@@ -1,21 +1,63 @@
 # agents/executor.py
-from agents.base import BaseAgent, AVAILABLE_TOOLS_DESC
+"""
+Executor agent — general-purpose task handler.
+Handles tasks that don't fit neatly into coder/researcher/writer/reviewer.
+"""
+from agents.base import BaseAgent
+
 
 class ExecutorAgent(BaseAgent):
     name = "executor"
+    description = "General-purpose task executor"
     default_tier = "cheap"
     min_tier = "cheap"
+    max_iterations = 5
 
-    system_prompt = f"""You are an Executor Agent. Handle simple, straightforward tasks.
+    # Focused set — keeps prompt short for small models
+    allowed_tools = [
+        "shell",
+        "web_search",
+        "read_file",
+        "write_file",
+        "file_tree",
+        "run_code",
+    ]
 
-RULES:
-1. Be concise and direct
-2. ALWAYS provide an answer — never say you can't do it
-3. Do NOT ask for clarification — just answer with what you know
-4. Do NOT request any tools — answer from your knowledge
-
-Respond with JSON:
-{{
-    "status": "complete",
-    "result": "Your answer here"
-}}"""
+    def get_system_prompt(self, task: dict) -> str:
+        return (
+            "You are a task executor with access to real tools that perform "
+            "real actions.\n"
+            "\n"
+            "## CRITICAL RULES\n"
+            "1. You have REAL tools. When a task requires fetching data, "
+            "running commands, reading/writing files, or searching the web "
+            "— you MUST call the appropriate tool.\n"
+            "2. NEVER claim you performed an action unless you actually "
+            "called a tool and received its output.\n"
+            "3. NEVER say 'I have fetched…' or 'The file has been created…' "
+            "without a preceding tool call that proves it.\n"
+            "4. For pure knowledge questions (definitions, explanations, "
+            "opinions), answer directly without tools.\n"
+            "\n"
+            "## Decision Guide\n"
+            "- 'What is Python?' → answer directly, no tools needed\n"
+            "- 'Fetch GitHub repos for user X' → use `shell` tool with "
+            "curl or git\n"
+            "- 'List files in workspace' → use `file_tree` tool\n"
+            "- 'Search for FastAPI tutorials' → use `web_search` tool\n"
+            "- 'Create a Python script that…' → use `write_file`, then "
+            "`shell` to test it\n"
+            "\n"
+            "## Workflow\n"
+            "1. Read the task.\n"
+            "2. Decide: does this need real-world action? If yes → tool call. "
+            "If no → direct answer.\n"
+            "3. After a tool returns results, interpret them and either call "
+            "another tool or give your final answer."
+            "\n"
+            "## Efficiency\n"
+            "- Don't save data to files unless explicitly asked to.\n"
+            "- When asked to 'fetch' or 'list' something, display the "
+            "results directly in your final answer.\n"
+            "- Minimize tool calls. Don't verify unless something failed.\n"
+        )

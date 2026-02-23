@@ -1,14 +1,15 @@
 # telegram_bot.py
 import asyncio
 import aiosqlite
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, DB_PATH
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, DB_PATH, TASK_PRIORITY
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters, ContextTypes
 )
 from db import (add_task, add_goal, get_active_goals, get_ready_tasks,
-                get_daily_stats, update_task)
+                get_daily_stats, update_task, get_recent_completed_tasks)
+
 
 pending_clarifications = {}  # task_id -> asyncio.Event + response
 
@@ -20,6 +21,7 @@ class TelegramInterface:
         self._setup_handlers()
         self._approval_events = {}
         self._clarification_events = {}
+        self.user_last_task_id = {}
 
 
     def _setup_handlers(self):
@@ -88,10 +90,19 @@ class TelegramInterface:
             await update.message.reply_text("Usage: /task <description>")
             return
         description = " ".join(context.args)
+        chat_id = update.message.chat_id
+        parent_id = self.user_last_task_id.get(chat_id)
+
         task_id = await add_task(
-            title=description[:50], description=description, tier="auto"
+            title=description[:50],
+            description=description,
+            tier="auto",
+            parent_task_id=parent_id,
+            priority=TASK_PRIORITY["critical"],
         )
+        self.user_last_task_id[chat_id] = task_id
         await update.message.reply_text(f"✅ Task #{task_id} queued.")
+
 
     async def cmd_list_goals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         goals = await get_active_goals()
@@ -269,9 +280,10 @@ class TelegramInterface:
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Smart handler: detect if it's a goal or simple task."""
         text = update.message.text
+        chat_id = update.message.chat_id
+        parent_id = self.user_last_task_id.get(chat_id)
 
-        # If it's long or sounds like a project, treat as goal
-        if len(text) > 200 or any(kw in text.lower() for kw in 
+        if len(text) > 200 or any(kw in text.lower() for kw in
             ["research", "create a", "build", "analyze", "develop",
              "write a report", "compare", "plan", "strategy"]):
             goal_id = await add_goal(title=text[:80], description=text, priority=5)
@@ -280,8 +292,16 @@ class TelegramInterface:
             await update.message.reply_text(
                 f" Interpreted as Goal #{goal_id}. Planning now..."
             )
+            self.user_last_task_id.pop(chat_id, None)
         else:
-            task_id = await add_task(title=text[:50], description=text, tier="auto")
+            task_id = await add_task(
+                title=text[:50],
+                description=text,
+                tier="auto",
+                parent_task_id=parent_id,
+                priority=TASK_PRIORITY["critical"],
+            )
+            self.user_last_task_id[chat_id] = task_id
             await update.message.reply_text(f"✅ Task #{task_id} queued.")
 
     async def handle_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -1,57 +1,79 @@
 # run.py
 import asyncio
+import os
+import subprocess
 import sys
-from config import print_config, MODEL_TIERS, AVAILABLE_KEYS
-from orchestrator import Orchestrator
+from dotenv import load_dotenv
 
-def preflight_check():
-    """Verify minimum requirements before starting."""
+load_dotenv()
+
+from config import print_config, DOCKER_CONTAINER_NAME
+
+
+def check_docker_sandbox():
+    """Ensure the Docker sandbox is built and running."""
+    print("🐳 Checking Docker sandbox...")
+
+    # Check if image exists
+    result = subprocess.run(
+        ["docker", "images", "-q", "orchestrator-sandbox"],
+        capture_output=True, text=True
+    )
+    if not result.stdout.strip():
+        print("   Building sandbox image...")
+
+        # ── FIX: point build context to the sandbox/ directory ──
+        sandbox_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox")
+        build = subprocess.run(
+            ["docker", "build", "-t", "orchestrator-sandbox", sandbox_dir],
+            capture_output=False
+        )
+        if build.returncode != 0:
+            print("   ⚠️  Docker build failed. Shell tool will be unavailable.")
+            return False
+
+
+def check_env():
+    """Verify minimum required env vars."""
+    required = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_ADMIN_CHAT_ID"]
+    missing = [v for v in required if not os.getenv(v)]
+    if missing:
+        print(f"❌ Missing required env vars: {missing}")
+        print("   Create a .env file with at least:")
+        print("   TELEGRAM_BOT_TOKEN=...")
+        print("   TELEGRAM_ADMIN_CHAT_ID=...")
+        sys.exit(1)
+
+    # Check for at least one model provider
+    providers = ["GROQ_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+                 "GEMINI_API_KEY", "CEREBRAS_API_KEY", "SAMBANOVA_API_KEY"]
+    has_cloud = any(os.getenv(p) for p in providers)
+
+    # Check ollama
+    try:
+        result = subprocess.run(["ollama", "list"], capture_output=True, timeout=3)
+        has_local = result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        has_local = False
+
+    if not has_cloud and not has_local:
+        print("❌ No model providers available!")
+        print("   Set at least one of: GROQ_API_KEY, GEMINI_API_KEY, etc.")
+        print("   Or install Ollama with at least one model.")
+        sys.exit(1)
+
+
+async def main():
+    check_env()
     print_config()
+    check_docker_sandbox()
 
-    if not any(AVAILABLE_KEYS.values()):
-        print("❌ FATAL: No API keys configured at all!")
-        sys.exit(1)
+    print("\n🚀 Starting orchestrator...\n")
 
-    if not MODEL_TIERS:
-        print("❌ FATAL: No model tiers available!")
-        sys.exit(1)
-
-    if "cheap" not in MODEL_TIERS:
-        print("⚠️  WARNING: No 'cheap' tier available. All tasks will use paid models.")
-
-    # Quick connectivity test
-    print("\n Testing model connectivity...")
-    broken_tiers = []
-
-    import litellm
-    for tier, config in list(MODEL_TIERS.items()):
-        try:
-            response = litellm.completion(
-                model=config["model"],
-                messages=[{"role": "user", "content": "Say 'ok'"}],
-                max_tokens=5,
-                temperature=0
-            )
-            print(f"   ✅ {tier}: {config['model']} — working")
-        except Exception as e:
-            short_error = str(e)[:80]
-            print(f"   ❌ {tier}: {config['model']} — {short_error}")
-            broken_tiers.append(tier)
-            # Remove broken tier
-
-    # Remove broken tiers AFTER iteration
-    for tier in broken_tiers:
-        print(f"      ↳ Removing '{tier}' tier from active config")
-        del MODEL_TIERS[tier]
-
-    if not MODEL_TIERS:
-        print("\n❌ FATAL: No working models after connectivity test!")
-        sys.exit(1)
-
-    print(f"\n✅ Preflight complete. {len(MODEL_TIERS)} working tier(s).\n")
+    from orchestrator import Orchestrator
+    orch = Orchestrator()
+    await orch.start()
 
 
 if __name__ == "__main__":
-    preflight_check()
-    orchestrator = Orchestrator()
-    asyncio.run(orchestrator.start())
+    asyncio.run(main())

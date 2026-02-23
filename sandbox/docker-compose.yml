@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  sandbox:
+    build: .
+    container_name: orchestrator-sandbox
+    network_mode: bridge
+    volumes:
+      - ../workspace:/app/workspace
+    deploy:
+      resources:
+        limits:
+          memory: 4096M
+          cpus: "8.0"
+    restart: unless-stopped

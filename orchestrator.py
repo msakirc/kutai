@@ -3,7 +3,7 @@ import asyncio
 import json
 import logging
 import aiosqlite
-from config import DB_PATH
+from config import DB_PATH, MAX_CONTEXT_CHAIN_LENGTH, TASK_PRIORITY
 from datetime import datetime
 from db import (
     init_db, get_ready_tasks, update_task, add_task, log_conversation,
@@ -13,13 +13,13 @@ from db import (
 from router import classify_task
 from agents import get_agent, AGENT_REGISTRY
 from tools import execute_tool
+from tools.workspace import get_file_tree
+from tools.git_ops import git_commit, ensure_git_repo
 from telegram_bot import TelegramInterface
 from config import MODEL_TIERS
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-PLANNING_PROMPT_CONTEXT = """Break this goal into actionable subtasks."""
 
 
 class Orchestrator:
@@ -27,6 +27,101 @@ class Orchestrator:
         self.telegram = TelegramInterface(self)
         self.running = False
         self.cycle_count = 0
+
+    # ─── NEW: Context Chaining ───────────────────────────────────────────
+
+    async def _inject_chain_context(self, task: dict) -> dict:
+        """
+        Before executing a task, inject results from completed sibling tasks
+        (prior steps in the same goal) and a workspace snapshot into its context.
+        This is how step 5 knows what steps 1-4 produced.
+        """
+        task_context = {}
+        raw_context = task.get("context", "{}")
+        if isinstance(raw_context, str):
+            try:
+                task_context = json.loads(raw_context)
+            except (json.JSONDecodeError, TypeError):
+                task_context = {}
+        elif isinstance(raw_context, dict):
+            task_context = raw_context
+
+        # ── Gather completed sibling tasks (same parent or same goal) ──
+        parent_id = task.get("parent_task_id")
+        goal_id = task.get("goal_id")
+
+        prior_steps = []
+
+        if parent_id:
+            # Get all completed siblings under the same parent
+            async with aiosqlite.connect(DB_PATH) as db:
+                db.row_factory = aiosqlite.Row
+                cursor = await db.execute(
+                    """SELECT id, title, result, agent_type, status
+                       FROM tasks
+                       WHERE parent_task_id = ?
+                         AND status = 'completed'
+                         AND id != ?
+                       ORDER BY completed_at ASC""",
+                    (parent_id, task["id"])
+                )
+                siblings = [dict(row) for row in await cursor.fetchall()]
+
+            for sib in siblings:
+                result_text = sib.get("result", "")
+                # Truncate individual results but keep them meaningful
+                if len(result_text) > 1500:
+                    result_text = result_text[:1500] + "\n... [truncated]"
+                prior_steps.append({
+                    "title": sib["title"],
+                    "agent_type": sib.get("agent_type", "?"),
+                    "status": sib["status"],
+                    "result": result_text,
+                })
+
+        # Trim total prior context to fit within budget
+        total_chars = sum(len(s.get("result", "")) for s in prior_steps)
+        while total_chars > MAX_CONTEXT_CHAIN_LENGTH and prior_steps:
+            # Remove the oldest/longest results first
+            longest_idx = max(range(len(prior_steps)),
+                              key=lambda i: len(prior_steps[i].get("result", "")))
+            old_result = prior_steps[longest_idx]["result"]
+            prior_steps[longest_idx]["result"] = old_result[:500] + "\n... [heavily truncated]"
+            total_chars = sum(len(s.get("result", "")) for s in prior_steps)
+
+        if prior_steps:
+            task_context["prior_steps"] = prior_steps
+
+        # ── Workspace snapshot ──
+        # For coder/reviewer/writer agents, include the current file tree
+        agent_type = task.get("agent_type", "executor")
+        if agent_type in ("coder", "reviewer", "writer", "planner"):
+            try:
+                tree = await get_file_tree(max_depth=3)
+                # Only include if there's something interesting
+                if tree and "File not found" not in tree and len(tree.split("\n")) > 1:
+                    task_context["workspace_snapshot"] = tree
+            except Exception as e:
+                logger.debug(f"Could not get workspace snapshot: {e}")
+
+        # Write context back to task dict
+        task["context"] = json.dumps(task_context)
+        return task
+
+    # ─── NEW: Auto-commit after coder tasks ─────────────────────────────
+
+    async def _auto_commit(self, task: dict, result: dict):
+        """Auto-commit workspace changes after a successful coder task."""
+        try:
+            await ensure_git_repo()
+            commit_msg = f"Task #{task['id']}: {task.get('title', 'untitled')[:60]}"
+            commit_result = await git_commit(commit_msg)
+            if "Nothing to commit" not in commit_result:
+                logger.info(f"[Task #{task['id']}] Auto-committed: {commit_msg}")
+        except Exception as e:
+            logger.debug(f"Auto-commit skipped: {e}")
+
+    # ─── Watchdog (unchanged) ────────────────────────────────────────────
 
     async def watchdog(self):
         """Detect and fix stuck states."""
@@ -61,7 +156,6 @@ class Orchestrator:
                 if not deps:
                     continue
 
-                # Check if ANY dependency has failed
                 placeholders = ",".join("?" * len(deps))
                 failed_cursor = await db.execute(
                     f"SELECT COUNT(*) FROM tasks WHERE id IN ({placeholders}) AND status = 'failed'",
@@ -101,8 +195,10 @@ class Orchestrator:
 
             await db.commit()
 
+    # ─── Core Task Processing ────────────────────────────────────────────
+
     async def process_task(self, task: dict):
-        """Process a single task through the appropriate agent."""
+        """Process a single task through the appropriate agent with context injection."""
         task_id = task["id"]
         title = task["title"]
         agent_type = task.get("agent_type", "executor")
@@ -113,13 +209,20 @@ class Orchestrator:
             await update_task(task_id, status="processing",
                               started_at=datetime.now().isoformat())
 
+            # ── Inject context from prior steps + workspace snapshot ──
+            task = await self._inject_chain_context(task)
+
             agent = get_agent(agent_type)
-            logger.info(f"[Task #{task_id}] Agent '{agent.name}' executing with tier '{task.get('tier','auto')}'")
+            logger.info(f"[Task #{task_id}] Agent '{agent.name}' executing (tier: {task.get('tier', 'auto')})")
 
             result = await agent.execute(task)
             status = result.get("status", "complete")
 
             logger.info(f"[Task #{task_id}] Agent returned status: '{status}'")
+
+            # Auto-commit after successful coder tasks
+            if status == "complete" and agent_type == "coder":
+                await self._auto_commit(task, result)
 
             if status == "complete":
                 await self._handle_complete(task, result)
@@ -129,8 +232,6 @@ class Orchestrator:
                 await self._handle_clarification(task, result)
             elif status == "needs_review":
                 await self._handle_review(task, result)
-            elif status == "needs_tool":
-                await self._handle_tool_request(task, result)
             else:
                 logger.warning(f"[Task #{task_id}] Unknown status '{status}', treating as complete")
                 await self._handle_complete(task, result)
@@ -150,27 +251,36 @@ class Orchestrator:
                                   error=f"{type(e).__name__}: {str(e)[:500]}")
                 await self.telegram.send_error(task_id, title, str(e)[:500])
 
+    # ─── Result Handlers ─────────────────────────────────────────────────
+
     async def _handle_complete(self, task, result):
         task_id = task["id"]
         result_text = result.get("result", "No result")
         model = result.get("model", "unknown")
         cost = result.get("cost", 0)
+        iterations = result.get("iterations", 1)
 
         await update_task(
             task_id, status="completed", result=result_text,
             completed_at=datetime.now().isoformat()
         )
 
-        # Check if all tasks for this goal are done
         if task.get("goal_id"):
             await self._check_goal_completion(task["goal_id"])
 
-        # Only notify human for top-level tasks or important results
+        # Notify for top-level tasks or multi-iteration tasks
         if not task.get("parent_task_id"):
             await self.telegram.send_result(task_id, task["title"],
                                             result_text, model, cost)
+        elif iterations > 3:
+            # Interesting enough to mention
+            await self.telegram.send_notification(
+                f"🔧 Task #{task_id} completed after {iterations} iterations\n"
+                f"_{task['title'][:60]}_"
+            )
 
-        logger.info(f"[Task #{task_id}] ✅ Complete via {model} (${cost:.4f})")
+        logger.info(f"[Task #{task_id}] ✅ Complete via {model} "
+                     f"(${cost:.4f}, {iterations} iter)")
 
     async def _handle_subtasks(self, task, result):
         task_id = task["id"]
@@ -181,7 +291,6 @@ class Orchestrator:
             await self._handle_complete(task, result)
             return
 
-        # Limit subtasks to prevent explosion
         MAX_SUBTASKS = 8
         if len(subtasks) > MAX_SUBTASKS:
             logger.warning(
@@ -197,18 +306,12 @@ class Orchestrator:
             if dep_step is not None and isinstance(dep_step, int) and 0 <= dep_step < len(created_ids):
                 depends_on = [created_ids[dep_step]]
 
-            # Resolve tier: don't trust planner to assign tiers that exist
             requested_tier = st.get("tier", "auto")
             if requested_tier != "auto" and requested_tier not in MODEL_TIERS:
-                # Map to best available
                 tier_map = {"expensive": "medium", "medium": "cheap"}
                 resolved = tier_map.get(requested_tier, "auto")
                 if resolved not in MODEL_TIERS and resolved != "auto":
                     resolved = "auto"
-                logger.info(
-                    f"Subtask tier '{requested_tier}' unavailable, "
-                    f"using '{resolved}'"
-                )
                 requested_tier = resolved
 
             sub_id = await add_task(
@@ -252,7 +355,6 @@ class Orchestrator:
         content = result.get("result", "")
         review_note = result.get("review_note", "Agent requested human review")
 
-        # Create a reviewer task
         review_task_id = await add_task(
             title=f"Review: {task['title'][:40]}",
             description=f"Review this output:\n\n{content}\n\nNote: {review_note}",
@@ -267,86 +369,7 @@ class Orchestrator:
                           completed_at=datetime.now().isoformat())
         logger.info(f"[Task #{task_id}] Sent to reviewer (Task #{review_task_id})")
 
-    async def _handle_tool_request(self, task: dict, result: dict):
-        """Agent needs a tool — execute it and feed result back."""
-        task_id = task["id"]
-        tool_name = result.get("tool", "")
-    
-        # Track how deep the tool chain goes
-        task_context = json.loads(task.get("context", "{}"))
-        tool_depth = task_context.get("tool_depth", 0)
-    
-        MAX_TOOL_DEPTH = 3  # prevent infinite loops
-    
-        if tool_depth >= MAX_TOOL_DEPTH:
-            logger.warning(
-                f"[Task #{task_id}] Tool depth limit reached ({MAX_TOOL_DEPTH}). "
-                f"Forcing completion."
-            )
-            await update_task(
-                task_id, status="completed",
-                result=f"Task stopped: exceeded maximum tool chain depth ({MAX_TOOL_DEPTH}). "
-                       f"Last tool requested: {tool_name}",
-                completed_at=datetime.now().isoformat()
-            )
-            return
-    
-        # Check if tool exists
-        from tools import TOOL_REGISTRY
-        if tool_name not in TOOL_REGISTRY:
-            logger.warning(
-                f"[Task #{task_id}] Unknown tool '{tool_name}' requested. "
-                f"Completing with error."
-            )
-            # Don't create a follow-up — just tell the agent the tool doesn't exist
-            # and let it complete with what it has
-            await update_task(
-                task_id, status="completed",
-                result=f"Agent requested unavailable tool '{tool_name}'. "
-                       f"Available tools: {list(TOOL_REGISTRY.keys())}. "
-                       f"Task completed with partial result.",
-                completed_at=datetime.now().isoformat()
-            )
-            return
-    
-        logger.info(f"[Task #{task_id}] Using tool: {tool_name}")
-    
-        # Build tool kwargs from result, excluding metadata
-        tool_args = {k: v for k, v in result.items()
-                     if k not in ("status", "tool", "model", "cost", "tier",
-                                  "memories", "result")}
-    
-        tool_result = await execute_tool(tool_name, **tool_args)
-    
-        # Create follow-up task with incremented depth
-        followup_context = {
-            "tool_result": tool_result[:3000],  # Limit tool result size
-            "original_task_id": task_id,
-            "tool_depth": tool_depth + 1
-        }
-    
-        followup_id = await add_task(
-            title=f"Continue: {task['title'][:40]}",
-            description=(
-                f"Original task: {task['description'][:500]}\n\n"
-                f"Tool '{tool_name}' returned:\n{tool_result[:2000]}\n\n"
-                f"Now complete the original task using this information. "
-                f"Do NOT request more tools unless absolutely necessary. "
-                f"Provide your final answer."
-            ),
-            goal_id=task.get("goal_id"),
-            parent_task_id=task.get("parent_task_id"),
-            agent_type=task.get("agent_type", "executor"),
-            tier=task.get("tier", "auto"),
-            priority=task.get("priority", 5),
-            context=followup_context
-        )
-    
-        await update_task(
-            task_id, status="completed",
-            result=f"Used tool {tool_name}, continuing in Task #{followup_id}",
-            completed_at=datetime.now().isoformat()
-        )
+    # ─── Goal Completion ─────────────────────────────────────────────────
 
     async def _check_goal_completion(self, goal_id):
         """Check if all tasks for a goal are done."""
@@ -364,17 +387,18 @@ class Orchestrator:
             await update_goal(goal_id, status="completed",
                               completed_at=datetime.now().isoformat())
 
-            # Summarize goal results
             results_summary = "\n".join(
                 f"• {t['title']}: {(t.get('result') or '')[:100]}"
                 for t in completed[-10:]
             )
 
             await self.telegram.send_notification(
-                f" *Goal Completed!*\n\n"
+                f"🎯 *Goal Completed!*\n\n"
                 f"Tasks: {len(completed)} completed, {len(failed)} failed\n\n"
                 f"Results:\n{results_summary}"
             )
+
+    # ─── Goal Planning ───────────────────────────────────────────────────
 
     async def plan_goal(self, goal_id: int, title: str, description: str):
         """Create initial planning task for a new goal."""
@@ -384,8 +408,10 @@ class Orchestrator:
             goal_id=goal_id,
             agent_type="planner",
             tier="medium",
-            priority=8
+            priority=TASK_PRIORITY["high"],
         )
+
+    # ─── Daily Digest ────────────────────────────────────────────────────
 
     async def daily_digest(self):
         """Send daily status summary."""
@@ -395,20 +421,30 @@ class Orchestrator:
         goals_text = "\n".join(f"  • {g['title']}" for g in goals[:5]) or "  None"
 
         await self.telegram.send_notification(
-            f" *Daily Digest*\n\n"
+            f"📊 *Daily Digest*\n\n"
             f"**Tasks today:**\n"
             f"  ✅ Completed: {stats['completed']}\n"
             f"  ⏳ Pending: {stats['pending']}\n"
-            f"   Processing: {stats['processing']}\n"
+            f"  ⚙️ Processing: {stats['processing']}\n"
             f"  ❌ Failed: {stats['failed']}\n"
-            f"   Cost today: ${stats['today_cost']:.4f}\n\n"
+            f"  💰 Cost today: ${stats['today_cost']:.4f}\n\n"
             f"**Active goals:**\n{goals_text}"
         )
+
+    # ─── Main Loop ───────────────────────────────────────────────────────
 
     async def run_loop(self):
         """Main autonomous work loop."""
         self.running = True
         logger.info("🚀 Autonomous orchestrator started")
+
+        # Ensure workspace and git are ready
+        try:
+            import os
+            os.makedirs("workspace", exist_ok=True)
+            await ensure_git_repo()
+        except Exception as e:
+            logger.warning(f"Workspace/git init: {e}")
 
         while self.running:
             try:
@@ -417,8 +453,7 @@ class Orchestrator:
                 if self.cycle_count % 10 == 0:
                     await self.watchdog()
 
-                # Fetch up to 5 ready tasks per cycle
-                tasks = await get_ready_tasks(limit=5)
+                tasks = await get_ready_tasks(limit=3)
 
                 if tasks:
                     task_names = [f"#{t['id']}({t.get('agent_type','?')})" for t in tasks]
@@ -427,19 +462,18 @@ class Orchestrator:
                         f"Processing {len(tasks)} task(s): {task_names}"
                     )
 
-                    # Process tasks SEQUENTIALLY to avoid rate limits on free tier
                     for t in tasks:
                         try:
                             await self.process_task(t)
-                            await asyncio.sleep(3)  # 3 second gap between tasks
+                            await asyncio.sleep(1)
                         except Exception as e:
                             logger.error(f"Task #{t['id']} error: {e}", exc_info=True)
 
-                    await asyncio.sleep(5)  # extra breathing room after batch
+                    await asyncio.sleep(2)
                 else:
                     if self.cycle_count % 20 == 0:
                         logger.info(f"[Cycle {self.cycle_count}] Idle")
-                    await asyncio.sleep(15)
+                    await asyncio.sleep(3)
 
                 if self.cycle_count % 500 == 0:
                     await self.daily_digest()
@@ -447,7 +481,6 @@ class Orchestrator:
             except Exception as e:
                 logger.error(f"Loop error: {e}", exc_info=True)
                 await asyncio.sleep(30)
-
 
     async def start(self):
         await init_db()

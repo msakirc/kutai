@@ -309,6 +309,21 @@ async def log_conversation(task_id, role, content, model_used=None,
         )
         await db.commit()
 
+async def get_recent_completed_tasks(limit=5):
+    """Get the most recently completed tasks with their results."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """SELECT id, title, result, agent_type, completed_at
+               FROM tasks
+               WHERE status = 'completed'
+                 AND result IS NOT NULL
+                 AND parent_task_id IS NULL
+               ORDER BY completed_at DESC
+               LIMIT ?""",
+            (limit,)
+        )
+        return [dict(row) for row in await cursor.fetchall()]
 
 # --- Memory Operations ---
 

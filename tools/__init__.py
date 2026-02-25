@@ -37,10 +37,10 @@ try:
     _optional_tools["web_search"] = {
         "function": web_search,
         "description": "Search the web. Args: query (str)",
-        "example": '{"tool": "web_search", "query": "FastAPI websocket tutorial"}',
+        "example": '{"action": "tool_call", "tool": "web_search", "args": {"query": "FastAPI websocket tutorial"}}',
     }
-except ImportError:
-    logger.info("web_search tool not available — skipping")
+except Exception as e:
+    logger.warning(f"web_search tool not available — {type(e).__name__}: {e}")
 
 try:
     from tools.code_runner import run_code
@@ -51,11 +51,10 @@ try:
             "Run a code snippet directly. "
             "Args: code (str), language (str, optional, default 'python')"
         ),
-        "example": '{"tool": "run_code", "code": "print(2+2)"}',
+        "example": '{"action": "tool_call", "tool": "run_code", "args": {"code": "print(2+2)"}}',
     }
 except ImportError:
-    logger.info("run_code tool not available — skipping")
-
+    logger.warning(f"run_code tool not available — {type(e).__name__}: {e}")
 
 # ---------------------------------------------------------------------------
 # Registry
@@ -69,7 +68,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "Args: command (str), timeout (int, optional, default 60), "
             "workdir (str, optional)"
         ),
-        "example": '{"tool": "shell", "command": "python3 main.py", "timeout": 30}',
+        "example": '{"action": "tool_call", "tool": "shell", "args": {"command": "python3 main.py"}}',
     },
     "shell_stdin": {
         "function": run_shell_with_stdin,
@@ -79,8 +78,8 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "timeout (int, optional), workdir (str, optional)"
         ),
         "example": (
-            '{"tool": "shell_stdin", '
-            '"command": "cat > hello.txt", "stdin_data": "Hello world"}'
+            '{"action": "tool_call", "tool": "shell_stdin", '
+            '"args": {"command": "cat > hello.txt", "stdin_data": "Hello world"}}'
         ),
     },
     "shell_sequential": {
@@ -91,8 +90,8 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "workdir (str, optional), stop_on_error (bool, default true)"
         ),
         "example": (
-            '{"tool": "shell_sequential", '
-            '"commands": ["pip install -r requirements.txt", "python main.py"]}'
+            '{"action": "tool_call", "tool": "shell_sequential", '
+            '"args": {"commands": ["pip install -r requirements.txt", "python main.py"]}}'
         ),
     },
 
@@ -104,7 +103,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "Args: path (str, optional), max_depth (int, optional, default 5), "
             "max_items (int, optional, default 200)"
         ),
-        "example": '{"tool": "file_tree", "path": "my-project"}',
+        "example": '{"action": "tool_call", "tool": "file_tree", "args": {"path": "."}}',
     },
     "read_file": {
         "function": read_file,
@@ -112,7 +111,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "Read a file with line numbers. "
             "Args: filepath (str), max_lines (int, optional, default 200)"
         ),
-        "example": '{"tool": "read_file", "filepath": "src/main.py"}',
+        "example": '{"action": "tool_call", "tool": "read_file", "args": {"filepath": "src/main.py"}}',
     },
     "write_file": {
         "function": write_file,
@@ -121,7 +120,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             'Args: filepath (str), content (str), '
             'mode ("write" or "append", default "write")'
         ),
-        "example": '{"tool": "write_file", "filepath": "src/main.py", "content": "print(\'hello\')"}',
+        "example": '{"action": "tool_call", "tool": "write_file", "args": {"filepath": "src/main.py", "content": "print(\'hello\')"}}',
     },
     "project_info": {
         "function": detect_project,
@@ -130,7 +129,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "dependencies, and file statistics. "
             "Args: path (str, optional)"
         ),
-        "example": '{"tool": "project_info"}',
+        "example": '{"action": "tool_call", "tool": "project_info", "args": {}}',
     },
 
     # ── Git ─────────────────────────────────────────────────────────────────
@@ -141,7 +140,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "Idempotent — safe to call on an existing repo. "
             "Args: path (str, optional)"
         ),
-        "example": '{"tool": "git_init"}',
+        "example": '{"action": "tool_call", "tool": "git_init", "args": {}}',
     },
     "git_commit": {
         "function": git_commit,
@@ -150,7 +149,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "Args: message (str), path (str, optional), "
             "add_all (bool, optional, default true)"
         ),
-        "example": '{"tool": "git_commit", "message": "feat: add login endpoint"}',
+        "example": '{"action": "tool_call", "tool": "git_commit", "args": {"message": "feat: add login endpoint"}}',
     },
     "git_branch": {
         "function": git_branch,
@@ -158,7 +157,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "Create and switch to a branch (or switch if it already exists). "
             "Args: branch_name (str), path (str, optional)"
         ),
-        "example": '{"tool": "git_branch", "branch_name": "feat/auth"}',
+        "example": '{"action": "tool_call", "tool": "git_branch", "args": {"branch_name": "feat/auth"}}',
     },
     "git_log": {
         "function": git_log,
@@ -166,7 +165,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "Show recent commits (one-line format). "
             "Args: path (str, optional), count (int, optional, default 10)"
         ),
-        "example": '{"tool": "git_log", "count": 5}',
+        "example": '{"action": "tool_call", "tool": "git_log", "args": {"count": 5}}',
     },
     "git_diff": {
         "function": git_diff,
@@ -174,7 +173,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "Show uncommitted changes. "
             "Args: path (str, optional), stat_only (bool, optional, default false)"
         ),
-        "example": '{"tool": "git_diff"}',
+        "example": '{"action": "tool_call", "tool": "git_diff", "args": {}}',
     },
     "git_rollback": {
         "function": git_rollback,
@@ -182,7 +181,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "Soft-reset the last N commits (keeps files staged). "
             "Args: steps (int, default 1), path (str, optional)"
         ),
-        "example": '{"tool": "git_rollback", "steps": 1}',
+        "example": '{"action": "tool_call", "tool": "git_rollback", "args": {"steps": 1}}',
     },
     "git_status": {
         "function": git_status,
@@ -190,13 +189,12 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "Show current branch and working-tree status. "
             "Args: path (str, optional)"
         ),
-        "example": '{"tool": "git_status"}',
+        "example": '{"action": "tool_call", "tool": "git_status", "args": {}}',
     },
 
     # ── Optional tools injected below ──────────────────────────────────────
     **_optional_tools,
 }
-
 
 # ---------------------------------------------------------------------------
 # Pre-compute accepted parameter names per tool (once at import time)
@@ -213,7 +211,7 @@ for _name, _info in TOOL_REGISTRY.items():
 
 # Clean up module namespace
 del _name, _info, _sig
-
+logger.info(f"📦 Loaded tools: {sorted(TOOL_REGISTRY.keys())}")
 
 # ---------------------------------------------------------------------------
 # Public helpers

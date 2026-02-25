@@ -456,6 +456,32 @@ class BaseAgent:
             action = _aliases[action]
             parsed["action"] = action
 
+        # ── Tool name used as action, OR wrong action but "tool" key present ──
+        if action and action not in (
+            "tool_call", "final_answer", "clarify", "decompose",
+            "think", "thinking", "reasoning", "analyze",
+            "observation", "reflect", "consider",
+        ):
+            # Case 1: action IS a registered tool name
+            if action in TOOL_REGISTRY:
+                parsed["tool"] = action
+                parsed["action"] = "tool_call"
+                action = "tool_call"
+                if "args" not in parsed:
+                    parsed["args"] = {
+                        k: v for k, v in parsed.items()
+                        if k not in ("action", "tool", "reasoning")
+                    }
+            # Case 2: action is wrong, but "tool" key exists → clearly a tool call
+            elif "tool" in parsed:
+                parsed["action"] = "tool_call"
+                action = "tool_call"
+                if "args" not in parsed:
+                    parsed["args"] = {
+                        k: v for k, v in parsed.items()
+                        if k not in ("action", "tool", "reasoning")
+                    }
+
         # ── Treat thinking/reasoning as non-actions → return None
         # so parser falls through to final_answer fallback ──
         if action in ("think", "thinking", "reasoning", "analyze",

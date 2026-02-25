@@ -27,6 +27,7 @@ class Orchestrator:
         self.telegram = TelegramInterface(self)
         self.running = False
         self.cycle_count = 0
+        self.last_digest = datetime.now()
 
     # ─── NEW: Context Chaining ───────────────────────────────────────────
 
@@ -269,11 +270,15 @@ class Orchestrator:
             await self._check_goal_completion(task["goal_id"])
 
         # Notify for top-level tasks or multi-iteration tasks
-        if not task.get("parent_task_id"):
+                # Always notify for interactive (critical priority) tasks
+        # Skip only background subtasks from goal decomposition
+        is_interactive = task.get("priority", 5) >= TASK_PRIORITY.get("critical", 10)
+        is_goal_subtask = task.get("goal_id") and task.get("parent_task_id")
+
+        if is_interactive or not is_goal_subtask:
             await self.telegram.send_result(task_id, task["title"],
                                             result_text, model, cost)
         elif iterations > 3:
-            # Interesting enough to mention
             await self.telegram.send_notification(
                 f"🔧 Task #{task_id} completed after {iterations} iterations\n"
                 f"_{task['title'][:60]}_"
@@ -475,8 +480,10 @@ class Orchestrator:
                         logger.info(f"[Cycle {self.cycle_count}] Idle")
                     await asyncio.sleep(3)
 
-                if self.cycle_count % 500 == 0:
+                hours_since_digest = (datetime.now() - self.last_digest).total_seconds() / 3600
+                if hours_since_digest >= 24:
                     await self.daily_digest()
+                    self.last_digest = datetime.now()
 
             except Exception as e:
                 logger.error(f"Loop error: {e}", exc_info=True)

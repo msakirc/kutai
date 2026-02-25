@@ -6,6 +6,9 @@ import os
 import subprocess
 import logging
 
+from router import select_model
+from  tools import list_tool_names
+
 logger = logging.getLogger(__name__)
 
 # ─── Core Settings ───────────────────────────────────────────────────────────
@@ -227,53 +230,53 @@ if AVAILABLE_KEYS["anthropic"]:
 
 # ─── Tier Helpers ────────────────────────────────────────────────────────────
 
-def get_models_for_tier(tier: str) -> list[str]:
-    """
-    Return MODEL_POOL keys suitable for *tier*, ordered best-first.
-
-    Overlap between tiers is intentional — it provides more fallback options.
-    """
-    if tier == "routing":
-        candidates = [
-            k for k, v in MODEL_POOL.items()
-            if "routing" in v["capabilities"]
-            or "classification" in v["capabilities"]
-        ]
-        if not candidates:
-            candidates = [k for k, v in MODEL_POOL.items() if v["quality"] <= 5]
-    elif tier == "cheap":
-        candidates = [k for k, v in MODEL_POOL.items() if v["quality"] <= 6]
-    elif tier == "code":
-        candidates = [k for k, v in MODEL_POOL.items()
-                      if "coding" in v["capabilities"]]
-    elif tier == "medium":
-        candidates = [k for k, v in MODEL_POOL.items() if v["quality"] >= 6]
-    elif tier == "expensive":
-        candidates = [k for k, v in MODEL_POOL.items() if v["quality"] >= 8]
-    else:
-        candidates = list(MODEL_POOL.keys())
-
-    # Sort: routing/cheap prefer local (unlimited); everything else by quality
-    if tier in ("routing", "cheap"):
-        candidates.sort(key=lambda k: (
-            0 if MODEL_POOL[k]["provider"] == "ollama" else 1,
-            -MODEL_POOL[k]["quality"],
-        ))
-    elif tier == "code":
-        # Prefer models whose *primary* capability is coding
-        candidates.sort(key=lambda k: (
-            0 if MODEL_POOL[k]["capabilities"][0] == "coding" else 1,
-            -MODEL_POOL[k]["quality"],
-        ))
-    else:
-        _free_cloud = {"groq", "cerebras", "sambanova", "gemini"}
-        candidates.sort(key=lambda k: (
-            0 if MODEL_POOL[k]["provider"] == "ollama" else
-            1 if MODEL_POOL[k]["provider"] in _free_cloud else 2,
-            -MODEL_POOL[k]["quality"],
-        ))
-
-    return candidates
+# def get_models_for_tier(tier: str) -> list[str]:
+#     """
+#     Return MODEL_POOL keys suitable for *tier*, ordered best-first.
+#
+#     Overlap between tiers is intentional — it provides more fallback options.
+#     """
+#     if tier == "routing":
+#         candidates = [
+#             k for k, v in MODEL_POOL.items()
+#             if "routing" in v["capabilities"]
+#             or "classification" in v["capabilities"]
+#         ]
+#         if not candidates:
+#             candidates = [k for k, v in MODEL_POOL.items() if v["quality"] <= 5]
+#     elif tier == "cheap":
+#         candidates = [k for k, v in MODEL_POOL.items() if v["quality"] <= 6]
+#     elif tier == "code":
+#         candidates = [k for k, v in MODEL_POOL.items()
+#                       if "coding" in v["capabilities"]]
+#     elif tier == "medium":
+#         candidates = [k for k, v in MODEL_POOL.items() if v["quality"] >= 6]
+#     elif tier == "expensive":
+#         candidates = [k for k, v in MODEL_POOL.items() if v["quality"] >= 8]
+#     else:
+#         candidates = list(MODEL_POOL.keys())
+#
+#     # Sort: routing/cheap prefer local (unlimited); everything else by quality
+#     if tier in ("routing", "cheap"):
+#         candidates.sort(key=lambda k: (
+#             0 if MODEL_POOL[k]["provider"] == "ollama" else 1,
+#             -MODEL_POOL[k]["quality"],
+#         ))
+#     elif tier == "code":
+#         # Prefer models whose *primary* capability is coding
+#         candidates.sort(key=lambda k: (
+#             0 if MODEL_POOL[k]["capabilities"][0] == "coding" else 1,
+#             -MODEL_POOL[k]["quality"],
+#         ))
+#     else:
+#         _free_cloud = {"groq", "cerebras", "sambanova", "gemini"}
+#         candidates.sort(key=lambda k: (
+#             0 if MODEL_POOL[k]["provider"] == "ollama" else
+#             1 if MODEL_POOL[k]["provider"] in _free_cloud else 2,
+#             -MODEL_POOL[k]["quality"],
+#         ))
+#
+#     return candidates
 
 
 # ─── MODEL_TIERS (derived from MODEL_POOL) ──────────────────────────────────
@@ -285,7 +288,7 @@ def _build_tier_config(
     description: str,
 ) -> dict | None:
     """Build a single MODEL_TIERS entry from the pool."""
-    candidates = get_models_for_tier(tier)
+    candidates = [m['litellm_name'] for m in select_model(tier)]
     if not candidates:
         return None
     primary = candidates[0]
@@ -315,7 +318,7 @@ for _tname, _ttemp, _tdesc in _tier_definitions:
 
 # ─── Classifier Model ───────────────────────────────────────────────────────
 
-_routing_pool = get_models_for_tier("routing")
+_routing_pool = [m['litellm_name'] for m in select_model("routing")]
 if _routing_pool:
     CLASSIFIER_MODEL: str = MODEL_POOL[_routing_pool[0]]["litellm_name"]
 elif MODEL_POOL:
@@ -378,7 +381,8 @@ def print_config() -> None:
         fb_str = f" (+{n_fb} fallback{'s' if n_fb != 1 else ''})" if n_fb else ""
         print(f"     {tier_name:12s}: {tier_cfg['model']}{fb_str}")
 
-    print(f"\n  🧭 Classifier: {CLASSIFIER_MODEL}")
+    # print(f"\n  🧭 Active tools: {list_tool_names()}")
+    print(f"\n\n  🧭 Classifier: {CLASSIFIER_MODEL}")
     print(f"  📁 Workspace:  {WORKSPACE_ROOT}")
     print(f"  🐳 Docker:     {DOCKER_CONTAINER_NAME}")
     print(f"  🔄 Max iters:  {MAX_AGENT_ITERATIONS}")

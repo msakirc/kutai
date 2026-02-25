@@ -86,6 +86,7 @@ async def ensure_container_running() -> bool:
         "docker", "run", "-d",
         "--name", CONTAINER_NAME,
         "--network", SANDBOX_NETWORK,
+        "--add-host", "host.docker.internal:host-gateway",
         "--memory", SANDBOX_MEMORY,
         "--cpus", SANDBOX_CPUS,
         "-v", f"{WORKSPACE_DIR}:{CONTAINER_WORKROOT}",

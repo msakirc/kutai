@@ -60,4 +60,10 @@ class ExecutorAgent(BaseAgent):
             "- When asked to 'fetch' or 'list' something, display the "
             "results directly in your final answer.\n"
             "- Minimize tool calls. Don't verify unless something failed.\n"
+            "\n"
+            "## Environment Limitations\n"
+            "- Shell commands run inside a Docker container, NOT on the host.\n"
+            "- Host tools like `ollama`, `systemctl`, `docker` are NOT available in shell.\n"
+            "- To access host APIs (like Ollama), use curl: `curl -s http://host.docker.internal:11434/api/tags`\n"
+            "- For web requests, use the `web_search` tool or `shell` with `curl`.\n"
         )

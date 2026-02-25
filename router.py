@@ -245,17 +245,16 @@ def select_model(
     Return a ranked list of models suitable for *tier* + optional *capability*.
 
     Ranking:
-      1. Matches capability (if specified)
-      2. Within tier quality range
-      3. Prefer local (unlimited rate, private)
-      4. Prefer providers with rate headroom
-      5. Higher quality wins ties
+      1. Provider class (local > free cloud > paid)
+      2. Matches capability (if specified)
+      3. Within tier quality range
+      4. Higher quality wins ties
     """
     tier_ranges = {
         "routing":   (0, 5),
         "cheap":     (0, 6),
         "code":      (0, 99),   # any quality, filtered by capability below
-        "medium":    (4, 8),    # overlapping is intentional
+        "medium":    (4, 8),
         "expensive": (7, 99),
     }
     q_min, q_max = tier_ranges.get(tier, (0, 99))
@@ -293,15 +292,13 @@ def select_model(
         rate_ok = headroom > 2
 
         # Provider priority class:
-        #   local (free + unlimited) > free cloud > paid cloud
         FREE_CLOUD = {"groq", "cerebras", "sambanova", "gemini"}
-
         if cfg["provider"] == "ollama":
-            provider_bonus = 200   # always prefer local
+            provider_bonus = 200
         elif cfg["provider"] in FREE_CLOUD:
-            provider_bonus = 100   # free cloud before paid
+            provider_bonus = 100
         else:
-            provider_bonus = 0     # paid = last resort
+            provider_bonus = 0
 
         score = provider_bonus + (quality_adj * 10)
         if rate_ok:
@@ -309,9 +306,28 @@ def select_model(
         else:
             score -= 30
 
-    candidates.sort(key=lambda c: -c["score"])
-    return candidates
+        # THIS IS THE MISSING PART
+        candidates.append({
+            "key": key,
+            "litellm_name": cfg["litellm_name"],
+            "provider": cfg["provider"],
+            "max_tokens": cfg.get("max_tokens", 2048),
+            "rate_limit": cfg.get("rate_limit", 30),
+            "quality": quality,
+            "score": score,
+        })
 
+    candidates.sort(key=lambda c: -c["score"])
+
+    # Debug: show which models were selected and their scores
+    if candidates:
+        model_list = [
+            f"{c['litellm_name']}(s={c['score']:.0f})"
+            for c in candidates
+        ]
+        logger.debug(f"select_model for tier '{tier}': {model_list}")
+
+    return candidates
 
 def _get_fallback_models(tier: str) -> list[dict]:
     """

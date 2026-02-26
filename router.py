@@ -13,8 +13,6 @@ litellm.suppress_debug_info = True
 
 from config import (
     MODEL_POOL,
-    MODEL_TIERS,
-    CLASSIFIER_MODEL,
     FALLBACK_ORDER,
 )
 
@@ -374,6 +372,39 @@ def _get_fallback_models(tier: str) -> list[dict]:
                 seen_names.add(c["litellm_name"])
 
     return chain
+
+# ─── Build MODEL_TIERS and CLASSIFIER_MODEL ─────────────────────────────────
+
+MODEL_TIERS: dict[str, dict] = {}
+
+_tier_definitions = [
+    ("routing",   0.0, "Task classification only"),
+    ("cheap",     0.3, "Simple Q&A, formatting, lookups"),
+    ("code",      0.1, "Code generation and debugging"),
+    ("medium",    0.3, "Summaries, planning, moderate reasoning"),
+    ("expensive", 0.3, "Complex analysis, full code gen, architecture"),
+]
+
+for _tname, _ttemp, _tdesc in _tier_definitions:
+    _candidates = select_model(_tname)
+    if _candidates:
+        _primary = _candidates[0]
+        MODEL_TIERS[_tname] = {
+            "model":       _primary["litellm_name"],
+            "fallbacks":   [c["litellm_name"] for c in _candidates[1:]],
+            "max_tokens":  _primary.get("max_tokens", 2048),
+            "temperature": _ttemp,
+            "description": _tdesc,
+        }
+
+_routing_candidates = select_model("routing")
+if _routing_candidates:
+    CLASSIFIER_MODEL: str = _routing_candidates[0]["litellm_name"]
+elif MODEL_POOL:
+    _cheapest = min(MODEL_POOL, key=lambda k: MODEL_POOL[k]["quality"])
+    CLASSIFIER_MODEL = MODEL_POOL[_cheapest]["litellm_name"]
+else:
+    CLASSIFIER_MODEL = "groq/llama-3.1-8b-instant"
 
 
 # ─── Main API ────────────────────────────────────────────────────────────────

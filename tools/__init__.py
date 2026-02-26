@@ -53,7 +53,7 @@ try:
         ),
         "example": '{"action": "tool_call", "tool": "run_code", "args": {"code": "print(2+2)"}}',
     }
-except ImportError:
+except ImportError as e:
     logger.warning(f"run_code tool not available — {type(e).__name__}: {e}")
 
 # ---------------------------------------------------------------------------

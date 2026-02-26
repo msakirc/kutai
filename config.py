@@ -6,8 +6,6 @@ import os
 import subprocess
 import logging
 
-from router import select_model
-from  tools import list_tool_names
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +225,7 @@ if AVAILABLE_KEYS["anthropic"]:
         "provider": "anthropic", "max_tokens": 8192,
     }
 
-
+'''
 # ─── Tier Helpers ────────────────────────────────────────────────────────────
 
 # def get_models_for_tier(tier: str) -> list[str]:
@@ -315,7 +313,6 @@ for _tname, _ttemp, _tdesc in _tier_definitions:
     if _tcfg:
         MODEL_TIERS[_tname] = _tcfg
 
-
 # ─── Classifier Model ───────────────────────────────────────────────────────
 
 _routing_pool = [m['litellm_name'] for m in select_model("routing")]
@@ -327,6 +324,7 @@ elif MODEL_POOL:
 else:
     CLASSIFIER_MODEL = "groq/llama-3.1-8b-instant"     # last-resort default
 
+'''
 # ─── Fallback & Agent Mapping ────────────────────────────────────────────────
 
 FALLBACK_ORDER: list[str] = ["expensive", "medium", "code", "cheap", "routing"]
@@ -353,7 +351,9 @@ TASK_PRIORITY = {
 # ─── Startup Display ────────────────────────────────────────────────────────
 
 def print_config() -> None:
-    """Print active configuration on startup."""
+    # Lazy import to avoid circular dependency
+    from router import MODEL_TIERS, CLASSIFIER_MODEL
+
     print("=" * 60)
     print("  🔑 API Keys:")
     for provider, available in AVAILABLE_KEYS.items():
@@ -381,7 +381,6 @@ def print_config() -> None:
         fb_str = f" (+{n_fb} fallback{'s' if n_fb != 1 else ''})" if n_fb else ""
         print(f"     {tier_name:12s}: {tier_cfg['model']}{fb_str}")
 
-    # print(f"\n  🧭 Active tools: {list_tool_names()}")
     print(f"\n\n  🧭 Classifier: {CLASSIFIER_MODEL}")
     print(f"  📁 Workspace:  {WORKSPACE_ROOT}")
     print(f"  🐳 Docker:     {DOCKER_CONTAINER_NAME}")

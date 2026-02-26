@@ -9,7 +9,7 @@ import json
 import logging
 import re
 
-from router import call_model, classify_task
+from router import call_model, classify_task, MODEL_TIERS
 from db import (
     log_conversation,
     store_memory,
@@ -18,6 +18,7 @@ from db import (
 )
 from tools import TOOL_REGISTRY, get_tool_descriptions, execute_tool
 from config import MAX_AGENT_ITERATIONS, AGENT_TIER_MAP, MAX_TOOL_OUTPUT_LENGTH
+import litellm as _litellm
 
 logger = logging.getLogger(__name__)
 
@@ -526,6 +527,106 @@ class BaseAgent:
         return parsed
 
     # ------------------------------------------------------------------ #
+    #  Context window management                                          #
+    # ------------------------------------------------------------------ #
+    def _count_tokens(self, messages: list[dict], model: str) -> int:
+        """Estimate token count for a message list."""
+        try:
+            return _litellm.token_counter(model=model, messages=messages)
+        except Exception:
+            # Fallback: ~4 chars per token
+            return sum(len(m.get("content", "")) for m in messages) // 4
+
+    def _get_context_window(self, model: str, tier: str) -> int:
+        """Return the context window size (input tokens) for a model."""
+        try:
+            info = _litellm.get_model_info(model=model)
+            if info:
+                ctx = info.get("max_input_tokens") or info.get("max_tokens")
+                if ctx and ctx > 0:
+                    return ctx
+        except Exception:
+            pass
+        # Conservative fallbacks per tier
+        return {
+            "routing": 4096,
+            "cheap": 8192,
+            "code": 16384,
+            "medium": 16384,
+            "expensive": 32768,
+        }.get(tier, 8192)
+
+    def _trim_messages_if_needed(
+        self, messages: list[dict], model: str, tier: str,
+    ) -> list[dict]:
+        """
+        If the conversation exceeds 80 % of the model's context window,
+        progressively compress older tool exchanges:
+          Phase 1 — truncate long middle messages
+          Phase 2 — drop oldest assistant/user pairs entirely
+        """
+        ctx_window = self._get_context_window(model, tier)
+        threshold = int(ctx_window * 0.80)
+
+        current = self._count_tokens(messages, model)
+        if current <= threshold:
+            return messages
+
+        logger.warning(
+            f"Context at {current}/{ctx_window} tokens "
+            f"({current * 100 // ctx_window}%%), compressing…"
+        )
+
+        # Need at minimum: system + initial user + latest 2
+        if len(messages) <= 4:
+            return messages
+
+        head = messages[:2]          # system prompt + task context
+        tail = messages[-2:]         # latest exchange
+        middle = list(messages[2:-2])
+
+        if not middle:
+            return messages
+
+        # ── Phase 1: truncate long content in middle messages ──
+        for i, msg in enumerate(middle):
+            content = msg.get("content", "")
+            if len(content) > 300:
+                middle[i] = {
+                    "role": msg["role"],
+                    "content": (
+                        content[:150]
+                        + "\n\n… [compressed] …\n\n"
+                        + content[-100:]
+                    ),
+                }
+
+        result = head + middle + tail
+        if self._count_tokens(result, model) <= threshold:
+            final = self._count_tokens(result, model)
+            logger.info(f"Context compressed (truncate): {current} → {final} tokens")
+            return result
+
+        # ── Phase 2: drop oldest pairs from middle ──
+        while len(middle) >= 2:
+            if self._count_tokens(head + middle + tail, model) <= threshold:
+                break
+            middle = middle[2:]      # drop one assistant + user pair
+
+        summary = {
+            "role": "user",
+            "content": (
+                "[Earlier tool interactions were removed to fit the context "
+                "window. Focus on the latest results and the original task.]"
+            ),
+        }
+        result = head + [summary] + middle + tail
+
+        final = self._count_tokens(result, model)
+        logger.info(f"Context compressed (drop): {current} → {final} tokens")
+        return result
+
+    # ------------------------------------------------------------------ #
     #  Main execution loop                                                #
     # ------------------------------------------------------------------ #
     async def execute(self, task: dict) -> dict:
@@ -565,6 +666,16 @@ class BaseAgent:
             logger.info(
                 f"[Task #{task_id}] Agent '{self.name}' iteration "
                 f"{iteration + 1}/{self.max_iterations}"
+            )
+
+            # Call LLM
+            # ── Trim context if approaching window limit ──
+            estimation_model = (
+                used_model if used_model != "unknown"
+                else MODEL_TIERS.get(tier, {}).get("model", "gpt-4o-mini")
+            )
+            messages = self._trim_messages_if_needed(
+                messages, estimation_model, tier,
             )
 
             # Call LLM

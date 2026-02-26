@@ -16,7 +16,7 @@ from tools import execute_tool
 from tools.workspace import get_file_tree
 from tools.git_ops import git_commit, ensure_git_repo
 from telegram_bot import TelegramInterface
-from config import MODEL_TIERS
+from router import MODEL_TIERS
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

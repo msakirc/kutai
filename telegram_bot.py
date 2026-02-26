@@ -1,6 +1,7 @@
 # telegram_bot.py
 import asyncio
 import aiosqlite
+import logging
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, DB_PATH, TASK_PRIORITY
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (

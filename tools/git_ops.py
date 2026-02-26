@@ -140,25 +140,16 @@ async def _ensure_repo(path: str = "") -> Optional[str]:
     if not os.path.isdir(os.path.join(target, ".git")):
         return None
     return target
-async def ensure_git_repo() -> str:
-    """Initialize git repo in workspace if not already."""
-    git_dir = os.path.join(WORKSPACE_ROOT, ".git")
+
+async def ensure_git_repo(path: str = "") -> str:
+    """Initialize git repo in workspace if not already. Delegates to git_init."""
+    target = _resolve_repo(path)
+    if target is None:
+        return "❌ Access denied: path is outside workspace."
+    git_dir = os.path.join(target, ".git")
     if os.path.isdir(git_dir):
         return "Git repo already initialized."
-
-    code, output = await _run_git(["init"])
-    if code != 0:
-        return f"❌ git init failed: {output}"
-
-    # Create .gitignore
-    gitignore_path = os.path.join(WORKSPACE_ROOT, ".gitignore")
-    if not os.path.exists(gitignore_path):
-        with open(gitignore_path, "w") as f:
-            f.write("__pycache__/\n*.pyc\nnode_modules/\n.env\n.venv/\nvenv/\n")
-
-    await _run_git(["add", "-A"])
-    await _run_git(["commit", "-m", "Initial commit by orchestrator"])
-    return "✅ Git repo initialized with initial commit."
+    return await git_init(path)
 
 # ---------------------------------------------------------------------------
 # Commit

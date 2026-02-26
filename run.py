@@ -4,9 +4,6 @@ import os
 import subprocess
 import sys
 from dotenv import load_dotenv
-from config import print_config
-print_config()
-
 load_dotenv()
 
 from config import print_config, DOCKER_CONTAINER_NAME

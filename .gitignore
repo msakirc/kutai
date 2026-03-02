@@ -21,4 +21,4 @@ Thumbs.db
 .env
 .idea/
 
-orchestrator.db
+*.db

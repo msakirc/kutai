@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import signal
 import aiosqlite
 from config import DB_PATH, MAX_CONTEXT_CHAIN_LENGTH, TASK_PRIORITY
 from datetime import datetime
@@ -23,11 +24,13 @@ logger = logging.getLogger(__name__)
 
 
 class Orchestrator:
-    def __init__(self):
+    def __init__(self, shutdown_event=None):
         self.telegram = TelegramInterface(self)
         self.running = False
         self.cycle_count = 0
         self.last_digest = datetime.now()
+        self.shutdown_event = shutdown_event or asyncio.Event()
+        self._current_task_future = None
 
     # ─── NEW: Context Chaining ───────────────────────────────────────────
 
@@ -213,10 +216,15 @@ class Orchestrator:
             # ── Inject context from prior steps + workspace snapshot ──
             task = await self._inject_chain_context(task)
 
-            agent = get_agent(agent_type)
-            logger.info(f"[Task #{task_id}] Agent '{agent.name}' executing (tier: {task.get('tier', 'auto')})")
-
-            result = await agent.execute(task)
+            if agent_type == "pipeline":
+                from pipeline import CodingPipeline
+                pipeline = CodingPipeline()
+                logger.info(f"[Task #{task_id}] Delegating to CodingPipeline")
+                result = await pipeline.run(task)
+            else:
+                agent = get_agent(agent_type)
+                logger.info(f"[Task #{task_id}] Agent '{agent.name}' executing (tier: {task.get('tier', 'auto')})")
+                result = await agent.execute(task)
             status = result.get("status", "complete")
 
             logger.info(f"[Task #{task_id}] Agent returned status: '{status}'")
@@ -329,7 +337,11 @@ class Orchestrator:
                 priority=st.get("priority", task.get("priority", 5)),
                 depends_on=depends_on
             )
-            created_ids.append(sub_id)
+            if sub_id is not None:
+                created_ids.append(sub_id)
+            else:
+                # Deduped — use a placeholder so later deps still index correctly
+                created_ids.append(-1)
 
         plan_summary = result.get("plan_summary", f"Created {len(subtasks)} subtasks")
         await update_task(task_id, status="waiting_subtasks", result=plan_summary)
@@ -372,7 +384,10 @@ class Orchestrator:
 
         await update_task(task_id, status="completed", result=content,
                           completed_at=datetime.now().isoformat())
-        logger.info(f"[Task #{task_id}] Sent to reviewer (Task #{review_task_id})")
+        if review_task_id:
+            logger.info(f"[Task #{task_id}] Sent to reviewer (Task #{review_task_id})")
+        else:
+            logger.info(f"[Task #{task_id}] Review task deduped, skipping")
 
     # ─── Goal Completion ─────────────────────────────────────────────────
 
@@ -451,7 +466,7 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"Workspace/git init: {e}")
 
-        while self.running:
+        while self.running and not self.shutdown_event.is_set():
             try:
                 self.cycle_count += 1
 
@@ -469,9 +484,14 @@ class Orchestrator:
 
                     for t in tasks:
                         try:
-                            await self.process_task(t)
+                            self._current_task_future = asyncio.ensure_future(
+                                self.process_task(t)
+                            )
+                            await self._current_task_future
+                            self._current_task_future = None
                             await asyncio.sleep(1)
                         except Exception as e:
+                            self._current_task_future = None
                             logger.error(f"Task #{t['id']} error: {e}", exc_info=True)
 
                     await asyncio.sleep(2)
@@ -501,5 +521,26 @@ class Orchestrator:
             try:
                 await self.run_loop()
             finally:
+                # ── Graceful shutdown ──
+                if self.shutdown_event.is_set():
+                    logger.info("🛑 Graceful shutdown initiated...")
+                    self.running = False
+
+                    # Wait for current task to finish (60s timeout)
+                    if self._current_task_future and not self._current_task_future.done():
+                        logger.info("⏳ Waiting for current task to complete (60s timeout)...")
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(self._current_task_future),
+                                timeout=60,
+                            )
+                            logger.info("✅ Current task completed cleanly")
+                        except asyncio.TimeoutError:
+                            logger.warning("⚠️  Shutdown timeout — current task abandoned")
+                        except Exception as e:
+                            logger.warning(f"⚠️  Task error during shutdown: {e}")
+
+                    logger.info("👋 Orchestrator stopped")
+
                 await self.telegram.app.updater.stop()
                 await self.telegram.app.stop()

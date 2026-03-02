@@ -89,6 +89,7 @@ if OLLAMA_AVAILABLE:
             "capabilities": ["planning", "reasoning", "general"],
             "quality": 7, "speed": "medium", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 4096,
+            "supports_function_calling": False,
         },
         "ollama-qwen25-coder-7b": {
             "litellm_name": "ollama/qwen2.5-coder:7b-instruct-q4_K_M",
@@ -96,6 +97,7 @@ if OLLAMA_AVAILABLE:
             "capabilities": ["coding", "debugging", "general"],
             "quality": 7, "speed": "medium", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 4096,
+            "supports_function_calling": False,
         },
         "ollama-qwen25-coder-3b": {
             "litellm_name": "ollama/qwen2.5-coder:3b-instruct-q5_K_M",
@@ -103,6 +105,7 @@ if OLLAMA_AVAILABLE:
             "capabilities": ["coding", "quick_code"],
             "quality": 5, "speed": "fast", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 2048,
+            "supports_function_calling": False,
         },
         "ollama-qwen25-7b": {
             "litellm_name": "ollama/qwen2.5:7b-instruct-q4_K_M",
@@ -110,6 +113,7 @@ if OLLAMA_AVAILABLE:
             "capabilities": ["general", "writing", "analysis"],
             "quality": 6, "speed": "medium", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 4096,
+            "supports_function_calling": False,
         },
         "ollama-llama32-3b": {
             "litellm_name": "ollama/llama3.2:3b-instruct-q5_K_M",
@@ -117,6 +121,7 @@ if OLLAMA_AVAILABLE:
             "capabilities": ["routing", "classification", "simple"],
             "quality": 4, "speed": "fast", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 1024,
+            "supports_function_calling": False,
         },
         "ollama-phi4-mini": {
             "litellm_name": "ollama/phi4-mini:3.8b-q4_K_M",
@@ -124,6 +129,7 @@ if OLLAMA_AVAILABLE:
             "capabilities": ["reasoning", "simple", "general"],
             "quality": 5, "speed": "fast", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 2048,
+            "supports_function_calling": False,
         },
     }
     for _key, _cfg in _ollama_defs.items():
@@ -140,6 +146,7 @@ if AVAILABLE_KEYS["groq"]:
         "capabilities": ["routing", "classification", "simple", "general"],
         "quality": 5, "speed": "very_fast", "rate_limit": 30,
         "provider": "groq", "max_tokens": 1024,
+        "supports_function_calling": True,
     }
     MODEL_POOL["groq-llama-70b"] = {
         "litellm_name": "groq/llama-3.3-70b-versatile",
@@ -149,6 +156,7 @@ if AVAILABLE_KEYS["groq"]:
         ],
         "quality": 8, "speed": "fast", "rate_limit": 30,
         "provider": "groq", "max_tokens": 4096,
+        "supports_function_calling": True,
     }
 
 # ── Cloud: Google Gemini (free tier ~15 rpm) ──
@@ -161,6 +169,7 @@ if AVAILABLE_KEYS["gemini"]:
         ],
         "quality": 8, "speed": "fast", "rate_limit": 15,
         "provider": "gemini", "max_tokens": 8192,
+        "supports_function_calling": True,
     }
     MODEL_POOL["gemini-flash-preview"] = {
         "litellm_name": "gemini/gemini-2.5-flash-preview-05-20",
@@ -170,6 +179,7 @@ if AVAILABLE_KEYS["gemini"]:
         ],
         "quality": 9, "speed": "fast", "rate_limit": 15,
         "provider": "gemini", "max_tokens": 8192,
+        "supports_function_calling": True,
     }
 
 # ── Cloud: Cerebras (free tier ~30 rpm) ──
@@ -179,6 +189,7 @@ if AVAILABLE_KEYS["cerebras"]:
         "capabilities": ["general", "coding", "reasoning", "writing"],
         "quality": 8, "speed": "very_fast", "rate_limit": 30,
         "provider": "cerebras", "max_tokens": 4096,
+        "supports_function_calling": True,
     }
 
 # ── Cloud: SambaNova (free tier ~20 rpm) ──
@@ -191,6 +202,7 @@ if AVAILABLE_KEYS["sambanova"]:
         ],
         "quality": 9, "speed": "fast", "rate_limit": 20,
         "provider": "sambanova", "max_tokens": 4096,
+        "supports_function_calling": True,
     }
 
 # ── Cloud: OpenAI (paid) ──
@@ -202,6 +214,7 @@ if AVAILABLE_KEYS["openai"]:
         ],
         "quality": 8, "speed": "fast", "rate_limit": 500,
         "provider": "openai", "max_tokens": 4096,
+        "supports_function_calling": True,
     }
     MODEL_POOL["gpt-4o"] = {
         "litellm_name": "gpt-4o",
@@ -211,6 +224,7 @@ if AVAILABLE_KEYS["openai"]:
         ],
         "quality": 9, "speed": "medium", "rate_limit": 500,
         "provider": "openai", "max_tokens": 8192,
+        "supports_function_calling": True,
     }
 
 # ── Cloud: Anthropic (paid) ──
@@ -223,6 +237,7 @@ if AVAILABLE_KEYS["anthropic"]:
         ],
         "quality": 10, "speed": "medium", "rate_limit": 50,
         "provider": "anthropic", "max_tokens": 8192,
+        "supports_function_calling": True,
     }
 
 '''

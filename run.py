@@ -69,8 +69,20 @@ async def main():
 
     print("\n🚀 Starting orchestrator...\n")
 
+    # Graceful shutdown event
+    import signal
+    shutdown_event = asyncio.Event()
+
+    def _signal_handler(sig, frame):
+        sig_name = signal.Signals(sig).name
+        print(f"\n⚠️  Received {sig_name} — initiating graceful shutdown...")
+        shutdown_event.set()
+
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+
     from orchestrator import Orchestrator
-    orch = Orchestrator()
+    orch = Orchestrator(shutdown_event=shutdown_event)
     await orch.start()
 
 

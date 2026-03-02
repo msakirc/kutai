@@ -1,5 +1,6 @@
 # db.py
 import aiosqlite
+import hashlib
 import json
 import logging
 from datetime import datetime
@@ -114,6 +115,17 @@ async def init_db():
         columns = [row[1] for row in await cursor.fetchall()]
         logger.info(f"📊 DB schema verified. Tasks columns: {columns}")
 
+        # Migration: add task_hash column if not present
+        if "task_hash" not in columns:
+            try:
+                await db.execute(
+                    "ALTER TABLE tasks ADD COLUMN task_hash TEXT"
+                )
+                await db.commit()
+                logger.info("📊 Added task_hash column to tasks table")
+            except Exception as e:
+                logger.debug(f"task_hash column migration skipped: {e}")
+
 # --- Goal Operations ---
 
 async def add_goal(title, description, priority=5, context=None):
@@ -143,18 +155,51 @@ async def update_goal(goal_id, **kwargs):
 
 # --- Task Operations ---
 
+def compute_task_hash(title: str, description: str, goal_id=None) -> str:
+    """Compute a SHA-256 hash for task deduplication."""
+    raw = f"{title or ''}|{description or ''}|{goal_id or ''}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+
+async def find_duplicate_task(task_hash: str) -> dict | None:
+    """Check for existing pending/processing tasks with the same hash."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """SELECT id, title, status FROM tasks
+               WHERE task_hash = ?
+                 AND status IN ('pending', 'processing')
+               LIMIT 1""",
+            (task_hash,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
 async def add_task(title, description, goal_id=None, parent_task_id=None,
                    agent_type="executor", tier="auto", priority=5,
                    requires_approval=False, depends_on=None, context=None):
+    # Deduplication check
+    task_hash = compute_task_hash(title, description, goal_id)
+    duplicate = await find_duplicate_task(task_hash)
+    if duplicate:
+        logger.info(
+            f"⏭️ Task dedup: '{title[:50]}' matches pending task "
+            f"#{duplicate['id']} — skipping creation"
+        )
+        return None
+
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """INSERT INTO tasks 
                (goal_id, parent_task_id, title, description, agent_type, 
-                tier, priority, requires_approval, depends_on, context)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                tier, priority, requires_approval, depends_on, context,
+                task_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (goal_id, parent_task_id, title, description, agent_type,
              tier, priority, requires_approval,
-             json.dumps(depends_on or []), json.dumps(context or {}))
+             json.dumps(depends_on or []), json.dumps(context or {}),
+             task_hash)
         )
         await db.commit()
         return cursor.lastrowid

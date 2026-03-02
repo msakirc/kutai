@@ -6,6 +6,10 @@ from agents.researcher import ResearcherAgent
 from agents.writer import WriterAgent
 from agents.reviewer import ReviewerAgent
 from agents.executor import ExecutorAgent
+from agents.architect import ArchitectAgent
+from agents.implementer import ImplementerAgent
+from agents.test_generator import TestGeneratorAgent
+from agents.fixer import FixerAgent
 
 AGENT_REGISTRY = {
     "planner": PlannerAgent(),
@@ -14,6 +18,10 @@ AGENT_REGISTRY = {
     "writer": WriterAgent(),
     "reviewer": ReviewerAgent(),
     "executor": ExecutorAgent(),
+    "architect": ArchitectAgent(),
+    "implementer": ImplementerAgent(),
+    "test_generator": TestGeneratorAgent(),
+    "fixer": FixerAgent(),
 }
 
 

@@ -273,7 +273,15 @@ async def write_file(
 
         size = os.path.getsize(full_path)
         action = "Appended to" if mode == "append" else "Wrote"
-        return f"✅ {action} {filepath} ({_human_size(size)})"
+        res = f"✅ {action} {filepath} ({_human_size(size)})"
+
+        # Auto-lint Python files
+        if full_path.endswith(".py"):
+            from tools.linting import auto_lint
+            lint_res = await auto_lint(filepath)
+            res += f"\n\n--- Auto-Linting ---\n{lint_res}"
+
+        return res
 
     except Exception as exc:
         logger.error(f"Error writing {filepath}: {exc}", exc_info=True)

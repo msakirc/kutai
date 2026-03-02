@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 from tools.shell import run_shell, run_shell_with_stdin, run_shell_sequential
 from tools.workspace import get_file_tree, read_file, write_file, detect_project
+from tools.edit_file import edit_file
+from tools.linting import auto_lint
+from tools.deps import verify_dependencies
 from tools.git_ops import (
     git_init,
     git_commit,
@@ -131,6 +134,31 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
         ),
         "example": '{"action": "tool_call", "tool": "project_info", "args": {}}',
     },
+    "edit_file": {
+        "function": edit_file,
+        "description": (
+            "Replace a range of lines in a file. start_line and end_line are 1-indexed and inclusive. "
+            "Args: filepath (str), start_line (int), end_line (int), new_content (str)"
+        ),
+        "example": '{"action": "tool_call", "tool": "edit_file", "args": {"filepath": "src/main.py", "start_line": 10, "end_line": 15, "new_content": "def foo():\\n    pass\\n"}}',
+    },
+    "lint": {
+        "function": auto_lint,
+        "description": (
+            "Auto-lint and format a Python file using ruff. "
+            "Args: filepath (str)"
+        ),
+        "example": '{"action": "tool_call", "tool": "lint", "args": {"filepath": "src/main.py"}}',
+    },
+    "verify_deps": {
+        "function": verify_dependencies,
+        "description": (
+            "Scan Python files, extract imports, and auto-install any missing "
+            "third-party packages via pip. "
+            "Args: path (str, optional)"
+        ),
+        "example": '{"action": "tool_call", "tool": "verify_deps", "args": {"path": "."}}',
+    },
 
     # ── Git ─────────────────────────────────────────────────────────────────
     "git_init": {
@@ -212,6 +240,96 @@ for _name, _info in TOOL_REGISTRY.items():
 # Clean up module namespace
 del _name, _info, _sig
 logger.info(f"📦 Loaded tools: {sorted(TOOL_REGISTRY.keys())}")
+
+# ---------------------------------------------------------------------------
+# LiteLLM Tool Schemas (auto-generated from TOOL_REGISTRY)
+# ---------------------------------------------------------------------------
+_PYTHON_TYPE_MAP = {
+    int: "integer", float: "number", bool: "boolean",
+    str: "string", list: "array", dict: "object",
+}
+
+TOOL_SCHEMAS: list[dict] = []
+
+for _name, _info in TOOL_REGISTRY.items():
+    try:
+        _sig = inspect.signature(_info["function"])
+        _properties: dict = {}
+        _required: list[str] = []
+        for _pname, _param in _sig.parameters.items():
+            _ptype = "string"  # safe default
+            _annotation = _param.annotation
+            if _annotation is not inspect.Parameter.empty:
+                _ptype = _PYTHON_TYPE_MAP.get(_annotation, "string")
+            _properties[_pname] = {
+                "type": _ptype,
+                "description": f"Parameter: {_pname}",
+            }
+            if _param.default is inspect.Parameter.empty:
+                _required.append(_pname)
+        TOOL_SCHEMAS.append({
+            "type": "function",
+            "function": {
+                "name": _name,
+                "description": _info["description"],
+                "parameters": {
+                    "type": "object",
+                    "properties": _properties,
+                    "required": _required,
+                },
+            },
+        })
+    except (ValueError, TypeError):
+        pass
+
+# Pseudo-tools for structured agent actions
+TOOL_SCHEMAS.append({
+    "type": "function",
+    "function": {
+        "name": "final_answer",
+        "description": (
+            "Provide your final answer to the task. Use this when you are "
+            "done and ready to submit your complete result."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "result": {
+                    "type": "string",
+                    "description": "Your complete answer / result for the task.",
+                },
+                "memories": {
+                    "type": "object",
+                    "description": "Optional key-value pairs to remember for future tasks.",
+                },
+            },
+            "required": ["result"],
+        },
+    },
+})
+
+TOOL_SCHEMAS.append({
+    "type": "function",
+    "function": {
+        "name": "clarify",
+        "description": (
+            "Ask the user a clarifying question when you need more information."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The clarification question to ask.",
+                },
+            },
+            "required": ["question"],
+        },
+    },
+})
+
+# Clean up
+del _name, _info, _sig, _properties, _required, _pname, _param, _ptype, _annotation
 
 # ---------------------------------------------------------------------------
 # Public helpers

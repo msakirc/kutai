@@ -16,7 +16,7 @@ from db import (
     recall_memory,
     get_completed_dependency_results,
 )
-from tools import TOOL_REGISTRY, get_tool_descriptions, execute_tool
+from tools import TOOL_REGISTRY, TOOL_SCHEMAS, get_tool_descriptions, execute_tool
 from config import MAX_AGENT_ITERATIONS, AGENT_TIER_MAP, MAX_TOOL_OUTPUT_LENGTH
 import litellm as _litellm
 
@@ -627,6 +627,97 @@ class BaseAgent:
         return result
 
     # ------------------------------------------------------------------ #
+    #  Function calling support                                            #
+    # ------------------------------------------------------------------ #
+    def _build_litellm_tools(self) -> list[dict] | None:
+        """Build filtered tool schemas for LiteLLM function calling."""
+        if self.allowed_tools is not None and not self.allowed_tools:
+            return None  # explicitly no tools
+
+        if self.allowed_tools is not None:
+            allowed = set(self.allowed_tools) | {"final_answer", "clarify"}
+            return [
+                s for s in TOOL_SCHEMAS
+                if s["function"]["name"] in allowed
+            ]
+        return list(TOOL_SCHEMAS)
+
+    @staticmethod
+    def _parse_function_call_response(tool_calls: list[dict]) -> dict | None:
+        """
+        Convert LiteLLM tool_calls into the canonical action dict.
+
+        Returns the first valid action found, or None if none could
+        be parsed.
+        """
+        if not tool_calls:
+            return None
+
+        tc = tool_calls[0]  # use the first tool call
+        name = tc.get("name", "")
+        args = tc.get("arguments", {})
+
+        # Pseudo-tool: final_answer
+        if name == "final_answer":
+            return {
+                "action": "final_answer",
+                "result": args.get("result", ""),
+                "memories": args.get("memories", {}),
+            }
+
+        # Pseudo-tool: clarify
+        if name == "clarify":
+            return {
+                "action": "clarify",
+                "question": args.get("question", ""),
+            }
+
+        # Real tool call
+        return {
+            "action": "tool_call",
+            "tool": name,
+            "args": args,
+        }
+
+    # ------------------------------------------------------------------ #
+    #  Output validation                                                   #
+    # ------------------------------------------------------------------ #
+    def _validate_response(self, result: str, task: dict) -> str | None:
+        """
+        Validate a final_answer result.  Returns an error string if
+        the response is invalid, or None if it passes.
+        """
+        if not result or not result.strip():
+            return "Your response was empty. Please provide a substantive answer."
+
+        stripped = result.strip()
+
+        # For non-trivial tasks, require > 20 chars
+        title = task.get("title", "").lower()
+        trivial_keywords = ["list", "ls", "status", "count", "version", "ping"]
+        is_trivial = any(kw in title for kw in trivial_keywords)
+
+        if not is_trivial and len(stripped) < 20:
+            return (
+                "Your response seems too short for this task. "
+                "Please provide a more complete answer."
+            )
+
+        # Check for refusal / error-only patterns
+        refusal_patterns = [
+            "i cannot", "i can't", "i'm unable", "as an ai",
+            "i don't have access", "i am not able",
+        ]
+        lower = stripped.lower()
+        if any(p in lower for p in refusal_patterns) and len(stripped) < 100:
+            return (
+                "Your response appears to be a refusal. "
+                "Try a different approach or use the available tools."
+            )
+
+        return None  # validation passed
+
+    # ------------------------------------------------------------------ #
     #  Main execution loop                                                #
     # ------------------------------------------------------------------ #
     async def execute(self, task: dict) -> dict:
@@ -660,6 +751,7 @@ class BaseAgent:
         total_cost = 0.0
         used_model = "unknown"
         tools_used = False
+        validation_retried = False
 
         # ── iterative loop ──
         for iteration in range(self.max_iterations):
@@ -680,7 +772,10 @@ class BaseAgent:
 
             # Call LLM
             try:
-                response = await call_model(tier, messages)
+                litellm_tools = self._build_litellm_tools()
+                response = await call_model(
+                    tier, messages, tools=litellm_tools,
+                )
             except Exception as exc:
                 logger.error(f"[Task #{task_id}] Model call failed: {exc}")
                 return {
@@ -704,8 +799,18 @@ class BaseAgent:
                 task_id, "assistant", content, used_model, step_cost
             )
 
-            # Parse
-            parsed      = self._parse_agent_response(content)
+            # Parse — try function calling first, then regex fallback
+            fc_tool_calls = response.get("tool_calls")
+            parsed = None
+            if fc_tool_calls:
+                parsed = self._parse_function_call_response(fc_tool_calls)
+                if parsed:
+                    logger.debug(
+                        f"[Task #{task_id}] Parsed via function calling: "
+                        f"{parsed.get('action')}"
+                    )
+            if parsed is None:
+                parsed = self._parse_agent_response(content)
             action_type = parsed.get("action", "final_answer")
 
             # ── HALLUCINATION GUARD ───────────────────────────────
@@ -772,6 +877,30 @@ class BaseAgent:
             if action_type == "final_answer":
                 result = parsed.get("result", content)
 
+                # ── OUTPUT VALIDATION ──────────────────────────────
+                if not validation_retried:
+                    validation_error = self._validate_response(result, task)
+                    if validation_error:
+                        validation_retried = True
+                        logger.warning(
+                            f"[Task #{task_id}] ⚠️ Output validation failed: "
+                            f"{validation_error}"
+                        )
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"{validation_error}\n\n"
+                                f"Please try again and provide a proper response."
+                            ),
+                        })
+                        await self._safe_log(
+                            task_id, "system",
+                            f"[output_validation] {validation_error}",
+                            None, 0,
+                        )
+                        continue
+                # ── END OUTPUT VALIDATION ──────────────────────────
                 # Persist memories
                 raw_memories = parsed.get("memories", {})
                 if raw_memories and isinstance(raw_memories, dict):

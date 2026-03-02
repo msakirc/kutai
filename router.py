@@ -52,6 +52,63 @@ class RateLimiter:
 _rate_limiters: dict[str, RateLimiter] = {}
 
 
+# ─── Per-Provider Circuit Breaker ────────────────────────────────────────────
+
+class CircuitBreaker:
+    """Track consecutive failures per provider and temporarily disable."""
+
+    def __init__(
+        self,
+        failure_threshold: int = 3,
+        window_seconds: float = 300,
+        cooldown_seconds: float = 600,
+    ):
+        self.failure_threshold = failure_threshold
+        self.window_seconds = window_seconds
+        self.cooldown_seconds = cooldown_seconds
+        self.failures: list[float] = []
+        self.degraded_until: float = 0.0
+
+    def record_failure(self) -> None:
+        now = time.time()
+        self.failures.append(now)
+        # Keep only failures within the window
+        self.failures = [t for t in self.failures if now - t < self.window_seconds]
+        if len(self.failures) >= self.failure_threshold:
+            self.degraded_until = now + self.cooldown_seconds
+            logger.warning(
+                f"Circuit breaker TRIPPED — provider degraded for "
+                f"{self.cooldown_seconds:.0f}s "
+                f"({len(self.failures)} failures in "
+                f"{self.window_seconds:.0f}s window)"
+            )
+
+    def record_success(self) -> None:
+        """Reset failures on a successful call."""
+        self.failures.clear()
+        self.degraded_until = 0.0
+
+    @property
+    def is_degraded(self) -> bool:
+        if time.time() >= self.degraded_until:
+            if self.degraded_until > 0:
+                # Cooldown expired, reset
+                self.degraded_until = 0.0
+                self.failures.clear()
+                logger.info("Circuit breaker RESET — provider recovered")
+            return False
+        return True
+
+
+_circuit_breakers: dict[str, CircuitBreaker] = {}
+
+
+def _get_circuit_breaker(provider: str) -> CircuitBreaker:
+    """Get or create a circuit breaker for *provider*."""
+    if provider not in _circuit_breakers:
+        _circuit_breakers[provider] = CircuitBreaker()
+    return _circuit_breakers[provider]
+
 def _get_limiter(provider: str, default_rpm: int = 30) -> RateLimiter:
     """Get or create a rate limiter for *provider*."""
     if provider not in _rate_limiters:
@@ -289,6 +346,14 @@ def select_model(
         headroom = limiter.calls_per_minute - limiter.current_usage
         rate_ok = headroom > 2
 
+        # Circuit breaker check — skip degraded providers
+        cb = _get_circuit_breaker(cfg["provider"])
+        if cb.is_degraded:
+            logger.debug(
+                f"Skipping {key} — provider '{cfg['provider']}' is degraded"
+            )
+            continue
+
         # Provider priority class:
         FREE_CLOUD = {"groq", "cerebras", "sambanova", "gemini"}
         if cfg["provider"] == "ollama":
@@ -414,6 +479,7 @@ async def call_model(
     messages: list,
     capability: str | None = None,
     task_context: str = "",
+    tools: list[dict] | None = None,
 ) -> dict:
     """
     Call the best available model for *tier*.
@@ -469,13 +535,33 @@ async def call_model(
                     f"(tier={tier}, attempt={attempt + 1}/{max_retries})"
                 )
 
+                # Decide whether to pass tools for function calling
+                use_tools = None
+                model_supports_fc = False
+                for _pool_key, _pool_cfg in MODEL_POOL.items():
+                    if _pool_cfg["litellm_name"] == model_name:
+                        model_supports_fc = _pool_cfg.get(
+                            "supports_function_calling", False
+                        )
+                        break
+                if tools and model_supports_fc:
+                    use_tools = tools
+                    logger.debug(
+                        f"Using function calling for {model_name}"
+                    )
+
+                completion_kwargs = dict(
+                    model=model_name,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+                if use_tools:
+                    completion_kwargs["tools"] = use_tools
+                    completion_kwargs["tool_choice"] = "auto"
+
                 response = await asyncio.wait_for(
-                    litellm.acompletion(
-                        model=model_name,
-                        messages=messages,
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                    ),
+                    litellm.acompletion(**completion_kwargs),
                     timeout=timeout_val,
                 )
 
@@ -491,17 +577,39 @@ async def call_model(
                 if is_ollama:
                     cost = 0.0
 
+                # Extract tool_calls from function-calling response
+                msg = response.choices[0].message
+                tool_calls = None
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
+                    tool_calls = []
+                    for tc in msg.tool_calls:
+                        fn = tc.function
+                        try:
+                            args = json.loads(fn.arguments) if fn.arguments else {}
+                        except (json.JSONDecodeError, TypeError):
+                            args = {}
+                        tool_calls.append({
+                            "id": tc.id,
+                            "name": fn.name,
+                            "arguments": args,
+                        })
+
+                # Success — reset circuit breaker for this provider
+                _get_circuit_breaker(provider).record_success()
+
                 return {
-                    "content": response.choices[0].message.content,
+                    "content": msg.content or "",
                     "model": model_name,
                     "tier": tier,
                     "cost": cost or 0.0,
                     "usage": (
                         dict(response.usage) if response.usage else {}
                     ),
+                    "tool_calls": tool_calls,
                 }
 
             except asyncio.TimeoutError:
+                _get_circuit_breaker(provider).record_failure()
                 logger.warning(
                     f"Timeout on {model_name} "
                     f"(attempt {attempt + 1}/{max_retries})"
@@ -510,6 +618,7 @@ async def call_model(
                 continue   # retry same model
 
             except Exception as e:
+                _get_circuit_breaker(provider).record_failure()
                 error_str = str(e).lower()
                 last_error = str(e)
 

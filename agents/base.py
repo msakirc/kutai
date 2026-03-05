@@ -5,6 +5,7 @@ Base agent with iterative ReAct loop:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -15,12 +16,25 @@ from db import (
     store_memory,
     recall_memory,
     get_completed_dependency_results,
+    save_task_checkpoint,
+    load_task_checkpoint,
+    clear_task_checkpoint,
 )
 from tools import TOOL_REGISTRY, TOOL_SCHEMAS, get_tool_descriptions, execute_tool
 from config import MAX_AGENT_ITERATIONS, AGENT_TIER_MAP, MAX_TOOL_OUTPUT_LENGTH
 import litellm as _litellm
 
 logger = logging.getLogger(__name__)
+
+
+# Tools whose execution has side effects and should not be re-run on retry.
+# Read-only tools (file_tree, read_file, git_log, etc.) are always re-executed.
+SIDE_EFFECT_TOOLS: frozenset[str] = frozenset({
+    "shell", "shell_stdin", "shell_sequential",
+    "write_file", "edit_file", "lint",
+    "verify_deps", "run_code",
+    "git_init", "git_commit", "git_branch", "git_rollback",
+})
 
 
 class BaseAgent:
@@ -739,22 +753,53 @@ class BaseAgent:
                 tier = AGENT_TIER_MAP.get(self.name, self.default_tier)
         tier = self._enforce_min_tier(tier)
 
-        # ── build messages ──
-        system_prompt = self._build_full_system_prompt(task)
-        context = await self._build_context(task)
+        # ── attempt checkpoint recovery ──
+        start_iteration = 0
+        checkpoint = None
+        if task_id != "?":
+            try:
+                checkpoint = await load_task_checkpoint(task_id)
+            except Exception as exc:
+                logger.warning(
+                    f"[Task #{task_id}] Checkpoint load failed: {exc}"
+                )
 
-        messages: list[dict[str, str]] = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": context},
-        ]
+        if checkpoint:
+            # Restore state from checkpoint
+            messages = checkpoint.get("messages", [])
+            start_iteration = checkpoint.get("iteration", 0)
+            total_cost = checkpoint.get("total_cost", 0.0)
+            used_model = checkpoint.get("used_model", "unknown")
+            tools_used = checkpoint.get("tools_used", False)
+            validation_retried = checkpoint.get("validation_retried", False)
+            tier = checkpoint.get("tier", tier)
+            completed_tool_ops: dict[str, str] = checkpoint.get(
+                "completed_tool_ops", {}
+            )
+            logger.info(
+                f"[Task #{task_id}] Resuming from checkpoint "
+                f"(iteration {start_iteration}, "
+                f"{len(messages)} messages, ${total_cost:.4f} spent, "
+                f"{len(completed_tool_ops)} cached tool ops)"
+            )
+        else:
+            # ── build messages from scratch ──
+            system_prompt = self._build_full_system_prompt(task)
+            context = await self._build_context(task)
 
-        total_cost = 0.0
-        used_model = "unknown"
-        tools_used = False
-        validation_retried = False
+            messages: list[dict[str, str]] = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": context},
+            ]
+
+            total_cost = 0.0
+            used_model = "unknown"
+            tools_used = False
+            validation_retried = False
+            completed_tool_ops: dict[str, str] = {}
 
         # ── iterative loop ──
-        for iteration in range(self.max_iterations):
+        for iteration in range(start_iteration, self.max_iterations):
             logger.info(
                 f"[Task #{task_id}] Agent '{self.name}' iteration "
                 f"{iteration + 1}/{self.max_iterations}"
@@ -779,7 +824,7 @@ class BaseAgent:
             except Exception as exc:
                 logger.error(f"[Task #{task_id}] Model call failed: {exc}")
                 return {
-                    "status":     "complete",
+                    "status":     "completed",
                     "result":     f"Agent failed after {iteration} iteration(s): {exc}",
                     "model":      used_model,
                     "cost":       total_cost,
@@ -870,6 +915,10 @@ class BaseAgent:
                     f"pushing model to use tools (iter {iteration})",
                     None, 0,
                 )
+                await self._save_checkpoint(
+                    task_id, iteration + 1, messages, total_cost,
+                    used_model, tier, tools_used, validation_retried,
+                )
                 continue
             # ── END HALLUCINATION GUARD ───────────────────────────
 
@@ -899,6 +948,10 @@ class BaseAgent:
                             f"[output_validation] {validation_error}",
                             None, 0,
                         )
+                        await self._save_checkpoint(
+                            task_id, iteration + 1, messages, total_cost,
+                            used_model, tier, tools_used, validation_retried,
+                        )
                         continue
                 # ── END OUTPUT VALIDATION ──────────────────────────
                 # Persist memories
@@ -922,6 +975,7 @@ class BaseAgent:
 
                 # Agent asked for subtask decomposition inside final_answer
                 if parsed.get("subtasks"):
+                    await self._clear_checkpoint_safe(task_id)
                     return {
                         "status":       "needs_subtasks",
                         "subtasks":     parsed["subtasks"],
@@ -933,6 +987,7 @@ class BaseAgent:
 
                 # Agent asked for clarification inside final_answer
                 if parsed.get("needs_clarification"):
+                    await self._clear_checkpoint_safe(task_id)
                     return {
                         "status":        "needs_clarification",
                         "clarification": parsed["needs_clarification"],
@@ -941,8 +996,9 @@ class BaseAgent:
                         "tier":          tier,
                     }
 
+                await self._clear_checkpoint_safe(task_id)
                 return {
-                    "status":     "complete",
+                    "status":     "completed",
                     "result":     result,
                     "model":      used_model,
                     "cost":       total_cost,
@@ -973,17 +1029,42 @@ class BaseAgent:
                         f"Available: {list(TOOL_REGISTRY.keys())}"
                     )
                 else:
-                    logger.info(
-                        f"[Task #{task_id}] 🔧 {tool_name}("
-                        f"{', '.join(f'{k}={repr(v)[:50]}' for k, v in tool_args.items())})"
+                    # ── Idempotency check for side-effect tools ──
+                    idem_key = self._tool_idempotency_key(
+                        tool_name, tool_args,
                     )
-                    try:
-                        tool_output = await execute_tool(tool_name, **tool_args)
-                    except Exception as exc:
-                        tool_output = f"❌ Tool execution error: {exc}"
-                        logger.error(
-                            f"[Task #{task_id}] Tool '{tool_name}' raised: {exc}"
+                    cached = (
+                        completed_tool_ops.get(idem_key)
+                        if tool_name in SIDE_EFFECT_TOOLS
+                        else None
+                    )
+
+                    if cached is not None:
+                        tool_output = cached
+                        logger.info(
+                            f"[Task #{task_id}] ♻️ Idempotent skip: "
+                            f"{tool_name} (cached result, "
+                            f"{len(tool_output)} chars)"
                         )
+                    else:
+                        logger.info(
+                            f"[Task #{task_id}] 🔧 {tool_name}("
+                            f"{', '.join(f'{k}={repr(v)[:50]}' for k, v in tool_args.items())})"
+                        )
+                        try:
+                            tool_output = await execute_tool(
+                                tool_name, **tool_args,
+                            )
+                        except Exception as exc:
+                            tool_output = f"❌ Tool execution error: {exc}"
+                            logger.error(
+                                f"[Task #{task_id}] Tool '{tool_name}' "
+                                f"raised: {exc}"
+                            )
+
+                        # Record for idempotency (side-effect tools only)
+                        if tool_name in SIDE_EFFECT_TOOLS:
+                            completed_tool_ops[idem_key] = tool_output
 
                     # ── Log tool output to terminal for debugging ──
                     output_preview = tool_output[:500] if tool_output else "(empty)"
@@ -1044,10 +1125,15 @@ class BaseAgent:
                     f"[{tool_name}] {tool_output[:2000]}",
                     None, 0,
                 )
+                await self._save_checkpoint(
+                    task_id, iteration + 1, messages, total_cost,
+                    used_model, tier, tools_used, validation_retried,
+                )
                 continue
 
             # ── CLARIFY ───────────────────────────────────────────────
             if action_type == "clarify":
+                await self._clear_checkpoint_safe(task_id)
                 return {
                     "status":        "needs_clarification",
                     "clarification": parsed.get("question", content),
@@ -1058,6 +1144,7 @@ class BaseAgent:
 
             # ── DECOMPOSE ─────────────────────────────────────────────
             if action_type == "decompose":
+                await self._clear_checkpoint_safe(task_id)
                 return {
                     "status":       "needs_subtasks",
                     "subtasks":     parsed.get("subtasks", []),
@@ -1092,15 +1179,20 @@ class BaseAgent:
                     f"Respond with ONLY the JSON block. Nothing else."
                 ),
             })
+            await self._save_checkpoint(
+                task_id, iteration + 1, messages, total_cost,
+                used_model, tier, tools_used, validation_retried,
+            )
 
         # ── exhausted iterations ──
         logger.warning(
             f"[Task #{task_id}] Agent '{self.name}' exhausted "
             f"{self.max_iterations} iterations"
         )
+        await self._clear_checkpoint_safe(task_id)
         last = messages[-1].get("content", "") if messages else ""
         return {
-            "status": "complete",
+            "status": "completed",
             "result": (
                 f"[Completed after {self.max_iterations} iterations "
                 f"without a final answer]\n\nLast context:\n{last[:3000]}"
@@ -1110,6 +1202,55 @@ class BaseAgent:
             "tier":       tier,
             "iterations": self.max_iterations,
         }
+
+    # ------------------------------------------------------------------ #
+    #  Checkpointing helpers                                              #
+    # ------------------------------------------------------------------ #
+    async def _save_checkpoint(
+        self,
+        task_id,
+        next_iteration: int,
+        messages: list[dict],
+        total_cost: float,
+        used_model: str,
+        tier: str,
+        tools_used: bool,
+        validation_retried: bool,
+    ) -> None:
+        """Persist agent loop state so execution can resume after a crash."""
+        if task_id == "?":
+            return
+        try:
+            state = {
+                "iteration": next_iteration,
+                "messages": messages,
+                "total_cost": total_cost,
+                "used_model": used_model,
+                "tier": tier,
+                "tools_used": tools_used,
+                "validation_retried": validation_retried,
+                "completed_tool_ops": completed_tool_ops,
+            }
+            await save_task_checkpoint(task_id, state)
+            logger.debug(
+                f"[Task #{task_id}] Checkpoint saved at iteration "
+                f"{next_iteration}"
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[Task #{task_id}] Checkpoint save failed: {exc}"
+            )
+
+    async def _clear_checkpoint_safe(self, task_id) -> None:
+        """Clear checkpoint on successful completion — never raises."""
+        if task_id == "?":
+            return
+        try:
+            await clear_task_checkpoint(task_id)
+        except Exception as exc:
+            logger.warning(
+                f"[Task #{task_id}] Checkpoint clear failed: {exc}"
+            )
 
     # ------------------------------------------------------------------ #
     #  Internal helpers                                                   #

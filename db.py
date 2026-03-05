@@ -126,6 +126,17 @@ async def init_db():
             except Exception as e:
                 logger.debug(f"task_hash column migration skipped: {e}")
 
+        # Migration: add task_state column for checkpointing
+        if "task_state" not in columns:
+            try:
+                await db.execute(
+                    "ALTER TABLE tasks ADD COLUMN task_state JSON DEFAULT NULL"
+                )
+                await db.commit()
+                logger.info("📊 Added task_state column to tasks table")
+            except Exception as e:
+                logger.debug(f"task_state column migration skipped: {e}")
+
 # --- Goal Operations ---
 
 async def add_goal(title, description, priority=5, context=None):
@@ -155,9 +166,10 @@ async def update_goal(goal_id, **kwargs):
 
 # --- Task Operations ---
 
-def compute_task_hash(title: str, description: str, goal_id=None) -> str:
+def compute_task_hash(title: str, description: str, agent_type: str,
+    goal_id=None, parent_task_id=None) -> str:
     """Compute a SHA-256 hash for task deduplication."""
-    raw = f"{title or ''}|{description or ''}|{goal_id or ''}"
+    raw = f"{title or ''}|{description or ''}|{agent_type or ''}|{goal_id or ''}|{parent_task_id or ''}"
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
@@ -180,7 +192,7 @@ async def add_task(title, description, goal_id=None, parent_task_id=None,
                    agent_type="executor", tier="auto", priority=5,
                    requires_approval=False, depends_on=None, context=None):
     # Deduplication check
-    task_hash = compute_task_hash(title, description, goal_id)
+    task_hash = compute_task_hash(title, description, agent_type, goal_id, parent_task_id)
     duplicate = await find_duplicate_task(task_hash)
     if duplicate:
         logger.info(
@@ -341,6 +353,46 @@ async def update_task(task_id, **kwargs):
         sets = ", ".join(f"{k} = ?" for k in kwargs)
         values = list(kwargs.values()) + [task_id]
         await db.execute(f"UPDATE tasks SET {sets} WHERE id = ?", values)
+        await db.commit()
+
+
+# --- Checkpoint Operations ---
+
+async def save_task_checkpoint(task_id: int, state: dict) -> None:
+    """Persist intermediate agent state for crash recovery."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE tasks SET task_state = ? WHERE id = ?",
+            (json.dumps(state), task_id)
+        )
+        await db.commit()
+
+
+async def load_task_checkpoint(task_id: int) -> dict | None:
+    """Load saved agent checkpoint state, or None if no checkpoint exists."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT task_state FROM tasks WHERE id = ?", (task_id,)
+        )
+        row = await cursor.fetchone()
+        if row and row[0]:
+            try:
+                return json.loads(row[0])
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(
+                    f"[Checkpoint] Corrupt task_state for task #{task_id}, "
+                    f"starting fresh"
+                )
+    return None
+
+
+async def clear_task_checkpoint(task_id: int) -> None:
+    """Clear checkpoint after successful completion."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE tasks SET task_state = NULL WHERE id = ?",
+            (task_id,)
+        )
         await db.commit()
 
 async def log_conversation(task_id, role, content, model_used=None,

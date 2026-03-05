@@ -225,15 +225,15 @@ class Orchestrator:
                 agent = get_agent(agent_type)
                 logger.info(f"[Task #{task_id}] Agent '{agent.name}' executing (tier: {task.get('tier', 'auto')})")
                 result = await agent.execute(task)
-            status = result.get("status", "complete")
+            status = result.get("status", "completed")
 
             logger.info(f"[Task #{task_id}] Agent returned status: '{status}'")
 
             # Auto-commit after successful coder tasks
-            if status == "complete" and agent_type == "coder":
+            if status == "completed" and agent_type == "coder":
                 await self._auto_commit(task, result)
 
-            if status == "complete":
+            if status == "completed":
                 await self._handle_complete(task, result)
             elif status == "needs_subtasks":
                 await self._handle_subtasks(task, result)

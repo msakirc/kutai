@@ -918,6 +918,7 @@ class BaseAgent:
                 await self._save_checkpoint(
                     task_id, iteration + 1, messages, total_cost,
                     used_model, tier, tools_used, validation_retried,
+                    completed_tool_ops,
                 )
                 continue
             # ── END HALLUCINATION GUARD ───────────────────────────
@@ -1128,6 +1129,7 @@ class BaseAgent:
                 await self._save_checkpoint(
                     task_id, iteration + 1, messages, total_cost,
                     used_model, tier, tools_used, validation_retried,
+                    completed_tool_ops,
                 )
                 continue
 
@@ -1204,6 +1206,20 @@ class BaseAgent:
         }
 
     # ------------------------------------------------------------------ #
+    #  Idempotency helpers                                                #
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _tool_idempotency_key(tool_name: str, tool_args: dict) -> str:
+        """Compute a short hash key for a tool call's identity.
+
+        Used to skip re-execution of side-effect tools (write_file, shell,
+        git_commit, etc.) when resuming from a checkpoint.
+        """
+        # Stable serialisation: sorted keys, no whitespace variance
+        raw = f"{tool_name}|{json.dumps(tool_args, sort_keys=True)}"
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+    # ------------------------------------------------------------------ #
     #  Checkpointing helpers                                              #
     # ------------------------------------------------------------------ #
     async def _save_checkpoint(
@@ -1216,6 +1232,7 @@ class BaseAgent:
         tier: str,
         tools_used: bool,
         validation_retried: bool,
+        completed_tool_ops: dict[str, str] | None = None,
     ) -> None:
         """Persist agent loop state so execution can resume after a crash."""
         if task_id == "?":
@@ -1229,7 +1246,7 @@ class BaseAgent:
                 "tier": tier,
                 "tools_used": tools_used,
                 "validation_retried": validation_retried,
-                "completed_tool_ops": completed_tool_ops,
+                "completed_tool_ops": completed_tool_ops or {},
             }
             await save_task_checkpoint(task_id, state)
             logger.debug(

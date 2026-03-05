@@ -1,15 +1,15 @@
 # telegram_bot.py
 import asyncio
-import aiosqlite
 import logging
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, DB_PATH, TASK_PRIORITY
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, TASK_PRIORITY
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters, ContextTypes
 )
 from db import (add_task, add_goal, get_active_goals, get_ready_tasks,
-                get_daily_stats, update_task, get_recent_completed_tasks)
+                get_daily_stats, update_task, get_recent_completed_tasks,
+                get_db)
 
 
 pending_clarifications = {}  # task_id -> asyncio.Event + response
@@ -146,20 +146,19 @@ class TelegramInterface:
 
     async def cmd_debug(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show ALL tasks with full status details."""
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
+        db = await get_db()
 
-            # All tasks
-            cursor = await db.execute(
-                """SELECT id, goal_id, parent_task_id, title, agent_type,
-                          status, tier, depends_on, error, retry_count
-                   FROM tasks ORDER BY id"""
-            )
-            tasks = [dict(row) for row in await cursor.fetchall()]
+        # All tasks
+        cursor = await db.execute(
+            """SELECT id, goal_id, parent_task_id, title, agent_type,
+                      status, tier, depends_on, error, retry_count
+               FROM tasks ORDER BY id"""
+        )
+        tasks = [dict(row) for row in await cursor.fetchall()]
 
-            # All goals
-            cursor2 = await db.execute("SELECT id, title, status FROM goals ORDER BY id")
-            goals = [dict(row) for row in await cursor2.fetchall()]
+        # All goals
+        cursor2 = await db.execute("SELECT id, title, status FROM goals ORDER BY id")
+        goals = [dict(row) for row in await cursor2.fetchall()]
 
         if not tasks and not goals:
             await update.message.reply_text("Database is empty.")
@@ -225,34 +224,34 @@ class TelegramInterface:
         arg = context.args[0].lower()
 
         if arg == "failed":
-            async with aiosqlite.connect(DB_PATH) as db:
-                cursor = await db.execute(
-                    """UPDATE tasks SET status = 'pending', retry_count = 0, error = NULL
-                       WHERE status = 'failed'"""
-                )
-                count = cursor.rowcount
-                await db.commit()
+            db = await get_db()
+            cursor = await db.execute(
+                """UPDATE tasks SET status = 'pending', retry_count = 0, error = NULL
+                   WHERE status = 'failed'"""
+            )
+            count = cursor.rowcount
+            await db.commit()
             await update.message.reply_text(f"♻️ Reset {count} failed task(s) to pending.")
 
         elif arg == "stuck":
-            async with aiosqlite.connect(DB_PATH) as db:
-                cursor = await db.execute(
-                    """UPDATE tasks SET status = 'pending'
-                       WHERE status = 'processing'"""
-                )
-                count = cursor.rowcount
-                await db.commit()
+            db = await get_db()
+            cursor = await db.execute(
+                """UPDATE tasks SET status = 'pending'
+                   WHERE status = 'processing'"""
+            )
+            count = cursor.rowcount
+            await db.commit()
             await update.message.reply_text(f"♻️ Reset {count} stuck task(s) to pending.")
 
         elif arg == "blocked":
             # Clear all dependency references so blocked tasks can run
-            async with aiosqlite.connect(DB_PATH) as db:
-                cursor = await db.execute(
-                    """UPDATE tasks SET depends_on = '[]'
-                       WHERE status = 'pending' AND depends_on != '[]'"""
-                )
-                count = cursor.rowcount
-                await db.commit()
+            db = await get_db()
+            cursor = await db.execute(
+                """UPDATE tasks SET depends_on = '[]'
+                   WHERE status = 'pending' AND depends_on != '[]'"""
+            )
+            count = cursor.rowcount
+            await db.commit()
             await update.message.reply_text(
                 f"♻️ Cleared dependencies on {count} blocked task(s). They'll run now."
             )
@@ -342,12 +341,12 @@ class TelegramInterface:
         data = query.data
 
         if data == "resetall_confirm":
-            async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute("DELETE FROM conversations")
-                await db.execute("DELETE FROM tasks")
-                await db.execute("DELETE FROM goals")
-                await db.execute("DELETE FROM memory")
-                await db.commit()
+            db = await get_db()
+            await db.execute("DELETE FROM conversations")
+            await db.execute("DELETE FROM tasks")
+            await db.execute("DELETE FROM goals")
+            await db.execute("DELETE FROM memory")
+            await db.commit()
             await query.edit_message_text("☢️ Everything wiped. Fresh start.")
             return
         elif data == "resetall_cancel":

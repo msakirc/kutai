@@ -3,13 +3,13 @@ import asyncio
 import json
 import logging
 import signal
-import aiosqlite
 from config import DB_PATH, MAX_CONTEXT_CHAIN_LENGTH, TASK_PRIORITY
 from datetime import datetime
 from db import (
-    init_db, get_ready_tasks, update_task, add_task, log_conversation,
+    init_db, get_db, close_db, get_ready_tasks, update_task, add_task,
+    claim_task, add_subtasks_atomically, log_conversation,
     get_active_goals, get_tasks_for_goal, update_goal, get_daily_stats,
-    store_memory
+    store_memory, compute_task_hash,
 )
 from router import classify_task
 from agents import get_agent, AGENT_REGISTRY
@@ -58,18 +58,17 @@ class Orchestrator:
 
         if parent_id:
             # Get all completed siblings under the same parent
-            async with aiosqlite.connect(DB_PATH) as db:
-                db.row_factory = aiosqlite.Row
-                cursor = await db.execute(
-                    """SELECT id, title, result, agent_type, status
-                       FROM tasks
-                       WHERE parent_task_id = ?
-                         AND status = 'completed'
-                         AND id != ?
-                       ORDER BY completed_at ASC""",
-                    (parent_id, task["id"])
-                )
-                siblings = [dict(row) for row in await cursor.fetchall()]
+            db = await get_db()
+            cursor = await db.execute(
+                """SELECT id, title, result, agent_type, status
+                   FROM tasks
+                   WHERE parent_task_id = ?
+                     AND status = 'completed'
+                     AND id != ?
+                   ORDER BY completed_at ASC""",
+                (parent_id, task["id"])
+            )
+            siblings = [dict(row) for row in await cursor.fetchall()]
 
             for sib in siblings:
                 result_text = sib.get("result", "")
@@ -129,75 +128,74 @@ class Orchestrator:
 
     async def watchdog(self):
         """Detect and fix stuck states."""
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
+        db = await get_db()
 
-            # 1. Tasks stuck in "processing" for more than 5 minutes
-            cursor = await db.execute(
-                """SELECT id, title FROM tasks
-                   WHERE status = 'processing'
-                   AND started_at < datetime('now', '-5 minutes')"""
+        # 1. Tasks stuck in "processing" for more than 5 minutes
+        cursor = await db.execute(
+            """SELECT id, title FROM tasks
+               WHERE status = 'processing'
+               AND started_at < datetime('now', '-5 minutes')"""
+        )
+        stuck = [dict(row) for row in await cursor.fetchall()]
+        for task in stuck:
+            logger.warning(f"[Watchdog] Task #{task['id']} stuck in processing, resetting")
+            await db.execute(
+                "UPDATE tasks SET status = 'pending', retry_count = retry_count + 1 WHERE id = ?",
+                (task["id"],)
             )
-            stuck = [dict(row) for row in await cursor.fetchall()]
-            for task in stuck:
-                logger.warning(f"[Watchdog] Task #{task['id']} stuck in processing, resetting")
+
+        # 2. Tasks blocked by FAILED dependencies — unblock or fail them
+        cursor2 = await db.execute(
+            "SELECT id, title, depends_on FROM tasks WHERE status = 'pending' AND depends_on != '[]'"
+        )
+        blocked = [dict(row) for row in await cursor2.fetchall()]
+        for task in blocked:
+            try:
+                deps = json.loads(task.get("depends_on", "[]"))
+            except (json.JSONDecodeError, TypeError):
+                deps = []
+
+            if not deps:
+                continue
+
+            placeholders = ",".join("?" * len(deps))
+            failed_cursor = await db.execute(
+                f"SELECT COUNT(*) FROM tasks WHERE id IN ({placeholders}) AND status = 'failed'",
+                deps
+            )
+            failed_count = (await failed_cursor.fetchone())[0]
+
+            if failed_count > 0:
+                logger.warning(
+                    f"[Watchdog] Task #{task['id']} has failed dependencies, "
+                    f"clearing deps so it can attempt to run"
+                )
                 await db.execute(
-                    "UPDATE tasks SET status = 'pending', retry_count = retry_count + 1 WHERE id = ?",
+                    "UPDATE tasks SET depends_on = '[]' WHERE id = ?",
                     (task["id"],)
                 )
 
-            # 2. Tasks blocked by FAILED dependencies — unblock or fail them
-            cursor2 = await db.execute(
-                "SELECT id, title, depends_on FROM tasks WHERE status = 'pending' AND depends_on != '[]'"
+        # 3. Goals with "waiting_subtasks" parent but all children done
+        cursor3 = await db.execute(
+            "SELECT id, title FROM tasks WHERE status = 'waiting_subtasks'"
+        )
+        waiting = [dict(row) for row in await cursor3.fetchall()]
+        for task in waiting:
+            child_cursor = await db.execute(
+                """SELECT COUNT(*) as total,
+                          SUM(CASE WHEN status IN ('completed','failed','rejected') THEN 1 ELSE 0 END) as done
+                   FROM tasks WHERE parent_task_id = ?""",
+                (task["id"],)
             )
-            blocked = [dict(row) for row in await cursor2.fetchall()]
-            for task in blocked:
-                try:
-                    deps = json.loads(task.get("depends_on", "[]"))
-                except (json.JSONDecodeError, TypeError):
-                    deps = []
-
-                if not deps:
-                    continue
-
-                placeholders = ",".join("?" * len(deps))
-                failed_cursor = await db.execute(
-                    f"SELECT COUNT(*) FROM tasks WHERE id IN ({placeholders}) AND status = 'failed'",
-                    deps
+            row = await child_cursor.fetchone()
+            if row and row["total"] > 0 and row["total"] == row["done"]:
+                logger.info(f"[Watchdog] Task #{task['id']} all subtasks done, marking complete")
+                await db.execute(
+                    "UPDATE tasks SET status = 'completed', completed_at = ? WHERE id = ?",
+                    (datetime.now().isoformat(), task["id"])
                 )
-                failed_count = (await failed_cursor.fetchone())[0]
 
-                if failed_count > 0:
-                    logger.warning(
-                        f"[Watchdog] Task #{task['id']} has failed dependencies, "
-                        f"clearing deps so it can attempt to run"
-                    )
-                    await db.execute(
-                        "UPDATE tasks SET depends_on = '[]' WHERE id = ?",
-                        (task["id"],)
-                    )
-
-            # 3. Goals with "waiting_subtasks" parent but all children done
-            cursor3 = await db.execute(
-                "SELECT id, title FROM tasks WHERE status = 'waiting_subtasks'"
-            )
-            waiting = [dict(row) for row in await cursor3.fetchall()]
-            for task in waiting:
-                child_cursor = await db.execute(
-                    """SELECT COUNT(*) as total,
-                              SUM(CASE WHEN status IN ('completed','failed','rejected') THEN 1 ELSE 0 END) as done
-                       FROM tasks WHERE parent_task_id = ?""",
-                    (task["id"],)
-                )
-                row = await child_cursor.fetchone()
-                if row and row["total"] > 0 and row["total"] == row["done"]:
-                    logger.info(f"[Watchdog] Task #{task['id']} all subtasks done, marking complete")
-                    await db.execute(
-                        "UPDATE tasks SET status = 'completed', completed_at = ? WHERE id = ?",
-                        (datetime.now().isoformat(), task["id"])
-                    )
-
-            await db.commit()
+        await db.commit()
 
     # ─── Core Task Processing ────────────────────────────────────────────
 
@@ -210,8 +208,11 @@ class Orchestrator:
         logger.info(f"[Task #{task_id}] Starting: '{title}' (agent: {agent_type})")
 
         try:
-            await update_task(task_id, status="processing",
-                              started_at=datetime.now().isoformat())
+            # Atomic claim — if another worker grabbed it first, skip
+            claimed = await claim_task(task_id)
+            if not claimed:
+                logger.info(f"[Task #{task_id}] Already claimed by another worker, skipping")
+                return
 
             # ── Inject context from prior steps + workspace snapshot ──
             task = await self._inject_chain_context(task)
@@ -312,13 +313,11 @@ class Orchestrator:
             )
             subtasks = subtasks[:MAX_SUBTASKS]
 
-        created_ids = []
+        # Pre-process subtasks: resolve tiers and dep_step references.
+        # We need a two-pass approach because depends_on_step references
+        # IDs that are created during insertion.
+        processed: list[dict] = []
         for i, st in enumerate(subtasks):
-            depends_on = []
-            dep_step = st.get("depends_on_step")
-            if dep_step is not None and isinstance(dep_step, int) and 0 <= dep_step < len(created_ids):
-                depends_on = [created_ids[dep_step]]
-
             requested_tier = st.get("tier", "auto")
             if requested_tier != "auto" and requested_tier not in MODEL_TIERS:
                 tier_map = {"expensive": "medium", "medium": "cheap"}
@@ -327,24 +326,42 @@ class Orchestrator:
                     resolved = "auto"
                 requested_tier = resolved
 
-            sub_id = await add_task(
-                title=st.get("title", f"Subtask {i+1}")[:80],
-                description=st.get("description", "")[:2000],
-                goal_id=goal_id,
-                parent_task_id=task_id,
-                agent_type=st.get("agent_type", "executor"),
-                tier=requested_tier,
-                priority=st.get("priority", task.get("priority", 5)),
-                depends_on=depends_on
-            )
-            if sub_id is not None:
-                created_ids.append(sub_id)
-            else:
-                # Deduped — use a placeholder so later deps still index correctly
-                created_ids.append(-1)
+            processed.append({
+                "title": st.get("title", f"Subtask {i+1}")[:80],
+                "description": st.get("description", "")[:2000],
+                "agent_type": st.get("agent_type", "executor"),
+                "tier": requested_tier,
+                "priority": st.get("priority", task.get("priority", 5)),
+                "depends_on": [],  # resolved after creation
+                "_dep_step": st.get("depends_on_step"),
+            })
 
+        # Use transactional batch insert
         plan_summary = result.get("plan_summary", f"Created {len(subtasks)} subtasks")
-        await update_task(task_id, status="waiting_subtasks", result=plan_summary)
+        created_ids = await add_subtasks_atomically(
+            parent_task_id=task_id,
+            subtasks=processed,
+            goal_id=goal_id,
+            parent_status="waiting_subtasks",
+            parent_result=plan_summary,
+        )
+
+        # Post-process: wire up depends_on_step references now that we
+        # have the created IDs.  This requires individual updates for
+        # tasks that reference earlier siblings.
+        for i, st in enumerate(processed):
+            dep_step = st.get("_dep_step")
+            if (
+                dep_step is not None
+                and isinstance(dep_step, int)
+                and 0 <= dep_step < len(created_ids)
+                and created_ids[dep_step] > 0
+                and created_ids[i] > 0
+            ):
+                await update_task(
+                    created_ids[i],
+                    depends_on=json.dumps([created_ids[dep_step]])
+                )
 
         subtask_list = "\n".join(
             f"  {i+1}. [{st.get('agent_type', '?')}] {st.get('title', '?')[:50]}"
@@ -542,5 +559,6 @@ class Orchestrator:
 
                     logger.info("👋 Orchestrator stopped")
 
+                await close_db()
                 await self.telegram.app.updater.stop()
                 await self.telegram.app.stop()

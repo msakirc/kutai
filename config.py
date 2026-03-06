@@ -24,6 +24,19 @@ MAX_AGENT_ITERATIONS = 8
 MAX_TOOL_OUTPUT_LENGTH = 4000
 MAX_CONTEXT_CHAIN_LENGTH = 12000   # chars of prior-step output to inject
 
+# ─── Cost Budget (Phase 4) ──────────────────────────────────────────────────
+COST_BUDGET_DAILY: float = float(os.getenv("COST_BUDGET_DAILY", "1.0"))
+
+# ─── Thinking/Reasoning Models (Phase 4) ────────────────────────────────────
+# Substrings to detect thinking-capable models. These models should not
+# have temperature set and need increased timeouts.
+THINKING_MODELS: list[str] = [
+    "o1", "o3", "o4",        # OpenAI reasoning
+    "qwq",                    # Alibaba QwQ
+    "deepseek-r1",            # DeepSeek R1
+    "gemini-2.5-flash",       # Gemini thinking
+]
+
 # ─── API Key Detection ───────────────────────────────────────────────────────
 
 AVAILABLE_KEYS: dict[str, bool] = {

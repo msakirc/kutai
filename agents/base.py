@@ -10,7 +10,7 @@ import json
 import logging
 import re
 
-from router import call_model, classify_task, MODEL_TIERS
+from router import call_model, classify_task, MODEL_TIERS, grade_response, check_cost_budget
 from db import (
     log_conversation,
     store_memory,
@@ -19,6 +19,9 @@ from db import (
     save_task_checkpoint,
     load_task_checkpoint,
     clear_task_checkpoint,
+    record_model_call,
+    update_task,
+    record_cost,
 )
 from tools import TOOL_REGISTRY, TOOL_SCHEMAS, get_tool_descriptions, execute_tool
 from config import MAX_AGENT_ITERATIONS, AGENT_TIER_MAP, MAX_TOOL_OUTPUT_LENGTH
@@ -39,6 +42,13 @@ SIDE_EFFECT_TOOLS: frozenset[str] = frozenset({
 
 # Max JSON format-correction retries before falling through to final_answer.
 MAX_FORMAT_RETRIES: int = 2
+
+# Mid-task escalation: after this many iterations with tool failures,
+# escalate to the next tier up.
+ESCALATION_THRESHOLD: int = 3
+
+# Tier escalation order (low → high)
+TIER_ESCALATION_ORDER: list[str] = ["cheap", "code", "medium", "expensive"]
 
 # Pre-build tool schema lookup by name for O(1) access during arg validation.
 _TOOL_SCHEMAS_BY_NAME: dict[str, dict] = {}
@@ -238,6 +248,17 @@ class BaseAgent:
             )
             return self.min_tier
         return requested_tier
+
+    @staticmethod
+    def _escalate_tier(current_tier: str) -> str | None:
+        """Return the next tier up, or None if already at highest."""
+        try:
+            idx = TIER_ESCALATION_ORDER.index(current_tier)
+        except ValueError:
+            return None
+        if idx < len(TIER_ESCALATION_ORDER) - 1:
+            return TIER_ESCALATION_ORDER[idx + 1]
+        return None
 
     # ------------------------------------------------------------------ #
     #  Context builder (DB + inline fallback)                             #
@@ -813,6 +834,10 @@ class BaseAgent:
             format_retries = 0
             completed_tool_ops: dict[str, str] = {}
 
+        # Track tool failures for mid-task escalation
+        consecutive_tool_failures = 0
+        escalated = False
+
         # ── iterative loop ──
         for iteration in range(start_iteration, self.max_iterations):
             logger.info(
@@ -830,11 +855,32 @@ class BaseAgent:
                 messages, estimation_model, tier,
             )
 
+            # ── Cost budget check (Phase 4) ──
+            try:
+                budget_status = await check_cost_budget()
+                if not budget_status.get("ok", True):
+                    logger.warning(
+                        f"[Task #{task_id}] Budget exceeded: "
+                        f"{budget_status.get('reason')}"
+                    )
+                    await self._clear_checkpoint_safe(task_id)
+                    return {
+                        "status":     "completed",
+                        "result":     f"Task paused: {budget_status['reason']}",
+                        "model":      used_model,
+                        "cost":       total_cost,
+                        "tier":       tier,
+                        "iterations": iteration,
+                    }
+            except Exception:
+                pass  # budget check failure shouldn't block work
+
             # Call LLM
             try:
                 litellm_tools = self._build_litellm_tools()
                 response = await call_model(
                     tier, messages, tools=litellm_tools,
+                    agent_type=self.name,
                 )
             except Exception as exc:
                 logger.error(f"[Task #{task_id}] Model call failed: {exc}")
@@ -850,7 +896,27 @@ class BaseAgent:
             content    = response.get("content", "")
             used_model = response.get("model", used_model)
             step_cost  = response.get("cost", 0)
+            step_latency = response.get("latency", 0)
             total_cost += step_cost
+
+            # ── Record model call stats (Phase 4) ──
+            try:
+                await record_model_call(
+                    model=used_model,
+                    agent_type=self.name,
+                    success=True,
+                    cost=step_cost,
+                    latency=step_latency,
+                )
+            except Exception:
+                pass  # never break the loop for stats
+
+            # ── Record cost for budget tracking (Phase 4) ──
+            if step_cost > 0:
+                try:
+                    await record_cost(step_cost)
+                except Exception:
+                    pass
 
             logger.debug(f"[Task #{task_id}] Raw response: {content[:200]}...")
 
@@ -1070,14 +1136,35 @@ class BaseAgent:
                         "tier":          tier,
                     }
 
+                # ── Response grading (Phase 4) ──
+                quality_score = None
+                try:
+                    quality_score = await grade_response(
+                        task.get("title", ""),
+                        task.get("description", ""),
+                        result,
+                    )
+                    if quality_score is not None and task_id != "?":
+                        await update_task(task_id, quality_score=quality_score)
+                        # Update model stats with grade
+                        await record_model_call(
+                            model=used_model,
+                            agent_type=self.name,
+                            success=True,
+                            grade=quality_score,
+                        )
+                except Exception as exc:
+                    logger.debug(f"Response grading failed: {exc}")
+
                 await self._clear_checkpoint_safe(task_id)
                 return {
-                    "status":     "completed",
-                    "result":     result,
-                    "model":      used_model,
-                    "cost":       total_cost,
-                    "tier":       tier,
-                    "iterations": iteration + 1,
+                    "status":        "completed",
+                    "result":        result,
+                    "model":         used_model,
+                    "cost":          total_cost,
+                    "tier":          tier,
+                    "iterations":    iteration + 1,
+                    "quality_score": quality_score,
                 }
 
             # ── TOOL CALL ─────────────────────────────────────────────
@@ -1204,6 +1291,34 @@ class BaseAgent:
                     or "exit code" in tool_output
                     and "exit code 0" not in tool_output
                 )
+
+                # ── Mid-task escalation (Phase 4) ──
+                if tool_failed:
+                    consecutive_tool_failures += 1
+                else:
+                    consecutive_tool_failures = 0
+
+                if (
+                    not escalated
+                    and consecutive_tool_failures >= ESCALATION_THRESHOLD
+                    and iteration >= ESCALATION_THRESHOLD
+                ):
+                    next_tier = self._escalate_tier(tier)
+                    if next_tier and next_tier in MODEL_TIERS:
+                        logger.warning(
+                            f"[Task #{task_id}] ⬆️ Escalating tier: "
+                            f"'{tier}' → '{next_tier}' after "
+                            f"{consecutive_tool_failures} consecutive "
+                            f"tool failures"
+                        )
+                        tier = next_tier
+                        escalated = True
+                        await self._safe_log(
+                            task_id, "system",
+                            f"[escalation] Upgraded to tier '{tier}' "
+                            f"after {consecutive_tool_failures} failures",
+                            None, 0,
+                        )
 
                 if tool_failed:
                     recovery_guidance = (

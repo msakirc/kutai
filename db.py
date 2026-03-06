@@ -139,6 +139,41 @@ async def init_db():
         )
     """)
 
+    # Model performance stats (Phase 4)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS model_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            model TEXT NOT NULL,
+            agent_type TEXT NOT NULL,
+            avg_grade REAL DEFAULT 0.0,
+            avg_cost REAL DEFAULT 0.0,
+            avg_latency REAL DEFAULT 0.0,
+            success_rate REAL DEFAULT 1.0,
+            total_calls INTEGER DEFAULT 0,
+            total_successes INTEGER DEFAULT 0,
+            total_grade_sum REAL DEFAULT 0.0,
+            total_cost_sum REAL DEFAULT 0.0,
+            total_latency_sum REAL DEFAULT 0.0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(model, agent_type)
+        )
+    """)
+
+    # Cost budget tracking (Phase 4)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS cost_budgets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope TEXT NOT NULL,
+            scope_id TEXT,
+            daily_limit REAL DEFAULT 0.0,
+            total_limit REAL DEFAULT 0.0,
+            spent_today REAL DEFAULT 0.0,
+            spent_total REAL DEFAULT 0.0,
+            last_reset_date TEXT,
+            UNIQUE(scope, scope_id)
+        )
+    """)
+
     await db.commit()
 
     # Verify schema
@@ -178,6 +213,17 @@ async def init_db():
             logger.info("📊 Added timeout_seconds column to tasks table")
         except Exception as e:
             logger.debug(f"timeout_seconds column migration skipped: {e}")
+
+    # Migration: add quality_score column for response grading (Phase 4)
+    if "quality_score" not in columns:
+        try:
+            await db.execute(
+                "ALTER TABLE tasks ADD COLUMN quality_score REAL DEFAULT NULL"
+            )
+            await db.commit()
+            logger.info("📊 Added quality_score column to tasks table")
+        except Exception as e:
+            logger.debug(f"quality_score column migration skipped: {e}")
 
 # --- Goal Operations ---
 
@@ -753,3 +799,234 @@ async def get_task_tree(goal_id: int) -> list[dict]:
         (goal_id,)
     )
     return [dict(row) for row in await cursor.fetchall()]
+
+
+# ─── Phase 4: Model Intelligence Layer ────────────────────────────────────
+
+# --- Model Stats ---
+
+async def record_model_call(
+    model: str,
+    agent_type: str,
+    success: bool,
+    cost: float = 0.0,
+    latency: float = 0.0,
+    grade: float | None = None,
+) -> None:
+    """Record a model call for performance tracking.
+
+    Updates running averages in model_stats table.
+    """
+    db = await get_db()
+
+    # Upsert: try to get existing row
+    cursor = await db.execute(
+        "SELECT * FROM model_stats WHERE model = ? AND agent_type = ?",
+        (model, agent_type)
+    )
+    existing = await cursor.fetchone()
+
+    if existing:
+        row = dict(existing)
+        total = row["total_calls"] + 1
+        successes = row["total_successes"] + (1 if success else 0)
+        cost_sum = row["total_cost_sum"] + cost
+        latency_sum = row["total_latency_sum"] + latency
+        grade_sum = row["total_grade_sum"] + (grade if grade else 0)
+
+        avg_cost = cost_sum / total if total > 0 else 0
+        avg_latency = latency_sum / total if total > 0 else 0
+        graded_calls = row["total_calls"]  # approximate
+        if grade is not None:
+            graded_calls += 1
+        avg_grade = grade_sum / graded_calls if graded_calls > 0 else 0
+        success_rate = successes / total if total > 0 else 0
+
+        await db.execute(
+            """UPDATE model_stats SET
+                   total_calls = ?, total_successes = ?,
+                   total_cost_sum = ?, total_latency_sum = ?,
+                   total_grade_sum = ?,
+                   avg_cost = ?, avg_latency = ?,
+                   avg_grade = ?, success_rate = ?,
+                   updated_at = datetime('now')
+               WHERE model = ? AND agent_type = ?""",
+            (total, successes, cost_sum, latency_sum, grade_sum,
+             avg_cost, avg_latency, avg_grade, success_rate,
+             model, agent_type)
+        )
+    else:
+        avg_grade = grade if grade else 0.0
+        await db.execute(
+            """INSERT INTO model_stats
+               (model, agent_type, total_calls, total_successes,
+                total_cost_sum, total_latency_sum, total_grade_sum,
+                avg_cost, avg_latency, avg_grade, success_rate)
+               VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (model, agent_type, 1 if success else 0,
+             cost, latency, grade if grade else 0,
+             cost, latency, avg_grade,
+             1.0 if success else 0.0)
+        )
+    await db.commit()
+
+
+async def get_model_stats(
+    model: str | None = None,
+    agent_type: str | None = None,
+) -> list[dict]:
+    """Query model performance stats.
+
+    Filter by model and/or agent_type.  Returns all if no filters.
+    """
+    db = await get_db()
+    query = "SELECT * FROM model_stats WHERE 1=1"
+    params: list = []
+    if model:
+        query += " AND model = ?"
+        params.append(model)
+    if agent_type:
+        query += " AND agent_type = ?"
+        params.append(agent_type)
+    query += " ORDER BY avg_grade DESC, success_rate DESC"
+    cursor = await db.execute(query, params)
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+async def get_model_performance_ranking(agent_type: str) -> list[dict]:
+    """Get models ranked by performance for a specific agent type.
+
+    Returns models sorted by: success_rate * avg_grade (composite score).
+    Only includes models with >= 3 calls for statistical significance.
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT model, avg_grade, avg_cost, avg_latency,
+                  success_rate, total_calls
+           FROM model_stats
+           WHERE agent_type = ? AND total_calls >= 3
+           ORDER BY (success_rate * avg_grade) DESC""",
+        (agent_type,)
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+# --- Cost Budget ---
+
+async def get_budget(scope: str, scope_id: str | None = None) -> dict | None:
+    """Get budget info for a scope (e.g. 'daily', 'goal')."""
+    db = await get_db()
+    if scope_id:
+        cursor = await db.execute(
+            "SELECT * FROM cost_budgets WHERE scope = ? AND scope_id = ?",
+            (scope, scope_id)
+        )
+    else:
+        cursor = await db.execute(
+            "SELECT * FROM cost_budgets WHERE scope = ? AND scope_id IS NULL",
+            (scope,)
+        )
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def set_budget(
+    scope: str,
+    scope_id: str | None = None,
+    daily_limit: float = 0.0,
+    total_limit: float = 0.0,
+) -> None:
+    """Create or update a cost budget."""
+    db = await get_db()
+    existing = await get_budget(scope, scope_id)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    if existing:
+        await db.execute(
+            """UPDATE cost_budgets
+               SET daily_limit = ?, total_limit = ?
+               WHERE scope = ? AND scope_id IS ?""",
+            (daily_limit, total_limit, scope, scope_id)
+        )
+    else:
+        await db.execute(
+            """INSERT INTO cost_budgets
+               (scope, scope_id, daily_limit, total_limit,
+                spent_today, spent_total, last_reset_date)
+               VALUES (?, ?, ?, ?, 0, 0, ?)""",
+            (scope, scope_id, daily_limit, total_limit, today)
+        )
+    await db.commit()
+
+
+async def record_cost(
+    cost: float,
+    scope: str = "daily",
+    scope_id: str | None = None,
+) -> None:
+    """Add cost to a budget scope. Resets daily spend if date changed."""
+    db = await get_db()
+    budget = await get_budget(scope, scope_id)
+    if not budget:
+        return
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    last_reset = budget.get("last_reset_date", "")
+
+    # Reset daily spend if new day
+    if today != last_reset:
+        await db.execute(
+            """UPDATE cost_budgets
+               SET spent_today = ?, spent_total = spent_total + ?,
+                   last_reset_date = ?
+               WHERE scope = ? AND scope_id IS ?""",
+            (cost, cost, today, scope, scope_id)
+        )
+    else:
+        await db.execute(
+            """UPDATE cost_budgets
+               SET spent_today = spent_today + ?,
+                   spent_total = spent_total + ?
+               WHERE scope = ? AND scope_id IS ?""",
+            (cost, cost, scope, scope_id)
+        )
+    await db.commit()
+
+
+async def check_budget(
+    scope: str = "daily",
+    scope_id: str | None = None,
+) -> dict:
+    """Check if budget is exceeded.
+
+    Returns:
+        {"ok": True/False, "reason": str, "budget": dict}
+    """
+    budget = await get_budget(scope, scope_id)
+    if not budget:
+        return {"ok": True, "reason": "no budget set", "budget": None}
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    spent_today = budget["spent_today"]
+    if budget.get("last_reset_date") != today:
+        spent_today = 0.0  # new day, reset hasn't happened yet
+
+    daily_limit = budget["daily_limit"]
+    total_limit = budget["total_limit"]
+    spent_total = budget["spent_total"]
+
+    if daily_limit > 0 and spent_today >= daily_limit:
+        return {
+            "ok": False,
+            "reason": f"Daily budget exceeded: ${spent_today:.4f} / ${daily_limit:.4f}",
+            "budget": budget,
+        }
+
+    if total_limit > 0 and spent_total >= total_limit:
+        return {
+            "ok": False,
+            "reason": f"Total budget exceeded: ${spent_total:.4f} / ${total_limit:.4f}",
+            "budget": budget,
+        }
+
+    return {"ok": True, "reason": "within budget", "budget": budget}

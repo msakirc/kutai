@@ -10,7 +10,7 @@ from telegram.ext import (
 from db import (add_task, add_goal, get_active_goals, get_ready_tasks,
                 get_daily_stats, update_task, get_recent_completed_tasks,
                 get_db, cancel_task, reprioritize_task, get_task_tree,
-                get_task)
+                get_task, get_budget, set_budget, get_model_stats)
 
 
 pending_clarifications = {}  # task_id -> asyncio.Event + response
@@ -40,6 +40,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("cancel", self.cmd_cancel))     # Phase 3
         self.app.add_handler(CommandHandler("priority", self.cmd_priority)) # Phase 3
         self.app.add_handler(CommandHandler("graph", self.cmd_graph))       # Phase 3
+        self.app.add_handler(CommandHandler("budget", self.cmd_budget))     # Phase 4
+        self.app.add_handler(CommandHandler("modelstats", self.cmd_model_stats))  # Phase 4
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.REPLY,
@@ -63,6 +65,8 @@ class TelegramInterface:
             "/cancel <id> — Cancel a task\n"
             "/priority <id> <1-10> — Reprioritize\n"
             "/graph <goal\\_id> — Show task dependency graph\n"
+            "/budget [daily\\_limit] — View/set cost budget\n"
+            "/modelstats — View model performance stats\n"
             "/digest — Get daily digest now\n\n"
             "Or just send a message — I'll figure out what to do.",
             parse_mode="Markdown"
@@ -382,6 +386,63 @@ class TelegramInterface:
 
         # Render root tasks (no parent) then their children
         _render(None)
+
+        await update.message.reply_text(
+            "\n".join(lines), parse_mode="Markdown"
+        )
+
+    async def cmd_budget(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """View or set daily cost budget."""
+        if context.args:
+            try:
+                new_limit = float(context.args[0])
+                await set_budget("daily", daily_limit=new_limit)
+                await update.message.reply_text(
+                    f"💰 Daily budget set to ${new_limit:.2f}"
+                )
+            except ValueError:
+                await update.message.reply_text(
+                    "Usage: /budget [daily_limit]\n"
+                    "Example: /budget 1.50"
+                )
+            return
+
+        budget = await get_budget("daily")
+        if not budget:
+            await update.message.reply_text(
+                "💰 No daily budget set.\n"
+                "Use /budget <amount> to set one.\n"
+                "Example: /budget 1.00"
+            )
+            return
+
+        today = budget.get("last_reset_date", "N/A")
+        await update.message.reply_text(
+            f"💰 *Cost Budget*\n\n"
+            f"Daily limit: ${budget['daily_limit']:.4f}\n"
+            f"Spent today: ${budget['spent_today']:.4f}\n"
+            f"Spent total: ${budget['spent_total']:.4f}\n"
+            f"Last reset: {today}",
+            parse_mode="Markdown"
+        )
+
+    async def cmd_model_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show model performance statistics."""
+        stats = await get_model_stats()
+        if not stats:
+            await update.message.reply_text("📊 No model stats yet.")
+            return
+
+        lines = ["📊 *Model Performance Stats*\n"]
+        for s in stats[:15]:  # limit output
+            model = s["model"].split("/")[-1][:20]
+            lines.append(
+                f"`{model}` ({s['agent_type']})\n"
+                f"  Grade: {s['avg_grade']:.1f}/5 | "
+                f"SR: {s['success_rate']*100:.0f}% | "
+                f"Calls: {s['total_calls']} | "
+                f"Cost: ${s['avg_cost']:.4f}"
+            )
 
         await update.message.reply_text(
             "\n".join(lines), parse_mode="Markdown"

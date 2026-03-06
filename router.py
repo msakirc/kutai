@@ -14,6 +14,8 @@ litellm.suppress_debug_info = True
 from config import (
     MODEL_POOL,
     FALLBACK_ORDER,
+    COST_BUDGET_DAILY,
+    THINKING_MODELS,
 )
 
 logger = logging.getLogger(__name__)
@@ -295,15 +297,17 @@ def select_model(
     tier: str,
     capability: str | None = None,
     prefer_local: bool = True,
+    agent_type: str | None = None,
 ) -> list[dict]:
     """
     Return a ranked list of models suitable for *tier* + optional *capability*.
 
     Ranking:
       1. Provider class (local > free cloud > paid)
-      2. Matches capability (if specified)
-      3. Within tier quality range
-      4. Higher quality wins ties
+      2. Historical performance for agent_type (Phase 4)
+      3. Matches capability (if specified)
+      4. Within tier quality range
+      5. Higher quality wins ties
     """
     tier_ranges = {
         "routing":   (0, 5),
@@ -313,6 +317,11 @@ def select_model(
         "expensive": (7, 99),
     }
     q_min, q_max = tier_ranges.get(tier, (0, 99))
+
+    # Fetch performance stats if agent_type is known
+    perf_by_model: dict[str, dict] = {}
+    if agent_type and _perf_cache_ready:
+        perf_by_model = _perf_cache.get(agent_type, {})
 
     candidates: list[dict] = []
 
@@ -369,7 +378,23 @@ def select_model(
         else:
             score -= 30
 
-        # THIS IS THE MISSING PART
+        # ── Performance-aware bonus (Phase 4) ──
+        # If we have historical stats for this model + agent_type,
+        # adjust score based on success_rate and avg_grade.
+        perf = perf_by_model.get(cfg["litellm_name"])
+        if perf and perf.get("total_calls", 0) >= 3:
+            # Composite: success_rate (0-1) * avg_grade (0-5) → 0-5
+            perf_score = perf["success_rate"] * perf.get("avg_grade", 3.0)
+            # Scale to ±20 points centered at 3.0 (neutral)
+            perf_bonus = (perf_score - 3.0) * 8
+            score += perf_bonus
+            logger.debug(
+                f"  {key}: perf_bonus={perf_bonus:+.1f} "
+                f"(sr={perf['success_rate']:.2f}, "
+                f"grade={perf.get('avg_grade', 0):.1f}, "
+                f"calls={perf['total_calls']})"
+            )
+
         candidates.append({
             "key": key,
             "litellm_name": cfg["litellm_name"],
@@ -391,6 +416,42 @@ def select_model(
         logger.debug(f"select_model for tier '{tier}': {model_list}")
 
     return candidates
+
+
+# ─── Performance Cache ──────────────────────────────────────────────────────
+# In-memory cache of model performance stats, refreshed periodically.
+# Avoids hitting DB on every select_model call.
+
+_perf_cache: dict[str, dict[str, dict]] = {}
+_perf_cache_ready: bool = False
+_perf_cache_last_refresh: float = 0.0
+_PERF_CACHE_TTL: float = 300.0  # refresh every 5 minutes
+
+
+async def refresh_perf_cache() -> None:
+    """Refresh the in-memory performance cache from DB."""
+    global _perf_cache, _perf_cache_ready, _perf_cache_last_refresh
+
+    now = time.time()
+    if _perf_cache_ready and (now - _perf_cache_last_refresh) < _PERF_CACHE_TTL:
+        return
+
+    try:
+        from db import get_model_stats
+        stats = await get_model_stats()
+        cache: dict[str, dict[str, dict]] = {}
+        for s in stats:
+            at = s["agent_type"]
+            m = s["model"]
+            if at not in cache:
+                cache[at] = {}
+            cache[at][m] = s
+        _perf_cache = cache
+        _perf_cache_ready = True
+        _perf_cache_last_refresh = now
+        logger.debug(f"Performance cache refreshed: {len(stats)} entries")
+    except Exception as e:
+        logger.debug(f"Performance cache refresh failed: {e}")
 
 def _get_fallback_models(tier: str) -> list[dict]:
     """
@@ -480,18 +541,24 @@ async def call_model(
     capability: str | None = None,
     task_context: str = "",
     tools: list[dict] | None = None,
+    agent_type: str | None = None,
+    stream: bool = False,
 ) -> dict:
     """
     Call the best available model for *tier*.
 
     Handles rate limits, retries with backoff, auth/billing errors,
-    timeouts, and automatic fallback across providers.
+    timeouts, automatic fallback across providers, thinking model
+    detection, and optional streaming.
     """
     tier = _resolve_tier(tier)
     tier_cfg = MODEL_TIERS.get(tier, {})
 
     # Temperature from tier config (default 0.3)
     temperature = tier_cfg.get("temperature", 0.3)
+
+    # Refresh performance cache periodically (Phase 4)
+    await refresh_perf_cache()
 
     # Build ordered fallback chain
     candidates = _get_fallback_models(tier)
@@ -526,13 +593,20 @@ async def call_model(
         max_retries = 2 if is_ollama else 3
         timeout_val = 120 if is_ollama else 60
 
+        # ── Thinking model adjustments (Phase 4) ──
+        is_thinking = _is_thinking_model(model_name)
+        if is_thinking:
+            timeout_val = max(timeout_val, 180)  # thinking models need more time
+            temperature = 1  # many thinking models ignore or require temp=1
+
         for attempt in range(max_retries):
             try:
                 await limiter.wait()
 
                 logger.info(
                     f"Calling {model_name} "
-                    f"(tier={tier}, attempt={attempt + 1}/{max_retries})"
+                    f"(tier={tier}, attempt={attempt + 1}/{max_retries}"
+                    f"{', thinking' if is_thinking else ''})"
                 )
 
                 # Decide whether to pass tools for function calling
@@ -561,13 +635,15 @@ async def call_model(
                     max_tokens=max_tokens,
                     temperature=temperature,
                 )
+
+                # Thinking models: don't set temperature (some reject it)
+                if is_thinking:
+                    completion_kwargs.pop("temperature", None)
+
                 if use_tools:
                     completion_kwargs["tools"] = use_tools
                     completion_kwargs["tool_choice"] = "auto"
                 elif model_supports_rf and not model_supports_fc:
-                    # Model can't do function calling but supports
-                    # JSON output mode — use response_format to
-                    # guarantee valid JSON.
                     completion_kwargs["response_format"] = {
                         "type": "json_object"
                     }
@@ -576,10 +652,58 @@ async def call_model(
                         f"{model_name}"
                     )
 
+                call_start = time.time()
+
+                # ── Streaming path (Phase 4) ──
+                if stream and not use_tools:
+                    completion_kwargs["stream"] = True
+                    chunks = []
+                    stream_response = await asyncio.wait_for(
+                        litellm.acompletion(**completion_kwargs),
+                        timeout=timeout_val,
+                    )
+                    full_content = ""
+                    async for chunk in stream_response:
+                        delta = chunk.choices[0].delta
+                        if delta and delta.content:
+                            full_content += delta.content
+                            chunks.append(chunk)
+
+                    call_latency = time.time() - call_start
+
+                    # Calculate cost from chunks
+                    try:
+                        cost = litellm.stream_chunk_builder(
+                            chunks
+                        ) if chunks else 0.0
+                        # Actually cost is hard to get from stream,
+                        # estimate from token count
+                        cost = 0.0  # will be estimated below
+                    except Exception:
+                        cost = 0.0
+
+                    if is_ollama:
+                        cost = 0.0
+
+                    _get_circuit_breaker(provider).record_success()
+
+                    return {
+                        "content": full_content,
+                        "model": model_name,
+                        "tier": tier,
+                        "cost": cost,
+                        "usage": {},
+                        "tool_calls": None,
+                        "latency": call_latency,
+                    }
+
+                # ── Standard (non-streaming) path ──
                 response = await asyncio.wait_for(
                     litellm.acompletion(**completion_kwargs),
                     timeout=timeout_val,
                 )
+
+                call_latency = time.time() - call_start
 
                 # Calculate cost
                 try:
@@ -610,6 +734,11 @@ async def call_model(
                             "arguments": args,
                         })
 
+                # ── Extract thinking content (Phase 4) ──
+                thinking_content = None
+                if is_thinking:
+                    thinking_content = _extract_thinking(msg)
+
                 # Success — reset circuit breaker for this provider
                 _get_circuit_breaker(provider).record_success()
 
@@ -622,6 +751,8 @@ async def call_model(
                         dict(response.usage) if response.usage else {}
                     ),
                     "tool_calls": tool_calls,
+                    "latency": call_latency,
+                    "thinking": thinking_content,
                 }
 
             except asyncio.TimeoutError:
@@ -688,3 +819,114 @@ async def call_model(
     raise RuntimeError(
         f"All models failed for tier '{tier}'. Last error: {last_error}"
     )
+
+
+# ─── Thinking Model Support (Phase 4) ───────────────────────────────────────
+
+def _is_thinking_model(model_name: str) -> bool:
+    """Detect if a model supports extended thinking/reasoning."""
+    name_lower = model_name.lower()
+    return any(p in name_lower for p in THINKING_MODELS)
+
+
+def _extract_thinking(msg) -> str | None:
+    """Extract thinking/reasoning content from model response.
+
+    Different providers format thinking differently:
+    - Anthropic: msg.thinking or <thinking> tags
+    - OpenAI o1/o3: reasoning_content field
+    - DeepSeek R1: <think> tags in content
+    """
+    # Check for dedicated thinking attribute
+    if hasattr(msg, "thinking") and msg.thinking:
+        return msg.thinking
+
+    if hasattr(msg, "reasoning_content") and msg.reasoning_content:
+        return msg.reasoning_content
+
+    # Check for thinking tags in content
+    content = msg.content or ""
+    import re
+    think_match = re.search(
+        r"<(?:thinking|think)>(.*?)</(?:thinking|think)>",
+        content, re.DOTALL
+    )
+    if think_match:
+        return think_match.group(1).strip()
+
+    return None
+
+
+# ─── Response Grading (Phase 4) ─────────────────────────────────────────────
+
+GRADING_PROMPT = """Rate this AI response on a scale of 1-5:
+1 = Wrong/useless, 2 = Partially relevant, 3 = Adequate,
+4 = Good and complete, 5 = Excellent
+
+Task: {task_title}
+Task description: {task_description}
+
+Response to grade:
+{response}
+
+Respond with ONLY a JSON object: {{"score": N, "reason": "brief"}}"""
+
+
+async def grade_response(
+    task_title: str,
+    task_description: str,
+    response_text: str,
+) -> float | None:
+    """Grade a response using the cheapest available model.
+
+    Returns a score 1-5, or None if grading fails.
+    """
+    if not response_text or len(response_text.strip()) < 10:
+        return None
+
+    try:
+        # Use cheapest tier for grading
+        grading_result = await call_model(
+            tier="routing",
+            messages=[{
+                "role": "user",
+                "content": GRADING_PROMPT.format(
+                    task_title=task_title[:100],
+                    task_description=(task_description or "")[:300],
+                    response=response_text[:2000],
+                ),
+            }],
+        )
+
+        raw = grading_result.get("content", "").strip()
+        # Strip markdown fences
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+            raw = raw.rsplit("```", 1)[0]
+
+        parsed = json.loads(raw.strip())
+        score = float(parsed.get("score", 3))
+        score = max(1.0, min(5.0, score))  # clamp to 1-5
+        logger.info(
+            f"Response graded: {score}/5 — "
+            f"{parsed.get('reason', 'N/A')[:60]}"
+        )
+        return score
+    except Exception as e:
+        logger.debug(f"Response grading failed: {e}")
+        return None
+
+
+# ─── Cost Budget Checking (Phase 4) ─────────────────────────────────────────
+
+async def check_cost_budget() -> dict:
+    """Check if daily cost budget is exceeded.
+
+    Returns {"ok": True/False, "reason": str}.
+    """
+    try:
+        from db import check_budget
+        return await check_budget("daily")
+    except Exception as e:
+        logger.debug(f"Budget check failed: {e}")
+        return {"ok": True, "reason": f"check failed: {e}"}

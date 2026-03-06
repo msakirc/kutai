@@ -393,3 +393,104 @@ async def git_status(path: str = "") -> str:
         return f"❌ git status failed: {err}"
 
     return out or "(clean)"
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Branch-per-goal workflow
+# ---------------------------------------------------------------------------
+
+def _slugify(text: str, max_len: int = 30) -> str:
+    """Convert text to a URL-safe slug for branch names."""
+    import re
+    slug = text.lower().strip()
+    slug = re.sub(r'[^a-z0-9]+', '-', slug)
+    slug = slug.strip('-')
+    return slug[:max_len]
+
+
+async def create_goal_branch(
+    goal_id: int,
+    title: str,
+    path: str = "",
+) -> str:
+    """Create a goal-specific branch: goal/{id}-{slug}.
+
+    Returns the branch name, or error string starting with '❌'.
+    """
+    target = await _ensure_repo(path)
+    if target is None:
+        return f"❌ No git repo at {path or 'workspace root'}."
+
+    slug = _slugify(title)
+    branch_name = f"goal/{goal_id}-{slug}"
+
+    code, out, err = await _run_git(
+        ["checkout", "-b", branch_name], cwd=target,
+    )
+    if code != 0:
+        # Branch might already exist
+        code2, out2, err2 = await _run_git(
+            ["checkout", branch_name], cwd=target,
+        )
+        if code2 != 0:
+            return f"❌ Failed to create/switch to branch '{branch_name}': {err}"
+        return branch_name
+
+    return branch_name
+
+
+async def get_current_branch(path: str = "") -> str | None:
+    """Get the current branch name."""
+    target = _resolve_repo(path)
+    if target is None:
+        return None
+    code, out, err = await _run_git(
+        ["rev-parse", "--abbrev-ref", "HEAD"], cwd=target,
+    )
+    if code != 0:
+        return None
+    return out.strip()
+
+
+async def switch_branch(
+    branch_name: str,
+    path: str = "",
+) -> str:
+    """Switch to an existing branch."""
+    target = _resolve_repo(path)
+    if target is None:
+        return f"❌ Invalid path: {path or 'workspace root'}."
+    code, out, err = await _run_git(
+        ["checkout", branch_name], cwd=target,
+    )
+    if code != 0:
+        return f"❌ Failed to switch to '{branch_name}': {err}"
+    return f"✅ Switched to branch '{branch_name}'"
+
+
+async def get_commit_sha(path: str = "") -> str | None:
+    """Get the current HEAD commit SHA."""
+    target = _resolve_repo(path)
+    if target is None:
+        return None
+    code, out, err = await _run_git(
+        ["rev-parse", "HEAD"], cwd=target,
+    )
+    if code != 0:
+        return None
+    return out.strip()[:12]
+
+
+async def list_branches(path: str = "") -> list[str]:
+    """List all branches in the repo."""
+    target = _resolve_repo(path)
+    if target is None:
+        return []
+    code, out, err = await _run_git(
+        ["branch", "--list"], cwd=target,
+    )
+    if code != 0:
+        return []
+    return [
+        b.strip().lstrip("* ") for b in out.strip().split("\n") if b.strip()
+    ]

@@ -10,7 +10,11 @@ from telegram.ext import (
 from db import (add_task, add_goal, get_active_goals, get_ready_tasks,
                 get_daily_stats, update_task, get_recent_completed_tasks,
                 get_db, cancel_task, reprioritize_task, get_task_tree,
-                get_task, get_budget, set_budget, get_model_stats)
+                get_task, get_budget, set_budget, get_model_stats,
+                get_goal_locks)
+from tools.workspace import (
+    list_goal_workspaces, load_projects_config, get_project,
+)
 
 
 pending_clarifications = {}  # task_id -> asyncio.Event + response
@@ -42,6 +46,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("graph", self.cmd_graph))       # Phase 3
         self.app.add_handler(CommandHandler("budget", self.cmd_budget))     # Phase 4
         self.app.add_handler(CommandHandler("modelstats", self.cmd_model_stats))  # Phase 4
+        self.app.add_handler(CommandHandler("workspace", self.cmd_workspace))  # Phase 6
+        self.app.add_handler(CommandHandler("project", self.cmd_project))      # Phase 6
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.REPLY,
@@ -67,6 +73,8 @@ class TelegramInterface:
             "/graph <goal\\_id> — Show task dependency graph\n"
             "/budget [daily\\_limit] — View/set cost budget\n"
             "/modelstats — View model performance stats\n"
+            "/workspace — View goal workspaces\n"
+            "/project [name] — List/view projects\n"
             "/digest — Get daily digest now\n\n"
             "Or just send a message — I'll figure out what to do.",
             parse_mode="Markdown"
@@ -446,6 +454,61 @@ class TelegramInterface:
 
         await update.message.reply_text(
             "\n".join(lines), parse_mode="Markdown"
+        )
+
+    async def cmd_workspace(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show active goal workspaces."""
+        workspaces = list_goal_workspaces()
+        if not workspaces:
+            await update.message.reply_text("📁 No goal workspaces active.")
+            return
+
+        lines = ["📁 *Goal Workspaces*\n"]
+        for ws in workspaces:
+            locks = await get_goal_locks(ws["goal_id"])
+            lock_str = f" ({len(locks)} locks)" if locks else ""
+            lines.append(
+                f"  Goal #{ws['goal_id']}: "
+                f"{ws['file_count']} files{lock_str}"
+            )
+
+        await update.message.reply_text(
+            "\n".join(lines), parse_mode="Markdown"
+        )
+
+    async def cmd_project(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List or switch projects. /project [name]"""
+        args = context.args
+        projects = load_projects_config()
+
+        if not args:
+            if not projects:
+                await update.message.reply_text(
+                    "📂 No projects configured. "
+                    "Add projects to `projects.json`."
+                )
+                return
+            lines = ["📂 *Projects*\n"]
+            for p in projects:
+                lang = p.get("language", "?")
+                lines.append(f"  `{p['name']}` — {lang} ({p.get('path', '?')})")
+            await update.message.reply_text(
+                "\n".join(lines), parse_mode="Markdown"
+            )
+            return
+
+        name = args[0]
+        project = get_project(name)
+        if not project:
+            await update.message.reply_text(f"❌ Project '{name}' not found.")
+            return
+
+        await update.message.reply_text(
+            f"📂 *Project: {project['name']}*\n"
+            f"Path: `{project.get('path', 'N/A')}`\n"
+            f"Language: {project.get('language', 'N/A')}\n"
+            f"Conventions: {project.get('conventions', 'N/A')}",
+            parse_mode="Markdown",
         )
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

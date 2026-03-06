@@ -12,12 +12,21 @@ from db import (
     store_memory, compute_task_hash,
     get_due_scheduled_tasks, update_scheduled_task,
     cancel_task, get_task,
+    save_workspace_snapshot, release_task_locks, release_goal_locks,
 )
 from router import classify_task
 from agents import get_agent, AGENT_REGISTRY
 from tools import execute_tool
-from tools.workspace import get_file_tree
-from tools.git_ops import git_commit, ensure_git_repo
+from tools.workspace import (
+    get_file_tree,
+    get_goal_workspace,
+    get_goal_workspace_relative,
+    compute_workspace_hashes,
+)
+from tools.git_ops import (
+    git_commit, ensure_git_repo,
+    create_goal_branch, get_current_branch, get_commit_sha,
+)
 from telegram_bot import TelegramInterface
 from router import MODEL_TIERS
 
@@ -113,15 +122,25 @@ class Orchestrator:
         if prior_steps:
             task_context["prior_steps"] = prior_steps
 
-        # ── Workspace snapshot ──
-        # For coder/reviewer/writer agents, include the current file tree
+        # ── Workspace snapshot (Phase 6: per-goal workspace) ──
+        # For coder/reviewer/writer agents, include the file tree
+        # from the goal's isolated workspace if available.
         agent_type = task.get("agent_type", "executor")
+        goal_id = task.get("goal_id")
         if agent_type in ("coder", "reviewer", "writer", "planner"):
             try:
-                tree = await get_file_tree(max_depth=3)
-                # Only include if there's something interesting
+                # Use per-goal workspace if goal_id exists
+                tree_path = (
+                    get_goal_workspace_relative(goal_id)
+                    if goal_id else ""
+                )
+                tree = await get_file_tree(path=tree_path, max_depth=3)
                 if tree and "File not found" not in tree and len(tree.split("\n")) > 1:
                     task_context["workspace_snapshot"] = tree
+                    if goal_id:
+                        task_context["workspace_path"] = (
+                            get_goal_workspace_relative(goal_id)
+                        )
             except Exception as e:
                 logger.debug(f"Could not get workspace snapshot: {e}")
 
@@ -134,9 +153,14 @@ class Orchestrator:
     async def _auto_commit(self, task: dict, result: dict):
         """Auto-commit workspace changes after a successful coder task."""
         try:
-            await ensure_git_repo()
+            # Use goal-specific workspace path if available
+            goal_id = task.get("goal_id")
+            repo_path = (
+                get_goal_workspace_relative(goal_id) if goal_id else ""
+            )
+            await ensure_git_repo(repo_path)
             commit_msg = f"Task #{task['id']}: {task.get('title', 'untitled')[:60]}"
-            commit_result = await git_commit(commit_msg)
+            commit_result = await git_commit(commit_msg, path=repo_path)
             if "Nothing to commit" not in commit_result:
                 logger.info(f"[Task #{task['id']}] Auto-committed: {commit_msg}")
         except Exception as e:
@@ -334,6 +358,25 @@ class Orchestrator:
             # ── Inject context from prior steps + workspace snapshot ──
             task = await self._inject_chain_context(task)
 
+            # ── Phase 6: Snapshot workspace before coder/pipeline tasks ──
+            goal_id = task.get("goal_id")
+            if goal_id and agent_type in ("coder", "pipeline", "implementer", "fixer"):
+                try:
+                    ws_path = get_goal_workspace(goal_id)
+                    hashes = compute_workspace_hashes(ws_path)
+                    repo_path = get_goal_workspace_relative(goal_id)
+                    sha = await get_commit_sha(path=repo_path)
+                    branch = await get_current_branch(path=repo_path)
+                    await save_workspace_snapshot(
+                        goal_id=goal_id,
+                        file_hashes=hashes,
+                        task_id=task_id,
+                        branch_name=branch,
+                        commit_sha=sha,
+                    )
+                except Exception as e:
+                    logger.debug(f"[Task #{task_id}] Snapshot skipped: {e}")
+
             # ── Determine timeout ──
             timeout_seconds = (
                 task.get("timeout_seconds")
@@ -391,8 +434,19 @@ class Orchestrator:
                 logger.warning(f"[Task #{task_id}] Unknown status '{status}', treating as complete")
                 await self._handle_complete(task, result)
 
+            # ── Phase 6: Release file locks held by this task ──
+            try:
+                await release_task_locks(task_id)
+            except Exception:
+                pass
+
         except Exception as e:
             logger.error(f"[Task #{task_id}] FAILED: {type(e).__name__}: {e}", exc_info=True)
+            # Release locks on failure too
+            try:
+                await release_task_locks(task_id)
+            except Exception:
+                pass
             retry_count = task.get("retry_count", 0)
             max_retries = task.get("max_retries", 3)
 
@@ -569,6 +623,12 @@ class Orchestrator:
             await update_goal(goal_id, status="completed",
                               completed_at=datetime.now().isoformat())
 
+            # Phase 6: Release all locks held by this goal
+            try:
+                await release_goal_locks(goal_id)
+            except Exception:
+                pass
+
             results_summary = "\n".join(
                 f"• {t['title']}: {(t.get('result') or '')[:100]}"
                 for t in completed[-10:]
@@ -584,6 +644,21 @@ class Orchestrator:
 
     async def plan_goal(self, goal_id: int, title: str, description: str):
         """Create initial planning task for a new goal."""
+        # ── Phase 6: Set up per-goal workspace + branch ──
+        try:
+            goal_ws = get_goal_workspace(goal_id)
+            await ensure_git_repo(get_goal_workspace_relative(goal_id))
+            branch = await create_goal_branch(
+                goal_id, title,
+                path=get_goal_workspace_relative(goal_id),
+            )
+            if not branch.startswith("❌"):
+                logger.info(
+                    f"[Goal #{goal_id}] Created workspace + branch: {branch}"
+                )
+        except Exception as e:
+            logger.debug(f"[Goal #{goal_id}] Workspace setup skipped: {e}")
+
         await add_task(
             title=f"Plan: {title[:40]}",
             description=f"Create an execution plan for this goal:\n\n{title}\n\n{description}",

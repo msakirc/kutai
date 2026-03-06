@@ -24,6 +24,14 @@ MAX_AGENT_ITERATIONS = 8
 MAX_TOOL_OUTPUT_LENGTH = 4000
 MAX_CONTEXT_CHAIN_LENGTH = 12000   # chars of prior-step output to inject
 
+# ─── Workspace Isolation (Phase 6) ─────────────────────────────────────────
+MAX_CONCURRENT_GOALS = int(os.getenv("MAX_CONCURRENT_GOALS", "3"))
+
+# Project config file path (JSON, for multi-project support)
+PROJECTS_CONFIG_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "projects.json"
+)
+
 # ─── Cost Budget (Phase 4) ──────────────────────────────────────────────────
 COST_BUDGET_DAILY: float = float(os.getenv("COST_BUDGET_DAILY", "1.0"))
 

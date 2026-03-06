@@ -174,6 +174,32 @@ async def init_db():
         )
     """)
 
+    # File locks (Phase 6)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS file_locks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filepath TEXT NOT NULL,
+            goal_id INTEGER,
+            task_id INTEGER,
+            agent_type TEXT,
+            acquired_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(filepath)
+        )
+    """)
+
+    # Workspace snapshots (Phase 6)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS workspace_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            goal_id INTEGER NOT NULL,
+            task_id INTEGER,
+            file_hashes JSON NOT NULL DEFAULT '{}',
+            branch_name TEXT,
+            commit_sha TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     await db.commit()
 
     # Verify schema
@@ -1030,3 +1056,119 @@ async def check_budget(
         }
 
     return {"ok": True, "reason": "within budget", "budget": budget}
+
+
+# ─── Phase 6: File Locking ──────────────────────────────────────────────────
+
+async def acquire_file_lock(
+    filepath: str,
+    goal_id: int | None = None,
+    task_id: int | None = None,
+    agent_type: str | None = None,
+) -> bool:
+    """Acquire an advisory lock on a file. Returns True if acquired."""
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT INTO file_locks (filepath, goal_id, task_id, agent_type) "
+            "VALUES (?, ?, ?, ?)",
+            (filepath, goal_id, task_id, agent_type),
+        )
+        await db.commit()
+        return True
+    except Exception:
+        # UNIQUE constraint violation → already locked
+        return False
+
+
+async def release_file_lock(filepath: str) -> None:
+    """Release advisory lock on a file."""
+    db = await get_db()
+    await db.execute("DELETE FROM file_locks WHERE filepath = ?", (filepath,))
+    await db.commit()
+
+
+async def release_task_locks(task_id: int) -> None:
+    """Release all locks held by a specific task."""
+    db = await get_db()
+    await db.execute("DELETE FROM file_locks WHERE task_id = ?", (task_id,))
+    await db.commit()
+
+
+async def release_goal_locks(goal_id: int) -> None:
+    """Release all locks held by a specific goal."""
+    db = await get_db()
+    await db.execute("DELETE FROM file_locks WHERE goal_id = ?", (goal_id,))
+    await db.commit()
+
+
+async def get_file_lock(filepath: str) -> dict | None:
+    """Check who holds the lock on a file."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM file_locks WHERE filepath = ?", (filepath,)
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def get_goal_locks(goal_id: int) -> list[dict]:
+    """List all locks held by a goal."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM file_locks WHERE goal_id = ?", (goal_id,)
+    )
+    return [dict(r) for r in await cursor.fetchall()]
+
+
+# ─── Phase 6: Workspace Snapshots ───────────────────────────────────────────
+
+async def save_workspace_snapshot(
+    goal_id: int,
+    file_hashes: dict,
+    task_id: int | None = None,
+    branch_name: str | None = None,
+    commit_sha: str | None = None,
+) -> int:
+    """Save a workspace state snapshot before a task runs."""
+    db = await get_db()
+    cursor = await db.execute(
+        "INSERT INTO workspace_snapshots "
+        "(goal_id, task_id, file_hashes, branch_name, commit_sha) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (goal_id, task_id, json.dumps(file_hashes), branch_name, commit_sha),
+    )
+    await db.commit()
+    return cursor.lastrowid
+
+
+async def get_latest_snapshot(goal_id: int) -> dict | None:
+    """Get the most recent snapshot for a goal."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM workspace_snapshots WHERE goal_id = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (goal_id,),
+    )
+    row = await cursor.fetchone()
+    if row:
+        d = dict(row)
+        if isinstance(d.get("file_hashes"), str):
+            d["file_hashes"] = json.loads(d["file_hashes"])
+        return d
+    return None
+
+
+async def get_snapshot(snapshot_id: int) -> dict | None:
+    """Get a specific snapshot by ID."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM workspace_snapshots WHERE id = ?", (snapshot_id,)
+    )
+    row = await cursor.fetchone()
+    if row:
+        d = dict(row)
+        if isinstance(d.get("file_hashes"), str):
+            d["file_hashes"] = json.loads(d["file_hashes"])
+        return d
+    return None

@@ -401,3 +401,149 @@ async def detect_project(path: str = "") -> str:
         parts.append(f"\n📎 {filename}:\n```\n{preview}\n```")
 
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Per-goal workspace isolation
+# ---------------------------------------------------------------------------
+
+def get_goal_workspace(goal_id: int) -> str:
+    """Return the workspace directory for a specific goal.
+
+    Creates the directory if it doesn't exist.
+    Structure: workspace/goal_{id}/
+    """
+    goal_dir = os.path.join(WORKSPACE_DIR, f"goal_{goal_id}")
+    os.makedirs(goal_dir, exist_ok=True)
+    return goal_dir
+
+
+def get_goal_workspace_relative(goal_id: int) -> str:
+    """Return the relative path (from workspace root) for a goal workspace."""
+    return f"goal_{goal_id}"
+
+
+def list_goal_workspaces() -> list[dict]:
+    """List all goal workspaces with basic info."""
+    result = []
+    if not os.path.isdir(WORKSPACE_DIR):
+        return result
+    for entry in os.scandir(WORKSPACE_DIR):
+        if entry.is_dir() and entry.name.startswith("goal_"):
+            try:
+                gid = int(entry.name.split("_", 1)[1])
+            except (ValueError, IndexError):
+                continue
+            # Count files
+            file_count = sum(
+                len(files) for _, _, files in os.walk(entry.path)
+            )
+            result.append({
+                "goal_id": gid,
+                "path": entry.path,
+                "file_count": file_count,
+            })
+    return result
+
+
+def cleanup_goal_workspace(goal_id: int) -> bool:
+    """Remove a goal's workspace directory (after goal completion).
+
+    Returns True if cleaned up, False if not found.
+    """
+    import shutil
+    goal_dir = os.path.join(WORKSPACE_DIR, f"goal_{goal_id}")
+    if os.path.isdir(goal_dir):
+        shutil.rmtree(goal_dir, ignore_errors=True)
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Workspace snapshots (file hashing)
+# ---------------------------------------------------------------------------
+
+def compute_workspace_hashes(workspace_path: str) -> dict[str, str]:
+    """Compute SHA-256 hashes of all files in a workspace directory.
+
+    Returns {relative_path: hash} dict.
+    """
+    import hashlib
+    hashes: dict[str, str] = {}
+    workspace_real = os.path.realpath(workspace_path)
+
+    if not os.path.isdir(workspace_real):
+        return hashes
+
+    for dirpath, dirnames, filenames in os.walk(workspace_real):
+        # Skip hidden/generated dirs
+        dirnames[:] = [d for d in dirnames if not _should_skip(d, True)]
+        for fname in filenames:
+            if _should_skip(fname, False):
+                continue
+            full = os.path.join(dirpath, fname)
+            rel = os.path.relpath(full, workspace_real)
+            try:
+                h = hashlib.sha256()
+                with open(full, "rb") as f:
+                    for chunk in iter(lambda: f.read(8192), b""):
+                        h.update(chunk)
+                hashes[rel] = h.hexdigest()[:16]
+            except (OSError, IOError):
+                pass
+    return hashes
+
+
+def diff_snapshots(
+    before: dict[str, str], after: dict[str, str],
+) -> dict[str, list[str]]:
+    """Compare two file-hash snapshots.
+
+    Returns {"added": [...], "modified": [...], "deleted": [...]}.
+    """
+    before_files = set(before.keys())
+    after_files = set(after.keys())
+
+    added = sorted(after_files - before_files)
+    deleted = sorted(before_files - after_files)
+    modified = sorted(
+        f for f in before_files & after_files
+        if before[f] != after[f]
+    )
+    return {"added": added, "modified": modified, "deleted": deleted}
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Multi-project support
+# ---------------------------------------------------------------------------
+
+def load_projects_config() -> list[dict]:
+    """Load project configurations from projects.json.
+
+    Returns list of project dicts:
+        [{"name": "...", "path": "...", "language": "...", "conventions": "..."}]
+    """
+    import json
+    from config import PROJECTS_CONFIG_PATH
+
+    if not os.path.isfile(PROJECTS_CONFIG_PATH):
+        return []
+    try:
+        with open(PROJECTS_CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict) and "projects" in data:
+            return data["projects"]
+    except (json.JSONDecodeError, IOError):
+        pass
+    return []
+
+
+def get_project(name: str) -> dict | None:
+    """Look up a project by name."""
+    projects = load_projects_config()
+    for p in projects:
+        if p.get("name", "").lower() == name.lower():
+            return p
+    return None

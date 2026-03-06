@@ -32,6 +32,22 @@ from tools.git_ops import (
     git_status,
 )
 
+# AST-aware code tools (Phase 8)
+from tools.ast_tools import (
+    get_function,
+    replace_function,
+    list_classes,
+    list_functions,
+    get_imports,
+)
+
+# Codebase indexing tools (Phase 8)
+from tools.codebase_index import (
+    index_workspace,
+    query_codebase,
+    codebase_map,
+)
+
 # Optional / pre-existing tools — degrade gracefully if absent
 _optional_tools: dict[str, dict[str, Any]] = {}
 
@@ -269,6 +285,89 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "Args: path (str, optional)"
         ),
         "example": '{"action": "tool_call", "tool": "git_status", "args": {}}',
+    },
+
+    # ── AST-Aware Code Tools (Phase 8) ────────────────────────────────────
+    "get_function": {
+        "function": get_function,
+        "description": (
+            "Extract a function/method source by name from a Python file. "
+            "For methods use 'ClassName.method_name' format. "
+            "Args: filepath (str), function_name (str)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "get_function", '
+            '"args": {"filepath": "src/main.py", "function_name": "process_data"}}'
+        ),
+    },
+    "replace_function": {
+        "function": replace_function,
+        "description": (
+            "Replace an entire function/method with new code. "
+            "For methods use 'ClassName.method_name' format. "
+            "Args: filepath (str), function_name (str), new_code (str)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "replace_function", '
+            '"args": {"filepath": "src/main.py", "function_name": "old_func", '
+            '"new_code": "def old_func():\\n    return 42\\n"}}'
+        ),
+    },
+    "list_classes": {
+        "function": list_classes,
+        "description": (
+            "List all classes in a Python file with methods and base classes. "
+            "Args: filepath (str)"
+        ),
+        "example": '{"action": "tool_call", "tool": "list_classes", "args": {"filepath": "src/models.py"}}',
+    },
+    "list_functions": {
+        "function": list_functions,
+        "description": (
+            "List all top-level functions in a Python file. "
+            "Args: filepath (str)"
+        ),
+        "example": '{"action": "tool_call", "tool": "list_functions", "args": {"filepath": "src/utils.py"}}',
+    },
+    "get_imports": {
+        "function": get_imports,
+        "description": (
+            "Extract all import statements from a Python file. "
+            "Args: filepath (str)"
+        ),
+        "example": '{"action": "tool_call", "tool": "get_imports", "args": {"filepath": "src/main.py"}}',
+    },
+
+    # ── Codebase Indexing (Phase 8) ────────────────────────────────────────
+    "index_workspace": {
+        "function": index_workspace,
+        "description": (
+            "Scan workspace and build a structural index of all Python files. "
+            "Index includes functions, classes, imports per file. "
+            "Args: path (str, optional, default '.')"
+        ),
+        "example": '{"action": "tool_call", "tool": "index_workspace", "args": {}}',
+    },
+    "query_codebase": {
+        "function": query_codebase,
+        "description": (
+            "Search the codebase index for functions, classes, or modules. "
+            "Much faster than reading files manually. "
+            "Args: query (str), search_type (str: all/function/class/import/file)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "query_codebase", '
+            '"args": {"query": "authenticate", "search_type": "function"}}'
+        ),
+    },
+    "codebase_map": {
+        "function": codebase_map,
+        "description": (
+            "Generate a high-level map of the codebase showing modules, "
+            "classes, and functions. Good for understanding project structure. "
+            "Args: path (str, optional)"
+        ),
+        "example": '{"action": "tool_call", "tool": "codebase_map", "args": {}}',
     },
 
     # ── Optional tools injected below ──────────────────────────────────────

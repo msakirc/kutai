@@ -81,6 +81,20 @@ class BaseAgent:
 
     can_create_subtasks: bool = False
 
+    # ── Phase 5: Execution pattern ──
+    # "react_loop" (default) — multi-turn with tools
+    # "single_shot" — one LLM call, no tool loop (planner, classifier)
+    execution_pattern: str = "react_loop"
+
+    # ── Phase 5: Self-reflection ──
+    # If True, inject a "review your own output" prompt before accepting
+    # final_answer. Costs one extra LLM call but catches obvious mistakes.
+    enable_self_reflection: bool = False
+
+    # ── Phase 5: Confidence-gated output ──
+    # Minimum confidence (1-5) for final_answer. Below this → reviewer.
+    min_confidence: int = 0  # 0 = disabled
+
     # ------------------------------------------------------------------ #
     #  System prompt — override in subclasses                             #
     # ------------------------------------------------------------------ #
@@ -766,9 +780,106 @@ class BaseAgent:
         return None  # validation passed
 
     # ------------------------------------------------------------------ #
+    #  Phase 5: Single-shot execution                                     #
+    # ------------------------------------------------------------------ #
+    async def execute_single_shot(self, task: dict) -> dict:
+        """Single LLM call with no tool loop. For planning/classification."""
+        task_id = task.get("id", "?")
+
+        tier = task.get("tier", self.default_tier)
+        if tier == "auto":
+            tier = AGENT_TIER_MAP.get(self.name, self.default_tier)
+        tier = self._enforce_min_tier(tier)
+
+        system_prompt = self._build_full_system_prompt(task)
+        context = await self._build_context(task)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": context},
+        ]
+
+        try:
+            response = await call_model(
+                tier, messages, agent_type=self.name,
+            )
+        except Exception as exc:
+            logger.error(f"[Task #{task_id}] Single-shot call failed: {exc}")
+            return {
+                "status": "completed",
+                "result": f"Agent failed: {exc}",
+                "model": "unknown", "cost": 0, "tier": tier,
+            }
+
+        content = response.get("content", "")
+        used_model = response.get("model", "unknown")
+        cost = response.get("cost", 0)
+
+        parsed = self._parse_agent_response(content)
+        action_type = parsed.get("action", "final_answer")
+
+        if action_type == "decompose" or parsed.get("subtasks"):
+            return {
+                "status": "needs_subtasks",
+                "subtasks": parsed.get("subtasks", []),
+                "plan_summary": parsed.get("plan_summary", ""),
+                "model": used_model, "cost": cost, "tier": tier,
+            }
+
+        return {
+            "status": "completed",
+            "result": parsed.get("result", content),
+            "model": used_model, "cost": cost,
+            "tier": tier, "iterations": 1,
+        }
+
+    # ------------------------------------------------------------------ #
+    #  Phase 5: Self-reflection                                            #
+    # ------------------------------------------------------------------ #
+    async def _self_reflect(
+        self, task: dict, result: str, tier: str, used_model: str,
+    ) -> dict | None:
+        """Review own output for errors. Returns corrections or None."""
+        try:
+            messages = [
+                {"role": "system", "content": (
+                    "You are a careful reviewer. Check this response "
+                    "for errors, omissions, or hallucinations. "
+                    "If the response is good, respond: "
+                    '{"verdict": "ok"}. '
+                    "If there are issues, respond: "
+                    '{"verdict": "fix", "issues": "description", '
+                    '"corrected_result": "the fixed version"}.'
+                )},
+                {"role": "user", "content": (
+                    f"Task: {task.get('title', '')}\n"
+                    f"Description: {(task.get('description') or '')[:500]}\n\n"
+                    f"Response to review:\n{result[:3000]}"
+                )},
+            ]
+            response = await call_model(
+                tier, messages, agent_type="self_reflection",
+            )
+            raw = response.get("content", "").strip()
+            parsed = self._try_parse_json(raw)
+            if parsed and parsed.get("verdict") == "fix":
+                return parsed
+        except Exception as exc:
+            logger.debug(f"Self-reflection failed: {exc}")
+        return None
+
+    # ------------------------------------------------------------------ #
     #  Main execution loop                                                #
     # ------------------------------------------------------------------ #
     async def execute(self, task: dict) -> dict:
+        """
+        Route to appropriate execution pattern, then run.
+        """
+        # ── Phase 5: execution pattern routing ──
+        if self.execution_pattern == "single_shot":
+            return await self.execute_single_shot(task)
+        return await self._execute_react_loop(task)
+
+    async def _execute_react_loop(self, task: dict) -> dict:
         """
         ReAct loop:  Think → Act → Observe → repeat → final_answer.
         """
@@ -1134,6 +1245,45 @@ class BaseAgent:
                         "model":         used_model,
                         "cost":          total_cost,
                         "tier":          tier,
+                    }
+
+                # ── Self-reflection (Phase 5) ──
+                if self.enable_self_reflection:
+                    try:
+                        reflection = await self._self_reflect(
+                            task, result, tier, used_model,
+                        )
+                        if reflection and reflection.get("verdict") == "fix":
+                            corrected = reflection.get("corrected_result")
+                            if corrected:
+                                logger.info(
+                                    f"[Task #{task_id}] Self-reflection "
+                                    f"corrected output: "
+                                    f"{reflection.get('issues', '')[:80]}"
+                                )
+                                result = corrected
+                    except Exception as exc:
+                        logger.debug(f"Self-reflection error: {exc}")
+
+                # ── Confidence gating (Phase 5) ──
+                confidence = parsed.get("confidence")
+                if (
+                    self.min_confidence > 0
+                    and isinstance(confidence, (int, float))
+                    and confidence < self.min_confidence
+                ):
+                    logger.warning(
+                        f"[Task #{task_id}] Low confidence {confidence}"
+                        f"/{self.min_confidence}, routing to reviewer"
+                    )
+                    await self._clear_checkpoint_safe(task_id)
+                    return {
+                        "status":      "needs_review",
+                        "result":      result,
+                        "review_note": f"Agent confidence: {confidence}/5",
+                        "model":       used_model,
+                        "cost":        total_cost,
+                        "tier":        tier,
                     }
 
                 # ── Response grading (Phase 4) ──

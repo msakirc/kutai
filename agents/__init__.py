@@ -10,6 +10,7 @@ from agents.architect import ArchitectAgent
 from agents.implementer import ImplementerAgent
 from agents.test_generator import TestGeneratorAgent
 from agents.fixer import FixerAgent
+from agents.error_recovery import ErrorRecoveryAgent
 
 AGENT_REGISTRY = {
     "planner": PlannerAgent(),
@@ -22,6 +23,7 @@ AGENT_REGISTRY = {
     "implementer": ImplementerAgent(),
     "test_generator": TestGeneratorAgent(),
     "fixer": FixerAgent(),
+    "error_recovery": ErrorRecoveryAgent(),
 }
 
 

@@ -25,7 +25,7 @@ from db import (
 )
 from tools import TOOL_REGISTRY, TOOL_SCHEMAS, get_tool_descriptions, execute_tool
 from config import MAX_AGENT_ITERATIONS, AGENT_TIER_MAP, MAX_TOOL_OUTPUT_LENGTH
-from models import validate_action, validate_tool_args
+from models import validate_action, validate_tool_args, validate_task_output
 import litellm as _litellm
 
 logger = logging.getLogger(__name__)
@@ -391,17 +391,22 @@ class BaseAgent:
     # ------------------------------------------------------------------ #
     #  JSON parsing & normalisation                                       #
     # ------------------------------------------------------------------ #
-    def _parse_agent_response(self, content: str) -> dict:
+    def _parse_agent_response(self, content: str) -> dict | None:
         """
         Extract an action dict from the model's text.
 
-        Handles:
-        - Clean JSON
-        - JSON inside ```json``` fences (multiple blocks)
-        - JSON buried in prose (brace-depth + regex fallback)
+        Phase 9.2 refactored pipeline:
+        1. try json.loads (clean JSON)
+        2. try fence extraction (```json``` blocks)
+        3. one brace-depth scan (JSON buried in prose)
+        4. explicit failure → return None (no silent fallback)
+
+        Also handles:
         - Legacy action names (``tool`` → ``tool_call``, etc.)
         - Legacy ``{"status": "complete", ...}`` format
-        - Plain-text fallback → ``final_answer``
+
+        Returns None when parsing fails — the caller is responsible
+        for format retries or explicit failure handling.
         """
         cleaned = content.strip()
 
@@ -443,22 +448,9 @@ class BaseAgent:
                             pass
                         break
 
-        # Try 4 — regex for possibly-nested one-liner objects
-        brace_match = re.search(
-            r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", cleaned
-        )
-        if brace_match:
-            try:
-                parsed = json.loads(brace_match.group())
-                if isinstance(parsed, dict):
-                    norm = self._normalize_action(parsed)
-                    if norm is not None:
-                        return norm
-            except json.JSONDecodeError:
-                pass
-
-        # Fallback — entire response is the answer
-        return {"action": "final_answer", "result": content}
+        # Phase 9.2: Explicit failure — no silent fallback to final_answer.
+        # The caller must handle None (format retry or explicit fail).
+        return None
 
     @staticmethod
     def _try_parse_json(text: str) -> dict | None:
@@ -815,6 +807,11 @@ class BaseAgent:
         cost = response.get("cost", 0)
 
         parsed = self._parse_agent_response(content)
+
+        # Phase 9.2: handle parse failure in single-shot mode
+        if parsed is None:
+            parsed = {"action": "final_answer", "result": content}
+
         action_type = parsed.get("action", "final_answer")
 
         if action_type == "decompose" or parsed.get("subtasks"):
@@ -1036,7 +1033,11 @@ class BaseAgent:
                 task_id, "assistant", content, used_model, step_cost
             )
 
-            # Parse — try function calling first, then regex fallback
+            # ── Phase 9.2: Structured parse priority ──
+            # (1) Function calling (tool_calls from response)
+            # (2) Text parsing (json.loads → fence → brace-depth)
+            # (3) One retry with parse error injected
+            # (4) Explicit failure — no silent fallback
             fc_tool_calls = response.get("tool_calls")
             parsed = None
             if fc_tool_calls:
@@ -1049,48 +1050,57 @@ class BaseAgent:
             if parsed is None:
                 parsed = self._parse_agent_response(content)
 
-            # ── FORMAT RETRY ─────────────────────────────────────
-            # If the model tried to produce JSON but it couldn't be
-            # parsed (fell through to final_answer fallback) AND the
-            # raw response contains braces (suggesting JSON intent),
-            # send a one-shot "fix your JSON" prompt instead of
-            # accepting garbled text as the answer.
-            if (
-                parsed.get("action") == "final_answer"
-                and parsed.get("result") == content  # fallback path
-                and "{" in content
-                and format_retries < MAX_FORMAT_RETRIES
-            ):
-                format_retries += 1
-                logger.warning(
-                    f"[Task #{task_id}] JSON parse failed on response "
-                    f"with braces — requesting format correction "
-                    f"(retry {format_retries}/{MAX_FORMAT_RETRIES})"
-                )
-                messages.append({"role": "assistant", "content": content})
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "Your response could not be parsed as valid JSON. "
-                        "Please fix the formatting and try again.\n\n"
-                        "You MUST respond with ONLY a valid JSON block:\n"
-                        "```json\n"
-                        '{"action": "tool_call", "tool": "...", '
-                        '"args": {...}}\n'
-                        "```\n"
-                        "or:\n"
-                        "```json\n"
-                        '{"action": "final_answer", "result": "..."}\n'
-                        "```\n\n"
-                        "No text before or after the JSON block."
-                    ),
-                })
-                await self._save_checkpoint(
-                    task_id, iteration + 1, messages, total_cost,
-                    used_model, tier, tools_used, validation_retried,
-                    completed_tool_ops, format_retries,
-                )
-                continue
+            # ── FORMAT RETRY (Phase 9.2) ─────────────────────────
+            # If parsing returned None (explicit failure), retry with
+            # a correction prompt. After MAX_FORMAT_RETRIES, fail the
+            # iteration rather than silently treating text as answer.
+            if parsed is None:
+                if format_retries < MAX_FORMAT_RETRIES:
+                    format_retries += 1
+                    logger.warning(
+                        f"[Task #{task_id}] JSON parse failed — "
+                        f"requesting format correction "
+                        f"(retry {format_retries}/{MAX_FORMAT_RETRIES})"
+                    )
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Your response could not be parsed as valid JSON. "
+                            "Please fix the formatting and try again.\n\n"
+                            "You MUST respond with ONLY a valid JSON block:\n"
+                            "```json\n"
+                            '{"action": "tool_call", "tool": "...", '
+                            '"args": {...}}\n'
+                            "```\n"
+                            "or:\n"
+                            "```json\n"
+                            '{"action": "final_answer", "result": "..."}\n'
+                            "```\n\n"
+                            "No text before or after the JSON block."
+                        ),
+                    })
+                    await self._save_checkpoint(
+                        task_id, iteration + 1, messages, total_cost,
+                        used_model, tier, tools_used, validation_retried,
+                        completed_tool_ops, format_retries,
+                    )
+                    continue
+                else:
+                    # Exhausted format retries — explicit failure
+                    logger.error(
+                        f"[Task #{task_id}] Parse failed after "
+                        f"{MAX_FORMAT_RETRIES} retries. "
+                        f"Failing iteration explicitly."
+                    )
+                    parsed = {
+                        "action": "final_answer",
+                        "result": (
+                            f"[Parse failure] Agent could not produce valid "
+                            f"JSON after {MAX_FORMAT_RETRIES} retries. "
+                            f"Raw output:\n{content[:2000]}"
+                        ),
+                    }
             # ── END FORMAT RETRY ─────────────────────────────────
 
             # ── PYDANTIC VALIDATION ──────────────────────────────
@@ -1205,6 +1215,40 @@ class BaseAgent:
                         )
                         continue
                 # ── END OUTPUT VALIDATION ──────────────────────────
+
+                # ── Phase 9.2: Per-task-type output validation ────
+                task_type_errors = validate_task_output(
+                    self.name, result,
+                )
+                if task_type_errors and not validation_retried:
+                    validation_retried = True
+                    err_msg = "; ".join(task_type_errors)
+                    logger.warning(
+                        f"[Task #{task_id}] ⚠️ Task-type validation: "
+                        f"{err_msg}"
+                    )
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"Output quality issue: {err_msg}\n\n"
+                            f"Please revise your answer to include the "
+                            f"expected content."
+                        ),
+                    })
+                    await self._safe_log(
+                        task_id, "system",
+                        f"[task_type_validation] {err_msg}",
+                        None, 0,
+                    )
+                    await self._save_checkpoint(
+                        task_id, iteration + 1, messages, total_cost,
+                        used_model, tier, tools_used, validation_retried,
+                        completed_tool_ops, format_retries,
+                    )
+                    continue
+                # ── END TASK-TYPE VALIDATION ──────────────────────
+
                 # Persist memories
                 raw_memories = parsed.get("memories", {})
                 if raw_memories and isinstance(raw_memories, dict):

@@ -267,9 +267,28 @@ async def write_file(
     try:
         os.makedirs(parent_abs, exist_ok=True)
 
-        file_mode = "a" if mode == "append" else "w"
-        with open(full_path, file_mode) as f:
-            f.write(content)
+        if mode == "append":
+            # Append doesn't need atomic — just write directly
+            with open(full_path, "a", encoding="utf-8") as f:
+                f.write(content)
+        else:
+            # Phase 9: Atomic write via temp file + os.replace()
+            # Write to a sibling temp file, then atomically move
+            import tempfile
+            fd, tmp_path = tempfile.mkstemp(
+                dir=parent_abs, prefix=".tmp_write_", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(content)
+                os.replace(tmp_path, full_path)
+            except Exception:
+                # Clean up temp file on failure
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
 
         size = os.path.getsize(full_path)
         action = "Appended to" if mode == "append" else "Wrote"

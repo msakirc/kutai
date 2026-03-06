@@ -33,6 +33,11 @@ async def close_db() -> None:
     """Close the shared connection (call on shutdown)."""
     global _db_connection
     if _db_connection is not None:
+        # Phase 9: checkpoint WAL before closing to consolidate writes
+        try:
+            await _db_connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
         await _db_connection.close()
         _db_connection = None
         logger.info("Database connection closed")
@@ -250,6 +255,28 @@ async def init_db():
             logger.info("📊 Added quality_score column to tasks table")
         except Exception as e:
             logger.debug(f"quality_score column migration skipped: {e}")
+
+    # Migration: add error_category column for error taxonomy (Phase 9)
+    if "error_category" not in columns:
+        try:
+            await db.execute(
+                "ALTER TABLE tasks ADD COLUMN error_category TEXT DEFAULT NULL"
+            )
+            await db.commit()
+            logger.info("📊 Added error_category column to tasks table")
+        except Exception as e:
+            logger.debug(f"error_category column migration skipped: {e}")
+
+    # Migration: add max_cost column for per-task budgets (Phase 9)
+    if "max_cost" not in columns:
+        try:
+            await db.execute(
+                "ALTER TABLE tasks ADD COLUMN max_cost REAL DEFAULT NULL"
+            )
+            await db.commit()
+            logger.info("📊 Added max_cost column to tasks table")
+        except Exception as e:
+            logger.debug(f"max_cost column migration skipped: {e}")
 
 # --- Goal Operations ---
 
@@ -1172,3 +1199,60 @@ async def get_snapshot(snapshot_id: int) -> dict | None:
             d["file_hashes"] = json.loads(d["file_hashes"])
         return d
     return None
+
+
+# ─── Phase 9: Per-Task Cost Tracking ─────────────────────────────────────────
+
+async def get_task_cost(task_id: int) -> float:
+    """Sum up all conversation costs for a task."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT COALESCE(SUM(cost_estimate), 0) as total FROM conversations "
+        "WHERE task_id = ?",
+        (task_id,),
+    )
+    row = await cursor.fetchone()
+    return float(row["total"]) if row else 0.0
+
+
+async def get_goal_total_cost(goal_id: int) -> float:
+    """Sum up all conversation costs across all tasks in a goal."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT COALESCE(SUM(c.cost_estimate), 0) as total "
+        "FROM conversations c "
+        "JOIN tasks t ON c.task_id = t.id "
+        "WHERE t.goal_id = ?",
+        (goal_id,),
+    )
+    row = await cursor.fetchone()
+    return float(row["total"]) if row else 0.0
+
+
+async def check_task_budget(task_id: int, additional_cost: float = 0.0) -> dict:
+    """
+    Check if a task's cost budget would be exceeded.
+
+    Returns: {"ok": bool, "reason": str, "spent": float, "limit": float|None}
+    """
+    from db import get_task
+    task = await get_task(task_id)
+    if not task:
+        return {"ok": True, "reason": "task not found", "spent": 0, "limit": None}
+
+    max_cost = task.get("max_cost")
+    if not max_cost:
+        return {"ok": True, "reason": "no task budget set", "spent": 0, "limit": None}
+
+    spent = await get_task_cost(task_id)
+    if spent + additional_cost > max_cost:
+        return {
+            "ok": False,
+            "reason": (
+                f"Task budget exceeded: ${spent + additional_cost:.4f} "
+                f"> ${max_cost:.4f}"
+            ),
+            "spent": spent,
+            "limit": max_cost,
+        }
+    return {"ok": True, "reason": "within budget", "spent": spent, "limit": max_cost}

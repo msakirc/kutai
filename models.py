@@ -218,3 +218,77 @@ def validate_tool_args(
             coerced[key] = value
 
     return coerced, errors
+
+
+# ─── Per-Task-Type Output Validators (Phase 9.2) ───────────────────────────
+
+import re as _re
+
+# Agent types mapped to their validator category.
+_AGENT_TYPE_CATEGORY: dict[str, str] = {
+    "coder":          "code",
+    "implementer":    "code",
+    "fixer":          "code",
+    "test_generator": "code",
+    "pipeline":       "code",
+    "researcher":     "research",
+    "web_researcher": "research",
+    "planner":        "planner",
+    "architect":      "planner",
+}
+
+
+def validate_task_output(agent_type: str, result: str) -> list[str]:
+    """Validate a final_answer result against task-type-specific rules.
+
+    Returns a list of human-readable validation errors (empty on pass).
+
+    Rules per category:
+      - **code**: result must contain a file path or a code block
+      - **research**: result must contain at least one URL or source reference
+      - **planner**: result must contain subtasks / step references
+    """
+    category = _AGENT_TYPE_CATEGORY.get(agent_type)
+    if category is None:
+        return []  # unknown agent type — skip validation
+
+    errors: list[str] = []
+
+    if category == "code":
+        has_filepath = bool(_re.search(
+            r'[a-zA-Z_/\\][\w/\\.-]*\.\w{1,10}', result,
+        ))
+        has_code_block = "```" in result or "    " in result
+        has_code_keywords = any(kw in result for kw in [
+            "def ", "class ", "function ", "import ", "const ", "let ", "var ",
+            "return ", "if ", "for ", "while ",
+        ])
+        if not (has_filepath or has_code_block or has_code_keywords):
+            errors.append(
+                "Code task result should contain a file path, code block, "
+                "or code keywords."
+            )
+
+    elif category == "research":
+        has_url = bool(_re.search(r'https?://', result))
+        has_source = any(kw in result.lower() for kw in [
+            "source:", "reference:", "according to", "from ",
+            "documentation", "found that", "article",
+        ])
+        if not (has_url or has_source):
+            errors.append(
+                "Research task result should contain at least one URL "
+                "or source reference."
+            )
+
+    elif category == "planner":
+        has_subtasks = "subtask" in result.lower() or "sub-task" in result.lower()
+        has_steps = bool(_re.search(r'(?:step\s*\d|^\s*\d+[\.\)]\s)', result, _re.MULTILINE))
+        has_list = bool(_re.search(r'^\s*[-*]\s', result, _re.MULTILINE))
+        if not (has_subtasks or has_steps or has_list):
+            errors.append(
+                "Planner task result should contain subtasks, "
+                "numbered steps, or a structured list."
+            )
+
+    return errors

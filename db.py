@@ -168,6 +168,17 @@ async def init_db():
         except Exception as e:
             logger.debug(f"task_state column migration skipped: {e}")
 
+    # Migration: add timeout_seconds column for per-task timeouts (Phase 3)
+    if "timeout_seconds" not in columns:
+        try:
+            await db.execute(
+                "ALTER TABLE tasks ADD COLUMN timeout_seconds INTEGER DEFAULT NULL"
+            )
+            await db.commit()
+            logger.info("📊 Added timeout_seconds column to tasks table")
+        except Exception as e:
+            logger.debug(f"timeout_seconds column migration skipped: {e}")
+
 # --- Goal Operations ---
 
 async def add_goal(title, description, priority=5, context=None):
@@ -603,3 +614,142 @@ async def get_daily_stats():
     cost_row = await cost_cursor.fetchone()
     stats["today_cost"] = cost_row["total"]
     return stats
+
+
+# ─── Phase 3: Scheduler & Task Engine ─────────────────────────────────────
+
+# --- Scheduled Tasks ---
+
+async def get_due_scheduled_tasks() -> list[dict]:
+    """Return enabled scheduled tasks whose next_run <= now."""
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT * FROM scheduled_tasks
+           WHERE enabled = 1
+             AND (next_run IS NULL OR next_run <= datetime('now'))
+           ORDER BY id"""
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+async def update_scheduled_task(sched_id: int, **kwargs) -> None:
+    """Update fields on a scheduled task (e.g. last_run, next_run)."""
+    db = await get_db()
+    sets = ", ".join(f"{k} = ?" for k in kwargs)
+    values = list(kwargs.values()) + [sched_id]
+    await db.execute(
+        f"UPDATE scheduled_tasks SET {sets} WHERE id = ?", values
+    )
+    await db.commit()
+
+
+async def add_scheduled_task(
+    title: str,
+    description: str = "",
+    cron_expression: str = "0 * * * *",
+    agent_type: str = "executor",
+    tier: str = "cheap",
+    context: dict | None = None,
+) -> int:
+    """Create a new scheduled task."""
+    db = await get_db()
+    cursor = await db.execute(
+        """INSERT INTO scheduled_tasks
+           (title, description, cron_expression, agent_type, tier, context)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (title, description, cron_expression, agent_type, tier,
+         json.dumps(context or {}))
+    )
+    await db.commit()
+    return cursor.lastrowid
+
+
+async def get_scheduled_tasks() -> list[dict]:
+    """Return all scheduled tasks."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM scheduled_tasks ORDER BY id"
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+# --- Task Cancellation ---
+
+async def cancel_task(task_id: int) -> bool:
+    """Cancel a task and all its pending/processing children.
+
+    Returns True if the task was found and cancelled.
+    """
+    db = await get_db()
+
+    # Cancel the task itself (only if not already completed/failed)
+    cursor = await db.execute(
+        """UPDATE tasks SET status = 'cancelled',
+               completed_at = datetime('now')
+           WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled')""",
+        (task_id,)
+    )
+    await db.commit()
+    if cursor.rowcount == 0:
+        return False
+
+    # Propagate: cancel all pending/processing children recursively
+    await _cancel_children(task_id)
+    return True
+
+
+async def _cancel_children(parent_id: int) -> None:
+    """Recursively cancel all pending/processing children of a task."""
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT id FROM tasks
+           WHERE parent_task_id = ?
+             AND status IN ('pending', 'processing', 'waiting_subtasks')""",
+        (parent_id,)
+    )
+    children = [row["id"] for row in await cursor.fetchall()]
+    if not children:
+        return
+
+    placeholders = ",".join("?" * len(children))
+    await db.execute(
+        f"""UPDATE tasks SET status = 'cancelled',
+                completed_at = datetime('now')
+            WHERE id IN ({placeholders})""",
+        children
+    )
+    await db.commit()
+
+    # Recurse into each child's children
+    for child_id in children:
+        await _cancel_children(child_id)
+
+
+# --- Task Reprioritization ---
+
+async def reprioritize_task(task_id: int, new_priority: int) -> bool:
+    """Change priority of a pending task. Returns True if updated."""
+    db = await get_db()
+    cursor = await db.execute(
+        """UPDATE tasks SET priority = ?
+           WHERE id = ? AND status IN ('pending', 'processing')""",
+        (new_priority, task_id)
+    )
+    await db.commit()
+    return cursor.rowcount > 0
+
+
+# --- Dependency Graph ---
+
+async def get_task_tree(goal_id: int) -> list[dict]:
+    """Get all tasks for a goal, including parent-child relationships."""
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT id, parent_task_id, title, status, agent_type,
+                  priority, depends_on
+           FROM tasks
+           WHERE goal_id = ?
+           ORDER BY id""",
+        (goal_id,)
+    )
+    return [dict(row) for row in await cursor.fetchall()]

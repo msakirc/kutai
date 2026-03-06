@@ -536,12 +536,17 @@ async def call_model(
                 )
 
                 # Decide whether to pass tools for function calling
+                # or response_format for JSON mode
                 use_tools = None
                 model_supports_fc = False
+                model_supports_rf = False
                 for _pool_key, _pool_cfg in MODEL_POOL.items():
                     if _pool_cfg["litellm_name"] == model_name:
                         model_supports_fc = _pool_cfg.get(
                             "supports_function_calling", False
+                        )
+                        model_supports_rf = _pool_cfg.get(
+                            "supports_response_format", False
                         )
                         break
                 if tools and model_supports_fc:
@@ -559,6 +564,17 @@ async def call_model(
                 if use_tools:
                     completion_kwargs["tools"] = use_tools
                     completion_kwargs["tool_choice"] = "auto"
+                elif model_supports_rf and not model_supports_fc:
+                    # Model can't do function calling but supports
+                    # JSON output mode — use response_format to
+                    # guarantee valid JSON.
+                    completion_kwargs["response_format"] = {
+                        "type": "json_object"
+                    }
+                    logger.debug(
+                        f"Using response_format json_object for "
+                        f"{model_name}"
+                    )
 
                 response = await asyncio.wait_for(
                     litellm.acompletion(**completion_kwargs),

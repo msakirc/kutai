@@ -9,7 +9,8 @@ from telegram.ext import (
 )
 from db import (add_task, add_goal, get_active_goals, get_ready_tasks,
                 get_daily_stats, update_task, get_recent_completed_tasks,
-                get_db)
+                get_db, cancel_task, reprioritize_task, get_task_tree,
+                get_task)
 
 
 pending_clarifications = {}  # task_id -> asyncio.Event + response
@@ -36,6 +37,9 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("debug", self.cmd_debug))       # NEW
         self.app.add_handler(CommandHandler("reset", self.cmd_reset))       # NEW
         self.app.add_handler(CommandHandler("resetall", self.cmd_reset_all)) # NEW
+        self.app.add_handler(CommandHandler("cancel", self.cmd_cancel))     # Phase 3
+        self.app.add_handler(CommandHandler("priority", self.cmd_priority)) # Phase 3
+        self.app.add_handler(CommandHandler("graph", self.cmd_graph))       # Phase 3
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.REPLY,
@@ -51,11 +55,14 @@ class TelegramInterface:
             " *Autonomous AI Orchestrator*\n\n"
             "I work 24/7 and only bug you when needed.\n\n"
             "*Commands:*\n"
-            "/goal <description> — Set a high-level goal (I'll plan & execute)\n"
+            "/goal <description> — Set a high-level goal\n"
             "/task <description> — Add a one-off task\n"
             "/goals — View active goals\n"
             "/queue — View pending tasks\n"
             "/status — System stats\n"
+            "/cancel <id> — Cancel a task\n"
+            "/priority <id> <1-10> — Reprioritize\n"
+            "/graph <goal\\_id> — Show task dependency graph\n"
             "/digest — Get daily digest now\n\n"
             "Or just send a message — I'll figure out what to do.",
             parse_mode="Markdown"
@@ -275,6 +282,109 @@ class TelegramInterface:
             "⚠️ This will delete ALL goals, tasks, memory, and conversations.\n"
             "Are you sure?",
             reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    # ─── Phase 3 Commands ──────────────────────────────────────────────
+
+    async def cmd_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Cancel a task and its children."""
+        if not context.args:
+            await update.message.reply_text("Usage: /cancel <task_id>")
+            return
+        try:
+            task_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("Task ID must be a number.")
+            return
+
+        success = await cancel_task(task_id)
+        if success:
+            await update.message.reply_text(
+                f"🚫 Task #{task_id} and its children cancelled."
+            )
+        else:
+            await update.message.reply_text(
+                f"Task #{task_id} not found or already finished."
+            )
+
+    async def cmd_priority(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Change task priority."""
+        if len(context.args) < 2:
+            await update.message.reply_text(
+                "Usage: /priority <task_id> <1-10>"
+            )
+            return
+        try:
+            task_id = int(context.args[0])
+            level = int(context.args[1])
+            if not 1 <= level <= 10:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text(
+                "Task ID and priority (1-10) must be numbers."
+            )
+            return
+
+        success = await reprioritize_task(task_id, level)
+        if success:
+            await update.message.reply_text(
+                f"✅ Task #{task_id} priority set to {level}."
+            )
+        else:
+            await update.message.reply_text(
+                f"Task #{task_id} not found or not pending/processing."
+            )
+
+    async def cmd_graph(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show text DAG of task dependencies for a goal."""
+        if not context.args:
+            await update.message.reply_text("Usage: /graph <goal_id>")
+            return
+        try:
+            goal_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("Goal ID must be a number.")
+            return
+
+        tasks = await get_task_tree(goal_id)
+        if not tasks:
+            await update.message.reply_text(
+                f"No tasks found for goal #{goal_id}."
+            )
+            return
+
+        # Build text DAG
+        lines = [f"📊 *Task Graph — Goal #{goal_id}*\n"]
+        status_icons = {
+            "pending": "⏳", "processing": "⚙️",
+            "completed": "✅", "failed": "❌",
+            "cancelled": "🚫", "waiting_subtasks": "🔄",
+            "needs_clarification": "❓", "needs_review": "👀",
+        }
+
+        # Build parent→children map
+        by_parent: dict[int | None, list] = {}
+        for t in tasks:
+            pid = t.get("parent_task_id")
+            by_parent.setdefault(pid, []).append(t)
+
+        def _render(parent_id, indent=0):
+            children = by_parent.get(parent_id, [])
+            for t in children:
+                icon = status_icons.get(t["status"], "❔")
+                prefix = "  " * indent + ("├─ " if indent > 0 else "")
+                agent = t.get("agent_type", "?")
+                lines.append(
+                    f"{prefix}{icon} #{t['id']} `{agent}` "
+                    f"{t['title'][:40]}"
+                )
+                _render(t["id"], indent + 1)
+
+        # Render root tasks (no parent) then their children
+        _render(None)
+
+        await update.message.reply_text(
+            "\n".join(lines), parse_mode="Markdown"
         )
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -10,6 +10,8 @@ from db import (
     claim_task, add_subtasks_atomically, log_conversation,
     get_active_goals, get_tasks_for_goal, update_goal, get_daily_stats,
     store_memory, compute_task_hash,
+    get_due_scheduled_tasks, update_scheduled_task,
+    cancel_task, get_task,
 )
 from router import classify_task
 from agents import get_agent, AGENT_REGISTRY
@@ -23,12 +25,28 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+    # Default timeouts per agent type (seconds).  Override via
+    # tasks.timeout_seconds column for per-task control.
+AGENT_TIMEOUTS: dict[str, int] = {
+    "planner":    120,
+    "coder":      300,
+    "researcher": 180,
+    "reviewer":   120,
+    "executor":   180,
+    "pipeline":   600,
+}
+
+# Maximum number of independent tasks to run concurrently.
+MAX_CONCURRENT_TASKS: int = 2
+
+
 class Orchestrator:
     def __init__(self, shutdown_event=None):
         self.telegram = TelegramInterface(self)
         self.running = False
         self.cycle_count = 0
         self.last_digest = datetime.now()
+        self.last_scheduler_check = datetime.min
         self.shutdown_event = shutdown_event or asyncio.Event()
         self._current_task_future = None
 
@@ -197,6 +215,99 @@ class Orchestrator:
 
         await db.commit()
 
+    # ─── Cron Scheduler ──────────────────────────────────────────────────
+
+    async def check_scheduled_tasks(self):
+        """Check for due scheduled tasks and create task instances.
+
+        Runs every 60s alongside the main loop.
+        """
+        try:
+            due = await get_due_scheduled_tasks()
+            if not due:
+                return
+
+            for sched in due:
+                sched_id = sched["id"]
+                title = sched["title"]
+                logger.info(
+                    f"[Scheduler] Triggering scheduled task #{sched_id}: "
+                    f"'{title}'"
+                )
+                task_id = await add_task(
+                    title=title,
+                    description=sched.get("description", ""),
+                    agent_type=sched.get("agent_type", "executor"),
+                    tier=sched.get("tier", "cheap"),
+                    context=json.loads(sched.get("context", "{}"))
+                    if isinstance(sched.get("context"), str)
+                    else sched.get("context", {}),
+                )
+                if task_id:
+                    logger.info(
+                        f"[Scheduler] Created task #{task_id} from "
+                        f"schedule #{sched_id}"
+                    )
+
+                # Update last_run and compute next_run
+                now = datetime.now()
+                next_run = self._compute_next_run(
+                    sched.get("cron_expression", "0 * * * *"), now
+                )
+                await update_scheduled_task(
+                    sched_id,
+                    last_run=now.isoformat(),
+                    next_run=next_run.isoformat() if next_run else None,
+                )
+
+        except Exception as e:
+            logger.error(f"[Scheduler] Error checking schedules: {e}")
+
+    @staticmethod
+    def _compute_next_run(
+        cron_expr: str, after: datetime
+    ) -> datetime | None:
+        """Simple cron parser supporting: minute hour day month weekday.
+
+        Examples: "0 * * * *" (hourly), "30 9 * * *" (daily 9:30),
+                  "0 0 * * 1" (Monday midnight).
+        Returns the next datetime after *after*, or None on parse failure.
+        """
+        try:
+            parts = cron_expr.strip().split()
+            if len(parts) != 5:
+                return None
+
+            minute, hour, day, month, weekday = parts
+
+            # Simple: advance by fixed intervals for common patterns
+            from datetime import timedelta
+
+            if minute != "*" and hour == "*":
+                # Every hour at minute M
+                m = int(minute)
+                candidate = after.replace(
+                    minute=m, second=0, microsecond=0
+                )
+                if candidate <= after:
+                    candidate += timedelta(hours=1)
+                return candidate
+
+            if minute != "*" and hour != "*":
+                # Daily at H:M
+                m, h = int(minute), int(hour)
+                candidate = after.replace(
+                    hour=h, minute=m, second=0, microsecond=0
+                )
+                if candidate <= after:
+                    candidate += timedelta(days=1)
+                return candidate
+
+            # Fallback: every hour from now
+            return after + timedelta(hours=1)
+        except Exception:
+            return None
+
     # ─── Core Task Processing ────────────────────────────────────────────
 
     async def process_task(self, task: dict):
@@ -214,18 +325,52 @@ class Orchestrator:
                 logger.info(f"[Task #{task_id}] Already claimed by another worker, skipping")
                 return
 
+            # ── Check for cancellation before starting ──
+            fresh = await get_task(task_id)
+            if fresh and fresh.get("status") == "cancelled":
+                logger.info(f"[Task #{task_id}] Cancelled before execution, skipping")
+                return
+
             # ── Inject context from prior steps + workspace snapshot ──
             task = await self._inject_chain_context(task)
+
+            # ── Determine timeout ──
+            timeout_seconds = (
+                task.get("timeout_seconds")
+                or AGENT_TIMEOUTS.get(agent_type, 180)
+            )
 
             if agent_type == "pipeline":
                 from pipeline import CodingPipeline
                 pipeline = CodingPipeline()
                 logger.info(f"[Task #{task_id}] Delegating to CodingPipeline")
-                result = await pipeline.run(task)
+                coro = pipeline.run(task)
             else:
                 agent = get_agent(agent_type)
-                logger.info(f"[Task #{task_id}] Agent '{agent.name}' executing (tier: {task.get('tier', 'auto')})")
-                result = await agent.execute(task)
+                logger.info(
+                    f"[Task #{task_id}] Agent '{agent.name}' executing "
+                    f"(tier: {task.get('tier', 'auto')}, "
+                    f"timeout: {timeout_seconds}s)"
+                )
+                coro = agent.execute(task)
+
+            # Wrap with timeout
+            try:
+                result = await asyncio.wait_for(coro, timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"[Task #{task_id}] TIMEOUT after {timeout_seconds}s"
+                )
+                await update_task(
+                    task_id, status="failed",
+                    error=f"Timeout after {timeout_seconds}s"
+                )
+                await self.telegram.send_error(
+                    task_id, title,
+                    f"Task timed out after {timeout_seconds}s"
+                )
+                return
+
             status = result.get("status", "completed")
 
             logger.info(f"[Task #{task_id}] Agent returned status: '{status}'")
@@ -490,26 +635,56 @@ class Orchestrator:
                 if self.cycle_count % 10 == 0:
                     await self.watchdog()
 
-                tasks = await get_ready_tasks(limit=3)
+                # ── Cron scheduler check (every 60s) ──
+                sched_elapsed = (
+                    datetime.now() - self.last_scheduler_check
+                ).total_seconds()
+                if sched_elapsed >= 60:
+                    await self.check_scheduled_tasks()
+                    self.last_scheduler_check = datetime.now()
+
+                tasks = await get_ready_tasks(limit=MAX_CONCURRENT_TASKS)
 
                 if tasks:
-                    task_names = [f"#{t['id']}({t.get('agent_type','?')})" for t in tasks]
+                    task_names = [
+                        f"#{t['id']}({t.get('agent_type','?')})"
+                        for t in tasks
+                    ]
                     logger.info(
                         f"[Cycle {self.cycle_count}] "
                         f"Processing {len(tasks)} task(s): {task_names}"
                     )
 
-                    for t in tasks:
+                    if len(tasks) == 1:
+                        # Single task — run directly
+                        t = tasks[0]
                         try:
                             self._current_task_future = asyncio.ensure_future(
                                 self.process_task(t)
                             )
                             await self._current_task_future
                             self._current_task_future = None
-                            await asyncio.sleep(1)
                         except Exception as e:
                             self._current_task_future = None
-                            logger.error(f"Task #{t['id']} error: {e}", exc_info=True)
+                            logger.error(
+                                f"Task #{t['id']} error: {e}",
+                                exc_info=True,
+                            )
+                    else:
+                        # Multiple tasks — run concurrently
+                        futures = [
+                            asyncio.ensure_future(self.process_task(t))
+                            for t in tasks
+                        ]
+                        results = await asyncio.gather(
+                            *futures, return_exceptions=True
+                        )
+                        for t, res in zip(tasks, results):
+                            if isinstance(res, Exception):
+                                logger.error(
+                                    f"Task #{t['id']} error: {res}",
+                                    exc_info=True,
+                                )
 
                     await asyncio.sleep(2)
                 else:

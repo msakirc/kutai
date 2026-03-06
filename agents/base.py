@@ -22,6 +22,7 @@ from db import (
 )
 from tools import TOOL_REGISTRY, TOOL_SCHEMAS, get_tool_descriptions, execute_tool
 from config import MAX_AGENT_ITERATIONS, AGENT_TIER_MAP, MAX_TOOL_OUTPUT_LENGTH
+from models import validate_action, validate_tool_args
 import litellm as _litellm
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,18 @@ SIDE_EFFECT_TOOLS: frozenset[str] = frozenset({
     "verify_deps", "run_code",
     "git_init", "git_commit", "git_branch", "git_rollback",
 })
+
+# Max JSON format-correction retries before falling through to final_answer.
+MAX_FORMAT_RETRIES: int = 2
+
+# Pre-build tool schema lookup by name for O(1) access during arg validation.
+_TOOL_SCHEMAS_BY_NAME: dict[str, dict] = {}
+for _ts in TOOL_SCHEMAS:
+    _fn = _ts.get("function", {})
+    _ts_name = _fn.get("name")
+    if _ts_name:
+        _TOOL_SCHEMAS_BY_NAME[_ts_name] = _fn.get("parameters", {})
+del _ts, _fn, _ts_name
 
 
 class BaseAgent:
@@ -772,6 +785,7 @@ class BaseAgent:
             used_model = checkpoint.get("used_model", "unknown")
             tools_used = checkpoint.get("tools_used", False)
             validation_retried = checkpoint.get("validation_retried", False)
+            format_retries = checkpoint.get("format_retries", 0)
             tier = checkpoint.get("tier", tier)
             completed_tool_ops: dict[str, str] = checkpoint.get(
                 "completed_tool_ops", {}
@@ -796,6 +810,7 @@ class BaseAgent:
             used_model = "unknown"
             tools_used = False
             validation_retried = False
+            format_retries = 0
             completed_tool_ops: dict[str, str] = {}
 
         # ── iterative loop ──
@@ -856,6 +871,63 @@ class BaseAgent:
                     )
             if parsed is None:
                 parsed = self._parse_agent_response(content)
+
+            # ── FORMAT RETRY ─────────────────────────────────────
+            # If the model tried to produce JSON but it couldn't be
+            # parsed (fell through to final_answer fallback) AND the
+            # raw response contains braces (suggesting JSON intent),
+            # send a one-shot "fix your JSON" prompt instead of
+            # accepting garbled text as the answer.
+            if (
+                parsed.get("action") == "final_answer"
+                and parsed.get("result") == content  # fallback path
+                and "{" in content
+                and format_retries < MAX_FORMAT_RETRIES
+            ):
+                format_retries += 1
+                logger.warning(
+                    f"[Task #{task_id}] JSON parse failed on response "
+                    f"with braces — requesting format correction "
+                    f"(retry {format_retries}/{MAX_FORMAT_RETRIES})"
+                )
+                messages.append({"role": "assistant", "content": content})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "Your response could not be parsed as valid JSON. "
+                        "Please fix the formatting and try again.\n\n"
+                        "You MUST respond with ONLY a valid JSON block:\n"
+                        "```json\n"
+                        '{"action": "tool_call", "tool": "...", '
+                        '"args": {...}}\n'
+                        "```\n"
+                        "or:\n"
+                        "```json\n"
+                        '{"action": "final_answer", "result": "..."}\n'
+                        "```\n\n"
+                        "No text before or after the JSON block."
+                    ),
+                })
+                await self._save_checkpoint(
+                    task_id, iteration + 1, messages, total_cost,
+                    used_model, tier, tools_used, validation_retried,
+                    completed_tool_ops, format_retries,
+                )
+                continue
+            # ── END FORMAT RETRY ─────────────────────────────────
+
+            # ── PYDANTIC VALIDATION ──────────────────────────────
+            # Validate the parsed action against its Pydantic model.
+            # On failure, log the error but keep the original parsed
+            # dict to avoid breaking the loop.
+            try:
+                parsed = validate_action(parsed)
+            except ValueError as exc:
+                logger.warning(
+                    f"[Task #{task_id}] Action validation warning: {exc}"
+                )
+            # ── END PYDANTIC VALIDATION ──────────────────────────
+
             action_type = parsed.get("action", "final_answer")
 
             # ── HALLUCINATION GUARD ───────────────────────────────
@@ -918,7 +990,7 @@ class BaseAgent:
                 await self._save_checkpoint(
                     task_id, iteration + 1, messages, total_cost,
                     used_model, tier, tools_used, validation_retried,
-                    completed_tool_ops,
+                    completed_tool_ops, format_retries,
                 )
                 continue
             # ── END HALLUCINATION GUARD ───────────────────────────
@@ -952,6 +1024,7 @@ class BaseAgent:
                         await self._save_checkpoint(
                             task_id, iteration + 1, messages, total_cost,
                             used_model, tier, tools_used, validation_retried,
+                            completed_tool_ops, format_retries,
                         )
                         continue
                 # ── END OUTPUT VALIDATION ──────────────────────────
@@ -1030,6 +1103,44 @@ class BaseAgent:
                         f"Available: {list(TOOL_REGISTRY.keys())}"
                     )
                 else:
+                    # ── Typed argument validation & coercion ──
+                    arg_schema = _TOOL_SCHEMAS_BY_NAME.get(tool_name)
+                    if arg_schema:
+                        tool_args, arg_errors = validate_tool_args(
+                            tool_name, tool_args, arg_schema,
+                        )
+                        if arg_errors:
+                            err_msg = "; ".join(arg_errors)
+                            logger.warning(
+                                f"[Task #{task_id}] Tool arg validation: "
+                                f"{err_msg}"
+                            )
+                            # Return error to LLM so it can fix the call
+                            tool_output = (
+                                f"❌ Argument error for tool '{tool_name}': "
+                                f"{err_msg}\n\n"
+                                f"Expected parameters: "
+                                f"{json.dumps(arg_schema, indent=2)}"
+                            )
+                            messages.append(
+                                {"role": "assistant", "content": content}
+                            )
+                            messages.append(
+                                {"role": "user", "content": tool_output}
+                            )
+                            await self._safe_log(
+                                task_id, "tool",
+                                f"[{tool_name}] ARG_ERROR: {err_msg}",
+                                None, 0,
+                            )
+                            await self._save_checkpoint(
+                                task_id, iteration + 1, messages,
+                                total_cost, used_model, tier,
+                                tools_used, validation_retried,
+                                completed_tool_ops, format_retries,
+                            )
+                            continue
+
                     # ── Idempotency check for side-effect tools ──
                     idem_key = self._tool_idempotency_key(
                         tool_name, tool_args,
@@ -1129,7 +1240,7 @@ class BaseAgent:
                 await self._save_checkpoint(
                     task_id, iteration + 1, messages, total_cost,
                     used_model, tier, tools_used, validation_retried,
-                    completed_tool_ops,
+                    completed_tool_ops, format_retries,
                 )
                 continue
 
@@ -1184,6 +1295,7 @@ class BaseAgent:
             await self._save_checkpoint(
                 task_id, iteration + 1, messages, total_cost,
                 used_model, tier, tools_used, validation_retried,
+                completed_tool_ops, format_retries,
             )
 
         # ── exhausted iterations ──
@@ -1233,6 +1345,7 @@ class BaseAgent:
         tools_used: bool,
         validation_retried: bool,
         completed_tool_ops: dict[str, str] | None = None,
+        format_retries: int = 0,
     ) -> None:
         """Persist agent loop state so execution can resume after a crash."""
         if task_id == "?":
@@ -1246,6 +1359,7 @@ class BaseAgent:
                 "tier": tier,
                 "tools_used": tools_used,
                 "validation_retried": validation_retried,
+                "format_retries": format_retries,
                 "completed_tool_ops": completed_tool_ops or {},
             }
             await save_task_checkpoint(task_id, state)

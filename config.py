@@ -90,6 +90,7 @@ if OLLAMA_AVAILABLE:
             "quality": 7, "speed": "medium", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 4096,
             "supports_function_calling": False,
+            "supports_response_format": True,
         },
         "ollama-qwen25-coder-7b": {
             "litellm_name": "ollama/qwen2.5-coder:7b-instruct-q4_K_M",
@@ -98,6 +99,7 @@ if OLLAMA_AVAILABLE:
             "quality": 7, "speed": "medium", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 4096,
             "supports_function_calling": False,
+            "supports_response_format": True,
         },
         "ollama-qwen25-coder-3b": {
             "litellm_name": "ollama/qwen2.5-coder:3b-instruct-q5_K_M",
@@ -106,6 +108,7 @@ if OLLAMA_AVAILABLE:
             "quality": 5, "speed": "fast", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 2048,
             "supports_function_calling": False,
+            "supports_response_format": True,
         },
         "ollama-qwen25-7b": {
             "litellm_name": "ollama/qwen2.5:7b-instruct-q4_K_M",
@@ -114,6 +117,7 @@ if OLLAMA_AVAILABLE:
             "quality": 6, "speed": "medium", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 4096,
             "supports_function_calling": False,
+            "supports_response_format": True,
         },
         "ollama-llama32-3b": {
             "litellm_name": "ollama/llama3.2:3b-instruct-q5_K_M",
@@ -122,6 +126,7 @@ if OLLAMA_AVAILABLE:
             "quality": 4, "speed": "fast", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 1024,
             "supports_function_calling": False,
+            "supports_response_format": True,
         },
         "ollama-phi4-mini": {
             "litellm_name": "ollama/phi4-mini:3.8b-q4_K_M",
@@ -130,6 +135,7 @@ if OLLAMA_AVAILABLE:
             "quality": 5, "speed": "fast", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 2048,
             "supports_function_calling": False,
+            "supports_response_format": True,
         },
     }
     for _key, _cfg in _ollama_defs.items():

@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 from tools.shell import run_shell, run_shell_with_stdin, run_shell_sequential
 from tools.workspace import get_file_tree, read_file, write_file, detect_project
 from tools.edit_file import edit_file
+from tools.patch_file import patch_file
 from tools.linting import auto_lint
 from tools.deps import verify_dependencies
 from tools.git_ops import (
@@ -58,6 +59,42 @@ try:
     }
 except ImportError as e:
     logger.warning(f"run_code tool not available — {type(e).__name__}: {e}")
+
+try:
+    from tools.http_client import http_request
+
+    _optional_tools["http_request"] = {
+        "function": http_request,
+        "description": (
+            "Make an HTTP request to a URL. "
+            "Args: method (str: GET/POST/PUT/DELETE), url (str), "
+            "headers (dict, optional), body (str, optional), "
+            "timeout (int, optional, default 30)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "http_request", '
+            '"args": {"method": "GET", "url": "https://api.example.com/data"}}'
+        ),
+    }
+except Exception as e:
+    logger.warning(f"http_request tool not available — {type(e).__name__}: {e}")
+
+try:
+    from tools.download import download_file
+
+    _optional_tools["download_file"] = {
+        "function": download_file,
+        "description": (
+            "Download a file from a URL into the workspace. "
+            "Args: url (str), save_as (str), timeout (int, optional)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "download_file", '
+            '"args": {"url": "https://example.com/data.csv", "save_as": "data.csv"}}'
+        ),
+    }
+except Exception as e:
+    logger.warning(f"download_file tool not available — {type(e).__name__}: {e}")
 
 # ---------------------------------------------------------------------------
 # Registry
@@ -141,6 +178,20 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "Args: filepath (str), start_line (int), end_line (int), new_content (str)"
         ),
         "example": '{"action": "tool_call", "tool": "edit_file", "args": {"filepath": "src/main.py", "start_line": 10, "end_line": 15, "new_content": "def foo():\\n    pass\\n"}}',
+    },
+    "patch_file": {
+        "function": patch_file,
+        "description": (
+            "Search-and-replace in a file. Find exact text and replace it. "
+            "More reliable than line-number editing. "
+            "Args: filepath (str), search_block (str), replace_block (str)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "patch_file", '
+            '"args": {"filepath": "src/main.py", '
+            '"search_block": "def old_func():", '
+            '"replace_block": "def new_func():"}}'
+        ),
     },
     "lint": {
         "function": auto_lint,

@@ -495,29 +495,78 @@ class TelegramInterface:
         )
 
     async def cmd_project(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """List or switch projects. /project [name]"""
+        """List, view, or onboard projects. /project [add <path>|name]"""
         args = context.args
         projects = load_projects_config()
 
         if not args:
             if not projects:
                 await update.message.reply_text(
-                    "📂 No projects configured. "
-                    "Add projects to `projects.json`."
+                    "📂 No projects configured.\n"
+                    "Use /project add <path> to onboard a project."
                 )
                 return
             lines = ["📂 *Projects*\n"]
             for p in projects:
                 lang = p.get("language", "?")
                 lines.append(f"  `{p['name']}` — {lang} ({p.get('path', '?')})")
+            lines.append("\nUse /project add <path> to onboard a new project.")
             await update.message.reply_text(
                 "\n".join(lines), parse_mode="Markdown"
             )
             return
 
+        # ── Phase 12.6: /project add <path> [name] ──
+        if args[0].lower() == "add":
+            if len(args) < 2:
+                await update.message.reply_text(
+                    "Usage: /project add <path> [name]\n\n"
+                    "Example: /project add /home/user/myapp myapp"
+                )
+                return
+            project_path = args[1]
+            project_name = args[2] if len(args) > 2 else ""
+            await update.message.reply_text(
+                f"🔄 Onboarding project at `{project_path}`...\n"
+                "This may take a moment (indexing, embedding, mapping).",
+                parse_mode="Markdown",
+            )
+            try:
+                from context.onboarding import (
+                    onboard_project,
+                    store_project_profile,
+                    format_project_profile,
+                )
+                profile = await onboard_project(project_path, project_name)
+                if "error" in profile:
+                    await update.message.reply_text(f"❌ {profile['error']}")
+                    return
+                await store_project_profile(profile)
+                summary = format_project_profile(profile)
+                await update.message.reply_text(
+                    f"✅ Project onboarded!\n\n{summary}\n\n"
+                    f"Files: {profile.get('files_indexed', 0)} | "
+                    f"Symbols: {profile.get('symbols_embedded', 0)}",
+                )
+            except Exception as e:
+                await update.message.reply_text(
+                    f"❌ Onboarding error: {type(e).__name__}: {e}"
+                )
+            return
+
         name = args[0]
         project = get_project(name)
         if not project:
+            # Try loading from DB profile
+            try:
+                from context.onboarding import load_project_profile, format_project_profile
+                profile = await load_project_profile(name)
+                if profile:
+                    summary = format_project_profile(profile)
+                    await update.message.reply_text(summary)
+                    return
+            except Exception:
+                pass
             await update.message.reply_text(f"❌ Project '{name}' not found.")
             return
 

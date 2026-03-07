@@ -18,6 +18,10 @@ class FixerAgent(BaseAgent):
         "read_file",
         "write_file",
         "edit_file",
+        "patch_file",
+        "apply_diff",
+        "get_function",
+        "query_codebase",
         "shell",
         "lint",
     ]
@@ -32,8 +36,12 @@ class FixerAgent(BaseAgent):
             "## Your Workflow\n"
             "1. **Understand Issues** — Read the feedback provided in your prompt carefully.\n"
             "2. **Read Code** — Use `read_file` to read the files mentioned in the feedback.\n"
-            "3. **Apply Fixes** — Use `edit_file` to make targeted fixes (preferred) or "
-            "`write_file` if rewriting large chunks of a file.\n"
+            "3. **Apply Fixes** — Use `patch_file` (search-and-replace) or `apply_diff` "
+            "(unified diff) for targeted fixes. Use `edit_file` for line-range edits. "
+            "Only use `write_file` if rewriting large chunks of a file.\n"
+            "   - Use `get_function` to extract the exact function before editing — "
+            "never guess at line numbers.\n"
+            "   - Use `query_codebase` to find related code that may need similar fixes.\n"
             "4. **Lint** — Run the `lint` tool on any modified Python files to catch "
             "syntax or formatting errors.\n"
             "5. **Verify** — Use `shell` to run `pytest` (if tests exist) or basic syntax "

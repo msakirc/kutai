@@ -17,6 +17,12 @@ class CoderAgent(BaseAgent):
         "file_tree",
         "read_file",
         "write_file",
+        "edit_file",
+        "patch_file",
+        "apply_diff",
+        "get_function",
+        "query_codebase",
+        "lint",
         "project_info",
         "git_init",
         "git_commit",
@@ -57,12 +63,21 @@ class CoderAgent(BaseAgent):
             "- Prefer simple solutions. Don't over-engineer.\n"
             "- Keep files focused — one responsibility per file.\n"
             "\n"
-            "## File Writing Tips\n"
-            "- Use `write_file` for creating or replacing files.\n"
-            "- For small edits, `read_file` first, then `write_file` with the full "
-            "updated content.\n"
-            "- Each `write_file` call must contain the COMPLETE file — the tool "
-            "replaces the entire file.\n"
+            "## File Editing Tips (Diff-First)\n"
+            "- **New files**: Use `write_file` to create from scratch.\n"
+            "- **Existing files <50 lines**: `write_file` with full updated content is OK.\n"
+            "- **Existing files >50 lines**: PREFER `patch_file` or `apply_diff` over "
+            "`write_file` — never rewrite an entire large file.\n"
+            "- `patch_file`: search-and-replace exact text blocks. Most reliable for "
+            "targeted changes.\n"
+            "- `apply_diff`: unified diff format with `@@ -start,count +start,count @@` "
+            "hunks. Best for multi-location edits.\n"
+            "- `edit_file`: line-range replacement. Use when you know exact line numbers.\n"
+            "- `get_function`: extract a specific function's source before editing — "
+            "don't guess at code you haven't read.\n"
+            "- `query_codebase`: find relevant functions/classes quickly instead of "
+            "reading entire files.\n"
+            "- After editing, run `lint` on modified Python files.\n"
             "\n"
             "## Shell Environment\n"
             "- The shell runs in a Docker sandbox with Python 3.12.\n"

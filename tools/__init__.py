@@ -20,6 +20,7 @@ from tools.shell import run_shell, run_shell_with_stdin, run_shell_sequential
 from tools.workspace import get_file_tree, read_file, write_file, detect_project
 from tools.edit_file import edit_file
 from tools.patch_file import patch_file
+from tools.apply_diff import apply_diff
 from tools.linting import auto_lint
 from tools.deps import verify_dependencies
 from tools.git_ops import (
@@ -233,6 +234,18 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             '"args": {"filepath": "src/main.py", '
             '"search_block": "def old_func():", '
             '"replace_block": "def new_func():"}}'
+        ),
+    },
+    "apply_diff": {
+        "function": apply_diff,
+        "description": (
+            "Apply a unified diff patch to a file. Validates syntax after applying. "
+            "Args: filepath (str), unified_diff (str: unified diff format with @@ hunks)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "apply_diff", '
+            '"args": {"filepath": "src/main.py", '
+            '"unified_diff": "@@ -10,3 +10,4 @@\\n context\\n-old line\\n+new line\\n+added line"}}'
         ),
     },
     "lint": {
@@ -527,6 +540,27 @@ def list_tool_names() -> list[str]:
     return sorted(TOOL_REGISTRY.keys())
 
 
+def _trigger_reindex(filepath: str | None) -> None:
+    """Re-index a single file after a write/edit/patch/diff tool call.
+
+    Runs synchronously-safe — fires and forgets so the tool isn't slowed.
+    """
+    if not filepath:
+        return
+    try:
+        from parsing.code_embeddings import reindex_file
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(reindex_file(filepath))
+        else:
+            loop.run_until_complete(reindex_file(filepath))
+    except Exception:
+        # Non-critical — embedding re-index is best-effort
+        pass
+
+
 async def execute_tool(tool_name: str, **kwargs: Any) -> str:
     """
     Execute a registered tool by name.
@@ -560,6 +594,11 @@ async def execute_tool(tool_name: str, **kwargs: Any) -> str:
 
     try:
         result = await func(**filtered)
+
+        # ── Phase 12.2: Trigger code re-indexing after file-change tools ──
+        if tool_name in ("write_file", "edit_file", "patch_file", "apply_diff"):
+            _trigger_reindex(filtered.get("filepath"))
+
         return str(result)
 
     except TypeError as exc:

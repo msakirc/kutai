@@ -1,9 +1,12 @@
 # tools/codebase_index.py
 """
-Codebase indexing — builds a structural index of Python files.
+Codebase indexing — builds a structural index of source files.
+
+Phase 12 upgrade: now uses tree-sitter multi-language parser (with
+ast/regex fallback) to support Python, JS, TS, Go, Rust, Java, C/C++.
 
 Provides:
-  - build_index: Scan a directory and index all Python files
+  - build_index: Scan a directory and index all source files
   - query_index: Search the index by function/class/module name
   - get_codebase_map: Generate a high-level codebase map for agents
   - detect_conventions: Detect coding conventions from existing code
@@ -13,13 +16,130 @@ import ast
 import os
 from typing import Optional
 
+try:
+    from parsing.tree_sitter_parser import (
+        detect_language,
+        get_parseable_extensions,
+        parse_file as ts_parse_file,
+    )
+    _HAS_TS_PARSER = True
+except ImportError:
+    _HAS_TS_PARSER = False
+
 
 # In-memory index store: { workspace_path: { filepath: FileIndex } }
 _INDEX_CACHE: dict[str, dict[str, dict]] = {}
 
 
+def _extract_module_name(import_text: str) -> str:
+    """Extract the module name from an import statement text.
+
+    'import os'                       -> 'os'
+    'from datetime import datetime'   -> 'datetime'
+    'import os.path'                  -> 'os.path'
+    """
+    text = import_text.strip()
+    if text.startswith("from "):
+        # "from X import Y" -> X
+        parts = text.split()
+        if len(parts) >= 2:
+            return parts[1]
+    elif text.startswith("import "):
+        parts = text.split()
+        if len(parts) >= 2:
+            return parts[1].rstrip(",")
+    return text
+
+
+def _convert_ts_result(ts_result: dict) -> dict:
+    """Convert tree-sitter parser output to the canonical index format."""
+    # Convert imports: ts format is [{type, text, line}] -> [str (module name)]
+    imports = [
+        _extract_module_name(imp.get("text", ""))
+        for imp in ts_result.get("imports", [])
+    ]
+
+    # Convert functions: ts format has {name, signature, docstring,
+    # line_start, line_end, body_preview, decorators}
+    # -> {name, args, line, end_line, is_async, docstring, decorators}
+    functions = []
+    for fn in ts_result.get("functions", []):
+        # Extract args from signature if available (best-effort)
+        sig = fn.get("signature", "")
+        args: list[str] = []
+        if "(" in sig and ")" in sig:
+            params_str = sig[sig.index("(") + 1 : sig.rindex(")")]
+            if params_str.strip():
+                args = [p.strip().split(":")[0].split("=")[0].strip()
+                        for p in params_str.split(",") if p.strip()]
+        functions.append({
+            "name": fn.get("name", ""),
+            "args": args,
+            "line": fn.get("line_start", 0),
+            "end_line": fn.get("line_end", 0),
+            "is_async": (fn.get("name", "").startswith("async ") or
+                        "async " in fn.get("signature", "") or
+                        fn.get("body_preview", "").lstrip().startswith("async ")),
+            "docstring": (fn.get("docstring") or "")[:100],
+            "decorators": fn.get("decorators", []),
+        })
+
+    # Convert classes: ts format has {name, bases, docstring, line_start,
+    # line_end, methods: [{name, line}]}
+    # -> {name, bases, line, end_line, methods: [{name, args, line, is_async}],
+    #     docstring}
+    classes = []
+    for cls in ts_result.get("classes", []):
+        methods = []
+        for m in cls.get("methods", []):
+            methods.append({
+                "name": m.get("name", ""),
+                "args": [],
+                "line": m.get("line", 0),
+                "is_async": False,
+            })
+        classes.append({
+            "name": cls.get("name", ""),
+            "bases": cls.get("bases", []),
+            "line": cls.get("line_start", 0),
+            "end_line": cls.get("line_end", 0),
+            "methods": methods,
+            "docstring": (cls.get("docstring") or "")[:100],
+        })
+
+    return {
+        "imports": imports,
+        "functions": functions,
+        "classes": classes,
+        "docstring": (ts_result.get("module_docstring") or "")[:200],
+        "line_count": ts_result.get("line_count", 0),
+    }
+
+
 def _parse_file(filepath: str) -> Optional[dict]:
-    """Parse a single Python file and extract structural info."""
+    """Parse a source file and extract structural info.
+
+    Tries the tree-sitter multi-language parser first.  Falls back to the
+    Python ``ast`` parser for ``.py`` files when tree-sitter is unavailable
+    or when it fails.
+    """
+    if _HAS_TS_PARSER:
+        try:
+            ts_result = ts_parse_file(filepath)
+            if ts_result is not None:
+                return _convert_ts_result(ts_result)
+        except Exception:
+            pass  # fall through to ast fallback
+
+    # Fallback: only .py files can be parsed with the ast module
+    if filepath.endswith(".py"):
+        return _parse_file_python_ast(filepath)
+
+    return None
+
+
+def _parse_file_python_ast(filepath: str) -> Optional[dict]:
+    """Parse a single Python file using the stdlib ``ast`` module."""
     try:
         with open(filepath, encoding="utf-8") as f:
             source = f.read()
@@ -97,13 +217,22 @@ def _parse_file(filepath: str) -> Optional[dict]:
     }
 
 
-def build_index(root_path: str, extensions: tuple = (".py",)) -> dict[str, dict]:
+def _default_extensions() -> tuple:
+    """Return parseable extensions — multi-language if tree-sitter is available."""
+    if _HAS_TS_PARSER:
+        return tuple(get_parseable_extensions())
+    return (".py",)
+
+
+def build_index(root_path: str, extensions: tuple | None = None) -> dict[str, dict]:
     """
     Scan directory recursively and build a structural index.
 
     Returns dict of { relative_filepath: file_info }.
     Also caches the result in memory.
     """
+    if extensions is None:
+        extensions = _default_extensions()
     root = os.path.normpath(root_path)
     index = {}
 

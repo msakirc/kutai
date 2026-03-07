@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # Read-only tools (file_tree, read_file, git_log, etc.) are always re-executed.
 SIDE_EFFECT_TOOLS: frozenset[str] = frozenset({
     "shell", "shell_stdin", "shell_sequential",
-    "write_file", "edit_file", "lint",
+    "write_file", "edit_file", "patch_file", "apply_diff", "lint",
     "verify_deps", "run_code",
     "git_init", "git_commit", "git_branch", "git_rollback",
 })
@@ -372,6 +372,19 @@ class BaseAgent:
                 "_Use this context to understand follow-up references "
                 "like 'list them', 'the names', 'do it again', etc._"
             )
+        # ── Phase 12.6: Project profile injection ──
+        try:
+            from context.onboarding import (
+                get_project_profile_for_task,
+                format_project_profile,
+            )
+            project_profile = await get_project_profile_for_task(task)
+            profile_block = format_project_profile(project_profile) if project_profile else ""
+            if profile_block:
+                parts.append(profile_block)
+        except Exception as exc:
+            logger.debug(f"Project profile injection failed (non-critical): {exc}")
+
         # ── Phase 11.3: RAG context injection ──
         try:
             from memory.rag import retrieve_context

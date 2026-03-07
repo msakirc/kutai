@@ -48,6 +48,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("modelstats", self.cmd_model_stats))  # Phase 4
         self.app.add_handler(CommandHandler("workspace", self.cmd_workspace))  # Phase 6
         self.app.add_handler(CommandHandler("project", self.cmd_project))      # Phase 6
+        self.app.add_handler(CommandHandler("ingest", self.cmd_ingest))        # Phase 11.5
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.REPLY,
@@ -75,6 +76,7 @@ class TelegramInterface:
             "/modelstats — View model performance stats\n"
             "/workspace — View goal workspaces\n"
             "/project [name] — List/view projects\n"
+            "/ingest <url\\_or\\_path> — Ingest a document into knowledge base\n"
             "/digest — Get daily digest now\n\n"
             "Or just send a message — I'll figure out what to do.",
             parse_mode="Markdown"
@@ -527,11 +529,65 @@ class TelegramInterface:
             parse_mode="Markdown",
         )
 
+    async def cmd_ingest(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Ingest a URL or file into the knowledge base."""
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /ingest <url\\_or\\_filepath>\n\n"
+                "Examples:\n"
+                "/ingest https://docs.example.com/api\n"
+                "/ingest /path/to/document.pdf",
+                parse_mode="Markdown",
+            )
+            return
+
+        source = " ".join(context.args)
+        await update.message.reply_text(f"📥 Ingesting: {source}...")
+
+        try:
+            from memory.ingest import ingest_document
+            result = await ingest_document(source)
+
+            if result["status"] == "ok":
+                await update.message.reply_text(
+                    f"✅ Ingested *{result['chunks']}* chunks from "
+                    f"`{result['source']}`\n\n"
+                    f"Knowledge is now available to all agents.",
+                    parse_mode="Markdown",
+                )
+            else:
+                await update.message.reply_text(
+                    f"❌ Ingestion failed: {result.get('error', 'unknown error')}"
+                )
+        except ImportError:
+            await update.message.reply_text(
+                "❌ Memory system not available. "
+                "Install chromadb: pip install chromadb"
+            )
+        except Exception as e:
+            await update.message.reply_text(
+                f"❌ Ingestion error: {type(e).__name__}: {e}"
+            )
+
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Smart handler: detect if it's a goal or simple task."""
         text = update.message.text
         chat_id = update.message.chat_id
         parent_id = self.user_last_task_id.get(chat_id)
+
+        # Phase 11.4: Embedding-based follow-up detection
+        recent_context = None
+        try:
+            from memory.conversations import (
+                find_followup_context, format_recent_context,
+            )
+            followup = await find_followup_context(chat_id, text)
+            if followup.get("is_followup") and followup.get("parent_task_id"):
+                parent_id = int(followup["parent_task_id"])
+            if followup.get("context"):
+                recent_context = format_recent_context(followup["context"])
+        except Exception:
+            pass  # fallback to user_last_task_id
 
         if len(text) > 200 or any(kw in text.lower() for kw in
             ["research", "create a", "build", "analyze", "develop",
@@ -544,12 +600,17 @@ class TelegramInterface:
             )
             self.user_last_task_id.pop(chat_id, None)
         else:
+            task_context = {}
+            if recent_context:
+                task_context["recent_conversation"] = recent_context
+
             task_id = await add_task(
                 title=text[:50],
                 description=text,
                 tier="auto",
                 parent_task_id=parent_id,
                 priority=TASK_PRIORITY["critical"],
+                context=task_context if task_context else None,
             )
             self.user_last_task_id[chat_id] = task_id
             await update.message.reply_text(f"✅ Task #{task_id} queued.")
@@ -584,6 +645,18 @@ class TelegramInterface:
                 await update.message.reply_text(
                     f"↩️ Got it. Resuming task #{task_id} with your input."
                 )
+
+                # Phase 11.7: Record modified feedback
+                try:
+                    from memory.preferences import record_feedback
+                    task_info = await get_task(task_id)
+                    if task_info:
+                        await record_feedback(
+                            task_info, "modified",
+                            details=answer,
+                        )
+                except Exception:
+                    pass
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -644,6 +717,21 @@ class TelegramInterface:
             f"Model: `{model}` | Cost: ${cost:.4f}\n\n"
             f"{truncated}"
         )
+
+        # Phase 11.4: Store exchange in conversation memory
+        try:
+            from memory.conversations import store_exchange
+            # Use admin chat ID as the chat_id for results
+            chat_id = TELEGRAM_ADMIN_CHAT_ID or "system"
+            await store_exchange(
+                chat_id=chat_id,
+                user_message=title,
+                ai_response=truncated[:500],
+                task_id=task_id,
+                task_title=title,
+            )
+        except Exception:
+            pass
 
     async def send_error(self, task_id, title, error):
         await self.send_notification(

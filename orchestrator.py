@@ -56,6 +56,7 @@ class Orchestrator:
         self.cycle_count = 0
         self.last_digest = datetime.now()
         self.last_scheduler_check = datetime.min
+        self.last_decay_check = datetime.min
         self.shutdown_event = shutdown_event or asyncio.Event()
         self._current_task_future = None
 
@@ -460,6 +461,16 @@ class Orchestrator:
                                   error=f"{type(e).__name__}: {str(e)[:500]}")
                 await self.telegram.send_error(task_id, title, str(e)[:500])
 
+                # Phase 11.2: Store failed task in episodic memory
+                try:
+                    from memory.episodic import store_task_result
+                    await store_task_result(
+                        task=task, result=str(e)[:500], model="unknown",
+                        cost=0.0, duration=0.0, success=False,
+                    )
+                except Exception:
+                    pass
+
     # ─── Result Handlers ─────────────────────────────────────────────────
 
     async def _handle_complete(self, task, result):
@@ -494,6 +505,23 @@ class Orchestrator:
 
         logger.info(f"[Task #{task_id}] ✅ Complete via {model} "
                      f"(${cost:.4f}, {iterations} iter)")
+
+        # ── Phase 11.2: Store episodic memory ──
+        try:
+            from memory.episodic import store_task_result
+            await store_task_result(
+                task=task, result=result_text, model=model,
+                cost=cost, duration=0.0, success=True,
+            )
+        except Exception as e:
+            logger.debug(f"Episodic memory store failed (non-critical): {e}")
+
+        # ── Phase 11.7: Record implicit acceptance feedback ──
+        try:
+            from memory.preferences import record_feedback
+            await record_feedback(task, "accepted")
+        except Exception as e:
+            logger.debug(f"Preference feedback failed (non-critical): {e}")
 
     async def _handle_subtasks(self, task, result):
         task_id = task["id"]
@@ -771,6 +799,18 @@ class Orchestrator:
                 if hours_since_digest >= 24:
                     await self.daily_digest()
                     self.last_digest = datetime.now()
+
+                # ── Phase 11.6: Memory decay (weekly) ──
+                days_since_decay = (
+                    datetime.now() - self.last_decay_check
+                ).total_seconds() / 86400
+                if days_since_decay >= 7:
+                    try:
+                        from memory.decay import run_decay_cycle
+                        await run_decay_cycle()
+                    except Exception as e:
+                        logger.debug(f"Memory decay failed (non-critical): {e}")
+                    self.last_decay_check = datetime.now()
 
             except Exception as e:
                 logger.error(f"Loop error: {e}", exc_info=True)

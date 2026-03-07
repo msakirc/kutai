@@ -372,6 +372,27 @@ class BaseAgent:
                 "_Use this context to understand follow-up references "
                 "like 'list them', 'the names', 'do it again', etc._"
             )
+        # ── Phase 11.3: RAG context injection ──
+        try:
+            from memory.rag import retrieve_context
+            rag_block = await retrieve_context(
+                task=task, agent_type=self.name, max_tokens=2000,
+            )
+            if rag_block:
+                parts.append(rag_block)
+        except Exception as exc:
+            logger.debug(f"RAG retrieval failed (non-critical): {exc}")
+
+        # ── Phase 11.7: User preference injection ──
+        try:
+            from memory.preferences import get_user_preferences, format_preferences
+            prefs = await get_user_preferences()
+            pref_block = format_preferences(prefs)
+            if pref_block:
+                parts.append(pref_block)
+        except Exception as exc:
+            logger.debug(f"Preference retrieval failed (non-critical): {exc}")
+
         try:
             memories = await recall_memory(goal_id=goal_id, limit=15)
         except Exception as exc:

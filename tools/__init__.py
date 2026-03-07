@@ -112,6 +112,32 @@ try:
 except Exception as e:
     logger.warning(f"download_file tool not available — {type(e).__name__}: {e}")
 
+# Phase 11.5: Document ingestion tool
+try:
+    from memory.ingest import ingest_document as _ingest_fn
+
+    async def _ingest_tool_wrapper(source: str, source_type: str = "auto") -> str:
+        """Wrapper to return string result for tool system."""
+        result = await _ingest_fn(source, source_type)
+        if result["status"] == "ok":
+            return f"Ingested {result['chunks']} chunks from {result['source']}"
+        return f"Ingestion failed: {result.get('error', 'unknown error')}"
+
+    _optional_tools["ingest_document"] = {
+        "function": _ingest_tool_wrapper,
+        "description": (
+            "Ingest a document (URL or file) into the knowledge base. "
+            "Args: source (str: URL or filepath), "
+            "source_type (str: 'url', 'file', or 'auto')"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "ingest_document", '
+            '"args": {"source": "https://docs.example.com/api"}}'
+        ),
+    }
+except Exception as e:
+    logger.debug(f"ingest_document tool not available — {type(e).__name__}: {e}")
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------

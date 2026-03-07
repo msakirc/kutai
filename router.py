@@ -298,9 +298,18 @@ def select_model(
     capability: str | None = None,
     prefer_local: bool = True,
     agent_type: str | None = None,
+    required_capabilities: list[str] | None = None,
+    min_context_length: int | None = None,
+    sensitivity: str | None = None,
 ) -> list[dict]:
     """
     Return a ranked list of models suitable for *tier* + optional *capability*.
+
+    Phase 10 enhancements:
+      - required_capabilities: filter to models that have ALL listed capabilities
+      - min_context_length: skip models with context_length below this threshold
+      - sensitivity: "public" | "private" | "secret" — restrict to local for
+        private/secret data
 
     Ranking:
       1. Provider class (local > free cloud > paid)
@@ -318,6 +327,10 @@ def select_model(
     }
     q_min, q_max = tier_ranges.get(tier, (0, 99))
 
+    # Phase 10.3: Local-only providers for sensitive data
+    _local_providers = {"ollama", "llamacpp", "custom_openai"}
+    restrict_local = sensitivity in ("private", "secret")
+
     # Fetch performance stats if agent_type is known
     perf_by_model: dict[str, dict] = {}
     if agent_type and _perf_cache_ready:
@@ -327,6 +340,22 @@ def select_model(
 
     for key, cfg in MODEL_POOL.items():
         quality = cfg["quality"]
+
+        # Phase 10.3: Skip non-local models for sensitive data
+        if restrict_local and cfg["provider"] not in _local_providers:
+            continue
+
+        # Phase 10.4: Required capabilities filter
+        if required_capabilities:
+            model_caps = set(cfg.get("capabilities", []))
+            if not all(rc in model_caps for rc in required_capabilities):
+                continue
+
+        # Phase 10.4: Context length filter
+        if min_context_length:
+            model_ctx = cfg.get("context_length", 8192)
+            if model_ctx < min_context_length:
+                continue
 
         # For "code" tier, require coding capability
         if tier == "code" and "coding" not in cfg.get("capabilities", []):
@@ -403,6 +432,7 @@ def select_model(
             "rate_limit": cfg.get("rate_limit", 30),
             "quality": quality,
             "score": score,
+            "api_base": cfg.get("api_base"),
         })
 
     candidates.sort(key=lambda c: -c["score"])
@@ -480,6 +510,7 @@ def _get_fallback_models(tier: str) -> list[dict]:
                         "rate_limit": cfg.get("rate_limit", 30),
                         "quality": cfg["quality"],
                         "score": 0,
+                        "api_base": cfg.get("api_base"),
                     })
                     seen_names.add(fb_name)
                     break
@@ -543,6 +574,7 @@ async def call_model(
     tools: list[dict] | None = None,
     agent_type: str | None = None,
     stream: bool = False,
+    model_override: str | None = None,
 ) -> dict:
     """
     Call the best available model for *tier*.
@@ -550,6 +582,9 @@ async def call_model(
     Handles rate limits, retries with backoff, auth/billing errors,
     timeouts, automatic fallback across providers, thinking model
     detection, and optional streaming.
+
+    Phase 10.5: If *model_override* is provided, skip tier selection
+    entirely and use that exact litellm model name.
     """
     tier = _resolve_tier(tier)
     tier_cfg = MODEL_TIERS.get(tier, {})
@@ -560,8 +595,47 @@ async def call_model(
     # Refresh performance cache periodically (Phase 4)
     await refresh_perf_cache()
 
-    # Build ordered fallback chain
-    candidates = _get_fallback_models(tier)
+    # ── Phase 10.5: Model pinning / override ──
+    if model_override:
+        # Find the model in MODEL_POOL by litellm_name
+        pinned_cfg = None
+        for _pk, _pcfg in MODEL_POOL.items():
+            if _pcfg["litellm_name"] == model_override:
+                pinned_cfg = _pcfg
+                break
+
+        if pinned_cfg:
+            candidates = [{
+                "key": _pk,
+                "litellm_name": model_override,
+                "provider": pinned_cfg["provider"],
+                "max_tokens": pinned_cfg.get("max_tokens", 2048),
+                "rate_limit": pinned_cfg.get("rate_limit", 30),
+                "quality": pinned_cfg["quality"],
+                "score": 999,
+                "api_base": pinned_cfg.get("api_base"),
+            }]
+            logger.info(
+                f"Model pinned: {model_override} (skipping tier selection)"
+            )
+        else:
+            # Not in MODEL_POOL — try using as raw litellm name
+            candidates = [{
+                "litellm_name": model_override,
+                "provider": "unknown",
+                "max_tokens": 4096,
+                "rate_limit": 30,
+                "quality": 5,
+                "score": 999,
+                "api_base": None,
+            }]
+            logger.warning(
+                f"Model override '{model_override}' not in MODEL_POOL — "
+                f"attempting raw litellm call"
+            )
+    else:
+        # Build ordered fallback chain
+        candidates = _get_fallback_models(tier)
 
     if not candidates:
         # Absolute fallback: any model in the pool
@@ -573,6 +647,7 @@ async def call_model(
                 "rate_limit": cfg.get("rate_limit", 30),
                 "quality": cfg["quality"],
                 "score": 0,
+                "api_base": cfg.get("api_base"),
             }
             for cfg in MODEL_POOL.values()
         ]
@@ -587,6 +662,7 @@ async def call_model(
         model_name = candidate["litellm_name"]
         provider = candidate.get("provider", "unknown")
         max_tokens = candidate.get("max_tokens", 2048)
+        api_base = candidate.get("api_base")
         is_ollama = provider == "ollama"
 
         limiter = _get_limiter(provider, candidate.get("rate_limit", 30))
@@ -635,6 +711,10 @@ async def call_model(
                     max_tokens=max_tokens,
                     temperature=temperature,
                 )
+
+                # Phase 10.1: Pass api_base for custom endpoints
+                if api_base:
+                    completion_kwargs["api_base"] = api_base
 
                 # Thinking models: don't set temperature (some reject it)
                 if is_thinking:

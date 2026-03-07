@@ -94,6 +94,78 @@ def _detect_ollama_models() -> list[str]:
 OLLAMA_MODELS: list[str] = _detect_ollama_models()
 OLLAMA_AVAILABLE: bool = len(OLLAMA_MODELS) > 0
 
+
+# ─── Phase 10.1: Custom Endpoint Detection ─────────────────────────────────
+
+def _detect_custom_endpoints() -> list[dict]:
+    """
+    Detect llama.cpp and custom OpenAI-compatible endpoints.
+
+    Env vars:
+      LLAMA_CPP_ENDPOINTS:       name=url pairs (e.g. qwen3-8b=http://localhost:8080)
+      CUSTOM_OPENAI_ENDPOINTS:   name=url pairs (covers vLLM, TGI, LocalAI, LM Studio)
+
+    For each endpoint, probes /v1/models to confirm alive.
+    Returns list of dicts ready to be inserted into MODEL_POOL.
+    """
+    endpoints: list[dict] = []
+
+    for env_var, provider in [
+        ("LLAMA_CPP_ENDPOINTS", "llamacpp"),
+        ("CUSTOM_OPENAI_ENDPOINTS", "custom_openai"),
+    ]:
+        raw = os.getenv(env_var, "").strip()
+        if not raw:
+            continue
+
+        for entry in raw.split(","):
+            entry = entry.strip()
+            if "=" not in entry:
+                continue
+            name, url = entry.split("=", 1)
+            name = name.strip()
+            url = url.strip().rstrip("/")
+
+            if not name or not url:
+                continue
+
+            # Probe /v1/models to confirm alive
+            alive = False
+            try:
+                import httpx
+                r = httpx.get(f"{url}/v1/models", timeout=5.0)
+                alive = r.status_code == 200
+            except Exception:
+                pass
+
+            if not alive:
+                logger.warning(
+                    f"Custom endpoint '{name}' at {url} is not responding "
+                    f"(skipping)"
+                )
+                continue
+
+            logger.info(f"✅ Found custom endpoint: {name} at {url}")
+            endpoints.append({
+                "name": name,
+                "provider": provider,
+                "litellm_name": f"openai/{name}",
+                "api_base": url,
+                "capabilities": ["general", "coding"],
+                "quality": 6,
+                "speed": "medium",
+                "rate_limit": 999,
+                "max_tokens": 4096,
+                "context_length": 8192,
+                "supports_function_calling": False,
+                "supports_response_format": True,
+            })
+
+    return endpoints
+
+
+CUSTOM_ENDPOINTS: list[dict] = _detect_custom_endpoints()
+
 # ─── Model Pool ──────────────────────────────────────────────────────────────
 # Rich model definitions with capabilities and quality scores.
 # The router uses this for smart model selection; MODEL_TIERS is derived
@@ -110,6 +182,7 @@ if OLLAMA_AVAILABLE:
             "capabilities": ["planning", "reasoning", "general"],
             "quality": 7, "speed": "medium", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 4096,
+            "context_length": 32768,
             "supports_function_calling": False,
             "supports_response_format": True,
         },
@@ -119,6 +192,7 @@ if OLLAMA_AVAILABLE:
             "capabilities": ["coding", "debugging", "general"],
             "quality": 7, "speed": "medium", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 4096,
+            "context_length": 32768,
             "supports_function_calling": False,
             "supports_response_format": True,
         },
@@ -128,6 +202,7 @@ if OLLAMA_AVAILABLE:
             "capabilities": ["coding", "quick_code"],
             "quality": 5, "speed": "fast", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 2048,
+            "context_length": 32768,
             "supports_function_calling": False,
             "supports_response_format": True,
         },
@@ -137,6 +212,7 @@ if OLLAMA_AVAILABLE:
             "capabilities": ["general", "writing", "analysis"],
             "quality": 6, "speed": "medium", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 4096,
+            "context_length": 32768,
             "supports_function_calling": False,
             "supports_response_format": True,
         },
@@ -146,6 +222,7 @@ if OLLAMA_AVAILABLE:
             "capabilities": ["routing", "classification", "simple"],
             "quality": 4, "speed": "fast", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 1024,
+            "context_length": 8192,
             "supports_function_calling": False,
             "supports_response_format": True,
         },
@@ -155,6 +232,7 @@ if OLLAMA_AVAILABLE:
             "capabilities": ["reasoning", "simple", "general"],
             "quality": 5, "speed": "fast", "rate_limit": 999,
             "provider": "ollama", "max_tokens": 2048,
+            "context_length": 16384,
             "supports_function_calling": False,
             "supports_response_format": True,
         },
@@ -173,6 +251,7 @@ if AVAILABLE_KEYS["groq"]:
         "capabilities": ["routing", "classification", "simple", "general"],
         "quality": 5, "speed": "very_fast", "rate_limit": 30,
         "provider": "groq", "max_tokens": 1024,
+        "context_length": 131072,
         "supports_function_calling": True,
     }
     MODEL_POOL["groq-llama-70b"] = {
@@ -183,6 +262,7 @@ if AVAILABLE_KEYS["groq"]:
         ],
         "quality": 8, "speed": "fast", "rate_limit": 30,
         "provider": "groq", "max_tokens": 4096,
+        "context_length": 131072,
         "supports_function_calling": True,
     }
 
@@ -196,6 +276,7 @@ if AVAILABLE_KEYS["gemini"]:
         ],
         "quality": 8, "speed": "fast", "rate_limit": 15,
         "provider": "gemini", "max_tokens": 8192,
+        "context_length": 1048576,
         "supports_function_calling": True,
     }
     MODEL_POOL["gemini-flash-preview"] = {
@@ -206,6 +287,7 @@ if AVAILABLE_KEYS["gemini"]:
         ],
         "quality": 9, "speed": "fast", "rate_limit": 15,
         "provider": "gemini", "max_tokens": 8192,
+        "context_length": 1048576,
         "supports_function_calling": True,
     }
 
@@ -216,6 +298,7 @@ if AVAILABLE_KEYS["cerebras"]:
         "capabilities": ["general", "coding", "reasoning", "writing"],
         "quality": 8, "speed": "very_fast", "rate_limit": 30,
         "provider": "cerebras", "max_tokens": 4096,
+        "context_length": 131072,
         "supports_function_calling": True,
     }
 
@@ -229,6 +312,7 @@ if AVAILABLE_KEYS["sambanova"]:
         ],
         "quality": 9, "speed": "fast", "rate_limit": 20,
         "provider": "sambanova", "max_tokens": 4096,
+        "context_length": 8192,
         "supports_function_calling": True,
     }
 
@@ -241,6 +325,7 @@ if AVAILABLE_KEYS["openai"]:
         ],
         "quality": 8, "speed": "fast", "rate_limit": 500,
         "provider": "openai", "max_tokens": 4096,
+        "context_length": 128000,
         "supports_function_calling": True,
     }
     MODEL_POOL["gpt-4o"] = {
@@ -251,6 +336,7 @@ if AVAILABLE_KEYS["openai"]:
         ],
         "quality": 9, "speed": "medium", "rate_limit": 500,
         "provider": "openai", "max_tokens": 8192,
+        "context_length": 128000,
         "supports_function_calling": True,
     }
 
@@ -264,7 +350,15 @@ if AVAILABLE_KEYS["anthropic"]:
         ],
         "quality": 10, "speed": "medium", "rate_limit": 50,
         "provider": "anthropic", "max_tokens": 8192,
+        "context_length": 200000,
         "supports_function_calling": True,
+    }
+
+# ── Phase 10.1: Register custom endpoints ──
+for _ep in CUSTOM_ENDPOINTS:
+    _ep_key = f"{_ep['provider']}-{_ep['name']}"
+    MODEL_POOL[_ep_key] = {
+        k: v for k, v in _ep.items() if k != "name"
     }
 
 '''

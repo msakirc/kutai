@@ -783,6 +783,17 @@ class BaseAgent:
             tier = AGENT_TIER_MAP.get(self.name, self.default_tier)
         tier = self._enforce_min_tier(tier)
 
+        # Phase 10.5: Extract model_override from task context
+        _ss_ctx = task.get("context")
+        if isinstance(_ss_ctx, str):
+            try:
+                _ss_ctx = json.loads(_ss_ctx)
+            except (json.JSONDecodeError, TypeError):
+                _ss_ctx = {}
+        if not isinstance(_ss_ctx, dict):
+            _ss_ctx = {}
+        _ss_model_override = _ss_ctx.get("model_override")
+
         system_prompt = self._build_full_system_prompt(task)
         context = await self._build_context(task)
         messages = [
@@ -793,6 +804,7 @@ class BaseAgent:
         try:
             response = await call_model(
                 tier, messages, agent_type=self.name,
+                model_override=_ss_model_override,
             )
         except Exception as exc:
             logger.error(f"[Task #{task_id}] Single-shot call failed: {exc}")
@@ -882,6 +894,17 @@ class BaseAgent:
         """
         task_id = task.get("id", "?")
         goal_id = task.get("goal_id")
+
+        # ── Phase 10.5: Extract model_override from task context ──
+        _task_ctx = task.get("context")
+        if isinstance(_task_ctx, str):
+            try:
+                _task_ctx = json.loads(_task_ctx)
+            except (json.JSONDecodeError, TypeError):
+                _task_ctx = {}
+        if not isinstance(_task_ctx, dict):
+            _task_ctx = {}
+        model_override = _task_ctx.get("model_override")
 
         # ── resolve tier ──
         tier = task.get("tier", self.default_tier)
@@ -989,6 +1012,7 @@ class BaseAgent:
                 response = await call_model(
                     tier, messages, tools=litellm_tools,
                     agent_type=self.name,
+                    model_override=model_override,
                 )
             except Exception as exc:
                 logger.error(f"[Task #{task_id}] Model call failed: {exc}")

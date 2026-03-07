@@ -107,11 +107,25 @@ class TelegramInterface:
 
     async def cmd_add_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not context.args:
-            await update.message.reply_text("Usage: /task <description>")
+            await update.message.reply_text(
+                "Usage: /task <description> [--model <litellm_name>]"
+            )
             return
-        description = " ".join(context.args)
+        raw_args = list(context.args)
         chat_id = update.message.chat_id
         parent_id = self.user_last_task_id.get(chat_id)
+
+        # Phase 10.5: Parse --model flag
+        model_override = None
+        if "--model" in raw_args:
+            idx = raw_args.index("--model")
+            if idx + 1 < len(raw_args):
+                model_override = raw_args[idx + 1]
+                raw_args = raw_args[:idx] + raw_args[idx + 2:]
+            else:
+                raw_args = raw_args[:idx]
+
+        description = " ".join(raw_args)
 
         task_id = await add_task(
             title=description[:50],
@@ -119,9 +133,11 @@ class TelegramInterface:
             tier="auto",
             parent_task_id=parent_id,
             priority=TASK_PRIORITY["critical"],
+            context={"model_override": model_override} if model_override else None,
         )
         self.user_last_task_id[chat_id] = task_id
-        await update.message.reply_text(f"✅ Task #{task_id} queued.")
+        pin_msg = f" (pinned: {model_override})" if model_override else ""
+        await update.message.reply_text(f"✅ Task #{task_id} queued.{pin_msg}")
 
 
     async def cmd_list_goals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

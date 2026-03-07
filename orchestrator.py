@@ -540,6 +540,22 @@ class Orchestrator:
             )
             subtasks = subtasks[:MAX_SUBTASKS]
 
+        # ── Phase 13.2: Plan verification ──
+        try:
+            from collaboration.plan_verification import verify_plan
+            issues = verify_plan(subtasks, goal_budget=10.0)
+            if issues:
+                logger.warning(
+                    f"[Task #{task_id}] Plan verification found "
+                    f"{len(issues)} issue(s): " + "; ".join(issues)
+                )
+                await self.telegram.send_notification(
+                    f"⚠️ *Plan Issues (Task #{task_id})*\n"
+                    + "\n".join(f"  • {i}" for i in issues)
+                )
+        except Exception as e:
+            logger.debug(f"Plan verification failed (non-critical): {e}")
+
         # Pre-process subtasks: resolve tiers and dep_step references.
         # We need a two-pass approach because depends_on_step references
         # IDs that are created during insertion.

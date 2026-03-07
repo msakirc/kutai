@@ -144,6 +144,15 @@ async def init_db():
         )
     """)
 
+    # Blackboards (Phase 13.1)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS blackboards (
+            goal_id INTEGER PRIMARY KEY,
+            data JSON NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     # Model performance stats (Phase 4)
     await db.execute("""
         CREATE TABLE IF NOT EXISTS model_stats (

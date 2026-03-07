@@ -385,6 +385,20 @@ class BaseAgent:
         except Exception as exc:
             logger.debug(f"Project profile injection failed (non-critical): {exc}")
 
+        # ── Phase 13.1: Blackboard injection ──
+        if goal_id:
+            try:
+                from collaboration.blackboard import (
+                    get_or_create_blackboard,
+                    format_blackboard_for_prompt,
+                )
+                board = await get_or_create_blackboard(goal_id)
+                bb_block = format_blackboard_for_prompt(board)
+                if bb_block:
+                    parts.append(bb_block)
+            except Exception as exc:
+                logger.debug(f"Blackboard injection failed (non-critical): {exc}")
+
         # ── Phase 11.3: RAG context injection ──
         try:
             from memory.rag import retrieve_context

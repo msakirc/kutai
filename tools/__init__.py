@@ -113,6 +113,58 @@ try:
 except Exception as e:
     logger.warning(f"download_file tool not available — {type(e).__name__}: {e}")
 
+# Phase 13.1: Blackboard tools
+try:
+    from collaboration.blackboard import (
+        read_blackboard as _read_blackboard_fn,
+        write_blackboard as _write_blackboard_fn,
+    )
+
+    async def _tool_read_blackboard(goal_id: int, key: str = "") -> str:
+        """Read from the shared project blackboard."""
+        import json as _json
+        result = await _read_blackboard_fn(int(goal_id), key=key or None)
+        return _json.dumps(result, indent=2) if result else "{}"
+
+    async def _tool_write_blackboard(goal_id: int, key: str, value: str) -> str:
+        """Write to the shared project blackboard."""
+        import json as _json
+        try:
+            parsed_value = _json.loads(value)
+        except (ValueError, TypeError):
+            parsed_value = value
+        await _write_blackboard_fn(int(goal_id), key, parsed_value)
+        return f"✅ Blackboard key '{key}' updated."
+
+    _optional_tools["read_blackboard"] = {
+        "function": _tool_read_blackboard,
+        "description": (
+            "Read from the shared project blackboard (structured state shared "
+            "between agents). "
+            "Args: goal_id (int), key (str, optional — e.g. 'architecture', "
+            "'files', 'decisions', 'open_issues', 'constraints')"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "read_blackboard", '
+            '"args": {"goal_id": 1, "key": "decisions"}}'
+        ),
+    }
+    _optional_tools["write_blackboard"] = {
+        "function": _tool_write_blackboard,
+        "description": (
+            "Write to the shared project blackboard. "
+            "Args: goal_id (int), key (str — 'architecture'|'files'|'decisions'"
+            "|'open_issues'|'constraints'), value (str — JSON string)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "write_blackboard", '
+            '"args": {"goal_id": 1, "key": "decisions", '
+            '"value": "[{\\"what\\": \\"Use FastAPI\\", \\"why\\": \\"speed\\", \\"by\\": \\"architect\\"}]"}}'
+        ),
+    }
+except Exception as e:
+    logger.debug(f"blackboard tools not available — {type(e).__name__}: {e}")
+
 # Phase 11.5: Document ingestion tool
 try:
     from memory.ingest import ingest_document as _ingest_fn

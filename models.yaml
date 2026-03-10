@@ -1,0 +1,60 @@
+# models.yaml — Model configuration
+# Most properties are auto-detected. Use this for overrides only.
+
+# ─── Settings ────────────────────────────────────────────────────────────────
+settings:
+  benchmark_cache_dir: ".benchmark_cache"
+  enrich_with_benchmarks: true          # auto-fetch benchmarks on load
+  benchmark_min_sources: 2              # require 2+ sources for benchmark override
+
+# ─── Personal projects (local-only routing) ──────────────────────────────────
+personal_projects:
+  - "my-app"
+  - "side-project"
+
+# ─── Cloud Models ────────────────────────────────────────────────────────────
+cloud:
+  gemini-flash:
+    litellm_name: "gemini/gemini-2.0-flash"
+
+  gemini-flash-thinking:
+    litellm_name: "gemini/gemini-2.5-flash-preview-05-20"
+
+  groq-llama-70b:
+    litellm_name: "groq/llama-3.3-70b-versatile"
+
+  groq-llama-8b:
+    litellm_name: "groq/llama-3.1-8b-instant"
+
+  cerebras-llama-70b:
+    litellm_name: "cerebras/llama3.3-70b"
+
+  sambanova-qwen3-32b:
+    litellm_name: "sambanova/Qwen3-32B"
+
+  claude-sonnet:
+    litellm_name: "claude-sonnet-4-20250514"
+
+  gpt-4o:
+    litellm_name: "gpt-4o"
+
+  gpt-4o-mini:
+    litellm_name: "gpt-4o-mini"
+
+# ─── Overrides (apply to any model by name) ─────────────────────────────────
+# Model name for local = GGUF filename stem (e.g., "Qwen3-30B-A3B-Q4_K_M")
+#overrides:
+  # Example: limit context for a model that OOMs at full context
+  # Qwen3-30B-A3B-Q4_K_M:
+  #   context_length: 16384
+  #   gpu_layers: 28
+  #
+  # Example: manually set capability scores
+  # my-custom-model:
+  #   capabilities:
+  #     code_generation: 9.0
+  #     reasoning: 7.5
+  #
+  # Example: disable a model
+  # old-model-v1:
+  #   disabled: true

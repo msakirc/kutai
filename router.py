@@ -1,69 +1,144 @@
-# router.py
+# router.py (rewritten)
 """
-Model router — task classification, smart model selection,
-rate limiting, retries, and cross-provider fallback.
+Model router — requirements-based model selection, rate limiting,
+retries, cross-provider fallback, and GPU-aware scheduling.
 """
-import json
+
+from __future__ import annotations
+
 import asyncio
+import json
 import logging
 import time
+from dataclasses import dataclass, field
 
 import litellm
 litellm.suppress_debug_info = True
 
-from config import (
-    MODEL_POOL,
-    FALLBACK_ORDER,
-    COST_BUDGET_DAILY,
-    THINKING_MODELS,
-)
+from config import THINKING_MODELS, COST_BUDGET_DAILY
+from model_registry import ModelInfo, get_registry
+from gpu_monitor import get_gpu_monitor
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Model Requirements ─────────────────────────────────────────────────────
+
+@dataclass
+class ModelRequirements:
+    """
+    Structured description of what a task needs from a model.
+    Built by agents/pipeline, consumed by select_model.
+
+    This replaces the flat 'tier' string with rich, queryable requirements.
+    """
+    # What the task needs to do
+    primary_capability: str = "general"        # "coding", "reasoning", "planning", etc.
+    secondary_capabilities: list[str] = field(default_factory=list)
+
+    # Quality floor (1-10). Minimum acceptable quality for primary_capability.
+    min_quality: int = 1
+
+    # Context requirements
+    estimated_input_tokens: int = 2000         # estimated prompt size
+    estimated_output_tokens: int = 1000        # expected completion size
+    min_context_length: int = 0                # 0 = auto-calculate from estimates
+
+    # Feature requirements
+    needs_function_calling: bool = False
+    needs_json_mode: bool = False
+    needs_thinking: bool = False
+
+    # Privacy / location constraints
+    local_only: bool = False                   # for personal/sensitive data
+
+    # Speed vs quality preference
+    prefer_speed: bool = False                 # True = prioritize fast models
+    prefer_quality: bool = False               # True = prioritize best quality
+
+    # Budget constraint for this call
+    max_cost: float = 0.0                      # 0 = no limit
+
+    # Task priority (from TASK_PRIORITY)
+    priority: int = 5                          # 10=critical(user waiting), 1=background
+
+    # Model diversity — avoid these litellm names (for review loops)
+    exclude_models: list[str] = field(default_factory=list)
+
+    # Agent context for performance lookup
+    agent_type: str = ""
+
+    # Direct model pin (escape hatch)
+    model_override: str | None = None
+
+    @property
+    def effective_context_needed(self) -> int:
+        """Calculate minimum context window needed."""
+        if self.min_context_length > 0:
+            return self.min_context_length
+        # 1.3x multiplier for safety margin
+        return int((self.estimated_input_tokens + self.estimated_output_tokens) * 1.3)
 
 
 # ─── Per-Provider Rate Limiting ──────────────────────────────────────────────
 
 class RateLimiter:
-    """Sliding-window rate limiter for a single provider."""
+    """Sliding-window rate limiter tracking both RPM and TPM."""
 
-    def __init__(self, calls_per_minute: int = 25):
-        self.calls_per_minute = calls_per_minute
-        self.timestamps: list[float] = []
+    def __init__(self, rpm: int = 30, tpm: int = 100000):
+        self.rpm = rpm
+        self.tpm = tpm
+        self._request_timestamps: list[float] = []
+        self._token_log: list[tuple[float, int]] = []  # (timestamp, token_count)
 
     @property
-    def current_usage(self) -> int:
+    def current_rpm_usage(self) -> int:
         now = time.time()
-        return len([t for t in self.timestamps if now - t < 60])
+        return len([t for t in self._request_timestamps if now - t < 60])
+
+    @property
+    def current_tpm_usage(self) -> int:
+        now = time.time()
+        return sum(tc for ts, tc in self._token_log if now - ts < 60)
+
+    @property
+    def rpm_headroom(self) -> int:
+        return self.rpm - self.current_rpm_usage
+
+    @property
+    def tpm_headroom(self) -> int:
+        return self.tpm - self.current_tpm_usage
+
+    def has_capacity(self, estimated_tokens: int = 0) -> bool:
+        """Check if there's capacity for a request without waiting."""
+        return self.rpm_headroom > 2 and self.tpm_headroom > estimated_tokens
 
     async def wait(self) -> None:
+        """Wait until rate limit allows a new request."""
         now = time.time()
-        self.timestamps = [t for t in self.timestamps if now - t < 60]
+        self._request_timestamps = [t for t in self._request_timestamps if now - t < 60]
 
-        if len(self.timestamps) >= self.calls_per_minute:
-            wait_time = 60 - (now - self.timestamps[0]) + 0.5
-            logger.info(
-                f"Rate limiter: waiting {wait_time:.1f}s "
-                f"({len(self.timestamps)}/{self.calls_per_minute} rpm)"
-            )
+        if len(self._request_timestamps) >= self.rpm:
+            wait_time = 60 - (now - self._request_timestamps[0]) + 0.5
+            logger.info(f"Rate limiter: waiting {wait_time:.1f}s (RPM)")
             await asyncio.sleep(wait_time)
 
-        self.timestamps.append(time.time())
+        self._request_timestamps.append(time.time())
 
+    def record_tokens(self, token_count: int) -> None:
+        """Record token usage after a call completes."""
+        now = time.time()
+        self._token_log.append((now, token_count))
+        # Clean old entries
+        self._token_log = [(t, c) for t, c in self._token_log if now - t < 60]
 
-# One limiter per provider, initialized from MODEL_POOL
-_rate_limiters: dict[str, RateLimiter] = {}
-
-
-# ─── Per-Provider Circuit Breaker ────────────────────────────────────────────
 
 class CircuitBreaker:
-    """Track consecutive failures per provider and temporarily disable."""
+    """Track failures per provider and temporarily disable."""
 
     def __init__(
-        self,
-        failure_threshold: int = 3,
-        window_seconds: float = 300,
-        cooldown_seconds: float = 600,
+        self, failure_threshold: int = 3,
+        window_seconds: float = 300, cooldown_seconds: float = 600,
     ):
         self.failure_threshold = failure_threshold
         self.window_seconds = window_seconds
@@ -74,19 +149,14 @@ class CircuitBreaker:
     def record_failure(self) -> None:
         now = time.time()
         self.failures.append(now)
-        # Keep only failures within the window
         self.failures = [t for t in self.failures if now - t < self.window_seconds]
         if len(self.failures) >= self.failure_threshold:
             self.degraded_until = now + self.cooldown_seconds
             logger.warning(
-                f"Circuit breaker TRIPPED — provider degraded for "
-                f"{self.cooldown_seconds:.0f}s "
-                f"({len(self.failures)} failures in "
-                f"{self.window_seconds:.0f}s window)"
+                f"Circuit breaker TRIPPED — degraded for {self.cooldown_seconds:.0f}s"
             )
 
     def record_success(self) -> None:
-        """Reset failures on a successful call."""
         self.failures.clear()
         self.degraded_until = 0.0
 
@@ -94,378 +164,59 @@ class CircuitBreaker:
     def is_degraded(self) -> bool:
         if time.time() >= self.degraded_until:
             if self.degraded_until > 0:
-                # Cooldown expired, reset
                 self.degraded_until = 0.0
                 self.failures.clear()
-                logger.info("Circuit breaker RESET — provider recovered")
             return False
         return True
 
 
+# Per-provider instances
+_rate_limiters: dict[str, RateLimiter] = {}
 _circuit_breakers: dict[str, CircuitBreaker] = {}
 
 
+def _get_limiter(provider: str, rpm: int = 30, tpm: int = 100000) -> RateLimiter:
+    if provider not in _rate_limiters:
+        _rate_limiters[provider] = RateLimiter(rpm, tpm)
+    return _rate_limiters[provider]
+
+
 def _get_circuit_breaker(provider: str) -> CircuitBreaker:
-    """Get or create a circuit breaker for *provider*."""
     if provider not in _circuit_breakers:
         _circuit_breakers[provider] = CircuitBreaker()
     return _circuit_breakers[provider]
 
-def _get_limiter(provider: str, default_rpm: int = 30) -> RateLimiter:
-    """Get or create a rate limiter for *provider*."""
-    if provider not in _rate_limiters:
-        _rate_limiters[provider] = RateLimiter(default_rpm)
-    return _rate_limiters[provider]
+
+# Initialize limiters from registry at first use
+_limiters_initialized = False
 
 
-def _get_limiter_for_model(litellm_name: str) -> RateLimiter:
-    """Find the rate limiter for a litellm model name."""
-    for cfg in MODEL_POOL.values():
-        if cfg["litellm_name"] == litellm_name:
-            return _get_limiter(cfg["provider"], cfg.get("rate_limit", 30))
-    # Infer provider from name prefix
-    provider = litellm_name.split("/")[0] if "/" in litellm_name else "unknown"
-    return _get_limiter(provider, 20)
-
-
-# Pre-initialize limiters for known providers
-for _pool_cfg in MODEL_POOL.values():
-    _prov = _pool_cfg["provider"]
-    _rpm = _pool_cfg.get("rate_limit", 30)
-    if _prov not in _rate_limiters:
-        _rate_limiters[_prov] = RateLimiter(_rpm)
-
-
-# ─── Classification ─────────────────────────────────────────────────────────
-
-ROUTER_PROMPT = """You are a task router. Classify the given task into a complexity tier.
-Respond ONLY with valid JSON, no markdown.
-
-Tiers:
-- "cheap": Simple/quick tasks — factual questions, formatting, lookups, \
-classification, translations, simple math, definitions. \
-MOST tasks should be cheap. When in doubt, choose cheap.
-- "code": Code-related tasks — writing code, debugging, creating scripts, \
-building features, fixing bugs, writing tests.
-- "medium": Moderate tasks — multi-paragraph summaries, content drafting, \
-data analysis, detailed explanations, comparisons, planning.
-- "expensive": Complex tasks ONLY — multi-step reasoning, full project \
-architecture, critical business decisions, creative strategy requiring nuance.
-
-IMPORTANT: Bias heavily toward "cheap". Code tasks go to "code". \
-Only use "expensive" if truly necessary.
-
-Also determine if human approval is needed:
-- needs_approval: true ONLY if task involves external actions, spending money, \
-sending communications, or irreversible operations.
-
-Task: {task_description}
-
-Respond as: {{"tier": "cheap", "needs_approval": false, "reasoning": "brief"}}"""
-
-
-async def classify_task(title: str, description: str) -> dict:
-    """Use the cheapest model to classify a task's complexity tier."""
-    limiter = _get_limiter_for_model(CLASSIFIER_MODEL)
-    await limiter.wait()
-
-    try:
-        response = await asyncio.wait_for(
-            litellm.acompletion(
-                model=CLASSIFIER_MODEL,
-                messages=[{
-                    "role": "user",
-                    "content": ROUTER_PROMPT.format(
-                        task_description=f"{title}: {description[:500]}"
-                    ),
-                }],
-                max_tokens=150,
-                temperature=0,
-            ),
-            timeout=30,
-        )
-
-        raw = response.choices[0].message.content.strip()
-
-        # Strip markdown fences if present
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-            raw = raw.rsplit("```", 1)[0]
-
-        result = json.loads(raw)
-        tier = _resolve_tier(result.get("tier", "cheap"))
-
-                # Bump action-heavy tasks out of the weakest tier
-        if tier == "cheap":
-            text = f"{title} {description[:200]}".lower()
-
-            # Strong verbs — always bump
-            strong_verbs = [
-                "fetch", "download", "install", "deploy", "execute",
-                "run ", "run:", "clone", "setup", "set up", "configure",
-                "compile", "test ", "debug", "create", "build", "scan",
-                "scrape", "start ", "stop ", "restart", "launch",
-                "migrate", "import ", "export ", "delete", "remove",
-            ]
-            # Contextual verbs — bump only when paired with tech targets
-            context_verbs = [
-                "list", "show", "check", "update", "read",
-                "write", "open", "search", "analyze", "monitor",
-                "get ", "find ",
-            ]
-            tech_targets = [
-                "repo", "file", "folder", "directory", "server",
-                "database", "api", "endpoint", "package", "container",
-                "docker", "service", "script", "code", "project",
-                "branch", "commit", "log", "port", "process",
-                "dependencies", "config", "workspace", "module",
-            ]
-
-            needs_bump = any(v in text for v in strong_verbs)
-            if not needs_bump:
-                has_verb = any(v in text for v in context_verbs)
-                has_target = any(t in text for t in tech_targets)
-                needs_bump = has_verb and has_target
-
-            if needs_bump:
-                tier = _resolve_tier("code")
-                logger.info(
-                    f"Tier bumped: 'cheap' → '{tier}' (action task detected)"
-                )
-
-        logger.info(
-            f"Classified: '{tier}' — "
-            f"{result.get('reasoning', 'N/A')[:80]}"
-        )
-        return {
-            "tier": tier,
-            "needs_approval": result.get("needs_approval", False),
-            "reasoning": result.get("reasoning", ""),
-        }
-
-    except Exception as e:
-        logger.warning(f"Classification failed ({e}), defaulting to cheap")
-        return {
-            "tier": _get_cheapest_available_tier(),
-            "needs_approval": False,
-            "reasoning": f"Classification failed, defaulting: {e}",
-        }
-
-
-# ─── Tier Resolution ────────────────────────────────────────────────────────
-
-def _resolve_tier(requested: str) -> str:
-    """
-    Map a requested tier to the best available tier.
-    Supports: routing, cheap, code, medium, expensive.
-    Falls back down the priority chain if the requested tier has no models.
-    """
-    if requested in MODEL_TIERS:
-        return requested
-
-    # Priority order for downward fallback
-    priority = ["expensive", "medium", "code", "cheap", "routing"]
-    try:
-        start_idx = priority.index(requested)
-    except ValueError:
-        start_idx = 0
-
-    # Walk down from requested tier
-    for i in range(start_idx, len(priority)):
-        if priority[i] in MODEL_TIERS:
-            if priority[i] != requested:
-                logger.info(
-                    f"Tier '{requested}' unavailable, falling back to "
-                    f"'{priority[i]}'"
-                )
-            return priority[i]
-
-    return _get_cheapest_available_tier()
-
-
-def _get_cheapest_available_tier() -> str:
-    """Return the cheapest tier that has models configured."""
-    for tier in reversed(["routing", "cheap", "code", "medium", "expensive"]):
-        if tier in MODEL_TIERS:
-            return tier
-    return "cheap"
-
-
-# ─── Smart Model Selection ──────────────────────────────────────────────────
-
-def select_model(
-    tier: str,
-    capability: str | None = None,
-    prefer_local: bool = True,
-    agent_type: str | None = None,
-    required_capabilities: list[str] | None = None,
-    min_context_length: int | None = None,
-    sensitivity: str | None = None,
-) -> list[dict]:
-    """
-    Return a ranked list of models suitable for *tier* + optional *capability*.
-
-    Phase 10 enhancements:
-      - required_capabilities: filter to models that have ALL listed capabilities
-      - min_context_length: skip models with context_length below this threshold
-      - sensitivity: "public" | "private" | "secret" — restrict to local for
-        private/secret data
-
-    Ranking:
-      1. Provider class (local > free cloud > paid)
-      2. Historical performance for agent_type (Phase 4)
-      3. Matches capability (if specified)
-      4. Within tier quality range
-      5. Higher quality wins ties
-    """
-    tier_ranges = {
-        "routing":   (0, 5),
-        "cheap":     (0, 6),
-        "code":      (0, 99),   # any quality, filtered by capability below
-        "medium":    (4, 8),
-        "expensive": (7, 99),
-    }
-    q_min, q_max = tier_ranges.get(tier, (0, 99))
-
-    # Phase 10.3: Local-only providers for sensitive data
-    _local_providers = {"ollama", "llamacpp", "custom_openai"}
-    restrict_local = sensitivity in ("private", "secret")
-
-    # Fetch performance stats if agent_type is known
-    perf_by_model: dict[str, dict] = {}
-    if agent_type and _perf_cache_ready:
-        perf_by_model = _perf_cache.get(agent_type, {})
-
-    candidates: list[dict] = []
-
-    for key, cfg in MODEL_POOL.items():
-        quality = cfg["quality"]
-
-        # Phase 10.3: Skip non-local models for sensitive data
-        if restrict_local and cfg["provider"] not in _local_providers:
-            continue
-
-        # Phase 10.4: Required capabilities filter
-        if required_capabilities:
-            model_caps = set(cfg.get("capabilities", []))
-            if not all(rc in model_caps for rc in required_capabilities):
-                continue
-
-        # Phase 10.4: Context length filter
-        if min_context_length:
-            model_ctx = cfg.get("context_length", 8192)
-            if model_ctx < min_context_length:
-                continue
-
-        # For "code" tier, require coding capability
-        if tier == "code" and "coding" not in cfg.get("capabilities", []):
-            continue
-
-        # For "routing" tier, prefer routing/classification capable
-        if tier == "routing":
-            has_routing = any(
-                c in cfg.get("capabilities", [])
-                for c in ("routing", "classification")
+def _init_limiters():
+    global _limiters_initialized
+    if _limiters_initialized:
+        return
+    registry = get_registry()
+    for m in registry.cloud_models():
+        if m.provider not in _rate_limiters:
+            _rate_limiters[m.provider] = RateLimiter(
+                m.rate_limit_rpm, m.rate_limit_tpm
             )
-            if not has_routing and quality > 5:
-                continue   # skip expensive models for routing
-
-        # Quality range filter
-        if quality < q_min or quality > q_max:
-            continue
-
-        # Capability match scoring
-        quality_adj = quality
-        if capability and capability not in cfg.get("capabilities", []):
-            quality_adj = quality - 2
-
-        # Rate headroom check
-        limiter = _get_limiter(cfg["provider"], cfg.get("rate_limit", 30))
-        headroom = limiter.calls_per_minute - limiter.current_usage
-        rate_ok = headroom > 2
-
-        # Circuit breaker check — skip degraded providers
-        cb = _get_circuit_breaker(cfg["provider"])
-        if cb.is_degraded:
-            logger.debug(
-                f"Skipping {key} — provider '{cfg['provider']}' is degraded"
-            )
-            continue
-
-        # Provider priority class:
-        FREE_CLOUD = {"groq", "cerebras", "sambanova", "gemini"}
-        if cfg["provider"] == "ollama":
-            provider_bonus = 200
-        elif cfg["provider"] in FREE_CLOUD:
-            provider_bonus = 100
-        else:
-            provider_bonus = 0
-
-        score = provider_bonus + (quality_adj * 10)
-        if rate_ok:
-            score += 5
-        else:
-            score -= 30
-
-        # ── Performance-aware bonus (Phase 4) ──
-        # If we have historical stats for this model + agent_type,
-        # adjust score based on success_rate and avg_grade.
-        perf = perf_by_model.get(cfg["litellm_name"])
-        if perf and perf.get("total_calls", 0) >= 3:
-            # Composite: success_rate (0-1) * avg_grade (0-5) → 0-5
-            perf_score = perf["success_rate"] * perf.get("avg_grade", 3.0)
-            # Scale to ±20 points centered at 3.0 (neutral)
-            perf_bonus = (perf_score - 3.0) * 8
-            score += perf_bonus
-            logger.debug(
-                f"  {key}: perf_bonus={perf_bonus:+.1f} "
-                f"(sr={perf['success_rate']:.2f}, "
-                f"grade={perf.get('avg_grade', 0):.1f}, "
-                f"calls={perf['total_calls']})"
-            )
-
-        candidates.append({
-            "key": key,
-            "litellm_name": cfg["litellm_name"],
-            "provider": cfg["provider"],
-            "max_tokens": cfg.get("max_tokens", 2048),
-            "rate_limit": cfg.get("rate_limit", 30),
-            "quality": quality,
-            "score": score,
-            "api_base": cfg.get("api_base"),
-        })
-
-    candidates.sort(key=lambda c: -c["score"])
-
-    # Debug: show which models were selected and their scores
-    if candidates:
-        model_list = [
-            f"{c['litellm_name']}(s={c['score']:.0f})"
-            for c in candidates
-        ]
-        logger.debug(f"select_model for tier '{tier}': {model_list}")
-
-    return candidates
+    _limiters_initialized = True
 
 
 # ─── Performance Cache ──────────────────────────────────────────────────────
-# In-memory cache of model performance stats, refreshed periodically.
-# Avoids hitting DB on every select_model call.
 
 _perf_cache: dict[str, dict[str, dict]] = {}
 _perf_cache_ready: bool = False
 _perf_cache_last_refresh: float = 0.0
-_PERF_CACHE_TTL: float = 300.0  # refresh every 5 minutes
+_PERF_CACHE_TTL: float = 300.0
 
 
 async def refresh_perf_cache() -> None:
-    """Refresh the in-memory performance cache from DB."""
     global _perf_cache, _perf_cache_ready, _perf_cache_last_refresh
-
     now = time.time()
     if _perf_cache_ready and (now - _perf_cache_last_refresh) < _PERF_CACHE_TTL:
         return
-
     try:
         from db import get_model_stats
         stats = await get_model_stats()
@@ -479,534 +230,777 @@ async def refresh_perf_cache() -> None:
         _perf_cache = cache
         _perf_cache_ready = True
         _perf_cache_last_refresh = now
-        logger.debug(f"Performance cache refreshed: {len(stats)} entries")
     except Exception as e:
         logger.debug(f"Performance cache refresh failed: {e}")
 
-def _get_fallback_models(tier: str) -> list[dict]:
+
+# ─── Model Selection (Core Redesign) ────────────────────────────────────────
+
+@dataclass
+class ScoredModel:
+    """A model candidate with its selection score and reasoning."""
+    model: ModelInfo
+    score: float
+    reasons: list[str] = field(default_factory=list)
+
+    @property
+    def litellm_name(self) -> str:
+        return self.model.litellm_name
+
+
+def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
     """
-    Build a full fallback chain: tier candidates first, then adjacent tiers.
+    Select models matching requirements, ranked by composite score.
+
+    Scoring dimensions (all normalized to 0-100 range, then weighted):
+
+    1. CAPABILITY FIT (weight: 35)
+       How well the model matches the required capabilities.
+
+    2. COST EFFICIENCY (weight: 25)
+       Prefer free/local over paid. Prefer cheaper paid models.
+
+    3. AVAILABILITY (weight: 20)
+       Rate limit headroom, circuit breaker status, model loaded status.
+
+    4. PERFORMANCE HISTORY (weight: 15)
+       Success rate and quality grades from past calls with this agent_type.
+
+    5. SPEED (weight: 5)
+       Estimated tokens/second, latency class.
     """
-    seen_names: set[str] = set()
-    chain: list[dict] = []
+    _init_limiters()
+    registry = get_registry()
 
-    # Primary: models for the requested tier
-    for c in select_model(tier):
-        if c["litellm_name"] not in seen_names:
-            chain.append(c)
-            seen_names.add(c["litellm_name"])
+    candidates: list[ScoredModel] = []
 
-    # Secondary: models from tier config fallbacks (if any)
-    tier_cfg = MODEL_TIERS.get(tier, {})
-    for fb_name in tier_cfg.get("fallbacks", []):
-        if fb_name not in seen_names:
-            # Find pool entry
-            for cfg in MODEL_POOL.values():
-                if cfg["litellm_name"] == fb_name:
-                    chain.append({
-                        "litellm_name": fb_name,
-                        "provider": cfg["provider"],
-                        "max_tokens": cfg.get("max_tokens", 2048),
-                        "rate_limit": cfg.get("rate_limit", 30),
-                        "quality": cfg["quality"],
-                        "score": 0,
-                        "api_base": cfg.get("api_base"),
-                    })
-                    seen_names.add(fb_name)
-                    break
+    for name, model in registry.models.items():
+        reasons: list[str] = []
+        skip = False
 
-    # Tertiary: walk down FALLBACK_ORDER for adjacent tiers
-    priority = FALLBACK_ORDER   # ["expensive", "medium", "code", "cheap", "routing"]
-    try:
-        tier_idx = priority.index(tier)
-    except ValueError:
-        tier_idx = 0
+        # ── Hard filters (instant rejection) ──
 
-    for i in range(tier_idx + 1, len(priority)):
-        for c in select_model(priority[i]):
-            if c["litellm_name"] not in seen_names:
-                chain.append(c)
-                seen_names.add(c["litellm_name"])
+        # Excluded models (diversity enforcement)
+        if model.litellm_name in reqs.exclude_models:
+            continue
 
-    return chain
+        # Local-only constraint
+        if reqs.local_only and not model.is_local:
+            continue
 
-# ─── Build MODEL_TIERS and CLASSIFIER_MODEL ─────────────────────────────────
+        # Context length
+        needed_ctx = reqs.effective_context_needed
+        if needed_ctx > 0 and model.context_length < needed_ctx:
+            continue
 
-MODEL_TIERS: dict[str, dict] = {}
+        # Function calling required but not supported
+        if reqs.needs_function_calling and not model.supports_function_calling:
+            continue
 
-_tier_definitions = [
-    ("routing",   0.0, "Task classification only"),
-    ("cheap",     0.3, "Simple Q&A, formatting, lookups"),
-    ("code",      0.1, "Code generation and debugging"),
-    ("medium",    0.3, "Summaries, planning, moderate reasoning"),
-    ("expensive", 0.3, "Complex analysis, full code gen, architecture"),
-]
+        # Thinking required but not available
+        if reqs.needs_thinking and not model.thinking_model:
+            continue
 
-for _tname, _ttemp, _tdesc in _tier_definitions:
-    _candidates = select_model(_tname)
-    if _candidates:
-        _primary = _candidates[0]
-        MODEL_TIERS[_tname] = {
-            "model":       _primary["litellm_name"],
-            "fallbacks":   [c["litellm_name"] for c in _candidates[1:]],
-            "max_tokens":  _primary.get("max_tokens", 2048),
-            "temperature": _ttemp,
-            "description": _tdesc,
+        # Cost constraint
+        if reqs.max_cost > 0 and not model.is_free:
+            est_cost = model.estimated_cost(
+                reqs.estimated_input_tokens, reqs.estimated_output_tokens
+            )
+            if est_cost > reqs.max_cost:
+                continue
+
+        # Primary capability minimum quality
+        primary_q = model.quality_for(reqs.primary_capability)
+        # Fall back to general quality if specific capability not listed
+        if primary_q == 0:
+            primary_q = model.quality_for("general")
+        if primary_q < reqs.min_quality:
+            continue
+
+        # Circuit breaker (cloud only)
+        if not model.is_local:
+            cb = _get_circuit_breaker(model.provider)
+            if cb.is_degraded:
+                continue
+
+        # Local model: must be loaded OR loadable
+        if model.is_local and not model.is_loaded:
+            # Check if we CAN load it (file exists, already verified by registry)
+            # The actual loading happens in call_model, not here
+            # But we penalize unloaded models in scoring
+            pass
+
+        # ── Scoring ──
+
+        # 1. CAPABILITY FIT (0-100)
+        cap_score = primary_q * 10  # 0-100
+        # Bonus for secondary capabilities
+        for sec_cap in reqs.secondary_capabilities:
+            sec_q = model.quality_for(sec_cap)
+            if sec_q > 0:
+                cap_score += sec_q * 2  # up to +20 per secondary
+                reasons.append(f"{sec_cap}={sec_q}")
+        cap_score = min(cap_score, 100)
+        reasons.insert(0, f"primary({reqs.primary_capability})={primary_q}")
+
+        # 2. COST EFFICIENCY (0-100)
+        if model.is_local:
+            cost_score = 95  # local is almost free
+            if not model.is_loaded:
+                # Penalize unloaded: swap costs time
+                cost_score = 70
+                reasons.append("needs_swap")
+            reasons.append("local")
+        elif model.is_free:
+            cost_score = 85  # free cloud is great
+            reasons.append("free_cloud")
+        else:
+            # Paid: score inversely proportional to cost
+            est_cost = model.estimated_cost(
+                reqs.estimated_input_tokens, reqs.estimated_output_tokens
+            )
+            if est_cost <= 0.001:
+                cost_score = 75
+            elif est_cost <= 0.01:
+                cost_score = 50
+            elif est_cost <= 0.05:
+                cost_score = 30
+            else:
+                cost_score = 10
+            reasons.append(f"est_cost=${est_cost:.4f}")
+
+        # 3. AVAILABILITY (0-100)
+        if model.is_local:
+            if model.is_loaded:
+                avail_score = 100
+                reasons.append("loaded")
+            else:
+                # Not loaded — estimate swap time penalty
+                swap_time = model.load_time_seconds
+                if swap_time < 10:
+                    avail_score = 60
+                elif swap_time < 30:
+                    avail_score = 40
+                else:
+                    avail_score = 20
+                reasons.append(f"swap_{swap_time:.0f}s")
+        else:
+            limiter = _get_limiter(
+                model.provider, model.rate_limit_rpm, model.rate_limit_tpm
+            )
+            total_tokens = reqs.estimated_input_tokens + reqs.estimated_output_tokens
+            if limiter.has_capacity(total_tokens):
+                avail_score = 90
+            elif limiter.rpm_headroom > 0:
+                avail_score = 50
+                reasons.append("low_headroom")
+            else:
+                avail_score = 10
+                reasons.append("rate_limited")
+
+        # 4. PERFORMANCE HISTORY (0-100)
+        perf_score = 50  # neutral default
+        if reqs.agent_type and _perf_cache_ready:
+            agent_perf = _perf_cache.get(reqs.agent_type, {})
+            model_perf = agent_perf.get(model.litellm_name)
+            if model_perf and model_perf.get("total_calls", 0) >= 3:
+                sr = model_perf["success_rate"]
+                grade = model_perf.get("avg_grade", 3.0)
+                perf_score = (sr * grade / 5.0) * 100
+                perf_score = max(0, min(100, perf_score))
+                reasons.append(
+                    f"perf(sr={sr:.2f},g={grade:.1f},n={model_perf['total_calls']})"
+                )
+
+        # 5. SPEED (0-100)
+        if model.is_local:
+            tps = model.tokens_per_second
+            if tps >= 50:
+                speed_score = 100
+            elif tps >= 20:
+                speed_score = 70
+            else:
+                speed_score = 40
+        else:
+            # Cloud speed classes (based on provider reputation)
+            speed_map = {
+                "groq": 95, "cerebras": 95,       # inference-optimized
+                "sambanova": 80,
+                "gemini": 70,
+                "openai": 60,
+                "anthropic": 50,
+            }
+            speed_score = speed_map.get(model.provider, 50)
+
+        # ── Composite score with weights ──
+        weights = {
+            "capability": 35,
+            "cost": 25,
+            "availability": 20,
+            "performance": 15,
+            "speed": 5,
         }
 
-_routing_candidates = select_model("routing")
-if _routing_candidates:
-    CLASSIFIER_MODEL: str = _routing_candidates[0]["litellm_name"]
-elif MODEL_POOL:
-    _cheapest = min(MODEL_POOL, key=lambda k: MODEL_POOL[k]["quality"])
-    CLASSIFIER_MODEL = MODEL_POOL[_cheapest]["litellm_name"]
-else:
-    CLASSIFIER_MODEL = "groq/llama-3.1-8b-instant"
+        # Adjust weights based on requirements
+        if reqs.prefer_quality:
+            weights["capability"] = 50
+            weights["cost"] = 10
+        elif reqs.prefer_speed:
+            weights["speed"] = 25
+            weights["capability"] = 25
+            weights["availability"] = 25
+            weights["cost"] = 15
+            weights["performance"] = 10
+
+        # Critical priority: maximize availability + quality
+        if reqs.priority >= 10:
+            weights["availability"] = 30
+            weights["capability"] = 35
+            weights["speed"] = 15
+            weights["cost"] = 10
+            weights["performance"] = 10
+
+        total_weight = sum(weights.values())
+        composite = (
+            cap_score * weights["capability"]
+            + cost_score * weights["cost"]
+            + avail_score * weights["availability"]
+            + perf_score * weights["performance"]
+            + speed_score * weights["speed"]
+        ) / total_weight
+
+        candidates.append(ScoredModel(
+            model=model,
+            score=composite,
+            reasons=reasons,
+        ))
+
+    # Sort descending by score
+    candidates.sort(key=lambda c: -c.score)
+
+    # Log selection
+    if candidates:
+        top3 = candidates[:3]
+        log_parts = [
+            f"{c.model.name}({c.score:.1f}|{','.join(c.reasons[:3])})"
+            for c in top3
+        ]
+        logger.info(
+            f"Model selection for {reqs.primary_capability}"
+            f"{'[local_only]' if reqs.local_only else ''}: "
+            f"{' > '.join(log_parts)}"
+            f"{f' (+{len(candidates)-3} more)' if len(candidates) > 3 else ''}"
+        )
+    else:
+        logger.warning(
+            f"No models match requirements: cap={reqs.primary_capability}, "
+            f"min_q={reqs.min_quality}, ctx={reqs.effective_context_needed}, "
+            f"fc={reqs.needs_function_calling}, local={reqs.local_only}"
+        )
+
+    return candidates
 
 
-# ─── Main API ────────────────────────────────────────────────────────────────
+# ─── Classification (Lightweight) ────────────────────────────────────────────
+
+ROUTER_PROMPT = """You are a task router. Classify this task into requirements.
+Respond ONLY with valid JSON, no markdown.
+
+Categories for primary_capability:
+- "routing": classification only
+- "simple": factual questions, definitions, conversions
+- "coding": write/debug/refactor code
+- "reasoning": multi-step logic, math, analysis
+- "planning": architecture, project planning, decomposition
+- "writing": prose, documentation, emails
+- "research": finding information, comparisons
+
+Also determine:
+- min_quality (1-10): how smart the model needs to be
+- needs_tools (bool): does this task require executing actions?
+- local_only (bool): does this involve personal/private data?
+
+BIAS: Most tasks need min_quality 5-7. Only use 8+ for complex architecture,
+multi-file refactoring, or critical decisions.
+
+Task: {task_description}
+
+Respond as: {{"primary_capability": "coding", "min_quality": 6, "needs_tools": true, "local_only": false, "reasoning": "brief"}}"""
+
+
+async def classify_task(title: str, description: str) -> ModelRequirements:
+    """
+    Classify a task and return structured ModelRequirements.
+    Uses cheapest available model. Falls back to keyword heuristic.
+    """
+    # Build minimal requirements for the classifier itself
+    classifier_reqs = ModelRequirements(
+        primary_capability="routing",
+        min_quality=1,
+        estimated_input_tokens=500,
+        estimated_output_tokens=100,
+        prefer_speed=True,
+    )
+
+    candidates = select_model(classifier_reqs)
+    if not candidates:
+        return _keyword_classify(title, description)
+
+    classifier_model = candidates[0].model
+
+    try:
+        # If local model and not loaded, use cloud for classification
+        # (don't swap just for routing)
+        if classifier_model.is_local and not classifier_model.is_loaded:
+            cloud_candidates = [c for c in candidates if not c.model.is_local]
+            if cloud_candidates:
+                classifier_model = cloud_candidates[0].model
+
+        limiter = _get_limiter(
+            classifier_model.provider,
+            classifier_model.rate_limit_rpm,
+            getattr(classifier_model, 'rate_limit_tpm', 100000),
+        )
+        await limiter.wait()
+
+        completion_kwargs = dict(
+            model=classifier_model.litellm_name,
+            messages=[{
+                "role": "user",
+                "content": ROUTER_PROMPT.format(
+                    task_description=f"{title}: {description[:500]}"
+                ),
+            }],
+            max_tokens=150,
+            temperature=0,
+        )
+        if classifier_model.api_base:
+            completion_kwargs["api_base"] = classifier_model.api_base
+
+        response = await asyncio.wait_for(
+            litellm.acompletion(**completion_kwargs),
+            timeout=30,
+        )
+
+        raw = response.choices[0].message.content.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+            raw = raw.rsplit("```", 1)[0]
+
+        result = json.loads(raw)
+
+        reqs = ModelRequirements(
+            primary_capability=result.get("primary_capability", "general"),
+            min_quality=result.get("min_quality", 5),
+            needs_function_calling=result.get("needs_tools", False),
+            local_only=result.get("local_only", False),
+        )
+
+        logger.info(
+            f"Classified: cap={reqs.primary_capability}, "
+            f"min_q={reqs.min_quality}, "
+            f"tools={reqs.needs_function_calling}, "
+            f"local={reqs.local_only} — "
+            f"{result.get('reasoning', '')[:60]}"
+        )
+        return reqs
+
+    except Exception as e:
+        logger.warning(f"Classification failed ({e}), using keyword fallback")
+        return _keyword_classify(title, description)
+
+
+def _keyword_classify(title: str, description: str) -> ModelRequirements:
+    """Fast keyword-based classification — no LLM call needed."""
+    text = f"{title} {description}".lower()
+
+    # Import the keyword rules from task_classifier
+    from task_classifier import _classify_by_keywords
+    result = _classify_by_keywords(title, description)
+    category = result["category"]
+
+    # Map category → ModelRequirements
+    category_map = {
+        "simple_qa":        ModelRequirements(primary_capability="simple", min_quality=3),
+        "code_simple":      ModelRequirements(primary_capability="coding", min_quality=5, needs_function_calling=True),
+        "code_complex":     ModelRequirements(primary_capability="coding", min_quality=7, needs_function_calling=True, prefer_quality=True),
+        "research":         ModelRequirements(primary_capability="research", min_quality=6, needs_function_calling=True),
+        "writing":          ModelRequirements(primary_capability="writing", min_quality=6),
+        "planning":         ModelRequirements(primary_capability="planning", min_quality=7, prefer_quality=True),
+        "action_required":  ModelRequirements(primary_capability="general", min_quality=5, needs_function_calling=True),
+        "sensitive":        ModelRequirements(primary_capability="general", min_quality=5, local_only=True),
+    }
+
+    reqs = category_map.get(category, ModelRequirements())
+    logger.debug(f"Keyword classified: {category} → {reqs.primary_capability}")
+    return reqs
+
+
+# ─── Main API: call_model ────────────────────────────────────────────────────
 
 async def call_model(
-    tier: str,
-    messages: list,
-    capability: str | None = None,
-    task_context: str = "",
+    reqs: ModelRequirements,
+    messages: list[dict],
     tools: list[dict] | None = None,
-    agent_type: str | None = None,
     stream: bool = False,
-    model_override: str | None = None,
 ) -> dict:
     """
-    Call the best available model for *tier*.
+    Call the best available model matching requirements.
 
-    Handles rate limits, retries with backoff, auth/billing errors,
-    timeouts, automatic fallback across providers, thinking model
-    detection, and optional streaming.
-
-    Phase 10.5: If *model_override* is provided, skip tier selection
-    entirely and use that exact litellm model name.
+    Handles: model selection, local model loading, rate limits,
+    retries with fallback, GPU semaphore, thinking models,
+    and function calling negotiation.
     """
-    tier = _resolve_tier(tier)
-    tier_cfg = MODEL_TIERS.get(tier, {})
-
-    # Temperature from tier config (default 0.3)
-    temperature = tier_cfg.get("temperature", 0.3)
-
-    # Refresh performance cache periodically (Phase 4)
     await refresh_perf_cache()
 
-    # ── Phase 10.5: Model pinning / override ──
-    if model_override:
-        # Find the model in MODEL_POOL by litellm_name
-        pinned_cfg = None
-        for _pk, _pcfg in MODEL_POOL.items():
-            if _pcfg["litellm_name"] == model_override:
-                pinned_cfg = _pcfg
-                break
-
-        if pinned_cfg:
-            candidates = [{
-                "key": _pk,
-                "litellm_name": model_override,
-                "provider": pinned_cfg["provider"],
-                "max_tokens": pinned_cfg.get("max_tokens", 2048),
-                "rate_limit": pinned_cfg.get("rate_limit", 30),
-                "quality": pinned_cfg["quality"],
-                "score": 999,
-                "api_base": pinned_cfg.get("api_base"),
-            }]
-            logger.info(
-                f"Model pinned: {model_override} (skipping tier selection)"
-            )
+    # ── Direct model override ──
+    if reqs.model_override:
+        registry = get_registry()
+        pinned = registry.find_by_litellm_name(reqs.model_override)
+        if pinned:
+            candidates = [ScoredModel(model=pinned, score=999, reasons=["pinned"])]
         else:
-            # Not in MODEL_POOL — try using as raw litellm name
-            candidates = [{
-                "litellm_name": model_override,
-                "provider": "unknown",
-                "max_tokens": 4096,
-                "rate_limit": 30,
-                "quality": 5,
-                "score": 999,
-                "api_base": None,
-            }]
-            logger.warning(
-                f"Model override '{model_override}' not in MODEL_POOL — "
-                f"attempting raw litellm call"
-            )
+            candidates = [ScoredModel(
+                model=ModelInfo(
+                    name="override",
+                    location="cloud",
+                    provider="unknown",
+                    litellm_name=reqs.model_override,
+                    capabilities={"general": 5},
+                    context_length=128000,
+                    max_tokens=4096,
+                ),
+                score=999,
+                reasons=["pinned_raw"],
+            )]
     else:
-        # Build ordered fallback chain
-        candidates = _get_fallback_models(tier)
+        # If tools are provided, we either need FC support or JSON mode
+        if tools:
+            reqs.needs_function_calling = True
+        candidates = select_model(reqs)
 
     if not candidates:
-        # Absolute fallback: any model in the pool
-        candidates = [
-            {
-                "litellm_name": cfg["litellm_name"],
-                "provider": cfg["provider"],
-                "max_tokens": cfg.get("max_tokens", 2048),
-                "rate_limit": cfg.get("rate_limit", 30),
-                "quality": cfg["quality"],
-                "score": 0,
-                "api_base": cfg.get("api_base"),
-            }
-            for cfg in MODEL_POOL.values()
-        ]
+        # Last resort: drop constraints and try again
+        fallback_reqs = ModelRequirements(
+            primary_capability="general",
+            min_quality=1,
+            agent_type=reqs.agent_type,
+        )
+        candidates = select_model(fallback_reqs)
 
     if not candidates:
-        raise RuntimeError("No models available in MODEL_POOL!")
+        raise RuntimeError("No models available!")
 
     last_error: str | None = None
 
-    # Try up to 5 candidates
-    for candidate in candidates[:5]:
-        model_name = candidate["litellm_name"]
-        provider = candidate.get("provider", "unknown")
-        max_tokens = candidate.get("max_tokens", 2048)
-        api_base = candidate.get("api_base")
-        is_ollama = provider == "ollama"
+    for scored in candidates[:5]:
+        model = scored.model
 
-        limiter = _get_limiter(provider, candidate.get("rate_limit", 30))
-        max_retries = 2 if is_ollama else 3
-        timeout_val = 120 if is_ollama else 60
+        # ── Local model: ensure loaded ──
+        if model.is_local:
+            from local_model_manager import get_local_manager
+            manager = get_local_manager()
 
-        # ── Thinking model adjustments (Phase 4) ──
-        is_thinking = _is_thinking_model(model_name)
+            if not model.is_loaded:
+                success = await manager.ensure_model(
+                    model.name,
+                    reason=f"{reqs.agent_type}:{reqs.primary_capability}",
+                )
+                if not success:
+                    last_error = f"Failed to load local model {model.name}"
+                    continue
+
+        # ── Build completion kwargs ──
+        is_thinking = model.thinking_model
+        temperature = 0.3
         if is_thinking:
-            timeout_val = max(timeout_val, 180)  # thinking models need more time
-            temperature = 1  # many thinking models ignore or require temp=1
+            temperature = None  # thinking models control their own temp
 
-        for attempt in range(max_retries):
-            try:
-                await limiter.wait()
+        timeout_val = 60
+        if model.is_local:
+            timeout_val = 120
+        if is_thinking:
+            timeout_val = max(timeout_val, 180)
 
-                logger.info(
-                    f"Calling {model_name} "
-                    f"(tier={tier}, attempt={attempt + 1}/{max_retries}"
-                    f"{', thinking' if is_thinking else ''})"
-                )
+        # Tool negotiation
+        use_tools = None
+        if tools and model.supports_function_calling:
+            use_tools = tools
 
-                # Decide whether to pass tools for function calling
-                # or response_format for JSON mode
-                use_tools = None
-                model_supports_fc = False
-                model_supports_rf = False
-                for _pool_key, _pool_cfg in MODEL_POOL.items():
-                    if _pool_cfg["litellm_name"] == model_name:
-                        model_supports_fc = _pool_cfg.get(
-                            "supports_function_calling", False
-                        )
-                        model_supports_rf = _pool_cfg.get(
-                            "supports_response_format", False
-                        )
-                        break
-                if tools and model_supports_fc:
-                    use_tools = tools
-                    logger.debug(
-                        f"Using function calling for {model_name}"
+        completion_kwargs = dict(
+            model=model.litellm_name,
+            messages=messages,
+            max_tokens=min(reqs.estimated_output_tokens * 2, model.max_tokens),
+        )
+
+        if temperature is not None:
+            completion_kwargs["temperature"] = temperature
+
+        if model.api_base:
+            completion_kwargs["api_base"] = model.api_base
+
+        if use_tools:
+            completion_kwargs["tools"] = use_tools
+            completion_kwargs["tool_choice"] = "auto"
+        elif not model.supports_function_calling and model.supports_json_mode:
+            completion_kwargs["response_format"] = {"type": "json_object"}
+
+        # ── Rate limiting ──
+        if not model.is_local:
+            limiter = _get_limiter(
+                model.provider, model.rate_limit_rpm,
+                model.rate_limit_tpm,
+            )
+            await limiter.wait()
+
+        # ── GPU semaphore for local models ──
+        local_manager = None
+        if model.is_local:
+            from local_model_manager import get_local_manager
+            local_manager = get_local_manager()
+            await local_manager.acquire_inference_slot()
+
+        max_retries = 2 if model.is_local else 3
+
+        try:
+            for attempt in range(max_retries):
+                try:
+                    call_start = time.time()
+
+                    logger.info(
+                        f"Calling {model.name} "
+                        f"(cap={reqs.primary_capability}, "
+                        f"q={model.quality_for(reqs.primary_capability)}, "
+                        f"attempt={attempt+1}/{max_retries}"
+                        f"{', thinking' if is_thinking else ''})"
                     )
 
-                completion_kwargs = dict(
-                    model=model_name,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
-
-                # Phase 10.1: Pass api_base for custom endpoints
-                if api_base:
-                    completion_kwargs["api_base"] = api_base
-
-                # Thinking models: don't set temperature (some reject it)
-                if is_thinking:
-                    completion_kwargs.pop("temperature", None)
-
-                if use_tools:
-                    completion_kwargs["tools"] = use_tools
-                    completion_kwargs["tool_choice"] = "auto"
-                elif model_supports_rf and not model_supports_fc:
-                    completion_kwargs["response_format"] = {
-                        "type": "json_object"
-                    }
-                    logger.debug(
-                        f"Using response_format json_object for "
-                        f"{model_name}"
-                    )
-
-                call_start = time.time()
-
-                # ── Streaming path (Phase 4) ──
-                if stream and not use_tools:
-                    completion_kwargs["stream"] = True
-                    chunks = []
-                    stream_response = await asyncio.wait_for(
+                    response = await asyncio.wait_for(
                         litellm.acompletion(**completion_kwargs),
                         timeout=timeout_val,
                     )
-                    full_content = ""
-                    async for chunk in stream_response:
-                        delta = chunk.choices[0].delta
-                        if delta and delta.content:
-                            full_content += delta.content
-                            chunks.append(chunk)
 
                     call_latency = time.time() - call_start
 
-                    # Calculate cost from chunks
+                    # Calculate cost
                     try:
-                        cost = litellm.stream_chunk_builder(
-                            chunks
-                        ) if chunks else 0.0
-                        # Actually cost is hard to get from stream,
-                        # estimate from token count
-                        cost = 0.0  # will be estimated below
+                        cost = litellm.completion_cost(completion_response=response)
                     except Exception:
                         cost = 0.0
-
-                    if is_ollama:
+                    if model.is_local:
                         cost = 0.0
 
-                    _get_circuit_breaker(provider).record_success()
+                    # Record token usage for TPM tracking
+                    if not model.is_local and response.usage:
+                        total_tokens = (
+                            (response.usage.prompt_tokens or 0)
+                            + (response.usage.completion_tokens or 0)
+                        )
+                        limiter.record_tokens(total_tokens)
+
+                    # Extract tool calls
+                    msg = response.choices[0].message
+                    tool_calls = None
+                    if hasattr(msg, "tool_calls") and msg.tool_calls:
+                        tool_calls = []
+                        for tc in msg.tool_calls:
+                            fn = tc.function
+                            try:
+                                args = json.loads(fn.arguments) if fn.arguments else {}
+                            except (json.JSONDecodeError, TypeError):
+                                args = {}
+                            tool_calls.append({
+                                "id": tc.id,
+                                "name": fn.name,
+                                "arguments": args,
+                            })
+
+                    # Extract thinking content
+                    thinking_content = _extract_thinking(msg) if is_thinking else None
+
+                    # Success — reset circuit breaker
+                    if not model.is_local:
+                        _get_circuit_breaker(model.provider).record_success()
 
                     return {
-                        "content": full_content,
-                        "model": model_name,
-                        "tier": tier,
-                        "cost": cost,
-                        "usage": {},
-                        "tool_calls": None,
+                        "content": msg.content or "",
+                        "model": model.litellm_name,
+                        "model_name": model.name,
+                        "cost": cost or 0.0,
+                        "usage": dict(response.usage) if response.usage else {},
+                        "tool_calls": tool_calls,
                         "latency": call_latency,
+                        "thinking": thinking_content,
+                        "is_local": model.is_local,
+                        "capability_quality": model.quality_for(reqs.primary_capability),
                     }
 
-                # ── Standard (non-streaming) path ──
-                response = await asyncio.wait_for(
-                    litellm.acompletion(**completion_kwargs),
-                    timeout=timeout_val,
-                )
+                except asyncio.TimeoutError:
+                    if not model.is_local:
+                        _get_circuit_breaker(model.provider).record_failure()
+                    last_error = f"Timeout on {model.name}"
+                    logger.warning(f"Timeout on {model.name} (attempt {attempt+1})")
+                    continue
 
-                call_latency = time.time() - call_start
+                except Exception as e:
+                    error_str = str(e).lower()
+                    last_error = str(e)
 
-                # Calculate cost
-                try:
-                    cost = litellm.completion_cost(
-                        completion_response=response
-                    )
-                except Exception:
-                    cost = 0.0
+                    if not model.is_local:
+                        _get_circuit_breaker(model.provider).record_failure()
 
-                # Ollama is always free
-                if is_ollama:
-                    cost = 0.0
-
-                # Extract tool_calls from function-calling response
-                msg = response.choices[0].message
-                tool_calls = None
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    tool_calls = []
-                    for tc in msg.tool_calls:
-                        fn = tc.function
-                        try:
-                            args = json.loads(fn.arguments) if fn.arguments else {}
-                        except (json.JSONDecodeError, TypeError):
-                            args = {}
-                        tool_calls.append({
-                            "id": tc.id,
-                            "name": fn.name,
-                            "arguments": args,
-                        })
-
-                # ── Extract thinking content (Phase 4) ──
-                thinking_content = None
-                if is_thinking:
-                    thinking_content = _extract_thinking(msg)
-
-                # Success — reset circuit breaker for this provider
-                _get_circuit_breaker(provider).record_success()
-
-                return {
-                    "content": msg.content or "",
-                    "model": model_name,
-                    "tier": tier,
-                    "cost": cost or 0.0,
-                    "usage": (
-                        dict(response.usage) if response.usage else {}
-                    ),
-                    "tool_calls": tool_calls,
-                    "latency": call_latency,
-                    "thinking": thinking_content,
-                }
-
-            except asyncio.TimeoutError:
-                _get_circuit_breaker(provider).record_failure()
-                logger.warning(
-                    f"Timeout on {model_name} "
-                    f"(attempt {attempt + 1}/{max_retries})"
-                )
-                last_error = f"Timeout on {model_name}"
-                continue   # retry same model
-
-            except Exception as e:
-                _get_circuit_breaker(provider).record_failure()
-                error_str = str(e).lower()
-                last_error = str(e)
-
-                # ── Auth / billing errors → skip provider entirely ──
-                is_auth = any(kw in error_str for kw in [
-                    "api key", "authentication", "unauthorized",
-                    "invalid_api_key",
-                ])
-                is_billing = any(kw in error_str for kw in [
-                    "credit", "billing", "quota", "insufficient",
-                ])
-                if is_auth or is_billing:
-                    logger.error(
-                        f"Auth/billing error on {model_name}: {e}"
-                    )
-                    break   # next candidate
-
-                # ── Rate limit → backoff then retry or skip ──
-                is_rate_limit = any(kw in error_str for kw in [
-                    "rate limit", "rate_limit", "429",
-                    "too many requests", "tokens per minute",
-                    "resource_exhausted",
-                ])
-                if is_rate_limit:
-                    if attempt < max_retries - 1:
-                        wait_time = (attempt + 1) * 5
-                        logger.warning(
-                            f"Rate limited on {model_name}, "
-                            f"waiting {wait_time}s "
-                            f"(attempt {attempt + 1}/{max_retries})"
-                        )
-                        await asyncio.sleep(wait_time)
-                        continue
-                    else:
-                        logger.warning(
-                            f"Rate limited on {model_name}, "
-                            f"moving to next model"
-                        )
+                    # Auth/billing → skip provider
+                    if any(kw in error_str for kw in [
+                        "api key", "authentication", "unauthorized",
+                        "billing", "credit", "quota",
+                    ]):
+                        logger.error(f"Auth/billing error on {model.name}: {e}")
                         break
 
-                # ── Unknown error → one retry then move on ──
-                if attempt < 1:
-                    logger.warning(
-                        f"Error on {model_name}: {e} — retrying once"
-                    )
-                    await asyncio.sleep(2)
-                    continue
-                logger.warning(f"Model {model_name} failed: {e}")
-                break
+                    # Rate limit → backoff or skip
+                    if any(kw in error_str for kw in [
+                        "rate limit", "429", "too many requests",
+                        "resource_exhausted",
+                    ]):
+                        if attempt < max_retries - 1:
+                            wait = (attempt + 1) * 5
+                            logger.warning(f"Rate limited on {model.name}, waiting {wait}s")
+                            await asyncio.sleep(wait)
+                            continue
+                        break
 
-    raise RuntimeError(
-        f"All models failed for tier '{tier}'. Last error: {last_error}"
-    )
+                    # Unknown error → one retry
+                    if attempt < 1:
+                        await asyncio.sleep(2)
+                        continue
+                    break
+
+        finally:
+            # Always release GPU semaphore
+            if local_manager:
+                local_manager.release_inference_slot()
+
+    raise RuntimeError(f"All models failed. Last error: {last_error}")
 
 
-# ─── Thinking Model Support (Phase 4) ───────────────────────────────────────
-
-def _is_thinking_model(model_name: str) -> bool:
-    """Detect if a model supports extended thinking/reasoning."""
-    name_lower = model_name.lower()
-    return any(p in name_lower for p in THINKING_MODELS)
-
+# ─── Thinking Model Helpers ─────────────────────────────────────────────────
 
 def _extract_thinking(msg) -> str | None:
-    """Extract thinking/reasoning content from model response.
-
-    Different providers format thinking differently:
-    - Anthropic: msg.thinking or <thinking> tags
-    - OpenAI o1/o3: reasoning_content field
-    - DeepSeek R1: <think> tags in content
-    """
-    # Check for dedicated thinking attribute
     if hasattr(msg, "thinking") and msg.thinking:
         return msg.thinking
-
     if hasattr(msg, "reasoning_content") and msg.reasoning_content:
         return msg.reasoning_content
-
-    # Check for thinking tags in content
     content = msg.content or ""
     import re
-    think_match = re.search(
+    match = re.search(
         r"<(?:thinking|think)>(.*?)</(?:thinking|think)>",
-        content, re.DOTALL
+        content, re.DOTALL,
     )
-    if think_match:
-        return think_match.group(1).strip()
-
-    return None
+    return match.group(1).strip() if match else None
 
 
-# ─── Response Grading (Phase 4) ─────────────────────────────────────────────
+# ─── Response Grading ────────────────────────────────────────────────────────
 
 GRADING_PROMPT = """Rate this AI response on a scale of 1-5:
 1 = Wrong/useless, 2 = Partially relevant, 3 = Adequate,
 4 = Good and complete, 5 = Excellent
 
 Task: {task_title}
-Task description: {task_description}
-
 Response to grade:
 {response}
 
-Respond with ONLY a JSON object: {{"score": N, "reason": "brief"}}"""
+Respond with ONLY JSON: {{"score": N, "reason": "brief"}}"""
 
 
 async def grade_response(
     task_title: str,
     task_description: str,
     response_text: str,
+    generating_model: str = "",
 ) -> float | None:
-    """Grade a response using the cheapest available model.
-
-    Returns a score 1-5, or None if grading fails.
+    """
+    Grade a response using a DIFFERENT model than the one that generated it.
+    Uses cheapest available model that ISN'T the generating model.
     """
     if not response_text or len(response_text.strip()) < 10:
         return None
 
     try:
-        # Use cheapest tier for grading
-        grading_result = await call_model(
-            tier="routing",
+        grading_reqs = ModelRequirements(
+            primary_capability="reasoning",
+            min_quality=3,
+            estimated_input_tokens=800,
+            estimated_output_tokens=50,
+            prefer_speed=True,
+            exclude_models=[generating_model] if generating_model else [],
+        )
+
+        result = await call_model(
+            reqs=grading_reqs,
             messages=[{
                 "role": "user",
                 "content": GRADING_PROMPT.format(
                     task_title=task_title[:100],
-                    task_description=(task_description or "")[:300],
                     response=response_text[:2000],
                 ),
             }],
         )
 
-        raw = grading_result.get("content", "").strip()
-        # Strip markdown fences
+        raw = result.get("content", "").strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
             raw = raw.rsplit("```", 1)[0]
 
         parsed = json.loads(raw.strip())
         score = float(parsed.get("score", 3))
-        score = max(1.0, min(5.0, score))  # clamp to 1-5
-        logger.info(
-            f"Response graded: {score}/5 — "
-            f"{parsed.get('reason', 'N/A')[:60]}"
-        )
-        return score
+        return max(1.0, min(5.0, score))
+
     except Exception as e:
         logger.debug(f"Response grading failed: {e}")
         return None
 
 
-# ─── Cost Budget Checking (Phase 4) ─────────────────────────────────────────
+# ─── Cost Budget ─────────────────────────────────────────────────────────────
 
 async def check_cost_budget() -> dict:
-    """Check if daily cost budget is exceeded.
-
-    Returns {"ok": True/False, "reason": str}.
-    """
     try:
         from db import check_budget
         return await check_budget("daily")
     except Exception as e:
-        logger.debug(f"Budget check failed: {e}")
         return {"ok": True, "reason": f"check failed: {e}"}
+
+
+# ─── Backward Compatibility Layer ────────────────────────────────────────────
+# These map old tier-based calls to new requirements-based calls.
+# Remove once all callers are migrated.
+
+_TIER_TO_REQUIREMENTS: dict[str, ModelRequirements] = {
+    "routing": ModelRequirements(primary_capability="routing", min_quality=1, prefer_speed=True),
+    "cheap": ModelRequirements(primary_capability="general", min_quality=3),
+    "code": ModelRequirements(primary_capability="coding", min_quality=5, needs_function_calling=True),
+    "medium": ModelRequirements(primary_capability="general", min_quality=6),
+    "expensive": ModelRequirements(primary_capability="reasoning", min_quality=8, prefer_quality=True),
+}
+
+# Build MODEL_TIERS and CLASSIFIER_MODEL for modules that still import them
+MODEL_TIERS: dict[str, dict] = {}
+for _tname, _treqs in _TIER_TO_REQUIREMENTS.items():
+    _tcandidates = select_model(_treqs)
+    if _tcandidates:
+        _top = _tcandidates[0]
+        MODEL_TIERS[_tname] = {
+            "model": _top.litellm_name,
+            "fallbacks": [c.litellm_name for c in _tcandidates[1:4]],
+            "max_tokens": _top.model.max_tokens,
+            "temperature": 0.0 if _tname == "routing" else 0.3,
+            "description": _tname,
+        }
+
+_classifier_candidates = select_model(ModelRequirements(
+    primary_capability="routing", min_quality=1, prefer_speed=True,
+))
+CLASSIFIER_MODEL: str = (
+    _classifier_candidates[0].litellm_name
+    if _classifier_candidates
+    else "groq/llama-3.1-8b-instant"
+)

@@ -1,11 +1,11 @@
 # config.py
 """
-Central configuration — API keys, model pool, tier mapping, constants.
+Central configuration — API keys, constants, environment.
+Model pool logic has moved to model_registry.py.
 """
-import os
-import subprocess
-import logging
 
+import os
+import logging
 
 logger = logging.getLogger(__name__)
 
@@ -19,31 +19,18 @@ WORKSPACE_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "workspace")
 )
 DOCKER_CONTAINER_NAME = "orchestrator-sandbox"
+MODEL_DIR = os.getenv("MODEL_DIR", "")
 
 MAX_AGENT_ITERATIONS = 8
 MAX_TOOL_OUTPUT_LENGTH = 4000
-MAX_CONTEXT_CHAIN_LENGTH = 12000   # chars of prior-step output to inject
+MAX_CONTEXT_CHAIN_LENGTH = 12000
 
-# ─── Workspace Isolation (Phase 6) ─────────────────────────────────────────
 MAX_CONCURRENT_GOALS = int(os.getenv("MAX_CONCURRENT_GOALS", "3"))
-
-# Project config file path (JSON, for multi-project support)
 PROJECTS_CONFIG_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "projects.json"
 )
 
-# ─── Cost Budget (Phase 4) ──────────────────────────────────────────────────
 COST_BUDGET_DAILY: float = float(os.getenv("COST_BUDGET_DAILY", "1.0"))
-
-# ─── Thinking/Reasoning Models (Phase 4) ────────────────────────────────────
-# Substrings to detect thinking-capable models. These models should not
-# have temperature set and need increased timeouts.
-THINKING_MODELS: list[str] = [
-    "o1", "o3", "o4",        # OpenAI reasoning
-    "qwq",                    # Alibaba QwQ
-    "deepseek-r1",            # DeepSeek R1
-    "gemini-2.5-flash",       # Gemini thinking
-]
 
 # ─── API Key Detection ───────────────────────────────────────────────────────
 
@@ -56,469 +43,136 @@ AVAILABLE_KEYS: dict[str, bool] = {
     "sambanova": bool(os.getenv("SAMBANOVA_API_KEY", "")),
 }
 
-# ─── Ollama Detection ────────────────────────────────────────────────────────
-
-def _detect_ollama_models() -> list[str]:
-    """
-    Detect locally-available Ollama models.
-    Tries the HTTP API first (works in Docker / remote setups),
-    then falls back to the CLI.
-    """
-    # Try HTTP API
-    try:
-        import httpx                       # usually available via litellm
-        r = httpx.get("http://localhost:11434/api/tags", timeout=3.0)
-        if r.status_code == 200:
-            return [m["name"] for m in r.json().get("models", [])]
-    except Exception:
-        pass
-
-    # Fallback: CLI
-    try:
-        result = subprocess.run(
-            ["ollama", "list"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            models: list[str] = []
-            for line in result.stdout.strip().split("\n")[1:]:   # skip header
-                if line.strip():
-                    models.append(line.split()[0])
-            return models
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    return []
-
-
-OLLAMA_MODELS: list[str] = _detect_ollama_models()
-OLLAMA_AVAILABLE: bool = len(OLLAMA_MODELS) > 0
-
-
-# ─── Phase 10.1: Custom Endpoint Detection ─────────────────────────────────
-
-def _detect_custom_endpoints() -> list[dict]:
-    """
-    Detect llama.cpp and custom OpenAI-compatible endpoints.
-
-    Env vars:
-      LLAMA_CPP_ENDPOINTS:       name=url pairs (e.g. qwen3-8b=http://localhost:8080)
-      CUSTOM_OPENAI_ENDPOINTS:   name=url pairs (covers vLLM, TGI, LocalAI, LM Studio)
-
-    For each endpoint, probes /v1/models to confirm alive.
-    Returns list of dicts ready to be inserted into MODEL_POOL.
-    """
-    endpoints: list[dict] = []
-
-    for env_var, provider in [
-        ("LLAMA_CPP_ENDPOINTS", "llamacpp"),
-        ("CUSTOM_OPENAI_ENDPOINTS", "custom_openai"),
-    ]:
-        raw = os.getenv(env_var, "").strip()
-        if not raw:
-            continue
-
-        for entry in raw.split(","):
-            entry = entry.strip()
-            if "=" not in entry:
-                continue
-            name, url = entry.split("=", 1)
-            name = name.strip()
-            url = url.strip().rstrip("/")
-
-            if not name or not url:
-                continue
-
-            # Probe /v1/models to confirm alive
-            alive = False
-            try:
-                import httpx
-                r = httpx.get(f"{url}/v1/models", timeout=5.0)
-                alive = r.status_code == 200
-            except Exception:
-                pass
-
-            if not alive:
-                logger.warning(
-                    f"Custom endpoint '{name}' at {url} is not responding "
-                    f"(skipping)"
-                )
-                continue
-
-            logger.info(f"✅ Found custom endpoint: {name} at {url}")
-            endpoints.append({
-                "name": name,
-                "provider": provider,
-                "litellm_name": f"openai/{name}",
-                "api_base": url,
-                "capabilities": ["general", "coding"],
-                "quality": 6,
-                "speed": "medium",
-                "rate_limit": 999,
-                "max_tokens": 4096,
-                "context_length": 8192,
-                "supports_function_calling": False,
-                "supports_response_format": True,
-            })
-
-    return endpoints
-
-
-CUSTOM_ENDPOINTS: list[dict] = _detect_custom_endpoints()
-
-# ─── Model Pool ──────────────────────────────────────────────────────────────
-# Rich model definitions with capabilities and quality scores.
-# The router uses this for smart model selection; MODEL_TIERS is derived
-# from it for backward compatibility and simple tier-based routing.
-
-MODEL_POOL: dict[str, dict] = {}
-
-# ── Local: Ollama ──
-if OLLAMA_AVAILABLE:
-    _ollama_defs: dict[str, dict] = {
-        "ollama-qwen3-8b": {
-            "litellm_name": "ollama/qwen3:8b-q4_K_M",
-            "match_fragment": "qwen3",
-            "capabilities": ["planning", "reasoning", "general"],
-            "quality": 7, "speed": "medium", "rate_limit": 999,
-            "provider": "ollama", "max_tokens": 4096,
-            "context_length": 32768,
-            "supports_function_calling": False,
-            "supports_response_format": True,
-        },
-        "ollama-qwen25-coder-7b": {
-            "litellm_name": "ollama/qwen2.5-coder:7b-instruct-q4_K_M",
-            "match_fragment": "qwen2.5-coder:7b",
-            "capabilities": ["coding", "debugging", "general"],
-            "quality": 7, "speed": "medium", "rate_limit": 999,
-            "provider": "ollama", "max_tokens": 4096,
-            "context_length": 32768,
-            "supports_function_calling": False,
-            "supports_response_format": True,
-        },
-        "ollama-qwen25-coder-3b": {
-            "litellm_name": "ollama/qwen2.5-coder:3b-instruct-q5_K_M",
-            "match_fragment": "qwen2.5-coder:3b",
-            "capabilities": ["coding", "quick_code"],
-            "quality": 5, "speed": "fast", "rate_limit": 999,
-            "provider": "ollama", "max_tokens": 2048,
-            "context_length": 32768,
-            "supports_function_calling": False,
-            "supports_response_format": True,
-        },
-        "ollama-qwen25-7b": {
-            "litellm_name": "ollama/qwen2.5:7b-instruct-q4_K_M",
-            "match_fragment": "qwen2.5:7b",
-            "capabilities": ["general", "writing", "analysis"],
-            "quality": 6, "speed": "medium", "rate_limit": 999,
-            "provider": "ollama", "max_tokens": 4096,
-            "context_length": 32768,
-            "supports_function_calling": False,
-            "supports_response_format": True,
-        },
-        "ollama-llama32-3b": {
-            "litellm_name": "ollama/llama3.2:3b-instruct-q5_K_M",
-            "match_fragment": "llama3.2",
-            "capabilities": ["routing", "classification", "simple"],
-            "quality": 4, "speed": "fast", "rate_limit": 999,
-            "provider": "ollama", "max_tokens": 1024,
-            "context_length": 8192,
-            "supports_function_calling": False,
-            "supports_response_format": True,
-        },
-        "ollama-phi4-mini": {
-            "litellm_name": "ollama/phi4-mini:3.8b-q4_K_M",
-            "match_fragment": "phi4-mini",
-            "capabilities": ["reasoning", "simple", "general"],
-            "quality": 5, "speed": "fast", "rate_limit": 999,
-            "provider": "ollama", "max_tokens": 2048,
-            "context_length": 16384,
-            "supports_function_calling": False,
-            "supports_response_format": True,
-        },
-    }
-    for _key, _cfg in _ollama_defs.items():
-        _fragment = _cfg["match_fragment"]
-        if any(_fragment in m for m in OLLAMA_MODELS):
-            MODEL_POOL[_key] = {
-                k: v for k, v in _cfg.items() if k != "match_fragment"
-            }
-
-# ── Cloud: Groq (free tier ~30 rpm) ──
-if AVAILABLE_KEYS["groq"]:
-    MODEL_POOL["groq-llama-8b"] = {
-        "litellm_name": "groq/llama-3.1-8b-instant",
-        "capabilities": ["routing", "classification", "simple", "general"],
-        "quality": 5, "speed": "very_fast", "rate_limit": 30,
-        "provider": "groq", "max_tokens": 1024,
-        "context_length": 131072,
-        "supports_function_calling": True,
-    }
-    MODEL_POOL["groq-llama-70b"] = {
-        "litellm_name": "groq/llama-3.3-70b-versatile",
-        "capabilities": [
-            "general", "coding", "planning",
-            "reasoning", "writing", "analysis",
-        ],
-        "quality": 8, "speed": "fast", "rate_limit": 30,
-        "provider": "groq", "max_tokens": 4096,
-        "context_length": 131072,
-        "supports_function_calling": True,
-    }
-
-# ── Cloud: Google Gemini (free tier ~15 rpm) ──
-if AVAILABLE_KEYS["gemini"]:
-    MODEL_POOL["gemini-flash"] = {
-        "litellm_name": "gemini/gemini-2.0-flash",
-        "capabilities": [
-            "general", "coding", "planning",
-            "reasoning", "writing", "analysis",
-        ],
-        "quality": 8, "speed": "fast", "rate_limit": 15,
-        "provider": "gemini", "max_tokens": 8192,
-        "context_length": 1048576,
-        "supports_function_calling": True,
-    }
-    MODEL_POOL["gemini-flash-preview"] = {
-        "litellm_name": "gemini/gemini-2.5-flash-preview-05-20",
-        "capabilities": [
-            "general", "coding", "planning",
-            "reasoning", "writing", "analysis",
-        ],
-        "quality": 9, "speed": "fast", "rate_limit": 15,
-        "provider": "gemini", "max_tokens": 8192,
-        "context_length": 1048576,
-        "supports_function_calling": True,
-    }
-
-# ── Cloud: Cerebras (free tier ~30 rpm) ──
-if AVAILABLE_KEYS["cerebras"]:
-    MODEL_POOL["cerebras-llama-70b"] = {
-        "litellm_name": "cerebras/llama3.3-70b",
-        "capabilities": ["general", "coding", "reasoning", "writing"],
-        "quality": 8, "speed": "very_fast", "rate_limit": 30,
-        "provider": "cerebras", "max_tokens": 4096,
-        "context_length": 131072,
-        "supports_function_calling": True,
-    }
-
-# ── Cloud: SambaNova (free tier ~20 rpm) ──
-if AVAILABLE_KEYS["sambanova"]:
-    MODEL_POOL["sambanova-qwen3-32b"] = {
-        "litellm_name": "sambanova/Qwen3-32B",
-        "capabilities": [
-            "general", "coding", "planning",
-            "reasoning", "writing", "analysis",
-        ],
-        "quality": 9, "speed": "fast", "rate_limit": 20,
-        "provider": "sambanova", "max_tokens": 4096,
-        "context_length": 8192,
-        "supports_function_calling": True,
-    }
-
-# ── Cloud: OpenAI (paid) ──
-if AVAILABLE_KEYS["openai"]:
-    MODEL_POOL["gpt-4o-mini"] = {
-        "litellm_name": "gpt-4o-mini",
-        "capabilities": [
-            "general", "coding", "planning", "writing", "analysis",
-        ],
-        "quality": 8, "speed": "fast", "rate_limit": 500,
-        "provider": "openai", "max_tokens": 4096,
-        "context_length": 128000,
-        "supports_function_calling": True,
-    }
-    MODEL_POOL["gpt-4o"] = {
-        "litellm_name": "gpt-4o",
-        "capabilities": [
-            "general", "coding", "planning",
-            "reasoning", "writing", "analysis",
-        ],
-        "quality": 9, "speed": "medium", "rate_limit": 500,
-        "provider": "openai", "max_tokens": 8192,
-        "context_length": 128000,
-        "supports_function_calling": True,
-    }
-
-# ── Cloud: Anthropic (paid) ──
-if AVAILABLE_KEYS["anthropic"]:
-    MODEL_POOL["claude-sonnet"] = {
-        "litellm_name": "claude-sonnet-4-20250514",
-        "capabilities": [
-            "general", "coding", "planning",
-            "reasoning", "writing", "analysis",
-        ],
-        "quality": 10, "speed": "medium", "rate_limit": 50,
-        "provider": "anthropic", "max_tokens": 8192,
-        "context_length": 200000,
-        "supports_function_calling": True,
-    }
-
-# ── Phase 10.1: Register custom endpoints ──
-for _ep in CUSTOM_ENDPOINTS:
-    _ep_key = f"{_ep['provider']}-{_ep['name']}"
-    MODEL_POOL[_ep_key] = {
-        k: v for k, v in _ep.items() if k != "name"
-    }
-
-'''
-# ─── Tier Helpers ────────────────────────────────────────────────────────────
-
-# def get_models_for_tier(tier: str) -> list[str]:
-#     """
-#     Return MODEL_POOL keys suitable for *tier*, ordered best-first.
-#
-#     Overlap between tiers is intentional — it provides more fallback options.
-#     """
-#     if tier == "routing":
-#         candidates = [
-#             k for k, v in MODEL_POOL.items()
-#             if "routing" in v["capabilities"]
-#             or "classification" in v["capabilities"]
-#         ]
-#         if not candidates:
-#             candidates = [k for k, v in MODEL_POOL.items() if v["quality"] <= 5]
-#     elif tier == "cheap":
-#         candidates = [k for k, v in MODEL_POOL.items() if v["quality"] <= 6]
-#     elif tier == "code":
-#         candidates = [k for k, v in MODEL_POOL.items()
-#                       if "coding" in v["capabilities"]]
-#     elif tier == "medium":
-#         candidates = [k for k, v in MODEL_POOL.items() if v["quality"] >= 6]
-#     elif tier == "expensive":
-#         candidates = [k for k, v in MODEL_POOL.items() if v["quality"] >= 8]
-#     else:
-#         candidates = list(MODEL_POOL.keys())
-#
-#     # Sort: routing/cheap prefer local (unlimited); everything else by quality
-#     if tier in ("routing", "cheap"):
-#         candidates.sort(key=lambda k: (
-#             0 if MODEL_POOL[k]["provider"] == "ollama" else 1,
-#             -MODEL_POOL[k]["quality"],
-#         ))
-#     elif tier == "code":
-#         # Prefer models whose *primary* capability is coding
-#         candidates.sort(key=lambda k: (
-#             0 if MODEL_POOL[k]["capabilities"][0] == "coding" else 1,
-#             -MODEL_POOL[k]["quality"],
-#         ))
-#     else:
-#         _free_cloud = {"groq", "cerebras", "sambanova", "gemini"}
-#         candidates.sort(key=lambda k: (
-#             0 if MODEL_POOL[k]["provider"] == "ollama" else
-#             1 if MODEL_POOL[k]["provider"] in _free_cloud else 2,
-#             -MODEL_POOL[k]["quality"],
-#         ))
-#
-#     return candidates
-
-
-# ─── MODEL_TIERS (derived from MODEL_POOL) ──────────────────────────────────
-# Backward-compatible dict consumed by the router and other modules.
-
-def _build_tier_config(
-    tier: str,
-    temperature: float,
-    description: str,
-) -> dict | None:
-    """Build a single MODEL_TIERS entry from the pool."""
-    candidates = [m['litellm_name'] for m in select_model(tier)]
-    if not candidates:
-        return None
-    primary = candidates[0]
-    return {
-        "model":       MODEL_POOL[primary]["litellm_name"],
-        "fallbacks":   [MODEL_POOL[k]["litellm_name"] for k in candidates[1:]],
-        "max_tokens":  MODEL_POOL[primary]["max_tokens"],
-        "temperature": temperature,
-        "description": description,
-    }
-
-
-MODEL_TIERS: dict[str, dict] = {}
-
-_tier_definitions = [
-    ("routing",   0.0, "Task classification only"),
-    ("cheap",     0.3, "Simple Q&A, formatting, lookups"),
-    ("code",      0.1, "Code generation and debugging"),
-    ("medium",    0.3, "Summaries, planning, moderate reasoning"),
-    ("expensive", 0.3, "Complex analysis, full code gen, architecture"),
-]
-for _tname, _ttemp, _tdesc in _tier_definitions:
-    _tcfg = _build_tier_config(_tname, _ttemp, _tdesc)
-    if _tcfg:
-        MODEL_TIERS[_tname] = _tcfg
-
-# ─── Classifier Model ───────────────────────────────────────────────────────
-
-_routing_pool = [m['litellm_name'] for m in select_model("routing")]
-if _routing_pool:
-    CLASSIFIER_MODEL: str = MODEL_POOL[_routing_pool[0]]["litellm_name"]
-elif MODEL_POOL:
-    _cheapest = min(MODEL_POOL, key=lambda k: MODEL_POOL[k]["quality"])
-    CLASSIFIER_MODEL = MODEL_POOL[_cheapest]["litellm_name"]
-else:
-    CLASSIFIER_MODEL = "groq/llama-3.1-8b-instant"     # last-resort default
-
-'''
-# ─── Fallback & Agent Mapping ────────────────────────────────────────────────
-
-FALLBACK_ORDER: list[str] = ["expensive", "medium", "code", "cheap", "routing"]
-
-AGENT_TIER_MAP: dict[str, str] = {
-    "planner":    "medium",
-    "coder":      "code",
-    "executor":   "cheap",
-    "researcher": "medium",
-    "writer":     "medium",
-    "reviewer":   "medium",
-}
-
 # ─── Task Priority Levels ────────────────────────────────────────────────────
 
 TASK_PRIORITY = {
-    "critical": 10,     # User actively waiting (Telegram conversation)
-    "high": 8,          # Goal planning, urgent
-    "normal": 5,        # Standard background subtasks
-    "low": 3,           # Maintenance, optional
-    "background": 1,    # Scheduled, nice-to-have
+    "critical": 10,
+    "high": 8,
+    "normal": 5,
+    "low": 3,
+    "background": 1,
 }
+
+# ─── Backward Compatibility ──────────────────────────────────────────────────
+# Other modules that imported MODEL_POOL from config.py can use this.
+# It's a read-only view derived from the registry on first access.
+
+_model_pool_cache: dict | None = None
+
+
+def get_model_pool() -> dict:
+    """
+    Backward-compatible MODEL_POOL derived from the registry.
+    Maps old format: {name: {litellm_name, capabilities, quality, ...}}
+    """
+    global _model_pool_cache
+    if _model_pool_cache is not None:
+        return _model_pool_cache
+
+    try:
+        from model_registry import get_registry
+        registry = get_registry()
+
+        pool = {}
+        for name, m in registry.models.items():
+            # Map 14-dimension capabilities back to a simple capability list
+            # (top capabilities above threshold 5.0)
+            top_caps = [
+                cap for cap, score in sorted(
+                    m.capabilities.items(), key=lambda x: x[1], reverse=True
+                )
+                if score >= 5.0
+            ][:6]
+
+            pool[name] = {
+                "litellm_name": m.litellm_name,
+                "capabilities": top_caps,
+                "quality": round(m.best_score()),
+                "speed": (
+                    "very_fast" if m.tokens_per_second > 100
+                    else "fast" if m.tokens_per_second > 30 or m.total_params_b < 10
+                    else "medium"
+                ),
+                "rate_limit": m.rate_limit_rpm,
+                "provider": m.provider,
+                "max_tokens": m.max_tokens,
+                "context_length": m.context_length,
+                "supports_function_calling": m.supports_function_calling,
+                "supports_response_format": m.supports_json_mode,
+            }
+
+        _model_pool_cache = pool
+        return pool
+
+    except Exception as e:
+        logger.error(f"Failed to build MODEL_POOL from registry: {e}")
+        return {}
+
+
+# Lazy property — code doing `from config import MODEL_POOL` gets this
+class _LazyModelPool:
+    """Lazy proxy that builds MODEL_POOL on first attribute access."""
+    def __init__(self):
+        self._pool = None
+
+    def _ensure(self):
+        if self._pool is None:
+            self._pool = get_model_pool()
+
+    def __getitem__(self, key):
+        self._ensure()
+        return self._pool[key]
+
+    def __contains__(self, key):
+        self._ensure()
+        return key in self._pool
+
+    def __iter__(self):
+        self._ensure()
+        return iter(self._pool)
+
+    def __len__(self):
+        self._ensure()
+        return len(self._pool)
+
+    def items(self):
+        self._ensure()
+        return self._pool.items()
+
+    def keys(self):
+        self._ensure()
+        return self._pool.keys()
+
+    def values(self):
+        self._ensure()
+        return self._pool.values()
+
+    def get(self, key, default=None):
+        self._ensure()
+        return self._pool.get(key, default)
+
+
+MODEL_POOL = _LazyModelPool()
+
 
 # ─── Startup Display ────────────────────────────────────────────────────────
 
 def print_config() -> None:
-    # Lazy import to avoid circular dependency
-    from router import MODEL_TIERS, CLASSIFIER_MODEL
+    from model_registry import get_registry
+
+    registry = get_registry()
 
     print("=" * 60)
     print("  🔑 API Keys:")
     for provider, available in AVAILABLE_KEYS.items():
         print(f"     {'✅' if available else '❌'} {provider}")
 
-    print(f"\n  🦙 Ollama: ", end="")
-    if OLLAMA_AVAILABLE:
-        print(f"✅ {len(OLLAMA_MODELS)} model(s)")
-        for m in OLLAMA_MODELS:
-            print(f"     • {m}")
-    else:
-        print("❌ offline")
+    print(f"\n  📁 Model Directory: {MODEL_DIR or '(not set)'}")
+    print(f"  📁 Workspace:       {WORKSPACE_ROOT}")
+    print(f"  🐳 Docker:          {DOCKER_CONTAINER_NAME}")
+    print(f"  🔄 Max iterations:  {MAX_AGENT_ITERATIONS}")
+    print(f"  💰 Daily budget:    ${COST_BUDGET_DAILY:.2f}")
 
-    print(f"\n  📦 Model Pool ({len(MODEL_POOL)} models):")
-    for key, cfg in MODEL_POOL.items():
-        caps = ", ".join(cfg["capabilities"][:3])
-        print(
-            f"     {key:30s} q={cfg['quality']:>2} | "
-            f"{cfg['provider']:10s} | {caps}"
-        )
-
-    print(f"\n  📊 Active Tiers:")
-    for tier_name, tier_cfg in MODEL_TIERS.items():
-        n_fb = len(tier_cfg.get("fallbacks", []))
-        fb_str = f" (+{n_fb} fallback{'s' if n_fb != 1 else ''})" if n_fb else ""
-        print(f"     {tier_name:12s}: {tier_cfg['model']}{fb_str}")
-
-    print(f"\n\n  🧭 Classifier: {CLASSIFIER_MODEL}")
-    print(f"  📁 Workspace:  {WORKSPACE_ROOT}")
-    print(f"  🐳 Docker:     {DOCKER_CONTAINER_NAME}")
-    print(f"  🔄 Max iters:  {MAX_AGENT_ITERATIONS}")
+    # Delegate detailed model info to registry
+    registry.print_summary()
     print("=" * 60)

@@ -43,7 +43,7 @@ Parallel task execution — Run up to N independent tasks concurrently (tasks wi
 Dependency graph visualization — /graph <goal_id> renders a text-based DAG of task dependencies and statuses. Helps you understand what's blocked and why.
 
 Phase 4: Model Intelligence Layer
-Response grading system — After every agent final_answer, run a fast/cheap model to score the result 1-5 on: relevance, completeness, correctness. Store grade in tasks.quality_score. Use for model performance tracking.
+Response grading system — After every agent final_answer, run a model to score the result 1-5 on: relevance, completeness, correctness. Store grade in tasks.quality_score. Use for model performance tracking.
 
 Model performance tracker — Table: model_stats(model, agent_type, avg_grade, avg_cost, avg_latency, success_rate, total_calls). Update after every call. Query when selecting models.
 

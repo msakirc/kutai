@@ -110,7 +110,7 @@ Phase 14: Multi-Language Coding
 Real projects aren't Python-only.
 
 14.1 — Language Toolkit Interface
-Create languages/base.py with abstract LanguageToolkit: lint(file), format(file), test(path), typecheck(path), detect_imports(file), install_deps(path), compile(path), run(file). Implement languages/python.py (ruff, pytest, mypy, pip), languages/javascript.py (eslint, prettier, jest/vitest, npm/yarn), languages/typescript.py (extends JS + tsc), languages/go.py (go vet, go test, go build), languages/rust.py (cargo clippy, cargo test, cargo build). also make sure you support java/kotlin fully. 
+Create languages/base.py with abstract LanguageToolkit: lint(file), format(file), test(path), typecheck(path), detect_imports(file), install_deps(path), compile(path), run(file). Implement languages/python.py (ruff, pytest, mypy, pip), languages/javascript.py (eslint, prettier, jest/vitest, npm/yarn), languages/typescript.py (extends JS + tsc), languages/go.py (go vet, go test, go build), languages/rust.py (cargo clippy, cargo test, cargo build).
 
 14.2 — Language-Aware Agent Prompts
 On task execution, detect project language from project profile (12.6) or file extensions. Dynamically append language-specific rules to agent system prompts: test runner commands, import conventions, common pitfalls, idiomatic patterns. Don't create separate agents per language — reuse existing agents with injected language context.
@@ -119,7 +119,7 @@ On task execution, detect project language from project profile (12.6) or file e
 Extend sandbox Dockerfile to include: Node.js 20 LTS, Go 1.22, Rust (rustup), Java 21. Add language parameter to run_code tool — route to appropriate interpreter/compiler. Alternatively, maintain separate lightweight container images per language stack and select at task time.
 
 14.4 — Language-Aware Dependency Detection
-Extend deps.py to handle: package.json (npm), go.mod (go), Cargo.toml (cargo), build.gradle (gradle), build.gradle.kts (kotlin) and pom.xml (maven). Detect language from project indicators, run appropriate package manager inside sandbox. Same flow: parse imports → detect missing → auto-install.
+Extend deps.py to handle: package.json (npm), go.mod (go), Cargo.toml (cargo), build.gradle (gradle). Detect language from project indicators, run appropriate package manager inside sandbox. Same flow: parse imports → detect missing → auto-install.
 
 Phase 15: MCP & Tool Ecosystem
 Plug into the wider world.
@@ -147,7 +147,6 @@ Create tools/web_extract.py: extract_url(url) → cleaned article text. Use traf
 
 15.8 — Tool Result Caching
 In tools/__init__.py, add a per-agent-execution cache. Read-only tools (file_tree, read_file, project_info, git_status, git_log) cache their results keyed by arguments. Cache invalidated when any write tool (write_file, edit_file, patch_file, shell) is called. Saves redundant tool calls across iterations within one task.
-
 
 Phase 16: Security & Privacy
 Required before trusting with real data.

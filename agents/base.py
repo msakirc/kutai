@@ -10,6 +10,7 @@ import json
 import logging
 import re
 
+from router import ModelRequirements
 from router import call_model, classify_task, MODEL_TIERS, grade_response, check_cost_budget
 from db import (
     log_conversation,
@@ -937,13 +938,11 @@ class BaseAgent:
         return await self._execute_react_loop(task)
 
     async def _execute_react_loop(self, task: dict) -> dict:
-        """
-        ReAct loop:  Think → Act → Observe → repeat → final_answer.
-        """
+        """ReAct loop with requirements-based model selection."""
         task_id = task.get("id", "?")
         goal_id = task.get("goal_id")
 
-        # ── Phase 10.5: Extract model_override from task context ──
+        # ── Parse task context ──
         _task_ctx = task.get("context")
         if isinstance(_task_ctx, str):
             try:
@@ -954,17 +953,10 @@ class BaseAgent:
             _task_ctx = {}
         model_override = _task_ctx.get("model_override")
 
-        # ── resolve tier ──
-        tier = task.get("tier", self.default_tier)
-        if tier == "auto":
-            try:
-                classification = await classify_task(
-                    task.get("title", ""), task.get("description", "")
-                )
-                tier = classification.get("tier", self.default_tier)
-            except Exception:
-                tier = AGENT_TIER_MAP.get(self.name, self.default_tier)
-        tier = self._enforce_min_tier(tier)
+        # ── Build initial ModelRequirements ──
+        reqs = await self._build_model_requirements(task, _task_ctx)
+        if model_override:
+            reqs.model_override = model_override
 
         # ── attempt checkpoint recovery ──
         start_iteration = 0
@@ -986,7 +978,7 @@ class BaseAgent:
             tools_used = checkpoint.get("tools_used", False)
             validation_retried = checkpoint.get("validation_retried", False)
             format_retries = checkpoint.get("format_retries", 0)
-            tier = checkpoint.get("tier", tier)
+            tier = checkpoint.get("reqs", reqs)
             completed_tool_ops: dict[str, str] = checkpoint.get(
                 "completed_tool_ops", {}
             )
@@ -1024,6 +1016,16 @@ class BaseAgent:
                 f"{iteration + 1}/{self.max_iterations}"
             )
 
+            # ── Update requirements based on current state ──
+            reqs.estimated_input_tokens = self._count_tokens(
+                messages, MODEL_TIERS.get("cheap", {}).get("model", "gpt-4o-mini")
+            )
+            reqs.estimated_output_tokens = min(
+                reqs.estimated_output_tokens,
+                4096,  # reasonable max per iteration
+            )
+
+
             # Call LLM
             # ── Trim context if approaching window limit ──
             estimation_model = (
@@ -1034,42 +1036,25 @@ class BaseAgent:
                 messages, estimation_model, tier,
             )
 
-            # ── Cost budget check (Phase 4) ──
-            try:
-                budget_status = await check_cost_budget()
-                if not budget_status.get("ok", True):
-                    logger.warning(
-                        f"[Task #{task_id}] Budget exceeded: "
-                        f"{budget_status.get('reason')}"
-                    )
-                    await self._clear_checkpoint_safe(task_id)
-                    return {
-                        "status":     "completed",
-                        "result":     f"Task paused: {budget_status['reason']}",
-                        "model":      used_model,
-                        "cost":       total_cost,
-                        "tier":       tier,
-                        "iterations": iteration,
-                    }
-            except Exception:
-                pass  # budget check failure shouldn't block work
+            # If tools are available, we benefit from FC
+            litellm_tools = self._build_litellm_tools()
+            if litellm_tools:
+                reqs.needs_function_calling = True
 
-            # Call LLM
+            # Call LLM with requirements
             try:
-                litellm_tools = self._build_litellm_tools()
                 response = await call_model(
-                    tier, messages, tools=litellm_tools,
-                    agent_type=self.name,
-                    model_override=model_override,
+                    reqs=reqs,
+                    messages=messages,
+                    tools=litellm_tools,
                 )
             except Exception as exc:
                 logger.error(f"[Task #{task_id}] Model call failed: {exc}")
                 return {
-                    "status":     "completed",
-                    "result":     f"Agent failed after {iteration} iteration(s): {exc}",
-                    "model":      used_model,
-                    "cost":       total_cost,
-                    "tier":       tier,
+                    "status": "completed",
+                    "result": f"Agent failed after {iteration} iteration(s): {exc}",
+                    "model": used_model,
+                    "cost": total_cost,
                     "iterations": iteration,
                 }
 
@@ -1782,3 +1767,82 @@ class BaseAgent:
             )
         except Exception as exc:
             logger.warning(f"[Task #{task_id}] log_conversation failed: {exc}")
+
+
+    async def _build_model_requirements(
+        self, task: dict, task_ctx: dict,
+    ) -> ModelRequirements:
+        """
+        Build ModelRequirements from task metadata + agent properties.
+        This is where task intelligence meets model selection.
+        """
+        title = task.get("title", "").lower()
+        description = task.get("description", "").lower()
+        priority = task.get("priority", 5)
+
+        # Start with agent defaults
+        reqs = ModelRequirements(
+            agent_type=self.name,
+            priority=priority,
+        )
+
+        # ── Determine primary capability from agent type ──
+        agent_capability_map = {
+            "planner":        ("planning", 7),
+            "architect":      ("planning", 8),
+            "coder":          ("coding", 7),
+            "implementer":    ("coding", 7),
+            "fixer":          ("coding", 6),
+            "test_generator": ("coding", 6),
+            "reviewer":       ("reasoning", 7),
+            "researcher":     ("research", 6),
+            "writer":         ("writing", 6),
+            "executor":       ("general", 5),
+        }
+        cap, min_q = agent_capability_map.get(self.name, ("general", 5))
+        reqs.primary_capability = cap
+        reqs.min_quality = min_q
+
+        # ── Adjust for task priority ──
+        if priority >= 10:  # critical — user waiting
+            reqs.prefer_speed = True
+            reqs.min_quality = max(reqs.min_quality, 6)
+        elif priority <= 2:  # background
+            reqs.min_quality = max(1, reqs.min_quality - 2)
+
+        # ── Detect personal/sensitive data ──
+        sensitivity_keywords = [
+            "personal", "private", "secret", "password",
+            "credential", "my ", "my_", "home",
+        ]
+        if any(kw in f"{title} {description}" for kw in sensitivity_keywords):
+            reqs.local_only = True
+
+        # From task context
+        if task_ctx.get("local_only"):
+            reqs.local_only = True
+        if task_ctx.get("prefer_quality"):
+            reqs.prefer_quality = True
+          
+        # ── Model diversity (from pipeline review loops) ──
+        exclude = task_ctx.get("exclude_models", [])
+        if exclude:
+            reqs.exclude_models = exclude
+
+        # ── Estimate context size from task content ──
+        desc_len = len(task.get("description", ""))
+        context_json = task.get("context", "{}")
+        if isinstance(context_json, str):
+            ctx_len = len(context_json)
+        else:
+            ctx_len = len(json.dumps(context_json))
+
+        estimated_input = (desc_len + ctx_len) // 4  # rough char-to-token
+        reqs.estimated_input_tokens = max(estimated_input, 1000)
+        reqs.estimated_output_tokens = 2000
+
+        # ── Tools needed? ──
+        if self.allowed_tools is None or len(self.allowed_tools or []) > 0:
+            reqs.needs_function_calling = True
+
+        return reqs

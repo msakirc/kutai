@@ -53,6 +53,7 @@ class CodingPipeline:
         self.test_generator = get_agent("test_generator")
         self.reviewer = get_agent("reviewer")
         self.fixer = get_agent("fixer")
+        self._implementer_model: str = ""
 
     async def run(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -98,10 +99,16 @@ class CodingPipeline:
                 "title": f"Plan Architecture: {base_title}",
                 "description": base_desc + extra_context,
                 "goal_id": original_goal,
+                "priority": 8,  # high priority for architecture
+                "context": json.dumps({
+                    # Tell the agent to use high-quality model
+                    "prefer_quality": True,
+                }),
             }
             arch_result = await self.architect.execute(arch_task)
             result_log.append(f"Architect: {arch_result.get('result', '')}")
             stages_run.append("architect")
+
 
         # ── Parse files to implement ──
         files_to_implement = []
@@ -142,29 +149,40 @@ class CodingPipeline:
 
         # ── Stage: Implement ──
         if "implement" in stages:
-            for f in files_to_implement:
-                # Phase 8: Skip already-completed files (incremental)
+            for idx, f in enumerate(files_to_implement):
                 if f in completed_files:
-                    logger.info(f"   [Implement] Skipping (already done): {f}")
-                    result_log.append(f"Implementer ({f}): skipped (already completed)")
                     continue
 
                 logger.info(f"   [Implement] Implementing: {f}")
+
+                # Build context with results from previous files
+                impl_context = {
+                    "pipeline_mode": True,
+                }
+                if idx > 0 and result_log:
+                    # Give implementer awareness of what was already built
+                    impl_context["prior_implementations"] = "\n".join(
+                        r for r in result_log if r.startswith("Implementer")
+                    )[-3000:]
+
                 impl_task = {
                     "title": f"Implement {f}",
                     "description": (
                         f"Overall Goal: {base_desc}\n\n"
                         f"Your specific assignment is to implement: {f}\n"
-                        f"Strictly follow the interfaces designed in ARCHITECTURE.md."
+                        f"Strictly follow the interfaces in ARCHITECTURE.md."
                         + extra_context
                     ),
                     "goal_id": original_goal,
+                    "context": json.dumps(impl_context),
                 }
                 impl_result = await self.implementer.execute(impl_task)
+
+                # Track which model was used
+                self._implementer_model = impl_result.get("model", "")
+
                 result_log.append(f"Implementer ({f}): {impl_result.get('result', '')}")
                 files_implemented.append(f)
-
-                # Track progress incrementally
                 completed_files.add(f)
                 _save_progress(original_goal, {
                     "completed_files": list(completed_files),
@@ -172,6 +190,54 @@ class CodingPipeline:
                 })
 
             stages_run.append("implement")
+
+        # ── Stage: Review + Fix loop (with model diversity) ──
+        if "review_fix" in stages or "review" in stages:
+            while not review_passed and qa_iteration <= max_qa:
+                logger.info(f"   [Review] Iteration {qa_iteration}...")
+
+                # CRITICAL: Tell reviewer to use a different model
+                review_context = {}
+                if self._implementer_model:
+                    review_context["exclude_models"] = [self._implementer_model]
+                    review_context["prefer_quality"] = True
+
+                review_task = {
+                    "title": f"Review Code: {base_title}",
+                    "description": (
+                        f"Review the newly implemented files for {base_title}.\n"
+                        f"Look for logic bugs, security issues, "
+                        f"missing error handling, and test failures."
+                    ),
+                    "goal_id": original_goal,
+                    "context": json.dumps(review_context),
+                }
+                review_result = await self.reviewer.execute(review_task)
+                review_summary = review_result.get("result", "")
+                result_log.append(f"Review {qa_iteration}: {review_summary[:100]}...")
+
+                if "✅ Good" in review_summary or "passed" in review_summary.lower():
+                    review_passed = True
+                elif "review_fix" in stages:
+                    # Escalate model quality on repeated failures
+                    fix_context = {}
+                    if qa_iteration >= 3:
+                        fix_context["prefer_quality"] = True
+
+                    fix_task = {
+                        "title": f"Fix QA Issues: {base_title}",
+                        "description": (
+                            f"The code reviewer found issues. Fix them all.\n\n"
+                            f"Review Feedback:\n{review_summary}"
+                        ),
+                        "goal_id": original_goal,
+                        "context": json.dumps(fix_context),
+                    }
+                    fix_result = await self.fixer.execute(fix_task)
+                    result_log.append(f"Fixer {qa_iteration}: {fix_result.get('result', '')}")
+                    qa_iteration += 1
+                else:
+                    break
 
         # ── Stage: Fix (bugfix mode — run fixer directly) ──
         if "fix" in stages:

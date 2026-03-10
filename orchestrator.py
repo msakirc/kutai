@@ -59,6 +59,8 @@ class Orchestrator:
         self.last_decay_check = datetime.min
         self.shutdown_event = shutdown_event or asyncio.Event()
         self._current_task_future = None
+        self._model_manager_tasks: list[asyncio.Task] = []
+
 
     # ─── NEW: Context Chaining ───────────────────────────────────────────
 
@@ -834,6 +836,14 @@ class Orchestrator:
 
     async def start(self):
         await init_db()
+
+        # ── Start local model manager background tasks ──
+        from local_model_manager import get_local_manager
+        manager = get_local_manager()
+        self._model_manager_tasks = [
+            asyncio.create_task(manager.run_idle_unloader()),
+            asyncio.create_task(manager.run_health_watchdog()),
+        ]
 
         async with self.telegram.app:
             await self.telegram.app.start()

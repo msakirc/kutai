@@ -1,3 +1,4 @@
+# model_registry.py
 """
 Model Registry v2 — auto-scanning, 14-dimension capabilities, hot reload.
 

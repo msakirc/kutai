@@ -1,3 +1,4 @@
+# capabilities.py
 """
 Capability dimensions, task profiles, and model-task scoring.
 

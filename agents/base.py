@@ -10,8 +10,16 @@ import json
 import logging
 import re
 
-from router import ModelRequirements
-from router import call_model, classify_task, MODEL_TIERS, grade_response, check_cost_budget
+from model_registry import get_registry
+from router import (
+    ModelRequirements,
+    call_model,
+    grade_response,
+    select_model,
+    MODEL_TIERS,
+    AGENT_TIER_MAP,       # now exported from router
+    TIER_ESCALATION_ORDER,  # now exported from router (or keep local, same values)
+)
 from db import (
     log_conversation,
     store_memory,
@@ -25,7 +33,7 @@ from db import (
     record_cost,
 )
 from tools import TOOL_REGISTRY, TOOL_SCHEMAS, get_tool_descriptions, execute_tool
-from config import MAX_AGENT_ITERATIONS, AGENT_TIER_MAP, MAX_TOOL_OUTPUT_LENGTH
+from config import MAX_AGENT_ITERATIONS, MAX_TOOL_OUTPUT_LENGTH
 from models import validate_action, validate_tool_args, validate_task_output
 import litellm as _litellm
 
@@ -274,6 +282,13 @@ class BaseAgent:
         if idx < len(TIER_ESCALATION_ORDER) - 1:
             return TIER_ESCALATION_ORDER[idx + 1]
         return None
+
+    def _escalate_requirements(self, reqs: ModelRequirements) -> ModelRequirements:
+        """
+        Escalate model requirements — increase quality floor.
+        Replaces tier-based escalation with capability-aware escalation.
+        """
+        return reqs.escalate()
 
     # ------------------------------------------------------------------ #
     #  Context builder (DB + inline fallback)                             #
@@ -640,8 +655,8 @@ class BaseAgent:
             # Fallback: ~4 chars per token
             return sum(len(m.get("content", "")) for m in messages) // 4
 
-    def _get_context_window(self, model: str, tier: str) -> int:
-        """Return the context window size (input tokens) for a model."""
+    def _get_context_window(self, model: str, tier_or_reqs=None) -> int:
+        """Return the context window size for a model."""
         try:
             info = _litellm.get_model_info(model=model)
             if info:
@@ -650,25 +665,38 @@ class BaseAgent:
                     return ctx
         except Exception:
             pass
-        # Conservative fallbacks per tier
+
+        # Try registry
+        try:
+            registry = get_registry()
+            model_info = registry.find_by_litellm_name(model)
+            if model_info:
+                return model_info.context_length
+        except Exception:
+            pass
+
+        # Legacy tier-based fallback
+        tier = tier_or_reqs
+        if isinstance(tier_or_reqs, ModelRequirements):
+            tier = tier_or_reqs.tier
+
         return {
             "routing": 4096,
             "cheap": 8192,
             "code": 16384,
             "medium": 16384,
             "expensive": 32768,
-        }.get(tier, 8192)
+        }.get(tier or "", 8192)
+
 
     def _trim_messages_if_needed(
-        self, messages: list[dict], model: str, tier: str,
+        self, messages: list[dict], model: str, tier_or_reqs=None,
     ) -> list[dict]:
         """
-        If the conversation exceeds 80 % of the model's context window,
-        progressively compress older tool exchanges:
-          Phase 1 — truncate long middle messages
-          Phase 2 — drop oldest assistant/user pairs entirely
+        If the conversation exceeds 80% of context, compress older exchanges.
+        Accepts tier string or ModelRequirements for compat.
         """
-        ctx_window = self._get_context_window(model, tier)
+        ctx_window = self._get_context_window(model, tier_or_reqs)
         threshold = int(ctx_window * 0.80)
 
         current = self._count_tokens(messages, model)
@@ -677,31 +705,26 @@ class BaseAgent:
 
         logger.warning(
             f"Context at {current}/{ctx_window} tokens "
-            f"({current * 100 // ctx_window}%%), compressing…"
+            f"({current * 100 // ctx_window}%), compressing…"
         )
 
-        # Need at minimum: system + initial user + latest 2
         if len(messages) <= 4:
             return messages
 
-        head = messages[:2]          # system prompt + task context
-        tail = messages[-2:]         # latest exchange
+        head = messages[:2]
+        tail = messages[-2:]
         middle = list(messages[2:-2])
 
         if not middle:
             return messages
 
-        # ── Phase 1: truncate long content in middle messages ──
+        # Phase 1: truncate long content
         for i, msg in enumerate(middle):
             content = msg.get("content", "")
             if len(content) > 300:
                 middle[i] = {
                     "role": msg["role"],
-                    "content": (
-                        content[:150]
-                        + "\n\n… [compressed] …\n\n"
-                        + content[-100:]
-                    ),
+                    "content": content[:150] + "\n\n… [compressed] …\n\n" + content[-100:],
                 }
 
         result = head + middle + tail
@@ -710,11 +733,11 @@ class BaseAgent:
             logger.info(f"Context compressed (truncate): {current} → {final} tokens")
             return result
 
-        # ── Phase 2: drop oldest pairs from middle ──
+        # Phase 2: drop oldest pairs
         while len(middle) >= 2:
             if self._count_tokens(head + middle + tail, model) <= threshold:
                 break
-            middle = middle[2:]      # drop one assistant + user pair
+            middle = middle[2:]
 
         summary = {
             "role": "user",
@@ -724,7 +747,6 @@ class BaseAgent:
             ),
         }
         result = head + [summary] + middle + tail
-
         final = self._count_tokens(result, model)
         logger.info(f"Context compressed (drop): {current} → {final} tokens")
         return result
@@ -821,111 +843,6 @@ class BaseAgent:
         return None  # validation passed
 
     # ------------------------------------------------------------------ #
-    #  Phase 5: Single-shot execution                                     #
-    # ------------------------------------------------------------------ #
-    async def execute_single_shot(self, task: dict) -> dict:
-        """Single LLM call with no tool loop. For planning/classification."""
-        task_id = task.get("id", "?")
-
-        tier = task.get("tier", self.default_tier)
-        if tier == "auto":
-            tier = AGENT_TIER_MAP.get(self.name, self.default_tier)
-        tier = self._enforce_min_tier(tier)
-
-        # Phase 10.5: Extract model_override from task context
-        _ss_ctx = task.get("context")
-        if isinstance(_ss_ctx, str):
-            try:
-                _ss_ctx = json.loads(_ss_ctx)
-            except (json.JSONDecodeError, TypeError):
-                _ss_ctx = {}
-        if not isinstance(_ss_ctx, dict):
-            _ss_ctx = {}
-        _ss_model_override = _ss_ctx.get("model_override")
-
-        system_prompt = self._build_full_system_prompt(task)
-        context = await self._build_context(task)
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": context},
-        ]
-
-        try:
-            response = await call_model(
-                tier, messages, agent_type=self.name,
-                model_override=_ss_model_override,
-            )
-        except Exception as exc:
-            logger.error(f"[Task #{task_id}] Single-shot call failed: {exc}")
-            return {
-                "status": "completed",
-                "result": f"Agent failed: {exc}",
-                "model": "unknown", "cost": 0, "tier": tier,
-            }
-
-        content = response.get("content", "")
-        used_model = response.get("model", "unknown")
-        cost = response.get("cost", 0)
-
-        parsed = self._parse_agent_response(content)
-
-        # Phase 9.2: handle parse failure in single-shot mode
-        if parsed is None:
-            parsed = {"action": "final_answer", "result": content}
-
-        action_type = parsed.get("action", "final_answer")
-
-        if action_type == "decompose" or parsed.get("subtasks"):
-            return {
-                "status": "needs_subtasks",
-                "subtasks": parsed.get("subtasks", []),
-                "plan_summary": parsed.get("plan_summary", ""),
-                "model": used_model, "cost": cost, "tier": tier,
-            }
-
-        return {
-            "status": "completed",
-            "result": parsed.get("result", content),
-            "model": used_model, "cost": cost,
-            "tier": tier, "iterations": 1,
-        }
-
-    # ------------------------------------------------------------------ #
-    #  Phase 5: Self-reflection                                            #
-    # ------------------------------------------------------------------ #
-    async def _self_reflect(
-        self, task: dict, result: str, tier: str, used_model: str,
-    ) -> dict | None:
-        """Review own output for errors. Returns corrections or None."""
-        try:
-            messages = [
-                {"role": "system", "content": (
-                    "You are a careful reviewer. Check this response "
-                    "for errors, omissions, or hallucinations. "
-                    "If the response is good, respond: "
-                    '{"verdict": "ok"}. '
-                    "If there are issues, respond: "
-                    '{"verdict": "fix", "issues": "description", '
-                    '"corrected_result": "the fixed version"}.'
-                )},
-                {"role": "user", "content": (
-                    f"Task: {task.get('title', '')}\n"
-                    f"Description: {(task.get('description') or '')[:500]}\n\n"
-                    f"Response to review:\n{result[:3000]}"
-                )},
-            ]
-            response = await call_model(
-                tier, messages, agent_type="self_reflection",
-            )
-            raw = response.get("content", "").strip()
-            parsed = self._try_parse_json(raw)
-            if parsed and parsed.get("verdict") == "fix":
-                return parsed
-        except Exception as exc:
-            logger.debug(f"Self-reflection failed: {exc}")
-        return None
-
-    # ------------------------------------------------------------------ #
     #  Main execution loop                                                #
     # ------------------------------------------------------------------ #
     async def execute(self, task: dict) -> dict:
@@ -970,7 +887,6 @@ class BaseAgent:
                 )
 
         if checkpoint:
-            # Restore state from checkpoint
             messages = checkpoint.get("messages", [])
             start_iteration = checkpoint.get("iteration", 0)
             total_cost = checkpoint.get("total_cost", 0.0)
@@ -978,10 +894,27 @@ class BaseAgent:
             tools_used = checkpoint.get("tools_used", False)
             validation_retried = checkpoint.get("validation_retried", False)
             format_retries = checkpoint.get("format_retries", 0)
-            tier = checkpoint.get("reqs", reqs)
             completed_tool_ops: dict[str, str] = checkpoint.get(
                 "completed_tool_ops", {}
             )
+
+            # Restore reqs from checkpoint (backward compat with tier-based checkpoints)
+            saved_reqs = checkpoint.get("reqs")
+            if isinstance(saved_reqs, ModelRequirements):
+                reqs = saved_reqs
+            elif isinstance(saved_reqs, str):
+                # Old checkpoint saved a tier string — convert
+                reqs = ModelRequirements.from_tier(
+                    saved_reqs, agent_type=self.name
+                )
+                # Re-apply task context overrides
+                if model_override:
+                    reqs.model_override = model_override
+                if _task_ctx.get("local_only"):
+                    reqs.local_only = True
+                if _task_ctx.get("prefer_quality"):
+                    reqs.prefer_quality = True
+
             logger.info(
                 f"[Task #{task_id}] Resuming from checkpoint "
                 f"(iteration {start_iteration}, "
@@ -989,7 +922,6 @@ class BaseAgent:
                 f"{len(completed_tool_ops)} cached tool ops)"
             )
         else:
-            # ── build messages from scratch ──
             system_prompt = self._build_full_system_prompt(task)
             context = await self._build_context(task)
 
@@ -1005,43 +937,38 @@ class BaseAgent:
             format_retries = 0
             completed_tool_ops: dict[str, str] = {}
 
-        # Track tool failures for mid-task escalation
         consecutive_tool_failures = 0
         escalated = False
 
-        # ── iterative loop ──
         for iteration in range(start_iteration, self.max_iterations):
             logger.info(
                 f"[Task #{task_id}] Agent '{self.name}' iteration "
                 f"{iteration + 1}/{self.max_iterations}"
             )
 
-            # ── Update requirements based on current state ──
-            reqs.estimated_input_tokens = self._count_tokens(
-                messages, MODEL_TIERS.get("cheap", {}).get("model", "gpt-4o-mini")
-            )
-            reqs.estimated_output_tokens = min(
-                reqs.estimated_output_tokens,
-                4096,  # reasonable max per iteration
-            )
-
-
-            # Call LLM
-            # ── Trim context if approaching window limit ──
+            # ── Update token estimates ──
             estimation_model = (
                 used_model if used_model != "unknown"
-                else MODEL_TIERS.get(tier, {}).get("model", "gpt-4o-mini")
+                else MODEL_TIERS.get(reqs.tier, {}).get("model", "gpt-4o-mini")
             )
-            messages = self._trim_messages_if_needed(
-                messages, estimation_model, tier,
+            reqs.estimated_input_tokens = self._count_tokens(
+                messages, estimation_model
+            )
+            reqs.estimated_output_tokens = min(
+                reqs.estimated_output_tokens, 4096,
             )
 
-            # If tools are available, we benefit from FC
+            # ── Trim context ── (now accepts reqs directly)
+            messages = self._trim_messages_if_needed(
+                messages, estimation_model, reqs,
+            )
+
+            # ── Tools ──
             litellm_tools = self._build_litellm_tools()
             if litellm_tools:
                 reqs.needs_function_calling = True
 
-            # Call LLM with requirements
+            # ── Call LLM ──
             try:
                 response = await call_model(
                     reqs=reqs,
@@ -1056,6 +983,7 @@ class BaseAgent:
                     "model": used_model,
                     "cost": total_cost,
                     "iterations": iteration,
+                    "tier": reqs.tier,  # compat
                 }
 
             content    = response.get("content", "")
@@ -1064,7 +992,6 @@ class BaseAgent:
             step_latency = response.get("latency", 0)
             total_cost += step_cost
 
-            # ── Record model call stats (Phase 4) ──
             try:
                 await record_model_call(
                     model=used_model,
@@ -1074,9 +1001,8 @@ class BaseAgent:
                     latency=step_latency,
                 )
             except Exception:
-                pass  # never break the loop for stats
+                pass
 
-            # ── Record cost for budget tracking (Phase 4) ──
             if step_cost > 0:
                 try:
                     await record_cost(step_cost)
@@ -1084,40 +1010,25 @@ class BaseAgent:
                     pass
 
             logger.debug(f"[Task #{task_id}] Raw response: {content[:200]}...")
-
-            # Log assistant turn
             await self._safe_log(
                 task_id, "assistant", content, used_model, step_cost
             )
 
-            # ── Phase 9.2: Structured parse priority ──
-            # (1) Function calling (tool_calls from response)
-            # (2) Text parsing (json.loads → fence → brace-depth)
-            # (3) One retry with parse error injected
-            # (4) Explicit failure — no silent fallback
+            # ── Parse response ──
             fc_tool_calls = response.get("tool_calls")
             parsed = None
             if fc_tool_calls:
                 parsed = self._parse_function_call_response(fc_tool_calls)
-                if parsed:
-                    logger.debug(
-                        f"[Task #{task_id}] Parsed via function calling: "
-                        f"{parsed.get('action')}"
-                    )
             if parsed is None:
                 parsed = self._parse_agent_response(content)
 
-            # ── FORMAT RETRY (Phase 9.2) ─────────────────────────
-            # If parsing returned None (explicit failure), retry with
-            # a correction prompt. After MAX_FORMAT_RETRIES, fail the
-            # iteration rather than silently treating text as answer.
+            # ── FORMAT RETRY ──
             if parsed is None:
                 if format_retries < MAX_FORMAT_RETRIES:
                     format_retries += 1
                     logger.warning(
                         f"[Task #{task_id}] JSON parse failed — "
-                        f"requesting format correction "
-                        f"(retry {format_retries}/{MAX_FORMAT_RETRIES})"
+                        f"retry {format_retries}/{MAX_FORMAT_RETRIES}"
                     )
                     messages.append({"role": "assistant", "content": content})
                     messages.append({
@@ -1127,29 +1038,19 @@ class BaseAgent:
                             "Please fix the formatting and try again.\n\n"
                             "You MUST respond with ONLY a valid JSON block:\n"
                             "```json\n"
-                            '{"action": "tool_call", "tool": "...", '
-                            '"args": {...}}\n'
-                            "```\n"
-                            "or:\n"
-                            "```json\n"
+                            '{"action": "tool_call", "tool": "...", "args": {...}}\n'
+                            "```\nor:\n```json\n"
                             '{"action": "final_answer", "result": "..."}\n'
-                            "```\n\n"
-                            "No text before or after the JSON block."
+                            "```\nNo text before or after the JSON block."
                         ),
                     })
                     await self._save_checkpoint(
                         task_id, iteration + 1, messages, total_cost,
-                        used_model, tier, tools_used, validation_retried,
+                        used_model, reqs.tier, tools_used, validation_retried,
                         completed_tool_ops, format_retries,
                     )
                     continue
                 else:
-                    # Exhausted format retries — explicit failure
-                    logger.error(
-                        f"[Task #{task_id}] Parse failed after "
-                        f"{MAX_FORMAT_RETRIES} retries. "
-                        f"Failing iteration explicitly."
-                    )
                     parsed = {
                         "action": "final_answer",
                         "result": (
@@ -1158,25 +1059,15 @@ class BaseAgent:
                             f"Raw output:\n{content[:2000]}"
                         ),
                     }
-            # ── END FORMAT RETRY ─────────────────────────────────
 
-            # ── PYDANTIC VALIDATION ──────────────────────────────
-            # Validate the parsed action against its Pydantic model.
-            # On failure, log the error but keep the original parsed
-            # dict to avoid breaking the loop.
             try:
                 parsed = validate_action(parsed)
             except ValueError as exc:
-                logger.warning(
-                    f"[Task #{task_id}] Action validation warning: {exc}"
-                )
-            # ── END PYDANTIC VALIDATION ──────────────────────────
+                logger.warning(f"[Task #{task_id}] Action validation warning: {exc}")
 
             action_type = parsed.get("action", "final_answer")
 
-            # ── HALLUCINATION GUARD ───────────────────────────────
-            # Catch models that claim task completion without calling
-            # a single tool on tasks that clearly require execution.
+            # ── HALLUCINATION GUARD (unchanged) ──
             has_tools = (
                 self.allowed_tools is None or len(self.allowed_tools) > 0
             )
@@ -1196,11 +1087,8 @@ class BaseAgent:
                 task_title = task.get("title", "")
 
                 logger.warning(
-                    f"[Task #{task_id}] ⚠️ Hallucination guard: model "
-                    f"returned final_answer on action task without any "
-                    f"tool calls (iter {iteration})"
+                    f"[Task #{task_id}] ⚠️ Hallucination guard triggered"
                 )
-
                 messages.append({"role": "assistant", "content": content})
                 messages.append({
                     "role": "user",
@@ -1216,97 +1104,58 @@ class BaseAgent:
                         '{"action": "tool_call", "tool": "shell", '
                         '"args": {"command": "ls -la"}}\n'
                         "```\n\n"
-                        "Example — to search the web:\n"
-                        "```json\n"
-                        '{"action": "tool_call", "tool": "web_search", '
-                        '"args": {"query": "your search here"}}\n'
-                        "```\n\n"
                         "Respond with ONLY the JSON block. No explanation."
                     ),
                 })
-
                 await self._safe_log(
                     task_id, "system",
-                    f"[hallucination_guard] Rejected premature final_answer, "
-                    f"pushing model to use tools (iter {iteration})",
+                    f"[hallucination_guard] Rejected premature final_answer",
                     None, 0,
                 )
                 await self._save_checkpoint(
                     task_id, iteration + 1, messages, total_cost,
-                    used_model, tier, tools_used, validation_retried,
+                    used_model, reqs.tier, tools_used, validation_retried,
                     completed_tool_ops, format_retries,
                 )
                 continue
-            # ── END HALLUCINATION GUARD ───────────────────────────
 
-            # ── FINAL ANSWER ──────────────────────────────────────────
+            # ── FINAL ANSWER ──
             if action_type == "final_answer":
                 result = parsed.get("result", content)
 
-                # ── OUTPUT VALIDATION ──────────────────────────────
                 if not validation_retried:
                     validation_error = self._validate_response(result, task)
                     if validation_error:
                         validation_retried = True
-                        logger.warning(
-                            f"[Task #{task_id}] ⚠️ Output validation failed: "
-                            f"{validation_error}"
-                        )
                         messages.append({"role": "assistant", "content": content})
                         messages.append({
                             "role": "user",
-                            "content": (
-                                f"{validation_error}\n\n"
-                                f"Please try again and provide a proper response."
-                            ),
+                            "content": f"{validation_error}\n\nPlease try again.",
                         })
-                        await self._safe_log(
-                            task_id, "system",
-                            f"[output_validation] {validation_error}",
-                            None, 0,
-                        )
                         await self._save_checkpoint(
                             task_id, iteration + 1, messages, total_cost,
-                            used_model, tier, tools_used, validation_retried,
+                            used_model, reqs.tier, tools_used, validation_retried,
                             completed_tool_ops, format_retries,
                         )
                         continue
-                # ── END OUTPUT VALIDATION ──────────────────────────
 
-                # ── Phase 9.2: Per-task-type output validation ────
-                task_type_errors = validate_task_output(
-                    self.name, result,
-                )
+                task_type_errors = validate_task_output(self.name, result)
                 if task_type_errors and not validation_retried:
                     validation_retried = True
                     err_msg = "; ".join(task_type_errors)
-                    logger.warning(
-                        f"[Task #{task_id}] ⚠️ Task-type validation: "
-                        f"{err_msg}"
-                    )
                     messages.append({"role": "assistant", "content": content})
                     messages.append({
                         "role": "user",
-                        "content": (
-                            f"Output quality issue: {err_msg}\n\n"
-                            f"Please revise your answer to include the "
-                            f"expected content."
-                        ),
+                        "content": f"Output quality issue: {err_msg}\n\nPlease revise.",
                     })
-                    await self._safe_log(
-                        task_id, "system",
-                        f"[task_type_validation] {err_msg}",
-                        None, 0,
-                    )
                     await self._save_checkpoint(
                         task_id, iteration + 1, messages, total_cost,
-                        used_model, tier, tools_used, validation_retried,
+                        used_model, reqs.tier, tools_used, validation_retried,
                         completed_tool_ops, format_retries,
                     )
                     continue
-                # ── END TASK-TYPE VALIDATION ──────────────────────
 
-                # Persist memories
+                # Memories
                 raw_memories = parsed.get("memories", {})
                 if raw_memories and isinstance(raw_memories, dict):
                     for key, value in raw_memories.items():
@@ -1316,16 +1165,13 @@ class BaseAgent:
                                 category=self.name, goal_id=goal_id,
                             )
                         except Exception as exc:
-                            logger.warning(
-                                f"[Task #{task_id}] store_memory failed: {exc}"
-                            )
+                            logger.warning(f"store_memory failed: {exc}")
 
                 logger.info(
                     f"[Task #{task_id}] ✅ Agent answered after "
                     f"{iteration + 1} iteration(s)"
                 )
 
-                # Agent asked for subtask decomposition inside final_answer
                 if parsed.get("subtasks"):
                     await self._clear_checkpoint_safe(task_id)
                     return {
@@ -1334,10 +1180,9 @@ class BaseAgent:
                         "plan_summary": parsed.get("plan_summary", ""),
                         "model":        used_model,
                         "cost":         total_cost,
-                        "tier":         tier,
+                        "tier":         reqs.tier,
                     }
 
-                # Agent asked for clarification inside final_answer
                 if parsed.get("needs_clarification"):
                     await self._clear_checkpoint_safe(task_id)
                     return {
@@ -1345,38 +1190,29 @@ class BaseAgent:
                         "clarification": parsed["needs_clarification"],
                         "model":         used_model,
                         "cost":          total_cost,
-                        "tier":          tier,
+                        "tier":          reqs.tier,
                     }
 
-                # ── Self-reflection (Phase 5) ──
+                # Self-reflection
                 if self.enable_self_reflection:
                     try:
                         reflection = await self._self_reflect(
-                            task, result, tier, used_model,
+                            task, result, reqs, used_model,
                         )
                         if reflection and reflection.get("verdict") == "fix":
                             corrected = reflection.get("corrected_result")
                             if corrected:
-                                logger.info(
-                                    f"[Task #{task_id}] Self-reflection "
-                                    f"corrected output: "
-                                    f"{reflection.get('issues', '')[:80]}"
-                                )
                                 result = corrected
                     except Exception as exc:
                         logger.debug(f"Self-reflection error: {exc}")
 
-                # ── Confidence gating (Phase 5) ──
+                # Confidence gating
                 confidence = parsed.get("confidence")
                 if (
                     self.min_confidence > 0
                     and isinstance(confidence, (int, float))
                     and confidence < self.min_confidence
                 ):
-                    logger.warning(
-                        f"[Task #{task_id}] Low confidence {confidence}"
-                        f"/{self.min_confidence}, routing to reviewer"
-                    )
                     await self._clear_checkpoint_safe(task_id)
                     return {
                         "status":      "needs_review",
@@ -1384,20 +1220,20 @@ class BaseAgent:
                         "review_note": f"Agent confidence: {confidence}/5",
                         "model":       used_model,
                         "cost":        total_cost,
-                        "tier":        tier,
+                        "tier":        reqs.tier,
                     }
 
-                # ── Response grading (Phase 4) ──
+                # Grading
                 quality_score = None
                 try:
                     quality_score = await grade_response(
                         task.get("title", ""),
                         task.get("description", ""),
                         result,
+                        generating_model=used_model,
                     )
                     if quality_score is not None and task_id != "?":
                         await update_task(task_id, quality_score=quality_score)
-                        # Update model stats with grade
                         await record_model_call(
                             model=used_model,
                             agent_type=self.name,
@@ -1413,12 +1249,12 @@ class BaseAgent:
                     "result":        result,
                     "model":         used_model,
                     "cost":          total_cost,
-                    "tier":          tier,
+                    "tier":          reqs.tier,
                     "iterations":    iteration + 1,
                     "quality_score": quality_score,
                 }
 
-            # ── TOOL CALL ─────────────────────────────────────────────
+            # ── TOOL CALL ──
             if action_type == "tool_call":
                 tools_used = True
                 tool_name = parsed.get("tool", "")
@@ -1426,14 +1262,13 @@ class BaseAgent:
                 if not isinstance(tool_args, dict):
                     tool_args = {}
 
-                # Validate access
                 if (
                     self.allowed_tools is not None
                     and tool_name not in self.allowed_tools
                 ):
                     tool_output = (
-                        f"❌ Tool '{tool_name}' is not available to this "
-                        f"agent. Allowed: {self.allowed_tools}"
+                        f"❌ Tool '{tool_name}' not available. "
+                        f"Allowed: {self.allowed_tools}"
                     )
                 elif tool_name not in TOOL_REGISTRY:
                     tool_output = (
@@ -1441,7 +1276,6 @@ class BaseAgent:
                         f"Available: {list(TOOL_REGISTRY.keys())}"
                     )
                 else:
-                    # ── Typed argument validation & coercion ──
                     arg_schema = _TOOL_SCHEMAS_BY_NAME.get(tool_name)
                     if arg_schema:
                         tool_args, arg_errors = validate_tool_args(
@@ -1449,40 +1283,20 @@ class BaseAgent:
                         )
                         if arg_errors:
                             err_msg = "; ".join(arg_errors)
-                            logger.warning(
-                                f"[Task #{task_id}] Tool arg validation: "
-                                f"{err_msg}"
-                            )
-                            # Return error to LLM so it can fix the call
                             tool_output = (
-                                f"❌ Argument error for tool '{tool_name}': "
-                                f"{err_msg}\n\n"
-                                f"Expected parameters: "
-                                f"{json.dumps(arg_schema, indent=2)}"
+                                f"❌ Argument error for '{tool_name}': {err_msg}\n\n"
+                                f"Expected: {json.dumps(arg_schema, indent=2)}"
                             )
-                            messages.append(
-                                {"role": "assistant", "content": content}
-                            )
-                            messages.append(
-                                {"role": "user", "content": tool_output}
-                            )
-                            await self._safe_log(
-                                task_id, "tool",
-                                f"[{tool_name}] ARG_ERROR: {err_msg}",
-                                None, 0,
-                            )
+                            messages.append({"role": "assistant", "content": content})
+                            messages.append({"role": "user", "content": tool_output})
                             await self._save_checkpoint(
-                                task_id, iteration + 1, messages,
-                                total_cost, used_model, tier,
-                                tools_used, validation_retried,
-                                completed_tool_ops, format_retries,
+                                task_id, iteration + 1, messages, total_cost,
+                                used_model, reqs.tier, tools_used,
+                                validation_retried, completed_tool_ops, format_retries,
                             )
                             continue
 
-                    # ── Idempotency check for side-effect tools ──
-                    idem_key = self._tool_idempotency_key(
-                        tool_name, tool_args,
-                    )
+                    idem_key = self._tool_idempotency_key(tool_name, tool_args)
                     cached = (
                         completed_tool_ops.get(idem_key)
                         if tool_name in SIDE_EFFECT_TOOLS
@@ -1491,83 +1305,58 @@ class BaseAgent:
 
                     if cached is not None:
                         tool_output = cached
-                        logger.info(
-                            f"[Task #{task_id}] ♻️ Idempotent skip: "
-                            f"{tool_name} (cached result, "
-                            f"{len(tool_output)} chars)"
-                        )
                     else:
                         logger.info(
                             f"[Task #{task_id}] 🔧 {tool_name}("
                             f"{', '.join(f'{k}={repr(v)[:50]}' for k, v in tool_args.items())})"
                         )
                         try:
-                            tool_output = await execute_tool(
-                                tool_name, **tool_args,
-                            )
+                            tool_output = await execute_tool(tool_name, **tool_args)
                         except Exception as exc:
                             tool_output = f"❌ Tool execution error: {exc}"
-                            logger.error(
-                                f"[Task #{task_id}] Tool '{tool_name}' "
-                                f"raised: {exc}"
-                            )
 
-                        # Record for idempotency (side-effect tools only)
                         if tool_name in SIDE_EFFECT_TOOLS:
                             completed_tool_ops[idem_key] = tool_output
 
-                    # ── Log tool output to terminal for debugging ──
-                    output_preview = tool_output[:500] if tool_output else "(empty)"
-                    if tool_output and len(tool_output) > 500:
-                        output_preview += f"\n... [{len(tool_output)} chars total]"
-                    logger.info(
-                        f"[Task #{task_id}] 📤 {tool_name} returned: "
-                        f"{output_preview}"
-                    )
-
-                # Truncate
                 if len(tool_output) > MAX_TOOL_OUTPUT_LENGTH:
                     tool_output = (
                         tool_output[:MAX_TOOL_OUTPUT_LENGTH]
-                        + f"\n\n... [truncated — {len(tool_output)} chars total]"
+                        + f"\n\n... [{len(tool_output)} chars total]"
                     )
 
-                # Append turns
-                                # Detect if the tool errored
                 tool_failed = (
                     tool_output.startswith("❌")
                     or tool_output.startswith("🚫")
                     or "command not found" in tool_output
                     or "No such file" in tool_output
-                    or "exit code" in tool_output
-                    and "exit code 0" not in tool_output
+                    or ("exit code" in tool_output and "exit code 0" not in tool_output)
                 )
 
-                # ── Mid-task escalation (Phase 4) ──
                 if tool_failed:
                     consecutive_tool_failures += 1
                 else:
                     consecutive_tool_failures = 0
 
+                # ── Mid-task escalation ── (NOW uses reqs.escalate())
                 if (
                     not escalated
                     and consecutive_tool_failures >= ESCALATION_THRESHOLD
                     and iteration >= ESCALATION_THRESHOLD
                 ):
-                    next_tier = self._escalate_tier(tier)
-                    if next_tier and next_tier in MODEL_TIERS:
+                    old_tier = reqs.tier
+                    reqs = self._escalate_requirements(reqs)
+                    new_tier = reqs.tier
+                    if new_tier != old_tier:
                         logger.warning(
-                            f"[Task #{task_id}] ⬆️ Escalating tier: "
-                            f"'{tier}' → '{next_tier}' after "
-                            f"{consecutive_tool_failures} consecutive "
-                            f"tool failures"
+                            f"[Task #{task_id}] ⬆️ Escalating: "
+                            f"'{old_tier}' → '{new_tier}' after "
+                            f"{consecutive_tool_failures} consecutive failures"
                         )
-                        tier = next_tier
                         escalated = True
                         await self._safe_log(
                             task_id, "system",
-                            f"[escalation] Upgraded to tier '{tier}' "
-                            f"after {consecutive_tool_failures} failures",
+                            f"[escalation] Upgraded quality after "
+                            f"{consecutive_tool_failures} failures",
                             None, 0,
                         )
 
@@ -1575,24 +1364,14 @@ class BaseAgent:
                     recovery_guidance = (
                         f"## Tool Result (`{tool_name}`) — ERROR:\n\n"
                         f"```\n{tool_output}\n```\n\n"
-                        f"The tool call failed. Try a DIFFERENT approach:\n"
-                        f"- If a command wasn't found, use an alternative "
-                        f"(e.g. `curl` instead of `gh`, "
-                        f"`python3` instead of `python`)\n"
-                        f"- If a file wasn't found, use `file_tree` to check "
-                        f"what exists\n"
-                        f"- If you're stuck, provide your best `final_answer` "
-                        f"with what you know\n\n"
-                        f"Respond with a JSON tool_call or final_answer. "
+                        f"The tool call failed. Try a DIFFERENT approach.\n"
                         f"Iteration {iteration + 2}/{self.max_iterations}."
                     )
                 else:
                     recovery_guidance = (
                         f"## Tool Result (`{tool_name}`):\n\n"
                         f"```\n{tool_output}\n```\n\n"
-                        f"Continue working. Provide your `final_answer` when "
-                        f"done, or call another tool. "
-                        f"Iteration {iteration + 2}/{self.max_iterations}."
+                        f"Continue working. Iteration {iteration + 2}/{self.max_iterations}."
                     )
 
                 messages.append({"role": "assistant", "content": content})
@@ -1605,70 +1384,50 @@ class BaseAgent:
                 )
                 await self._save_checkpoint(
                     task_id, iteration + 1, messages, total_cost,
-                    used_model, tier, tools_used, validation_retried,
+                    used_model, reqs.tier, tools_used, validation_retried,
                     completed_tool_ops, format_retries,
                 )
                 continue
 
-            # ── CLARIFY ───────────────────────────────────────────────
+            # ── CLARIFY / DECOMPOSE / UNKNOWN (unchanged) ──
             if action_type == "clarify":
                 await self._clear_checkpoint_safe(task_id)
                 return {
-                    "status":        "needs_clarification",
+                    "status": "needs_clarification",
                     "clarification": parsed.get("question", content),
-                    "model":         used_model,
-                    "cost":          total_cost,
-                    "tier":          tier,
+                    "model": used_model, "cost": total_cost, "tier": reqs.tier,
                 }
 
-            # ── DECOMPOSE ─────────────────────────────────────────────
             if action_type == "decompose":
                 await self._clear_checkpoint_safe(task_id)
                 return {
-                    "status":       "needs_subtasks",
-                    "subtasks":     parsed.get("subtasks", []),
+                    "status": "needs_subtasks",
+                    "subtasks": parsed.get("subtasks", []),
                     "plan_summary": parsed.get("summary", ""),
-                    "model":        used_model,
-                    "cost":         total_cost,
-                    "tier":         tier,
+                    "model": used_model, "cost": total_cost, "tier": reqs.tier,
                 }
 
-            # ── UNKNOWN — nudge with concrete format examples ─────
-            logger.warning(
-                f"[Task #{task_id}] Unrecognized action "
-                f"'{action_type}' on iteration {iteration + 1}. "
-                f"Raw: {content[:200]}"
-            )
+            # Unknown action
             messages.append({"role": "assistant", "content": content})
             messages.append({
                 "role": "user",
                 "content": (
                     f"ERROR: Unrecognized action '{action_type}'. "
-                    f"You MUST use one of these exact formats:\n\n"
-                    f"To call a tool:\n"
+                    f"Use tool_call or final_answer only.\n\n"
                     f"```json\n"
-                    f'{{"action": "tool_call", "tool": "shell", '
-                    f'"args": {{"command": "ls -la"}}}}\n'
-                    f"```\n\n"
-                    f"To give your final answer:\n"
-                    f"```json\n"
-                    f'{{"action": "final_answer", "result": '
-                    f'"your complete answer here"}}\n'
-                    f"```\n\n"
-                    f"Respond with ONLY the JSON block. Nothing else."
+                    f'{{"action": "tool_call", "tool": "shell", "args": {{"command": "ls"}}}}\n'
+                    f"```\nor:\n```json\n"
+                    f'{{"action": "final_answer", "result": "your answer"}}\n'
+                    f"```"
                 ),
             })
             await self._save_checkpoint(
                 task_id, iteration + 1, messages, total_cost,
-                used_model, tier, tools_used, validation_retried,
+                used_model, reqs.tier, tools_used, validation_retried,
                 completed_tool_ops, format_retries,
             )
 
-        # ── exhausted iterations ──
-        logger.warning(
-            f"[Task #{task_id}] Agent '{self.name}' exhausted "
-            f"{self.max_iterations} iterations"
-        )
+        # ── Exhausted iterations ──
         await self._clear_checkpoint_safe(task_id)
         last = messages[-1].get("content", "") if messages else ""
         return {
@@ -1677,11 +1436,210 @@ class BaseAgent:
                 f"[Completed after {self.max_iterations} iterations "
                 f"without a final answer]\n\nLast context:\n{last[:3000]}"
             ),
-            "model":      used_model,
-            "cost":       total_cost,
-            "tier":       tier,
+            "model": used_model,
+            "cost": total_cost,
+            "tier": reqs.tier,
             "iterations": self.max_iterations,
         }
+
+    async def _build_model_requirements(
+        self, task: dict, task_ctx: dict,
+    ) -> ModelRequirements:
+        """
+        Build ModelRequirements from task metadata + agent properties.
+        Uses the new task-based routing while preserving all existing logic.
+        """
+        title = task.get("title", "").lower()
+        description = task.get("description", "").lower()
+        priority = task.get("priority", 5)
+
+        # ── Map agent type directly to task profile ──
+        agent_task_map = {
+            "planner":        ("planner",        7),
+            "architect":      ("architect",      8),
+            "coder":          ("coder",          7),
+            "implementer":    ("implementer",    7),
+            "fixer":          ("fixer",          6),
+            "test_generator": ("test_generator", 6),
+            "reviewer":       ("reviewer",       7),
+            "researcher":     ("researcher",     6),
+            "writer":         ("writer",         6),
+            "executor":       ("executor",       5),
+        }
+        task_name, min_q = agent_task_map.get(self.name, ("assistant", 5))
+
+        reqs = ModelRequirements(
+            task=task_name,
+            agent_type=self.name,
+            min_quality=min_q,
+            priority=priority,
+        )
+
+        # ── Adjust for task priority ──
+        if priority >= 10:
+            reqs.prefer_speed = True
+            reqs.min_quality = max(reqs.min_quality, 6)
+        elif priority <= 2:
+            reqs.min_quality = max(1, reqs.min_quality - 2)
+
+        # ── Detect personal/sensitive data ──
+        sensitivity_keywords = [
+            "personal", "private", "secret", "password",
+            "credential", "my ", "my_", "home",
+        ]
+        if any(kw in f"{title} {description}" for kw in sensitivity_keywords):
+            reqs.local_only = True
+
+        if task_ctx.get("local_only"):
+            reqs.local_only = True
+        if task_ctx.get("prefer_quality"):
+            reqs.prefer_quality = True
+
+        # ── Model diversity ──
+        exclude = task_ctx.get("exclude_models", [])
+        if exclude:
+            reqs.exclude_models = exclude
+
+        # ── Estimate context size ──
+        desc_len = len(task.get("description", ""))
+        context_json = task.get("context", "{}")
+        if isinstance(context_json, str):
+            ctx_len = len(context_json)
+        else:
+            ctx_len = len(json.dumps(context_json))
+
+        estimated_input = (desc_len + ctx_len) // 4  # rough char-to-token
+        reqs.estimated_input_tokens = max(estimated_input, 1000)
+        reqs.estimated_output_tokens = 2000
+
+        # ── Tools needed? ──
+        if self.allowed_tools is None or len(self.allowed_tools or []) > 0:
+            reqs.needs_function_calling = True
+
+        # ── Vision needed? ──
+        if task_ctx.get("needs_vision"):
+            reqs.needs_vision = True
+        if any(kw in f"{title} {description}" for kw in [
+            "screenshot", "image", "visual", "ui review", "layout",
+            "diagram", "photo", "picture",
+        ]):
+            reqs.needs_vision = True
+
+        # ── Thinking needed? ──
+        if task_ctx.get("needs_thinking"):
+            reqs.needs_thinking = True
+
+        return reqs
+
+    async def execute_single_shot(self, task: dict) -> dict:
+        """Single LLM call with no tool loop. For planning/classification."""
+        task_id = task.get("id", "?")
+
+        _ss_ctx = task.get("context")
+        if isinstance(_ss_ctx, str):
+            try:
+                _ss_ctx = json.loads(_ss_ctx)
+            except (json.JSONDecodeError, TypeError):
+                _ss_ctx = {}
+        if not isinstance(_ss_ctx, dict):
+            _ss_ctx = {}
+
+        # Build requirements using the same method as react loop
+        reqs = await self._build_model_requirements(task, _ss_ctx)
+
+        _ss_model_override = _ss_ctx.get("model_override")
+        if _ss_model_override:
+            reqs.model_override = _ss_model_override
+
+        system_prompt = self._build_full_system_prompt(task)
+        context = await self._build_context(task)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": context},
+        ]
+
+        try:
+            response = await call_model(reqs, messages)
+        except Exception as exc:
+            logger.error(f"[Task #{task_id}] Single-shot call failed: {exc}")
+            return {
+                "status": "completed",
+                "result": f"Agent failed: {exc}",
+                "model": "unknown", "cost": 0, "tier": reqs.tier,
+            }
+
+        content = response.get("content", "")
+        used_model = response.get("model", "unknown")
+        cost = response.get("cost", 0)
+
+        parsed = self._parse_agent_response(content)
+        if parsed is None:
+            parsed = {"action": "final_answer", "result": content}
+
+        action_type = parsed.get("action", "final_answer")
+
+        if action_type == "decompose" or parsed.get("subtasks"):
+            return {
+                "status": "needs_subtasks",
+                "subtasks": parsed.get("subtasks", []),
+                "plan_summary": parsed.get("plan_summary", ""),
+                "model": used_model, "cost": cost, "tier": reqs.tier,
+            }
+
+        return {
+            "status": "completed",
+            "result": parsed.get("result", content),
+            "model": used_model, "cost": cost,
+            "tier": reqs.tier, "iterations": 1,
+        }
+
+    async def _self_reflect(
+        self, task: dict, result: str,
+        tier_or_reqs=None, used_model: str = "",
+    ) -> dict | None:
+        """Review own output for errors. Accepts tier string or ModelRequirements."""
+        try:
+            # Build requirements for the reflection call
+            if isinstance(tier_or_reqs, ModelRequirements):
+                reflect_reqs = ModelRequirements(
+                    task="reviewer",
+                    min_quality=tier_or_reqs.min_quality,
+                    agent_type="self_reflection",
+                    estimated_input_tokens=800,
+                    estimated_output_tokens=500,
+                    prefer_speed=True,
+                )
+            else:
+                # Legacy tier string
+                reflect_reqs = ModelRequirements.from_tier(
+                    tier_or_reqs or "medium",
+                    agent_type="self_reflection",
+                )
+
+            messages = [
+                {"role": "system", "content": (
+                    "You are a careful reviewer. Check this response "
+                    "for errors, omissions, or hallucinations. "
+                    "If the response is good, respond: "
+                    '{"verdict": "ok"}. '
+                    "If there are issues, respond: "
+                    '{"verdict": "fix", "issues": "description", '
+                    '"corrected_result": "the fixed version"}.'
+                )},
+                {"role": "user", "content": (
+                    f"Task: {task.get('title', '')}\n"
+                    f"Description: {(task.get('description') or '')[:500]}\n\n"
+                    f"Response to review:\n{result[:3000]}"
+                )},
+            ]
+            response = await call_model(reflect_reqs, messages)
+            raw = response.get("content", "").strip()
+            parsed = self._try_parse_json(raw)
+            if parsed and parsed.get("verdict") == "fix":
+                return parsed
+        except Exception as exc:
+            logger.debug(f"Self-reflection failed: {exc}")
+        return None
 
     # ------------------------------------------------------------------ #
     #  Idempotency helpers                                                #
@@ -1767,82 +1725,3 @@ class BaseAgent:
             )
         except Exception as exc:
             logger.warning(f"[Task #{task_id}] log_conversation failed: {exc}")
-
-
-    async def _build_model_requirements(
-        self, task: dict, task_ctx: dict,
-    ) -> ModelRequirements:
-        """
-        Build ModelRequirements from task metadata + agent properties.
-        This is where task intelligence meets model selection.
-        """
-        title = task.get("title", "").lower()
-        description = task.get("description", "").lower()
-        priority = task.get("priority", 5)
-
-        # Start with agent defaults
-        reqs = ModelRequirements(
-            agent_type=self.name,
-            priority=priority,
-        )
-
-        # ── Determine primary capability from agent type ──
-        agent_capability_map = {
-            "planner":        ("planning", 7),
-            "architect":      ("planning", 8),
-            "coder":          ("coding", 7),
-            "implementer":    ("coding", 7),
-            "fixer":          ("coding", 6),
-            "test_generator": ("coding", 6),
-            "reviewer":       ("reasoning", 7),
-            "researcher":     ("research", 6),
-            "writer":         ("writing", 6),
-            "executor":       ("general", 5),
-        }
-        cap, min_q = agent_capability_map.get(self.name, ("general", 5))
-        reqs.primary_capability = cap
-        reqs.min_quality = min_q
-
-        # ── Adjust for task priority ──
-        if priority >= 10:  # critical — user waiting
-            reqs.prefer_speed = True
-            reqs.min_quality = max(reqs.min_quality, 6)
-        elif priority <= 2:  # background
-            reqs.min_quality = max(1, reqs.min_quality - 2)
-
-        # ── Detect personal/sensitive data ──
-        sensitivity_keywords = [
-            "personal", "private", "secret", "password",
-            "credential", "my ", "my_", "home",
-        ]
-        if any(kw in f"{title} {description}" for kw in sensitivity_keywords):
-            reqs.local_only = True
-
-        # From task context
-        if task_ctx.get("local_only"):
-            reqs.local_only = True
-        if task_ctx.get("prefer_quality"):
-            reqs.prefer_quality = True
-          
-        # ── Model diversity (from pipeline review loops) ──
-        exclude = task_ctx.get("exclude_models", [])
-        if exclude:
-            reqs.exclude_models = exclude
-
-        # ── Estimate context size from task content ──
-        desc_len = len(task.get("description", ""))
-        context_json = task.get("context", "{}")
-        if isinstance(context_json, str):
-            ctx_len = len(context_json)
-        else:
-            ctx_len = len(json.dumps(context_json))
-
-        estimated_input = (desc_len + ctx_len) // 4  # rough char-to-token
-        reqs.estimated_input_tokens = max(estimated_input, 1000)
-        reqs.estimated_output_tokens = 2000
-
-        # ── Tools needed? ──
-        if self.allowed_tools is None or len(self.allowed_tools or []) > 0:
-            reqs.needs_function_calling = True
-
-        return reqs

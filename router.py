@@ -1,25 +1,113 @@
-# router.py (rewritten)
+# router.py
 """
-Model router — requirements-based model selection, rate limiting,
-retries, cross-provider fallback, and GPU-aware scheduling.
+Model Router v2 — 14-dimension task-aware model selection,
+rate limiting, retries, cross-provider fallback, GPU-aware scheduling.
+
+Backward compatible: call_model() accepts both ModelRequirements objects
+AND the old (tier_str, messages, ...) signature for gradual migration.
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
+from typing import Optional, overload
 
 import litellm
 litellm.suppress_debug_info = True
 
-from config import THINKING_MODELS, COST_BUDGET_DAILY
+from config import COST_BUDGET_DAILY
+from capabilities import (
+    ALL_CAPABILITIES,
+    Cap,
+    TASK_PROFILES,
+    TaskRequirements as CapabilityTaskReqs,
+    score_model_for_task,
+)
 from model_registry import ModelInfo, get_registry
 from gpu_monitor import get_gpu_monitor
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Capability ↔ Task Mapping ───────────────────────────────────────────────
+
+CAPABILITY_TO_TASK: dict[str, str] = {
+    "coding":         "coder",
+    "code":           "coder",
+    "debugging":      "fixer",
+    "debug":          "fixer",
+    "fixing":         "fixer",
+    "fix":            "fixer",
+    "reasoning":      "planner",
+    "planning":       "planner",
+    "plan":           "planner",
+    "architecture":   "architect",
+    "design":         "architect",
+    "writing":        "writer",
+    "write":          "writer",
+    "documentation":  "writer",
+    "research":       "researcher",
+    "analysis":       "reviewer",
+    "review":         "reviewer",
+    "testing":        "test_generator",
+    "test":           "test_generator",
+    "implementation": "implementer",
+    "implement":      "implementer",
+    "execution":      "executor",
+    "execute":        "executor",
+    "tool_use":       "executor",
+    "routing":        "router",
+    "classification": "router",
+    "visual":         "visual_reviewer",
+    "vision":         "visual_reviewer",
+    "screenshot":     "visual_reviewer",
+    "conversation":   "assistant",
+    "chat":           "assistant",
+    "assistant":      "assistant",
+    "summarize":      "summarizer",
+    "summary":        "summarizer",
+    "general":        "assistant",
+    "simple":         "executor",
+}
+
+# Legacy tier → task mapping (for backward compat)
+TIER_TO_TASK: dict[str, str] = {
+    "routing":   "router",
+    "cheap":     "executor",
+    "code":      "coder",
+    "medium":    "assistant",
+    "expensive": "planner",
+}
+
+# Legacy tier → quality floor
+TIER_TO_MIN_QUALITY: dict[str, int] = {
+    "routing":   1,
+    "cheap":     3,
+    "code":      5,
+    "medium":    6,
+    "expensive": 8,
+}
+
+# Tier escalation order (used by base.py, preserved for compat)
+TIER_ESCALATION_ORDER: list[str] = ["cheap", "code", "medium", "expensive"]
+
+
+def _make_adhoc_profile(primary_cap: str) -> dict[str, float]:
+    """Create a task profile on the fly for unknown capability requests."""
+    profile = {cap: 0.3 for cap in ALL_CAPABILITIES}
+    for c in Cap:
+        if c.value == primary_cap or primary_cap in c.value:
+            profile[c.value] = 1.0
+            return profile
+    profile[Cap.REASONING.value] = 0.8
+    profile[Cap.INSTRUCTION_ADHERENCE.value] = 0.8
+    return profile
 
 
 # ─── Model Requirements ─────────────────────────────────────────────────────
@@ -28,56 +116,143 @@ logger = logging.getLogger(__name__)
 class ModelRequirements:
     """
     Structured description of what a task needs from a model.
-    Built by agents/pipeline, consumed by select_model.
 
-    This replaces the flat 'tier' string with rich, queryable requirements.
+    Supports both new task-based routing and legacy tier/capability routing.
     """
-    # What the task needs to do
-    primary_capability: str = "general"        # "coding", "reasoning", "planning", etc.
+    # ── Task identity (preferred path) ──
+    task: str = ""                            # Key into TASK_PROFILES
+
+    # ── Legacy capability path (auto-maps to task) ──
+    primary_capability: str = "general"
     secondary_capabilities: list[str] = field(default_factory=list)
 
-    # Quality floor (1-10). Minimum acceptable quality for primary_capability.
-    min_quality: int = 1
+    # ── Quality floor ──
+    min_score: float = 0.0                     # Minimum weighted task score (0-10)
+    min_quality: int = 1                       # Legacy: maps to min_score
 
-    # Context requirements
-    estimated_input_tokens: int = 2000         # estimated prompt size
-    estimated_output_tokens: int = 1000        # expected completion size
-    min_context_length: int = 0                # 0 = auto-calculate from estimates
+    # ── Context requirements ──
+    estimated_input_tokens: int = 2000
+    estimated_output_tokens: int = 1000
+    min_context_length: int = 0
 
-    # Feature requirements
+    # ── Feature requirements ──
     needs_function_calling: bool = False
     needs_json_mode: bool = False
     needs_thinking: bool = False
+    needs_vision: bool = False
 
-    # Privacy / location constraints
-    local_only: bool = False                   # for personal/sensitive data
+    # ── Constraints ──
+    local_only: bool = False
+    prefer_speed: bool = False
+    prefer_quality: bool = False
+    prefer_local: bool = False
+    max_cost: float = 0.0
 
-    # Speed vs quality preference
-    prefer_speed: bool = False                 # True = prioritize fast models
-    prefer_quality: bool = False               # True = prioritize best quality
+    # ── Priority ──
+    priority: int = 5
 
-    # Budget constraint for this call
-    max_cost: float = 0.0                      # 0 = no limit
-
-    # Task priority (from TASK_PRIORITY)
-    priority: int = 5                          # 10=critical(user waiting), 1=background
-
-    # Model diversity — avoid these litellm names (for review loops)
+    # ── Exclusion / pinning ──
     exclude_models: list[str] = field(default_factory=list)
+    model_override: str | None = None
 
-    # Agent context for performance lookup
+    # ── Agent context ──
     agent_type: str = ""
 
-    # Direct model pin (escape hatch)
-    model_override: str | None = None
+    # ── Legacy tier (for backward compat — auto-maps to task) ──
+    _tier: str = ""
+
+    @property
+    def effective_task(self) -> str:
+        if self.task and self.task in TASK_PROFILES:
+            return self.task
+        mapped = CAPABILITY_TO_TASK.get(self.primary_capability)
+        if mapped and mapped in TASK_PROFILES:
+            return mapped
+        if self._tier:
+            tier_mapped = TIER_TO_TASK.get(self._tier)
+            if tier_mapped and tier_mapped in TASK_PROFILES:
+                return tier_mapped
+        return ""
+
+    @property
+    def task_profile(self) -> dict[str, float]:
+        task = self.effective_task
+        if task:
+            return TASK_PROFILES[task]
+        return _make_adhoc_profile(self.primary_capability)
 
     @property
     def effective_context_needed(self) -> int:
-        """Calculate minimum context window needed."""
         if self.min_context_length > 0:
             return self.min_context_length
-        # 1.3x multiplier for safety margin
         return int((self.estimated_input_tokens + self.estimated_output_tokens) * 1.3)
+
+    @property
+    def effective_min_score(self) -> float:
+        if self.min_score > 0:
+            return self.min_score
+        if self.min_quality > 1:
+            return self.min_quality * 0.8
+        return 0.0
+
+    @classmethod
+    def from_tier(
+        cls,
+        tier: str,
+        agent_type: str = "",
+        model_override: str | None = None,
+        **kwargs,
+    ) -> "ModelRequirements":
+        """Create ModelRequirements from a legacy tier string."""
+        task = TIER_TO_TASK.get(tier, "assistant")
+        min_q = TIER_TO_MIN_QUALITY.get(tier, 5)
+        return cls(
+            task=task,
+            _tier=tier,
+            primary_capability=CAPABILITY_TO_TASK.get(task, "general"),
+            min_quality=min_q,
+            agent_type=agent_type,
+            model_override=model_override,
+            prefer_speed=(tier in ("routing", "cheap")),
+            prefer_quality=(tier == "expensive"),
+            needs_function_calling=(tier == "code"),
+            **kwargs,
+        )
+
+    def escalate(self) -> "ModelRequirements":
+        """
+        Return a copy with escalated quality requirements.
+        Used by base.py for mid-task escalation.
+        """
+        escalated = copy.copy(self)
+        # Bump quality floor
+        escalated.min_quality = min(10, self.min_quality + 2)
+        escalated.min_score = min(10.0, self.effective_min_score + 1.5)
+        escalated.prefer_quality = True
+        # If we had a tier, escalate it
+        if self._tier and self._tier in TIER_ESCALATION_ORDER:
+            idx = TIER_ESCALATION_ORDER.index(self._tier)
+            if idx < len(TIER_ESCALATION_ORDER) - 1:
+                escalated._tier = TIER_ESCALATION_ORDER[idx + 1]
+                escalated.task = TIER_TO_TASK.get(escalated._tier, escalated.task)
+        return escalated
+
+    @property
+    def tier(self) -> str:
+        """Legacy tier accessor for checkpoint compat."""
+        if self._tier:
+            return self._tier
+        # Reverse-map from task
+        for t, task_name in TIER_TO_TASK.items():
+            if task_name == self.effective_task:
+                return t
+        if self.prefer_quality or self.min_quality >= 8:
+            return "expensive"
+        if self.min_quality >= 6:
+            return "medium"
+        if self.needs_function_calling:
+            return "code"
+        return "cheap"
 
 
 # ─── Per-Provider Rate Limiting ──────────────────────────────────────────────
@@ -89,7 +264,7 @@ class RateLimiter:
         self.rpm = rpm
         self.tpm = tpm
         self._request_timestamps: list[float] = []
-        self._token_log: list[tuple[float, int]] = []  # (timestamp, token_count)
+        self._token_log: list[tuple[float, int]] = []
 
     @property
     def current_rpm_usage(self) -> int:
@@ -110,26 +285,20 @@ class RateLimiter:
         return self.tpm - self.current_tpm_usage
 
     def has_capacity(self, estimated_tokens: int = 0) -> bool:
-        """Check if there's capacity for a request without waiting."""
         return self.rpm_headroom > 2 and self.tpm_headroom > estimated_tokens
 
     async def wait(self) -> None:
-        """Wait until rate limit allows a new request."""
         now = time.time()
         self._request_timestamps = [t for t in self._request_timestamps if now - t < 60]
-
         if len(self._request_timestamps) >= self.rpm:
             wait_time = 60 - (now - self._request_timestamps[0]) + 0.5
             logger.info(f"Rate limiter: waiting {wait_time:.1f}s (RPM)")
             await asyncio.sleep(wait_time)
-
         self._request_timestamps.append(time.time())
 
     def record_tokens(self, token_count: int) -> None:
-        """Record token usage after a call completes."""
         now = time.time()
         self._token_log.append((now, token_count))
-        # Clean old entries
         self._token_log = [(t, c) for t, c in self._token_log if now - t < 60]
 
 
@@ -137,8 +306,10 @@ class CircuitBreaker:
     """Track failures per provider and temporarily disable."""
 
     def __init__(
-        self, failure_threshold: int = 3,
-        window_seconds: float = 300, cooldown_seconds: float = 600,
+        self,
+        failure_threshold: int = 3,
+        window_seconds: float = 300,
+        cooldown_seconds: float = 600,
     ):
         self.failure_threshold = failure_threshold
         self.window_seconds = window_seconds
@@ -170,7 +341,6 @@ class CircuitBreaker:
         return True
 
 
-# Per-provider instances
 _rate_limiters: dict[str, RateLimiter] = {}
 _circuit_breakers: dict[str, CircuitBreaker] = {}
 
@@ -187,7 +357,6 @@ def _get_circuit_breaker(provider: str) -> CircuitBreaker:
     return _circuit_breakers[provider]
 
 
-# Initialize limiters from registry at first use
 _limiters_initialized = False
 
 
@@ -234,13 +403,15 @@ async def refresh_perf_cache() -> None:
         logger.debug(f"Performance cache refresh failed: {e}")
 
 
-# ─── Model Selection (Core Redesign) ────────────────────────────────────────
+# ─── Model Selection ────────────────────────────────────────────────────────
 
 @dataclass
 class ScoredModel:
     """A model candidate with its selection score and reasoning."""
     model: ModelInfo
     score: float
+    capability_score: float = 0.0
+    composite_score: float = 0.0
     reasons: list[str] = field(default_factory=list)
 
     @property
@@ -252,56 +423,46 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
     """
     Select models matching requirements, ranked by composite score.
 
-    Scoring dimensions (all normalized to 0-100 range, then weighted):
-
-    1. CAPABILITY FIT (weight: 35)
-       How well the model matches the required capabilities.
-
-    2. COST EFFICIENCY (weight: 25)
-       Prefer free/local over paid. Prefer cheaper paid models.
-
-    3. AVAILABILITY (weight: 20)
-       Rate limit headroom, circuit breaker status, model loaded status.
-
-    4. PERFORMANCE HISTORY (weight: 15)
-       Success rate and quality grades from past calls with this agent_type.
-
-    5. SPEED (weight: 5)
-       Estimated tokens/second, latency class.
+    Scoring (all 0-100, then weighted):
+    1. CAPABILITY FIT (35)  — 14-dimension weighted dot product
+    2. COST EFFICIENCY (25) — local > free cloud > cheap paid > expensive
+    3. AVAILABILITY (20)    — rate limit headroom, loaded status
+    4. PERFORMANCE (15)     — historical success rate + quality grades
+    5. SPEED (5)            — tps, provider speed class
     """
     _init_limiters()
     registry = get_registry()
+
+    task_profile = reqs.task_profile
+    effective_task = reqs.effective_task
+    min_score = reqs.effective_min_score
 
     candidates: list[ScoredModel] = []
 
     for name, model in registry.models.items():
         reasons: list[str] = []
-        skip = False
 
-        # ── Hard filters (instant rejection) ──
+        # ═════════════════════════════════════════
+        # Hard Filters
+        # ═════════════════════════════════════════
 
-        # Excluded models (diversity enforcement)
         if model.litellm_name in reqs.exclude_models:
             continue
-
-        # Local-only constraint
         if reqs.local_only and not model.is_local:
             continue
 
-        # Context length
         needed_ctx = reqs.effective_context_needed
         if needed_ctx > 0 and model.context_length < needed_ctx:
             continue
-
-        # Function calling required but not supported
         if reqs.needs_function_calling and not model.supports_function_calling:
             continue
-
-        # Thinking required but not available
+        if reqs.needs_json_mode and not model.supports_json_mode:
+            continue
         if reqs.needs_thinking and not model.thinking_model:
             continue
+        if reqs.needs_vision and not model.has_vision:
+            continue
 
-        # Cost constraint
         if reqs.max_cost > 0 and not model.is_free:
             est_cost = model.estimated_cost(
                 reqs.estimated_input_tokens, reqs.estimated_output_tokens
@@ -309,53 +470,53 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
             if est_cost > reqs.max_cost:
                 continue
 
-        # Primary capability minimum quality
-        primary_q = model.quality_for(reqs.primary_capability)
-        # Fall back to general quality if specific capability not listed
-        if primary_q == 0:
-            primary_q = model.quality_for("general")
-        if primary_q < reqs.min_quality:
-            continue
-
-        # Circuit breaker (cloud only)
         if not model.is_local:
             cb = _get_circuit_breaker(model.provider)
             if cb.is_degraded:
                 continue
 
-        # Local model: must be loaded OR loadable
-        if model.is_local and not model.is_loaded:
-            # Check if we CAN load it (file exists, already verified by registry)
-            # The actual loading happens in call_model, not here
-            # But we penalize unloaded models in scoring
-            pass
-
-        # ── Scoring ──
-
+        # ═════════════════════════════════════════
         # 1. CAPABILITY FIT (0-100)
-        cap_score = primary_q * 10  # 0-100
-        # Bonus for secondary capabilities
-        for sec_cap in reqs.secondary_capabilities:
-            sec_q = model.quality_for(sec_cap)
-            if sec_q > 0:
-                cap_score += sec_q * 2  # up to +20 per secondary
-                reasons.append(f"{sec_cap}={sec_q}")
-        cap_score = min(cap_score, 100)
-        reasons.insert(0, f"primary({reqs.primary_capability})={primary_q}")
+        # ═════════════════════════════════════════
 
+        cap_score_raw = score_model_for_task(
+            model_capabilities=model.capabilities,
+            model_operational=model.operational_dict(),
+            requirements=CapabilityTaskReqs(
+                task_name=effective_task or reqs.primary_capability,
+                min_context=needed_ctx,
+                needs_function_calling=reqs.needs_function_calling,
+                needs_json_mode=reqs.needs_json_mode,
+                needs_vision=reqs.needs_vision,
+                needs_thinking=reqs.needs_thinking,
+                prefer_local=reqs.prefer_local or reqs.local_only,
+                prefer_fast=reqs.prefer_speed,
+            ),
+        )
+
+        if cap_score_raw < 0:
+            continue
+        if min_score > 0 and cap_score_raw < min_score:
+            continue
+
+        cap_score = min(cap_score_raw * 10, 100)
+        reasons.append(f"cap={cap_score_raw:.1f}")
+        if effective_task:
+            reasons.append(f"task={effective_task}")
+
+        # ═════════════════════════════════════════
         # 2. COST EFFICIENCY (0-100)
+        # ═════════════════════════════════════════
+
         if model.is_local:
-            cost_score = 95  # local is almost free
+            cost_score = 95 if model.is_loaded else 70
             if not model.is_loaded:
-                # Penalize unloaded: swap costs time
-                cost_score = 70
                 reasons.append("needs_swap")
             reasons.append("local")
         elif model.is_free:
-            cost_score = 85  # free cloud is great
+            cost_score = 85
             reasons.append("free_cloud")
         else:
-            # Paid: score inversely proportional to cost
             est_cost = model.estimated_cost(
                 reqs.estimated_input_tokens, reqs.estimated_output_tokens
             )
@@ -367,22 +528,19 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
                 cost_score = 30
             else:
                 cost_score = 10
-            reasons.append(f"est_cost=${est_cost:.4f}")
+            reasons.append(f"cost=${est_cost:.4f}")
 
+        # ═════════════════════════════════════════
         # 3. AVAILABILITY (0-100)
+        # ═════════════════════════════════════════
+
         if model.is_local:
             if model.is_loaded:
                 avail_score = 100
                 reasons.append("loaded")
             else:
-                # Not loaded — estimate swap time penalty
                 swap_time = model.load_time_seconds
-                if swap_time < 10:
-                    avail_score = 60
-                elif swap_time < 30:
-                    avail_score = 40
-                else:
-                    avail_score = 20
+                avail_score = 60 if swap_time < 10 else (40 if swap_time < 30 else 20)
                 reasons.append(f"swap_{swap_time:.0f}s")
         else:
             limiter = _get_limiter(
@@ -398,67 +556,62 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
                 avail_score = 10
                 reasons.append("rate_limited")
 
+        # ═════════════════════════════════════════
         # 4. PERFORMANCE HISTORY (0-100)
-        perf_score = 50  # neutral default
+        # ═════════════════════════════════════════
+
+        perf_score = 50
         if reqs.agent_type and _perf_cache_ready:
             agent_perf = _perf_cache.get(reqs.agent_type, {})
             model_perf = agent_perf.get(model.litellm_name)
             if model_perf and model_perf.get("total_calls", 0) >= 3:
                 sr = model_perf["success_rate"]
                 grade = model_perf.get("avg_grade", 3.0)
-                perf_score = (sr * grade / 5.0) * 100
-                perf_score = max(0, min(100, perf_score))
+                perf_score = max(0, min(100, (sr * grade / 5.0) * 100))
                 reasons.append(
                     f"perf(sr={sr:.2f},g={grade:.1f},n={model_perf['total_calls']})"
                 )
 
+        # ═════════════════════════════════════════
         # 5. SPEED (0-100)
+        # ═════════════════════════════════════════
+
         if model.is_local:
             tps = model.tokens_per_second
             if tps >= 50:
                 speed_score = 100
             elif tps >= 20:
                 speed_score = 70
-            else:
+            elif tps > 0:
                 speed_score = 40
+            else:
+                speed_score = 80 if model.total_params_b < 5 else (50 if model.total_params_b < 15 else 30)
         else:
-            # Cloud speed classes (based on provider reputation)
             speed_map = {
-                "groq": 95, "cerebras": 95,       # inference-optimized
-                "sambanova": 80,
-                "gemini": 70,
-                "openai": 60,
-                "anthropic": 50,
+                "groq": 95, "cerebras": 95, "sambanova": 80,
+                "gemini": 70, "openai": 60, "anthropic": 50,
             }
             speed_score = speed_map.get(model.provider, 50)
 
-        # ── Composite score with weights ──
-        weights = {
-            "capability": 35,
-            "cost": 25,
-            "availability": 20,
-            "performance": 15,
-            "speed": 5,
-        }
+        # ═════════════════════════════════════════
+        # Composite
+        # ═════════════════════════════════════════
 
-        # Adjust weights based on requirements
+        weights = {"capability": 35, "cost": 25, "availability": 20, "performance": 15, "speed": 5}
+
         if reqs.prefer_quality:
-            weights["capability"] = 50
-            weights["cost"] = 10
+            weights = {"capability": 50, "cost": 10, "availability": 15, "performance": 20, "speed": 5}
         elif reqs.prefer_speed:
-            weights["speed"] = 25
-            weights["capability"] = 25
-            weights["availability"] = 25
-            weights["cost"] = 15
-            weights["performance"] = 10
+            weights = {"capability": 25, "cost": 15, "availability": 25, "performance": 10, "speed": 25}
 
-        # Critical priority: maximize availability + quality
-        if reqs.priority >= 10:
+        if reqs.local_only:
             weights["availability"] = 30
-            weights["capability"] = 35
-            weights["speed"] = 15
             weights["cost"] = 10
-            weights["performance"] = 10
+
+        if reqs.priority >= 10:
+            weights = {"capability": 30, "cost": 5, "availability": 30, "performance": 10, "speed": 25}
+        elif reqs.priority <= 2:
+            weights = {"capability": 25, "cost": 40, "availability": 15, "performance": 15, "speed": 5}
 
         total_weight = sum(weights.values())
         composite = (
@@ -472,73 +625,89 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
         candidates.append(ScoredModel(
             model=model,
             score=composite,
+            capability_score=cap_score_raw,
+            composite_score=composite,
             reasons=reasons,
         ))
 
-    # Sort descending by score
     candidates.sort(key=lambda c: -c.score)
 
-    # Log selection
+    # Logging
     if candidates:
         top3 = candidates[:3]
+        task_str = effective_task or reqs.primary_capability
         log_parts = [
-            f"{c.model.name}({c.score:.1f}|{','.join(c.reasons[:3])})"
+            f"{c.model.name}({c.score:.1f}|cap={c.capability_score:.1f}|{','.join(c.reasons[:2])})"
             for c in top3
         ]
+        extra = f" (+{len(candidates)-3} more)" if len(candidates) > 3 else ""
         logger.info(
-            f"Model selection for {reqs.primary_capability}"
-            f"{'[local_only]' if reqs.local_only else ''}: "
-            f"{' > '.join(log_parts)}"
-            f"{f' (+{len(candidates)-3} more)' if len(candidates) > 3 else ''}"
+            f"Model selection [{task_str}]"
+            f"{'[local]' if reqs.local_only else ''}"
+            f"{'[quality]' if reqs.prefer_quality else ''}"
+            f"{'[fast]' if reqs.prefer_speed else ''}"
+            f": {' > '.join(log_parts)}{extra}"
         )
     else:
         logger.warning(
-            f"No models match requirements: cap={reqs.primary_capability}, "
-            f"min_q={reqs.min_quality}, ctx={reqs.effective_context_needed}, "
-            f"fc={reqs.needs_function_calling}, local={reqs.local_only}"
+            f"No models match: task={effective_task or reqs.primary_capability}, "
+            f"min_score={min_score:.1f}, ctx={reqs.effective_context_needed}, "
+            f"fc={reqs.needs_function_calling}, vision={reqs.needs_vision}, "
+            f"thinking={reqs.needs_thinking}, local={reqs.local_only}"
         )
 
     return candidates
 
 
-# ─── Classification (Lightweight) ────────────────────────────────────────────
+# ─── Convenience Selectors ───────────────────────────────────────────────────
 
-ROUTER_PROMPT = """You are a task router. Classify this task into requirements.
+def select_for_task(task: str, **kwargs) -> list[ScoredModel]:
+    """Simplified selection by task name."""
+    return select_model(ModelRequirements(task=task, **kwargs))
+
+
+# ─── Task Classification ────────────────────────────────────────────────────
+
+ROUTER_PROMPT = """You are a task router for an AI agent system. Classify this task.
 Respond ONLY with valid JSON, no markdown.
 
-Categories for primary_capability:
-- "routing": classification only
-- "simple": factual questions, definitions, conversions
-- "coding": write/debug/refactor code
-- "reasoning": multi-step logic, math, analysis
-- "planning": architecture, project planning, decomposition
-- "writing": prose, documentation, emails
-- "research": finding information, comparisons
+Available task types:
+- "planner": goal decomposition, project planning, step ordering
+- "architect": system design, API design, technology decisions
+- "coder": writing new code from specs
+- "implementer": following detailed implementation plans exactly
+- "fixer": debugging, fixing errors, root cause analysis
+- "test_generator": writing tests, edge case identification
+- "reviewer": code review, quality analysis, critique
+- "researcher": finding information, comparisons, documentation lookup
+- "writer": prose, documentation, emails, reports
+- "executor": running tools, file operations, simple transformations
+- "router": simple classification, routing decisions
+- "visual_reviewer": analyzing screenshots, UI review, diagram understanding
+- "assistant": general conversation, Q&A, personal assistance
+- "summarizer": condensing long content, extracting key points
 
-Also determine:
-- min_quality (1-10): how smart the model needs to be
-- needs_tools (bool): does this task require executing actions?
-- local_only (bool): does this involve personal/private data?
-
-BIAS: Most tasks need min_quality 5-7. Only use 8+ for complex architecture,
-multi-file refactoring, or critical decisions.
+Determine:
+- task_type: best matching type from above
+- min_score: quality needed 1-10 (most tasks: 5-7, complex: 8+, simple: 3-4)
+- needs_tools: does this need to execute actions (files, shell, search)?
+- needs_vision: does this need to look at images/screenshots?
+- needs_thinking: does this need deep multi-step reasoning?
+- local_only: personal/sensitive data that shouldn't go to cloud?
+- priority: "critical" | "high" | "normal" | "low" | "background"
 
 Task: {task_description}
 
-Respond as: {{"primary_capability": "coding", "min_quality": 6, "needs_tools": true, "local_only": false, "reasoning": "brief"}}"""
+JSON: {{"task_type": "coder", "min_score": 6, "needs_tools": true, "needs_vision": false, "needs_thinking": false, "local_only": false, "priority": "normal", "reasoning": "brief"}}"""
 
 
 async def classify_task(title: str, description: str) -> ModelRequirements:
-    """
-    Classify a task and return structured ModelRequirements.
-    Uses cheapest available model. Falls back to keyword heuristic.
-    """
-    # Build minimal requirements for the classifier itself
+    """Classify a task and return structured ModelRequirements."""
     classifier_reqs = ModelRequirements(
-        primary_capability="routing",
+        task="router",
         min_quality=1,
         estimated_input_tokens=500,
-        estimated_output_tokens=100,
+        estimated_output_tokens=150,
         prefer_speed=True,
     )
 
@@ -549,8 +718,6 @@ async def classify_task(title: str, description: str) -> ModelRequirements:
     classifier_model = candidates[0].model
 
     try:
-        # If local model and not loaded, use cloud for classification
-        # (don't swap just for routing)
         if classifier_model.is_local and not classifier_model.is_loaded:
             cloud_candidates = [c for c in candidates if not c.model.is_local]
             if cloud_candidates:
@@ -559,7 +726,7 @@ async def classify_task(title: str, description: str) -> ModelRequirements:
         limiter = _get_limiter(
             classifier_model.provider,
             classifier_model.rate_limit_rpm,
-            getattr(classifier_model, 'rate_limit_tpm', 100000),
+            classifier_model.rate_limit_tpm,
         )
         await limiter.wait()
 
@@ -571,7 +738,7 @@ async def classify_task(title: str, description: str) -> ModelRequirements:
                     task_description=f"{title}: {description[:500]}"
                 ),
             }],
-            max_tokens=150,
+            max_tokens=200,
             temperature=0,
         )
         if classifier_model.api_base:
@@ -589,18 +756,26 @@ async def classify_task(title: str, description: str) -> ModelRequirements:
 
         result = json.loads(raw)
 
+        priority_map = {
+            "critical": 10, "high": 8, "normal": 5, "low": 3, "background": 1,
+        }
+
         reqs = ModelRequirements(
-            primary_capability=result.get("primary_capability", "general"),
-            min_quality=result.get("min_quality", 5),
+            task=result.get("task_type", "assistant"),
+            primary_capability=result.get("task_type", "general"),
+            min_score=float(result.get("min_score", 5)) * 0.8,
+            min_quality=result.get("min_score", 5),
             needs_function_calling=result.get("needs_tools", False),
+            needs_vision=result.get("needs_vision", False),
+            needs_thinking=result.get("needs_thinking", False),
             local_only=result.get("local_only", False),
+            priority=priority_map.get(result.get("priority", "normal"), 5),
         )
 
         logger.info(
-            f"Classified: cap={reqs.primary_capability}, "
-            f"min_q={reqs.min_quality}, "
-            f"tools={reqs.needs_function_calling}, "
-            f"local={reqs.local_only} — "
+            f"Classified: task={reqs.task}, min_q={reqs.min_quality}, "
+            f"tools={reqs.needs_function_calling}, vision={reqs.needs_vision}, "
+            f"thinking={reqs.needs_thinking}, local={reqs.local_only} — "
             f"{result.get('reasoning', '')[:60]}"
         )
         return reqs
@@ -611,46 +786,100 @@ async def classify_task(title: str, description: str) -> ModelRequirements:
 
 
 def _keyword_classify(title: str, description: str) -> ModelRequirements:
-    """Fast keyword-based classification — no LLM call needed."""
+    """Fast keyword-based classification."""
+    try:
+        from task_classifier import _classify_by_keywords
+        result = _classify_by_keywords(title, description)
+        category = result["category"]
+
+        category_map = {
+            "simple_qa":       ModelRequirements(task="executor",   min_quality=3, prefer_speed=True),
+            "code_simple":     ModelRequirements(task="coder",      min_quality=5, needs_function_calling=True),
+            "code_complex":    ModelRequirements(task="coder",      min_quality=7, needs_function_calling=True, prefer_quality=True),
+            "research":        ModelRequirements(task="researcher", min_quality=6, needs_function_calling=True),
+            "writing":         ModelRequirements(task="writer",     min_quality=6),
+            "planning":        ModelRequirements(task="planner",    min_quality=7, prefer_quality=True),
+            "action_required": ModelRequirements(task="executor",   min_quality=5, needs_function_calling=True),
+            "sensitive":       ModelRequirements(task="assistant",  min_quality=5, local_only=True),
+        }
+
+        return category_map.get(category, ModelRequirements(task="assistant"))
+    except ImportError:
+        pass
+
     text = f"{title} {description}".lower()
-
-    # Import the keyword rules from task_classifier
-    from task_classifier import _classify_by_keywords
-    result = _classify_by_keywords(title, description)
-    category = result["category"]
-
-    # Map category → ModelRequirements
-    category_map = {
-        "simple_qa":        ModelRequirements(primary_capability="simple", min_quality=3),
-        "code_simple":      ModelRequirements(primary_capability="coding", min_quality=5, needs_function_calling=True),
-        "code_complex":     ModelRequirements(primary_capability="coding", min_quality=7, needs_function_calling=True, prefer_quality=True),
-        "research":         ModelRequirements(primary_capability="research", min_quality=6, needs_function_calling=True),
-        "writing":          ModelRequirements(primary_capability="writing", min_quality=6),
-        "planning":         ModelRequirements(primary_capability="planning", min_quality=7, prefer_quality=True),
-        "action_required":  ModelRequirements(primary_capability="general", min_quality=5, needs_function_calling=True),
-        "sensitive":        ModelRequirements(primary_capability="general", min_quality=5, local_only=True),
-    }
-
-    reqs = category_map.get(category, ModelRequirements())
-    logger.debug(f"Keyword classified: {category} → {reqs.primary_capability}")
-    return reqs
+    if any(kw in text for kw in ["fix", "bug", "error", "debug", "traceback"]):
+        return ModelRequirements(task="fixer", min_quality=6, needs_function_calling=True)
+    if any(kw in text for kw in ["implement", "create", "build", "write code"]):
+        return ModelRequirements(task="coder", min_quality=6, needs_function_calling=True)
+    if any(kw in text for kw in ["test", "spec", "coverage"]):
+        return ModelRequirements(task="test_generator", min_quality=5, needs_function_calling=True)
+    if any(kw in text for kw in ["review", "analyze", "audit"]):
+        return ModelRequirements(task="reviewer", min_quality=6)
+    if any(kw in text for kw in ["plan", "design", "architect"]):
+        return ModelRequirements(task="planner", min_quality=7, prefer_quality=True)
+    if any(kw in text for kw in ["screenshot", "image", "visual", "ui"]):
+        return ModelRequirements(task="visual_reviewer", needs_vision=True, min_quality=5)
+    if any(kw in text for kw in ["write", "document", "email", "report"]):
+        return ModelRequirements(task="writer", min_quality=5)
+    if any(kw in text for kw in ["search", "find", "research"]):
+        return ModelRequirements(task="researcher", min_quality=5, needs_function_calling=True)
+    if any(kw in text for kw in ["summarize", "tldr", "key points"]):
+        return ModelRequirements(task="summarizer", min_quality=5)
+    return ModelRequirements(task="assistant", min_quality=5)
 
 
 # ─── Main API: call_model ────────────────────────────────────────────────────
 
 async def call_model(
-    reqs: ModelRequirements,
-    messages: list[dict],
+    reqs_or_tier,
+    messages: list[dict] | None = None,
     tools: list[dict] | None = None,
+    *,
+    # Legacy kwargs (used when first arg is a tier string)
+    agent_type: str = "",
+    model_override: str | None = None,
     stream: bool = False,
+    # New-style: reqs + messages as first two positional args
+    **kwargs,
 ) -> dict:
     """
     Call the best available model matching requirements.
 
-    Handles: model selection, local model loading, rate limits,
-    retries with fallback, GPU semaphore, thinking models,
-    and function calling negotiation.
+    Supports BOTH calling conventions:
+
+    New style:
+        await call_model(reqs=ModelRequirements(...), messages=[...], tools=[...])
+
+    Legacy style (tier string):
+        await call_model("medium", messages, agent_type="coder")
+        await call_model("code", messages, agent_type="fixer", model_override="...")
+
+    Legacy style auto-converts to ModelRequirements internally.
     """
+    # ── Detect calling convention ──
+    if isinstance(reqs_or_tier, str):
+        # Legacy: call_model(tier, messages, agent_type=..., model_override=...)
+        tier_str = reqs_or_tier
+        reqs = ModelRequirements.from_tier(
+            tier_str,
+            agent_type=agent_type,
+            model_override=model_override,
+        )
+        # messages is the second positional arg
+        if messages is None:
+            raise ValueError("messages required when using tier string")
+    elif isinstance(reqs_or_tier, ModelRequirements):
+        reqs = reqs_or_tier
+        # messages may be second positional or keyword
+        if messages is None:
+            raise ValueError("messages required")
+    else:
+        raise TypeError(
+            f"call_model() first argument must be ModelRequirements or tier string, "
+            f"got {type(reqs_or_tier)}"
+        )
+
     await refresh_perf_cache()
 
     # ── Direct model override ──
@@ -666,7 +895,7 @@ async def call_model(
                     location="cloud",
                     provider="unknown",
                     litellm_name=reqs.model_override,
-                    capabilities={"general": 5},
+                    capabilities={cap: 5.0 for cap in ALL_CAPABILITIES},
                     context_length=128000,
                     max_tokens=4096,
                 ),
@@ -674,16 +903,16 @@ async def call_model(
                 reasons=["pinned_raw"],
             )]
     else:
-        # If tools are provided, we either need FC support or JSON mode
         if tools:
             reqs.needs_function_calling = True
         candidates = select_model(reqs)
 
     if not candidates:
-        # Last resort: drop constraints and try again
         fallback_reqs = ModelRequirements(
+            task="assistant",
             primary_capability="general",
             min_quality=1,
+            min_score=0,
             agent_type=reqs.agent_type,
         )
         candidates = select_model(fallback_reqs)
@@ -697,14 +926,13 @@ async def call_model(
         model = scored.model
 
         # ── Local model: ensure loaded ──
-        if model.is_local:
+        if model.is_local and model.location != "ollama":
             from local_model_manager import get_local_manager
             manager = get_local_manager()
-
             if not model.is_loaded:
                 success = await manager.ensure_model(
                     model.name,
-                    reason=f"{reqs.agent_type}:{reqs.primary_capability}",
+                    reason=f"{reqs.agent_type}:{reqs.effective_task or reqs.primary_capability}",
                 )
                 if not success:
                     last_error = f"Failed to load local model {model.name}"
@@ -712,9 +940,7 @@ async def call_model(
 
         # ── Build completion kwargs ──
         is_thinking = model.thinking_model
-        temperature = 0.3
-        if is_thinking:
-            temperature = None  # thinking models control their own temp
+        temperature = None if is_thinking else 0.3
 
         timeout_val = 60
         if model.is_local:
@@ -722,7 +948,6 @@ async def call_model(
         if is_thinking:
             timeout_val = max(timeout_val, 180)
 
-        # Tool negotiation
         use_tools = None
         if tools and model.supports_function_calling:
             use_tools = tools
@@ -735,27 +960,25 @@ async def call_model(
 
         if temperature is not None:
             completion_kwargs["temperature"] = temperature
-
         if model.api_base:
             completion_kwargs["api_base"] = model.api_base
 
         if use_tools:
             completion_kwargs["tools"] = use_tools
             completion_kwargs["tool_choice"] = "auto"
-        elif not model.supports_function_calling and model.supports_json_mode:
+        elif tools and not model.supports_function_calling and model.supports_json_mode:
             completion_kwargs["response_format"] = {"type": "json_object"}
 
         # ── Rate limiting ──
         if not model.is_local:
             limiter = _get_limiter(
-                model.provider, model.rate_limit_rpm,
-                model.rate_limit_tpm,
+                model.provider, model.rate_limit_rpm, model.rate_limit_tpm,
             )
             await limiter.wait()
 
-        # ── GPU semaphore for local models ──
+        # ── GPU semaphore ──
         local_manager = None
-        if model.is_local:
+        if model.is_local and model.location != "ollama":
             from local_model_manager import get_local_manager
             local_manager = get_local_manager()
             await local_manager.acquire_inference_slot()
@@ -766,13 +989,15 @@ async def call_model(
             for attempt in range(max_retries):
                 try:
                     call_start = time.time()
+                    task_label = reqs.effective_task or reqs.primary_capability
 
                     logger.info(
                         f"Calling {model.name} "
-                        f"(cap={reqs.primary_capability}, "
-                        f"q={model.quality_for(reqs.primary_capability)}, "
+                        f"(task={task_label}, "
+                        f"cap={scored.capability_score:.1f}, "
                         f"attempt={attempt+1}/{max_retries}"
-                        f"{', thinking' if is_thinking else ''})"
+                        f"{'|thinking' if is_thinking else ''}"
+                        f"{'|vision' if model.has_vision else ''})"
                     )
 
                     response = await asyncio.wait_for(
@@ -782,7 +1007,6 @@ async def call_model(
 
                     call_latency = time.time() - call_start
 
-                    # Calculate cost
                     try:
                         cost = litellm.completion_cost(completion_response=response)
                     except Exception:
@@ -790,13 +1014,20 @@ async def call_model(
                     if model.is_local:
                         cost = 0.0
 
-                    # Record token usage for TPM tracking
+                    # Record TPM usage
                     if not model.is_local and response.usage:
                         total_tokens = (
                             (response.usage.prompt_tokens or 0)
                             + (response.usage.completion_tokens or 0)
                         )
                         limiter.record_tokens(total_tokens)
+
+                    # Update measured speed
+                    if model.is_local and response.usage:
+                        output_tokens = response.usage.completion_tokens or 0
+                        if output_tokens > 0 and call_latency > 0:
+                            registry = get_registry()
+                            registry.update_speed(model.name, output_tokens / call_latency)
 
                     # Extract tool calls
                     msg = response.choices[0].message
@@ -815,10 +1046,8 @@ async def call_model(
                                 "arguments": args,
                             })
 
-                    # Extract thinking content
                     thinking_content = _extract_thinking(msg) if is_thinking else None
 
-                    # Success — reset circuit breaker
                     if not model.is_local:
                         _get_circuit_breaker(model.provider).record_success()
 
@@ -832,7 +1061,10 @@ async def call_model(
                         "latency": call_latency,
                         "thinking": thinking_content,
                         "is_local": model.is_local,
-                        "capability_quality": model.quality_for(reqs.primary_capability),
+                        "task": task_label,
+                        "capability_score": scored.capability_score,
+                        # Legacy compat: agents read "tier" from response
+                        "tier": reqs.tier,
                     }
 
                 except asyncio.TimeoutError:
@@ -849,7 +1081,6 @@ async def call_model(
                     if not model.is_local:
                         _get_circuit_breaker(model.provider).record_failure()
 
-                    # Auth/billing → skip provider
                     if any(kw in error_str for kw in [
                         "api key", "authentication", "unauthorized",
                         "billing", "credit", "quota",
@@ -857,7 +1088,6 @@ async def call_model(
                         logger.error(f"Auth/billing error on {model.name}: {e}")
                         break
 
-                    # Rate limit → backoff or skip
                     if any(kw in error_str for kw in [
                         "rate limit", "429", "too many requests",
                         "resource_exhausted",
@@ -869,21 +1099,19 @@ async def call_model(
                             continue
                         break
 
-                    # Unknown error → one retry
                     if attempt < 1:
                         await asyncio.sleep(2)
                         continue
                     break
 
         finally:
-            # Always release GPU semaphore
             if local_manager:
                 local_manager.release_inference_slot()
 
     raise RuntimeError(f"All models failed. Last error: {last_error}")
 
 
-# ─── Thinking Model Helpers ─────────────────────────────────────────────────
+# ─── Thinking Helpers ────────────────────────────────────────────────────────
 
 def _extract_thinking(msg) -> str | None:
     if hasattr(msg, "thinking") and msg.thinking:
@@ -891,7 +1119,6 @@ def _extract_thinking(msg) -> str | None:
     if hasattr(msg, "reasoning_content") and msg.reasoning_content:
         return msg.reasoning_content
     content = msg.content or ""
-    import re
     match = re.search(
         r"<(?:thinking|think)>(.*?)</(?:thinking|think)>",
         content, re.DOTALL,
@@ -918,16 +1145,13 @@ async def grade_response(
     response_text: str,
     generating_model: str = "",
 ) -> float | None:
-    """
-    Grade a response using a DIFFERENT model than the one that generated it.
-    Uses cheapest available model that ISN'T the generating model.
-    """
+    """Grade a response using a DIFFERENT model."""
     if not response_text or len(response_text.strip()) < 10:
         return None
 
     try:
         grading_reqs = ModelRequirements(
-            primary_capability="reasoning",
+            task="reviewer",
             min_quality=3,
             estimated_input_tokens=800,
             estimated_output_tokens=50,
@@ -936,7 +1160,7 @@ async def grade_response(
         )
 
         result = await call_model(
-            reqs=grading_reqs,
+            grading_reqs,
             messages=[{
                 "role": "user",
                 "content": GRADING_PROMPT.format(
@@ -953,7 +1177,21 @@ async def grade_response(
 
         parsed = json.loads(raw.strip())
         score = float(parsed.get("score", 3))
-        return max(1.0, min(5.0, score))
+        grade = max(1.0, min(5.0, score))
+
+        # Feed grade back to registry
+        if generating_model:
+            registry = get_registry()
+            model_name = generating_model.split("/")[-1] if "/" in generating_model else generating_model
+            # Find dominant capability for the grading task context
+            task_name = result.get("task", "")
+            if task_name and task_name in TASK_PROFILES:
+                profile = TASK_PROFILES[task_name]
+                dominant = max(profile.items(), key=lambda x: x[1])
+                cap_key = dominant[0].value if hasattr(dominant[0], 'value') else dominant[0]
+                registry.update_quality_from_grading(model_name, cap_key, grade * 2.0)
+
+        return grade
 
     except Exception as e:
         logger.debug(f"Response grading failed: {e}")
@@ -970,37 +1208,153 @@ async def check_cost_budget() -> dict:
         return {"ok": True, "reason": f"check failed: {e}"}
 
 
-# ─── Backward Compatibility Layer ────────────────────────────────────────────
-# These map old tier-based calls to new requirements-based calls.
-# Remove once all callers are migrated.
+# ─── Backward Compatibility ─────────────────────────────────────────────────
 
-_TIER_TO_REQUIREMENTS: dict[str, ModelRequirements] = {
-    "routing": ModelRequirements(primary_capability="routing", min_quality=1, prefer_speed=True),
-    "cheap": ModelRequirements(primary_capability="general", min_quality=3),
-    "code": ModelRequirements(primary_capability="coding", min_quality=5, needs_function_calling=True),
-    "medium": ModelRequirements(primary_capability="general", min_quality=6),
-    "expensive": ModelRequirements(primary_capability="reasoning", min_quality=8, prefer_quality=True),
+_model_tiers_cache: dict | None = None
+_classifier_model_cache: str | None = None
+
+
+def _build_compat_tiers():
+    global _model_tiers_cache, _classifier_model_cache
+    if _model_tiers_cache is not None:
+        return
+
+    _model_tiers_cache = {}
+    for tname in TIER_ESCALATION_ORDER + ["routing"]:
+        treqs = ModelRequirements.from_tier(tname)
+        tcandidates = select_model(treqs)
+        if tcandidates:
+            top = tcandidates[0]
+            _model_tiers_cache[tname] = {
+                "model": top.litellm_name,
+                "fallbacks": [c.litellm_name for c in tcandidates[1:4]],
+                "max_tokens": top.model.max_tokens,
+                "temperature": 0.0 if tname == "routing" else 0.3,
+                "description": tname,
+            }
+
+    classifier_candidates = select_model(
+        ModelRequirements(task="router", min_quality=1, prefer_speed=True)
+    )
+    _classifier_model_cache = (
+        classifier_candidates[0].litellm_name
+        if classifier_candidates
+        else "groq/llama-3.1-8b-instant"
+    )
+
+
+class _LazyTiers:
+    """Lazy proxy for MODEL_TIERS backward compat."""
+    def _ensure(self):
+        _build_compat_tiers()
+
+    def __getitem__(self, key):
+        self._ensure()
+        return _model_tiers_cache[key]
+
+    def __contains__(self, key):
+        self._ensure()
+        return key in _model_tiers_cache
+
+    def __iter__(self):
+        self._ensure()
+        return iter(_model_tiers_cache)
+
+    def items(self):
+        self._ensure()
+        return _model_tiers_cache.items()
+
+    def keys(self):
+        self._ensure()
+        return _model_tiers_cache.keys()
+
+    def values(self):
+        self._ensure()
+        return _model_tiers_cache.values()
+
+    def get(self, key, default=None):
+        self._ensure()
+        return _model_tiers_cache.get(key, default)
+
+
+class _LazyClassifier:
+    """Lazy proxy for CLASSIFIER_MODEL."""
+    def __str__(self):
+        _build_compat_tiers()
+        return _classifier_model_cache
+
+    def __repr__(self):
+        return str(self)
+
+    def __eq__(self, other):
+        return str(self) == str(other)
+
+    def __hash__(self):
+        return hash(str(self))
+
+    def split(self, *args, **kwargs):
+        return str(self).split(*args, **kwargs)
+
+    def lower(self):
+        return str(self).lower()
+
+    def startswith(self, *args):
+        return str(self).startswith(*args)
+
+    def endswith(self, *args):
+        return str(self).endswith(*args)
+
+    def __contains__(self, item):
+        return item in str(self)
+
+
+MODEL_TIERS = _LazyTiers()
+CLASSIFIER_MODEL = _LazyClassifier()
+
+
+# ─── Agent Requirement Templates ─────────────────────────────────────────────
+
+AGENT_REQUIREMENTS: dict[str, ModelRequirements] = {
+    "planner":        ModelRequirements(task="planner",        min_quality=7, estimated_output_tokens=2000, prefer_quality=True, needs_json_mode=True),
+    "architect":      ModelRequirements(task="architect",      min_quality=7, estimated_output_tokens=3000, prefer_quality=True),
+    "coder":          ModelRequirements(task="coder",          min_quality=6, estimated_output_tokens=4000, needs_function_calling=True),
+    "implementer":    ModelRequirements(task="implementer",    min_quality=5, estimated_output_tokens=4000, needs_function_calling=True),
+    "fixer":          ModelRequirements(task="fixer",          min_quality=6, estimated_output_tokens=3000, needs_function_calling=True),
+    "test_generator": ModelRequirements(task="test_generator", min_quality=5, estimated_output_tokens=3000, needs_function_calling=True),
+    "reviewer":       ModelRequirements(task="reviewer",       min_quality=6, estimated_output_tokens=2000),
+    "researcher":     ModelRequirements(task="researcher",     min_quality=5, estimated_output_tokens=2000, needs_function_calling=True),
+    "writer":         ModelRequirements(task="writer",         min_quality=5, estimated_output_tokens=3000),
+    "executor":       ModelRequirements(task="executor",       min_quality=3, estimated_output_tokens=1000, needs_function_calling=True, prefer_speed=True),
+    "visual_reviewer": ModelRequirements(task="visual_reviewer", min_quality=5, estimated_output_tokens=2000, needs_vision=True),
+    "assistant":      ModelRequirements(task="assistant",      min_quality=5, estimated_output_tokens=2000),
 }
 
-# Build MODEL_TIERS and CLASSIFIER_MODEL for modules that still import them
-MODEL_TIERS: dict[str, dict] = {}
-for _tname, _treqs in _TIER_TO_REQUIREMENTS.items():
-    _tcandidates = select_model(_treqs)
-    if _tcandidates:
-        _top = _tcandidates[0]
-        MODEL_TIERS[_tname] = {
-            "model": _top.litellm_name,
-            "fallbacks": [c.litellm_name for c in _tcandidates[1:4]],
-            "max_tokens": _top.model.max_tokens,
-            "temperature": 0.0 if _tname == "routing" else 0.3,
-            "description": _tname,
-        }
 
-_classifier_candidates = select_model(ModelRequirements(
-    primary_capability="routing", min_quality=1, prefer_speed=True,
-))
-CLASSIFIER_MODEL: str = (
-    _classifier_candidates[0].litellm_name
-    if _classifier_candidates
-    else "groq/llama-3.1-8b-instant"
-)
+def get_agent_requirements(agent_type: str, **overrides) -> ModelRequirements:
+    """Get pre-built requirements for an agent type with optional overrides."""
+    template = AGENT_REQUIREMENTS.get(agent_type)
+    if template:
+        reqs = copy.copy(template)
+    else:
+        task = CAPABILITY_TO_TASK.get(agent_type, "assistant")
+        reqs = ModelRequirements(task=task)
+    reqs.agent_type = agent_type
+    for key, value in overrides.items():
+        if hasattr(reqs, key):
+            setattr(reqs, key, value)
+    return reqs
+
+
+# Legacy import compat — AGENT_TIER_MAP maps agent names to tier strings
+AGENT_TIER_MAP: dict[str, str] = {
+    "planner":        "expensive",
+    "architect":      "expensive",
+    "coder":          "code",
+    "implementer":    "code",
+    "fixer":          "code",
+    "test_generator": "code",
+    "reviewer":       "medium",
+    "researcher":     "medium",
+    "writer":         "medium",
+    "executor":       "cheap",
+}

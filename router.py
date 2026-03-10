@@ -981,7 +981,23 @@ async def call_model(
         if model.is_local and model.location != "ollama":
             from local_model_manager import get_local_manager
             local_manager = get_local_manager()
-            await local_manager.acquire_inference_slot()
+
+            granted = await local_manager.acquire_inference_slot(
+                priority=reqs.priority,
+                task_id=reqs.agent_type,  # or actual task_id if available
+                agent_type=reqs.agent_type,
+                timeout=120 if reqs.priority < 10 else 30,
+            )
+
+            if not granted:
+                # GPU busy and timed out — skip to next candidate (likely cloud)
+                logger.warning(
+                    f"GPU access denied for {model.name} "
+                    f"(priority={reqs.priority}, queue too deep) "
+                    f"— trying next candidate"
+                )
+                last_error = f"GPU queue timeout for {model.name}"
+                continue
 
         max_retries = 2 if model.is_local else 3
 
@@ -1108,7 +1124,43 @@ async def call_model(
             if local_manager:
                 local_manager.release_inference_slot()
 
-    raise RuntimeError(f"All models failed. Last error: {last_error}")
+    # ── All candidates exhausted — try backpressure queue ──
+    from backpressure import get_backpressure_queue
+
+    bp_queue = get_backpressure_queue()
+    call_id = f"{reqs.agent_type}:{reqs.primary_capability}"
+
+    logger.warning(
+        f"All models failed for {call_id} — "
+        f"submitting to backpressure queue. Last error: {last_error}"
+    )
+
+
+    # Create a retry callable that re-runs selection + call
+    async def _retry_call():
+        # On retry, refresh perf cache and try again
+        await refresh_perf_cache()
+        # Recursive call — but with a flag to prevent infinite backpressure
+        reqs._is_retry = True
+        return await call_model(reqs, messages, tools, stream)
+
+    # Check if this is already a retry (prevent infinite recursion)
+    if getattr(reqs, '_is_retry', False):
+        raise RuntimeError(
+            f"All models failed after backpressure retry for "
+            f"'{call_id}'. Last error: {last_error}"
+        )
+
+    try:
+        return await bp_queue.enqueue(
+            call_id=call_id,
+            priority=reqs.priority,
+            last_error=last_error or "Unknown",
+            call_func=_retry_call,
+        )
+    except RuntimeError:
+        # Queue full or expired — propagate
+        raise
 
 
 # ─── Thinking Helpers ────────────────────────────────────────────────────────

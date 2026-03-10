@@ -20,7 +20,7 @@ Original Stages:
    (Loops 5 & 6 until review passes)
 7. Committer -> git_commit
 """
-
+import json
 import logging
 from typing import Any, Dict
 
@@ -54,64 +54,84 @@ class CodingPipeline:
         self.reviewer = get_agent("reviewer")
         self.fixer = get_agent("fixer")
         self._implementer_model: str = ""
+# pipeline.py — replace the entire run() method
 
-    async def run(self, task: Dict[str, Any]) -> Dict[str, Any]:
+    async def run(self, task: dict) -> dict:
         """
-        Run the coding pipeline with adaptive stage selection.
+        Run the coding pipeline with adaptive stage selection
+        and accumulated context between stages.
+        """
+        from pipeline_context import PipelineContext, StageResult
 
-        Classifies task complexity and runs only the necessary stages.
-        Supports incremental implementation (resume from failure).
-        """
         original_goal = task.get("goal_id")
         base_title = task.get("title", "Complex Coding Task")
         base_desc = task.get("description", "")
         context = task.get("context", {})
+        if isinstance(context, str):
+            try:
+                context = json.loads(context)
+            except (json.JSONDecodeError, TypeError):
+                context = {}
 
-        # Check for explicit mode override in context
         explicit_mode = context.get("pipeline_mode")
 
-        result_log = []
-        stages_run = []
-        files_implemented = []
+        result_log: list[str] = []
+        stages_run: list[str] = []
 
-        # ── Phase 8: Classify complexity ──
+        # ── Classify complexity ──
         complexity = explicit_mode or classify_complexity(base_title, base_desc)
         stages = get_stages_for_complexity(complexity)
 
         logger.info(
-            f"🚀 Starting Coding Pipeline for: {base_title} "
+            f"🚀 Pipeline: {base_title} "
             f"(complexity: {complexity}, stages: {stages})"
         )
 
-        # ── Phase 8: Load incremental progress ──
+        # ── Initialize pipeline context ──
+        pipe_ctx = PipelineContext(
+            goal_title=base_title,
+            goal_description=base_desc,
+            goal_id=original_goal,
+            complexity=complexity,
+        )
+
+        # ── Load incremental progress ──
         progress = _load_progress(original_goal)
         completed_files = set(progress.get("completed_files", []))
 
-        # ── Phase 8: Build convention + codebase context ──
-        convention_ctx = _get_convention_context()
-        codebase_map_ctx = _get_codebase_map_context()
-        extra_context = convention_ctx + codebase_map_ctx
+        # ── Convention + codebase context (static, computed once) ──
+        extra_context = _get_convention_context() + _get_codebase_map_context()
 
-        # ── Stage: Architect ──
+        # Track which model implemented code (for review diversity)
+        implementer_model: str = ""
+
+        # ─────────────────────────────────────────────────────────
+        #  Stage: ARCHITECT
+        # ─────────────────────────────────────────────────────────
         if "architect" in stages:
             logger.info("   [Architect] Planning architecture...")
             arch_task = {
                 "title": f"Plan Architecture: {base_title}",
                 "description": base_desc + extra_context,
                 "goal_id": original_goal,
-                "priority": 8,  # high priority for architecture
-                "context": json.dumps({
-                    # Tell the agent to use high-quality model
-                    "prefer_quality": True,
-                }),
+                "priority": 8,
+                "context": json.dumps({"prefer_quality": True}),
             }
             arch_result = await self.architect.execute(arch_task)
-            result_log.append(f"Architect: {arch_result.get('result', '')}")
+            arch_text = arch_result.get("result", "")
+
+            pipe_ctx.record_stage(StageResult(
+                stage_name="architect",
+                agent_type="architect",
+                model_used=arch_result.get("model", ""),
+                result_text=arch_text,
+                cost=arch_result.get("cost", 0),
+            ))
+            result_log.append(f"Architect: {arch_text}")
             stages_run.append("architect")
 
-
         # ── Parse files to implement ──
-        files_to_implement = []
+        files_to_implement: list[str] = []
         try:
             arch_md = await read_file("ARCHITECTURE.md", max_lines=1000)
             for line in arch_md.split("\n"):
@@ -128,9 +148,15 @@ class CodingPipeline:
 
         logger.info(f"   Files to build: {files_to_implement}")
 
-        # ── Stage: Test (TDD mode — tests before implementation) ──
+        # ─────────────────────────────────────────────────────────
+        #  Stage: TEST (TDD mode — tests before implementation)
+        # ─────────────────────────────────────────────────────────
         if "test" in stages and complexity == "tdd":
             logger.info("   [TDD] Writing tests first...")
+
+            # Build context: architect output + file list
+            tdd_context = pipe_ctx.format_for_stage("test")
+
             test_task = {
                 "title": f"Write Tests (TDD): {base_title}",
                 "description": (
@@ -138,149 +164,152 @@ class CodingPipeline:
                     f"TDD MODE: Write comprehensive tests FIRST based on the "
                     f"architecture plan. The implementation will follow.\n"
                     f"Files to be implemented: {', '.join(files_to_implement)}\n"
-                    f"Write tests that will pass once implementation is complete."
+                    f"Write tests that will pass once implementation is complete.\n\n"
+                    f"{tdd_context}"
                     + extra_context
                 ),
                 "goal_id": original_goal,
             }
             test_result = await self.test_generator.execute(test_task)
-            result_log.append(f"TDD Tests: {test_result.get('result', '')}")
+            test_text = test_result.get("result", "")
+
+            pipe_ctx.record_stage(StageResult(
+                stage_name="test",
+                agent_type="test_generator",
+                model_used=test_result.get("model", ""),
+                result_text=test_text,
+                cost=test_result.get("cost", 0),
+            ))
+            result_log.append(f"TDD Tests: {test_text}")
             stages_run.append("test_tdd")
 
-        # ── Stage: Implement ──
+        # ─────────────────────────────────────────────────────────
+        #  Stage: IMPLEMENT
+        # ─────────────────────────────────────────────────────────
         if "implement" in stages:
             for idx, f in enumerate(files_to_implement):
                 if f in completed_files:
+                    logger.info(f"   [Implement] Skipping (done): {f}")
+                    result_log.append(f"Implementer ({f}): skipped (already completed)")
                     continue
 
                 logger.info(f"   [Implement] Implementing: {f}")
 
-                # Build context with results from previous files
-                impl_context = {
-                    "pipeline_mode": True,
-                }
-                if idx > 0 and result_log:
-                    # Give implementer awareness of what was already built
-                    impl_context["prior_implementations"] = "\n".join(
-                        r for r in result_log if r.startswith("Implementer")
-                    )[-3000:]
+                # Build context WITH prior stages and prior files
+                impl_stage_ctx = pipe_ctx.format_for_stage(
+                    "implement", target_file=f,
+                )
 
                 impl_task = {
                     "title": f"Implement {f}",
                     "description": (
                         f"Overall Goal: {base_desc}\n\n"
                         f"Your specific assignment is to implement: {f}\n"
-                        f"Strictly follow the interfaces in ARCHITECTURE.md."
+                        f"Strictly follow the interfaces designed in ARCHITECTURE.md.\n\n"
+                        f"{impl_stage_ctx}"
                         + extra_context
                     ),
                     "goal_id": original_goal,
-                    "context": json.dumps(impl_context),
                 }
                 impl_result = await self.implementer.execute(impl_task)
+                impl_text = impl_result.get("result", "")
+                implementer_model = impl_result.get("model", "")
 
-                # Track which model was used
-                self._implementer_model = impl_result.get("model", "")
+                pipe_ctx.record_stage(StageResult(
+                    stage_name="implement",
+                    agent_type="implementer",
+                    model_used=implementer_model,
+                    result_text=impl_text,
+                    files_touched=[f],
+                    cost=impl_result.get("cost", 0),
+                ))
+                result_log.append(f"Implementer ({f}): {impl_text}")
 
-                result_log.append(f"Implementer ({f}): {impl_result.get('result', '')}")
-                files_implemented.append(f)
                 completed_files.add(f)
                 _save_progress(original_goal, {
                     "completed_files": list(completed_files),
                     "stage": "implement",
                 })
 
+            pipe_ctx.files_implemented = list(completed_files)
             stages_run.append("implement")
 
-        # ── Stage: Review + Fix loop (with model diversity) ──
-        if "review_fix" in stages or "review" in stages:
-            while not review_passed and qa_iteration <= max_qa:
-                logger.info(f"   [Review] Iteration {qa_iteration}...")
-
-                # CRITICAL: Tell reviewer to use a different model
-                review_context = {}
-                if self._implementer_model:
-                    review_context["exclude_models"] = [self._implementer_model]
-                    review_context["prefer_quality"] = True
-
-                review_task = {
-                    "title": f"Review Code: {base_title}",
-                    "description": (
-                        f"Review the newly implemented files for {base_title}.\n"
-                        f"Look for logic bugs, security issues, "
-                        f"missing error handling, and test failures."
-                    ),
-                    "goal_id": original_goal,
-                    "context": json.dumps(review_context),
-                }
-                review_result = await self.reviewer.execute(review_task)
-                review_summary = review_result.get("result", "")
-                result_log.append(f"Review {qa_iteration}: {review_summary[:100]}...")
-
-                if "✅ Good" in review_summary or "passed" in review_summary.lower():
-                    review_passed = True
-                elif "review_fix" in stages:
-                    # Escalate model quality on repeated failures
-                    fix_context = {}
-                    if qa_iteration >= 3:
-                        fix_context["prefer_quality"] = True
-
-                    fix_task = {
-                        "title": f"Fix QA Issues: {base_title}",
-                        "description": (
-                            f"The code reviewer found issues. Fix them all.\n\n"
-                            f"Review Feedback:\n{review_summary}"
-                        ),
-                        "goal_id": original_goal,
-                        "context": json.dumps(fix_context),
-                    }
-                    fix_result = await self.fixer.execute(fix_task)
-                    result_log.append(f"Fixer {qa_iteration}: {fix_result.get('result', '')}")
-                    qa_iteration += 1
-                else:
-                    break
-
-        # ── Stage: Fix (bugfix mode — run fixer directly) ──
+        # ─────────────────────────────────────────────────────────
+        #  Stage: FIX (bugfix mode — direct fixer entry point)
+        # ─────────────────────────────────────────────────────────
         if "fix" in stages:
             logger.info("   [Fix] Running fixer for bug...")
+
+            fix_stage_ctx = pipe_ctx.format_for_stage("fix")
+
             fix_task = {
                 "title": f"Fix Bug: {base_title}",
                 "description": (
                     f"Bug report: {base_desc}\n\n"
                     f"Investigate and fix this bug. Read relevant files, "
-                    f"identify the root cause, and apply a fix."
+                    f"identify the root cause, and apply a fix.\n\n"
+                    f"{fix_stage_ctx}"
                     + extra_context
                 ),
                 "goal_id": original_goal,
             }
             fix_result = await self.fixer.execute(fix_task)
-            result_log.append(f"Fixer: {fix_result.get('result', '')}")
+            fix_text = fix_result.get("result", "")
+
+            pipe_ctx.record_stage(StageResult(
+                stage_name="fix",
+                agent_type="fixer",
+                model_used=fix_result.get("model", ""),
+                result_text=fix_text,
+                cost=fix_result.get("cost", 0),
+            ))
+            result_log.append(f"Fixer: {fix_text}")
             stages_run.append("fix")
 
-        # ── Stage: Dependencies ──
+        # ─────────────────────────────────────────────────────────
+        #  Stage: DEPENDENCIES
+        # ─────────────────────────────────────────────────────────
         if "deps" in stages:
             logger.info("   [Deps] Verifying dependencies...")
             dep_res = await verify_dependencies()
             result_log.append(f"Deps: {dep_res}")
             stages_run.append("deps")
 
-        # ── Stage: Test (normal mode — tests after implementation) ──
+        # ─────────────────────────────────────────────────────────
+        #  Stage: TEST (normal — tests after implementation)
+        # ─────────────────────────────────────────────────────────
         if "test" in stages and complexity != "tdd":
             logger.info("   [Test] Generating and running tests...")
+
+            test_stage_ctx = pipe_ctx.format_for_stage("test")
+
             test_task = {
                 "title": f"Write Tests: {base_title}",
                 "description": (
                     f"Goal: {base_desc}\n\n"
                     f"We just implemented {len(files_to_implement)} files. "
-                    f"Write tests for them and run pytest."
+                    f"Write tests for them and run pytest.\n\n"
+                    f"{test_stage_ctx}"
                     + extra_context
                 ),
                 "goal_id": original_goal,
             }
             test_result = await self.test_generator.execute(test_task)
-            result_log.append(f"Tester: {test_result.get('result', '')}")
+            test_text = test_result.get("result", "")
+
+            pipe_ctx.record_stage(StageResult(
+                stage_name="test",
+                agent_type="test_generator",
+                model_used=test_result.get("model", ""),
+                result_text=test_text,
+                cost=test_result.get("cost", 0),
+            ))
+            result_log.append(f"Tester: {test_text}")
             stages_run.append("test")
 
-        # ── Stage: Review + Fix loop ──
+        # ─────────────────────────────────────────────────────────
+        #  Stage: REVIEW + FIX loop (with diversity + escalation)
+        # ─────────────────────────────────────────────────────────
         qa_iteration = 1
         max_qa = 5
         review_passed = False
@@ -289,76 +318,137 @@ class CodingPipeline:
             while not review_passed and qa_iteration <= max_qa:
                 logger.info(f"   [Review] Iteration {qa_iteration}...")
 
+                review_stage_ctx = pipe_ctx.format_for_stage("review")
+
+                # Enforce model diversity: reviewer ≠ implementer
+                review_ctx_dict: dict = {}
+                if implementer_model:
+                    review_ctx_dict["exclude_models"] = [implementer_model]
+                review_ctx_dict["prefer_quality"] = True
+
                 review_task = {
                     "title": f"Review Code: {base_title}",
                     "description": (
                         f"Review the newly implemented files for {base_title}.\n"
                         f"Look for logic bugs, security issues, "
-                        f"missing error handling, and test failures."
+                        f"missing error handling, and test failures.\n\n"
+                        f"{review_stage_ctx}"
                     ),
                     "goal_id": original_goal,
+                    "context": json.dumps(review_ctx_dict),
                 }
                 review_result = await self.reviewer.execute(review_task)
                 review_summary = review_result.get("result", "")
-                result_log.append(f"Review {qa_iteration}: {review_summary[:100]}...")
 
-                if "✅ Good" in review_summary or "passed" in review_summary.lower():
+                pipe_ctx.record_stage(StageResult(
+                    stage_name="review",
+                    agent_type="reviewer",
+                    model_used=review_result.get("model", ""),
+                    result_text=review_summary,
+                    cost=review_result.get("cost", 0),
+                ))
+                result_log.append(
+                    f"Review {qa_iteration}: {review_summary[:100]}..."
+                )
+
+                if (
+                    "✅ Good" in review_summary
+                    or "passed" in review_summary.lower()
+                ):
                     logger.info("   [QA Passed] Implementation is solid.")
                     review_passed = True
+
                 elif "review_fix" in stages:
-                    logger.info(f"   [Fix] Fixing issues from review {qa_iteration}...")
+                    logger.info(
+                        f"   [Fix] Fixing issues from review "
+                        f"{qa_iteration}..."
+                    )
+
+                    fix_stage_ctx = pipe_ctx.format_for_stage("fix")
+
+                    # Escalate quality after repeated failures
+                    fix_ctx_dict: dict = {}
+                    if qa_iteration >= 3:
+                        fix_ctx_dict["prefer_quality"] = True
+
                     fix_task = {
                         "title": f"Fix QA Issues: {base_title}",
                         "description": (
-                            f"The code reviewer found issues. Fix them all.\n\n"
-                            f"Review Feedback:\n{review_summary}"
+                            f"The code reviewer found issues. "
+                            f"Fix them all.\n\n"
+                            f"{fix_stage_ctx}"
                         ),
                         "goal_id": original_goal,
+                        "context": json.dumps(fix_ctx_dict),
                     }
                     fix_result = await self.fixer.execute(fix_task)
-                    result_log.append(f"Fixer {qa_iteration}: {fix_result.get('result', '')}")
+                    fix_text = fix_result.get("result", "")
+
+                    pipe_ctx.record_stage(StageResult(
+                        stage_name="fix",
+                        agent_type="fixer",
+                        model_used=fix_result.get("model", ""),
+                        result_text=fix_text,
+                        cost=fix_result.get("cost", 0),
+                    ))
+                    result_log.append(
+                        f"Fixer {qa_iteration}: {fix_text}"
+                    )
                     qa_iteration += 1
                 else:
-                    # Review-only mode (oneliner) — no fix loop
                     break
 
             stages_run.append("review")
             if not review_passed and "review_fix" in stages:
-                result_log.append("QA Notes: Exited review loop without full pass.")
+                result_log.append(
+                    "QA Notes: Exited review loop without full pass."
+                )
 
-        # ── Stage: Commit ──
+        # ─────────────────────────────────────────────────────────
+        #  Stage: COMMIT
+        # ─────────────────────────────────────────────────────────
         if "commit" in stages:
             logger.info("   [Commit] Committing changes...")
-            commit_msg = f"feat: completed pipeline for - {base_title[:50]}"
+            commit_msg = (
+                f"feat: completed pipeline for - {base_title[:50]}"
+            )
             try:
-                commit_res = await git_commit(message=commit_msg, add_all=True)
+                commit_res = await git_commit(
+                    message=commit_msg, add_all=True,
+                )
                 result_log.append(f"Committer: {commit_res}")
                 stages_run.append("commit")
             except Exception as e:
                 result_log.append(f"Committer Error: {e}")
 
-        # ── Phase 8: Generate PR summary ──
+        # ── PR summary ──
         pr_summary = await generate_pr_summary(
             title=base_title,
-            files_changed=files_implemented or files_to_implement,
+            files_changed=pipe_ctx.files_implemented,
             stages_run=stages_run,
             review_iterations=qa_iteration - 1,
             complexity=complexity,
         )
         result_log.append(f"\n{pr_summary}")
 
-        # ── Clean up progress on success ──
+        # ── Cleanup ──
         _cleanup_progress(original_goal)
 
-        logger.info(f"🏁 Pipeline Complete: {base_title} (complexity: {complexity})")
+        logger.info(
+            f"🏁 Pipeline Complete: {base_title} "
+            f"(complexity: {complexity}, "
+            f"cost: ${pipe_ctx.total_cost:.4f})"
+        )
 
         return {
             "status": "completed",
             "result": "\n\n".join(result_log),
+            "cost": pipe_ctx.total_cost,
             "memories": {
                 "pipeline_stages_run": len(stages_run),
                 "review_iterations": qa_iteration - 1,
                 "complexity": complexity,
-                "files_implemented": files_implemented,
+                "files_implemented": pipe_ctx.files_implemented,
+                "total_cost": pipe_ctx.total_cost,
             },
         }

@@ -12,6 +12,7 @@ Responsibilities:
 
 from __future__ import annotations
 
+import os
 import asyncio
 import logging
 import subprocess
@@ -24,6 +25,7 @@ import httpx
 
 from gpu_monitor import get_gpu_monitor
 from model_registry import ModelInfo, get_registry
+from gpu_scheduler import get_gpu_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -62,11 +64,12 @@ class LocalModelManager:
         self.api_base: str = f"http://127.0.0.1:{self.port}"
 
         self._swap_lock = asyncio.Lock()
-        self._inference_semaphore = asyncio.Semaphore(1)  # one inference at a time
         self._swap_queue: asyncio.Queue[ModelSwapRequest] = asyncio.Queue()
         self._last_request_time: float = 0.0
         self._started_at: float = 0.0
         self._total_swaps: int = 0
+
+        self._scheduler = get_gpu_scheduler()
 
     # ── Public API ──────────────────────────────────────────────
 
@@ -84,24 +87,46 @@ class LocalModelManager:
 
         return await self._swap_model(model_name, reason)
 
-    async def acquire_inference_slot(self) -> None:
+    async def acquire_inference_slot(
+        self,
+        priority: int = 5,
+        task_id: str = "?",
+        agent_type: str = "",
+        timeout: float = 120,
+    ) -> bool:
         """
-        Acquire the inference semaphore. Callers MUST release after use.
-        This prevents concurrent inference requests to a single GPU.
+        Acquire GPU inference slot via priority scheduler.
 
-        Usage:
-            await manager.acquire_inference_slot()
-            try:
-                response = await litellm.acompletion(...)
-            finally:
-                manager.release_inference_slot()
+        Returns True if granted, False if timed out.
+        Callers MUST call release_inference_slot() in a finally block.
         """
-        await self._inference_semaphore.acquire()
-        self._last_request_time = time.time()
+        from gpu_scheduler import GPURequest, get_gpu_scheduler
+
+        scheduler = get_gpu_scheduler()
+
+        # Adjust timeout for high-priority tasks
+        if priority >= 10:
+            timeout = min(timeout, 30)  # critical tasks fail fast to try cloud
+
+        request = GPURequest.make(
+            priority=priority,
+            task_id=task_id,
+            agent_type=agent_type,
+            model_needed=self.current_model or "",
+        )
+
+        granted = await scheduler.acquire(request, timeout=timeout)
+
+        if granted:
+            self._last_request_time = time.time()
+
+        return granted
 
     def release_inference_slot(self) -> None:
-        """Release the inference semaphore after a call completes."""
-        self._inference_semaphore.release()
+        """Release GPU slot — grants to next highest-priority waiter."""
+        from gpu_scheduler import get_gpu_scheduler
+        scheduler = get_gpu_scheduler()
+        scheduler.release()
 
     @property
     def is_loaded(self) -> bool:

@@ -169,11 +169,28 @@ class Orchestrator:
         except Exception as e:
             logger.debug(f"Auto-commit skipped: {e}")
 
-    # ─── Watchdog (unchanged) ────────────────────────────────────────────
+    # ─── Watchdog ────────────────────────────────────────────
 
     async def watchdog(self):
-        """Detect and fix stuck states."""
+        """
+        Detect and fix stuck states at BOTH task and resource level.
+
+        Task-level:
+          - Tasks stuck in processing
+          - Tasks blocked by failed dependencies
+          - Goals with all children done but still waiting
+
+        Resource-level:
+          - Crashed llama-server → auto-restart
+          - GPU OOM / thermal throttle → pause local, route to cloud
+          - All cloud providers rate-limited → log warning, wait
+          - Backpressure queue overload → alert via Telegram
+        """
         db = await get_db()
+
+        # ═══════════════════════════════════════════════════════════
+        #  TASK-LEVEL RECOVERY (existing logic, preserved)
+        # ═══════════════════════════════════════════════════════════
 
         # 1. Tasks stuck in "processing" for more than 5 minutes
         cursor = await db.execute(
@@ -183,15 +200,20 @@ class Orchestrator:
         )
         stuck = [dict(row) for row in await cursor.fetchall()]
         for task in stuck:
-            logger.warning(f"[Watchdog] Task #{task['id']} stuck in processing, resetting")
+            logger.warning(
+                f"[Watchdog] Task #{task['id']} stuck in processing, "
+                f"resetting"
+            )
             await db.execute(
-                "UPDATE tasks SET status = 'pending', retry_count = retry_count + 1 WHERE id = ?",
+                "UPDATE tasks SET status = 'pending', "
+                "retry_count = retry_count + 1 WHERE id = ?",
                 (task["id"],)
             )
 
-        # 2. Tasks blocked by FAILED dependencies — unblock or fail them
+        # 2. Tasks blocked by FAILED dependencies
         cursor2 = await db.execute(
-            "SELECT id, title, depends_on FROM tasks WHERE status = 'pending' AND depends_on != '[]'"
+            "SELECT id, title, depends_on FROM tasks "
+            "WHERE status = 'pending' AND depends_on != '[]'"
         )
         blocked = [dict(row) for row in await cursor2.fetchall()]
         for task in blocked:
@@ -205,42 +227,242 @@ class Orchestrator:
 
             placeholders = ",".join("?" * len(deps))
             failed_cursor = await db.execute(
-                f"SELECT COUNT(*) FROM tasks WHERE id IN ({placeholders}) AND status = 'failed'",
-                deps
+                f"SELECT COUNT(*) FROM tasks "
+                f"WHERE id IN ({placeholders}) AND status = 'failed'",
+                deps,
             )
             failed_count = (await failed_cursor.fetchone())[0]
 
             if failed_count > 0:
                 logger.warning(
-                    f"[Watchdog] Task #{task['id']} has failed dependencies, "
-                    f"clearing deps so it can attempt to run"
+                    f"[Watchdog] Task #{task['id']} has failed deps, "
+                    f"clearing"
                 )
                 await db.execute(
                     "UPDATE tasks SET depends_on = '[]' WHERE id = ?",
-                    (task["id"],)
+                    (task["id"],),
                 )
 
-        # 3. Goals with "waiting_subtasks" parent but all children done
+        # 3. Goals with all children done but parent still waiting
         cursor3 = await db.execute(
-            "SELECT id, title FROM tasks WHERE status = 'waiting_subtasks'"
+            "SELECT id, title FROM tasks "
+            "WHERE status = 'waiting_subtasks'"
         )
         waiting = [dict(row) for row in await cursor3.fetchall()]
         for task in waiting:
             child_cursor = await db.execute(
                 """SELECT COUNT(*) as total,
-                          SUM(CASE WHEN status IN ('completed','failed','rejected') THEN 1 ELSE 0 END) as done
+                   SUM(CASE WHEN status IN (
+                       'completed','failed','rejected','cancelled'
+                   ) THEN 1 ELSE 0 END) as done
                    FROM tasks WHERE parent_task_id = ?""",
-                (task["id"],)
+                (task["id"],),
             )
             row = await child_cursor.fetchone()
             if row and row["total"] > 0 and row["total"] == row["done"]:
-                logger.info(f"[Watchdog] Task #{task['id']} all subtasks done, marking complete")
+                logger.info(
+                    f"[Watchdog] Task #{task['id']} all subtasks done, "
+                    f"marking complete"
+                )
                 await db.execute(
-                    "UPDATE tasks SET status = 'completed', completed_at = ? WHERE id = ?",
-                    (datetime.now().isoformat(), task["id"])
+                    "UPDATE tasks SET status = 'completed', "
+                    "completed_at = ? WHERE id = ?",
+                    (datetime.now().isoformat(), task["id"]),
                 )
 
         await db.commit()
+
+        # ═══════════════════════════════════════════════════════════
+        #  RESOURCE-LEVEL RECOVERY
+        # ═══════════════════════════════════════════════════════════
+
+        resource_issues: list[str] = []
+
+        # 4. Check llama-server health
+        try:
+            from local_model_manager import get_local_manager
+
+            manager = get_local_manager()
+            if manager.current_model:
+                # Server should be running
+                if manager.process is None or manager.process.poll() is not None:
+                    resource_issues.append(
+                        f"llama-server crashed (model: {manager.current_model})"
+                    )
+                    logger.error(
+                        f"[Watchdog] llama-server process died! "
+                        f"Attempting restart of {manager.current_model}"
+                    )
+                    model_name = manager.current_model
+                    manager.process = None
+                    manager.current_model = None
+
+                    # Attempt restart
+                    success = await manager.ensure_model(
+                        model_name, reason="watchdog crash recovery",
+                    )
+                    if success:
+                        logger.info(
+                            f"[Watchdog] ✅ llama-server recovered: "
+                            f"{model_name}"
+                        )
+                    else:
+                        resource_issues.append(
+                            f"Failed to restart llama-server for "
+                            f"{model_name}"
+                        )
+        except Exception as e:
+            logger.debug(f"[Watchdog] Local model check failed: {e}")
+
+        # 5. Check GPU health
+        try:
+            from gpu_monitor import get_gpu_monitor
+
+            gpu_state = get_gpu_monitor().get_state()
+
+            if gpu_state.gpu.available:
+                # Thermal throttling
+                if gpu_state.gpu.is_thermal_throttling:
+                    resource_issues.append(
+                        f"GPU thermal throttling! "
+                        f"Temp: {gpu_state.gpu.temperature_c}°C"
+                    )
+                    logger.warning(
+                        f"[Watchdog] 🌡️ GPU at {gpu_state.gpu.temperature_c}°C "
+                        f"— thermal throttling detected"
+                    )
+
+                # VRAM nearly full (>95%) without a model loaded
+                # This suggests a leak or external process consuming VRAM
+                from local_model_manager import get_local_manager
+                mgr = get_local_manager()
+                if (
+                    gpu_state.gpu.vram_usage_pct > 95
+                    and not mgr.is_loaded
+                ):
+                    resource_issues.append(
+                        f"VRAM nearly full ({gpu_state.gpu.vram_usage_pct:.0f}%) "
+                        f"but no model loaded — possible leak"
+                    )
+                    logger.warning(
+                        f"[Watchdog] VRAM at "
+                        f"{gpu_state.gpu.vram_used_mb}/"
+                        f"{gpu_state.gpu.vram_total_mb}MB "
+                        f"with no model loaded"
+                    )
+
+            # Low RAM
+            if gpu_state.ram_available_mb < 2048:
+                resource_issues.append(
+                    f"Low RAM: {gpu_state.ram_available_mb}MB available"
+                )
+                logger.warning(
+                    f"[Watchdog] Low RAM: "
+                    f"{gpu_state.ram_available_mb}MB available"
+                )
+
+        except Exception as e:
+            logger.debug(f"[Watchdog] GPU health check failed: {e}")
+
+        # 6. Check GPU scheduler queue depth
+        try:
+            from gpu_scheduler import get_gpu_scheduler
+
+            sched = get_gpu_scheduler()
+            sched_status = sched.get_status()
+
+            if sched_status["queue_depth"] > 5:
+                resource_issues.append(
+                    f"GPU scheduler queue deep: "
+                    f"{sched_status['queue_depth']} waiting"
+                )
+                logger.warning(
+                    f"[Watchdog] GPU queue depth: "
+                    f"{sched_status['queue_depth']} tasks waiting"
+                )
+
+        except Exception as e:
+            logger.debug(f"[Watchdog] GPU scheduler check failed: {e}")
+
+        # 7. Check backpressure queue
+        try:
+            from backpressure import get_backpressure_queue
+
+            bp = get_backpressure_queue()
+            bp_status = bp.get_status()
+
+            if bp_status["queue_depth"] > 10:
+                resource_issues.append(
+                    f"Backpressure queue overloaded: "
+                    f"{bp_status['queue_depth']} calls waiting"
+                )
+                logger.warning(
+                    f"[Watchdog] Backpressure queue: "
+                    f"{bp_status['queue_depth']} calls, "
+                    f"{bp_status['total_expired']} expired"
+                )
+
+        except Exception as e:
+            logger.debug(f"[Watchdog] Backpressure check failed: {e}")
+
+        # 8. Check circuit breakers — are ALL cloud providers down?
+        try:
+            from router import _circuit_breakers
+
+            degraded_providers = [
+                p for p, cb in _circuit_breakers.items()
+                if cb.is_degraded
+            ]
+            if degraded_providers:
+                resource_issues.append(
+                    f"Degraded providers: {', '.join(degraded_providers)}"
+                )
+                logger.warning(
+                    f"[Watchdog] Circuit breakers tripped: "
+                    f"{degraded_providers}"
+                )
+
+                # Check if ALL providers are degraded
+                from model_registry import get_registry
+                registry = get_registry()
+                all_cloud_providers = set(
+                    m.provider for m in registry.cloud_models()
+                )
+                if all_cloud_providers and all_cloud_providers.issubset(
+                    set(degraded_providers)
+                ):
+                    resource_issues.append(
+                        "⚠️ ALL cloud providers are degraded! "
+                        "Only local inference available."
+                    )
+
+        except Exception as e:
+            logger.debug(f"[Watchdog] Circuit breaker check failed: {e}")
+
+        # ── Alert on resource issues ──
+        if resource_issues:
+            issues_text = "\n".join(f"  • {i}" for i in resource_issues)
+            logger.warning(
+                f"[Watchdog] {len(resource_issues)} resource issue(s):\n"
+                f"{issues_text}"
+            )
+
+            # Only send Telegram alert for serious issues
+            serious = [
+                i for i in resource_issues
+                if any(kw in i.lower() for kw in [
+                    "crashed", "failed to restart", "overloaded",
+                    "all cloud", "thermal", "low ram",
+                ])
+            ]
+            if serious:
+                try:
+                    await self.telegram.send_notification(
+                        f"🚨 *Watchdog Alert*\n\n"
+                        + "\n".join(f"• {i}" for i in serious)
+                    )
+                except Exception:
+                    pass
 
     # ─── Cron Scheduler ──────────────────────────────────────────────────
 
@@ -837,19 +1059,27 @@ class Orchestrator:
     async def start(self):
         await init_db()
 
-        # ── Start local model manager background tasks ──
+        # ── Start background infrastructure ──
         from local_model_manager import get_local_manager
+        from backpressure import get_backpressure_queue
+
         manager = get_local_manager()
-        self._model_manager_tasks = [
+        bp_queue = get_backpressure_queue()
+
+        self._background_tasks: list[asyncio.Task] = [
             asyncio.create_task(manager.run_idle_unloader()),
             asyncio.create_task(manager.run_health_watchdog()),
+            asyncio.create_task(bp_queue.run_processor()),
         ]
 
         async with self.telegram.app:
             await self.telegram.app.start()
             await self.telegram.app.updater.start_polling()
 
-            logger.info("✅ System online — Telegram + Orchestrator running")
+            logger.info(
+                "✅ System online — Telegram + Orchestrator + "
+                "GPU Scheduler + Backpressure Queue running"
+            )
 
             try:
                 await self.run_loop()
@@ -859,9 +1089,20 @@ class Orchestrator:
                     logger.info("🛑 Graceful shutdown initiated...")
                     self.running = False
 
-                    # Wait for current task to finish (60s timeout)
-                    if self._current_task_future and not self._current_task_future.done():
-                        logger.info("⏳ Waiting for current task to complete (60s timeout)...")
+                    # Stop background tasks
+                    bp_queue.stop()
+                    for t in self._background_tasks:
+                        t.cancel()
+
+                    # Wait for current task to finish
+                    if (
+                        self._current_task_future
+                        and not self._current_task_future.done()
+                    ):
+                        logger.info(
+                            "⏳ Waiting for current task to complete "
+                            "(60s timeout)..."
+                        )
                         try:
                             await asyncio.wait_for(
                                 asyncio.shield(self._current_task_future),
@@ -869,9 +1110,13 @@ class Orchestrator:
                             )
                             logger.info("✅ Current task completed cleanly")
                         except asyncio.TimeoutError:
-                            logger.warning("⚠️  Shutdown timeout — current task abandoned")
+                            logger.warning(
+                                "⚠️ Shutdown timeout — task abandoned"
+                            )
                         except Exception as e:
-                            logger.warning(f"⚠️  Task error during shutdown: {e}")
+                            logger.warning(
+                                f"⚠️ Task error during shutdown: {e}"
+                            )
 
                     logger.info("👋 Orchestrator stopped")
 

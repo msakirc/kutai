@@ -439,6 +439,13 @@ class Orchestrator:
         except Exception as e:
             logger.debug(f"[Watchdog] Circuit breaker check failed: {e}")
 
+        # 9. Restore rate limits that were adaptively reduced
+        try:
+            from rate_limiter import get_rate_limit_manager
+            get_rate_limit_manager().restore_limits()
+        except Exception as e:
+            logger.debug(f"[Watchdog] Rate limit restore failed: {e}")
+
         # ── Alert on resource issues ──
         if resource_issues:
             issues_text = "\n".join(f"  • {i}" for i in resource_issues)

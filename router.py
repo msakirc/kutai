@@ -19,9 +19,11 @@ from dataclasses import dataclass, field
 from typing import Optional, overload
 
 import litellm
+
 litellm.suppress_debug_info = True
 
 from config import COST_BUDGET_DAILY
+from rate_limiter import get_rate_limit_manager
 from capabilities import (
     ALL_CAPABILITIES,
     Cap,
@@ -341,14 +343,7 @@ class CircuitBreaker:
         return True
 
 
-_rate_limiters: dict[str, RateLimiter] = {}
 _circuit_breakers: dict[str, CircuitBreaker] = {}
-
-
-def _get_limiter(provider: str, rpm: int = 30, tpm: int = 100000) -> RateLimiter:
-    if provider not in _rate_limiters:
-        _rate_limiters[provider] = RateLimiter(rpm, tpm)
-    return _rate_limiters[provider]
 
 
 def _get_circuit_breaker(provider: str) -> CircuitBreaker:
@@ -358,19 +353,6 @@ def _get_circuit_breaker(provider: str) -> CircuitBreaker:
 
 
 _limiters_initialized = False
-
-
-def _init_limiters():
-    global _limiters_initialized
-    if _limiters_initialized:
-        return
-    registry = get_registry()
-    for m in registry.cloud_models():
-        if m.provider not in _rate_limiters:
-            _rate_limiters[m.provider] = RateLimiter(
-                m.rate_limit_rpm, m.rate_limit_tpm
-            )
-    _limiters_initialized = True
 
 
 # ─── Performance Cache ──────────────────────────────────────────────────────
@@ -430,7 +412,6 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
     4. PERFORMANCE (15)     — historical success rate + quality grades
     5. SPEED (5)            — tps, provider speed class
     """
-    _init_limiters()
     registry = get_registry()
 
     task_profile = reqs.task_profile
@@ -543,17 +524,33 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
                 avail_score = 60 if swap_time < 10 else (40 if swap_time < 30 else 20)
                 reasons.append(f"swap_{swap_time:.0f}s")
         else:
-            limiter = _get_limiter(
-                model.provider, model.rate_limit_rpm, model.rate_limit_tpm
+            rl_manager = get_rate_limit_manager()
+            total_tokens = (
+                reqs.estimated_input_tokens + reqs.estimated_output_tokens
             )
-            total_tokens = reqs.estimated_input_tokens + reqs.estimated_output_tokens
-            if limiter.has_capacity(total_tokens):
-                avail_score = 90
-            elif limiter.rpm_headroom > 0:
+
+            # Check BOTH model-level and provider-level capacity
+            has_model_cap = rl_manager.has_capacity(
+                model.litellm_name, model.provider, total_tokens,
+            )
+            model_util = rl_manager.get_utilization(model.litellm_name)
+            provider_util = rl_manager.get_provider_utilization(
+                model.provider,
+            )
+
+            if has_model_cap and model_util < 50:
+                avail_score = 95
+            elif has_model_cap and model_util < 80:
+                avail_score = 75
+                reasons.append(f"util={model_util:.0f}%")
+            elif has_model_cap:
                 avail_score = 50
-                reasons.append("low_headroom")
+                reasons.append(f"util={model_util:.0f}%")
+            elif provider_util < 100:
+                avail_score = 25
+                reasons.append("model_limited")
             else:
-                avail_score = 10
+                avail_score = 5
                 reasons.append("rate_limited")
 
         # ═════════════════════════════════════════
@@ -689,16 +686,29 @@ Available task types:
 
 Determine:
 - task_type: best matching type from above
-- min_score: quality needed 1-10 (most tasks: 5-7, complex: 8+, simple: 3-4)
+- "min_score" (1-10): minimum model quality needed.
+  1-3: trivial (definitions, formatting, classification)
+  4-6: moderate (standard code, summaries, Q&A)
+  7-8: complex (multi-file refactoring, architecture, deep analysis)
+  9-10: critical (production decisions, novel algorithms, security audits)
 - needs_tools: does this need to execute actions (files, shell, search)?
 - needs_vision: does this need to look at images/screenshots?
 - needs_thinking: does this need deep multi-step reasoning?
 - local_only: personal/sensitive data that shouldn't go to cloud?
-- priority: "critical" | "high" | "normal" | "low" | "background"
+- "priority": "critical" | "high" | "normal" | "low" | "background"
+  critical = user actively waiting for immediate response
+  high = important, should run soon
+  normal = standard background work
+  low = can wait, nice-to-have
+  background = scheduled maintenance, optional
+  
+BIAS: Most tasks need min_score 4-6. Only use 8+ for genuinely complex work.
+Default to needs_tools=false unless the task clearly requires execution.
+Default to local_only=false unless personal data is explicitly mentioned.
 
 Task: {task_description}
 
-JSON: {{"task_type": "coder", "min_score": 6, "needs_tools": true, "needs_vision": false, "needs_thinking": false, "local_only": false, "priority": "normal", "reasoning": "brief"}}"""
+Respond as: {{"task_type": "coding", "min_score": 6, "needs_tools": true, "needs_vision": false, "needs_thinking": false, "local_only": false, "priority": "normal", "reasoning": "brief explanation"}}"""
 
 
 async def classify_task(title: str, description: str) -> ModelRequirements:
@@ -723,12 +733,14 @@ async def classify_task(title: str, description: str) -> ModelRequirements:
             if cloud_candidates:
                 classifier_model = cloud_candidates[0].model
 
-        limiter = _get_limiter(
-            classifier_model.provider,
-            classifier_model.rate_limit_rpm,
-            classifier_model.rate_limit_tpm,
-        )
-        await limiter.wait()
+        # Rate limiting via two-tier system
+        if not classifier_model.is_local:
+            rl_manager = get_rate_limit_manager()
+            await rl_manager.wait_and_acquire(
+                litellm_name=classifier_model.litellm_name,
+                provider=classifier_model.provider,
+                estimated_tokens=650,  # input + output estimate
+            )
 
         completion_kwargs = dict(
             model=classifier_model.litellm_name,
@@ -749,6 +761,18 @@ async def classify_task(title: str, description: str) -> ModelRequirements:
             timeout=30,
         )
 
+        # Record token usage
+        if not classifier_model.is_local and response.usage:
+            total_tokens = (
+                (response.usage.prompt_tokens or 0)
+                + (response.usage.completion_tokens or 0)
+            )
+            get_rate_limit_manager().record_tokens(
+                classifier_model.litellm_name,
+                classifier_model.provider,
+                total_tokens,
+            )
+
         raw = response.choices[0].message.content.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
@@ -760,11 +784,14 @@ async def classify_task(title: str, description: str) -> ModelRequirements:
             "critical": 10, "high": 8, "normal": 5, "low": 3, "background": 1,
         }
 
+        task_type = result.get("task_type", "assistant")
+        min_score = result.get("min_score", 5)
+
         reqs = ModelRequirements(
             task=result.get("task_type", "assistant"),
             primary_capability=result.get("task_type", "general"),
-            min_score=float(result.get("min_score", 5)) * 0.8,
-            min_quality=result.get("min_score", 5),
+            min_score=min_score,
+            min_quality=min_score,
             needs_function_calling=result.get("needs_tools", False),
             needs_vision=result.get("needs_vision", False),
             needs_thinking=result.get("needs_thinking", False),
@@ -773,15 +800,34 @@ async def classify_task(title: str, description: str) -> ModelRequirements:
         )
 
         logger.info(
-            f"Classified: task={reqs.task}, min_q={reqs.min_quality}, "
-            f"tools={reqs.needs_function_calling}, vision={reqs.needs_vision}, "
-            f"thinking={reqs.needs_thinking}, local={reqs.local_only} — "
+            f"Classified: task={task_type}, min_q={min_score}, "
+            f"tools={reqs.needs_function_calling}, "
+            f"vision={reqs.needs_vision}, "
+            f"thinking={reqs.needs_thinking}, "
+            f"local={reqs.local_only}, "
+            f"priority={reqs.priority} — "
             f"{result.get('reasoning', '')[:60]}"
         )
         return reqs
 
     except Exception as e:
-        logger.warning(f"Classification failed ({e}), using keyword fallback")
+        # Record 429 for adaptive rate limiting
+        error_str = str(e).lower()
+        if any(kw in error_str for kw in [
+            "rate limit", "429", "too many requests",
+            "resource_exhausted",
+        ]):
+            try:
+                get_rate_limit_manager().record_429(
+                    classifier_model.litellm_name,
+                    classifier_model.provider,
+                )
+            except Exception:
+                pass
+
+        logger.warning(
+            f"Classification failed ({e}), using keyword fallback"
+        )
         return _keyword_classify(title, description)
 
 
@@ -969,12 +1015,22 @@ async def call_model(
         elif tools and not model.supports_function_calling and model.supports_json_mode:
             completion_kwargs["response_format"] = {"type": "json_object"}
 
-        # ── Rate limiting ──
+        # ── Rate limiting (two-tier) ──
         if not model.is_local:
-            limiter = _get_limiter(
-                model.provider, model.rate_limit_rpm, model.rate_limit_tpm,
+            rl_manager = get_rate_limit_manager()
+            estimated_tokens = (
+                reqs.estimated_input_tokens + reqs.estimated_output_tokens
             )
-            await limiter.wait()
+            wait_time = await rl_manager.wait_and_acquire(
+                litellm_name=model.litellm_name,
+                provider=model.provider,
+                estimated_tokens=estimated_tokens,
+            )
+            if wait_time > 0:
+                logger.info(
+                    f"Rate limiter waited {wait_time:.1f}s for "
+                    f"{model.name}"
+                )
 
         # ── GPU semaphore ──
         local_manager = None
@@ -1030,13 +1086,17 @@ async def call_model(
                     if model.is_local:
                         cost = 0.0
 
-                    # Record TPM usage
+                    # Record actual token usage
                     if not model.is_local and response.usage:
                         total_tokens = (
                             (response.usage.prompt_tokens or 0)
                             + (response.usage.completion_tokens or 0)
                         )
-                        limiter.record_tokens(total_tokens)
+                        rl_manager.record_tokens(
+                            model.litellm_name,
+                            model.provider,
+                            total_tokens,
+                        )
 
                     # Update measured speed
                     if model.is_local and response.usage:
@@ -1104,14 +1164,24 @@ async def call_model(
                         logger.error(f"Auth/billing error on {model.name}: {e}")
                         break
 
-                    if any(kw in error_str for kw in [
-                        "rate limit", "429", "too many requests",
+                    is_rate_limit = any(kw in error_str for kw in [
+                        "rate limit", "rate_limit", "429",
+                        "too many requests", "tokens per minute",
                         "resource_exhausted",
-                    ]):
+                    ])
+                    if is_rate_limit:
+                        if not model.is_local:
+                            rl_manager.record_429(
+                                model.litellm_name,
+                                model.provider,
+                            )
                         if attempt < max_retries - 1:
-                            wait = (attempt + 1) * 5
-                            logger.warning(f"Rate limited on {model.name}, waiting {wait}s")
-                            await asyncio.sleep(wait)
+                            wait_time = (attempt + 1) * 5
+                            logger.warning(
+                                f"Rate limited on {model.name}, "
+                                f"waiting {wait_time}s"
+                            )
+                            await asyncio.sleep(wait_time)
                             continue
                         break
 

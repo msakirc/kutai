@@ -27,7 +27,8 @@ from typing import Any, Dict
 from src.agents import get_agent
 from src.tools.workspace import read_file
 from src.tools.deps import verify_dependencies
-from pipeline_utils import (
+from .pipeline_context import PipelineContext, StageResult
+from .pipeline_utils import (
     classify_complexity,
     get_stages_for_complexity,
     generate_pr_summary,
@@ -61,8 +62,6 @@ class CodingPipeline:
         Run the coding pipeline with adaptive stage selection
         and accumulated context between stages.
         """
-        from pipeline_context import PipelineContext, StageResult
-
         original_goal = task.get("goal_id")
         base_title = task.get("title", "Complex Coding Task")
         base_desc = task.get("description", "")

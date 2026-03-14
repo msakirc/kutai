@@ -11,6 +11,8 @@ import inspect
 import logging
 from typing import Any, Optional
 
+from ..parsing.code_embeddings import reindex_file
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -32,6 +34,7 @@ from .git_ops import (
     git_rollback,
     git_status,
 )
+from ..memory.ingest import ingest_document as _ingest_fn
 
 # AST-aware code tools (Phase 8)
 from .ast_tools import (
@@ -167,8 +170,6 @@ except Exception as e:
 
 # Phase 11.5: Document ingestion tool
 try:
-    from memory.ingest import ingest_document as _ingest_fn
-
     async def _ingest_tool_wrapper(source: str, source_type: str = "auto") -> str:
         """Wrapper to return string result for tool system."""
         result = await _ingest_fn(source, source_type)
@@ -600,7 +601,6 @@ def _trigger_reindex(filepath: str | None) -> None:
     if not filepath:
         return
     try:
-        from parsing.code_embeddings import reindex_file
         import asyncio
 
         loop = asyncio.get_event_loop()

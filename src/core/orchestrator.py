@@ -14,7 +14,7 @@ from ..infra.db import (
     cancel_task, get_task,
     save_workspace_snapshot, release_task_locks, release_goal_locks,
 )
-from .router import classify_task
+from .router import classify_task, _circuit_breakers
 from ..agents import get_agent, AGENT_REGISTRY
 from ..tools import execute_tool
 from ..tools.workspace import (
@@ -407,8 +407,6 @@ class Orchestrator:
 
         # 8. Check circuit breakers — are ALL cloud providers down?
         try:
-            from router import _circuit_breakers
-
             degraded_providers = [
                 p for p, cb in _circuit_breakers.items()
                 if cb.is_degraded

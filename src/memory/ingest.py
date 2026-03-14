@@ -16,7 +16,7 @@ import logging
 import os
 from typing import Optional
 
-from vector_store import embed_and_store, is_ready
+from .vector_store import embed_and_store, is_ready
 
 logger = logging.getLogger(__name__)
 

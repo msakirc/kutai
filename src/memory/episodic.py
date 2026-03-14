@@ -13,7 +13,7 @@ Public API:
 import logging
 import time
 
-from vector_store import embed_and_store, query, is_ready
+from .vector_store import embed_and_store, query, is_ready
 
 logger = logging.getLogger(__name__)
 

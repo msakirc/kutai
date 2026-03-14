@@ -6,6 +6,8 @@ import json
 import logging
 import urllib.parse
 
+from src.tools import run_shell
+
 logger = logging.getLogger(__name__)
 
 # Try to use duckduckgo-search package first
@@ -43,8 +45,6 @@ async def web_search(query: str, max_results: int = 5) -> str:
 
     # Method 2: curl via shell (Docker container has internet)
     try:
-        from shell import run_shell
-
         safe_query = urllib.parse.quote_plus(query)
         # DuckDuckGo Instant Answer API (free, no key needed)
         url = f"https://api.duckduckgo.com/?q={safe_query}&format=json&no_html=1&no_redirect=1"

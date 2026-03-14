@@ -4,7 +4,8 @@ import hashlib
 import json
 import logging
 from datetime import datetime
-from config import DB_PATH
+
+from src.app.config import DB_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -1244,7 +1245,6 @@ async def check_task_budget(task_id: int, additional_cost: float = 0.0) -> dict:
 
     Returns: {"ok": bool, "reason": str, "spent": float, "limit": float|None}
     """
-    from db import get_task
     task = await get_task(task_id)
     if not task:
         return {"ok": True, "reason": "task not found", "spent": 0, "limit": None}

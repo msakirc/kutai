@@ -21,11 +21,12 @@ import os
 import time
 from typing import Optional
 
-from tree_sitter_parser import (
+from .tree_sitter_parser import (
     detect_language,
     get_parseable_extensions,
     parse_file,
 )
+from ..memory.vector_store import is_ready, embed_and_store, query as vs_query
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,6 @@ async def _embed_symbol(
 ) -> Optional[str]:
     """Store a code symbol embedding in the codebase collection."""
     try:
-        from memory.vector_store import embed_and_store, is_ready
         if not is_ready():
             return None
 
@@ -268,7 +268,6 @@ async def search_code(query: str, top_k: int = 10) -> list[dict]:
         line_start, line_end, language, distance.
     """
     try:
-        from memory.vector_store import query as vs_query, is_ready
         if not is_ready():
             return []
 

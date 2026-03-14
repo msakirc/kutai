@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 
 import litellm
 
+from src.core.task_classifier import _classify_by_keywords
+
 litellm.suppress_debug_info = True
 
 from src.models.rate_limiter import get_rate_limit_manager
@@ -826,7 +828,6 @@ async def classify_task(title: str, description: str) -> ModelRequirements:
 def _keyword_classify(title: str, description: str) -> ModelRequirements:
     """Fast keyword-based classification."""
     try:
-        from task_classifier import _classify_by_keywords
         result = _classify_by_keywords(title, description)
         category = result["category"]
 

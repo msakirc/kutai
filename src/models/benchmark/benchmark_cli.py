@@ -14,6 +14,8 @@ Usage:
 import sys
 import logging
 
+from src.models.benchmark.benchmark_fetcher import \
+    enrich_registry_with_benchmarks, BenchmarkFetcher
 from ..model_registry import reload_registry, get_registry
 from ..capabilities import TASK_PROFILES, Cap
 
@@ -36,8 +38,6 @@ def cmd_scan():
 
 def cmd_benchmarks():
     """Fetch/refresh benchmark data from all sources."""
-    from benchmark_fetcher import BenchmarkFetcher
-
     fetcher = BenchmarkFetcher()
     fetcher.refresh_cache()
 
@@ -53,7 +53,6 @@ def cmd_benchmarks():
 
 def cmd_enrich():
     """Enrich registry with benchmark data."""
-    from benchmark_fetcher import enrich_registry_with_benchmarks
 
     registry = get_registry()
     enriched = enrich_registry_with_benchmarks(registry)

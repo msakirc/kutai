@@ -6,7 +6,7 @@ import sys
 from dotenv import load_dotenv
 load_dotenv()
 
-from config import print_config, DOCKER_CONTAINER_NAME
+from .config import print_config, DOCKER_CONTAINER_NAME
 from src.core.orchestrator import Orchestrator
 
 def check_docker_sandbox():

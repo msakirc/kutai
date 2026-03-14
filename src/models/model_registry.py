@@ -24,6 +24,7 @@ from typing import Optional
 
 import yaml
 
+from .benchmark.benchmark_fetcher import enrich_registry_with_benchmarks
 from .capabilities import (
     ALL_CAPABILITIES,
     Cap,
@@ -34,6 +35,7 @@ from .capabilities import (
     rank_models_for_task,
     score_model_for_task,
 )
+from .gpu_monitor import get_gpu_monitor
 from .model_profiles import (
     CLOUD_PROFILES,
     FAMILY_PROFILES,
@@ -752,7 +754,6 @@ class ModelRegistry:
             settings = self._raw_config.get("settings", {})
             if settings.get("enrich_with_benchmarks", False):
                 try:
-                    from benchmark_fetcher import enrich_registry_with_benchmarks
                     cache_dir = settings.get("benchmark_cache_dir", ".benchmark_cache")
                     min_sources = settings.get("benchmark_min_sources", 2)
                     enrich_registry_with_benchmarks(
@@ -957,7 +958,7 @@ class ModelRegistry:
         result = {}
 
         try:
-            from config import AVAILABLE_KEYS
+            from ..app.config import AVAILABLE_KEYS
         except ImportError:
             logger.warning("config.py not found — skipping cloud models")
             return result
@@ -1187,7 +1188,6 @@ class ModelRegistry:
     def _get_available_vram() -> int:
         """Get available VRAM in MB."""
         try:
-            from gpu_monitor import get_gpu_monitor
             gpu_state = get_gpu_monitor().get_state()
             return gpu_state.gpu.vram_total_mb if gpu_state.gpu.available else 0
         except Exception:

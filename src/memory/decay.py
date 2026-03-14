@@ -15,11 +15,11 @@ Public API:
 import logging
 import time
 
-from vector_store import (
+from .vector_store import (
     COLLECTIONS,
     is_ready,
     get_collection_count,
-    get_all_counts,
+    get_all_counts, _collections,
 )
 
 logger = logging.getLogger(__name__)
@@ -115,8 +115,6 @@ async def run_decay_cycle() -> dict:
     """
     if not is_ready():
         return {}
-
-    from memory.vector_store import _collections
 
     stats: dict[str, dict] = {}
     total_deleted = 0

@@ -11,6 +11,11 @@ import logging
 import os
 from typing import Optional
 
+import src.tools.workspace as _ws
+from src.tools import git_diff
+from src.tools.codebase_index import get_cached_index, build_index, \
+    get_codebase_map
+
 logger = logging.getLogger(__name__)
 
 
@@ -130,7 +135,6 @@ async def generate_pr_summary(
     """Generate a PR-style summary of pipeline results."""
     diff_output = ""
     try:
-        from src.tools.git_ops import git_diff
         diff_output = await git_diff(stat_only=True)
     except Exception:
         diff_output = "(diff unavailable)"
@@ -196,9 +200,6 @@ def _get_convention_context() -> str:
 def _get_codebase_map_context() -> str:
     """Generate codebase map for large codebases."""
     try:
-        import src.tools.workspace as _ws
-        from src.tools.codebase_index import build_index, get_cached_index, get_codebase_map
-
         index = get_cached_index(_ws.WORKSPACE_DIR)
         if not index:
             index = build_index(_ws.WORKSPACE_DIR)

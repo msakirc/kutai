@@ -100,7 +100,7 @@ class LocalModelManager:
         Returns True if granted, False if timed out.
         Callers MUST call release_inference_slot() in a finally block.
         """
-        from gpu_scheduler import GPURequest, get_gpu_scheduler
+        from .gpu_scheduler import GPURequest, get_gpu_scheduler
 
         scheduler = get_gpu_scheduler()
 
@@ -124,7 +124,7 @@ class LocalModelManager:
 
     def release_inference_slot(self) -> None:
         """Release GPU slot — grants to next highest-priority waiter."""
-        from gpu_scheduler import get_gpu_scheduler
+        from .gpu_scheduler import get_gpu_scheduler
         scheduler = get_gpu_scheduler()
         scheduler.release()
 

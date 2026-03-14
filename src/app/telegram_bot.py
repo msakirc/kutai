@@ -1,17 +1,24 @@
 # telegram_bot.py
 import asyncio
 import logging
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, TASK_PRIORITY
+from .config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, TASK_PRIORITY
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters, ContextTypes
 )
+
+from ..context.onboarding import load_project_profile, format_project_profile, \
+    onboard_project, store_project_profile
 from ..infra.db import (add_task, add_goal, get_active_goals, get_ready_tasks,
                 get_daily_stats, update_task, get_recent_completed_tasks,
                 get_db, cancel_task, reprioritize_task, get_task_tree,
                 get_task, get_budget, set_budget, get_model_stats,
                 get_goal_locks)
+from ..memory.conversations import format_recent_context, find_followup_context, \
+    store_exchange
+from ..memory.ingest import ingest_document
+from ..memory.preferences import record_feedback
 from ..tools.workspace import (
     list_goal_workspaces, load_projects_config, get_project,
 )
@@ -532,11 +539,6 @@ class TelegramInterface:
                 parse_mode="Markdown",
             )
             try:
-                from context.onboarding import (
-                    onboard_project,
-                    store_project_profile,
-                    format_project_profile,
-                )
                 profile = await onboard_project(project_path, project_name)
                 if "error" in profile:
                     await update.message.reply_text(f"❌ {profile['error']}")
@@ -559,7 +561,6 @@ class TelegramInterface:
         if not project:
             # Try loading from DB profile
             try:
-                from context.onboarding import load_project_profile, format_project_profile
                 profile = await load_project_profile(name)
                 if profile:
                     summary = format_project_profile(profile)
@@ -594,7 +595,6 @@ class TelegramInterface:
         await update.message.reply_text(f"📥 Ingesting: {source}...")
 
         try:
-            from memory.ingest import ingest_document
             result = await ingest_document(source)
 
             if result["status"] == "ok":
@@ -627,9 +627,6 @@ class TelegramInterface:
         # Phase 11.4: Embedding-based follow-up detection
         recent_context = None
         try:
-            from memory.conversations import (
-                find_followup_context, format_recent_context,
-            )
             followup = await find_followup_context(chat_id, text)
             if followup.get("is_followup") and followup.get("parent_task_id"):
                 parent_id = int(followup["parent_task_id"])
@@ -697,7 +694,6 @@ class TelegramInterface:
 
                 # Phase 11.7: Record modified feedback
                 try:
-                    from memory.preferences import record_feedback
                     task_info = await get_task(task_id)
                     if task_info:
                         await record_feedback(
@@ -769,7 +765,6 @@ class TelegramInterface:
 
         # Phase 11.4: Store exchange in conversation memory
         try:
-            from memory.conversations import store_exchange
             # Use admin chat ID as the chat_id for results
             chat_id = TELEGRAM_ADMIN_CHAT_ID or "system"
             await store_exchange(

@@ -1,5 +1,6 @@
 # orchestrator.py
 import asyncio
+import dataclasses
 import json
 import logging
 import signal
@@ -14,7 +15,7 @@ from ..infra.db import (
     cancel_task, get_task,
     save_workspace_snapshot, release_task_locks, release_goal_locks,
 )
-from .router import classify_task, _circuit_breakers
+from .router import _circuit_breakers
 from ..agents import get_agent
 from ..tools import execute_tool
 from ..tools.workspace import (
@@ -587,6 +588,27 @@ class Orchestrator:
             # ── Inject context from prior steps + workspace snapshot ──
             task = await self._inject_chain_context(task)
 
+            # ── Classify task if not already classified ──
+            task_ctx = task.get("context", "{}")
+            if isinstance(task_ctx, str):
+                try:
+                    task_ctx = json.loads(task_ctx)
+                except (json.JSONDecodeError, TypeError):
+                    task_ctx = {}
+            if not isinstance(task_ctx, dict):
+                task_ctx = {}
+
+            if "classification" not in task_ctx:
+                from .task_classifier import classify_task as classify
+                classification = await classify(
+                    task["title"], task.get("description", ""),
+                )
+                task_ctx["classification"] = dataclasses.asdict(classification)
+                if classification.confidence >= 0.7:
+                    task["agent_type"] = classification.agent_type
+                    agent_type = classification.agent_type
+                task["context"] = json.dumps(task_ctx)
+
             # ── Phase 6: Snapshot workspace before coder/pipeline tasks ──
             goal_id = task.get("goal_id")
             if goal_id and agent_type in ("coder", "pipeline", "implementer", "fixer"):
@@ -807,6 +829,14 @@ class Orchestrator:
                 "depends_on": [],  # resolved after creation
                 "_dep_step": st.get("depends_on_step"),
             })
+
+        # Classify each subtask for difficulty and agent routing
+        from .task_classifier import classify_task as classify
+        for st in processed:
+            cls = await classify(st["title"], st.get("description", ""))
+            st["difficulty"] = cls.difficulty
+            if cls.confidence > 0.8 and cls.agent_type != st["agent_type"]:
+                st["agent_type"] = cls.agent_type
 
         # Use transactional batch insert
         plan_summary = result.get("plan_summary", f"Created {len(subtasks)} subtasks")

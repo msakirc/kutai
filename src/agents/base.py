@@ -1432,26 +1432,19 @@ class BaseAgent:
         description = task.get("description", "").lower()
         priority = task.get("priority", 5)
 
-        # ── Map agent type directly to task profile ──
-        agent_task_map = {
-            "planner":        ("planner",        7),
-            "architect":      ("architect",      8),
-            "coder":          ("coder",          7),
-            "implementer":    ("implementer",    7),
-            "fixer":          ("fixer",          6),
-            "test_generator": ("test_generator", 6),
-            "reviewer":       ("reviewer",       7),
-            "researcher":     ("researcher",     6),
-            "writer":         ("writer",         6),
-            "executor":       ("executor",       5),
-        }
-        task_name, min_q = agent_task_map.get(self.name, ("assistant", 5))
+        # ── Build from classification if available ──
+        classification = task_ctx.get("classification", {})
 
         reqs = ModelRequirements(
-            task=task_name,
+            task=classification.get("agent_type", self.name),
+            difficulty=classification.get("difficulty", 5),
             agent_type=self.name,
-            difficulty=min_q,
             priority=priority,
+            needs_function_calling=classification.get("needs_tools", False),
+            needs_vision=classification.get("needs_vision", False),
+            needs_thinking=classification.get("needs_thinking", False),
+            local_only=classification.get("local_only", False),
+            prefer_local=True,
         )
 
         # ── Adjust for task priority ──
@@ -1491,11 +1484,11 @@ class BaseAgent:
         reqs.estimated_input_tokens = max(estimated_input, 1000)
         reqs.estimated_output_tokens = 2000
 
-        # ── Tools needed? ──
+        # ── Tools needed? (agent-level override) ──
         if self.allowed_tools is None or len(self.allowed_tools or []) > 0:
             reqs.needs_function_calling = True
 
-        # ── Vision needed? ──
+        # ── Vision needed? (keyword override) ──
         if task_ctx.get("needs_vision"):
             reqs.needs_vision = True
         if any(kw in f"{title} {description}" for kw in [

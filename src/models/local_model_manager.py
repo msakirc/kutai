@@ -150,7 +150,7 @@ class LocalModelManager:
             "idle_seconds": round(self.idle_seconds, 1),
             "total_swaps": self._total_swaps,
             "uptime_seconds": round(time.time() - self._started_at, 1) if self._started_at else 0,
-            "inference_busy": self._inference_semaphore.locked(),
+            "inference_busy": self._scheduler.is_busy,
         }
 
     # ── Model Swapping ─────────────────────────────────────────
@@ -363,13 +363,17 @@ class LocalModelManager:
 
     # ── Background Tasks ────────────────────────────────────────
 
-    async def run_idle_unloader(self, check_interval: float = 60) -> None:
+    async def run_idle_unloader(
+        self,
+        check_interval: float = 60,
+        max_idle_minutes: float = 10,
+    ) -> None:
         """
         Background task: unload model if idle for too long.
+        Frees VRAM when no inference requests arrive within the idle window.
         Run as: asyncio.create_task(manager.run_idle_unloader())
         """
-        policy = get_registry().get_swap_policy()
-        max_idle = policy.get("max_idle_minutes", 10) * 60
+        max_idle = max_idle_minutes * 60
 
         while True:
             await asyncio.sleep(check_interval)

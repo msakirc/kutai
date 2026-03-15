@@ -2,9 +2,6 @@
 """
 Model Router v2 — 14-dimension task-aware model selection,
 rate limiting, retries, cross-provider fallback, GPU-aware scheduling.
-
-Backward compatible: call_model() accepts both ModelRequirements objects
-AND the old (tier_str, messages, ...) signature for gradual migration.
 """
 
 from __future__ import annotations
@@ -33,67 +30,6 @@ logger = logging.getLogger(__name__)
 
 # ─── Capability ↔ Task Mapping ───────────────────────────────────────────────
 
-CAPABILITY_TO_TASK: dict[str, str] = {
-    "coding":         "coder",
-    "code":           "coder",
-    "debugging":      "fixer",
-    "debug":          "fixer",
-    "fixing":         "fixer",
-    "fix":            "fixer",
-    "reasoning":      "planner",
-    "planning":       "planner",
-    "plan":           "planner",
-    "architecture":   "architect",
-    "design":         "architect",
-    "writing":        "writer",
-    "write":          "writer",
-    "documentation":  "writer",
-    "research":       "researcher",
-    "analysis":       "reviewer",
-    "review":         "reviewer",
-    "testing":        "test_generator",
-    "test":           "test_generator",
-    "implementation": "implementer",
-    "implement":      "implementer",
-    "execution":      "executor",
-    "execute":        "executor",
-    "tool_use":       "executor",
-    "routing":        "router",
-    "classification": "router",
-    "visual":         "visual_reviewer",
-    "vision":         "visual_reviewer",
-    "screenshot":     "visual_reviewer",
-    "conversation":   "assistant",
-    "chat":           "assistant",
-    "assistant":      "assistant",
-    "summarize":      "summarizer",
-    "summary":        "summarizer",
-    "general":        "assistant",
-    "simple":         "executor",
-}
-
-# Legacy tier → task mapping (for backward compat)
-TIER_TO_TASK: dict[str, str] = {
-    "routing":   "router",
-    "cheap":     "executor",
-    "code":      "coder",
-    "medium":    "assistant",
-    "expensive": "planner",
-}
-
-# Legacy tier → quality floor
-TIER_TO_MIN_QUALITY: dict[str, int] = {
-    "routing":   1,
-    "cheap":     3,
-    "code":      5,
-    "medium":    6,
-    "expensive": 8,
-}
-
-# Tier escalation order (used by base.py, preserved for compat)
-TIER_ESCALATION_ORDER: list[str] = ["cheap", "code", "medium", "expensive"]
-
-
 def _make_adhoc_profile(primary_cap: str) -> dict[str, float]:
     """Create a task profile on the fly for unknown capability requests."""
     profile = {cap: 0.3 for cap in ALL_CAPABILITIES}
@@ -113,18 +49,18 @@ class ModelRequirements:
     """
     Structured description of what a task needs from a model.
 
-    Supports both new task-based routing and legacy tier/capability routing.
+    Uses difficulty (1-10) to express how capable the model must be.
     """
     # ── Task identity (preferred path) ──
     task: str = ""                            # Key into TASK_PROFILES
 
-    # ── Legacy capability path (auto-maps to task) ──
+    # ── Capability path (auto-maps to task) ──
     primary_capability: str = "general"
     secondary_capabilities: list[str] = field(default_factory=list)
 
-    # ── Quality floor ──
-    min_score: float = 0.0                     # Minimum weighted task score (0-10)
-    min_quality: int = 1                       # Legacy: maps to min_score
+    # ── Difficulty (1-10) — drives model quality selection ──
+    difficulty: int = 5
+    min_score: float = 0.0                     # Override; if 0, computed from difficulty
 
     # ── Context requirements ──
     estimated_input_tokens: int = 2000
@@ -154,9 +90,6 @@ class ModelRequirements:
     # ── Agent context ──
     agent_type: str = ""
 
-    # ── Legacy tier (for backward compat — auto-maps to task) ──
-    _tier: str = ""
-
     @property
     def effective_task(self) -> str:
         if self.task and self.task in TASK_PROFILES:
@@ -164,10 +97,6 @@ class ModelRequirements:
         mapped = CAPABILITY_TO_TASK.get(self.primary_capability)
         if mapped and mapped in TASK_PROFILES:
             return mapped
-        if self._tier:
-            tier_mapped = TIER_TO_TASK.get(self._tier)
-            if tier_mapped and tier_mapped in TASK_PROFILES:
-                return tier_mapped
         return ""
 
     @property
@@ -187,33 +116,7 @@ class ModelRequirements:
     def effective_min_score(self) -> float:
         if self.min_score > 0:
             return self.min_score
-        if self.min_quality > 1:
-            return self.min_quality * 0.8
-        return 0.0
-
-    @classmethod
-    def from_tier(
-        cls,
-        tier: str,
-        agent_type: str = "",
-        model_override: str | None = None,
-        **kwargs,
-    ) -> "ModelRequirements":
-        """Create ModelRequirements from a legacy tier string."""
-        task = TIER_TO_TASK.get(tier, "assistant")
-        min_q = TIER_TO_MIN_QUALITY.get(tier, 5)
-        return cls(
-            task=task,
-            _tier=tier,
-            primary_capability=CAPABILITY_TO_TASK.get(task, "general"),
-            min_quality=min_q,
-            agent_type=agent_type,
-            model_override=model_override,
-            prefer_speed=(tier in ("routing", "cheap")),
-            prefer_quality=(tier == "expensive"),
-            needs_function_calling=(tier == "code"),
-            **kwargs,
-        )
+        return self.difficulty * 0.7
 
     def escalate(self) -> "ModelRequirements":
         """
@@ -221,34 +124,10 @@ class ModelRequirements:
         Used by base.py for mid-task escalation.
         """
         escalated = copy.copy(self)
-        # Bump quality floor
-        escalated.min_quality = min(10, self.min_quality + 2)
-        escalated.min_score = min(10.0, self.effective_min_score + 1.5)
+        escalated.difficulty = min(10, self.difficulty + 2)
+        escalated.min_score = 0.0  # reset so it recomputes from new difficulty
         escalated.prefer_quality = True
-        # If we had a tier, escalate it
-        if self._tier and self._tier in TIER_ESCALATION_ORDER:
-            idx = TIER_ESCALATION_ORDER.index(self._tier)
-            if idx < len(TIER_ESCALATION_ORDER) - 1:
-                escalated._tier = TIER_ESCALATION_ORDER[idx + 1]
-                escalated.task = TIER_TO_TASK.get(escalated._tier, escalated.task)
         return escalated
-
-    @property
-    def tier(self) -> str:
-        """Legacy tier accessor for checkpoint compat."""
-        if self._tier:
-            return self._tier
-        # Reverse-map from task
-        for t, task_name in TIER_TO_TASK.items():
-            if task_name == self.effective_task:
-                return t
-        if self.prefer_quality or self.min_quality >= 8:
-            return "expensive"
-        if self.min_quality >= 6:
-            return "medium"
-        if self.needs_function_calling:
-            return "code"
-        return "cheap"
 
 
 # ─── Per-Provider Rate Limiting ──────────────────────────────────────────────
@@ -588,21 +467,27 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
         # Composite
         # ═════════════════════════════════════════
 
-        weights = {"capability": 35, "cost": 25, "availability": 20, "performance": 15, "speed": 5}
+        # Base weights from difficulty
+        d = reqs.difficulty
+        if d <= 3:
+            weights = {"capability": 15, "cost": 50, "availability": 20, "performance": 10, "speed": 5}
+        elif d <= 5:
+            weights = {"capability": 30, "cost": 30, "availability": 20, "performance": 15, "speed": 5}
+        elif d <= 7:
+            weights = {"capability": 40, "cost": 20, "availability": 20, "performance": 15, "speed": 5}
+        else:
+            weights = {"capability": 55, "cost": 5, "availability": 15, "performance": 20, "speed": 5}
 
+        # Modifiers
+        if reqs.prefer_speed:
+            weights["speed"] += 15
+            weights["cost"] -= 10
         if reqs.prefer_quality:
-            weights = {"capability": 50, "cost": 10, "availability": 15, "performance": 20, "speed": 5}
-        elif reqs.prefer_speed:
-            weights = {"capability": 25, "cost": 15, "availability": 25, "performance": 10, "speed": 25}
-
+            weights["capability"] += 10
+            weights["cost"] -= 10
         if reqs.local_only:
-            weights["availability"] = 30
-            weights["cost"] = 10
-
-        if reqs.priority >= 10:
-            weights = {"capability": 30, "cost": 5, "availability": 30, "performance": 10, "speed": 25}
-        elif reqs.priority <= 2:
-            weights = {"capability": 25, "cost": 40, "availability": 15, "performance": 15, "speed": 5}
+            weights["availability"] += 10
+            weights["cost"] -= 10
 
         total_weight = sum(weights.values())
         composite = (
@@ -709,7 +594,7 @@ async def classify_task(title: str, description: str) -> ModelRequirements:
     """Classify a task and return structured ModelRequirements."""
     classifier_reqs = ModelRequirements(
         task="router",
-        min_quality=1,
+        difficulty=1,
         estimated_input_tokens=500,
         estimated_output_tokens=150,
         prefer_speed=True,
@@ -785,7 +670,7 @@ async def classify_task(title: str, description: str) -> ModelRequirements:
             task=result.get("task_type", "assistant"),
             primary_capability=result.get("task_type", "general"),
             min_score=min_score,
-            min_quality=min_score,
+            difficulty=min_score,
             needs_function_calling=result.get("needs_tools", False),
             needs_vision=result.get("needs_vision", False),
             needs_thinking=result.get("needs_thinking", False),
@@ -832,14 +717,14 @@ def _keyword_classify(title: str, description: str) -> ModelRequirements:
         category = result["category"]
 
         category_map = {
-            "simple_qa":       ModelRequirements(task="executor",   min_quality=3, prefer_speed=True),
-            "code_simple":     ModelRequirements(task="coder",      min_quality=5, needs_function_calling=True),
-            "code_complex":    ModelRequirements(task="coder",      min_quality=7, needs_function_calling=True, prefer_quality=True),
-            "research":        ModelRequirements(task="researcher", min_quality=6, needs_function_calling=True),
-            "writing":         ModelRequirements(task="writer",     min_quality=6),
-            "planning":        ModelRequirements(task="planner",    min_quality=7, prefer_quality=True),
-            "action_required": ModelRequirements(task="executor",   min_quality=5, needs_function_calling=True),
-            "sensitive":       ModelRequirements(task="assistant",  min_quality=5, local_only=True),
+            "simple_qa":       ModelRequirements(task="executor",   difficulty=3, prefer_speed=True),
+            "code_simple":     ModelRequirements(task="coder",      difficulty=5, needs_function_calling=True),
+            "code_complex":    ModelRequirements(task="coder",      difficulty=7, needs_function_calling=True, prefer_quality=True),
+            "research":        ModelRequirements(task="researcher", difficulty=6, needs_function_calling=True),
+            "writing":         ModelRequirements(task="writer",     difficulty=6),
+            "planning":        ModelRequirements(task="planner",    difficulty=7, prefer_quality=True),
+            "action_required": ModelRequirements(task="executor",   difficulty=5, needs_function_calling=True),
+            "sensitive":       ModelRequirements(task="assistant",  difficulty=5, local_only=True),
         }
 
         return category_map.get(category, ModelRequirements(task="assistant"))
@@ -848,76 +733,39 @@ def _keyword_classify(title: str, description: str) -> ModelRequirements:
 
     text = f"{title} {description}".lower()
     if any(kw in text for kw in ["fix", "bug", "error", "debug", "traceback"]):
-        return ModelRequirements(task="fixer", min_quality=6, needs_function_calling=True)
+        return ModelRequirements(task="fixer", difficulty=6, needs_function_calling=True)
     if any(kw in text for kw in ["implement", "create", "build", "write code"]):
-        return ModelRequirements(task="coder", min_quality=6, needs_function_calling=True)
+        return ModelRequirements(task="coder", difficulty=6, needs_function_calling=True)
     if any(kw in text for kw in ["test", "spec", "coverage"]):
-        return ModelRequirements(task="test_generator", min_quality=5, needs_function_calling=True)
+        return ModelRequirements(task="test_generator", difficulty=5, needs_function_calling=True)
     if any(kw in text for kw in ["review", "analyze", "audit"]):
-        return ModelRequirements(task="reviewer", min_quality=6)
+        return ModelRequirements(task="reviewer", difficulty=6)
     if any(kw in text for kw in ["plan", "design", "architect"]):
-        return ModelRequirements(task="planner", min_quality=7, prefer_quality=True)
+        return ModelRequirements(task="planner", difficulty=7, prefer_quality=True)
     if any(kw in text for kw in ["screenshot", "image", "visual", "ui"]):
-        return ModelRequirements(task="visual_reviewer", needs_vision=True, min_quality=5)
+        return ModelRequirements(task="visual_reviewer", needs_vision=True, difficulty=5)
     if any(kw in text for kw in ["write", "document", "email", "report"]):
-        return ModelRequirements(task="writer", min_quality=5)
+        return ModelRequirements(task="writer", difficulty=5)
     if any(kw in text for kw in ["search", "find", "research"]):
-        return ModelRequirements(task="researcher", min_quality=5, needs_function_calling=True)
+        return ModelRequirements(task="researcher", difficulty=5, needs_function_calling=True)
     if any(kw in text for kw in ["summarize", "tldr", "key points"]):
-        return ModelRequirements(task="summarizer", min_quality=5)
-    return ModelRequirements(task="assistant", min_quality=5)
+        return ModelRequirements(task="summarizer", difficulty=5)
+    return ModelRequirements(task="assistant", difficulty=5)
 
 
 # ─── Main API: call_model ────────────────────────────────────────────────────
 
 async def call_model(
-    reqs_or_tier,
-    messages: list[dict] | None = None,
+    reqs: ModelRequirements,
+    messages: list[dict],
     tools: list[dict] | None = None,
-    *,
-    # Legacy kwargs (used when first arg is a tier string)
-    agent_type: str = "",
-    model_override: str | None = None,
-    stream: bool = False,
-    # New-style: reqs + messages as first two positional args
-    **kwargs,
 ) -> dict:
     """
     Call the best available model matching requirements.
 
-    Supports BOTH calling conventions:
-
-    New style:
-        await call_model(reqs=ModelRequirements(...), messages=[...], tools=[...])
-
-    Legacy style (tier string):
-        await call_model("medium", messages, agent_type="coder")
-        await call_model("code", messages, agent_type="fixer", model_override="...")
-
-    Legacy style auto-converts to ModelRequirements internally.
+    Usage:
+        await call_model(ModelRequirements(...), messages=[...], tools=[...])
     """
-    # ── Detect calling convention ──
-    if isinstance(reqs_or_tier, str):
-        # Legacy: call_model(tier, messages, agent_type=..., model_override=...)
-        tier_str = reqs_or_tier
-        reqs = ModelRequirements.from_tier(
-            tier_str,
-            agent_type=agent_type,
-            model_override=model_override,
-        )
-        # messages is the second positional arg
-        if messages is None:
-            raise ValueError("messages required when using tier string")
-    elif isinstance(reqs_or_tier, ModelRequirements):
-        reqs = reqs_or_tier
-        # messages may be second positional or keyword
-        if messages is None:
-            raise ValueError("messages required")
-    else:
-        raise TypeError(
-            f"call_model() first argument must be ModelRequirements or tier string, "
-            f"got {type(reqs_or_tier)}"
-        )
 
     await refresh_perf_cache()
 
@@ -950,7 +798,7 @@ async def call_model(
         fallback_reqs = ModelRequirements(
             task="assistant",
             primary_capability="general",
-            min_quality=1,
+            difficulty=1,
             min_score=0,
             agent_type=reqs.agent_type,
         )
@@ -1132,8 +980,7 @@ async def call_model(
                         "is_local": model.is_local,
                         "task": task_label,
                         "capability_score": scored.capability_score,
-                        # Legacy compat: agents read "tier" from response
-                        "tier": reqs.tier,
+                        "difficulty": reqs.difficulty,
                     }
 
                 except asyncio.TimeoutError:
@@ -1205,7 +1052,7 @@ async def call_model(
         await refresh_perf_cache()
         # Recursive call — but with a flag to prevent infinite backpressure
         reqs._is_retry = True
-        return await call_model(reqs, messages, tools, stream)
+        return await call_model(reqs, messages, tools)
 
     # Check if this is already a retry (prevent infinite recursion)
     if getattr(reqs, '_is_retry', False):
@@ -1267,7 +1114,7 @@ async def grade_response(
     try:
         grading_reqs = ModelRequirements(
             task="reviewer",
-            min_quality=3,
+            difficulty=3,
             estimated_input_tokens=800,
             estimated_output_tokens=50,
             prefer_speed=True,
@@ -1325,151 +1172,19 @@ async def check_cost_budget() -> dict:
 
 # ─── Backward Compatibility ─────────────────────────────────────────────────
 
-_model_tiers_cache: dict | None = None
-_classifier_model_cache: str | None = None
-
-
-def _build_compat_tiers():
-    global _model_tiers_cache, _classifier_model_cache
-    if _model_tiers_cache is not None:
-        return
-
-    _model_tiers_cache = {}
-    for tname in TIER_ESCALATION_ORDER + ["routing"]:
-        treqs = ModelRequirements.from_tier(tname)
-        tcandidates = select_model(treqs)
-        if tcandidates:
-            top = tcandidates[0]
-            _model_tiers_cache[tname] = {
-                "model": top.litellm_name,
-                "fallbacks": [c.litellm_name for c in tcandidates[1:4]],
-                "max_tokens": top.model.max_tokens,
-                "temperature": 0.0 if tname == "routing" else 0.3,
-                "description": tname,
-            }
-
-    classifier_candidates = select_model(
-        ModelRequirements(task="router", min_quality=1, prefer_speed=True)
-    )
-    _classifier_model_cache = (
-        classifier_candidates[0].litellm_name
-        if classifier_candidates
-        else "groq/llama-3.1-8b-instant"
-    )
-
-
-class _LazyTiers:
-    """Lazy proxy for MODEL_TIERS backward compat."""
-    def _ensure(self):
-        _build_compat_tiers()
-
-    def __getitem__(self, key):
-        self._ensure()
-        return _model_tiers_cache[key]
-
-    def __contains__(self, key):
-        self._ensure()
-        return key in _model_tiers_cache
-
-    def __iter__(self):
-        self._ensure()
-        return iter(_model_tiers_cache)
-
-    def items(self):
-        self._ensure()
-        return _model_tiers_cache.items()
-
-    def keys(self):
-        self._ensure()
-        return _model_tiers_cache.keys()
-
-    def values(self):
-        self._ensure()
-        return _model_tiers_cache.values()
-
-    def get(self, key, default=None):
-        self._ensure()
-        return _model_tiers_cache.get(key, default)
-
-
-class _LazyClassifier:
-    """Lazy proxy for CLASSIFIER_MODEL."""
-    def __str__(self):
-        _build_compat_tiers()
-        return _classifier_model_cache
-
-    def __repr__(self):
-        return str(self)
-
-    def __eq__(self, other):
-        return str(self) == str(other)
-
-    def __hash__(self):
-        return hash(str(self))
-
-    def split(self, *args, **kwargs):
-        return str(self).split(*args, **kwargs)
-
-    def lower(self):
-        return str(self).lower()
-
-    def startswith(self, *args):
-        return str(self).startswith(*args)
-
-    def endswith(self, *args):
-        return str(self).endswith(*args)
-
-    def __contains__(self, item):
-        return item in str(self)
-
-
-MODEL_TIERS = _LazyTiers()
-CLASSIFIER_MODEL = _LazyClassifier()
-
-
 # ─── Agent Requirement Templates ─────────────────────────────────────────────
 
 AGENT_REQUIREMENTS: dict[str, ModelRequirements] = {
-    "planner":        ModelRequirements(task="planner",        min_quality=7, estimated_output_tokens=2000, prefer_quality=True, needs_json_mode=True),
-    "architect":      ModelRequirements(task="architect",      min_quality=7, estimated_output_tokens=3000, prefer_quality=True),
-    "coder":          ModelRequirements(task="coder",          min_quality=6, estimated_output_tokens=4000, needs_function_calling=True),
-    "implementer":    ModelRequirements(task="implementer",    min_quality=5, estimated_output_tokens=4000, needs_function_calling=True),
-    "fixer":          ModelRequirements(task="fixer",          min_quality=6, estimated_output_tokens=3000, needs_function_calling=True),
-    "test_generator": ModelRequirements(task="test_generator", min_quality=5, estimated_output_tokens=3000, needs_function_calling=True),
-    "reviewer":       ModelRequirements(task="reviewer",       min_quality=6, estimated_output_tokens=2000),
-    "researcher":     ModelRequirements(task="researcher",     min_quality=5, estimated_output_tokens=2000, needs_function_calling=True),
-    "writer":         ModelRequirements(task="writer",         min_quality=5, estimated_output_tokens=3000),
-    "executor":       ModelRequirements(task="executor",       min_quality=3, estimated_output_tokens=1000, needs_function_calling=True, prefer_speed=True),
-    "visual_reviewer": ModelRequirements(task="visual_reviewer", min_quality=5, estimated_output_tokens=2000, needs_vision=True),
-    "assistant":      ModelRequirements(task="assistant",      min_quality=5, estimated_output_tokens=2000),
-}
-
-
-def get_agent_requirements(agent_type: str, **overrides) -> ModelRequirements:
-    """Get pre-built requirements for an agent type with optional overrides."""
-    template = AGENT_REQUIREMENTS.get(agent_type)
-    if template:
-        reqs = copy.copy(template)
-    else:
-        task = CAPABILITY_TO_TASK.get(agent_type, "assistant")
-        reqs = ModelRequirements(task=task)
-    reqs.agent_type = agent_type
-    for key, value in overrides.items():
-        if hasattr(reqs, key):
-            setattr(reqs, key, value)
-    return reqs
-
-
-# Legacy import compat — AGENT_TIER_MAP maps agent names to tier strings
-AGENT_TIER_MAP: dict[str, str] = {
-    "planner":        "expensive",
-    "architect":      "expensive",
-    "coder":          "code",
-    "implementer":    "code",
-    "fixer":          "code",
-    "test_generator": "code",
-    "reviewer":       "medium",
-    "researcher":     "medium",
-    "writer":         "medium",
-    "executor":       "cheap",
+    "planner":        ModelRequirements(task="planner",        difficulty=7, estimated_output_tokens=2000, prefer_quality=True, needs_json_mode=True),
+    "architect":      ModelRequirements(task="architect",      difficulty=7, estimated_output_tokens=3000, prefer_quality=True),
+    "coder":          ModelRequirements(task="coder",          difficulty=6, estimated_output_tokens=4000, needs_function_calling=True),
+    "implementer":    ModelRequirements(task="implementer",    difficulty=5, estimated_output_tokens=4000, needs_function_calling=True),
+    "fixer":          ModelRequirements(task="fixer",          difficulty=6, estimated_output_tokens=3000, needs_function_calling=True),
+    "test_generator": ModelRequirements(task="test_generator", difficulty=5, estimated_output_tokens=3000, needs_function_calling=True),
+    "reviewer":       ModelRequirements(task="reviewer",       difficulty=6, estimated_output_tokens=2000),
+    "researcher":     ModelRequirements(task="researcher",     difficulty=5, estimated_output_tokens=2000, needs_function_calling=True),
+    "writer":         ModelRequirements(task="writer",         difficulty=5, estimated_output_tokens=3000),
+    "executor":       ModelRequirements(task="executor",       difficulty=3, estimated_output_tokens=1000, needs_function_calling=True, prefer_speed=True),
+    "visual_reviewer": ModelRequirements(task="visual_reviewer", difficulty=5, estimated_output_tokens=2000, needs_vision=True),
+    "assistant":      ModelRequirements(task="assistant",      difficulty=5, estimated_output_tokens=2000),
 }

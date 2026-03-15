@@ -496,7 +496,7 @@ def scan_model_directory(model_dir: str | Path) -> list[dict]:
         ])).lower()
 
         # Normalize separators for matching
-        detect_name = detect_name.replace("_", "-").replace(".", "-")
+        detect_name = detect_name.replace("_", "-")
         family_key = detect_family(detect_name)
 
         # Vision support
@@ -556,10 +556,60 @@ _FREE_TIER_DEFAULTS: dict[str, dict] = {
     "anthropic": {"rpm": 50, "tpm": 80000, "tier": "paid"},
 }
 
-_PROVIDER_MAP = {
-    "gemini": "gemini", "groq": "groq", "cerebras": "cerebras",
-    "sambanova": "sambanova", "anthropic": "anthropic",
-    "claude": "anthropic",
+KNOWN_PROVIDERS = {
+    "openai",
+    "anthropic",
+    "google",
+    "mistral",
+    "cohere",
+    "deepseek",
+    "perplexity",
+    "xai",
+    "groq",
+    "openrouter",
+    "together",
+    "fireworks",
+    "replicate",
+    "vertex",
+    "bedrock",
+    "ollama",
+    "lmstudio",
+    "azure",
+}
+
+PROVIDER_PREFIXES = {
+    "openai": (
+        "gpt",
+        "o1",
+        "o3",
+        "o4",
+    ),
+    "anthropic": (
+        "claude",
+    ),
+    "google": (
+        "gemini",
+        "palm",
+    ),
+    "mistral": (
+        "mistral",
+        "mixtral",
+        "codestral",
+    ),
+    "cohere": (
+        "command",
+        "aya",
+    ),
+    "deepseek": (
+        "deepseek",
+    ),
+    "perplexity": (
+        "sonar",
+        "pplx",
+    ),
+    "xai": (
+        "grok",
+    ),
 }
 
 
@@ -606,12 +656,17 @@ def detect_cloud_model(litellm_name: str, provider: str) -> dict:
     has_vision = False
     thinking_model = False
 
+    matched_len = 0
+    matched_profile = None
     for hint_key, profile_data in CLOUD_PROFILES.items():
-        if hint_key.lower() in name_lower:
-            capabilities = dict(profile_data["capabilities"])
-            has_vision = profile_data.get("has_vision", False)
-            thinking_model = profile_data.get("thinking_model", False)
-            break
+        if hint_key.lower() in name_lower and len(hint_key) > matched_len:
+            matched_len = len(hint_key)
+            matched_profile = profile_data
+
+    if matched_profile:
+        capabilities = dict(matched_profile["capabilities"])
+        has_vision = matched_profile.get("has_vision", False)
+        thinking_model = matched_profile.get("thinking_model", False)
 
     if capabilities is None:
         # Unknown cloud model — reasonable defaults
@@ -630,6 +685,27 @@ def detect_cloud_model(litellm_name: str, provider: str) -> dict:
 
 
 # ─── The Registry ────────────────────────────────────────────────────────────
+
+def _resolve_provider(litellm_name: str) -> str | None:
+    if not litellm_name:
+        return None
+
+    name = litellm_name.lower().strip()
+
+    # Explicit provider format
+    if "/" in name:
+        provider = name.split("/", 1)[0]
+        if provider in KNOWN_PROVIDERS:
+            return provider
+        return None
+
+    # Infer from model name
+    for provider, prefixes in PROVIDER_PREFIXES.items():
+        if name.startswith(prefixes):
+            return provider
+
+    return None
+
 
 class ModelRegistry:
     """
@@ -900,7 +976,7 @@ class ModelRegistry:
 
         detect_name = " ".join(filter(None, [
             meta.get("architecture", ""), meta.get("model_name", ""), name
-        ])).lower().replace("_", "-").replace(".", "-")
+        ])).lower().replace("_", "-")
         family_key = detect_family(detect_name)
 
         has_vision = detect_vision_support(family_key, meta, path)
@@ -968,8 +1044,9 @@ class ModelRegistry:
             if not litellm_name:
                 continue
 
-            provider = litellm_name.split("/")[0] if "/" in litellm_name else "openai"
-            config_provider = _PROVIDER_MAP.get(provider, provider)
+            config_provider = _resolve_provider(litellm_name)
+            if not config_provider:
+                continue
 
             if not AVAILABLE_KEYS.get(config_provider, False):
                 logger.debug(f"Cloud model '{name}': no API key for {config_provider}")
@@ -1189,13 +1266,13 @@ class ModelRegistry:
         """Get available VRAM in MB."""
         try:
             gpu_state = get_gpu_monitor().get_state()
-            return gpu_state.gpu.vram_total_mb if gpu_state.gpu.available else 0
+            return gpu_state.gpu.vram_free_mb  if gpu_state.gpu.available else 0
         except Exception:
             # Fallback: try nvidia-smi
             try:
                 import subprocess
                 result = subprocess.run(
-                    ["nvidia-smi", "--query-gpu=memory.total",
+                    ["nvidia-smi", "--query-gpu=memory.free",
                      "--format=csv,noheader,nounits"],
                     capture_output=True, text=True, timeout=5,
                 )

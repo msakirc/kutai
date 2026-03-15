@@ -5,6 +5,7 @@ Base agent with iterative ReAct loop:
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -22,9 +23,6 @@ from ..core.router import (
     call_model,
     grade_response,
     select_model,
-    MODEL_TIERS,
-    AGENT_TIER_MAP,       # now exported from router
-    TIER_ESCALATION_ORDER,  # now exported from router (or keep local, same values)
 )
 from ..infra.db import (
     log_conversation,
@@ -62,8 +60,6 @@ MAX_FORMAT_RETRIES: int = 2
 # escalate to the next tier up.
 ESCALATION_THRESHOLD: int = 3
 
-# Tier escalation order (low → high)
-TIER_ESCALATION_ORDER: list[str] = ["cheap", "code", "medium", "expensive"]
 
 # Pre-build tool schema lookup by name for O(1) access during arg validation.
 _TOOL_SCHEMAS_BY_NAME: dict[str, dict] = {}
@@ -268,26 +264,6 @@ class BaseAgent:
     # ------------------------------------------------------------------ #
     #  Tier helpers                                                       #
     # ------------------------------------------------------------------ #
-    def _enforce_min_tier(self, requested_tier: str) -> str:
-        tier_order = {"cheap": 0, "medium": 1, "expensive": 2}
-        if tier_order.get(requested_tier, 0) < tier_order.get(self.min_tier, 0):
-            logger.info(
-                f"Agent '{self.name}' requires min tier '{self.min_tier}', "
-                f"upgrading from '{requested_tier}'"
-            )
-            return self.min_tier
-        return requested_tier
-
-    @staticmethod
-    def _escalate_tier(current_tier: str) -> str | None:
-        """Return the next tier up, or None if already at highest."""
-        try:
-            idx = TIER_ESCALATION_ORDER.index(current_tier)
-        except ValueError:
-            return None
-        if idx < len(TIER_ESCALATION_ORDER) - 1:
-            return TIER_ESCALATION_ORDER[idx + 1]
-        return None
 
     def _escalate_requirements(self, reqs: ModelRequirements) -> ModelRequirements:
         """
@@ -671,18 +647,23 @@ class BaseAgent:
         except Exception:
             pass
 
-        # Legacy tier-based fallback
-        tier = tier_or_reqs
+        # Difficulty-based fallback
         if isinstance(tier_or_reqs, ModelRequirements):
-            tier = tier_or_reqs.tier
+            diff = tier_or_reqs.difficulty
+        elif isinstance(tier_or_reqs, str):
+            diff = {"routing": 1, "cheap": 3, "code": 5,
+                    "medium": 6, "expensive": 8}.get(tier_or_reqs, 5)
+        else:
+            diff = 5
 
-        return {
-            "routing": 4096,
-            "cheap": 8192,
-            "code": 16384,
-            "medium": 16384,
-            "expensive": 32768,
-        }.get(tier or "", 8192)
+        if diff <= 2:
+            return 4096
+        elif diff <= 4:
+            return 8192
+        elif diff <= 6:
+            return 16384
+        else:
+            return 32768
 
 
     def _trim_messages_if_needed(
@@ -894,22 +875,19 @@ class BaseAgent:
                 "completed_tool_ops", {}
             )
 
-            # Restore reqs from checkpoint (backward compat with tier-based checkpoints)
+            # Restore reqs from checkpoint
             saved_reqs = checkpoint.get("reqs")
             if isinstance(saved_reqs, ModelRequirements):
                 reqs = saved_reqs
-            elif isinstance(saved_reqs, str):
-                # Old checkpoint saved a tier string — convert
-                reqs = ModelRequirements.from_tier(
-                    saved_reqs, agent_type=self.name
+            elif isinstance(saved_reqs, dict):
+                # Checkpoint saved via dataclasses.asdict — reconstruct
+                valid_fields = {f.name for f in dataclasses.fields(ModelRequirements)}
+                reqs = ModelRequirements(
+                    **{k: v for k, v in saved_reqs.items() if k in valid_fields}
                 )
-                # Re-apply task context overrides
-                if model_override:
-                    reqs.model_override = model_override
-                if _task_ctx.get("local_only"):
-                    reqs.local_only = True
-                if _task_ctx.get("prefer_quality"):
-                    reqs.prefer_quality = True
+            else:
+                # Very old checkpoint or missing — build fresh
+                reqs = await self._build_model_requirements(task, _task_ctx)
 
             logger.info(
                 f"[Task #{task_id}] Resuming from checkpoint "
@@ -943,9 +921,14 @@ class BaseAgent:
             )
 
             # ── Update token estimates ──
+            _diff_to_tier = {1: "routing", 2: "routing", 3: "cheap",
+                             4: "cheap", 5: "code", 6: "medium",
+                             7: "medium", 8: "expensive", 9: "expensive",
+                             10: "expensive"}
+            _tier_key = _diff_to_tier.get(reqs.difficulty, "medium")
             estimation_model = (
                 used_model if used_model != "unknown"
-                else MODEL_TIERS.get(reqs.tier, {}).get("model", "gpt-4o-mini")
+                else MODEL_TIERS.get(_tier_key, {}).get("model", "gpt-4o-mini")
             )
             reqs.estimated_input_tokens = self._count_tokens(
                 messages, estimation_model
@@ -967,10 +950,9 @@ class BaseAgent:
             # ── Call LLM ──
             try:
                 response = await call_model(
-                    reqs=reqs,
-                    messages=messages,
+                    reqs,
+                    messages,
                     tools=litellm_tools,
-                    reqs_or_tier=reqs,
                 )
             except Exception as exc:
                 logger.error(f"[Task #{task_id}] Model call failed: {exc}")
@@ -980,7 +962,7 @@ class BaseAgent:
                     "model": used_model,
                     "cost": total_cost,
                     "iterations": iteration,
-                    "tier": reqs.tier,  # compat
+                    "difficulty": reqs.difficulty,  # compat
                 }
 
             content    = response.get("content", "")
@@ -1043,7 +1025,7 @@ class BaseAgent:
                     })
                     await self._save_checkpoint(
                         task_id, iteration + 1, messages, total_cost,
-                        used_model, reqs.tier, tools_used, validation_retried,
+                        used_model, reqs, tools_used, validation_retried,
                         completed_tool_ops, format_retries,
                     )
                     continue
@@ -1111,7 +1093,7 @@ class BaseAgent:
                 )
                 await self._save_checkpoint(
                     task_id, iteration + 1, messages, total_cost,
-                    used_model, reqs.tier, tools_used, validation_retried,
+                    used_model, reqs, tools_used, validation_retried,
                     completed_tool_ops, format_retries,
                 )
                 continue
@@ -1131,7 +1113,7 @@ class BaseAgent:
                         })
                         await self._save_checkpoint(
                             task_id, iteration + 1, messages, total_cost,
-                            used_model, reqs.tier, tools_used, validation_retried,
+                            used_model, reqs, tools_used, validation_retried,
                             completed_tool_ops, format_retries,
                         )
                         continue
@@ -1147,7 +1129,7 @@ class BaseAgent:
                     })
                     await self._save_checkpoint(
                         task_id, iteration + 1, messages, total_cost,
-                        used_model, reqs.tier, tools_used, validation_retried,
+                        used_model, reqs, tools_used, validation_retried,
                         completed_tool_ops, format_retries,
                     )
                     continue
@@ -1177,7 +1159,7 @@ class BaseAgent:
                         "plan_summary": parsed.get("plan_summary", ""),
                         "model":        used_model,
                         "cost":         total_cost,
-                        "tier":         reqs.tier,
+                        "difficulty":   reqs.difficulty,
                     }
 
                 if parsed.get("needs_clarification"):
@@ -1187,7 +1169,7 @@ class BaseAgent:
                         "clarification": parsed["needs_clarification"],
                         "model":         used_model,
                         "cost":          total_cost,
-                        "tier":          reqs.tier,
+                        "difficulty":    reqs.difficulty,
                     }
 
                 # Self-reflection
@@ -1217,7 +1199,7 @@ class BaseAgent:
                         "review_note": f"Agent confidence: {confidence}/5",
                         "model":       used_model,
                         "cost":        total_cost,
-                        "tier":        reqs.tier,
+                        "difficulty":  reqs.difficulty,
                     }
 
                 # Grading
@@ -1246,7 +1228,7 @@ class BaseAgent:
                     "result":        result,
                     "model":         used_model,
                     "cost":          total_cost,
-                    "tier":          reqs.tier,
+                    "difficulty":    reqs.difficulty,
                     "iterations":    iteration + 1,
                     "quality_score": quality_score,
                 }
@@ -1288,7 +1270,7 @@ class BaseAgent:
                             messages.append({"role": "user", "content": tool_output})
                             await self._save_checkpoint(
                                 task_id, iteration + 1, messages, total_cost,
-                                used_model, reqs.tier, tools_used,
+                                used_model, reqs, tools_used,
                                 validation_retried, completed_tool_ops, format_retries,
                             )
                             continue
@@ -1340,9 +1322,9 @@ class BaseAgent:
                     and consecutive_tool_failures >= ESCALATION_THRESHOLD
                     and iteration >= ESCALATION_THRESHOLD
                 ):
-                    old_tier = reqs.tier
+                    old_tier = reqs.difficulty
                     reqs = self._escalate_requirements(reqs)
-                    new_tier = reqs.tier
+                    new_tier = reqs.difficulty
                     if new_tier != old_tier:
                         logger.warning(
                             f"[Task #{task_id}] ⬆️ Escalating: "
@@ -1381,7 +1363,7 @@ class BaseAgent:
                 )
                 await self._save_checkpoint(
                     task_id, iteration + 1, messages, total_cost,
-                    used_model, reqs.tier, tools_used, validation_retried,
+                    used_model, reqs, tools_used, validation_retried,
                     completed_tool_ops, format_retries,
                 )
                 continue
@@ -1392,7 +1374,7 @@ class BaseAgent:
                 return {
                     "status": "needs_clarification",
                     "clarification": parsed.get("question", content),
-                    "model": used_model, "cost": total_cost, "tier": reqs.tier,
+                    "model": used_model, "cost": total_cost, "difficulty": reqs.difficulty,
                 }
 
             if action_type == "decompose":
@@ -1401,7 +1383,7 @@ class BaseAgent:
                     "status": "needs_subtasks",
                     "subtasks": parsed.get("subtasks", []),
                     "plan_summary": parsed.get("summary", ""),
-                    "model": used_model, "cost": total_cost, "tier": reqs.tier,
+                    "model": used_model, "cost": total_cost, "difficulty": reqs.difficulty,
                 }
 
             # Unknown action
@@ -1420,7 +1402,7 @@ class BaseAgent:
             })
             await self._save_checkpoint(
                 task_id, iteration + 1, messages, total_cost,
-                used_model, reqs.tier, tools_used, validation_retried,
+                used_model, reqs, tools_used, validation_retried,
                 completed_tool_ops, format_retries,
             )
 
@@ -1435,7 +1417,7 @@ class BaseAgent:
             ),
             "model": used_model,
             "cost": total_cost,
-            "tier": reqs.tier,
+            "difficulty": reqs.difficulty,
             "iterations": self.max_iterations,
         }
 
@@ -1468,16 +1450,16 @@ class BaseAgent:
         reqs = ModelRequirements(
             task=task_name,
             agent_type=self.name,
-            min_quality=min_q,
+            difficulty=min_q,
             priority=priority,
         )
 
         # ── Adjust for task priority ──
         if priority >= 10:
             reqs.prefer_speed = True
-            reqs.min_quality = max(reqs.min_quality, 6)
+            reqs.difficulty = max(reqs.difficulty, 6)
         elif priority <= 2:
-            reqs.min_quality = max(1, reqs.min_quality - 2)
+            reqs.difficulty = max(1, reqs.difficulty - 2)
 
         # ── Detect personal/sensitive data ──
         sensitivity_keywords = [
@@ -1562,7 +1544,7 @@ class BaseAgent:
             return {
                 "status": "completed",
                 "result": f"Agent failed: {exc}",
-                "model": "unknown", "cost": 0, "tier": reqs.tier,
+                "model": "unknown", "cost": 0, "difficulty": reqs.difficulty,
             }
 
         content = response.get("content", "")
@@ -1580,14 +1562,14 @@ class BaseAgent:
                 "status": "needs_subtasks",
                 "subtasks": parsed.get("subtasks", []),
                 "plan_summary": parsed.get("plan_summary", ""),
-                "model": used_model, "cost": cost, "tier": reqs.tier,
+                "model": used_model, "cost": cost, "difficulty": reqs.difficulty,
             }
 
         return {
             "status": "completed",
             "result": parsed.get("result", content),
             "model": used_model, "cost": cost,
-            "tier": reqs.tier, "iterations": 1,
+            "difficulty": reqs.difficulty, "iterations": 1,
         }
 
     async def _self_reflect(
@@ -1600,7 +1582,7 @@ class BaseAgent:
             if isinstance(tier_or_reqs, ModelRequirements):
                 reflect_reqs = ModelRequirements(
                     task="reviewer",
-                    min_quality=tier_or_reqs.min_quality,
+                    difficulty=tier_or_reqs.difficulty,
                     agent_type="self_reflection",
                     estimated_input_tokens=800,
                     estimated_output_tokens=500,
@@ -1608,8 +1590,11 @@ class BaseAgent:
                 )
             else:
                 # Legacy tier string
-                reflect_reqs = ModelRequirements.from_tier(
-                    tier_or_reqs or "medium",
+                from ..core.router import TIER_TO_TASK, TIER_TO_MIN_QUALITY
+                tier_str = tier_or_reqs or "medium"
+                reflect_reqs = ModelRequirements(
+                    task=TIER_TO_TASK.get(tier_str, "reviewer"),
+                    difficulty=TIER_TO_MIN_QUALITY.get(tier_str, 6),
                     agent_type="self_reflection",
                 )
 
@@ -1662,7 +1647,7 @@ class BaseAgent:
         messages: list[dict],
         total_cost: float,
         used_model: str,
-        tier: str,
+        reqs: ModelRequirements,
         tools_used: bool,
         validation_retried: bool,
         completed_tool_ops: dict[str, str] | None = None,
@@ -1677,7 +1662,7 @@ class BaseAgent:
                 "messages": messages,
                 "total_cost": total_cost,
                 "used_model": used_model,
-                "tier": tier,
+                "reqs": dataclasses.asdict(reqs),
                 "tools_used": tools_used,
                 "validation_retried": validation_retried,
                 "format_retries": format_retries,

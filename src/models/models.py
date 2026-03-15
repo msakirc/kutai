@@ -226,15 +226,21 @@ import re as _re
 
 # Agent types mapped to their validator category.
 _AGENT_TYPE_CATEGORY: dict[str, str] = {
-    "coder":          "code",
-    "implementer":    "code",
-    "fixer":          "code",
-    "test_generator": "code",
-    "pipeline":       "code",
-    "researcher":     "research",
-    "web_researcher": "research",
-    "planner":        "planner",
-    "architect":      "planner",
+    "coder":           "code",
+    "implementer":     "code",
+    "fixer":           "code",
+    "test_generator":  "code",
+    "reviewer":        "code",
+    "visual_reviewer": "code",
+    "error_recovery":  "code",
+    "analyst":         "research",
+    "researcher":      "research",
+    "planner":         "planner",
+    "architect":       "planner",
+    "writer":          "prose",
+    "summarizer":      "prose",
+    "assistant":       "prose",
+    "executor":        "execution",
 }
 
 
@@ -272,7 +278,7 @@ def validate_task_output(agent_type: str, result: str) -> list[str]:
     elif category == "research":
         has_url = bool(_re.search(r'https?://', result))
         has_source = any(kw in result.lower() for kw in [
-            "source:", "reference:", "according to", "from ",
+            "source:", "reference:", "according to",
             "documentation", "found that", "article",
         ])
         if not (has_url or has_source):
@@ -289,6 +295,25 @@ def validate_task_output(agent_type: str, result: str) -> list[str]:
             errors.append(
                 "Planner task result should contain subtasks, "
                 "numbered steps, or a structured list."
+            )
+
+    elif category == "prose":
+        has_structure = bool(_re.search(r'[.!?]\s', result))
+        has_paragraphs = len(result.split("\n\n")) >= 2 or len(result) >= 100
+        if not (has_structure or has_paragraphs):
+            errors.append(
+                "Prose task result should contain proper sentences "
+                "or structured paragraphs."
+            )
+
+    elif category == "execution":
+        has_status = any(kw in result.lower() for kw in [
+            "success", "fail", "error", "completed", "done",
+            "result:", "output:", "status:",
+        ])
+        if not has_status:
+            errors.append(
+                "Execution task result should indicate status or outcome."
             )
 
     return errors

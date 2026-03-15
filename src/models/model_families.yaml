@@ -1,0 +1,26 @@
+# Model family profiles — YAML overrides for FAMILY_PROFILES and CLOUD_PROFILES.
+# Entries here override the hardcoded defaults in model_profiles.py.
+#
+# Each family entry should include last_verified (YYYY-MM) so we can detect
+# stale profiles. Entries older than 6 months trigger a warning at startup.
+#
+# families:
+#   family_key:
+#     last_verified: "2025-01"
+#     anchor_params_b: 32
+#     base_capabilities:
+#       reasoning: 8.5
+#       ...
+#
+# cloud:
+#   model-name-hint:
+#     last_verified: "2025-01"
+#     capabilities:
+#       reasoning: 9.0
+#       ...
+#     thinking_model: false
+#     has_vision: true
+
+families: {}
+
+cloud: {}

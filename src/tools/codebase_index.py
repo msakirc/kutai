@@ -16,16 +16,11 @@ import ast
 import os
 from typing import Optional
 
-try:
-    from parsing.tree_sitter_parser import (
-        detect_language,
-        get_parseable_extensions,
-        parse_file as ts_parse_file,
-    )
-    _HAS_TS_PARSER = True
-except ImportError:
-    _HAS_TS_PARSER = False
-
+from ..parsing.tree_sitter_parser import (
+    detect_language,
+    get_parseable_extensions,
+    parse_file as ts_parse_file,
+)
 
 # In-memory index store: { workspace_path: { filepath: FileIndex } }
 _INDEX_CACHE: dict[str, dict[str, dict]] = {}
@@ -123,13 +118,12 @@ def _parse_file(filepath: str) -> Optional[dict]:
     Python ``ast`` parser for ``.py`` files when tree-sitter is unavailable
     or when it fails.
     """
-    if _HAS_TS_PARSER:
-        try:
-            ts_result = ts_parse_file(filepath)
-            if ts_result is not None:
-                return _convert_ts_result(ts_result)
-        except Exception:
-            pass  # fall through to ast fallback
+    try:
+        ts_result = ts_parse_file(filepath)
+        if ts_result is not None:
+            return _convert_ts_result(ts_result)
+    except Exception:
+        pass  # fall through to ast fallback
 
     # Fallback: only .py files can be parsed with the ast module
     if filepath.endswith(".py"):
@@ -219,9 +213,7 @@ def _parse_file_python_ast(filepath: str) -> Optional[dict]:
 
 def _default_extensions() -> tuple:
     """Return parseable extensions — multi-language if tree-sitter is available."""
-    if _HAS_TS_PARSER:
-        return tuple(get_parseable_extensions())
-    return (".py",)
+    return tuple(get_parseable_extensions())
 
 
 def build_index(root_path: str, extensions: tuple | None = None) -> dict[str, dict]:

@@ -869,7 +869,9 @@ class BaseAgent:
             total_cost = checkpoint.get("total_cost", 0.0)
             used_model = checkpoint.get("used_model", "unknown")
             tools_used = checkpoint.get("tools_used", False)
-            validation_retried = checkpoint.get("validation_retried", False)
+            _compat_retried = checkpoint.get("validation_retried", False)
+            custom_validation_retried = _compat_retried
+            task_type_validation_retried = _compat_retried
             format_retries = checkpoint.get("format_retries", 0)
             completed_tool_ops: dict[str, str] = checkpoint.get(
                 "completed_tool_ops", {}
@@ -907,7 +909,8 @@ class BaseAgent:
             total_cost = 0.0
             used_model = "unknown"
             tools_used = False
-            validation_retried = False
+            custom_validation_retried = False
+            task_type_validation_retried = False
             format_retries = 0
             completed_tool_ops: dict[str, str] = {}
 
@@ -921,15 +924,7 @@ class BaseAgent:
             )
 
             # ── Update token estimates ──
-            _diff_to_tier = {1: "routing", 2: "routing", 3: "cheap",
-                             4: "cheap", 5: "code", 6: "medium",
-                             7: "medium", 8: "expensive", 9: "expensive",
-                             10: "expensive"}
-            _tier_key = _diff_to_tier.get(reqs.difficulty, "medium")
-            estimation_model = (
-                used_model if used_model != "unknown"
-                else MODEL_TIERS.get(_tier_key, {}).get("model", "gpt-4o-mini")
-            )
+            estimation_model = used_model if used_model != "unknown" else "gpt-4o-mini"
             reqs.estimated_input_tokens = self._count_tokens(
                 messages, estimation_model
             )
@@ -1025,7 +1020,7 @@ class BaseAgent:
                     })
                     await self._save_checkpoint(
                         task_id, iteration + 1, messages, total_cost,
-                        used_model, reqs, tools_used, validation_retried,
+                        used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
                         completed_tool_ops, format_retries,
                     )
                     continue
@@ -1093,7 +1088,7 @@ class BaseAgent:
                 )
                 await self._save_checkpoint(
                     task_id, iteration + 1, messages, total_cost,
-                    used_model, reqs, tools_used, validation_retried,
+                    used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
                     completed_tool_ops, format_retries,
                 )
                 continue
@@ -1102,10 +1097,10 @@ class BaseAgent:
             if action_type == "final_answer":
                 result = parsed.get("result", content)
 
-                if not validation_retried:
+                if not custom_validation_retried:
                     validation_error = self._validate_response(result, task)
                     if validation_error:
-                        validation_retried = True
+                        custom_validation_retried = True
                         messages.append({"role": "assistant", "content": content})
                         messages.append({
                             "role": "user",
@@ -1113,14 +1108,15 @@ class BaseAgent:
                         })
                         await self._save_checkpoint(
                             task_id, iteration + 1, messages, total_cost,
-                            used_model, reqs, tools_used, validation_retried,
+                            used_model, reqs, tools_used,
+                            custom_validation_retried or task_type_validation_retried,
                             completed_tool_ops, format_retries,
                         )
                         continue
 
                 task_type_errors = validate_task_output(self.name, result)
-                if task_type_errors and not validation_retried:
-                    validation_retried = True
+                if task_type_errors and not task_type_validation_retried:
+                    task_type_validation_retried = True
                     err_msg = "; ".join(task_type_errors)
                     messages.append({"role": "assistant", "content": content})
                     messages.append({
@@ -1129,7 +1125,8 @@ class BaseAgent:
                     })
                     await self._save_checkpoint(
                         task_id, iteration + 1, messages, total_cost,
-                        used_model, reqs, tools_used, validation_retried,
+                        used_model, reqs, tools_used,
+                        custom_validation_retried or task_type_validation_retried,
                         completed_tool_ops, format_retries,
                     )
                     continue
@@ -1202,25 +1199,27 @@ class BaseAgent:
                         "difficulty":  reqs.difficulty,
                     }
 
-                # Grading
+                # Grading (skip trivial tasks)
                 quality_score = None
-                try:
-                    quality_score = await grade_response(
-                        task.get("title", ""),
-                        task.get("description", ""),
-                        result,
-                        generating_model=used_model,
-                    )
-                    if quality_score is not None and task_id != "?":
-                        await update_task(task_id, quality_score=quality_score)
-                        await record_model_call(
-                            model=used_model,
-                            agent_type=self.name,
-                            success=True,
-                            grade=quality_score,
+                if reqs.difficulty >= 4:
+                    try:
+                        quality_score = await grade_response(
+                            task.get("title", ""),
+                            task.get("description", ""),
+                            result,
+                            generating_model=used_model,
+                            task_name=reqs.task,
                         )
-                except Exception as exc:
-                    logger.debug(f"Response grading failed: {exc}")
+                        if quality_score is not None and task_id != "?":
+                            await update_task(task_id, quality_score=quality_score)
+                            await record_model_call(
+                                model=used_model,
+                                agent_type=self.name,
+                                success=True,
+                                grade=quality_score,
+                            )
+                    except Exception as exc:
+                        logger.debug(f"Response grading failed: {exc}")
 
                 await self._clear_checkpoint_safe(task_id)
                 return {
@@ -1271,7 +1270,8 @@ class BaseAgent:
                             await self._save_checkpoint(
                                 task_id, iteration + 1, messages, total_cost,
                                 used_model, reqs, tools_used,
-                                validation_retried, completed_tool_ops, format_retries,
+                                custom_validation_retried or task_type_validation_retried,
+                                completed_tool_ops, format_retries,
                             )
                             continue
 
@@ -1363,7 +1363,7 @@ class BaseAgent:
                 )
                 await self._save_checkpoint(
                     task_id, iteration + 1, messages, total_cost,
-                    used_model, reqs, tools_used, validation_retried,
+                    used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
                     completed_tool_ops, format_retries,
                 )
                 continue
@@ -1402,7 +1402,7 @@ class BaseAgent:
             })
             await self._save_checkpoint(
                 task_id, iteration + 1, messages, total_cost,
-                used_model, reqs, tools_used, validation_retried,
+                used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
                 completed_tool_ops, format_retries,
             )
 
@@ -1582,13 +1582,14 @@ class BaseAgent:
                     prefer_speed=True,
                 )
             else:
-                # Legacy tier string
-                from ..core.router import TIER_TO_TASK, TIER_TO_MIN_QUALITY
-                tier_str = tier_or_reqs or "medium"
+                # Legacy fallback — tier strings no longer used
                 reflect_reqs = ModelRequirements(
-                    task=TIER_TO_TASK.get(tier_str, "reviewer"),
-                    difficulty=TIER_TO_MIN_QUALITY.get(tier_str, 6),
+                    task="reviewer",
+                    difficulty=6,
                     agent_type="self_reflection",
+                    estimated_input_tokens=800,
+                    estimated_output_tokens=500,
+                    prefer_speed=True,
                 )
 
             messages = [

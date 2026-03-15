@@ -28,6 +28,26 @@ logger = logging.getLogger(__name__)
 
 # ─── Capability ↔ Task Mapping ───────────────────────────────────────────────
 
+CAPABILITY_TO_TASK: dict[str, str] = {
+    # Map primary_capability values to TASK_PROFILES keys
+    "reasoning":             "planner",
+    "planning":              "planner",
+    "analysis":              "analyst",
+    "code_generation":       "coder",
+    "code_reasoning":        "fixer",
+    "system_design":         "architect",
+    "prose_quality":         "writer",
+    "instruction_adherence": "executor",
+    "domain_knowledge":      "researcher",
+    "context_utilization":   "summarizer",
+    "structured_output":     "executor",
+    "tool_use":              "executor",
+    "vision":                "visual_reviewer",
+    "conversation":          "assistant",
+    "general":               "assistant",
+}
+
+
 def _make_adhoc_profile(primary_cap: str) -> dict[str, float]:
     """Create a task profile on the fly for unknown capability requests."""
     profile = {cap: 0.3 for cap in ALL_CAPABILITIES}
@@ -439,6 +459,10 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
                 reasons.append(
                     f"perf(sr={sr:.2f},g={grade:.1f},n={model_perf['total_calls']})"
                 )
+                # Penalize unreliable models
+                if sr < 0.5:
+                    avail_score = int(avail_score * 0.3)
+                    reasons.append("unreliable")
 
         # ═════════════════════════════════════════
         # 5. SPEED (0-100)
@@ -495,6 +519,10 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
             + perf_score * weights["performance"]
             + speed_score * weights["speed"]
         ) / total_weight
+
+        # Swap stickiness: prefer already-loaded local model to avoid swap cost
+        if model.is_local and model.is_loaded:
+            composite *= 1.10
 
         candidates.append(ScoredModel(
             model=model,
@@ -894,6 +922,7 @@ async def grade_response(
     task_description: str,
     response_text: str,
     generating_model: str = "",
+    task_name: str = "",
 ) -> float | None:
     """Grade a response using a DIFFERENT model."""
     if not response_text or len(response_text.strip()) < 10:
@@ -934,12 +963,22 @@ async def grade_response(
             registry = get_registry()
             model_name = generating_model.split("/")[-1] if "/" in generating_model else generating_model
             # Find dominant capability for the grading task context
-            task_name = result.get("task", "")
-            if task_name and task_name in TASK_PROFILES:
-                profile = TASK_PROFILES[task_name]
+            lookup = task_name or result.get("task", "")
+            if lookup and lookup in TASK_PROFILES:
+                profile = TASK_PROFILES[lookup]
                 dominant = max(profile.items(), key=lambda x: x[1])
                 cap_key = dominant[0].value if hasattr(dominant[0], 'value') else dominant[0]
-                registry.update_quality_from_grading(model_name, cap_key, grade * 2.0)
+                # Pass call count so EMA uses lower alpha for early samples
+                call_count = 0
+                if _perf_cache_ready:
+                    for _agent_perf in _perf_cache.values():
+                        mp = _agent_perf.get(generating_model)
+                        if mp:
+                            call_count = mp.get("total_calls", 0)
+                            break
+                registry.update_quality_from_grading(
+                    model_name, cap_key, grade * 2.0, call_count=call_count,
+                )
 
         return grade
 
@@ -971,8 +1010,11 @@ AGENT_REQUIREMENTS: dict[str, ModelRequirements] = {
     "test_generator": ModelRequirements(task="test_generator", difficulty=5, estimated_output_tokens=3000, needs_function_calling=True),
     "reviewer":       ModelRequirements(task="reviewer",       difficulty=6, estimated_output_tokens=2000),
     "researcher":     ModelRequirements(task="researcher",     difficulty=5, estimated_output_tokens=2000, needs_function_calling=True),
+    "analyst":        ModelRequirements(task="analyst",        difficulty=6, estimated_output_tokens=3000, needs_function_calling=True),
     "writer":         ModelRequirements(task="writer",         difficulty=5, estimated_output_tokens=3000),
     "executor":       ModelRequirements(task="executor",       difficulty=3, estimated_output_tokens=1000, needs_function_calling=True, prefer_speed=True),
     "visual_reviewer": ModelRequirements(task="visual_reviewer", difficulty=5, estimated_output_tokens=2000, needs_vision=True),
-    "assistant":      ModelRequirements(task="assistant",      difficulty=5, estimated_output_tokens=2000),
+    "assistant":       ModelRequirements(task="assistant",       difficulty=5, estimated_output_tokens=2000),
+    "summarizer":      ModelRequirements(task="summarizer",      difficulty=4, estimated_output_tokens=2000, prefer_speed=True),
+    "error_recovery":  ModelRequirements(task="error_recovery",  difficulty=6, estimated_output_tokens=2000, needs_function_calling=True),
 }

@@ -14,7 +14,9 @@ The registry scales these based on actual size + quantization.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass
@@ -49,11 +51,17 @@ FAMILY_PATTERNS: list[tuple[list[str], str]] = [
     (["qwen2", "vl"],                        "qwen2_vl"),
     (["gemma3"],                             "gemma3"),      # gemma3 has vision
 
+    # GLM models (before base to match flash variant first)
+    (["glm-4", "flash"],                     "glm4_flash"),
+    (["glm-4"],                              "glm4"),
+    (["glm4"],                               "glm4"),
+
     # Reasoning / thinking models
     (["qwq"],                                "qwq"),
     (["deepseek", "r1"],                     "deepseek_r1"),
 
     # Base families
+    (["qwen3.5"],                            "qwen35"),
     (["qwen3"],                              "qwen3"),
     (["qwen2.5"],                            "qwen25"),
     (["qwen2"],                              "qwen2"),
@@ -106,6 +114,29 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              8.0,
             "vision":                0.0,
             "conversation":          7.5,
+        },
+    ),
+    "qwen35": FamilyProfile(
+        anchor_params_b=32,
+        specialty="",
+        function_calling=True,
+        thinking_capable=True,
+        context_default=131072,
+        base_capabilities={
+            "reasoning":             9.0,
+            "planning":              8.5,
+            "analysis":              8.5,
+            "code_generation":       8.5,
+            "code_reasoning":        8.0,
+            "system_design":         8.0,
+            "prose_quality":         8.0,
+            "instruction_adherence": 8.5,
+            "domain_knowledge":      8.5,
+            "context_utilization":   8.5,
+            "structured_output":     8.5,
+            "tool_use":              8.5,
+            "vision":                0.0,
+            "conversation":          8.0,
         },
     ),
     "qwen3_coder": FamilyProfile(
@@ -481,6 +512,56 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "instruction_adherence": 6.5,
             "domain_knowledge":      7.0,
             "context_utilization":   6.5,
+            "structured_output":     6.5,
+            "tool_use":              6.5,
+            "vision":                0.0,
+            "conversation":          7.0,
+        },
+    ),
+
+    # ════════════════════════════════════════════════════════
+    # GLM family
+    # ════════════════════════════════════════════════════════
+    "glm4": FamilyProfile(
+        anchor_params_b=9,
+        specialty="",
+        function_calling=True,
+        thinking_capable=True,
+        context_default=131072,
+        base_capabilities={
+            "reasoning":             7.5,
+            "planning":              7.0,
+            "analysis":              7.0,
+            "code_generation":       7.0,
+            "code_reasoning":        6.5,
+            "system_design":         6.5,
+            "prose_quality":         7.0,
+            "instruction_adherence": 7.5,
+            "domain_knowledge":      7.0,
+            "context_utilization":   7.5,
+            "structured_output":     7.0,
+            "tool_use":              7.0,
+            "vision":                0.0,
+            "conversation":          7.5,
+        },
+    ),
+    "glm4_flash": FamilyProfile(
+        anchor_params_b=9,
+        specialty="",
+        function_calling=True,
+        thinking_capable=True,
+        context_default=131072,
+        base_capabilities={
+            "reasoning":             7.0,
+            "planning":              6.5,
+            "analysis":              6.5,
+            "code_generation":       6.5,
+            "code_reasoning":        6.0,
+            "system_design":         6.0,
+            "prose_quality":         6.5,
+            "instruction_adherence": 7.0,
+            "domain_knowledge":      6.5,
+            "context_utilization":   7.0,
             "structured_output":     6.5,
             "tool_use":              6.5,
             "vision":                0.0,
@@ -1135,3 +1216,51 @@ def get_default_profile() -> FamilyProfile:
             "conversation":          4.0,
         },
     )
+
+
+# ─── YAML Override Loading ─────────────────────────────────────────────────
+# Hardcoded dicts above are defaults. YAML entries override them at import time.
+
+_YAML_PATH = Path(__file__).parent / "model_families.yaml"
+if _YAML_PATH.exists():
+    try:
+        import yaml
+        from datetime import datetime as _dt
+
+        _yaml_data = yaml.safe_load(_YAML_PATH.read_text(encoding="utf-8"))
+        _logger = logging.getLogger(__name__)
+        _now = _dt.now()
+
+        if _yaml_data:
+            for key, data in (_yaml_data.get("families") or {}).items():
+                _verified = data.pop("last_verified", None)
+                if _verified:
+                    try:
+                        _vdate = _dt.strptime(str(_verified), "%Y-%m")
+                        if (_now - _vdate).days > 180:
+                            _logger.warning(
+                                f"Model family '{key}' last verified {_verified} "
+                                f"(>6 months ago) — consider updating"
+                            )
+                    except ValueError:
+                        pass
+                FAMILY_PROFILES[key] = FamilyProfile(**data)
+
+            for key, data in (_yaml_data.get("cloud") or {}).items():
+                _verified = data.pop("last_verified", None)
+                if _verified:
+                    try:
+                        _vdate = _dt.strptime(str(_verified), "%Y-%m")
+                        if (_now - _vdate).days > 180:
+                            _logger.warning(
+                                f"Cloud profile '{key}' last verified {_verified} "
+                                f"(>6 months ago) — consider updating"
+                            )
+                    except ValueError:
+                        pass
+                CLOUD_PROFILES[key] = data
+
+    except ImportError:
+        pass  # pyyaml not installed — YAML overrides disabled
+    except Exception as _e:
+        logging.getLogger(__name__).warning(f"Failed to load model_families.yaml: {_e}")

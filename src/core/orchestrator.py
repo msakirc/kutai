@@ -37,13 +37,22 @@ logger = logging.getLogger(__name__)
     # Default timeouts per agent type (seconds).  Override via
     # tasks.timeout_seconds column for per-task control.
 AGENT_TIMEOUTS: dict[str, int] = {
-    "planner":    120,
-    "coder":      300,
-    "researcher": 180,
-    "reviewer":   120,
-    "executor":   180,
-    "pipeline":   600,
+    "planner":        120,
+    "architect":      180,
+    "coder":          300,
+    "implementer":    300,
+    "fixer":          240,
+    "test_generator": 180,
+    "reviewer":       120,
+    "visual_reviewer":120,
+    "researcher":     180,
+    "analyst":        240,
+    "writer":         180,
+    "summarizer":     120,
+    "assistant":      120,
+    "executor":       180,
     "error_recovery": 240,
+    "pipeline":       600,
 }
 
 # Maximum number of independent tasks to run concurrently.
@@ -270,6 +279,23 @@ class Orchestrator:
                     "completed_at = ? WHERE id = ?",
                     (datetime.now().isoformat(), task["id"]),
                 )
+
+        # 4. Tasks stuck in needs_clarification for >24h
+        cursor_clar = await db.execute(
+            """SELECT id, title FROM tasks
+               WHERE status = 'needs_clarification'
+               AND updated_at < datetime('now', '-24 hours')"""
+        )
+        stale = [dict(row) for row in await cursor_clar.fetchall()]
+        for task in stale:
+            logger.warning(
+                f"[Watchdog] Task #{task['id']} stale clarification, "
+                f"cancelling"
+            )
+            await update_task(
+                task["id"], status="cancelled",
+                error="No clarification received within 24h",
+            )
 
         await db.commit()
 
@@ -1168,9 +1194,33 @@ class Orchestrator:
                         f"Processing {len(tasks)} task(s): {task_names}"
                     )
 
-                    if len(tasks) == 1:
+                    # Partition tasks: at most 1 local-model task runs at a time
+                    if len(tasks) > 1:
+                        local_tasks = []
+                        cloud_tasks = []
+                        for t in tasks:
+                            ctx = t.get("context", "{}")
+                            if isinstance(ctx, str):
+                                try:
+                                    ctx = json.loads(ctx)
+                                except (json.JSONDecodeError, TypeError):
+                                    ctx = {}
+                            cls = ctx.get("classification", {}) if isinstance(ctx, dict) else {}
+                            if cls.get("local_only", False):
+                                local_tasks.append(t)
+                            else:
+                                cloud_tasks.append(t)
+
+                        # Run at most 1 local task concurrently with cloud tasks
+                        batch = cloud_tasks + local_tasks[:1]
+                        deferred = local_tasks[1:]
+                    else:
+                        batch = tasks
+                        deferred = []
+
+                    if len(batch) == 1:
                         # Single task — run directly
-                        t = tasks[0]
+                        t = batch[0]
                         try:
                             self._current_task_future = asyncio.ensure_future(
                                 self.process_task(t)
@@ -1187,17 +1237,27 @@ class Orchestrator:
                         # Multiple tasks — run concurrently
                         futures = [
                             asyncio.ensure_future(self.process_task(t))
-                            for t in tasks
+                            for t in batch
                         ]
                         results = await asyncio.gather(
                             *futures, return_exceptions=True
                         )
-                        for t, res in zip(tasks, results):
+                        for t, res in zip(batch, results):
                             if isinstance(res, Exception):
                                 logger.error(
                                     f"Task #{t['id']} error: {res}",
                                     exc_info=True,
                                 )
+
+                    # Run deferred local tasks sequentially
+                    for t in deferred:
+                        try:
+                            await self.process_task(t)
+                        except Exception as e:
+                            logger.error(
+                                f"Task #{t['id']} error: {e}",
+                                exc_info=True,
+                            )
 
                     await asyncio.sleep(2)
                 else:

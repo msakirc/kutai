@@ -124,6 +124,9 @@ class ModelInfo:
             "tokens_per_second": self.tokens_per_second,
             "tier": self.tier,
             "rate_limit_rpm": self.rate_limit_rpm,
+            "model_type": self.model_type,
+            "total_params_b": self.total_params_b,
+            "active_params_b": self.active_params_b,
         }
 
     @property
@@ -250,6 +253,19 @@ def estimate_capabilities(
     # Get family profile
     if family_key and family_key in FAMILY_PROFILES:
         profile = FAMILY_PROFILES[family_key]
+    elif family_key is None:
+        # Unknown family — try benchmark data before falling back to default
+        try:
+            from .benchmark.benchmark_fetcher import lookup_model_scores
+            bench_scores = lookup_model_scores(
+                total_params_b=total_params_b,
+                quantization=quantization,
+            )
+            if bench_scores:
+                return bench_scores
+        except (ImportError, Exception):
+            pass
+        profile = get_default_profile()
     else:
         profile = get_default_profile()
 
@@ -397,8 +413,8 @@ def detect_function_calling(family_key: str | None, gguf_metadata: dict) -> bool
 
 # ─── Thinking Model Detection ───────────────────────────────────────────────
 
-_THINKING_FAMILIES = {"qwen3", "qwen3_coder", "qwq", "deepseek_r1"}
-_THINKING_NAME_PATTERNS = ["o1", "o3", "o4", "qwq", "deepseek-r1", "gemini-2.5"]
+_THINKING_FAMILIES = {"qwen3", "qwen3_coder", "qwq", "deepseek_r1", "glm4_flash"}
+_THINKING_NAME_PATTERNS = ["o1", "o3", "o4", "qwq", "deepseek-r1", "gemini-2.5", "glm"]
 
 
 def detect_thinking_model(
@@ -652,6 +668,8 @@ def detect_cloud_model(litellm_name: str, provider: str) -> dict:
 
     # Match against cloud profiles
     name_lower = litellm_name.lower()
+    # Strip provider prefix (e.g., "cerebras/llama-3.3-70b" → "llama-3.3-70b")
+    name_no_prefix = litellm_name.split("/", 1)[-1].lower() if "/" in litellm_name else name_lower
     capabilities = None
     has_vision = False
     thinking_model = False
@@ -659,7 +677,7 @@ def detect_cloud_model(litellm_name: str, provider: str) -> dict:
     matched_len = 0
     matched_profile = None
     for hint_key, profile_data in CLOUD_PROFILES.items():
-        if hint_key.lower() in name_lower and len(hint_key) > matched_len:
+        if hint_key.lower() in name_no_prefix and len(hint_key) > matched_len:
             matched_len = len(hint_key)
             matched_profile = profile_data
 
@@ -1285,33 +1303,40 @@ class ModelRegistry:
     # ── Query Methods ────────────────────────────────────────────────────────
 
     def get(self, name: str) -> ModelInfo | None:
-        return self.models.get(name)
+        models = self.models
+        return models.get(name)
 
     def find_by_litellm_name(self, litellm_name: str) -> ModelInfo | None:
-        for m in self.models.values():
+        models = self.models
+        for m in models.values():
             if m.litellm_name == litellm_name:
                 return m
         return None
 
     def local_models(self) -> list[ModelInfo]:
-        return [m for m in self.models.values() if m.is_local]
+        models = self.models
+        return [m for m in models.values() if m.is_local]
 
     def cloud_models(self) -> list[ModelInfo]:
-        return [m for m in self.models.values() if not m.is_local]
+        models = self.models
+        return [m for m in models.values() if not m.is_local]
 
     def models_with_capability(
         self, capability: str, min_score: float = 1.0
     ) -> list[ModelInfo]:
+        models = self.models
         return [
-            m for m in self.models.values()
+            m for m in models.values()
             if m.capabilities.get(capability, 0) >= min_score
         ]
 
     def vision_models(self) -> list[ModelInfo]:
-        return [m for m in self.models.values() if m.has_vision]
+        models = self.models
+        return [m for m in models.values() if m.has_vision]
 
     def thinking_models(self) -> list[ModelInfo]:
-        return [m for m in self.models.values() if m.thinking_model]
+        models = self.models
+        return [m for m in models.values() if m.thinking_model]
 
     def best_for_task(
         self,
@@ -1341,9 +1366,10 @@ class ModelRegistry:
             prefer_fast=prefer_fast,
         )
 
+        models = self.models
         model_data = {
             name: (m.capabilities, m.operational_dict())
-            for name, m in self.models.items()
+            for name, m in models.items()
         }
         return rank_models_for_task(model_data, requirements, top_k=top_k)
 
@@ -1386,17 +1412,20 @@ class ModelRegistry:
 
     def update_quality_from_grading(
         self, model_name: str, capability: str, measured_quality: float,
+        call_count: int = 0,
     ) -> None:
         """
         Update a model's capability score from grading feedback.
-        EMA: new = 0.7 * old + 0.3 * measured
+        EMA alpha is lower (0.1) when few calls have been seen, to
+        avoid noise from early samples overriding calibrated defaults.
         """
+        alpha = 0.1 if call_count < 5 else 0.3
         with self._lock:
             model = self.models.get(model_name)
             if not model:
                 return
             old_q = model.capabilities.get(capability, 5.0)
-            new_q = round(0.7 * old_q + 0.3 * measured_quality, 1)
+            new_q = round((1 - alpha) * old_q + alpha * measured_quality, 1)
             new_q = max(0.0, min(10.0, new_q))
             if abs(new_q - old_q) > 0.05:
                 model.capabilities[capability] = new_q

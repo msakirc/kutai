@@ -52,6 +52,8 @@ Available agent types:
 - "visual_reviewer": analyzing screenshots, UI review, diagram understanding
 - "assistant": general conversation, Q&A, personal assistance
 - "summarizer": condensing long content, extracting key points
+- "analyst": data analysis, feasibility studies, structured evaluation, risk assessment
+- "error_recovery": recovering from failures, retrying operations, fallback strategies
 
 Determine:
 - agent_type: best matching type from above
@@ -193,13 +195,17 @@ async def _classify_with_llm(title: str, description: str) -> TaskClassification
 _KEYWORD_RULES: list[tuple[str, int, list[str]]] = [
     # (agent_type, difficulty, keywords)
     ("fixer",          6, ["fix", "bug", "error", "debug", "traceback", "crash"]),
+    ("error_recovery", 6, ["recover", "retry", "fallback", "roll back", "revert failure"]),
+    ("architect",      7, ["architect", "system design", "api design", "scalability"]),
     ("coder",          7, ["implement", "create", "build", "write code", "refactor"]),
+    ("implementer",    6, ["follow plan", "implement plan", "step by step", "execute plan"]),
     ("test_generator", 5, ["test", "spec", "coverage", "unit test"]),
     ("reviewer",       6, ["review", "analyze", "audit", "critique"]),
-    ("planner",        7, ["plan", "design", "architect", "roadmap", "schema"]),
+    ("planner",        7, ["plan", "design", "roadmap", "schema", "decompose"]),
     ("visual_reviewer",5, ["screenshot", "image", "visual", "ui review", "layout"]),
     ("writer",         5, ["write", "document", "email", "report", "readme"]),
     ("researcher",     5, ["search", "find", "research", "compare", "look up"]),
+    ("analyst",        6, ["analyze", "evaluate", "assess", "feasibility", "risk analysis"]),
     ("summarizer",     4, ["summarize", "tldr", "key points", "condense"]),
     ("executor",       4, ["deploy", "run", "install", "execute", "download"]),
     ("assistant",      3, ["what is", "what does", "how many", "define", "explain"]),
@@ -213,7 +219,8 @@ def _classify_by_keywords(title: str, description: str) -> TaskClassification:
     for agent_type, difficulty, keywords in _KEYWORD_RULES:
         if any(kw in text for kw in keywords):
             needs_tools = agent_type in (
-                "fixer", "coder", "test_generator", "executor", "researcher",
+                "fixer", "coder", "implementer", "test_generator",
+                "executor", "researcher", "error_recovery",
             )
             return TaskClassification(
                 agent_type=agent_type,

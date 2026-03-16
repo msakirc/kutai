@@ -5,7 +5,7 @@ import json
 import logging
 import signal
 from ..app.config import DB_PATH, MAX_CONTEXT_CHAIN_LENGTH, TASK_PRIORITY
-from datetime import datetime
+from datetime import datetime, timedelta
 from ..infra.db import (
     init_db, get_db, close_db, get_ready_tasks, update_task, add_task,
     claim_task, add_subtasks_atomically, log_conversation,
@@ -281,22 +281,90 @@ class Orchestrator:
                     (datetime.now().isoformat(), task["id"]),
                 )
 
-        # 4. Tasks stuck in needs_clarification for >24h
+        # 4. Escalation tiers for tasks stuck in needs_clarification
+        #    Uses started_at as the baseline timestamp (set when task
+        #    began processing, before entering needs_clarification).
+        #    We compute the threshold in Python with isoformat() so the
+        #    string comparison matches the format used when storing
+        #    started_at (which also uses datetime.now().isoformat()).
+        threshold_24h = (
+            datetime.now() - timedelta(hours=24)
+        ).isoformat()
         cursor_clar = await db.execute(
-            """SELECT id, title FROM tasks
+            """SELECT id, title, context, started_at FROM tasks
                WHERE status = 'needs_clarification'
-               AND updated_at < datetime('now', '-24 hours')"""
+               AND started_at < ?""",
+            (threshold_24h,),
         )
         stale = [dict(row) for row in await cursor_clar.fetchall()]
         for task in stale:
-            logger.warning(
-                f"[Watchdog] Task #{task['id']} stale clarification, "
-                f"cancelling"
-            )
-            await update_task(
-                task["id"], status="cancelled",
-                error="No clarification received within 24h",
-            )
+            # Parse escalation_count from task context
+            raw_ctx = task.get("context", "{}")
+            if isinstance(raw_ctx, str):
+                try:
+                    task_ctx = json.loads(raw_ctx)
+                except (json.JSONDecodeError, TypeError):
+                    task_ctx = {}
+            else:
+                task_ctx = raw_ctx if isinstance(raw_ctx, dict) else {}
+
+            escalation_count = task_ctx.get("escalation_count", 0)
+            tid = task["id"]
+            ttitle = task["title"]
+
+            # Calculate hours since started_at
+            try:
+                started = datetime.fromisoformat(task["started_at"])
+            except (ValueError, TypeError):
+                started = datetime.min
+            hours_waiting = (
+                datetime.now() - started
+            ).total_seconds() / 3600
+
+            if escalation_count == 0 and hours_waiting >= 24:
+                # Tier 1: 24h reminder
+                task_ctx["escalation_count"] = 1
+                await update_task(
+                    tid, context=json.dumps(task_ctx),
+                )
+                logger.info(
+                    f"[Watchdog] Task #{tid} escalation tier 1 (24h)"
+                )
+                await self.telegram.send_notification(
+                    f"⏰ Task #{tid} has been waiting for "
+                    f"clarification for 24h.\n*{ttitle}*"
+                )
+            elif escalation_count == 1 and hours_waiting >= 48:
+                # Tier 2: 48h urgent
+                task_ctx["escalation_count"] = 2
+                await update_task(
+                    tid, context=json.dumps(task_ctx),
+                )
+                logger.info(
+                    f"[Watchdog] Task #{tid} escalation tier 2 (48h)"
+                )
+                await self.telegram.send_notification(
+                    f"🚨 *URGENT:* Task #{tid} needs your input!\n"
+                    f"*{ttitle}*\n\n"
+                    f"_This task will be cancelled in 24h if no "
+                    f"response is received._"
+                )
+            elif escalation_count >= 2 and hours_waiting >= 72:
+                # Tier 3: 72h cancel
+                task_ctx["escalation_count"] = 3
+                logger.warning(
+                    f"[Watchdog] Task #{tid} escalation tier 3 "
+                    f"(72h), cancelling"
+                )
+                await update_task(
+                    tid, status="cancelled",
+                    error="No clarification received within 72h",
+                    context=json.dumps(task_ctx),
+                )
+                await self.telegram.send_notification(
+                    f"❌ Task #{tid} cancelled — no clarification "
+                    f"received after 72h.\n*{ttitle}*"
+                )
 
         await db.commit()
 

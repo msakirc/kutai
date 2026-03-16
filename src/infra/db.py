@@ -1475,3 +1475,40 @@ async def check_task_budget(task_id: int, additional_cost: float = 0.0) -> dict:
             "limit": max_cost,
         }
     return {"ok": True, "reason": "within budget", "spent": spent, "limit": max_cost}
+
+
+# ─── Approval Requests ────────────────────────────────────────────────────────
+
+async def insert_approval_request(task_id: int, goal_id: int | None,
+                                  title: str, details: str):
+    """Persist an approval request to the DB."""
+    db = await get_db()
+    await db.execute(
+        """INSERT OR REPLACE INTO approval_requests
+           (task_id, goal_id, title, details, status, created_at)
+           VALUES (?, ?, ?, ?, 'pending', ?)""",
+        (task_id, goal_id, title, details, datetime.now().isoformat()),
+    )
+    await db.commit()
+
+
+async def update_approval_status(task_id: int, status: str):
+    """Update an approval request status and set resolved_at."""
+    db = await get_db()
+    await db.execute(
+        """UPDATE approval_requests
+           SET status = ?, resolved_at = ?
+           WHERE task_id = ?""",
+        (status, datetime.now().isoformat(), task_id),
+    )
+    await db.commit()
+
+
+async def get_pending_approvals() -> list[dict]:
+    """Return all pending approval requests."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM approval_requests WHERE status = 'pending' "
+        "ORDER BY created_at"
+    )
+    return [dict(row) for row in await cursor.fetchall()]

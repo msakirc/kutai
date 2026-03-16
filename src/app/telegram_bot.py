@@ -14,7 +14,8 @@ from ..infra.db import (add_task, add_goal, get_active_goals, get_ready_tasks,
                 get_daily_stats, update_task, get_recent_completed_tasks,
                 get_db, cancel_task, reprioritize_task, get_task_tree,
                 get_task, get_budget, set_budget, get_model_stats,
-                get_goal_locks)
+                get_goal_locks,
+                insert_approval_request, update_approval_status)
 from ..memory.conversations import format_recent_context, find_followup_context, \
     store_exchange
 from ..memory.ingest import ingest_document
@@ -725,11 +726,13 @@ class TelegramInterface:
         task_id = int(task_id_str)
 
         if action == "approve":
+            await update_approval_status(task_id, "approved")
             if task_id in self._approval_events:
                 self._approval_events[task_id]["result"] = "approved"
                 self._approval_events[task_id]["event"].set()
             await query.edit_message_text(f"✅ Task #{task_id} approved.")
         elif action == "reject":
+            await update_approval_status(task_id, "rejected")
             if task_id in self._approval_events:
                 self._approval_events[task_id]["result"] = "rejected"
                 self._approval_events[task_id]["event"].set()
@@ -791,7 +794,12 @@ class TelegramInterface:
             f"_Reply to this message with your answer._"
         )
 
-    async def request_approval(self, task_id, title, plan, tier):
+    async def request_approval(self, task_id, title, plan, tier,
+                               goal_id=None):
+        # Persist approval request to DB
+        details = f"Tier: {tier}\n\n{plan[:500]}"
+        await insert_approval_request(task_id, goal_id, title, details)
+
         keyboard = [[
             InlineKeyboardButton("✅ Approve", callback_data=f"approve_{task_id}"),
             InlineKeyboardButton("❌ Reject", callback_data=f"reject_{task_id}"),
@@ -811,6 +819,7 @@ class TelegramInterface:
             await asyncio.wait_for(event.wait(), timeout=1800)
             return self._approval_events[task_id]["result"] == "approved"
         except asyncio.TimeoutError:
+            await update_approval_status(task_id, "timeout")
             await self.send_notification(f"⏰ Approval for #{task_id} timed out. Skipped.")
             return False
         finally:

@@ -5,9 +5,10 @@ Two-tier rate limiting: per-model + per-provider.
 Providers like Groq enforce per-model RPM/TPM limits AND
 per-account aggregate limits. We track both layers.
 
-Also supports adaptive limit discovery: if we get a 429 at
-a rate below our configured limit, we automatically lower
-the limit.
+Supports:
+- Adaptive limit discovery from 429 errors
+- Dynamic limit updates from API response headers
+- Daily limit tracking (Cerebras, SambaNova, Gemini)
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 
+from .header_parser import RateLimitSnapshot
 from .model_registry import get_registry
 
 logger = logging.getLogger(__name__)
@@ -33,6 +35,19 @@ class RateLimitState:
     _last_429_at: float = 0.0
     _original_rpm: int = 0
     _original_tpm: int = 0
+
+    # Header-derived live state
+    _header_rpm_remaining: int | None = field(default=None, repr=False)
+    _header_tpm_remaining: int | None = field(default=None, repr=False)
+    _header_rpm_reset_at: float | None = field(default=None, repr=False)
+    _header_tpm_reset_at: float | None = field(default=None, repr=False)
+    _limits_discovered: bool = field(default=False, repr=False)
+    _last_header_update: float = field(default=0.0, repr=False)
+
+    # Daily limits (Cerebras, SambaNova, Gemini)
+    rpd_limit: int | None = field(default=None, repr=False)
+    rpd_remaining: int | None = field(default=None, repr=False)
+    rpd_reset_at: float | None = field(default=None, repr=False)
 
     def __post_init__(self):
         self._original_rpm = self.rpm_limit
@@ -68,10 +83,26 @@ class RateLimitState:
 
     def has_capacity(self, estimated_tokens: int = 0) -> bool:
         """Check if a request can be made without waiting."""
-        return (
-            self.rpm_headroom > 1
-            and self.tpm_headroom > estimated_tokens
-        )
+        # Daily limit exhaustion is absolute
+        if self.rpd_remaining is not None and self.rpd_remaining <= 0:
+            if self.rpd_reset_at and time.time() < self.rpd_reset_at:
+                return False
+
+        now = time.time()
+        header_fresh = (now - self._last_header_update) < 5.0
+
+        # Use header-derived remaining when fresh
+        if header_fresh and self._header_rpm_remaining is not None:
+            rpm_ok = self._header_rpm_remaining > 1
+        else:
+            rpm_ok = self.rpm_headroom > 1
+
+        if header_fresh and self._header_tpm_remaining is not None:
+            tpm_ok = self._header_tpm_remaining > estimated_tokens
+        else:
+            tpm_ok = self.tpm_headroom > estimated_tokens
+
+        return rpm_ok and tpm_ok
 
     def utilization_pct(self) -> float:
         """How close to limits we are (0-100)."""
@@ -83,13 +114,46 @@ class RateLimitState:
         """
         Wait until rate limit allows a request.
         Returns seconds waited (0 if no wait needed).
+        Returns -1.0 if daily limit exhausted (caller should skip model).
         """
         waited = 0.0
         now = time.time()
         self._cleanup(now)
 
-        # RPM check
-        if len(self._request_timestamps) >= self.rpm_limit:
+        # Daily limit check — if exhausted, signal skip
+        if self.rpd_remaining is not None and self.rpd_remaining <= 0:
+            if self.rpd_reset_at and self.rpd_reset_at > now:
+                logger.warning(
+                    f"Rate limiter: daily limit exhausted, "
+                    f"resets in {self.rpd_reset_at - now:.0f}s"
+                )
+                return -1.0
+
+        header_fresh = (now - self._last_header_update) < 10.0
+
+        # RPM check — prefer header reset time if available
+        if header_fresh and self._header_rpm_remaining is not None and self._header_rpm_remaining <= 1:
+            if self._header_rpm_reset_at and self._header_rpm_reset_at > now:
+                rpm_wait = self._header_rpm_reset_at - now + 0.5
+                logger.info(
+                    f"Rate limiter: RPM wait {rpm_wait:.1f}s (from headers, "
+                    f"remaining={self._header_rpm_remaining})"
+                )
+                await asyncio.sleep(rpm_wait)
+                waited += rpm_wait
+                self._header_rpm_remaining = None  # stale after wait
+            elif len(self._request_timestamps) >= self.rpm_limit:
+                oldest = self._request_timestamps[0]
+                rpm_wait = 60 - (now - oldest) + 0.5
+                if rpm_wait > 0:
+                    logger.info(
+                        f"Rate limiter: RPM wait {rpm_wait:.1f}s "
+                        f"({self.current_rpm}/{self.rpm_limit})"
+                    )
+                    await asyncio.sleep(rpm_wait)
+                    waited += rpm_wait
+                    self._cleanup()
+        elif len(self._request_timestamps) >= self.rpm_limit:
             oldest = self._request_timestamps[0]
             rpm_wait = 60 - (now - oldest) + 0.5
             if rpm_wait > 0:
@@ -103,18 +167,21 @@ class RateLimitState:
 
         # TPM check
         if estimated_tokens > 0 and self.current_tpm + estimated_tokens > self.tpm_limit:
-            # Wait for oldest token entries to expire
-            if self._token_log:
+            if header_fresh and self._header_tpm_reset_at and self._header_tpm_reset_at > time.time():
+                tpm_wait = self._header_tpm_reset_at - time.time() + 0.5
+            elif self._token_log:
                 oldest_token_ts = self._token_log[0][0]
                 tpm_wait = 60 - (time.time() - oldest_token_ts) + 0.5
-                if tpm_wait > 0:
-                    logger.info(
-                        f"Rate limiter: TPM wait {tpm_wait:.1f}s "
-                        f"({self.current_tpm}/{self.tpm_limit})"
-                    )
-                    await asyncio.sleep(tpm_wait)
-                    waited += tpm_wait
-                    self._cleanup()
+            else:
+                tpm_wait = 0
+            if tpm_wait > 0:
+                logger.info(
+                    f"Rate limiter: TPM wait {tpm_wait:.1f}s "
+                    f"({self.current_tpm}/{self.tpm_limit})"
+                )
+                await asyncio.sleep(tpm_wait)
+                waited += tpm_wait
+                self._cleanup()
 
         self._request_timestamps.append(time.time())
         return waited
@@ -179,6 +246,52 @@ class RateLimitState:
             f"RPM={self.rpm_limit}/{self._original_rpm}, "
             f"TPM={self.tpm_limit}/{self._original_tpm}"
         )
+
+    def update_from_snapshot(self, snap: RateLimitSnapshot) -> None:
+        """Update state from parsed response headers."""
+        now = time.time()
+        self._last_header_update = now
+
+        # Update limits if provider reports them
+        if snap.rpm_limit is not None and snap.rpm_limit != self.rpm_limit:
+            logger.info(
+                f"Rate limit discovered: RPM {self.rpm_limit}→{snap.rpm_limit}"
+            )
+            self.rpm_limit = snap.rpm_limit
+            self._original_rpm = snap.rpm_limit
+        if snap.tpm_limit is not None and snap.tpm_limit != self.tpm_limit:
+            logger.info(
+                f"Rate limit discovered: TPM {self.tpm_limit}→{snap.tpm_limit}"
+            )
+            self.tpm_limit = snap.tpm_limit
+            self._original_tpm = snap.tpm_limit
+
+        # If we discovered real limits, clear any adaptive reductions
+        if snap.rpm_limit is not None or snap.tpm_limit is not None:
+            self._limits_discovered = True
+            if self._rate_limit_hits > 0:
+                self._rate_limit_hits = 0
+                self._last_429_at = 0.0
+
+        # Store remaining counts (ground truth from provider)
+        if snap.rpm_remaining is not None:
+            self._header_rpm_remaining = snap.rpm_remaining
+        if snap.tpm_remaining is not None:
+            self._header_tpm_remaining = snap.tpm_remaining
+
+        # Store reset timestamps
+        if snap.rpm_reset_at is not None:
+            self._header_rpm_reset_at = snap.rpm_reset_at
+        if snap.tpm_reset_at is not None:
+            self._header_tpm_reset_at = snap.tpm_reset_at
+
+        # Daily limits
+        if snap.rpd_limit is not None:
+            self.rpd_limit = snap.rpd_limit
+        if snap.rpd_remaining is not None:
+            self.rpd_remaining = snap.rpd_remaining
+        if snap.rpd_reset_at is not None:
+            self.rpd_reset_at = snap.rpd_reset_at
 
 
 class RateLimitManager:
@@ -251,19 +364,25 @@ class RateLimitManager:
     ) -> float:
         """
         Wait for both model and provider limits, then record request.
-        Returns total seconds waited.
+        Returns total seconds waited, or -1.0 if daily limit exhausted.
         """
         total_waited = 0.0
 
         # Wait on model limit first
         model_state = self.model_limits.get(litellm_name)
         if model_state:
-            total_waited += await model_state.wait_if_needed(estimated_tokens)
+            result = await model_state.wait_if_needed(estimated_tokens)
+            if result < 0:
+                return -1.0
+            total_waited += result
 
         # Then wait on provider aggregate
         provider_state = self._provider_limits.get(provider)
         if provider_state:
-            total_waited += await provider_state.wait_if_needed(estimated_tokens)
+            result = await provider_state.wait_if_needed(estimated_tokens)
+            if result < 0:
+                return -1.0
+            total_waited += result
 
         return total_waited
 
@@ -296,6 +415,24 @@ class RateLimitManager:
         if provider_state:
             provider_state.record_429()
 
+    def update_from_headers(
+        self,
+        litellm_name: str,
+        provider: str,
+        snapshot: RateLimitSnapshot,
+    ) -> None:
+        """
+        Update rate limit state from parsed response headers.
+        Updates both model-level and provider-level state.
+        """
+        model_state = self.model_limits.get(litellm_name)
+        if model_state:
+            model_state.update_from_snapshot(snapshot)
+
+        provider_state = self._provider_limits.get(provider)
+        if provider_state:
+            provider_state.update_from_snapshot(snapshot)
+
     def restore_limits(self) -> None:
         """Periodically called to gradually restore adapted limits."""
         for state in self.model_limits.values():
@@ -322,6 +459,7 @@ class RateLimitManager:
                 "tpm": f"{state.current_tpm}/{state.tpm_limit}",
                 "utilization_pct": round(state.utilization_pct(), 1),
                 "429_hits": state._rate_limit_hits,
+                "discovered": state._limits_discovered,
             }
 
         providers = {}
@@ -331,6 +469,7 @@ class RateLimitManager:
                 "tpm": f"{state.current_tpm}/{state.tpm_limit}",
                 "utilization_pct": round(state.utilization_pct(), 1),
                 "429_hits": state._rate_limit_hits,
+                "discovered": state._limits_discovered,
             }
 
         return {"models": models, "providers": providers}
@@ -340,11 +479,10 @@ class RateLimitManager:
       return self._provider_limits
 
 
-# ─── Provider-Specific Aggregate Limits ──────────────────────────────────────
-# These are account-level limits for free tiers (as of mid-2025).
-# Per-model limits come from models.yaml via the registry.
-
-PROVIDER_AGGREGATE_LIMITS: dict[str, dict[str, int]] = {
+# ─── Initial Provider Limits (fallback before header discovery) ──────────────
+# Used only until the first API response with rate limit headers arrives.
+# After that, headers are authoritative.
+_INITIAL_PROVIDER_LIMITS: dict[str, dict[str, int]] = {
     "groq": {"rpm": 30, "tpm": 131072},
     "gemini": {"rpm": 15, "tpm": 1000000},
     "cerebras": {"rpm": 30, "tpm": 131072},
@@ -352,6 +490,9 @@ PROVIDER_AGGREGATE_LIMITS: dict[str, dict[str, int]] = {
     "openai": {"rpm": 500, "tpm": 2000000},
     "anthropic": {"rpm": 50, "tpm": 80000},
 }
+
+# Backward compat alias
+PROVIDER_AGGREGATE_LIMITS = _INITIAL_PROVIDER_LIMITS
 
 
 # ─── Singleton ───────────────────────────────────────────────
@@ -373,7 +514,7 @@ def _init_from_registry() -> None:
         manager = get_rate_limit_manager()
 
         for model in registry.cloud_models():
-            agg = PROVIDER_AGGREGATE_LIMITS.get(model.provider, {})
+            agg = _INITIAL_PROVIDER_LIMITS.get(model.provider, {})
             manager.register_model(
                 litellm_name=model.litellm_name,
                 provider=model.provider,

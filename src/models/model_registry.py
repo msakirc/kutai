@@ -563,6 +563,8 @@ def scan_model_directory(model_dir: str | Path) -> list[dict]:
 
 # ─── Cloud Model Auto-Detection ─────────────────────────────────────────────
 
+# Initial rate limit defaults per provider — used as seed values until
+# runtime header discovery provides actual limits from API responses.
 _FREE_TIER_DEFAULTS: dict[str, dict] = {
     "gemini":    {"rpm": 15, "tpm": 1000000, "tier": "free"},
     "groq":      {"rpm": 30, "tpm": 131072, "tier": "free"},

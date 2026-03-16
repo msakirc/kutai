@@ -350,6 +350,7 @@ class TestStatusWithRealWorkflow(unittest.TestCase):
             tasks.append({
                 "id": i + 1,
                 "title": f"[{step['id']}] {step.get('name', '')}",
+                "status": status,
                 "context": {
                     "workflow_phase": phase,
                     "workflow_step_id": step["id"],
@@ -381,7 +382,7 @@ class TestStatusWithRealWorkflow(unittest.TestCase):
         progress = compute_phase_progress(tasks)
         total_completed = sum(info["completed"] for info in progress.values())
         expected_completed = sum(
-            1 for t in tasks if t["context"]["status"] == "completed"
+            1 for t in tasks if t.get("status") == "completed"
         )
         self.assertEqual(total_completed, expected_completed)
 

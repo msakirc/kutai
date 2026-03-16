@@ -645,6 +645,14 @@ class Orchestrator:
             if is_workflow_step(task_ctx):
                 task = await pre_execute_workflow_step(task)
 
+                # Check if this step should delegate to CodingPipeline
+                from ..workflows.engine.pipeline_bridge import should_delegate_to_pipeline
+                template_step_id = task_ctx.get("template_step_id", "")
+                if should_delegate_to_pipeline(template_step_id, agent_type):
+                    agent_type = "pipeline"
+                    task["agent_type"] = "pipeline"
+                    logger.info(f"[Task #{task_id}] Workflow step delegated to CodingPipeline")
+
             # ── Phase 6: Snapshot workspace before coder/pipeline tasks ──
             goal_id = task.get("goal_id")
             if goal_id and agent_type in ("coder", "pipeline", "implementer", "fixer"):

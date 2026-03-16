@@ -10,6 +10,8 @@ import logging
 from typing import Optional
 
 from .artifacts import ArtifactStore, format_artifacts_for_prompt
+from .conditions import evaluate_condition, resolve_group
+from .policies import ReviewTracker
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +24,7 @@ def get_artifact_store() -> ArtifactStore:
     """Return the module-level ArtifactStore singleton (lazy init)."""
     global _artifact_store
     if _artifact_store is None:
-        _artifact_store = ArtifactStore(use_db=False)
+        _artifact_store = ArtifactStore(use_db=True)
     return _artifact_store
 
 
@@ -126,12 +128,14 @@ async def pre_execute_workflow_step(task: dict) -> dict:
     return task
 
 
+_review_tracker = ReviewTracker()
+
+
 async def post_execute_workflow_step(task: dict, result: dict) -> None:
-    """Post-hook: store output artifacts after successful workflow step execution.
+    """Post-hook: store output artifacts, evaluate conditional groups,
+    trigger template expansion, and track review cycles.
 
     If the task is not a workflow step, returns immediately.
-    For single output artifacts, stores the full result output.
-    For multiple output artifacts, stores the full result under each name.
     """
     ctx = _parse_context(task)
     if not is_workflow_step(ctx):
@@ -139,12 +143,13 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
 
     goal_id = ctx.get("goal_id")
     output_names = extract_output_artifact_names(ctx)
+    step_id = ctx.get("step_id", "")
 
     if not goal_id or not output_names:
         return
 
     store = get_artifact_store()
-    output_value = result.get("output", "")
+    output_value = result.get("result", "")
 
     for name in output_names:
         await store.store(goal_id, name, output_value)
@@ -152,3 +157,126 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
             f"[Workflow Hook] Post-execute: stored artifact '{name}' "
             f"for goal {goal_id} ({len(output_value)} chars)"
         )
+
+    # ── Check conditional group triggers ──
+    await _check_conditional_triggers(goal_id, output_names, store)
+
+    # ── Check template expansion trigger ──
+    if "implementation_backlog" in output_names:
+        await _trigger_template_expansion(goal_id, output_value)
+
+    # ── Track review status ──
+    status = result.get("status", "completed")
+    if status in ("needs_review", "failed"):
+        action = _review_tracker.record_failure(step_id)
+        if action == "escalate":
+            logger.warning(
+                f"[Workflow Hook] Step '{step_id}' exceeded max review "
+                f"cycles — escalating to needs_clarification"
+            )
+
+
+async def _check_conditional_triggers(
+    goal_id: int, output_names: list[str], store: ArtifactStore
+) -> None:
+    """Evaluate conditional groups when their trigger artifact is produced."""
+    try:
+        from .loader import load_workflow
+
+        wf = load_workflow("idea_to_product_v2")
+    except Exception:
+        logger.debug("[Workflow Hook] Could not load workflow for conditional eval")
+        return
+
+    for group in wf.conditional_groups:
+        condition_artifact = group.get("condition_artifact", "")
+        if condition_artifact not in output_names:
+            continue
+
+        artifact_value = await store.retrieve(goal_id, condition_artifact)
+        if artifact_value is None:
+            continue
+
+        condition_check = group.get("condition_check", "")
+        result_bool = evaluate_condition(condition_check, artifact_value)
+        included, excluded = resolve_group(group, artifact_value)
+
+        logger.info(
+            f"[Workflow Hook] Conditional group '{group.get('group_id')}': "
+            f"condition={result_bool}, include={len(included)}, "
+            f"exclude={len(excluded)} steps"
+        )
+
+        # Update task statuses in DB for excluded steps
+        if excluded:
+            try:
+                from ...infra.db import update_task_by_context_field
+
+                for step in excluded:
+                    await update_task_by_context_field(
+                        goal_id=goal_id,
+                        field="step_id",
+                        value=step,
+                        status="skipped",
+                    )
+            except (ImportError, Exception) as e:
+                logger.debug(
+                    f"[Workflow Hook] Could not skip excluded steps: {e}"
+                )
+
+
+async def _trigger_template_expansion(goal_id: int, backlog_text: str) -> None:
+    """Expand feature_implementation_template for each feature in backlog."""
+    import json as _json
+
+    try:
+        features = _json.loads(backlog_text)
+        if not isinstance(features, list):
+            logger.debug("[Workflow Hook] implementation_backlog is not a list")
+            return
+    except (ValueError, TypeError):
+        logger.debug("[Workflow Hook] Could not parse implementation_backlog as JSON")
+        return
+
+    try:
+        from .loader import load_workflow
+        from .expander import expand_template, expand_steps_to_tasks
+        from ...infra.db import insert_task
+
+        wf = load_workflow("idea_to_product_v2")
+        template = wf.get_template("feature_implementation_template")
+        if not template:
+            logger.warning("[Workflow Hook] feature_implementation_template not found")
+            return
+
+        for feature in features:
+            if not isinstance(feature, dict):
+                continue
+            fid = feature.get("id", feature.get("feature_id", "unknown"))
+            fname = feature.get("name", feature.get("feature_name", "Unnamed"))
+
+            expanded = expand_template(
+                template,
+                params={"feature_id": fid, "feature_name": fname},
+                prefix=f"8.{fid}.",
+            )
+
+            tasks = expand_steps_to_tasks(
+                expanded, goal_id=goal_id, initial_context={}
+            )
+
+            for t in tasks:
+                try:
+                    await insert_task(**t)
+                except Exception as e:
+                    logger.debug(
+                        f"[Workflow Hook] Could not insert expanded task: {e}"
+                    )
+
+            logger.info(
+                f"[Workflow Hook] Expanded template for feature '{fid}' "
+                f"({len(expanded)} steps → {len(tasks)} tasks)"
+            )
+
+    except (ImportError, Exception) as e:
+        logger.debug(f"[Workflow Hook] Template expansion failed: {e}")

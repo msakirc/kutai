@@ -210,7 +210,7 @@ class TestPostExecuteWorkflowStep(unittest.TestCase):
         """Non-workflow tasks are ignored."""
         task = {"context": "{}"}
         # Should not raise
-        self._run(post_execute_workflow_step(task, {"output": "result"}))
+        self._run(post_execute_workflow_step(task, {"result": "result"}))
 
     def test_stores_single_output_artifact(self):
         """Single output artifact stores the full result."""
@@ -222,7 +222,7 @@ class TestPostExecuteWorkflowStep(unittest.TestCase):
                 "output_artifacts": ["analysis"],
             }),
         }
-        result = {"output": "Analysis result text"}
+        result = {"result": "Analysis result text"}
         self._run(post_execute_workflow_step(task, result))
 
         stored = self._run(store.retrieve(100, "analysis"))
@@ -238,7 +238,7 @@ class TestPostExecuteWorkflowStep(unittest.TestCase):
                 "output_artifacts": ["doc_a", "doc_b"],
             }),
         }
-        result = {"output": "Combined output"}
+        result = {"result": "Combined output"}
         self._run(post_execute_workflow_step(task, result))
 
         stored_a = self._run(store.retrieve(101, "doc_a"))

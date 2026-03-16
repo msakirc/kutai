@@ -64,7 +64,9 @@ def compute_phase_progress(tasks: list[dict]) -> dict:
             }
 
         progress[phase]["total"] += 1
-        if ctx.get("status") == "completed":
+        # Check task-level status first (DB tasks), fall back to context status
+        task_status = task.get("status") or ctx.get("status")
+        if task_status == "completed":
             progress[phase]["completed"] += 1
 
     return progress

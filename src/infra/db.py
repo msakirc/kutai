@@ -228,6 +228,18 @@ async def init_db():
         )
     """)
 
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS workflow_checkpoints (
+            goal_id INTEGER PRIMARY KEY,
+            workflow_name TEXT NOT NULL,
+            current_phase TEXT,
+            completed_phases TEXT DEFAULT '[]',
+            failed_step_id TEXT,
+            checkpoint_at TEXT,
+            metadata TEXT DEFAULT '{}'
+        )
+    """)
+
     await db.commit()
 
     # Verify schema
@@ -311,6 +323,13 @@ async def add_goal(title, description, priority=5, context=None):
     )
     await db.commit()
     return cursor.lastrowid
+
+async def get_goal(goal_id):
+    """Fetch a single goal by ID."""
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM goals WHERE id = ?", (goal_id,))
+    row = await cursor.fetchone()
+    return dict(row) if row else None
 
 async def get_active_goals():
     db = await get_db()
@@ -1512,3 +1531,58 @@ async def get_pending_approvals() -> list[dict]:
         "ORDER BY created_at"
     )
     return [dict(row) for row in await cursor.fetchall()]
+
+
+# ── Workflow checkpoints ──────────────────────────────────────────────────
+
+
+async def upsert_workflow_checkpoint(
+    goal_id: int,
+    workflow_name: str,
+    current_phase: str = None,
+    completed_phases: list = None,
+    failed_step_id: str = None,
+    metadata: dict = None,
+) -> None:
+    """Create or update a workflow checkpoint for the given goal."""
+    from datetime import datetime
+
+    db = await get_db()
+    await db.execute(
+        """INSERT OR REPLACE INTO workflow_checkpoints
+           (goal_id, workflow_name, current_phase, completed_phases,
+            failed_step_id, checkpoint_at, metadata)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            goal_id,
+            workflow_name,
+            current_phase,
+            json.dumps(completed_phases or []),
+            failed_step_id,
+            datetime.now().isoformat(),
+            json.dumps(metadata or {}),
+        ),
+    )
+    await db.commit()
+
+
+async def get_workflow_checkpoint(goal_id: int) -> dict | None:
+    """Get the workflow checkpoint for a goal, or None if not found."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM workflow_checkpoints WHERE goal_id = ?",
+        (goal_id,),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+
+    result = dict(row)
+    # JSON-decode fields
+    for field in ("completed_phases", "metadata"):
+        raw = result.get(field, "")
+        try:
+            result[field] = json.loads(raw) if raw else ([] if field == "completed_phases" else {})
+        except (json.JSONDecodeError, TypeError):
+            result[field] = [] if field == "completed_phases" else {}
+    return result

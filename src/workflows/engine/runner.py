@@ -111,6 +111,110 @@ class WorkflowRunner:
     def __init__(self) -> None:
         self.artifact_store = ArtifactStore(use_db=True)
 
+    async def find_resumable(self, workflow_name: str) -> Optional[int]:
+        """Find an active goal with a matching workflow checkpoint."""
+        from src.infra.db import get_active_goals, get_workflow_checkpoint
+
+        goals = await get_active_goals()
+        for goal in goals:
+            ctx = goal.get("context", "{}")
+            if isinstance(ctx, str):
+                try:
+                    ctx = json.loads(ctx)
+                except (json.JSONDecodeError, TypeError):
+                    ctx = {}
+            if not isinstance(ctx, dict):
+                ctx = {}
+            if ctx.get("workflow_name") != workflow_name:
+                continue
+
+            checkpoint = await get_workflow_checkpoint(goal["id"])
+            if checkpoint and checkpoint.get("workflow_name") == workflow_name:
+                return goal["id"]
+        return None
+
+    async def resume(self, goal_id: int) -> int:
+        """Resume a workflow from its last checkpoint.
+
+        Resets failed/stuck tasks to pending, identifies steps not yet
+        created as tasks, and inserts them. Returns goal_id.
+        Raises ValueError if checkpoint not found.
+        """
+        from src.infra.db import (
+            get_tasks_for_goal, get_workflow_checkpoint,
+            update_task, add_task,
+        )
+
+        checkpoint = await get_workflow_checkpoint(goal_id)
+        if checkpoint is None:
+            raise ValueError(
+                f"Goal {goal_id} has no workflow checkpoint — cannot resume"
+            )
+
+        wf_name = checkpoint["workflow_name"]
+        wf = load_workflow(wf_name)
+
+        # Warm artifact cache
+        await self.artifact_store.warm_cache(goal_id)
+
+        tasks = await get_tasks_for_goal(goal_id)
+
+        # Identify completed step IDs and reset failed tasks
+        completed_step_ids: set[str] = set()
+        existing_step_ids: set[str] = set()
+        for t in tasks:
+            ctx = t.get("context", "{}")
+            if isinstance(ctx, str):
+                try:
+                    ctx = json.loads(ctx)
+                except (json.JSONDecodeError, TypeError):
+                    ctx = {}
+            sid = ctx.get("workflow_step_id", "")
+            if sid:
+                existing_step_ids.add(sid)
+            if t.get("status") in ("completed", "skipped"):
+                completed_step_ids.add(sid)
+            elif t.get("status") in ("failed", "needs_clarification"):
+                await update_task(t["id"], status="pending", retry_count=0, error=None)
+
+        # Find and insert missing steps
+        missing_steps = [s for s in wf.steps if s["id"] not in existing_step_ids]
+        if missing_steps:
+            task_dicts = expand_steps_to_tasks(missing_steps, goal_id=goal_id, initial_context={})
+            step_to_task: dict[str, int] = {}
+            for t in tasks:
+                ctx = t.get("context", "{}")
+                if isinstance(ctx, str):
+                    try:
+                        ctx = json.loads(ctx)
+                    except (json.JSONDecodeError, TypeError):
+                        ctx = {}
+                sid = ctx.get("workflow_step_id", "")
+                if sid:
+                    step_to_task[sid] = t["id"]
+
+            for task_dict in task_dicts:
+                step_id = task_dict["context"].get("workflow_step_id", "")
+                depends_on_steps = task_dict.pop("depends_on_steps", [])
+                depends_on = resolve_dependencies(depends_on_steps, step_to_task)
+                task_id = await add_task(
+                    title=task_dict["title"],
+                    description=task_dict["description"],
+                    goal_id=task_dict["goal_id"],
+                    agent_type=task_dict["agent_type"],
+                    tier=task_dict["tier"],
+                    priority=task_dict["priority"],
+                    depends_on=depends_on if depends_on else None,
+                    context=task_dict["context"],
+                )
+                step_to_task[step_id] = task_id
+
+        logger.info(
+            "Workflow '%s' resumed: goal_id=%d, %d completed, %d new tasks inserted",
+            wf_name, goal_id, len(completed_step_ids), len(missing_steps),
+        )
+        return goal_id
+
     async def start(
         self,
         workflow_name: str,
@@ -271,3 +375,85 @@ class WorkflowRunner:
                 step_id,
                 cron,
             )
+
+    async def resume(self, goal_id: int) -> int:
+        """Resume a workflow from its last checkpoint.
+
+        Resets failed/stuck tasks to pending, identifies steps not yet
+        created as tasks, and inserts them. Returns goal_id.
+        Raises ValueError if checkpoint not found.
+        """
+        from src.infra.db import (
+            get_tasks_for_goal, get_workflow_checkpoint,
+            update_task, add_task,
+        )
+
+        checkpoint = await get_workflow_checkpoint(goal_id)
+        if checkpoint is None:
+            raise ValueError(
+                f"Goal {goal_id} has no workflow checkpoint — cannot resume"
+            )
+
+        wf_name = checkpoint["workflow_name"]
+        wf = load_workflow(wf_name)
+
+        # Warm artifact cache
+        await self.artifact_store.warm_cache(goal_id)
+
+        tasks = await get_tasks_for_goal(goal_id)
+
+        # Identify completed step IDs and reset failed tasks
+        completed_step_ids: set[str] = set()
+        existing_step_ids: set[str] = set()
+        for t in tasks:
+            ctx = t.get("context", "{}")
+            if isinstance(ctx, str):
+                try:
+                    ctx = json.loads(ctx)
+                except (json.JSONDecodeError, TypeError):
+                    ctx = {}
+            sid = ctx.get("workflow_step_id", "")
+            if sid:
+                existing_step_ids.add(sid)
+            if t.get("status") in ("completed", "skipped"):
+                completed_step_ids.add(sid)
+            elif t.get("status") in ("failed", "needs_clarification"):
+                await update_task(t["id"], status="pending", retry_count=0, error=None)
+
+        # Find and insert missing steps
+        missing_steps = [s for s in wf.steps if s["id"] not in existing_step_ids]
+        if missing_steps:
+            task_dicts = expand_steps_to_tasks(missing_steps, goal_id=goal_id, initial_context={})
+            step_to_task: dict[str, int] = {}
+            for t in tasks:
+                ctx = t.get("context", "{}")
+                if isinstance(ctx, str):
+                    try:
+                        ctx = json.loads(ctx)
+                    except (json.JSONDecodeError, TypeError):
+                        ctx = {}
+                sid = ctx.get("workflow_step_id", "")
+                if sid:
+                    step_to_task[sid] = t["id"]
+
+            for task_dict in task_dicts:
+                step_id = task_dict["context"].get("workflow_step_id", "")
+                depends_on_steps = task_dict.pop("depends_on_steps", [])
+                depends_on = resolve_dependencies(depends_on_steps, step_to_task)
+                task_id = await add_task(
+                    title=task_dict["title"],
+                    description=task_dict["description"],
+                    goal_id=task_dict["goal_id"],
+                    agent_type=task_dict["agent_type"],
+                    tier=task_dict["tier"],
+                    priority=task_dict["priority"],
+                    depends_on=depends_on if depends_on else None,
+                    context=task_dict["context"],
+                )
+                step_to_task[step_id] = task_id
+
+        logger.info(
+            "Workflow '%s' resumed: goal_id=%d, %d completed, %d new tasks inserted",
+            wf_name, goal_id, len(completed_step_ids), len(missing_steps),
+        )
+        return goal_id

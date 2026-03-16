@@ -14,7 +14,7 @@ from ..infra.db import (add_task, add_goal, get_active_goals, get_ready_tasks,
                 get_daily_stats, update_task, get_recent_completed_tasks,
                 get_db, cancel_task, reprioritize_task, get_task_tree,
                 get_task, get_budget, set_budget, get_model_stats,
-                get_goal_locks,
+                get_goal_locks, get_goal, get_tasks_for_goal,
                 insert_approval_request, update_approval_status)
 from ..memory.conversations import format_recent_context, find_followup_context, \
     store_exchange
@@ -57,6 +57,9 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("workspace", self.cmd_workspace))  # Phase 6
         self.app.add_handler(CommandHandler("project", self.cmd_project))      # Phase 6
         self.app.add_handler(CommandHandler("ingest", self.cmd_ingest))        # Phase 11.5
+        self.app.add_handler(CommandHandler("wfstatus", self.cmd_wfstatus))  # Workflow status
+        self.app.add_handler(CommandHandler("product", self.cmd_product))    # Start product workflow
+        self.app.add_handler(CommandHandler("resume", self.cmd_resume))      # Resume workflow
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.REPLY,
@@ -85,6 +88,9 @@ class TelegramInterface:
             "/workspace — View goal workspaces\n"
             "/project [name] — List/view projects\n"
             "/ingest <url\\_or\\_path> — Ingest a document into knowledge base\n"
+            "/product <idea> — Start idea-to-product workflow\n"
+            "/wfstatus <goal\\_id> — View workflow progress\n"
+            "/resume <goal\\_id> — Resume a failed workflow\n"
             "/digest — Get daily digest now\n\n"
             "Or just send a message — I'll figure out what to do.",
             parse_mode="Markdown"
@@ -617,6 +623,122 @@ class TelegramInterface:
         except Exception as e:
             await update.message.reply_text(
                 f"❌ Ingestion error: {type(e).__name__}: {e}"
+            )
+
+    # ─── Workflow Commands ──────────────────────────────────────────────
+
+    async def cmd_wfstatus(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show workflow progress for a goal."""
+        if not context.args:
+            await update.message.reply_text("Usage: /wfstatus <goal\\_id>",
+                                            parse_mode="Markdown")
+            return
+
+        try:
+            goal_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("Goal ID must be a number.")
+            return
+
+        try:
+            from ..workflows.engine.status import (
+                compute_phase_progress, format_status_message,
+            )
+
+            goal = await get_goal(goal_id)
+            if not goal:
+                await update.message.reply_text(f"Goal #{goal_id} not found.")
+                return
+
+            tasks = await get_tasks_for_goal(goal_id)
+            if not tasks:
+                await update.message.reply_text(
+                    f"No tasks found for goal #{goal_id}."
+                )
+                return
+
+            # Determine workflow name from goal context
+            goal_ctx = goal.get("context", "{}")
+            if isinstance(goal_ctx, str):
+                import json as _json
+                try:
+                    goal_ctx = _json.loads(goal_ctx)
+                except (ValueError, TypeError):
+                    goal_ctx = {}
+            workflow_name = goal_ctx.get("workflow_name", "idea_to_product_v2")
+
+            progress = compute_phase_progress(tasks)
+            msg = format_status_message(workflow_name, goal_id, progress)
+            await update.message.reply_text(msg)
+        except Exception as e:
+            await update.message.reply_text(
+                f"Error fetching workflow status: {type(e).__name__}: {e}"
+            )
+
+    async def cmd_product(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start a new idea-to-product workflow."""
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /product <your product idea>"
+            )
+            return
+
+        idea_text = " ".join(context.args)
+
+        try:
+            from ..workflows.engine.runner import WorkflowRunner
+
+            await update.message.reply_text(
+                f"Starting product workflow for: _{idea_text}_\n"
+                "This may take a moment...",
+                parse_mode="Markdown",
+            )
+
+            runner = WorkflowRunner()
+            goal_id = await runner.start(
+                "idea_to_product_v2",
+                initial_input={"raw_idea": idea_text},
+                title=idea_text[:80],
+            )
+
+            await update.message.reply_text(
+                f"\U0001f680 Product workflow started! Goal #{goal_id}\n"
+                f"Use /wfstatus {goal_id} to track progress."
+            )
+        except Exception as e:
+            await update.message.reply_text(
+                f"Failed to start product workflow: {type(e).__name__}: {e}"
+            )
+
+    async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Resume a failed or paused workflow."""
+        if not context.args:
+            await update.message.reply_text("Usage: /resume <goal\\_id>",
+                                            parse_mode="Markdown")
+            return
+
+        try:
+            goal_id_str = context.args[0]
+            goal_id = int(goal_id_str)
+        except ValueError:
+            await update.message.reply_text("Goal ID must be a number.")
+            return
+
+        try:
+            from ..workflows.engine.runner import WorkflowRunner
+
+            runner = WorkflowRunner()
+            resumed_id = await runner.resume(goal_id)
+
+            await update.message.reply_text(
+                f"\u25b6\ufe0f Workflow resumed for goal #{resumed_id}\n"
+                f"Use /wfstatus {resumed_id} to track progress."
+            )
+        except ValueError as e:
+            await update.message.reply_text(f"Cannot resume: {e}")
+        except Exception as e:
+            await update.message.reply_text(
+                f"Failed to resume workflow: {type(e).__name__}: {e}"
             )
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

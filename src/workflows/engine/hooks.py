@@ -175,6 +175,67 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
                 f"cycles — escalating to needs_clarification"
             )
 
+    # ── Check phase completion for checkpoint/resume support ──
+    workflow_phase = ctx.get("workflow_phase")
+    if goal_id and workflow_phase:
+        await _check_phase_completion(goal_id, workflow_phase)
+
+
+async def _check_phase_completion(goal_id: int, phase_id: str) -> bool:
+    """Detect when all tasks in a workflow phase are done and checkpoint it.
+
+    Returns True if the phase is complete, False otherwise.
+    """
+    try:
+        from ...infra.db import get_tasks_for_goal, get_workflow_checkpoint, upsert_workflow_checkpoint
+    except ImportError as exc:
+        logger.debug(f"[Workflow Hook] Phase completion check skipped (import): {exc}")
+        return False
+
+    try:
+        tasks = await get_tasks_for_goal(goal_id)
+    except Exception as exc:
+        logger.debug(f"[Workflow Hook] Could not fetch tasks for goal {goal_id}: {exc}")
+        return False
+
+    terminal_states = {"completed", "skipped", "cancelled"}
+    phase_tasks = []
+    for t in tasks:
+        ctx = _parse_context(t)
+        if ctx.get("workflow_phase") == phase_id:
+            phase_tasks.append(t)
+
+    if not phase_tasks:
+        return False
+
+    all_done = all(t.get("status") in terminal_states for t in phase_tasks)
+    if not all_done:
+        return False
+
+    # Phase complete — update checkpoint
+    try:
+        checkpoint = await get_workflow_checkpoint(goal_id)
+        completed = checkpoint["completed_phases"] if checkpoint else []
+        workflow_name = checkpoint["workflow_name"] if checkpoint else ""
+
+        if phase_id not in completed:
+            completed.append(phase_id)
+
+        await upsert_workflow_checkpoint(
+            goal_id=goal_id,
+            workflow_name=workflow_name,
+            current_phase=phase_id,
+            completed_phases=completed,
+        )
+        logger.info(
+            f"[Workflow Hook] Phase '{phase_id}' complete for goal {goal_id} "
+            f"({len(phase_tasks)} tasks). Checkpoint updated."
+        )
+    except Exception as exc:
+        logger.debug(f"[Workflow Hook] Could not update checkpoint: {exc}")
+
+    return True
+
 
 async def _check_conditional_triggers(
     goal_id: int, output_names: list[str], store: ArtifactStore

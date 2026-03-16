@@ -202,6 +202,19 @@ async def init_db():
         )
     """)
 
+    # Approval requests (Resilience)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS approval_requests (
+            task_id INTEGER PRIMARY KEY,
+            goal_id INTEGER,
+            title TEXT,
+            details TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            resolved_at TIMESTAMP
+        )
+    """)
+
     # Workspace snapshots (Phase 6)
     await db.execute("""
         CREATE TABLE IF NOT EXISTS workspace_snapshots (
@@ -437,7 +450,7 @@ async def get_ready_tasks(limit=5):
                 break
             continue
 
-        # Check if ALL dependencies are completed
+        # Check dependency statuses (completed + skipped count as resolved)
         placeholders = ",".join("?" * len(deps))
         dep_cursor = await db.execute(
             f"""SELECT COUNT(*) FROM tasks
@@ -445,6 +458,15 @@ async def get_ready_tasks(limit=5):
             deps
         )
         completed_count = (await dep_cursor.fetchone())[0]
+
+        skip_cursor = await db.execute(
+            f"""SELECT COUNT(*) FROM tasks
+                WHERE id IN ({placeholders}) AND status = 'skipped'""",
+            deps
+        )
+        skipped_count = (await skip_cursor.fetchone())[0]
+
+        resolved_count = completed_count + skipped_count
 
         # Also check if any dependency FAILED (unrecoverable block)
         fail_cursor = await db.execute(
@@ -454,10 +476,19 @@ async def get_ready_tasks(limit=5):
         )
         failed_count = (await fail_cursor.fetchone())[0]
 
-        if completed_count == len(deps):
+        if resolved_count == len(deps) and completed_count > 0:
+            # All deps resolved AND at least one completed → ready
             ready.append(task)
             if len(ready) >= limit:
                 break
+        elif resolved_count == len(deps) and completed_count == 0:
+            # All deps resolved but ALL are skipped → auto-skip this task
+            await db.execute(
+                "UPDATE tasks SET status = 'skipped', error = 'dependency_skipped' WHERE id = ?",
+                (task_id,)
+            )
+            await db.commit()
+            logger.info(f"Task #{task_id} auto-skipped: all deps are skipped")
         elif failed_count > 0:
             blocked.append((task_id, "has_failed_deps"))
             logger.debug(
@@ -602,6 +633,185 @@ async def add_subtasks_atomically(
         raise
 
     return created_ids
+
+
+# ─── Transaction-safe task creation (no parent) ──────────────────────────────
+
+async def insert_tasks_atomically(
+    tasks: list[dict],
+    goal_id: int,
+) -> list[int]:
+    """Insert multiple tasks for a goal in a single transaction.
+
+    Each task dict may have: title, description, agent_type, tier, priority,
+    depends_on (list of task IDs), context (dict).
+
+    Uses compute_task_hash for dedup within the batch (and against existing
+    pending/processing tasks).
+
+    Returns list of created task IDs (or -1 for deduped entries).
+    """
+    db = await get_db()
+    created_ids: list[int] = []
+
+    try:
+        await db.execute("BEGIN")
+
+        seen_hashes: set[str] = set()
+
+        for t in tasks:
+            title = t.get("title", "Task")
+            description = t.get("description", "")
+            agent_type = t.get("agent_type", "executor")
+            task_hash = compute_task_hash(
+                title, description, agent_type, goal_id, None
+            )
+
+            # Dedup within this batch
+            if task_hash in seen_hashes:
+                created_ids.append(-1)
+                continue
+            seen_hashes.add(task_hash)
+
+            # Dedup against existing DB tasks
+            cursor = await db.execute(
+                """SELECT id FROM tasks
+                   WHERE task_hash = ? AND status IN ('pending', 'processing')
+                   LIMIT 1""",
+                (task_hash,)
+            )
+            dup = await cursor.fetchone()
+            if dup:
+                created_ids.append(-1)
+                continue
+
+            cursor = await db.execute(
+                """INSERT INTO tasks
+                   (goal_id, parent_task_id, title, description, agent_type,
+                    tier, priority, requires_approval, depends_on, context,
+                    task_hash)
+                   VALUES (?, NULL, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
+                (goal_id, title, description, agent_type,
+                 t.get("tier", "auto"), t.get("priority", 5),
+                 json.dumps(t.get("depends_on", [])),
+                 json.dumps(t.get("context", {})),
+                 task_hash)
+            )
+            created_ids.append(cursor.lastrowid)
+
+        await db.commit()
+    except Exception:
+        await db.execute("ROLLBACK")
+        raise
+
+    return created_ids
+
+
+# ─── Skip propagation (transitive closure) ────────────────────────────────────
+
+async def propagate_skips(goal_id: int) -> int:
+    """Propagate skip status transitively through dependency chains.
+
+    For each pending task whose depends_on contains a skipped dep:
+    - If ALL deps are completed or skipped, AND at least one is completed,
+      the task is still ready (do nothing).
+    - If ALL deps are skipped (none completed), mark the task as skipped
+      with error reason "dependency_skipped".
+
+    Repeats until no more tasks are newly skipped (transitive closure).
+
+    Returns count of newly skipped tasks.
+    """
+    db = await get_db()
+    total_skipped = 0
+
+    while True:
+        # Collect all skipped task IDs for this goal
+        cursor = await db.execute(
+            "SELECT id FROM tasks WHERE goal_id = ? AND status = 'skipped'",
+            (goal_id,)
+        )
+        skipped_ids = {row[0] for row in await cursor.fetchall()}
+
+        if not skipped_ids:
+            break
+
+        # Get all pending tasks for this goal
+        cursor = await db.execute(
+            "SELECT id, depends_on FROM tasks WHERE goal_id = ? AND status = 'pending'",
+            (goal_id,)
+        )
+        pending_tasks = await cursor.fetchall()
+
+        newly_skipped = 0
+
+        for row in pending_tasks:
+            task_id = row[0]
+            raw_deps = row[1]
+
+            # Parse depends_on
+            try:
+                if raw_deps is None or raw_deps == "" or raw_deps == "null":
+                    deps = []
+                elif isinstance(raw_deps, str):
+                    parsed = json.loads(raw_deps)
+                    deps = parsed if isinstance(parsed, list) else [parsed] if isinstance(parsed, int) else []
+                elif isinstance(raw_deps, (list, tuple)):
+                    deps = list(raw_deps)
+                elif isinstance(raw_deps, int):
+                    deps = [raw_deps]
+                else:
+                    deps = []
+            except (json.JSONDecodeError, TypeError):
+                deps = []
+
+            if not deps:
+                continue
+
+            # Check if any dep is skipped
+            has_skipped_dep = any(d in skipped_ids for d in deps)
+            if not has_skipped_dep:
+                continue
+
+            # Check status of all deps
+            placeholders = ",".join("?" * len(deps))
+            dep_cursor = await db.execute(
+                f"SELECT id, status FROM tasks WHERE id IN ({placeholders})",
+                deps
+            )
+            dep_rows = await dep_cursor.fetchall()
+            dep_statuses = {r[0]: r[1] for r in dep_rows}
+
+            # All deps must be in {completed, skipped}
+            all_resolved = all(
+                dep_statuses.get(d) in ('completed', 'skipped')
+                for d in deps
+            )
+            if not all_resolved:
+                continue
+
+            # If ALL are skipped (none completed), skip this task
+            has_completed = any(
+                dep_statuses.get(d) == 'completed' for d in deps
+            )
+            if not has_completed:
+                await db.execute(
+                    "UPDATE tasks SET status = 'skipped', error = 'dependency_skipped' WHERE id = ?",
+                    (task_id,)
+                )
+                newly_skipped += 1
+
+        if newly_skipped == 0:
+            break
+
+        await db.commit()
+        total_skipped += newly_skipped
+
+    if total_skipped > 0:
+        await db.commit()
+        logger.info(f"Skip propagation: {total_skipped} tasks skipped for goal #{goal_id}")
+
+    return total_skipped
 
 
 # --- Checkpoint Operations ---

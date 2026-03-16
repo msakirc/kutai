@@ -245,6 +245,19 @@ class BackpressureQueue:
                 f"{e} — next retry in {entry.retry_interval:.0f}s"
             )
 
+    def signal_capacity_available(self) -> None:
+        """Signal that rate limit capacity has been restored, triggering faster retries."""
+        if self._queue:
+            now = time.time()
+            for entry in self._queue:
+                if not entry.result_future.done():
+                    entry.next_retry_at = now  # make eligible immediately
+            self._has_items.set()
+            logger.info(
+                f"Backpressure: capacity signal — "
+                f"{len(self._queue)} queued calls eligible for retry"
+            )
+
     def stop(self) -> None:
         self._running = False
 

@@ -17,8 +17,11 @@ from dataclasses import dataclass, field
 import litellm
 
 litellm.suppress_debug_info = True
+litellm.return_response_headers = True
 
 from src.models.rate_limiter import get_rate_limit_manager
+from src.models.header_parser import parse_rate_limit_headers
+from src.models.quota_planner import get_quota_planner
 from src.models.capabilities import ALL_CAPABILITIES, Cap, TASK_PROFILES, \
   TaskRequirements as CapabilityTaskReqs, score_model_for_task
 from src.models.model_registry import ModelInfo, get_registry
@@ -402,6 +405,13 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
                 cost_score = 10
             reasons.append(f"cost=${est_cost:.4f}")
 
+            # Quota planner: penalize paid models when below threshold
+            planner = get_quota_planner()
+            if reqs.difficulty < planner.expensive_threshold:
+                penalty = (planner.expensive_threshold - reqs.difficulty) * 8
+                cost_score = max(0, cost_score - penalty)
+                reasons.append(f"quota_pen=-{penalty}")
+
         # ═════════════════════════════════════════
         # 3. AVAILABILITY (0-100)
         # ═════════════════════════════════════════
@@ -569,6 +579,44 @@ def select_for_task(task: str, **kwargs) -> list[ScoredModel]:
 
 
 
+def _update_limits_from_response(
+    response,
+    model: ModelInfo,
+    rl_manager,
+) -> None:
+    """Parse rate limit headers from a litellm response and update state."""
+    try:
+        hidden = getattr(response, "_hidden_params", None)
+        if not hidden:
+            return
+        headers = hidden.get("additional_headers") or hidden.get("headers")
+        if not headers:
+            return
+
+        snapshot = parse_rate_limit_headers(model.provider, dict(headers))
+        if snapshot is None:
+            return
+
+        rl_manager.update_from_headers(
+            model.litellm_name, model.provider, snapshot,
+        )
+
+        # Update quota planner utilization from header data
+        planner = get_quota_planner()
+        if snapshot.rpm_limit and snapshot.rpm_remaining is not None:
+            util_pct = (1.0 - snapshot.rpm_remaining / snapshot.rpm_limit) * 100
+            reset_in = (snapshot.rpm_reset_at - time.time()) if snapshot.rpm_reset_at else 3600
+            planner.update_paid_utilization(model.provider, util_pct, max(0, reset_in))
+
+            # Detect quota restoration
+            prev_util = planner._paid_utilization.get(model.provider, 100.0)
+            if prev_util > 80 and util_pct < 30:
+                planner.on_quota_restored(model.provider, snapshot.rpm_remaining / snapshot.rpm_limit * 100)
+
+    except Exception as e:
+        logger.debug(f"Header parsing failed for {model.name}: {e}")
+
+
 # ─── Main API: call_model ────────────────────────────────────────────────────
 
 async def call_model(
@@ -683,6 +731,12 @@ async def call_model(
                 provider=model.provider,
                 estimated_tokens=estimated_tokens,
             )
+            if wait_time < 0:
+                logger.warning(
+                    f"Daily limit exhausted for {model.name} — skipping"
+                )
+                last_error = f"Daily limit exhausted for {model.name}"
+                continue
             if wait_time > 0:
                 logger.info(
                     f"Rate limiter waited {wait_time:.1f}s for "
@@ -754,6 +808,10 @@ async def call_model(
                             model.provider,
                             total_tokens,
                         )
+
+                    # Update rate limits from response headers
+                    if not model.is_local:
+                        _update_limits_from_response(response, model, rl_manager)
 
                     # Update measured speed
                     if model.is_local and response.usage:
@@ -831,6 +889,8 @@ async def call_model(
                                 model.litellm_name,
                                 model.provider,
                             )
+                            if not model.is_free:
+                                get_quota_planner().record_429(model.provider)
                         if attempt < max_retries - 1:
                             wait_time = (attempt + 1) * 5
                             logger.warning(

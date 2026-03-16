@@ -18,8 +18,10 @@ Schema per goal::
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import sqlite3
 from typing import Any, Optional
 
 from ..infra.db import get_db
@@ -207,15 +209,27 @@ async def _ensure_table(db) -> None:
 
 
 async def _persist(goal_id: int, board: dict) -> None:
-    """Write board state back to DB."""
-    try:
-        db = await get_db()
-        await _ensure_table(db)
-        await db.execute(
-            """INSERT OR REPLACE INTO blackboards (goal_id, data, updated_at)
-               VALUES (?, ?, CURRENT_TIMESTAMP)""",
-            (goal_id, json.dumps(board)),
-        )
-        await db.commit()
-    except Exception as exc:
-        logger.debug(f"Blackboard persist failed (non-critical): {exc}")
+    """Write board state back to DB with 1 retry on SQLite busy errors."""
+    last_exc: Exception | None = None
+    for attempt in range(2):  # initial + 1 retry
+        try:
+            db = await get_db()
+            await _ensure_table(db)
+            await db.execute(
+                """INSERT OR REPLACE INTO blackboards (goal_id, data, updated_at)
+                   VALUES (?, ?, CURRENT_TIMESTAMP)""",
+                (goal_id, json.dumps(board)),
+            )
+            await db.commit()
+            return  # success
+        except sqlite3.OperationalError as exc:
+            last_exc = exc
+            if attempt == 0 and "database is locked" in str(exc).lower():
+                logger.debug("Blackboard persist: SQLite busy, retrying in 100ms")
+                await asyncio.sleep(0.1)
+                continue
+            raise  # non-busy OperationalError — propagate
+        except Exception:
+            raise  # non-SQLite errors always propagate
+    # Exhausted retries — raise the last busy error
+    raise last_exc  # type: ignore[misc]

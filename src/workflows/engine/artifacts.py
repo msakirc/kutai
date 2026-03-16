@@ -36,18 +36,15 @@ class ArtifactStore:
         return str(goal_id)
 
     async def store(self, goal_id: int | str, name: str, value: str) -> None:
-        """Store an artifact in cache and optionally persist to blackboard."""
+        """Store an artifact — DB first, then cache on success."""
         key = self._goal_key(goal_id)
+        if self._use_db:
+            from src.collaboration.blackboard import update_blackboard_entry
+            await update_blackboard_entry(goal_id, "artifacts", name, value)
+        # Cache only after successful DB write (or if use_db=False)
         if key not in self._cache:
             self._cache[key] = {}
         self._cache[key][name] = value
-
-        if self._use_db:
-            try:
-                from src.collaboration.blackboard import update_blackboard_entry
-                await update_blackboard_entry(goal_id, "artifacts", name, value)
-            except Exception as exc:
-                logger.debug(f"Artifact DB persist failed (non-critical): {exc}")
 
     async def retrieve(self, goal_id: int | str, name: str) -> Optional[str]:
         """Retrieve an artifact, cache-first with DB fallback."""
@@ -92,6 +89,42 @@ class ArtifactStore:
         if key in self._cache:
             return list(self._cache[key].keys())
         return []
+
+    async def flush_cache(self) -> None:
+        """Best-effort flush of all cached artifacts to DB.
+
+        Used during graceful shutdown.  Logs failures but does not raise.
+        """
+        if not self._use_db:
+            return
+        from src.collaboration.blackboard import update_blackboard_entry
+
+        for goal_key, artifacts in self._cache.items():
+            goal_id = int(goal_key)
+            for name, value in artifacts.items():
+                try:
+                    await update_blackboard_entry(goal_id, "artifacts", name, value)
+                except Exception as exc:
+                    logger.warning(
+                        "flush_cache: failed to persist artifact %s for goal %s: %s",
+                        name, goal_key, exc,
+                    )
+
+    async def warm_cache(self, goal_id: int | str) -> None:
+        """Load all artifacts for *goal_id* from the blackboard into cache.
+
+        Used during workflow resume to restore in-memory state.
+        """
+        if not self._use_db:
+            return
+        from src.collaboration.blackboard import read_blackboard
+
+        artifacts = await read_blackboard(goal_id, "artifacts")
+        if isinstance(artifacts, dict) and artifacts:
+            key = self._goal_key(goal_id)
+            if key not in self._cache:
+                self._cache[key] = {}
+            self._cache[key].update(artifacts)
 
 
 # ── Prompt formatting ───────────────────────────────────────────────────────

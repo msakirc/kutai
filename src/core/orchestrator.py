@@ -53,6 +53,7 @@ AGENT_TIMEOUTS: dict[str, int] = {
     "executor":       180,
     "error_recovery": 240,
     "pipeline":       600,
+    "workflow":       900,  # 15 min — workflow steps can be lengthy
 }
 
 # Maximum number of independent tasks to run concurrently.
@@ -635,6 +636,15 @@ class Orchestrator:
                     agent_type = classification.agent_type
                 task["context"] = json.dumps(task_ctx)
 
+            # ── Workflow step pre-hook: inject artifact context ──
+            from ..workflows.engine.hooks import (
+                pre_execute_workflow_step,
+                post_execute_workflow_step,
+                is_workflow_step,
+            )
+            if is_workflow_step(task_ctx):
+                task = await pre_execute_workflow_step(task)
+
             # ── Phase 6: Snapshot workspace before coder/pipeline tasks ──
             goal_id = task.get("goal_id")
             if goal_id and agent_type in ("coder", "pipeline", "implementer", "fixer"):
@@ -698,6 +708,9 @@ class Orchestrator:
                 await self._auto_commit(task, result)
 
             if status == "completed":
+                # Workflow step post-hook: store output artifacts
+                if is_workflow_step(task_ctx):
+                    await post_execute_workflow_step(task, result)
                 await self._handle_complete(task, result)
             elif status == "needs_subtasks":
                 await self._handle_subtasks(task, result)

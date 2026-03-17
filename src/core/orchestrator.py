@@ -446,6 +446,47 @@ class Orchestrator:
                     f"received after 72h.\n*{ttitle}*"
                 )
 
+        # 5. Workflow-level timeout check — pause workflows running too long
+        try:
+            goal_cursor = await db.execute(
+                """SELECT id, title, context, created_at FROM goals
+                   WHERE status = 'active'"""
+            )
+            active_goals = [dict(row) for row in await goal_cursor.fetchall()]
+            for goal in active_goals:
+                raw_gctx = goal.get("context", "{}")
+                if isinstance(raw_gctx, str):
+                    try:
+                        gctx = json.loads(raw_gctx)
+                    except (json.JSONDecodeError, TypeError):
+                        gctx = {}
+                else:
+                    gctx = raw_gctx or {}
+
+                timeout_hours = gctx.get("workflow_timeout_hours")
+                if not timeout_hours:
+                    continue
+
+                try:
+                    created = datetime.fromisoformat(goal["created_at"])
+                except (ValueError, TypeError):
+                    continue
+
+                elapsed_hours = (datetime.now() - created).total_seconds() / 3600
+                if elapsed_hours > timeout_hours:
+                    logger.warning(
+                        "[Watchdog] Goal #%d exceeded timeout (%dh > %dh), pausing",
+                        goal["id"], int(elapsed_hours), timeout_hours,
+                    )
+                    await update_goal(goal["id"], status="paused")
+                    await self.telegram.send_notification(
+                        f"⏱️ *Workflow timeout*: Goal #{goal['id']} paused after "
+                        f"{int(elapsed_hours)}h (limit: {timeout_hours}h).\n"
+                        f"*{goal['title']}*\nUse /resume to continue."
+                    )
+        except Exception as e:
+            logger.warning(f"[Watchdog] Workflow timeout check failed: {e}")
+
         await db.commit()
 
         # ═══════════════════════════════════════════════════════════
@@ -488,7 +529,7 @@ class Orchestrator:
                             f"{model_name}"
                         )
         except Exception as e:
-            logger.debug(f"[Watchdog] Local model check failed: {e}")
+            logger.warning(f"[Watchdog] Local model check failed: {e}")
 
         # 5. Check GPU health
         try:
@@ -538,7 +579,7 @@ class Orchestrator:
                 )
 
         except Exception as e:
-            logger.debug(f"[Watchdog] GPU health check failed: {e}")
+            logger.warning(f"[Watchdog] GPU health check failed: {e}")
 
         # 6. Check GPU scheduler queue depth
         try:
@@ -558,7 +599,7 @@ class Orchestrator:
                 )
 
         except Exception as e:
-            logger.debug(f"[Watchdog] GPU scheduler check failed: {e}")
+            logger.warning(f"[Watchdog] GPU scheduler check failed: {e}")
 
         # 7. Check backpressure queue
         try:
@@ -579,7 +620,7 @@ class Orchestrator:
                 )
 
         except Exception as e:
-            logger.debug(f"[Watchdog] Backpressure check failed: {e}")
+            logger.warning(f"[Watchdog] Backpressure check failed: {e}")
 
         # 8. Check circuit breakers — are ALL cloud providers down?
         try:
@@ -611,14 +652,34 @@ class Orchestrator:
                     )
 
         except Exception as e:
-            logger.debug(f"[Watchdog] Circuit breaker check failed: {e}")
+            logger.warning(f"[Watchdog] Circuit breaker check failed: {e}")
 
         # 9. Restore rate limits that were adaptively reduced
         try:
             from ..models.rate_limiter import get_rate_limit_manager
             get_rate_limit_manager().restore_limits()
         except Exception as e:
-            logger.debug(f"[Watchdog] Rate limit restore failed: {e}")
+            logger.warning(f"[Watchdog] Rate limit restore failed: {e}")
+
+        # 10. Check for expiring credentials (warn 24h before expiry)
+        try:
+            from ..security.credential_store import list_credentials, get_credential
+            from datetime import timezone
+
+            services = await list_credentials()
+            for svc in services:
+                cred = await get_credential(svc)
+                if cred is None:
+                    # Already expired — get_credential returns None
+                    resource_issues.append(
+                        f"🔑 Credential '{svc}' has expired. Refresh with /credential add."
+                    )
+                    await self.telegram.send_notification(
+                        f"🔑 *Credential expired*: `{svc}`\n"
+                        f"Use /credential add to refresh."
+                    )
+        except Exception as e:
+            logger.warning(f"[Watchdog] Credential expiry check failed: {e}")
 
         # ── Alert on resource issues ──
         if resource_issues:
@@ -1133,10 +1194,21 @@ class Orchestrator:
 
         MAX_SUBTASKS = 8
         if len(subtasks) > MAX_SUBTASKS:
+            dropped_titles = [
+                s.get("title", "?")[:60] for s in subtasks[MAX_SUBTASKS:]
+            ]
             logger.warning(
                 f"[Task #{task_id}] Planner created {len(subtasks)} subtasks, "
-                f"capping at {MAX_SUBTASKS}"
+                f"capping at {MAX_SUBTASKS}. Dropped: {dropped_titles}"
             )
+            try:
+                await self.telegram.send_notification(
+                    f"⚠️ *Subtask cap* (Task #{task_id})\n"
+                    f"Created {len(subtasks)}, keeping {MAX_SUBTASKS}.\n"
+                    f"Dropped: {', '.join(dropped_titles)}"
+                )
+            except Exception:
+                pass
             subtasks = subtasks[:MAX_SUBTASKS]
 
         # ── Phase 13.2: Plan verification ──
@@ -1287,9 +1359,13 @@ class Orchestrator:
             f"Report what went wrong and how to prevent it."
         )
 
+        # Use a stable title for dedup — error text varies between retries
+        # but we only want ONE recovery task per failed task
+        stable_title = f"Error recovery: task#{task_id}"
+
         try:
             recovery_task_id = await add_task(
-                title=f"Error recovery: {title[:50]}",
+                title=stable_title,
                 description=recovery_description,
                 goal_id=goal_id,
                 parent_task_id=task_id,

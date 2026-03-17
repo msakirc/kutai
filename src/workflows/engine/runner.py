@@ -337,10 +337,14 @@ class WorkflowRunner:
         # 2. Create goal
         goal_title = title or f"Workflow: {wf.metadata.get('title', workflow_name)}"
         goal_description = wf.metadata.get("description", "")
+        # Workflow-level timeout: default 72 hours for full workflows
+        timeout_hours = wf.metadata.get("timeout_hours", 72)
+
         goal_context = {
             "workflow_name": workflow_name,
             "workflow_version": wf.version,
             "plan_id": wf.plan_id,
+            "workflow_timeout_hours": timeout_hours,
         }
         if initial_input:
             goal_context["initial_input"] = initial_input

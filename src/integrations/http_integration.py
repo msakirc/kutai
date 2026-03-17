@@ -10,9 +10,42 @@ import asyncio
 import json
 import logging
 import os
+import urllib.parse
 from typing import Any
 
 from .base import BaseIntegration
+
+# ---------------------------------------------------------------------------
+# URL safety — prevent SSRF and parameter injection
+# ---------------------------------------------------------------------------
+
+_BLOCKED_HOSTS = frozenset({
+    "localhost", "127.0.0.1", "0.0.0.0", "::1",
+    "metadata.google.internal",       # GCP metadata
+    "169.254.169.254",                 # AWS/Azure metadata
+    "metadata.azure.com",
+})
+
+
+def _validate_url(url: str) -> None:
+    """Raise ValueError if the URL targets a blocked/internal host."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Blocked URL scheme: {parsed.scheme!r} (only http/https allowed)")
+    hostname = (parsed.hostname or "").lower()
+    if hostname in _BLOCKED_HOSTS:
+        raise ValueError(f"Blocked internal host: {hostname}")
+    # Block private IP ranges (10.x, 172.16-31.x, 192.168.x)
+    if hostname.startswith(("10.", "192.168.")):
+        raise ValueError(f"Blocked private IP: {hostname}")
+    parts = hostname.split(".")
+    if len(parts) == 4 and parts[0] == "172":
+        try:
+            second_octet = int(parts[1])
+        except (ValueError, IndexError):
+            second_octet = -1
+        if 16 <= second_octet <= 31:
+            raise ValueError(f"Blocked private IP: {hostname}")
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +194,8 @@ class HttpIntegration(BaseIntegration):
         self._auth_header = config.get("auth_header", "Authorization")
         self._auth_query_param = config.get("auth_query_param", "token")
         self._actions = config.get("actions", {})
+        # Validate base_url at construction time
+        _validate_url(self._base_url)
 
     @classmethod
     def from_config_file(cls, config_path: str) -> "HttpIntegration":
@@ -233,14 +268,20 @@ class HttpIntegration(BaseIntegration):
                 ),
             }
 
-        # Build URL
+        # Build URL with safe path parameter substitution
         url = self._base_url + path
 
-        # Substitute path parameters like {owner}, {repo}
+        # Substitute path parameters like {owner}, {repo} — URL-encode values
         for key, value in params.items():
             placeholder = "{" + key + "}"
             if placeholder in url:
-                url = url.replace(placeholder, str(value))
+                url = url.replace(placeholder, urllib.parse.quote(str(value), safe=""))
+
+        # Validate final URL to prevent SSRF attacks
+        try:
+            _validate_url(url)
+        except ValueError as e:
+            return {"status": "error", "error": f"URL validation failed: {e}"}
 
         # Build headers and auth
         headers: dict[str, str] = {

@@ -47,14 +47,20 @@ def _get_fernet():
 
     raw_key = os.getenv("KUTAY_MASTER_KEY", "")
     if not raw_key:
+        env = os.getenv("KUTAY_ENV", "development").lower()
+        if env in ("production", "prod", "staging"):
+            raise RuntimeError(
+                "KUTAY_MASTER_KEY environment variable is required in "
+                f"{env} mode. Set a Fernet-compatible key or a passphrase."
+            )
         warnings.warn(
-            "KUTAY_MASTER_KEY not set — using auto-generated fallback key. "
-            "Set KUTAY_MASTER_KEY for persistent encrypted storage.",
+            "KUTAY_MASTER_KEY not set — using dev-only fallback key. "
+            "This is NOT secure. Set KUTAY_MASTER_KEY for production.",
             stacklevel=2,
         )
-        # Generate a deterministic-ish fallback for dev/testing
-        # (NOT secure — credentials won't survive restarts with different key)
+        # Dev-only deterministic key — credentials won't survive key changes
         raw_key = base64.urlsafe_b64encode(b"kutay-dev-fallback-key-00000000").decode()
+        logger.warning("🔓 Using insecure dev fallback key for credential encryption")
 
     # Ensure the key is valid Fernet format (32 url-safe base64 bytes)
     try:
@@ -62,10 +68,16 @@ def _get_fernet():
         _MASTER_KEY = raw_key.encode() if isinstance(raw_key, str) else raw_key
         return _fernet
     except Exception:
-        # Key isn't valid Fernet format — derive one from it
+        # Key isn't valid Fernet format — derive one using PBKDF2
         import hashlib
 
-        derived = hashlib.sha256(raw_key.encode()).digest()
+        # Use PBKDF2 with 480k iterations (OWASP 2023 recommendation for SHA-256)
+        derived = hashlib.pbkdf2_hmac(
+            "sha256",
+            raw_key.encode(),
+            salt=b"kutay-credential-store-v1",  # static salt is OK here
+            iterations=480_000,
+        )
         key = base64.urlsafe_b64encode(derived)
         _fernet = Fernet(key)
         _MASTER_KEY = key

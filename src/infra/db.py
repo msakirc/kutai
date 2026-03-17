@@ -330,10 +330,15 @@ async def init_db():
         ("idx_tasks_goal_id", "tasks", "goal_id"),
         ("idx_tasks_status_priority", "tasks", "status, priority DESC"),
         ("idx_tasks_goal_status", "tasks", "goal_id, status"),
+        ("idx_tasks_hash", "tasks", "task_hash"),
+        ("idx_tasks_parent", "tasks", "parent_task_id"),
+        ("idx_tasks_created", "tasks", "created_at"),
+        ("idx_goals_status", "goals", "status"),
         ("idx_conversations_task_id", "conversations", "task_id"),
         ("idx_memory_goal_category", "memory", "goal_id, category"),
         ("idx_model_stats_model_agent", "model_stats", "model, agent_type"),
         ("idx_blackboards_goal", "blackboards", "goal_id"),
+        ("idx_credentials_service", "credentials", "service_name"),
     ]
     for idx_name, table, columns_str in _indexes:
         try:
@@ -369,7 +374,33 @@ async def get_active_goals():
     )
     return [dict(row) for row in await cursor.fetchall()]
 
+# ─── Column whitelists (prevent SQL injection via dynamic kwargs) ─────────
+
+_GOAL_COLUMNS = frozenset({
+    "title", "description", "status", "priority",
+    "completed_at", "context",
+})
+
+_TASK_COLUMNS = frozenset({
+    "title", "description", "agent_type", "status", "tier", "priority",
+    "requires_approval", "depends_on", "result", "error", "error_category",
+    "context", "retry_count", "max_retries", "started_at", "completed_at",
+    "task_hash", "max_cost",
+})
+
+
+def _validate_columns(kwargs: dict, whitelist: frozenset, table: str) -> None:
+    """Raise ValueError if any kwarg key is not in the column whitelist."""
+    bad = set(kwargs.keys()) - whitelist
+    if bad:
+        raise ValueError(
+            f"Invalid column(s) for {table}: {bad}. "
+            f"Allowed: {sorted(whitelist)}"
+        )
+
+
 async def update_goal(goal_id, **kwargs):
+    _validate_columns(kwargs, _GOAL_COLUMNS, "goals")
     db = await get_db()
     sets = ", ".join(f"{k} = ?" for k in kwargs)
     values = list(kwargs.values()) + [goal_id]
@@ -405,39 +436,49 @@ async def add_task(title, description, goal_id=None, parent_task_id=None,
                    requires_approval=False, depends_on=None, context=None):
     db = await get_db()
 
-    # Dedup check + insert — single-connection serialises writes via WAL,
-    # so the gap between SELECT and INSERT is safe within one async task.
+    # Atomic dedup + insert — wrapped in explicit transaction to prevent
+    # race conditions between concurrent async coroutines.
     task_hash = compute_task_hash(title, description, agent_type, goal_id, parent_task_id)
 
-    cursor = await db.execute(
-        """SELECT id, title, status FROM tasks
-           WHERE task_hash = ?
-             AND status IN ('pending', 'processing')
-           LIMIT 1""",
-        (task_hash,)
-    )
-    duplicate = await cursor.fetchone()
-    if duplicate:
-        dup = dict(duplicate)
-        logger.info(
-            f"⏭️ Task dedup: '{title[:50]}' matches pending task "
-            f"#{dup['id']} — skipping creation"
-        )
-        return None
+    try:
+        await db.execute("BEGIN IMMEDIATE")
 
-    cursor = await db.execute(
-        """INSERT INTO tasks
-           (goal_id, parent_task_id, title, description, agent_type,
-            tier, priority, requires_approval, depends_on, context,
-            task_hash)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (goal_id, parent_task_id, title, description, agent_type,
-         tier, priority, requires_approval,
-         json.dumps(depends_on or []), json.dumps(context or {}),
-         task_hash)
-    )
-    await db.commit()
-    return cursor.lastrowid
+        cursor = await db.execute(
+            """SELECT id, title, status FROM tasks
+               WHERE task_hash = ?
+                 AND status IN ('pending', 'processing')
+               LIMIT 1""",
+            (task_hash,)
+        )
+        duplicate = await cursor.fetchone()
+        if duplicate:
+            dup = dict(duplicate)
+            logger.info(
+                f"⏭️ Task dedup: '{title[:50]}' matches pending task "
+                f"#{dup['id']} — skipping creation"
+            )
+            await db.execute("ROLLBACK")
+            return None
+
+        cursor = await db.execute(
+            """INSERT INTO tasks
+               (goal_id, parent_task_id, title, description, agent_type,
+                tier, priority, requires_approval, depends_on, context,
+                task_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (goal_id, parent_task_id, title, description, agent_type,
+             tier, priority, requires_approval,
+             json.dumps(depends_on or []), json.dumps(context or {}),
+             task_hash)
+        )
+        await db.commit()
+        return cursor.lastrowid
+    except Exception:
+        try:
+            await db.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
 
 async def get_ready_tasks(limit=5):
     """Get pending tasks whose dependencies are all completed.
@@ -586,6 +627,7 @@ async def get_completed_dependency_results(depends_on):
     return results
 
 async def update_task(task_id, **kwargs):
+    _validate_columns(kwargs, _TASK_COLUMNS, "tasks")
     db = await get_db()
     sets = ", ".join(f"{k} = ?" for k in kwargs)
     values = list(kwargs.values()) + [task_id]
@@ -669,10 +711,11 @@ async def add_subtasks_atomically(
             )
             created_ids.append(cursor.lastrowid)
 
-        # Update parent task status
+        # Update parent task status (safe: keys are hardcoded above)
         update_fields = {"status": parent_status}
         if parent_result is not None:
             update_fields["result"] = parent_result
+        _validate_columns(update_fields, _TASK_COLUMNS, "tasks")
         sets = ", ".join(f"{k} = ?" for k in update_fields)
         values = list(update_fields.values()) + [parent_task_id]
         await db.execute(f"UPDATE tasks SET {sets} WHERE id = ?", values)

@@ -35,9 +35,15 @@ class QueuedCall:
     enqueued_at: float = field(default_factory=time.time)
     next_retry_at: float = 0.0
     last_error: str = ""
-    result_future: asyncio.Future = field(
-        default_factory=lambda: asyncio.get_event_loop().create_future()
-    )
+    result_future: asyncio.Future = field(default=None)  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.result_future is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+            self.result_future = loop.create_future()
 
     @property
     def wait_seconds(self) -> float:

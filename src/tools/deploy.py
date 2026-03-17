@@ -16,6 +16,7 @@ SUPPORTED_TARGETS = ("vercel", "railway")
 # Retry settings for post-deploy health check
 _HEALTH_CHECK_RETRIES = 3
 _HEALTH_CHECK_DELAY = 10  # seconds between retries
+_HEALTH_CHECK_TOTAL_TIMEOUT = 45  # total seconds for all retries combined
 
 
 async def _check_credential(target: str) -> dict | None:
@@ -245,7 +246,18 @@ async def deploy(
     verification = None
 
     if deployed_url:
-        verification = await _health_check(deployed_url)
+        try:
+            verification = await asyncio.wait_for(
+                _health_check(deployed_url),
+                timeout=_HEALTH_CHECK_TOTAL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            verification = {
+                "healthy": False,
+                "status_code": None,
+                "attempts": _HEALTH_CHECK_RETRIES,
+                "error": f"Health check timed out after {_HEALTH_CHECK_TOTAL_TIMEOUT}s",
+            }
     else:
         verification = {
             "healthy": None,

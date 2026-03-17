@@ -274,6 +274,14 @@ class BaseAgent:
     #  Tier helpers                                                       #
     # ------------------------------------------------------------------ #
 
+    def _check_tool_permission(self, tool_name: str) -> bool:
+        """Check if this agent is permitted to use tool_name (Phase 8.1)."""
+        try:
+            from ..security.permissions import check_permission
+            return check_permission(self.name, tool_name)
+        except Exception:
+            return True  # fail-open if permissions module unavailable
+
     def _escalate_requirements(self, reqs: ModelRequirements) -> ModelRequirements:
         """
         Escalate model requirements — increase quality floor.
@@ -1271,6 +1279,15 @@ class BaseAgent:
                         f"❌ Tool '{tool_name}' not available. "
                         f"Allowed: {self.allowed_tools}"
                     )
+                elif not self._check_tool_permission(tool_name):
+                    tool_output = (
+                        f"🚫 Tool '{tool_name}' not permitted for agent "
+                        f"type '{self.name}' (security policy)."
+                    )
+                    logger.warning(
+                        f"[Task #{task_id}] Permission denied: "
+                        f"{self.name} → {tool_name}"
+                    )
                 elif tool_name not in TOOL_REGISTRY:
                     tool_output = (
                         f"❌ Unknown tool '{tool_name}'. "
@@ -1316,6 +1333,21 @@ class BaseAgent:
                             tool_output = await execute_tool(tool_name, **tool_args)
                         except Exception as exc:
                             tool_output = f"❌ Tool execution error: {exc}"
+
+                        # Phase 8.4: Audit log tool execution
+                        try:
+                            from ..infra.audit import audit, ACTOR_AGENT, ACTION_TOOL_EXEC
+                            _tid = int(task_id) if str(task_id).isdigit() else None
+                            await audit(
+                                actor=f"{ACTOR_AGENT}:{self.name}",
+                                action=ACTION_TOOL_EXEC,
+                                target=tool_name,
+                                details=str(tool_args)[:500],
+                                task_id=_tid,
+                                goal_id=goal_id,
+                            )
+                        except Exception:
+                            pass
 
                         if tool_name in SIDE_EFFECT_TOOLS:
                             completed_tool_ops[idem_key] = tool_output

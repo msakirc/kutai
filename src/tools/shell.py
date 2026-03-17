@@ -46,10 +46,56 @@ BLOCKED_PATTERNS: set[str] = {
 }
 
 
+# Phase 8.2: Per-agent-type command allowlists (first token of command)
+# None = no restriction beyond blocklist
+AGENT_COMMAND_ALLOWLIST: dict[str, set[str] | None] = {
+    "coder": {
+        "python", "python3", "pip", "pip3", "npm", "node", "npx",
+        "go", "cargo", "rustc", "git", "cat", "ls", "mkdir", "cp",
+        "mv", "grep", "find", "head", "tail", "wc", "sort", "curl",
+        "echo", "touch", "chmod", "pytest", "jest", "ruff", "mypy",
+        "black", "flake8", "eslint", "tsc", "make",
+    },
+    "reviewer": {
+        "pytest", "python", "python3", "npm", "node", "npx",
+        "cat", "ls", "grep", "find", "head", "tail",
+        "ruff", "mypy", "black", "flake8", "eslint", "tsc",
+        "git", "wc", "sort",
+    },
+    "test_generator": {
+        "python", "python3", "pip", "pip3", "npm", "node", "npx",
+        "pytest", "jest", "cat", "ls", "grep", "find", "head", "tail",
+        "git", "ruff", "mypy",
+    },
+    "fixer": {
+        "python", "python3", "pip", "pip3", "npm", "node", "npx",
+        "go", "cargo", "rustc", "git", "cat", "ls", "mkdir", "cp",
+        "mv", "grep", "find", "head", "tail", "wc", "sort", "curl",
+        "echo", "touch", "pytest", "jest", "ruff", "mypy",
+    },
+}
+
+
 def _is_command_blocked(command: str) -> bool:
     """Return True if the command matches any blocked pattern."""
     lower = command.lower().strip()
     return any(pattern in lower for pattern in BLOCKED_PATTERNS)
+
+
+def _is_command_allowed_for_agent(command: str, agent_type: str) -> bool:
+    """Return True if command is allowed for the given agent type (Phase 8.2)."""
+    allowlist = AGENT_COMMAND_ALLOWLIST.get(agent_type)
+    if allowlist is None:
+        return True  # no restriction
+    # Extract the first token (the executable name)
+    first_token = command.strip().split()[0] if command.strip() else ""
+    # Strip path prefix (e.g. /usr/bin/python → python)
+    first_token = first_token.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if first_token in allowlist:
+        return True
+    logger.warning(f"Shell command '{first_token}' not in allowlist for agent '{agent_type}'"
+                   f" — allowed: {sorted(allowlist)[:10]}...")
+    return False
 
 
 # ---------------------------------------------------------------------------

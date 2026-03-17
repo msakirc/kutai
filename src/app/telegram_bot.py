@@ -61,6 +61,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("project", self.cmd_project))      # Phase 6
         self.app.add_handler(CommandHandler("projects", self.cmd_projects))   # Phase 7.1
         self.app.add_handler(CommandHandler("progress", self.cmd_progress))   # Phase 7.2
+        self.app.add_handler(CommandHandler("audit", self.cmd_audit))         # Phase 8.4
         self.app.add_handler(CommandHandler("ingest", self.cmd_ingest))        # Phase 11.5
         self.app.add_handler(CommandHandler("wfstatus", self.cmd_wfstatus))  # Workflow status
         self.app.add_handler(CommandHandler("product", self.cmd_product))    # Start product workflow
@@ -100,6 +101,7 @@ class TelegramInterface:
             "/project [name] — List/view projects\n"
             "/projects — List all projects\n"
             "/progress [goal\\_id] — Show progress notes\n"
+            "/audit [task\\_id] — Show audit log\n"
             "/ingest <url\\_or\\_path> — Ingest a document into knowledge base\n"
             "/product <idea> — Start idea-to-product workflow\n"
             "/wfstatus <goal\\_id> — View workflow progress\n"
@@ -682,6 +684,24 @@ class TelegramInterface:
             await update.message.reply_text(msg, parse_mode="Markdown")
         except (ValueError, IndexError):
             await update.message.reply_text("Usage: /progress [goal_id]")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    async def cmd_audit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show audit log for a task or goal. /audit [task_id]"""
+        args = context.args
+        try:
+            from src.infra.audit import get_audit_log, format_audit_log
+            task_id = int(args[0]) if args else None
+            entries = await get_audit_log(task_id=task_id, limit=30)
+            log_text = format_audit_log(entries)
+            header = f"🔍 *Audit Log* (task #{task_id})" if task_id else "🔍 *Recent Audit Log*"
+            msg = f"{header}\n\n{log_text}"
+            if len(msg) > 4000:
+                msg = msg[:4000] + "\n... (truncated)"
+            await update.message.reply_text(msg, parse_mode="Markdown")
+        except (ValueError, IndexError):
+            await update.message.reply_text("Usage: /audit [task_id]")
         except Exception as e:
             await update.message.reply_text(f"❌ Error: {e}")
 

@@ -115,7 +115,8 @@ def load_workflow(workflow_name: str) -> WorkflowDefinition:
 
 
 def validate_dependencies(wf: WorkflowDefinition) -> list[str]:
-    """Check that every ``depends_on`` reference in *wf* resolves.
+    """Check that every ``depends_on`` reference in *wf* resolves,
+    detect dependency cycles, and flag orphan steps.
 
     Also validates fallback_steps inside conditional groups.
 
@@ -129,15 +130,19 @@ def validate_dependencies(wf: WorkflowDefinition) -> list[str]:
 
     errors: list[str] = []
 
-    # Validate main steps
+    # ── 1. Unknown-reference check ──────────────────────────────────────
+    # Build adjacency list at the same time for cycle detection later
+    adjacency: dict[str, list[str]] = {sid: [] for sid in known_ids}
+
     for step in wf.steps:
         for dep in step.get("depends_on", []):
             if dep not in known_ids:
                 errors.append(
                     f"Step '{step['id']}' depends on unknown step '{dep}'"
                 )
+            else:
+                adjacency[step["id"]].append(dep)
 
-    # Validate fallback steps inside conditional groups
     for cg in wf.conditional_groups:
         for fb in cg.get("fallback_steps", []):
             for dep in fb.get("depends_on", []):
@@ -146,5 +151,59 @@ def validate_dependencies(wf: WorkflowDefinition) -> list[str]:
                         f"Fallback step '{fb['id']}' (group '{cg['group_id']}') "
                         f"depends on unknown step '{dep}'"
                     )
+                else:
+                    adjacency[fb["id"]].append(dep)
+
+    # ── 2. Cycle detection (DFS-based) ──────────────────────────────────
+    # We reverse the adjacency (depends_on → "is depended on by") and
+    # look for back-edges with a standard 3-colour DFS.
+    WHITE, GREY, BLACK = 0, 1, 2
+    colour: dict[str, int] = {sid: WHITE for sid in known_ids}
+    cycle_participants: list[str] = []
+
+    def _dfs_cycle(node: str, path: list[str]) -> bool:
+        """Return True if a cycle is detected reachable from *node*."""
+        colour[node] = GREY
+        path.append(node)
+        for neighbour in adjacency.get(node, []):
+            if colour[neighbour] == GREY:
+                # Back-edge → cycle
+                cycle_start = path.index(neighbour)
+                cycle_participants.extend(path[cycle_start:])
+                return True
+            if colour[neighbour] == WHITE:
+                if _dfs_cycle(neighbour, path):
+                    return True
+        path.pop()
+        colour[node] = BLACK
+        return False
+
+    for sid in known_ids:
+        if colour[sid] == WHITE:
+            if _dfs_cycle(sid, []):
+                break  # one cycle is enough to report
+
+    if cycle_participants:
+        cycle_str = " → ".join(cycle_participants)
+        errors.append(f"Dependency cycle detected: {cycle_str}")
+
+    # ── 3. Orphan step detection ────────────────────────────────────────
+    # Steps that have no dependencies AND no other step depends on them
+    # (excluding phase-1 root steps which are legitimate roots).
+    depended_on: set[str] = set()
+    for deps in adjacency.values():
+        depended_on.update(deps)
+
+    for step in wf.steps:
+        sid = step["id"]
+        has_deps = bool(step.get("depends_on"))
+        is_depended_on = sid in depended_on
+        phase = step.get("phase", "")
+        # Phase 1 steps are roots — they're expected to have no deps
+        if not has_deps and not is_depended_on and phase != "phase_1":
+            errors.append(
+                f"Orphan step '{sid}' (phase {phase}): not connected "
+                f"to any other step via depends_on"
+            )
 
     return errors

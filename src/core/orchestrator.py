@@ -664,13 +664,18 @@ class Orchestrator:
                     f"[Scheduler] Triggering scheduled task #{sched_id}: "
                     f"'{title}'"
                 )
+                sched_ctx = (
+                    json.loads(sched.get("context", "{}"))
+                    if isinstance(sched.get("context"), str)
+                    else sched.get("context", {})
+                )
                 task_id = await add_task(
                     title=title,
                     description=sched.get("description", ""),
                     agent_type=sched.get("agent_type", "executor"),
-                    context=json.loads(sched.get("context", "{}"))
-                    if isinstance(sched.get("context"), str)
-                    else sched.get("context", {}),
+                    tier=sched.get("tier", "cheap"),
+                    goal_id=sched_ctx.get("goal_id"),
+                    context=sched_ctx,
                 )
                 if task_id:
                     logger.info(
@@ -944,7 +949,16 @@ class Orchestrator:
                 logger.info(f"[Task #{task_id}] Will retry ({retry_count + 1}/{max_retries})")
             else:
                 error_str = f"{type(e).__name__}: {str(e)[:500]}"
-                await update_task(task_id, status="failed", error=error_str)
+                # Classify the error for analytics and DLQ routing
+                try:
+                    from ..infra.dead_letter import _classify_error
+                    error_cat = _classify_error(error_str, "unknown")
+                except Exception:
+                    error_cat = "unknown"
+                await update_task(
+                    task_id, status="failed", error=error_str,
+                    error_category=error_cat,
+                )
                 await self.telegram.send_error(task_id, title, error_str)
 
                 # ── Fix #9: Workflow step failure notification ──
@@ -971,6 +985,19 @@ class Orchestrator:
 
                 # ── Spawn error recovery agent ──
                 await self._spawn_error_recovery(task, error_str)
+
+                # ── Dead-letter queue: quarantine permanently failed tasks ──
+                try:
+                    from ..infra.dead_letter import quarantine_task
+                    await quarantine_task(
+                        task_id=task_id,
+                        goal_id=task.get("goal_id"),
+                        error=error_str,
+                        original_agent=task.get("agent_type", "executor"),
+                        retry_count=max_retries,
+                    )
+                except Exception as dlq_err:
+                    logger.error(f"[Task #{task_id}] DLQ quarantine failed: {dlq_err}")
 
     # ─── Result Handlers ─────────────────────────────────────────────────
 

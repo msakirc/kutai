@@ -324,6 +324,26 @@ async def init_db():
         except Exception as e:
             logger.debug(f"max_cost column migration skipped: {e}")
 
+    # ── Performance indexes on common query patterns ──
+    _indexes = [
+        ("idx_tasks_status", "tasks", "status"),
+        ("idx_tasks_goal_id", "tasks", "goal_id"),
+        ("idx_tasks_status_priority", "tasks", "status, priority DESC"),
+        ("idx_tasks_goal_status", "tasks", "goal_id, status"),
+        ("idx_conversations_task_id", "conversations", "task_id"),
+        ("idx_memory_goal_category", "memory", "goal_id, category"),
+        ("idx_model_stats_model_agent", "model_stats", "model, agent_type"),
+        ("idx_blackboards_goal", "blackboards", "goal_id"),
+    ]
+    for idx_name, table, columns_str in _indexes:
+        try:
+            await db.execute(
+                f"CREATE INDEX IF NOT EXISTS {idx_name} ON {table} ({columns_str})"
+            )
+        except Exception as e:
+            logger.debug(f"Index {idx_name} creation skipped: {e}")
+    await db.commit()
+
 # --- Goal Operations ---
 
 async def add_goal(title, description, priority=5, context=None):

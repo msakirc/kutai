@@ -6,6 +6,7 @@ Each config defines a service_name, base_url, auth pattern, and a set of
 actions with method/path/required_params.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -271,27 +272,54 @@ class HttpIntegration(BaseIntegration):
                 if "{" + k + "}" not in action_spec["path"]:
                     query_params[k] = str(v)
 
-        # Make the request
-        try:
-            http_func = _get_http_func()
-            result = await http_func(
-                method, url, headers,
-                json_body=body_params,
-                params=query_params if query_params else None,
-            )
+        # Make the request with retry/backoff for transient failures
+        max_retries = action_spec.get("max_retries", 3)
+        backoff_delays = [1, 3, 8]  # seconds between retries
 
-            status_code = result["status_code"]
-            body = result["body"]
-
-            # Try to parse JSON response
+        last_error = ""
+        for attempt in range(max_retries + 1):
             try:
-                parsed = json.loads(body)
-            except (json.JSONDecodeError, ValueError):
-                parsed = body
+                http_func = _get_http_func()
+                result = await http_func(
+                    method, url, headers,
+                    json_body=body_params,
+                    params=query_params if query_params else None,
+                )
 
-            if 200 <= status_code < 300:
-                return {"status": "ok", "data": parsed, "status_code": status_code}
-            else:
+                status_code = result["status_code"]
+                body = result["body"]
+
+                # Try to parse JSON response
+                try:
+                    parsed = json.loads(body)
+                except (json.JSONDecodeError, ValueError):
+                    parsed = body
+
+                if 200 <= status_code < 300:
+                    return {"status": "ok", "data": parsed, "status_code": status_code}
+
+                # Retry on transient HTTP errors (429, 500, 502, 503, 504)
+                if status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
+                    # Respect Retry-After header if present
+                    retry_after = result.get("headers", {}).get("Retry-After")
+                    if retry_after:
+                        try:
+                            delay = min(float(retry_after), 60)
+                        except (ValueError, TypeError):
+                            delay = backoff_delays[min(attempt, len(backoff_delays) - 1)]
+                    else:
+                        delay = backoff_delays[min(attempt, len(backoff_delays) - 1)]
+
+                    logger.warning(
+                        "[%s] HTTP %d on %s %s — retrying in %.1fs "
+                        "(attempt %d/%d)",
+                        self.service_name, status_code, method, path,
+                        delay, attempt + 1, max_retries,
+                    )
+                    await asyncio.sleep(delay)
+                    last_error = f"HTTP {status_code}"
+                    continue
+
                 return {
                     "status": "error",
                     "error": f"HTTP {status_code}",
@@ -299,8 +327,26 @@ class HttpIntegration(BaseIntegration):
                     "status_code": status_code,
                 }
 
-        except Exception as e:
-            return {
-                "status": "error",
-                "error": f"{type(e).__name__}: {e}",
-            }
+            except Exception as e:
+                last_error = f"{type(e).__name__}: {e}"
+                # Retry on connection/timeout errors
+                if attempt < max_retries:
+                    delay = backoff_delays[min(attempt, len(backoff_delays) - 1)]
+                    logger.warning(
+                        "[%s] %s on %s %s — retrying in %.1fs "
+                        "(attempt %d/%d)",
+                        self.service_name, last_error, method, path,
+                        delay, attempt + 1, max_retries,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                return {
+                    "status": "error",
+                    "error": last_error,
+                }
+
+        return {
+            "status": "error",
+            "error": f"All {max_retries + 1} attempts failed: {last_error}",
+        }

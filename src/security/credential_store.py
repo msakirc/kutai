@@ -94,11 +94,31 @@ def _decrypt(token: str) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
-async def store_credential(service_name: str, data: dict) -> None:
-    """Encrypt and store a credential in the database."""
+async def store_credential(
+    service_name: str,
+    data: dict,
+    expires_at: str | None = None,
+) -> None:
+    """Encrypt and store a credential in the database.
+
+    Parameters
+    ----------
+    service_name:
+        Unique identifier for the service (e.g. "github", "vercel").
+    data:
+        Credential payload to encrypt (e.g. {"token": "..."}).
+    expires_at:
+        Optional ISO-8601 expiration timestamp.  When set, ``get_credential``
+        will return ``None`` after this time and log a warning.
+    """
     from ..infra.db import get_db
 
-    encrypted = _encrypt(json.dumps(data))
+    # Embed expiration inside the encrypted payload so it's tamper-proof
+    envelope = {"_data": data}
+    if expires_at:
+        envelope["_expires_at"] = expires_at
+
+    encrypted = _encrypt(json.dumps(envelope))
     now = datetime.now(timezone.utc).isoformat()
 
     db = await get_db()
@@ -115,7 +135,11 @@ async def store_credential(service_name: str, data: dict) -> None:
 
 
 async def get_credential(service_name: str) -> dict | None:
-    """Retrieve and decrypt a credential from the database."""
+    """Retrieve and decrypt a credential from the database.
+
+    Returns ``None`` if the credential doesn't exist, can't be decrypted,
+    or has expired.
+    """
     from ..infra.db import get_db
 
     db = await get_db()
@@ -129,10 +153,30 @@ async def get_credential(service_name: str) -> dict | None:
 
     try:
         decrypted = _decrypt(row[0] if isinstance(row, tuple) else row["encrypted_data"])
-        return json.loads(decrypted)
+        payload = json.loads(decrypted)
     except Exception as e:
         logger.error(f"Failed to decrypt credential for {service_name}: {e}")
         return None
+
+    # Handle both new envelope format and legacy flat format
+    if isinstance(payload, dict) and "_data" in payload:
+        # New envelope format: check expiration
+        expires_at = payload.get("_expires_at")
+        if expires_at:
+            try:
+                exp_dt = datetime.fromisoformat(expires_at)
+                if exp_dt < datetime.now(timezone.utc):
+                    logger.warning(
+                        f"Credential for '{service_name}' expired at {expires_at}. "
+                        "Please refresh it with /credential add."
+                    )
+                    return None
+            except (ValueError, TypeError):
+                pass  # malformed expiration — treat as non-expiring
+        return payload["_data"]
+
+    # Legacy flat format (no envelope) — return as-is
+    return payload
 
 
 async def delete_credential(service_name: str) -> bool:

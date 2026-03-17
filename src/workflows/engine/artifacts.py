@@ -129,11 +129,20 @@ class ArtifactStore:
 
 # ── Prompt formatting ───────────────────────────────────────────────────────
 
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate: ~4 chars per token for English text."""
+    return max(1, len(text) // 4)
+
+
 def _truncate(content: str, budget: int) -> str:
     """Truncate content to fit within a character budget."""
     if len(content) <= budget:
         return content
     return content[:budget - 3] + "..."
+
+
+# Maximum total tokens to inject into a single task prompt
+MAX_CONTEXT_INJECTION_TOKENS = 12000  # ~48K chars, safe for 128K context models
 
 
 def format_artifacts_for_prompt(
@@ -186,6 +195,22 @@ def format_artifacts_for_prompt(
     if len(result) > max_total:
         result = result[:max_total]
 
+    # Token-aware safety net: if the assembled prompt exceeds the injection
+    # budget, progressively drop lower-priority sections from the end
+    estimated = estimate_tokens(result)
+    if estimated > MAX_CONTEXT_INJECTION_TOKENS and len(sections) > 1:
+        logger.warning(
+            "Artifact injection too large (~%d tokens, budget %d). "
+            "Trimming lower-priority sections.",
+            estimated, MAX_CONTEXT_INJECTION_TOKENS,
+        )
+        while sections and estimate_tokens("\n\n---\n\n".join(sections)) > MAX_CONTEXT_INJECTION_TOKENS:
+            dropped = sections.pop()
+            logger.debug("Dropped artifact section: %s", dropped[:40])
+        result = "\n\n---\n\n".join(sections)
+        if len(result) > max_total:
+            result = result[:max_total]
+
     return result
 
 
@@ -220,11 +245,28 @@ async def get_phase_summaries(
         return {}
 
     summaries: dict[str, str] = {}
+    total_tokens = 0
+    # Budget: use at most 1/4 of the injection budget for summaries
+    summary_token_budget = MAX_CONTEXT_INJECTION_TOKENS // 4
+
     # Phases range from -1 up to current_num - 1
     for n in range(-1, current_num):
         artifact_name = f"phase_{n}_summary"
         content = await store.retrieve(goal_id, artifact_name)
         if content is not None:
+            content_tokens = estimate_tokens(content)
+            if total_tokens + content_tokens > summary_token_budget:
+                # Truncate this summary to fit remaining budget
+                remaining_chars = (summary_token_budget - total_tokens) * 4
+                if remaining_chars > 100:
+                    content = _truncate(content, remaining_chars)
+                else:
+                    logger.debug(
+                        "Skipping phase summary '%s' — token budget exhausted",
+                        artifact_name,
+                    )
+                    continue
             summaries[artifact_name] = content
+            total_tokens += estimate_tokens(content)
 
     return summaries

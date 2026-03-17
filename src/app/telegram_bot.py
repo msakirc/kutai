@@ -63,6 +63,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("credential", self.cmd_credential))  # Credential mgmt
         self.app.add_handler(CommandHandler("cost", self.cmd_cost))            # Per-goal cost
         self.app.add_handler(CommandHandler("preview", self.cmd_preview))      # Workflow preview
+        self.app.add_handler(CommandHandler("dlq", self.cmd_dlq))                # Dead-letter queue
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.REPLY,
@@ -896,6 +897,68 @@ class TelegramInterface:
                 f"Failed to start product workflow: {type(e).__name__}: {e}"
             )
 
+    async def cmd_dlq(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Dead-letter queue management: /dlq [retry <task_id> | discard <task_id>]."""
+        from ..infra.dead_letter import (
+            get_dlq_summary, get_dlq_tasks, retry_dlq_task, resolve_dlq_task,
+        )
+
+        args = context.args or []
+
+        try:
+            if len(args) >= 2 and args[0] == "retry":
+                task_id = int(args[1])
+                await retry_dlq_task(task_id)
+                await update.message.reply_text(
+                    f"\u2705 Task #{task_id} re-queued from dead-letter queue."
+                )
+                return
+
+            if len(args) >= 2 and args[0] == "discard":
+                task_id = int(args[1])
+                await resolve_dlq_task(task_id, resolution="discarded")
+                await update.message.reply_text(
+                    f"\U0001f5d1 Task #{task_id} discarded from dead-letter queue."
+                )
+                return
+
+            # Default: show summary + recent entries
+            summary = await get_dlq_summary()
+            tasks = await get_dlq_tasks()
+
+            lines = [
+                "\u2620\ufe0f *Dead-Letter Queue*\n",
+                f"Unresolved: *{summary['unresolved']}*  |  "
+                f"Resolved: *{summary['resolved']}*  |  "
+                f"Total: *{summary['total']}*",
+            ]
+
+            if summary["categories"]:
+                cats = ", ".join(
+                    f"{cat}: {cnt}" for cat, cnt in summary["categories"].items()
+                )
+                lines.append(f"Categories: {cats}\n")
+
+            if tasks:
+                lines.append("*Recent quarantined tasks:*")
+                for t in tasks[:8]:
+                    error_preview = (t.get("error") or "")[:60]
+                    lines.append(
+                        f"  \u2022 #{t['task_id']} (goal {t.get('goal_id', '?')}) "
+                        f"[{t.get('error_category', '?')}] {error_preview}"
+                    )
+                lines.append(
+                    "\nUse `/dlq retry <id>` or `/dlq discard <id>`"
+                )
+            else:
+                lines.append("\n\u2705 No quarantined tasks!")
+
+            await update.message.reply_text(
+                "\n".join(lines), parse_mode="Markdown"
+            )
+        except Exception as e:
+            await update.message.reply_text(f"DLQ error: {e}")
+
     async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Resume a failed or paused workflow."""
         if not context.args:
@@ -1049,21 +1112,29 @@ class TelegramInterface:
 
     # --- Outbound notifications ---
 
-    async def send_notification(self, text: str):
-        try:
-            await self.app.bot.send_message(
-                chat_id=TELEGRAM_ADMIN_CHAT_ID,
-                text=text,
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            # Retry without markdown if formatting fails
+    async def send_notification(self, text: str, retries: int = 2):
+        import asyncio as _asyncio
+
+        for attempt in range(retries + 1):
             try:
                 await self.app.bot.send_message(
-                    chat_id=TELEGRAM_ADMIN_CHAT_ID, text=text
+                    chat_id=TELEGRAM_ADMIN_CHAT_ID,
+                    text=text,
+                    parse_mode="Markdown"
                 )
-            except Exception:
-                logging.error(f"Failed to send Telegram notification: {e}")
+                return
+            except Exception as e:
+                # First fallback: retry without markdown
+                try:
+                    await self.app.bot.send_message(
+                        chat_id=TELEGRAM_ADMIN_CHAT_ID, text=text
+                    )
+                    return
+                except Exception:
+                    if attempt < retries:
+                        await _asyncio.sleep(1 * (attempt + 1))
+                        continue
+                    logging.error(f"Failed to send Telegram notification: {e}")
 
     async def send_result(self, task_id, title, result, model, cost):
         truncated = result[:3000] if len(result) > 3000 else result

@@ -16,7 +16,7 @@ from src.workflows.engine.expander import (
     expand_steps_to_tasks,
     filter_steps_for_context,
 )
-from src.workflows.engine.loader import load_workflow
+from src.workflows.engine.loader import load_workflow, validate_dependencies
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +233,13 @@ class WorkflowRunner:
         """
         wf = load_workflow(workflow_name)
 
+        # Validate DAG integrity before preview
+        dag_errors = validate_dependencies(wf)
+        if dag_errors:
+            logger.warning(
+                "Workflow '%s' has DAG issues: %s", workflow_name, dag_errors
+            )
+
         has_existing = existing_codebase_path is not None
         filtered_steps = filter_steps_for_context(wf.steps, has_existing_codebase=has_existing)
 
@@ -290,6 +297,7 @@ class WorkflowRunner:
             "conditional_groups": len(wf.conditional_groups),
             "templates": len(wf.templates),
             "estimated_cost": round(estimated_cost, 2),
+            "dag_warnings": dag_errors,
         }
 
     async def start(
@@ -308,6 +316,23 @@ class WorkflowRunner:
 
         # 1. Load workflow definition
         wf = load_workflow(workflow_name)
+
+        # 1b. Validate DAG integrity — block on cycles/unknown refs, warn on orphans
+        dag_errors = validate_dependencies(wf)
+        critical_errors = [
+            e for e in dag_errors
+            if "cycle" in e.lower() or "unknown step" in e.lower()
+        ]
+        if critical_errors:
+            raise ValueError(
+                f"Workflow '{workflow_name}' has critical DAG errors and "
+                f"cannot be started:\n" + "\n".join(critical_errors)
+            )
+        if dag_errors:
+            logger.warning(
+                "Workflow '%s' has non-critical DAG warnings: %s",
+                workflow_name, dag_errors,
+            )
 
         # 2. Create goal
         goal_title = title or f"Workflow: {wf.metadata.get('title', workflow_name)}"

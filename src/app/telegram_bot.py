@@ -60,6 +60,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("wfstatus", self.cmd_wfstatus))  # Workflow status
         self.app.add_handler(CommandHandler("product", self.cmd_product))    # Start product workflow
         self.app.add_handler(CommandHandler("resume", self.cmd_resume))      # Resume workflow
+        self.app.add_handler(CommandHandler("credential", self.cmd_credential))  # Credential mgmt
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.REPLY,
@@ -91,6 +92,7 @@ class TelegramInterface:
             "/product <idea> — Start idea-to-product workflow\n"
             "/wfstatus <goal\\_id> — View workflow progress\n"
             "/resume <goal\\_id> — Resume a failed workflow\n"
+            "/credential — Manage API credentials\n"
             "/digest — Get daily digest now\n\n"
             "Or just send a message — I'll figure out what to do.",
             parse_mode="Markdown"
@@ -623,6 +625,105 @@ class TelegramInterface:
         except Exception as e:
             await update.message.reply_text(
                 f"❌ Ingestion error: {type(e).__name__}: {e}"
+            )
+
+    # ─── Credential Management ────────────────────────────────────────
+
+    async def cmd_credential(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Manage stored credentials for external services."""
+        if not context.args:
+            await update.message.reply_text(
+                "Usage:\n"
+                "/credential list — Show stored services\n"
+                "/credential add <service> <json\\_data> — Store credential\n"
+                "/credential remove <service> — Delete credential\n\n"
+                "Example:\n"
+                '/credential add github \\{"token": "ghp\\_xxx"\\}',
+                parse_mode="Markdown",
+            )
+            return
+
+        sub = context.args[0].lower()
+
+        if sub == "list":
+            try:
+                from ..security.credential_store import list_credentials
+
+                services = await list_credentials()
+                if not services:
+                    await update.message.reply_text(
+                        "No credentials stored. Use /credential add to add one."
+                    )
+                else:
+                    lines = ["*Stored Credentials:*\n"]
+                    for svc in services:
+                        lines.append(f"  `{svc}`")
+                    await update.message.reply_text(
+                        "\n".join(lines), parse_mode="Markdown"
+                    )
+            except Exception as e:
+                await update.message.reply_text(f"Error: {e}")
+
+        elif sub == "add":
+            if len(context.args) < 3:
+                await update.message.reply_text(
+                    "Usage: /credential add <service> <json\\_data>\n"
+                    'Example: /credential add github \\{"token": "ghp\\_xxx"\\}',
+                    parse_mode="Markdown",
+                )
+                return
+
+            service_name = context.args[1]
+            json_str = " ".join(context.args[2:])
+
+            try:
+                import json as _json
+
+                data = _json.loads(json_str)
+            except (ValueError, TypeError):
+                await update.message.reply_text(
+                    "Invalid JSON data. Make sure to use proper JSON format."
+                )
+                return
+
+            try:
+                from ..security.credential_store import store_credential
+
+                await store_credential(service_name, data)
+                await update.message.reply_text(
+                    f"Stored credential for `{service_name}`.",
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                await update.message.reply_text(f"Error storing credential: {e}")
+
+        elif sub == "remove":
+            if len(context.args) < 2:
+                await update.message.reply_text(
+                    "Usage: /credential remove <service>"
+                )
+                return
+
+            service_name = context.args[1]
+            try:
+                from ..security.credential_store import delete_credential
+
+                deleted = await delete_credential(service_name)
+                if deleted:
+                    await update.message.reply_text(
+                        f"Removed credential for `{service_name}`.",
+                        parse_mode="Markdown",
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"No credential found for '{service_name}'."
+                    )
+            except Exception as e:
+                await update.message.reply_text(f"Error: {e}")
+
+        else:
+            await update.message.reply_text(
+                "Unknown subcommand. Use: list, add, or remove."
             )
 
     # ─── Workflow Commands ──────────────────────────────────────────────

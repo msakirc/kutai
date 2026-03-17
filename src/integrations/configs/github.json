@@ -1,0 +1,33 @@
+{
+  "service_name": "github",
+  "base_url": "https://api.github.com",
+  "auth_type": "bearer",
+  "auth_header": "Authorization",
+  "actions": {
+    "list_repos": {
+      "method": "GET",
+      "path": "/user/repos",
+      "required_params": []
+    },
+    "create_repo": {
+      "method": "POST",
+      "path": "/user/repos",
+      "required_params": ["name"]
+    },
+    "get_repo": {
+      "method": "GET",
+      "path": "/repos/{owner}/{repo}",
+      "required_params": ["owner", "repo"]
+    },
+    "create_issue": {
+      "method": "POST",
+      "path": "/repos/{owner}/{repo}/issues",
+      "required_params": ["owner", "repo", "title"]
+    },
+    "list_issues": {
+      "method": "GET",
+      "path": "/repos/{owner}/{repo}/issues",
+      "required_params": ["owner", "repo"]
+    }
+  }
+}

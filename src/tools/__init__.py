@@ -168,6 +168,70 @@ try:
 except Exception as e:
     logger.debug(f"blackboard tools not available — {type(e).__name__}: {e}")
 
+# External service integration tool
+try:
+    async def service_call(service: str, action: str, params: str = "{}") -> str:
+        """Call an external service API via the integration registry."""
+        import json as _json
+        from ..integrations.registry import get_integration_registry
+
+        registry = get_integration_registry()
+        integration = registry.get(service)
+        if integration is None:
+            available = registry.list_services()
+            return (
+                f"Unknown service '{service}'. "
+                f"Available: {', '.join(available) if available else '(none)'}"
+            )
+
+        # Parse params — accept both dict and JSON string
+        if isinstance(params, str):
+            try:
+                parsed_params = _json.loads(params)
+            except (ValueError, TypeError):
+                parsed_params = {}
+        else:
+            parsed_params = params
+
+        result = await integration.execute(action, parsed_params)
+        return _json.dumps(result, indent=2, default=str)
+
+    _optional_tools["service_call"] = {
+        "function": service_call,
+        "description": (
+            "Call an external service API (GitHub, Vercel, Railway, etc.). "
+            "Args: service (str: service name), action (str: action to perform), "
+            "params (str: JSON string of action parameters)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "service_call", '
+            '"args": {"service": "github", "action": "list_repos", "params": "{}"}}'
+        ),
+    }
+except Exception as e:
+    logger.debug(f"service_call tool not available — {type(e).__name__}: {e}")
+
+# Deployment tool (Gap 6)
+try:
+    from .deploy import deploy as _deploy_fn
+
+    _optional_tools["deploy"] = {
+        "function": _deploy_fn,
+        "description": (
+            "Deploy application to cloud platform (Vercel, Railway). "
+            "Args: target (str: 'vercel' or 'railway'), "
+            "project_path (str: path to project), "
+            "env_vars (dict, optional: environment variables), "
+            "goal_id (int, optional: workflow goal ID for validation)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "deploy", '
+            '"args": {"target": "vercel", "project_path": "./my-app"}}'
+        ),
+    }
+except Exception as e:
+    logger.debug(f"deploy tool not available — {type(e).__name__}: {e}")
+
 # Phase 11.5: Document ingestion tool
 try:
     async def _ingest_tool_wrapper(source: str, source_type: str = "auto") -> str:

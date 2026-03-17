@@ -1,0 +1,23 @@
+{
+  "service_name": "vercel",
+  "base_url": "https://api.vercel.com",
+  "auth_type": "bearer",
+  "auth_header": "Authorization",
+  "actions": {
+    "list_deployments": {
+      "method": "GET",
+      "path": "/v6/deployments",
+      "required_params": []
+    },
+    "deploy": {
+      "method": "POST",
+      "path": "/v13/deployments",
+      "required_params": ["name", "gitSource"]
+    },
+    "list_projects": {
+      "method": "GET",
+      "path": "/v9/projects",
+      "required_params": []
+    }
+  }
+}

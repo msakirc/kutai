@@ -228,6 +228,17 @@ async def init_db():
         )
     """)
 
+    # Credentials (External Service Integration)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS credentials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_name TEXT UNIQUE NOT NULL,
+            encrypted_data TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+
     await db.execute("""
         CREATE TABLE IF NOT EXISTS workflow_checkpoints (
             goal_id INTEGER PRIMARY KEY,

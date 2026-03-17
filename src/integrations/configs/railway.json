@@ -1,0 +1,18 @@
+{
+  "service_name": "railway",
+  "base_url": "https://backboard.railway.app",
+  "auth_type": "bearer",
+  "auth_header": "Authorization",
+  "actions": {
+    "list_projects": {
+      "method": "POST",
+      "path": "/graphql/v2",
+      "required_params": ["query"]
+    },
+    "deploy": {
+      "method": "POST",
+      "path": "/graphql/v2",
+      "required_params": ["query"]
+    }
+  }
+}

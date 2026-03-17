@@ -6,12 +6,11 @@ Init, commit, branch, log, diff, rollback — with subdirectory support.
 
 import asyncio
 import os
-import logging
 from typing import Optional
 
-# from config import WORKSPACE_ROOT
+from src.infra.logging_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("tools.git_ops")
 
 # ---------------------------------------------------------------------------
 # Configuration

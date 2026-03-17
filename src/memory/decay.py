@@ -12,9 +12,9 @@ Public API:
     stats = await run_decay_cycle()     # Run one pruning cycle
     score = compute_relevance(metadata)  # Score a single memory
 """
-import logging
 import time
 
+from src.infra.logging_config import get_logger
 from .vector_store import (
     COLLECTIONS,
     is_ready,
@@ -22,7 +22,7 @@ from .vector_store import (
     get_all_counts, _collections,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger("memory.decay")
 
 
 # ─── Configuration ────────────────────────────────────────────────────────────

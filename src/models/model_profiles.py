@@ -14,9 +14,10 @@ The registry scales these based on actual size + quantization.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from src.infra.logging_config import get_logger
 
 
 @dataclass
@@ -1228,7 +1229,7 @@ if _YAML_PATH.exists():
         from datetime import datetime as _dt
 
         _yaml_data = yaml.safe_load(_YAML_PATH.read_text(encoding="utf-8"))
-        _logger = logging.getLogger(__name__)
+        _logger = get_logger("models.model_profiles")
         _now = _dt.now()
 
         if _yaml_data:

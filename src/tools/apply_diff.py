@@ -11,15 +11,15 @@ Public API:
 After applying, validates syntax with tree-sitter (if available)
 and runs auto_lint on Python files.
 """
-import logging
 import os
 import re
 from typing import Optional
 
+from src.infra.logging_config import get_logger
 from .linting import auto_lint
 from .workspace import _safe_resolve
 
-logger = logging.getLogger(__name__)
+logger = get_logger("tools.apply_diff")
 
 
 def _parse_unified_diff(diff_text: str) -> list[dict]:

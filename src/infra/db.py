@@ -2,12 +2,12 @@
 import aiosqlite
 import hashlib
 import json
-import logging
 from datetime import datetime
 
 from src.app.config import DB_PATH
+from src.infra.logging_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("infra.db")
 
 # ─── Connection Pool (singleton) ────────────────────────────────────────────
 # Instead of opening/closing a connection on every DB call, we maintain a

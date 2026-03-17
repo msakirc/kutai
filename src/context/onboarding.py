@@ -12,11 +12,12 @@ When a project is registered via ``/project add <path>``, this module:
 """
 
 import json
-import logging
 import os
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("context.onboarding")
 
 
 async def onboard_project(project_path: str, project_name: str = "") -> dict:

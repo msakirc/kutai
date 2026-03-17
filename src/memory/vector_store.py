@@ -19,14 +19,14 @@ Public API:
     await delete(ids, collection)
     await get_collection_count(collection)
 """
-import logging
 import os
 import time
 from typing import Optional
 
+from src.infra.logging_config import get_logger
 from src.memory.embeddings import get_embedding
 
-logger = logging.getLogger(__name__)
+logger = get_logger("memory.vector_store")
 
 
 # ─── Constants ────────────────────────────────────────────────────────────────

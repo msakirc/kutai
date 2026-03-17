@@ -8,11 +8,11 @@ reliable search-and-replace approach.
 """
 
 import os
-import logging
 
+from src.infra.logging_config import get_logger
 from .workspace import _safe_resolve
 
-logger = logging.getLogger(__name__)
+logger = get_logger("tools.patch_file")
 
 async def patch_file(
     filepath: str,

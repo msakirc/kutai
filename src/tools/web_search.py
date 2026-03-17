@@ -3,12 +3,12 @@
 Web search using DuckDuckGo — with curl fallback.
 """
 import json
-import logging
 import urllib.parse
 
+from src.infra.logging_config import get_logger
 from src.tools import run_shell
 
-logger = logging.getLogger(__name__)
+logger = get_logger("tools.web_search")
 
 # Try to use duckduckgo-search package first
 _DDGS = None
@@ -22,6 +22,7 @@ except Exception as e:
 
 async def web_search(query: str, max_results: int = 5) -> str:
     """Search the web using DuckDuckGo."""
+    logger.info("web search query", query=query, max_results=max_results)
 
     # Method 1: duckduckgo-search package
     if _DDGS is not None:
@@ -31,6 +32,7 @@ async def web_search(query: str, max_results: int = 5) -> str:
                 for r in ddgs.text(query, max_results=max_results):
                     results.append(r)
             if results:
+                logger.debug("duckduckgo search results", count=len(results))
                 lines = []
                 for i, r in enumerate(results, 1):
                     title = r.get("title", "No title")
@@ -41,7 +43,7 @@ async def web_search(query: str, max_results: int = 5) -> str:
             else:
                 return f"No results found for '{query}'"
         except Exception as e:
-            logger.warning(f"DDGS search failed: {e}, falling back to curl")
+            logger.warning("duckduckgo search failed, using curl fallback", error=str(e))
 
     # Method 2: curl via shell (Docker container has internet)
     try:
@@ -79,6 +81,7 @@ async def web_search(query: str, max_results: int = 5) -> str:
                 lines.append(f"- {text}\n  {url}")
 
         if lines:
+            logger.debug("curl search results", count=len(lines))
             return f"Search results for '{query}':\n\n" + "\n\n".join(lines)
 
         # If instant answer API returned nothing useful, try HTML scraping
@@ -97,5 +100,5 @@ async def web_search(query: str, max_results: int = 5) -> str:
         return f"No results found for '{query}'. DuckDuckGo returned empty response."
 
     except Exception as e:
-        logger.error(f"Web search curl fallback failed: {e}")
+        logger.exception("web search curl fallback failed", error=str(e))
         return f"Search error: {e}"

@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
-import logging
 import re
 import time
 from dataclasses import dataclass, field
@@ -19,6 +18,7 @@ import litellm
 litellm.suppress_debug_info = True
 litellm.return_response_headers = True
 
+from src.infra.logging_config import get_logger
 from src.models.rate_limiter import get_rate_limit_manager
 from src.models.header_parser import parse_rate_limit_headers
 from src.models.quota_planner import get_quota_planner
@@ -26,7 +26,7 @@ from src.models.capabilities import ALL_CAPABILITIES, Cap, TASK_PROFILES, \
   TaskRequirements as CapabilityTaskReqs, score_model_for_task
 from src.models.model_registry import ModelInfo, get_registry
 
-logger = logging.getLogger(__name__)
+logger = get_logger("core.router")
 
 
 # ─── Capability ↔ Task Mapping ───────────────────────────────────────────────
@@ -188,7 +188,7 @@ class RateLimiter:
         self._request_timestamps = [t for t in self._request_timestamps if now - t < 60]
         if len(self._request_timestamps) >= self.rpm:
             wait_time = 60 - (now - self._request_timestamps[0]) + 0.5
-            logger.info(f"Rate limiter: waiting {wait_time:.1f}s (RPM)")
+            logger.info("rate limiter wait", wait_time_seconds=wait_time)
             await asyncio.sleep(wait_time)
         self._request_timestamps.append(time.time())
 
@@ -219,9 +219,7 @@ class CircuitBreaker:
         self.failures = [t for t in self.failures if now - t < self.window_seconds]
         if len(self.failures) >= self.failure_threshold:
             self.degraded_until = now + self.cooldown_seconds
-            logger.warning(
-                f"Circuit breaker TRIPPED — degraded for {self.cooldown_seconds:.0f}s"
-            )
+            logger.warning("circuit breaker tripped", cooldown_seconds=self.cooldown_seconds)
 
     def record_success(self) -> None:
         self.failures.clear()
@@ -276,7 +274,7 @@ async def refresh_perf_cache() -> None:
         _perf_cache_ready = True
         _perf_cache_last_refresh = now
     except Exception as e:
-        logger.debug(f"Performance cache refresh failed: {e}")
+        logger.debug("performance cache refresh failed", error=str(e))
 
 
 # ─── Model Selection ────────────────────────────────────────────────────────
@@ -554,18 +552,24 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
         ]
         extra = f" (+{len(candidates)-3} more)" if len(candidates) > 3 else ""
         logger.info(
-            f"Model selection [{task_str}]"
-            f"{'[local]' if reqs.local_only else ''}"
-            f"{'[quality]' if reqs.prefer_quality else ''}"
-            f"{'[fast]' if reqs.prefer_speed else ''}"
-            f": {' > '.join(log_parts)}{extra}"
+            "route chosen",
+            task=task_str,
+            local_only=reqs.local_only,
+            prefer_quality=reqs.prefer_quality,
+            prefer_speed=reqs.prefer_speed,
+            top_models=" > ".join(log_parts) + extra,
+            candidate_count=len(candidates),
         )
     else:
         logger.warning(
-            f"No models match: task={effective_task or reqs.primary_capability}, "
-            f"min_score={min_score:.1f}, ctx={reqs.effective_context_needed}, "
-            f"fc={reqs.needs_function_calling}, vision={reqs.needs_vision}, "
-            f"thinking={reqs.needs_thinking}, local={reqs.local_only}"
+            "no models matched",
+            task=effective_task or reqs.primary_capability,
+            min_score=min_score,
+            context_needed=reqs.effective_context_needed,
+            needs_function_calling=reqs.needs_function_calling,
+            needs_vision=reqs.needs_vision,
+            needs_thinking=reqs.needs_thinking,
+            local_only=reqs.local_only,
         )
 
     return candidates
@@ -614,7 +618,7 @@ def _update_limits_from_response(
                 planner.on_quota_restored(model.provider, snapshot.rpm_remaining / snapshot.rpm_limit * 100)
 
     except Exception as e:
-        logger.debug(f"Header parsing failed for {model.name}: {e}")
+        logger.debug("header parsing failed", model_name=model.name, error=str(e))
 
 
 # ─── Main API: call_model ────────────────────────────────────────────────────
@@ -733,14 +737,16 @@ async def call_model(
             )
             if wait_time < 0:
                 logger.warning(
-                    f"Daily limit exhausted for {model.name} — skipping"
+                    "daily limit exhausted",
+                    model_name=model.name,
                 )
                 last_error = f"Daily limit exhausted for {model.name}"
                 continue
             if wait_time > 0:
                 logger.info(
-                    f"Rate limiter waited {wait_time:.1f}s for "
-                    f"{model.name}"
+                    "rate limiter waited",
+                    model_name=model.name,
+                    wait_time_seconds=wait_time,
                 )
 
         # ── GPU semaphore ──
@@ -759,9 +765,9 @@ async def call_model(
             if not granted:
                 # GPU busy and timed out — skip to next candidate (likely cloud)
                 logger.warning(
-                    f"GPU access denied for {model.name} "
-                    f"(priority={reqs.priority}, queue too deep) "
-                    f"— trying next candidate"
+                    "gpu access denied",
+                    model_name=model.name,
+                    priority=reqs.priority,
                 )
                 last_error = f"GPU queue timeout for {model.name}"
                 continue
@@ -775,12 +781,14 @@ async def call_model(
                     task_label = reqs.effective_task or reqs.primary_capability
 
                     logger.info(
-                        f"Calling {model.name} "
-                        f"(task={task_label}, "
-                        f"cap={scored.capability_score:.1f}, "
-                        f"attempt={attempt+1}/{max_retries}"
-                        f"{'|thinking' if is_thinking else ''}"
-                        f"{'|vision' if model.has_vision else ''})"
+                        "calling model",
+                        model_name=model.name,
+                        task=task_label,
+                        capability_score=scored.capability_score,
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        thinking=is_thinking,
+                        vision=model.has_vision,
                     )
 
                     response = await asyncio.wait_for(
@@ -861,7 +869,7 @@ async def call_model(
                     if not model.is_local:
                         _get_circuit_breaker(model.provider).record_failure()
                     last_error = f"Timeout on {model.name}"
-                    logger.warning(f"Timeout on {model.name} (attempt {attempt+1})")
+                    logger.warning("model timeout", model_name=model.name, attempt=attempt + 1)
                     continue
 
                 except Exception as e:
@@ -875,7 +883,7 @@ async def call_model(
                         "api key", "authentication", "unauthorized",
                         "billing", "credit", "quota",
                     ]):
-                        logger.error(f"Auth/billing error on {model.name}: {e}")
+                        logger.error("auth/billing error", model_name=model.name, error=str(e))
                         break
 
                     is_rate_limit = any(kw in error_str for kw in [
@@ -894,8 +902,9 @@ async def call_model(
                         if attempt < max_retries - 1:
                             wait_time = (attempt + 1) * 5
                             logger.warning(
-                                f"Rate limited on {model.name}, "
-                                f"waiting {wait_time}s"
+                                "model rate limited",
+                                model_name=model.name,
+                                wait_time_seconds=wait_time,
                             )
                             await asyncio.sleep(wait_time)
                             continue
@@ -917,8 +926,9 @@ async def call_model(
     call_id = f"{reqs.agent_type}:{reqs.primary_capability}"
 
     logger.warning(
-        f"All models failed for {call_id} — "
-        f"submitting to backpressure queue. Last error: {last_error}"
+        "all models failed fallback to backpressure",
+        call_id=call_id,
+        last_error=last_error,
     )
 
 
@@ -1043,7 +1053,7 @@ async def grade_response(
         return grade
 
     except Exception as e:
-        logger.debug(f"Response grading failed: {e}")
+        logger.debug("response grading failed", error=str(e))
         return None
 
 

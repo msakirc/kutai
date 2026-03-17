@@ -2,11 +2,10 @@
 """
 Run code snippets inside the Docker sandbox — never on the host.
 """
-import logging
-
+from src.infra.logging_config import get_logger
 from src.tools import run_shell_with_stdin, run_shell
 
-logger = logging.getLogger(__name__)
+logger = get_logger("tools.code_runner")
 
 
 async def run_code(code: str, language: str = "python", timeout: int = 30) -> str:
@@ -22,4 +21,11 @@ async def run_code(code: str, language: str = "python", timeout: int = 30) -> st
         return f"Failed to write code to sandbox: {write_result}"
 
     # Execute inside sandbox
-    return await run_shell("python3 /tmp/_run_code.py", timeout=timeout)
+    logger.debug("executing python code", timeout=timeout)
+    result = await run_shell("python3 /tmp/_run_code.py", timeout=timeout)
+    # Extract exit code from result
+    if result.startswith("✅"):
+        logger.info("python code executed successfully", timeout=timeout)
+    elif result.startswith("❌"):
+        logger.warning("python code execution failed", timeout=timeout)
+    return result

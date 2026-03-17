@@ -4,6 +4,9 @@ Researcher agent — searches for information, evaluates sources,
 and synthesizes findings into clear, actionable summaries.
 """
 from .base import BaseAgent
+from ..infra.logging_config import get_logger
+
+logger = get_logger("agents.researcher")
 
 
 class ResearcherAgent(BaseAgent):

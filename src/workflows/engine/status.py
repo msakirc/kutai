@@ -2,6 +2,10 @@
 
 import json
 
+from src.infra.logging_config import get_logger
+
+logger = get_logger("workflows.engine.status")
+
 PHASE_NAMES: dict[str, str] = {
     "phase_-1": "Existing Project Onboarding",
     "phase_0": "Idea Capture & Clarification",

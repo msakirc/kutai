@@ -21,9 +21,9 @@ Original Stages:
 7. Committer -> git_commit
 """
 import json
-import logging
 from typing import Any, Dict
 
+from src.infra.logging_config import get_logger
 from src.agents import get_agent
 from src.tools.workspace import read_file
 from src.tools.deps import verify_dependencies
@@ -40,7 +40,7 @@ from .pipeline_utils import (
 )
 from src.tools.git_ops import git_commit
 
-logger = logging.getLogger(__name__)
+logger = get_logger("workflows.pipeline.pipeline")
 
 
 # ─── Pipeline ───────────────────────────────────────────────────────────────

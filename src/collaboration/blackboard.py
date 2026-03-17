@@ -20,13 +20,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import sqlite3
 from typing import Any, Optional
 
+from src.infra.logging_config import get_logger
 from ..infra.db import get_db
 
-logger = logging.getLogger(__name__)
+logger = get_logger("collaboration.blackboard")
 
 # ── Default empty blackboard ─────────────────────────────────────────────────
 

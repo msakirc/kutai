@@ -15,7 +15,10 @@ import os
 import textwrap
 from typing import Optional
 
+from src.infra.logging_config import get_logger
 from .workspace import WORKSPACE_DIR
+
+logger = get_logger("tools.ast_tools")
 
 
 def _workspace_dir() -> str:

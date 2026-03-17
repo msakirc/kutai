@@ -4,6 +4,9 @@ Planner agent — inspects the workspace, then decomposes a goal into
 concrete, ordered subtasks for other agents to execute.
 """
 from .base import BaseAgent
+from ..infra.logging_config import get_logger
+
+logger = get_logger("agents.planner")
 
 
 class PlannerAgent(BaseAgent):

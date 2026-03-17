@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import os
 import asyncio
-import logging
 import subprocess
 import time
 from dataclasses import dataclass, field
+
+from src.infra.logging_config import get_logger
 from pathlib import Path
 from typing import Optional
 
@@ -27,7 +28,7 @@ from .gpu_monitor import get_gpu_monitor
 from .model_registry import ModelInfo, get_registry
 from .gpu_scheduler import get_gpu_scheduler
 
-logger = logging.getLogger(__name__)
+logger = get_logger("models.local_model_manager")
 
 # Path to llama-server executable — set via env var or auto-detect
 LLAMA_SERVER_PATH = Path(

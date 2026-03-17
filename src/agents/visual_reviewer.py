@@ -4,6 +4,9 @@ Visual reviewer agent — analyzes screenshots, UI designs, diagrams,
 and other visual content. Requires a vision-capable model.
 """
 from .base import BaseAgent
+from ..infra.logging_config import get_logger
+
+logger = get_logger("agents.visual_reviewer")
 
 
 class VisualReviewerAgent(BaseAgent):

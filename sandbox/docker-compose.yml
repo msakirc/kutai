@@ -15,3 +15,14 @@ services:
           memory: 1024M
           cpus: "1.0"
     restart: unless-stopped
+
+  frontail:
+    image: mthenw/frontail
+    container_name: orchestrator-frontail
+    volumes:
+      - ../logs:/logs:ro
+    ports:
+      - "9001:9001"
+    command: --ui-highlight --number 1000 /logs/orchestrator.jsonl
+    mem_limit: 50m
+    restart: unless-stopped

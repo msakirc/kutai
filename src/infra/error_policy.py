@@ -6,13 +6,13 @@ Defines per-error-category retry strategies that replace the generic
 retry_count < max_retries check in the orchestrator.
 """
 
-import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
+from src.infra.logging_config import get_logger
 from ..core.state_machine import ErrorCategory
 
-logger = logging.getLogger(__name__)
+logger = get_logger("infra.error_policy")
 
 
 @dataclass

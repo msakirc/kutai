@@ -2,6 +2,10 @@
 
 from collections import defaultdict
 
+from src.infra.logging_config import get_logger
+
+logger = get_logger("workflows.engine.policies")
+
 
 APPROVAL_REQUIRED_ACTIONS: set[str] = {
     "database_schema_changes",

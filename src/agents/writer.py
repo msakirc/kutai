@@ -4,6 +4,9 @@ Writer agent — creates documentation, READMEs, articles, and other
 text content with proper structure and formatting.
 """
 from .base import BaseAgent
+from ..infra.logging_config import get_logger
+
+logger = get_logger("agents.writer")
 
 
 class WriterAgent(BaseAgent):

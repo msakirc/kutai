@@ -17,12 +17,13 @@ Public API:
     ok     = tree_sitter_available()
 """
 import ast as python_ast
-import logging
 import os
 import re
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("parsing.tree_sitter_parser")
 
 
 # ─── Language Detection ──────────────────────────────────────────────────────

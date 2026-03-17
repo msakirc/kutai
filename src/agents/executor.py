@@ -4,6 +4,9 @@ Executor agent — general-purpose task handler.
 Handles tasks that don't fit neatly into coder/researcher/writer/reviewer.
 """
 from .base import BaseAgent
+from ..infra.logging_config import get_logger
+
+logger = get_logger("agents.executor")
 
 
 class ExecutorAgent(BaseAgent):

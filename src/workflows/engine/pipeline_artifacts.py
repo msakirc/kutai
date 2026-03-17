@@ -5,12 +5,13 @@ to produce structured artifacts: files changed, test results, dependencies
 added, and architectural decisions made.
 """
 import json
-import logging
 import os
 import re
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("workflows.engine.pipeline_artifacts")
 
 
 async def extract_pipeline_artifacts(

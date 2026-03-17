@@ -3,6 +3,9 @@
 TestGenerator agent - Reads source files and generates pytest tests.
 """
 from .base import BaseAgent
+from ..infra.logging_config import get_logger
+
+logger = get_logger("agents.test_generator")
 
 
 class TestGeneratorAgent(BaseAgent):

@@ -5,11 +5,11 @@ File download tool — download files from URLs into the workspace.
 
 import asyncio
 import os
-import logging
 
-logger = logging.getLogger(__name__)
-
+from src.infra.logging_config import get_logger
 from .workspace import _safe_resolve, WORKSPACE_DIR
+
+logger = get_logger("tools.download")
 
 MAX_FILE_SIZE = 50_000_000  # 50 MB
 ALLOWED_EXTENSIONS = {

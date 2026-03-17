@@ -12,14 +12,14 @@ Given a task description, assembles the most relevant code context:
 Public API:
     context_block = await assemble_context(task, project_root, max_tokens)
 """
-import logging
 import os
 import subprocess
 from typing import Optional
 
+from src.infra.logging_config import get_logger
 from ..parsing.tree_sitter_parser import parse_file, detect_language
 
-logger = logging.getLogger(__name__)
+logger = get_logger("context.assembler")
 
 
 # ─── Token Estimation ────────────────────────────────────────────────────────

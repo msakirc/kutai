@@ -8,7 +8,6 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-import logging
 import re
 
 from ..collaboration.blackboard import get_or_create_blackboard, \
@@ -39,9 +38,10 @@ from ..infra.db import (
 from ..tools import TOOL_REGISTRY, TOOL_SCHEMAS, get_tool_descriptions, execute_tool
 from ..app.config import MAX_AGENT_ITERATIONS, MAX_TOOL_OUTPUT_LENGTH
 from ..models.models import validate_action, validate_tool_args, validate_task_output
+from ..infra.logging_config import get_logger
 import litellm as _litellm
 
-logger = logging.getLogger(__name__)
+logger = get_logger("agents.base")
 
 
 # Tools whose execution has side effects and should not be re-run on retry.

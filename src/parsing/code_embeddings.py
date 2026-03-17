@@ -16,11 +16,11 @@ Public API:
     results = await search_code(query, top_k=10)
 """
 import hashlib
-import logging
 import os
 import time
 from typing import Optional
 
+from src.infra.logging_config import get_logger
 from .tree_sitter_parser import (
     detect_language,
     get_parseable_extensions,
@@ -28,7 +28,7 @@ from .tree_sitter_parser import (
 )
 from ..memory.vector_store import is_ready, embed_and_store, query as vs_query
 
-logger = logging.getLogger(__name__)
+logger = get_logger("parsing.code_embeddings")
 
 
 # ─── File Hash Tracking ──────────────────────────────────────────────────────

@@ -5,9 +5,10 @@ Generic HTTP client tool for agents to interact with REST APIs.
 
 import asyncio
 import json
-import logging
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("tools.http_client")
 
 MAX_RESPONSE_SIZE = 10_000  # chars
 

@@ -7,16 +7,16 @@ agents → router → litellm dependency chain.
 """
 
 import json
-import logging
 import os
 from typing import Optional
 
+from src.infra.logging_config import get_logger
 import src.tools.workspace as _ws
 from src.tools import git_diff
 from src.tools.codebase_index import get_cached_index, build_index, \
     get_codebase_map
 
-logger = logging.getLogger(__name__)
+logger = get_logger("workflows.pipeline.pipeline_utils")
 
 
 # ─── Complexity Classification ──────────────────────────────────────────────

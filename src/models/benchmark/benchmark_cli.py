@@ -11,13 +11,16 @@ Usage:
     python benchmark_cli.py compare <m1> <m2> # Side-by-side comparison
 """
 
-import sys
 import logging
+import sys
 
+from src.infra.logging_config import get_logger
 from src.models.benchmark.benchmark_fetcher import \
     enrich_registry_with_benchmarks, BenchmarkFetcher
 from ..model_registry import reload_registry, get_registry
 from ..capabilities import TASK_PROFILES, Cap
+
+logger = get_logger("models.benchmark.cli")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,7 +29,7 @@ logging.basicConfig(
 
 
 def cmd_scan():
-    logging.info("alo")
+    logger.info("alo")
     """Rescan model directory and show results."""
 
     result = reload_registry()

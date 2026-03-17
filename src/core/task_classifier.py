@@ -9,15 +9,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from dataclasses import dataclass
 
 import litellm
 
+from src.infra.logging_config import get_logger
 from .router import ModelRequirements, select_model
 from ..models.rate_limiter import get_rate_limit_manager
 
-logger = logging.getLogger(__name__)
+logger = get_logger("core.task_classifier")
 
 
 @dataclass
@@ -91,7 +91,7 @@ async def classify_task(title: str, description: str) -> TaskClassification:
     try:
         return await _classify_with_llm(title, description)
     except Exception as e:
-        logger.warning(f"LLM classification failed ({e}), using keyword fallback")
+        logger.warning("llm classification failed fallback to keyword", error=str(e))
         return _classify_by_keywords(title, description)
 
 
@@ -180,10 +180,15 @@ async def _classify_with_llm(title: str, description: str) -> TaskClassification
     )
 
     logger.info(
-        f"Classified: agent={cls.agent_type}, diff={cls.difficulty}, "
-        f"tools={cls.needs_tools}, vision={cls.needs_vision}, "
-        f"thinking={cls.needs_thinking}, local={cls.local_only}, "
-        f"priority={cls.priority}"
+        "task classified",
+        agent_type=cls.agent_type,
+        difficulty=cls.difficulty,
+        needs_tools=cls.needs_tools,
+        needs_vision=cls.needs_vision,
+        needs_thinking=cls.needs_thinking,
+        local_only=cls.local_only,
+        priority=cls.priority,
+        confidence=cls.confidence,
     )
 
     # Record 429s for adaptive rate limiting

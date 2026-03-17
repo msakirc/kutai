@@ -14,10 +14,11 @@ when expensive capacity should be reserved.
 
 from __future__ import annotations
 
-import logging
 import time
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("models.quota_planner")
 
 # How long a 429 event stays relevant for threshold calculation
 _429_DECAY_SECONDS = 600  # 10 minutes

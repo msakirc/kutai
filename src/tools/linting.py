@@ -4,10 +4,10 @@ Auto-linting post-step — run ruff check --fix and ruff format on Python files
 inside the Docker sandbox. Non-blocking: auto-fixes what it can.
 """
 
-import logging
+from src.infra.logging_config import get_logger
 from .shell import run_shell
 
-logger = logging.getLogger(__name__)
+logger = get_logger("tools.linting")
 
 # Extensions that can be linted
 _LINTABLE = {".py"}

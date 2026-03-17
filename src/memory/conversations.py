@@ -11,13 +11,13 @@ Public API:
     await find_followup_context(chat_id, new_message, top_k=3)
     await get_recent_exchanges(chat_id, limit=5)
 """
-import logging
 import time
 from typing import Optional
 
+from src.infra.logging_config import get_logger
 from .vector_store import embed_and_store, query, is_ready
 
-logger = logging.getLogger(__name__)
+logger = get_logger("memory.conversations")
 
 
 async def store_exchange(

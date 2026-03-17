@@ -14,14 +14,15 @@ Supports:
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from dataclasses import dataclass, field
+
+from src.infra.logging_config import get_logger
 
 from .header_parser import RateLimitSnapshot
 from .model_registry import get_registry
 
-logger = logging.getLogger(__name__)
+logger = get_logger("models.rate_limiter")
 
 
 @dataclass

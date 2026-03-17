@@ -10,12 +10,12 @@ Public API:
     await store_error_recovery(task, error, fix, hint)
     await recall_similar_tasks(title, description, top_k=3)
 """
-import logging
 import time
 
+from src.infra.logging_config import get_logger
 from .vector_store import embed_and_store, query, is_ready
 
-logger = logging.getLogger(__name__)
+logger = get_logger("memory.episodic")
 
 
 # ─── Store Task Result ────────────────────────────────────────────────────────

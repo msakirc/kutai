@@ -8,11 +8,11 @@ actions with method/path/required_params.
 
 import asyncio
 import json
-import logging
 import os
 import urllib.parse
 from typing import Any
 
+from src.infra.logging_config import get_logger
 from .base import BaseIntegration
 
 # ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@ def _validate_url(url: str) -> None:
         if 16 <= second_octet <= 31:
             raise ValueError(f"Blocked private IP: {hostname}")
 
-logger = logging.getLogger(__name__)
+logger = get_logger("integrations.http_integration")
 
 # ---------------------------------------------------------------------------
 # HTTP client — prefer httpx, fall back to aiohttp, then urllib

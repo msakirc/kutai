@@ -13,11 +13,12 @@ Call reload() at any time to rescan without restarting.
 
 from __future__ import annotations
 
-import logging
 import math
 import os
 import re
 import threading
+
+from src.infra.logging_config import get_logger
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -45,7 +46,7 @@ from .model_profiles import (
     interpolate_size_multiplier,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger("models.model_registry")
 
 REGISTRY_PATH = Path(__file__).parent / "models.yaml"
 

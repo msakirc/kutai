@@ -3,6 +3,10 @@
 import re
 from typing import Optional
 
+from src.infra.logging_config import get_logger
+
+logger = get_logger("workflows.engine.dispatch")
+
 WORKFLOW_PATTERNS: list[re.Pattern[str]] = [
     re.compile(
         r"(build|create|make|develop)\s+(me\s+)?(an?\s+)?(\w+\s+)*(product|app|application|saas|platform|tool|service|website|startup)",

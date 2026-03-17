@@ -4,6 +4,9 @@ Summarizer agent — condenses long content into clear, structured summaries.
 Extracts key points, decisions, and action items.
 """
 from .base import BaseAgent
+from ..infra.logging_config import get_logger
+
+logger = get_logger("agents.summarizer")
 
 
 class SummarizerAgent(BaseAgent):

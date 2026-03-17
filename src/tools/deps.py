@@ -6,12 +6,12 @@ check against installed packages, auto-install missing ones.
 
 import ast
 import os
-import logging
 import re
+from src.infra.logging_config import get_logger
 from .shell import run_shell
 from .workspace import _safe_resolve, WORKSPACE_DIR
 
-logger = logging.getLogger(__name__)
+logger = get_logger("tools.deps")
 
 # Modules from the Python stdlib (3.10+) — no need to install these.
 # This is a subset; we check pip as the authoritative source.

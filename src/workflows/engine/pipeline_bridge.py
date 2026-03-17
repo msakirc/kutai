@@ -6,6 +6,10 @@ this module packages the step's context into a CodingPipeline-compatible task.
 
 import re
 
+from src.infra.logging_config import get_logger
+
+logger = get_logger("workflows.engine.pipeline_bridge")
+
 # Template step IDs (feat.N) that should be delegated to CodingPipeline.
 PIPELINE_DELEGATE_STEPS: set[str] = {
     "feat.3", "feat.4", "feat.5", "feat.6", "feat.7",

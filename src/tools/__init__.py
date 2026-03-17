@@ -8,12 +8,12 @@ prompts via ``get_tool_descriptions()``.
 """
 
 import inspect
-import logging
 from typing import Any, Optional
 
 from ..parsing.code_embeddings import reindex_file
+from ..infra.logging_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("tools")
 
 # ---------------------------------------------------------------------------
 # Imports — must match the public API of each module we built

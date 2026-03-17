@@ -19,11 +19,12 @@ Integration with existing systems:
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("infra.dead_letter")
 
 # If this many tasks from the same goal enter the DLQ, pause the goal
 GOAL_DLQ_THRESHOLD = 3

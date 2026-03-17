@@ -12,13 +12,13 @@ Public API:
 
 Result dict: {"chunks": int, "source": str, "status": "ok"|"error"}
 """
-import logging
 import os
 from typing import Optional
 
+from src.infra.logging_config import get_logger
 from .vector_store import embed_and_store, is_ready
 
-logger = logging.getLogger(__name__)
+logger = get_logger("memory.ingest")
 
 
 # ─── Text Chunking ───────────────────────────────────────────────────────────

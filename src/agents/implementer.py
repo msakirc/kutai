@@ -4,6 +4,9 @@ Implementer agent - Writes or modifies ONE file per invocation based on
 the architectural plan.
 """
 from .base import BaseAgent
+from ..infra.logging_config import get_logger
+
+logger = get_logger("agents.implementer")
 
 
 class ImplementerAgent(BaseAgent):

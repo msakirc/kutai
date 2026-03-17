@@ -6,6 +6,10 @@ import json
 import re
 from typing import Any
 
+from src.infra.logging_config import get_logger
+
+logger = get_logger("workflows.engine.conditions")
+
 
 def _parse_artifact(artifact_str: str) -> Any:
     """JSON-parse *artifact_str*, falling back to the raw string on failure."""

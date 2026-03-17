@@ -28,14 +28,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("models.benchmark.fetcher")
 
 CACHE_TTL_HOURS = 72  # Re-fetch after 3 days
 

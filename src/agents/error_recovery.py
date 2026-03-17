@@ -5,6 +5,9 @@ diagnoses root cause, either fixes and retries or escalates
 with a clear diagnosis.
 """
 from .base import BaseAgent
+from ..infra.logging_config import get_logger
+
+logger = get_logger("agents.error_recovery")
 
 
 class ErrorRecoveryAgent(BaseAgent):

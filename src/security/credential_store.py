@@ -8,12 +8,13 @@ Falls back to base64 encoding if cryptography is not installed or key is unset.
 
 import base64
 import json
-import logging
 import os
 import warnings
 from datetime import datetime, timezone
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("security.credential_store")
 
 # ---------------------------------------------------------------------------
 # Encryption backend — prefer cryptography.fernet, fall back to base64
@@ -143,7 +144,7 @@ async def store_credential(
         (service_name, encrypted, now, now),
     )
     await db.commit()
-    logger.info(f"Stored credential for service: {service_name}")
+    logger.info(f"Stored credential for service: {service_name}", service=service_name)
 
 
 async def get_credential(service_name: str) -> dict | None:
@@ -167,7 +168,7 @@ async def get_credential(service_name: str) -> dict | None:
         decrypted = _decrypt(row[0] if isinstance(row, tuple) else row["encrypted_data"])
         payload = json.loads(decrypted)
     except Exception as e:
-        logger.error(f"Failed to decrypt credential for {service_name}: {e}")
+        logger.error(f"Failed to decrypt credential for {service_name}: {e}", service=service_name, error=str(e))
         return None
 
     # Handle both new envelope format and legacy flat format
@@ -180,7 +181,9 @@ async def get_credential(service_name: str) -> dict | None:
                 if exp_dt < datetime.now(timezone.utc):
                     logger.warning(
                         f"Credential for '{service_name}' expired at {expires_at}. "
-                        "Please refresh it with /credential add."
+                        "Please refresh it with /credential add.",
+                        service=service_name,
+                        expires_at=expires_at,
                     )
                     return None
             except (ValueError, TypeError):
@@ -203,7 +206,7 @@ async def delete_credential(service_name: str) -> bool:
     await db.commit()
     deleted = cursor.rowcount > 0
     if deleted:
-        logger.info(f"Deleted credential for service: {service_name}")
+        logger.info(f"Deleted credential for service: {service_name}", service=service_name)
     return deleted
 
 

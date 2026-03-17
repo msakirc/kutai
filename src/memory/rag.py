@@ -11,13 +11,13 @@ Main function:
 The returned text block is injected into BaseAgent._build_context()
 between the task description and tool descriptions.
 """
-import logging
 import time
 from typing import Optional
 
+from src.infra.logging_config import get_logger
 from src.memory.vector_store import is_ready, query, embed_and_store
 
-logger = logging.getLogger(__name__)
+logger = get_logger("memory.rag")
 
 
 # ─── Scoring Helpers ──────────────────────────────────────────────────────────

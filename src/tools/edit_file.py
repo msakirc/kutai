@@ -5,12 +5,12 @@ Saves tokens on large files compared to write_file.
 """
 
 import os
-import logging
 from typing import Optional
 
+from src.infra.logging_config import get_logger
 from src.tools.workspace import _safe_resolve
 
-logger = logging.getLogger(__name__)
+logger = get_logger("tools.edit_file")
 
 # Re-use workspace safety from workspace.py
 

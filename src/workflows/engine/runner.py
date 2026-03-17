@@ -8,9 +8,9 @@ Usage:
 from __future__ import annotations
 
 import json
-import logging
 from typing import Optional
 
+from src.infra.logging_config import get_logger
 from src.workflows.engine.artifacts import ArtifactStore, format_artifacts_for_prompt
 from src.workflows.engine.expander import (
     expand_steps_to_tasks,
@@ -18,7 +18,7 @@ from src.workflows.engine.expander import (
 )
 from src.workflows.engine.loader import load_workflow, validate_dependencies
 
-logger = logging.getLogger(__name__)
+logger = get_logger("workflows.engine.runner")
 
 # ── Trigger-to-cron mapping ────────────────────────────────────────────────
 

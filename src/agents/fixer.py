@@ -4,6 +4,9 @@ Fixer agent - Takes review feedback and test failures, directly modifying
 source code to resolve issues.
 """
 from .base import BaseAgent
+from ..infra.logging_config import get_logger
+
+logger = get_logger("agents.fixer")
 
 
 class FixerAgent(BaseAgent):

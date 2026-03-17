@@ -3,12 +3,12 @@
 Integration registry — discover, register, and look up service integrations.
 """
 
-import logging
 from typing import Optional
 
+from src.infra.logging_config import get_logger
 from .base import BaseIntegration
 
-logger = logging.getLogger(__name__)
+logger = get_logger("integrations.registry")
 
 
 class IntegrationRegistry:

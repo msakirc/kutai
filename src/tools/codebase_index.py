@@ -16,11 +16,14 @@ import ast
 import os
 from typing import Optional
 
+from src.infra.logging_config import get_logger
 from ..parsing.tree_sitter_parser import (
     detect_language,
     get_parseable_extensions,
     parse_file as ts_parse_file,
 )
+
+logger = get_logger("tools.codebase_index")
 
 # In-memory index store: { workspace_path: { filepath: FileIndex } }
 _INDEX_CACHE: dict[str, dict[str, dict]] = {}

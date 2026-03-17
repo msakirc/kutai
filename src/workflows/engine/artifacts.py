@@ -6,10 +6,11 @@ tiered artifact loading (primary > reference > full_only_if_needed).
 """
 from __future__ import annotations
 
-import logging
 from typing import Any, Optional
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("workflows.engine.artifacts")
 
 # ── Context budget tiers ────────────────────────────────────────────────────
 

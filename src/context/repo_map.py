@@ -14,18 +14,18 @@ Public API:
     text     = format_repo_map(repo_map)
 """
 import json
-import logging
 import os
 import re
 from typing import Optional
 
+from src.infra.logging_config import get_logger
 from ..parsing.tree_sitter_parser import (
     detect_language,
     get_parseable_extensions,
     parse_file,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger("context.repo_map")
 
 
 # ─── Configuration ───────────────────────────────────────────────────────────

@@ -1,7 +1,9 @@
 # telegram_bot.py
 import asyncio
-import logging
+from src.infra.logging_config import get_logger
 from .config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, TASK_PRIORITY
+
+logger = get_logger("app.telegram_bot")
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -996,6 +998,8 @@ class TelegramInterface:
         chat_id = update.message.chat_id
         parent_id = self.user_last_task_id.get(chat_id)
 
+        logger.info("Message received", user_id=chat_id, command=text[:50] if text else "")
+
         # Phase 11.4: Embedding-based follow-up detection
         recent_context = None
         try:
@@ -1134,7 +1138,7 @@ class TelegramInterface:
                     if attempt < retries:
                         await _asyncio.sleep(1 * (attempt + 1))
                         continue
-                    logging.error(f"Failed to send Telegram notification: {e}")
+                    logger.error("Failed to send Telegram notification", error=str(e))
 
     async def send_result(self, task_id, title, result, model, cost):
         truncated = result[:3000] if len(result) > 3000 else result

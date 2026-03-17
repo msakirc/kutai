@@ -13,12 +13,13 @@ this module ensures:
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("models.gpu_scheduler")
 
 
 @dataclass(order=True)

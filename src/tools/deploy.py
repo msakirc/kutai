@@ -6,10 +6,11 @@ Validates prerequisites before deploying.
 
 import asyncio
 import json
-import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("tools.deploy")
 
 SUPPORTED_TARGETS = ("vercel", "railway")
 

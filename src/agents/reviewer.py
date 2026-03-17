@@ -4,6 +4,9 @@ Reviewer agent — reviews code and content for quality, correctness,
 completeness, and security. Provides structured, actionable feedback.
 """
 from .base import BaseAgent
+from ..infra.logging_config import get_logger
+
+logger = get_logger("agents.reviewer")
 
 
 class ReviewerAgent(BaseAgent):

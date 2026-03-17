@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from typing import Optional
 
+from src.infra.logging_config import get_logger
+
+logger = get_logger("workflows.engine.expander")
+
 # Maps workflow agent names to system agent types.
 # Most map 1:1; only special case is router -> executor.
 AGENT_MAP: dict[str, str] = {

@@ -6,11 +6,12 @@ has awareness of what prior stages produced.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("workflows.pipeline.pipeline_context")
 
 
 @dataclass

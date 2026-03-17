@@ -20,11 +20,12 @@ Error categories attached to failed tasks:
   invalid_output, dependency_failed, cancelled
 """
 
-import logging
 from enum import Enum
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("core.state_machine")
 
 
 # ─── States ──────────────────────────────────────────────────────────────────
@@ -163,9 +164,12 @@ async def transition_task(
     if error_category is not None:
         update_kwargs["error_category"] = error_category
 
-    logger.debug(
-        f"[Task #{task_id}] State transition: {current_state} → {to_state}"
-        + (f" (error_category={error_category})" if error_category else "")
+    logger.info(
+        "state transition",
+        task_id=task_id,
+        from_state=current_state,
+        to_state=to_state,
+        error_category=error_category,
     )
 
     await update_task(task_id, **update_kwargs)

@@ -4,6 +4,9 @@ Assistant agent — handles general conversation, Q&A, personal assistance,
 and tasks that don't fit a specialized agent type.
 """
 from .base import BaseAgent
+from ..infra.logging_config import get_logger
+
+logger = get_logger("agents.assistant")
 
 
 class AssistantAgent(BaseAgent):

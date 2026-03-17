@@ -20,13 +20,13 @@ Public API:
     prefs = await get_user_preferences(chat_id)
     prompt_block = format_preferences(preferences)
 """
-import logging
 import time
 from typing import Optional
 
+from src.infra.logging_config import get_logger
 from src.memory.vector_store import is_ready, embed_and_store, query
 
-logger = logging.getLogger(__name__)
+logger = get_logger("memory.preferences")
 
 
 # ─── Feedback Types ──────────────────────────────────────────────────────────

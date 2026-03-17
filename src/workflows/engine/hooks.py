@@ -6,15 +6,15 @@ template expansion triggers, and CodingPipeline delegation detection.
 from __future__ import annotations
 
 import json
-import logging
 from typing import Optional
 
+from src.infra.logging_config import get_logger
 from .artifacts import ArtifactStore, format_artifacts_for_prompt, get_phase_summaries
 from .conditions import evaluate_condition, resolve_group
 from .policies import ReviewTracker
 from .quality_gates import evaluate_gate, format_gate_result
 
-logger = logging.getLogger(__name__)
+logger = get_logger("workflows.engine.hooks")
 
 # ── Module-level singleton ─────────────────────────────────────────────────
 

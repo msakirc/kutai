@@ -2,7 +2,6 @@
 import asyncio
 import dataclasses
 import json
-import logging
 import os
 import signal
 from ..app.config import DB_PATH, MAX_CONTEXT_CHAIN_LENGTH, TASK_PRIORITY
@@ -16,6 +15,7 @@ from ..infra.db import (
     cancel_task, get_task,
     save_workspace_snapshot, release_task_locks, release_goal_locks,
 )
+from src.infra.logging_config import get_logger
 from .router import _circuit_breakers
 from ..agents import get_agent
 from ..tools import execute_tool
@@ -31,8 +31,7 @@ from ..tools.git_ops import (
 )
 from ..app.telegram_bot import TelegramInterface
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = get_logger("core.orchestrator")
 
 
     # Default timeouts per agent type (seconds).  Override via
@@ -811,20 +810,20 @@ class Orchestrator:
         title = task["title"]
         agent_type = task.get("agent_type", "executor")
 
-        logger.info(f"[Task #{task_id}] Starting: '{title}' (agent: {agent_type})")
+        logger.info("task received", task_id=task_id, title=title, agent_type=agent_type)
 
         task_ctx = {}  # initialized here so except handler can safely access it
         try:
             # Atomic claim — if another worker grabbed it first, skip
             claimed = await claim_task(task_id)
             if not claimed:
-                logger.info(f"[Task #{task_id}] Already claimed by another worker, skipping")
+                logger.info("task already claimed", task_id=task_id)
                 return
 
             # ── Check for cancellation before starting ──
             fresh = await get_task(task_id)
             if fresh and fresh.get("status") == "cancelled":
-                logger.info(f"[Task #{task_id}] Cancelled before execution, skipping")
+                logger.info("task cancelled before execution", task_id=task_id)
                 return
 
             # ── Inject context from prior steps + workspace snapshot ──
@@ -866,12 +865,12 @@ class Orchestrator:
                 if should_delegate_to_pipeline(template_step_id, agent_type):
                     agent_type = "pipeline"
                     task["agent_type"] = "pipeline"
-                    logger.info(f"[Task #{task_id}] Workflow step delegated to CodingPipeline")
+                    logger.info("workflow step delegated to pipeline", task_id=task_id)
 
             # ── Human approval gate ──
             if task_ctx.get("human_gate"):
                 try:
-                    logger.info(f"[Task #{task_id}] Human approval gate triggered")
+                    logger.info("human approval gate triggered", task_id=task_id)
                     approved = await self.telegram.request_approval(
                         task_id,
                         task.get("title", ""),
@@ -880,12 +879,12 @@ class Orchestrator:
                         goal_id=task.get("goal_id"),
                     )
                     if not approved:
-                        logger.info(f"[Task #{task_id}] Human gate rejected/timed out, pausing task")
+                        logger.info("human gate rejected", task_id=task_id)
                         await update_task(task_id, status="paused")
                         return
-                    logger.info(f"[Task #{task_id}] Human gate approved, continuing execution")
+                    logger.info("human gate approved", task_id=task_id)
                 except Exception as e:
-                    logger.error(f"[Task #{task_id}] Human gate error (continuing): {e}")
+                    logger.error("human gate error", task_id=task_id, error=str(e))
 
             # ── Phase 6: Snapshot workspace before coder/pipeline tasks ──
             goal_id = task.get("goal_id")
@@ -915,14 +914,17 @@ class Orchestrator:
             if agent_type == "pipeline":
                 from ..workflows.pipeline import CodingPipeline
                 pipeline = CodingPipeline()
-                logger.info(f"[Task #{task_id}] Delegating to CodingPipeline")
+                logger.info("delegating to pipeline", task_id=task_id)
                 coro = pipeline.run(task)
             else:
                 agent = get_agent(agent_type)
                 logger.info(
-                    f"[Task #{task_id}] Agent '{agent.name}' executing "
-                    f"(tier: {task.get('tier', 'auto')}, "
-                    f"timeout: {timeout_seconds}s)"
+                    "agent dispatched",
+                    task_id=task_id,
+                    agent_name=agent.name,
+                    agent_type=agent_type,
+                    tier=task.get('tier', 'auto'),
+                    timeout_seconds=timeout_seconds,
                 )
                 coro = agent.execute(task)
 
@@ -931,7 +933,7 @@ class Orchestrator:
                 result = await asyncio.wait_for(coro, timeout=timeout_seconds)
             except asyncio.TimeoutError:
                 timeout_err = f"TimeoutError: Task timed out after {timeout_seconds}s"
-                logger.error(f"[Task #{task_id}] TIMEOUT after {timeout_seconds}s")
+                logger.error("task timeout", task_id=task_id, timeout_seconds=timeout_seconds, error=timeout_err)
                 await update_task(
                     task_id, status="failed", error=timeout_err
                 )
@@ -943,7 +945,7 @@ class Orchestrator:
 
             status = result.get("status", "completed")
 
-            logger.info(f"[Task #{task_id}] Agent returned status: '{status}'")
+            logger.info("result received", task_id=task_id, status=status)
 
             # Auto-commit after successful coder tasks
             if status == "completed" and agent_type == "coder":
@@ -984,7 +986,7 @@ class Orchestrator:
             elif status == "needs_review":
                 await self._handle_review(task, result)
             else:
-                logger.warning(f"[Task #{task_id}] Unknown status '{status}', treating as complete")
+                logger.warning("unknown task status", task_id=task_id, status=status)
                 await self._handle_complete(task, result)
 
             # ── Phase 6: Release file locks held by this task ──
@@ -994,7 +996,7 @@ class Orchestrator:
                 pass
 
         except Exception as e:
-            logger.error(f"[Task #{task_id}] FAILED: {type(e).__name__}: {e}", exc_info=True)
+            logger.exception("task failed", task_id=task_id, error_type=type(e).__name__, error=str(e))
             # Release locks on failure too
             try:
                 await release_task_locks(task_id)
@@ -1007,7 +1009,7 @@ class Orchestrator:
                 await update_task(task_id, status="pending",
                                   retry_count=retry_count + 1,
                                   error=f"{type(e).__name__}: {str(e)[:200]}")
-                logger.info(f"[Task #{task_id}] Will retry ({retry_count + 1}/{max_retries})")
+                logger.info("task will retry", task_id=task_id, retry_count=retry_count + 1, max_retries=max_retries)
             else:
                 error_str = f"{type(e).__name__}: {str(e)[:500]}"
                 # Classify the error for analytics and DLQ routing
@@ -1058,7 +1060,7 @@ class Orchestrator:
                         retry_count=max_retries,
                     )
                 except Exception as dlq_err:
-                    logger.error(f"[Task #{task_id}] DLQ quarantine failed: {dlq_err}")
+                    logger.error("dlq quarantine failed", task_id=task_id, error=str(dlq_err))
 
     # ─── Result Handlers ─────────────────────────────────────────────────
 
@@ -1131,8 +1133,7 @@ class Orchestrator:
                 f"_{task['title'][:60]}_"
             )
 
-        logger.info(f"[Task #{task_id}] ✅ Complete via {model} "
-                     f"(${cost:.4f}, {iterations} iter)")
+        logger.info("task completed", task_id=task_id, model=model, cost=cost, iterations=iterations)
 
         # ── Fix #9: Workflow phase completion notification ──
         if task_ctx.get("is_workflow_step") and task.get("goal_id"):

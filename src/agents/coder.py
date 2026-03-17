@@ -3,6 +3,9 @@
 Coder agent — writes, runs, debugs, and commits working code.
 """
 from .base import BaseAgent
+from ..infra.logging_config import get_logger
+
+logger = get_logger("agents.coder")
 
 
 class CoderAgent(BaseAgent):

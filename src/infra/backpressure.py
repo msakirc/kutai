@@ -9,12 +9,13 @@ requests are queued and retried with exponential backoff.
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("infra.backpressure")
 
 # Maximum time a request can sit in the backpressure queue
 MAX_QUEUE_WAIT_SECONDS: float = 300  # 5 minutes

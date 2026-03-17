@@ -6,11 +6,12 @@ Uses pynvml (NVIDIA) for GPU stats, psutil for RAM/CPU.
 
 from __future__ import annotations
 
-import logging
 import time
 from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("models.gpu_monitor")
 
 
 @dataclass

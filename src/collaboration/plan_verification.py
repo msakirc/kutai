@@ -10,11 +10,12 @@ After planner creates subtasks, verify:
 """
 from __future__ import annotations
 
-import logging
 import re
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("collaboration.plan_verification")
 
 # ── Heuristic: keywords → expected agent_type mapping ────────────────────────
 

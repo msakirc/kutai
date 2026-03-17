@@ -4,6 +4,9 @@ Analyst agent — performs structured analysis, data interpretation,
 feasibility studies, and produces structured reports with findings.
 """
 from .base import BaseAgent
+from ..infra.logging_config import get_logger
+
+logger = get_logger("agents.analyst")
 
 
 class AnalystAgent(BaseAgent):

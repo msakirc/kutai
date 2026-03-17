@@ -8,12 +8,13 @@ This module normalizes them into a common RateLimitSnapshot.
 
 from __future__ import annotations
 
-import logging
 import re
 import time
 from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("models.header_parser")
 
 
 @dataclass

@@ -9,10 +9,11 @@ a fallback.
 Also exposes a batch helper: get_embeddings(texts).
 """
 import hashlib
-import logging
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("memory.embeddings")
 
 
 # ─── In-Memory Cache ──────────────────────────────────────────────────────────

@@ -4,6 +4,9 @@ Architect agent - Takes a task description and workspace state to produce
 a structured architectural plan (ARCHITECTURE.md).
 """
 from .base import BaseAgent
+from ..infra.logging_config import get_logger
+
+logger = get_logger("agents.architect")
 
 
 class ArchitectAgent(BaseAgent):

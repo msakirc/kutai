@@ -5,11 +5,12 @@ The workspace directory is bind-mounted so file changes persist.
 """
 
 import asyncio
-import logging
 import os
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from src.infra.logging_config import get_logger
+
+logger = get_logger("tools.shell")
 
 # ---------------------------------------------------------------------------
 # Configuration — override via environment or config import
@@ -77,11 +78,11 @@ async def ensure_container_running() -> bool:
     # 2. Exists but stopped? Try restart.
     rc, _, _ = await _run_quiet("docker", "start", CONTAINER_NAME)
     if rc == 0:
-        logger.info(f"Restarted existing sandbox container '{CONTAINER_NAME}'.")
+        logger.info("restarted existing sandbox container", container=CONTAINER_NAME)
         return True
 
     # 3. Doesn't exist — create from scratch.
-    logger.info(f"Creating new sandbox container '{CONTAINER_NAME}'...")
+    logger.info("creating new sandbox container", container=CONTAINER_NAME)
     rc, _, stderr = await _run_quiet(
         "docker", "run", "-d",
         "--name", CONTAINER_NAME,
@@ -95,10 +96,10 @@ async def ensure_container_running() -> bool:
         "sleep", "infinity",
     )
     if rc != 0:
-        logger.error(f"Failed to create sandbox: {stderr.strip()}")
+        logger.error("failed to create sandbox container", error=stderr.strip())
         return False
 
-    logger.info("Sandbox container created and running.")
+    logger.info("sandbox container created and running")
     return True
 
 
@@ -187,7 +188,7 @@ async def run_shell(
         )
 
     resolved_wd = _resolve_workdir(workdir)
-    logger.info(f"[shell] {resolved_wd}$ {command[:120]}")
+    logger.debug("executing shell command", command=command[:120], workdir=resolved_wd)
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -212,10 +213,12 @@ async def run_shell(
             await proc.wait()
             return f"⏱️ TIMEOUT: Command exceeded {timeout}s limit.\nCommand: {command[:120]}"
 
-        return _format_output(stdout, stderr, proc.returncode or 0)
+        exit_code = proc.returncode or 0
+        logger.info("shell command completed", exit_code=exit_code)
+        return _format_output(stdout, stderr, exit_code)
 
     except Exception as exc:
-        logger.error(f"[shell] Unexpected error: {exc}", exc_info=True)
+        logger.exception("unexpected shell error", error=str(exc))
         return f"❌ Shell execution error: {type(exc).__name__}: {exc}"
 
 
@@ -261,7 +264,7 @@ async def run_shell_with_stdin(
         return _format_output(stdout, stderr, proc.returncode or 0)
 
     except Exception as exc:
-        logger.error(f"[shell+stdin] Error: {exc}", exc_info=True)
+        logger.exception("shell with stdin error", error=str(exc))
         return f"❌ Shell execution error: {type(exc).__name__}: {exc}"
 
 

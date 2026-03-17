@@ -5,13 +5,13 @@ Gates define requirements that must be met before the next phase can start.
 from __future__ import annotations
 
 import json
-import logging
 import re
 from typing import Any, Optional
 
+from src.infra.logging_config import get_logger
 from .artifacts import ArtifactStore
 
-logger = logging.getLogger(__name__)
+logger = get_logger("workflows.engine.quality_gates")
 
 # ── Gate definitions ──────────────────────────────────────────────────────────
 

@@ -5,16 +5,28 @@ Model pool logic has moved to model_registry.py.
 """
 
 import os
-import logging
 
+from src.infra.logging_config import get_logger
 from src.models.model_registry import get_registry
 
-logger = logging.getLogger(__name__)
+logger = get_logger("app.config")
 
 # ─── Core Settings ───────────────────────────────────────────────────────────
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_ADMIN_CHAT_ID = os.getenv("TELEGRAM_ADMIN_CHAT_ID")
+
+# ─── Notifications (ntfy) ────────────────────────────────────────────────────
+
+NTFY_URL = os.getenv("NTFY_URL", "")
+NTFY_USER = os.getenv("NTFY_USER", "")
+NTFY_PASS = os.getenv("NTFY_PASS", "")
+
+# Two topics: errors get phone alerts, logs are browsable
+NTFY_TOPIC_ERRORS = "orchestrator-errors"   # ERROR/CRITICAL only, phone ON
+NTFY_TOPIC_LOGS   = "orchestrator-logs"     # INFO/WARNING/ERROR, phone OFF
+
+# ─── Core Settings ───────────────────────────────────────────────────────────
 
 DB_PATH = "orchestrator.db"
 WORKSPACE_ROOT = os.path.abspath(
@@ -159,20 +171,16 @@ MODEL_POOL = _LazyModelPool()
 # ─── Startup Display ────────────────────────────────────────────────────────
 
 def print_config() -> None:
-
     registry = get_registry()
 
-    print("=" * 60)
-    print("  🔑 API Keys:")
-    for provider, available in AVAILABLE_KEYS.items():
-        print(f"     {'✅' if available else '❌'} {provider}")
-
-    print(f"\n  📁 Model Directory: {MODEL_DIR or '(not set)'}")
-    print(f"  📁 Workspace:       {WORKSPACE_ROOT}")
-    print(f"  🐳 Docker:          {DOCKER_CONTAINER_NAME}")
-    print(f"  🔄 Max iterations:  {MAX_AGENT_ITERATIONS}")
-    print(f"  💰 Daily budget:    ${COST_BUDGET_DAILY:.2f}")
-
-    # Delegate detailed model info to registry
-    registry.print_summary()
-    print("=" * 60)
+    key_status = {p: ("ok" if ok else "missing") for p, ok in AVAILABLE_KEYS.items()}
+    logger.info(
+        "Config summary",
+        api_keys=key_status,
+        model_dir=MODEL_DIR or "(not set)",
+        workspace=WORKSPACE_ROOT,
+        docker=DOCKER_CONTAINER_NAME,
+        max_iterations=MAX_AGENT_ITERATIONS,
+        daily_budget=COST_BUDGET_DAILY,
+    )
+    registry.print_summary()  # registry still prints its own table to stdout

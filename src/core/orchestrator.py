@@ -290,6 +290,37 @@ class Orchestrator:
         threshold_24h = (
             datetime.now() - timedelta(hours=24)
         ).isoformat()
+
+        # Tier 0: 4-hour gentle nudge (no escalation count increment)
+        threshold_4h = (
+            datetime.now() - timedelta(hours=4)
+        ).isoformat()
+        cursor_nudge = await db.execute(
+            """SELECT id, title, context FROM tasks
+               WHERE status = 'needs_clarification'
+               AND started_at < ?
+               AND started_at >= ?""",
+            (threshold_4h, threshold_24h),
+        )
+        nudge_tasks = [dict(row) for row in await cursor_nudge.fetchall()]
+        for task in nudge_tasks:
+            raw_ctx = task.get("context", "{}")
+            if isinstance(raw_ctx, str):
+                try:
+                    task_ctx = json.loads(raw_ctx)
+                except (json.JSONDecodeError, TypeError):
+                    task_ctx = {}
+            else:
+                task_ctx = raw_ctx if isinstance(raw_ctx, dict) else {}
+
+            if not task_ctx.get("nudge_sent"):
+                task_ctx["nudge_sent"] = True
+                await update_task(task["id"], context=json.dumps(task_ctx))
+                await self.telegram.send_notification(
+                    f"\U0001f4ac Gentle reminder: Task #{task['id']} needs your input.\n"
+                    f"*{task['title']}*"
+                )
+
         cursor_clar = await db.execute(
             """SELECT id, title, context, started_at FROM tasks
                WHERE status = 'needs_clarification'
@@ -720,6 +751,25 @@ class Orchestrator:
                     agent_type = "pipeline"
                     task["agent_type"] = "pipeline"
                     logger.info(f"[Task #{task_id}] Workflow step delegated to CodingPipeline")
+
+            # ── Human approval gate ──
+            if task_ctx.get("human_gate"):
+                try:
+                    logger.info(f"[Task #{task_id}] Human approval gate triggered")
+                    approved = await self.telegram.request_approval(
+                        task_id,
+                        task.get("title", ""),
+                        task.get("description", "")[:200],
+                        tier=task.get("tier", "auto"),
+                        goal_id=task.get("goal_id"),
+                    )
+                    if not approved:
+                        logger.info(f"[Task #{task_id}] Human gate rejected/timed out, pausing task")
+                        await update_task(task_id, status="paused")
+                        return
+                    logger.info(f"[Task #{task_id}] Human gate approved, continuing execution")
+                except Exception as e:
+                    logger.error(f"[Task #{task_id}] Human gate error (continuing): {e}")
 
             # ── Phase 6: Snapshot workspace before coder/pipeline tasks ──
             goal_id = task.get("goal_id")

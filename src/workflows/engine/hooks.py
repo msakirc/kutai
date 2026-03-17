@@ -9,9 +9,10 @@ import json
 import logging
 from typing import Optional
 
-from .artifacts import ArtifactStore, format_artifacts_for_prompt
+from .artifacts import ArtifactStore, format_artifacts_for_prompt, get_phase_summaries
 from .conditions import evaluate_condition, resolve_group
 from .policies import ReviewTracker
+from .quality_gates import evaluate_gate, format_gate_result
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,26 @@ async def pre_execute_workflow_step(task: dict) -> dict:
     artifact_contents: dict[str, Optional[str]] = {}
     if goal_id is not None and input_artifact_names:
         artifact_contents = await store.collect(goal_id, input_artifact_names)
+
+    # Inject phase summaries from earlier phases
+    workflow_phase = ctx.get("workflow_phase")
+    if goal_id is not None and workflow_phase:
+        phase_summaries = await get_phase_summaries(store, goal_id, workflow_phase)
+        if phase_summaries:
+            artifact_contents.update(phase_summaries)
+            # Ensure phase summaries are included at reference tier
+            context_strategy = ctx.get("context_strategy")
+            if isinstance(context_strategy, dict):
+                ref_list = context_strategy.setdefault("reference", [])
+                for sname in phase_summaries:
+                    if sname not in ref_list:
+                        ref_list.append(sname)
+                # Re-serialize updated strategy into context so enrich picks it up
+                if isinstance(task.get("context"), str):
+                    ctx["context_strategy"] = context_strategy
+                    task["context"] = json.dumps(ctx)
+                else:
+                    task["context"]["context_strategy"] = context_strategy
 
     # Enrich description
     task["description"] = enrich_task_description(task, artifact_contents)
@@ -234,7 +255,106 @@ async def _check_phase_completion(goal_id: int, phase_id: str) -> bool:
     except Exception as exc:
         logger.debug(f"[Workflow Hook] Could not update checkpoint: {exc}")
 
+    # Generate a summary artifact for the completed phase
+    await _generate_phase_summary(goal_id, phase_id, phase_tasks)
+
+    # ── Evaluate quality gate ──
+    await _evaluate_phase_gate(goal_id, phase_id)
+
     return True
+
+
+async def _evaluate_phase_gate(goal_id: int, phase_id: str) -> None:
+    """Evaluate the quality gate for a completed phase and store the result."""
+    store = get_artifact_store()
+    try:
+        phase_num = phase_id.replace("phase_", "")
+        passed, details = await evaluate_gate(goal_id, phase_id, store)
+
+        # Store gate result as artifact
+        result_text = format_gate_result(phase_id, passed, details)
+        await store.store(goal_id, f"phase_{phase_num}_gate_result", result_text)
+
+        if details:  # Only log if there was actually a gate
+            if passed:
+                logger.info(
+                    f"[Workflow Hook] Quality gate for '{phase_id}' PASSED "
+                    f"(goal {goal_id})"
+                )
+            else:
+                logger.warning(
+                    f"[Workflow Hook] Quality gate for '{phase_id}' FAILED "
+                    f"(goal {goal_id}): {result_text}"
+                )
+    except Exception as exc:
+        logger.debug(f"[Workflow Hook] Quality gate evaluation failed: {exc}")
+
+
+async def _generate_phase_summary(
+    goal_id: int, phase_id: str, phase_tasks: list[dict]
+) -> None:
+    """Build a structured summary from a completed phase's output artifacts.
+
+    The summary is stored as ``phase_{N}_summary`` in the artifact store so
+    that subsequent phases can receive it as context.
+    """
+    from .status import PHASE_NAMES
+
+    store = get_artifact_store()
+
+    # Collect output artifact names from all phase tasks
+    output_names: list[str] = []
+    for t in phase_tasks:
+        ctx = _parse_context(t)
+        output_names.extend(ctx.get("output_artifacts", []))
+
+    # De-duplicate while preserving order
+    seen: set[str] = set()
+    unique_names: list[str] = []
+    for name in output_names:
+        if name not in seen:
+            seen.add(name)
+            unique_names.append(name)
+
+    # Fetch artifact contents
+    artifact_contents = await store.collect(goal_id, unique_names)
+
+    # Build summary text
+    phase_name = PHASE_NAMES.get(phase_id, phase_id)
+    # Extract phase number for the artifact key
+    try:
+        phase_num = phase_id.split("_", 1)[1]
+    except IndexError:
+        phase_num = phase_id
+
+    names_with_content = [
+        n for n in unique_names if artifact_contents.get(n)
+    ]
+    artifact_count = len(names_with_content)
+
+    lines: list[str] = [
+        f"## Phase {phase_num}: {phase_name} — Summary",
+        f"**Key outputs:** {', '.join(names_with_content) if names_with_content else 'none'}",
+        f"**Artifacts produced:** {artifact_count}",
+        "",
+    ]
+
+    for name in names_with_content:
+        content = artifact_contents[name] or ""
+        excerpt = content[:200]
+        if len(content) > 200:
+            excerpt += "..."
+        lines.append(f"### {name}\n{excerpt}")
+        lines.append("")
+
+    summary_text = "\n".join(lines).rstrip()
+
+    summary_artifact_name = f"phase_{phase_num}_summary"
+    await store.store(goal_id, summary_artifact_name, summary_text)
+    logger.info(
+        f"[Workflow Hook] Generated summary for '{phase_id}' "
+        f"({artifact_count} artifacts) -> '{summary_artifact_name}'"
+    )
 
 
 async def _check_conditional_triggers(

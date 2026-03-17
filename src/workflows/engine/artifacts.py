@@ -187,3 +187,44 @@ def format_artifacts_for_prompt(
         result = result[:max_total]
 
     return result
+
+
+# ── Phase summary helpers ────────────────────────────────────────────────────
+
+async def get_phase_summaries(
+    store: ArtifactStore,
+    goal_id: int | str,
+    up_to_phase: str,
+) -> dict[str, str]:
+    """Collect all ``phase_{N}_summary`` artifacts for phases before *up_to_phase*.
+
+    Parameters
+    ----------
+    store:
+        The :class:`ArtifactStore` to query.
+    goal_id:
+        Workflow goal identifier.
+    up_to_phase:
+        Phase identifier like ``"phase_3"``.  Summaries for all phases with
+        a number strictly less than the parsed value are returned.
+
+    Returns
+    -------
+    dict[str, str]
+        Mapping of artifact name (e.g. ``"phase_0_summary"``) to its content.
+        Empty dict when no summaries exist or the phase string cannot be parsed.
+    """
+    try:
+        current_num = int(up_to_phase.split("_", 1)[1])
+    except (IndexError, ValueError):
+        return {}
+
+    summaries: dict[str, str] = {}
+    # Phases range from -1 up to current_num - 1
+    for n in range(-1, current_num):
+        artifact_name = f"phase_{n}_summary"
+        content = await store.retrieve(goal_id, artifact_name)
+        if content is not None:
+            summaries[artifact_name] = content
+
+    return summaries

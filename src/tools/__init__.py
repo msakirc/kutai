@@ -116,6 +116,46 @@ try:
 except Exception as e:
     logger.warning(f"download_file tool not available — {type(e).__name__}: {e}")
 
+# Document / web tools (Phase 5)
+try:
+    from .web_extract import extract_url
+
+    _optional_tools["extract_url"] = {
+        "function": extract_url,
+        "description": "Extract clean text from a URL. Args: url (str)",
+        "example": '{"action": "tool_call", "tool": "extract_url", "args": {"url": "https://example.com/article"}}',
+    }
+except Exception as e:
+    logger.warning(f"extract_url tool not available — {e}")
+
+try:
+    from .vision import analyze_image
+
+    _optional_tools["analyze_image"] = {
+        "function": analyze_image,
+        "description": "Analyze an image file with a vision model. Args: filepath (str), question (str, optional)",
+        "example": '{"action": "tool_call", "tool": "analyze_image", "args": {"filepath": "screenshot.png", "question": "What does this UI show?"}}',
+    }
+except Exception as e:
+    logger.warning(f"analyze_image tool not available — {e}")
+
+try:
+    from .documents import extract_text, read_pdf, read_docx, read_spreadsheet
+
+    for _name, _fn, _desc in [
+        ("read_pdf", read_pdf, "Extract text from a PDF. Args: filepath (str), max_pages (int, optional)"),
+        ("read_docx", read_docx, "Extract text from a Word .docx file. Args: filepath (str)"),
+        ("read_spreadsheet", read_spreadsheet, "Extract content from Excel/CSV. Args: filepath (str), sheet (str, optional)"),
+        ("extract_text", extract_text, "Auto-detect file type and extract text. Args: filepath (str)"),
+    ]:
+        _optional_tools[_name] = {
+            "function": _fn,
+            "description": _desc,
+            "example": f'{{"action": "tool_call", "tool": "{_name}", "args": {{"filepath": "file.pdf"}}}}',
+        }
+except Exception as e:
+    logger.warning(f"document tools not available — {e}")
+
 # Phase 13.1: Blackboard tools
 try:
     from ..collaboration.blackboard import (

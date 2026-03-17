@@ -1,9 +1,12 @@
 # tools/web_search.py
 """
-Web search using DuckDuckGo — with curl fallback.
+Web search using Perplexica (primary) — with DuckDuckGo and curl fallback.
 """
 import json
+import os
 import urllib.parse
+
+import aiohttp
 
 from src.infra.logging_config import get_logger
 from src.tools import run_shell
@@ -20,9 +23,93 @@ except Exception as e:
     logger.warning(f"web_search: duckduckgo-search unavailable ({e}), using curl fallback")
 
 
-async def web_search(query: str, max_results: int = 5) -> str:
-    """Search the web using DuckDuckGo."""
-    logger.info("web search query", query=query, max_results=max_results)
+async def _search_perplexica(query: str, max_results: int, focus_mode: str):
+    """
+    Search using Perplexica API.
+
+    Returns list of result dicts with 'title', 'url', 'snippet' keys, or None on error.
+    """
+    perplexica_url = os.getenv("PERPLEXICA_URL", "").strip()
+    if not perplexica_url:
+        return None
+
+    # Map focus_mode to Perplexica's camelCase format
+    focus_mode_map = {
+        "web": "webSearch",
+        "academic": "academicSearch",
+        "code": "webSearch",  # Perplexica doesn't have code search, use web
+    }
+    perplexica_focus = focus_mode_map.get(focus_mode, "webSearch")
+
+    payload = {
+        "query": query,
+        "focusMode": perplexica_focus,
+        "optimizationMode": "speed",
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{perplexica_url}/api/search",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(
+                        "perplexica search failed",
+                        status=resp.status,
+                        query=query,
+                    )
+                    return None
+
+                data = await resp.json()
+
+                # Convert Perplexica response to standard format
+                results = []
+                for item in data.get("results", [])[:max_results]:
+                    results.append({
+                        "title": item.get("title", ""),
+                        "url": item.get("url", ""),
+                        "snippet": item.get("snippet", ""),
+                    })
+
+                if results:
+                    logger.debug("perplexica search results", count=len(results))
+
+                return results if results else None
+
+    except Exception as e:
+        logger.warning("perplexica search error", error=str(e), query=query)
+        return None
+
+
+async def web_search(query: str, max_results: int = 5, search_type: str = "web") -> str:
+    """
+    Search the web using Perplexica (primary), with DuckDuckGo fallback.
+
+    search_type: "web", "academic", or "code"
+    """
+    logger.info("web search query", query=query, max_results=max_results, search_type=search_type)
+
+    # Check for degraded capability
+    try:
+        from src.infra.runtime_state import runtime_state
+        is_degraded = "web_search" in runtime_state.get("degraded_capabilities", [])
+    except Exception:
+        is_degraded = False
+
+    # Method 0: Try Perplexica first (if available and not degraded)
+    if not is_degraded:
+        perplexica_results = await _search_perplexica(query, max_results, search_type)
+        if perplexica_results:
+            logger.debug("using perplexica backend for web search")
+            lines = []
+            for i, r in enumerate(perplexica_results, 1):
+                title = r.get("title", "No title")
+                snippet = r.get("snippet", "")[:200]
+                url = r.get("url", "")
+                lines.append(f"{i}. **{title}**\n   {snippet}\n   {url}")
+            return f"Search results for '{query}':\n\n" + "\n\n".join(lines)
 
     # Method 1: duckduckgo-search package
     if _DDGS is not None:
@@ -32,7 +119,7 @@ async def web_search(query: str, max_results: int = 5) -> str:
                 for r in ddgs.text(query, max_results=max_results):
                     results.append(r)
             if results:
-                logger.debug("duckduckgo search results", count=len(results))
+                logger.debug("using duckduckgo-search backend for web search", count=len(results))
                 lines = []
                 for i, r in enumerate(results, 1):
                     title = r.get("title", "No title")
@@ -95,8 +182,10 @@ async def web_search(query: str, max_results: int = 5) -> str:
             scrape_result = scrape_result[1:].strip()
 
         if scrape_result and "❌" not in scrape_result:
+            logger.debug("using curl scraping backend for web search")
             return f"Search results for '{query}':\n\n{scrape_result}"
 
+        logger.debug("no results found from curl fallback")
         return f"No results found for '{query}'. DuckDuckGo returned empty response."
 
     except Exception as e:

@@ -1,5 +1,6 @@
 # telegram_bot.py
 import asyncio
+from pathlib import Path
 from src.infra.logging_config import get_logger
 from .config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, TASK_PRIORITY
 
@@ -62,10 +63,12 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("wfstatus", self.cmd_wfstatus))  # Workflow status
         self.app.add_handler(CommandHandler("product", self.cmd_product))    # Start product workflow
         self.app.add_handler(CommandHandler("resume", self.cmd_resume))      # Resume workflow
+        self.app.add_handler(CommandHandler("pause", self.cmd_pause))        # Pause workflow
         self.app.add_handler(CommandHandler("credential", self.cmd_credential))  # Credential mgmt
         self.app.add_handler(CommandHandler("cost", self.cmd_cost))            # Per-goal cost
         self.app.add_handler(CommandHandler("preview", self.cmd_preview))      # Workflow preview
         self.app.add_handler(CommandHandler("dlq", self.cmd_dlq))                # Dead-letter queue
+        self.app.add_handler(CommandHandler("load", self.cmd_load))              # GPU load mode
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.REPLY,
@@ -97,6 +100,7 @@ class TelegramInterface:
             "/product <idea> — Start idea-to-product workflow\n"
             "/wfstatus <goal\\_id> — View workflow progress\n"
             "/resume <goal\\_id> — Resume a failed workflow\n"
+            "/pause <goal\\_id> — Pause pending/processing tasks for a goal\n"
             "/credential — Manage API credentials\n"
             "/cost <goal\\_id> — View per-goal cost breakdown\n"
             "/preview <idea> — Preview workflow steps & cost estimate\n"
@@ -992,10 +996,85 @@ class TelegramInterface:
                 f"Failed to resume workflow: {type(e).__name__}: {e}"
             )
 
+    async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Pause a task or goal: /pause <goal_id|task_id>"""
+        args = context.args or []
+        if not args:
+            await update.message.reply_text("Usage: /pause <goal\\_id>\nPauses all pending/processing tasks for the goal.",
+                                           parse_mode="Markdown")
+            return
+        try:
+            goal_id = int(args[0])
+            from ..infra.db import get_db
+            async with get_db() as db:
+                result = await db.execute(
+                    """UPDATE tasks SET status = 'paused'
+                       WHERE goal_id = ? AND status IN ('pending', 'processing')""",
+                    (goal_id,)
+                )
+                await db.commit()
+                count = result.rowcount
+            await update.message.reply_text(f"\u23f8 Goal #{goal_id}: paused {count} task(s).")
+            logger.info("goal paused via command", goal_id=goal_id, tasks_paused=count)
+        except ValueError:
+            await update.message.reply_text("Please provide a valid integer goal ID.")
+        except Exception as e:
+            logger.exception("pause command failed", error=str(e))
+            await update.message.reply_text(f"\u274c Error: {e}")
+
+    async def cmd_load(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/load full|shared|minimal — set GPU load mode"""
+        args = context.args or []
+        if not args:
+            from src.infra.load_manager import get_load_mode
+            current = await get_load_mode()
+            await update.message.reply_text(
+                f"Current load mode: *{current}*\n\n"
+                "Usage: `/load full` | `/load shared` | `/load minimal`\n"
+                "• *full* — all GPU available\n"
+                "• *shared* — 50% VRAM cap\n"
+                "• *minimal* — cloud only, no local GPU",
+                parse_mode="Markdown",
+            )
+            return
+        from src.infra.load_manager import set_load_mode
+        msg = await set_load_mode(args[0].lower())
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        logger.info("load mode changed via command", mode=args[0])
+
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Smart handler: detect if it's a goal or simple task."""
-        text = update.message.text
+        """Smart handler: detect if it's a goal or simple task, or handle file uploads."""
         chat_id = update.message.chat_id
+
+        # Handle file uploads
+        if update.message.document:
+            try:
+                uploads_dir = Path("workspace/uploads")
+                uploads_dir.mkdir(parents=True, exist_ok=True)
+
+                # Download file
+                file_obj = await context.bot.get_file(update.message.document.file_id)
+                filename = update.message.document.file_name or f"file_{update.message.document.file_id}"
+                filepath = uploads_dir / filename
+
+                await file_obj.download_to_drive(str(filepath))
+
+                await update.message.reply_text(
+                    f"📎 File received: `{filename}`\n"
+                    f"Use `/ingest {filepath}` to add to knowledge base.",
+                    parse_mode="Markdown"
+                )
+                logger.info("File uploaded", filename=filename, chat_id=chat_id)
+                return
+            except Exception as e:
+                logger.error(f"Failed to handle file upload: {e}")
+                await update.message.reply_text(f"Failed to save file: {e}")
+                return
+
+        text = update.message.text
+        if not text:
+            return
+
         parent_id = self.user_last_task_id.get(chat_id)
 
         logger.info("Message received", user_id=chat_id, command=text[:50] if text else "")
@@ -1141,27 +1220,76 @@ class TelegramInterface:
                     logger.error("Failed to send Telegram notification", error=str(e))
 
     async def send_result(self, task_id, title, result, model, cost):
-        truncated = result[:3000] if len(result) > 3000 else result
-        await self.send_notification(
-            f"✅ *Task #{task_id} Complete*\n"
-            f"**{title}**\n"
-            f"Model: `{model}` | Cost: ${cost:.4f}\n\n"
-            f"{truncated}"
-        )
+        # Handle long results (>3000 chars) by sending as file attachment
+        if len(result) > 3000:
+            # Create results directory if needed
+            results_dir = Path("workspace/results")
+            results_dir.mkdir(parents=True, exist_ok=True)
 
-        # Phase 11.4: Store exchange in conversation memory
-        try:
-            # Use admin chat ID as the chat_id for results
-            chat_id = TELEGRAM_ADMIN_CHAT_ID or "system"
-            await store_exchange(
-                chat_id=chat_id,
-                user_message=title,
-                ai_response=truncated[:500],
-                task_id=task_id,
-                task_title=title,
+            # Save full result to file
+            result_file = results_dir / f"task_{task_id}.md"
+            try:
+                result_file.write_text(result, encoding='utf-8')
+            except Exception as e:
+                logger.error(f"Failed to save result file: {e}")
+
+            # Send summary message first
+            summary = result[:500] + "..." if len(result) > 500 else result
+            summary_text = (
+                f"✅ *Task #{task_id} Complete*\n"
+                f"**{title}**\n"
+                f"Model: `{model}` | Cost: ${cost:.4f}\n\n"
+                f"{summary}"
             )
-        except Exception:
-            pass
+            await self.send_notification(summary_text)
+
+            # Send full result as file attachment
+            try:
+                with open(result_file, 'rb') as doc:
+                    await self.app.bot.send_document(
+                        chat_id=TELEGRAM_ADMIN_CHAT_ID,
+                        document=doc,
+                        filename=f"task_{task_id}.md",
+                        caption=f"📎 Full result for task #{task_id}"
+                    )
+            except Exception as e:
+                logger.error(f"Failed to send result document: {e}")
+
+            # Store exchange with summary
+            try:
+                chat_id = TELEGRAM_ADMIN_CHAT_ID or "system"
+                await store_exchange(
+                    chat_id=chat_id,
+                    user_message=title,
+                    ai_response=summary,
+                    task_id=task_id,
+                    task_title=title,
+                )
+            except Exception:
+                pass
+        else:
+            # Short results (<= 3000 chars) send as plain text
+            truncated = result
+            await self.send_notification(
+                f"✅ *Task #{task_id} Complete*\n"
+                f"**{title}**\n"
+                f"Model: `{model}` | Cost: ${cost:.4f}\n\n"
+                f"{truncated}"
+            )
+
+            # Phase 11.4: Store exchange in conversation memory
+            try:
+                # Use admin chat ID as the chat_id for results
+                chat_id = TELEGRAM_ADMIN_CHAT_ID or "system"
+                await store_exchange(
+                    chat_id=chat_id,
+                    user_message=title,
+                    ai_response=truncated[:500],
+                    task_id=task_id,
+                    task_title=title,
+                )
+            except Exception:
+                pass
 
     async def send_error(self, task_id, title, error):
         await self.send_notification(

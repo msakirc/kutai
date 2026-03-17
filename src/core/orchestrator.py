@@ -1078,6 +1078,14 @@ class Orchestrator:
                 except Exception as _e:
                     logger.debug("update_model_stats failed", error=str(_e))
 
+                # Phase 9.1: Record failed metrics
+                try:
+                    from src.infra.metrics import record_task_failed
+                    model = result.get("model", "") if isinstance(result, dict) else ""
+                    record_task_failed(model=model)
+                except Exception:
+                    pass
+
     # ─── Result Handlers ─────────────────────────────────────────────────
 
     async def _handle_complete(self, task, result):
@@ -1215,6 +1223,15 @@ class Orchestrator:
             )
         except Exception as _e:
             logger.debug("update_model_stats failed", error=str(_e))
+
+        # Phase 9.1: Record metrics
+        try:
+            from src.infra.metrics import record_task_complete, record_queue_depth
+            cost = result.get("cost", 0.0) if isinstance(result, dict) else 0.0
+            model = result.get("model", "") if isinstance(result, dict) else ""
+            record_task_complete(model=model, cost=cost)
+        except Exception:
+            pass
 
     async def _handle_subtasks(self, task, result):
         task_id = task["id"]
@@ -1738,6 +1755,13 @@ class Orchestrator:
                     except Exception as e:
                         logger.debug(f"Memory decay failed (non-critical): {e}")
                     self.last_decay_check = datetime.now()
+
+                # Phase 9.3: Check alerts periodically
+                try:
+                    from src.infra.alerting import check_alerts
+                    await check_alerts()
+                except Exception:
+                    pass
 
             except Exception as e:
                 logger.error(f"Loop error: {e}", exc_info=True)

@@ -62,6 +62,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("projects", self.cmd_projects))   # Phase 7.1
         self.app.add_handler(CommandHandler("progress", self.cmd_progress))   # Phase 7.2
         self.app.add_handler(CommandHandler("audit", self.cmd_audit))         # Phase 8.4
+        self.app.add_handler(CommandHandler("metrics", self.cmd_metrics))     # Phase 9.1
+        self.app.add_handler(CommandHandler("replay", self.cmd_replay))       # Phase 9.2
         self.app.add_handler(CommandHandler("ingest", self.cmd_ingest))        # Phase 11.5
         self.app.add_handler(CommandHandler("wfstatus", self.cmd_wfstatus))  # Workflow status
         self.app.add_handler(CommandHandler("product", self.cmd_product))    # Start product workflow
@@ -102,6 +104,8 @@ class TelegramInterface:
             "/projects — List all projects\n"
             "/progress [goal\\_id] — Show progress notes\n"
             "/audit [task\\_id] — Show audit log\n"
+            "/metrics — System metrics\n"
+            "/replay <task\\_id> — Replay task trace\n"
             "/ingest <url\\_or\\_path> — Ingest a document into knowledge base\n"
             "/product <idea> — Start idea-to-product workflow\n"
             "/wfstatus <goal\\_id> — View workflow progress\n"
@@ -702,6 +706,35 @@ class TelegramInterface:
             await update.message.reply_text(msg, parse_mode="Markdown")
         except (ValueError, IndexError):
             await update.message.reply_text("Usage: /audit [task_id]")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    async def cmd_metrics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show system metrics summary. /metrics"""
+        try:
+            from src.infra.metrics import format_metrics_summary
+            msg = format_metrics_summary()
+            await update.message.reply_text(msg, parse_mode="Markdown")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    async def cmd_replay(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Replay task execution trace. /replay <task_id>"""
+        args = context.args
+        if not args:
+            await update.message.reply_text("Usage: /replay <task_id>")
+            return
+        try:
+            from src.infra.tracing import get_trace, format_trace
+            task_id = int(args[0])
+            trace = await get_trace(task_id)
+            trace_text = format_trace(trace)
+            msg = f"🔄 *Trace for Task #{task_id}*\n\n{trace_text}"
+            if len(msg) > 4000:
+                msg = msg[:4000] + "\n... (truncated)"
+            await update.message.reply_text(msg, parse_mode="Markdown")
+        except (ValueError, IndexError):
+            await update.message.reply_text("Usage: /replay <task_id>")
         except Exception as e:
             await update.message.reply_text(f"❌ Error: {e}")
 

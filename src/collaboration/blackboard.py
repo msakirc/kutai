@@ -36,6 +36,8 @@ DEFAULT_BLACKBOARD: dict = {
     "decisions": [],
     "open_issues": [],
     "constraints": [],
+    "dependency_map": {},
+    "version": 0,
 }
 
 # In-memory cache to reduce DB round-trips within a single run cycle.
@@ -99,6 +101,9 @@ async def write_blackboard(goal_id: int, key: str, value: Any) -> None:
     async with _get_lock(goal_id):
         board = await get_or_create_blackboard(goal_id)
         board[key] = value
+        # Automatically increment version on every write (except when writing to "version" key directly)
+        if key != "version":
+            board["version"] = board.get("version", 0) + 1
         _BLACKBOARD_CACHE[goal_id] = board
     await _persist(goal_id, board)
 
@@ -129,6 +134,28 @@ async def append_blackboard(goal_id: int, key: str, item: Any) -> None:
             section = [section]
         section.append(item)
         board[key] = section
+        _BLACKBOARD_CACHE[goal_id] = board
+    await _persist(goal_id, board)
+
+
+async def write_blackboard_versioned(
+    goal_id: int, key: str, value: Any, expected_version: int
+) -> None:
+    """Write to blackboard with optimistic locking (version checking).
+
+    Raises ValueError if the blackboard version doesn't match expected_version.
+    """
+    async with _get_lock(goal_id):
+        board = await get_or_create_blackboard(goal_id)
+        current_version = board.get("version", 0)
+        if current_version != expected_version:
+            raise ValueError(
+                f"Blackboard conflict: expected version {expected_version}, "
+                f"got {current_version}"
+            )
+        board[key] = value
+        # Increment version after successful write
+        board["version"] = current_version + 1
         _BLACKBOARD_CACHE[goal_id] = board
     await _persist(goal_id, board)
 
@@ -204,6 +231,12 @@ def format_blackboard_for_prompt(board: dict, max_chars: int = 3000) -> str:
         constraint_lines = [f"  - {c}" for c in constraints if isinstance(c, str)]
         if constraint_lines:
             parts.append("### Constraints\n" + "\n".join(constraint_lines))
+
+    # Dependency Map
+    dependency_map = board.get("dependency_map", {})
+    if dependency_map:
+        num_deps = len(dependency_map)
+        parts.append(f"### Task Dependencies\n  {num_deps} task dependencies tracked")
 
     text = "\n\n".join(parts)
     if len(text) > max_chars:

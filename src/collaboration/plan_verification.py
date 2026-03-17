@@ -103,6 +103,42 @@ def verify_plan(
             f"${goal_budget:.2f}"
         )
 
+    # 5. File reference consistency
+    file_mentions: dict[str, int] = {}
+    file_subtasks: dict[str, list[int]] = {}
+
+    for i, st in enumerate(subtasks):
+        text = f"{st.get('title', '')} {st.get('description', '')}"
+        files = re.findall(
+            r'[\w./]+-?\w+\.(?:py|js|ts|go|rs|java|cpp|c|h|rb|php|cs)\b',
+            text
+        )
+        for file_path in files:
+            file_mentions[file_path] = file_mentions.get(file_path, 0) + 1
+            if file_path not in file_subtasks:
+                file_subtasks[file_path] = []
+            file_subtasks[file_path].append(i)
+
+    for file_path, count in file_mentions.items():
+        if count >= 3:
+            # Check if any subtask has "implement" or "create" verb for this file
+            has_create_intent = False
+            subtask_indices = file_subtasks[file_path]
+            for idx in subtask_indices:
+                text = (
+                    f"{subtasks[idx].get('title', '')} "
+                    f"{subtasks[idx].get('description', '')}"
+                ).lower()
+                if re.search(r'\b(?:implement|create)\b', text):
+                    has_create_intent = True
+                    break
+
+            if not has_create_intent:
+                issues.append(
+                    f"File '{file_path}' mentioned in {count} subtasks — "
+                    f"verify no conflicts"
+                )
+
     return issues
 
 

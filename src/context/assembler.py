@@ -393,3 +393,81 @@ async def assemble_context(
         return ""
 
     return "## Code Context\n\n" + "\n\n".join(sections)
+
+
+# ─── Ambient Context Assembly ──────────────────────────────────────────────────
+
+async def assemble_ambient_context(
+    goal_id: int | None = None,
+    max_tokens: int = 400,
+) -> str:
+    """
+    Assemble a short ambient context block injected into every agent execution.
+
+    Includes: time of day, system load mode, active goals count, and recent
+    blackboard decisions if goal_id is provided. Stays under max_tokens.
+    """
+    import datetime
+    parts: list[str] = []
+
+    # Time of day
+    now = datetime.datetime.now()
+    hour = now.hour
+    if hour < 6:
+        tod = "night"
+    elif hour < 12:
+        tod = "morning"
+    elif hour < 17:
+        tod = "afternoon"
+    else:
+        tod = "evening"
+    parts.append(f"- Time: {now.strftime('%Y-%m-%d %H:%M')} ({tod})")
+
+    # System load mode
+    try:
+        from ..infra.load_manager import get_load_mode
+        mode = get_load_mode()
+        parts.append(f"- System load mode: {mode}")
+    except Exception:
+        pass
+
+    # Active goals
+    try:
+        from ..infra.db import get_db
+        db = await get_db()
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM goals WHERE status IN ('pending','running','in_progress')"
+        )
+        row = await cursor.fetchone()
+        if row:
+            count = row[0]
+            parts.append(f"- Active goals: {count}")
+    except Exception:
+        pass
+
+    # Recent blackboard decisions
+    if goal_id:
+        try:
+            from ..collaboration.blackboard import read_blackboard
+            decisions = await read_blackboard(goal_id, key="decisions")
+            if decisions and isinstance(decisions, list) and len(decisions) > 0:
+                recent = decisions[-2:]  # last 2
+                dec_strs = []
+                for d in recent:
+                    if isinstance(d, dict):
+                        dec_strs.append(d.get("what", str(d))[:80])
+                    else:
+                        dec_strs.append(str(d)[:80])
+                if dec_strs:
+                    parts.append("- Recent decisions: " + "; ".join(dec_strs))
+        except Exception:
+            pass
+
+    if not parts:
+        return ""
+
+    text = "## Current Context\n" + "\n".join(parts)
+    # Rough token trim
+    if len(text) > max_tokens * 4:
+        text = text[:max_tokens * 4]
+    return text

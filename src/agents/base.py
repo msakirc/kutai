@@ -164,6 +164,15 @@ class BaseAgent:
             "}",
             "```",
             "",
+            "To query another specialized agent (researcher, analyst, writer, coder):",
+            "```json",
+            "{",
+            '  "action": "ask_agent",',
+            '  "target": "<agent_type>",',
+            '  "question": "<your question>"',
+            "}",
+            "```",
+            "",
             "### Tools:",
         ]
 
@@ -370,6 +379,15 @@ class BaseAgent:
                 "_Use this context to understand follow-up references "
                 "like 'list them', 'the names', 'do it again', etc._"
             )
+        # ── Phase 6.4: Ambient context injection ──
+        try:
+            from ..context.assembler import assemble_ambient_context
+            ambient = await assemble_ambient_context(goal_id=goal_id, max_tokens=400)
+            if ambient:
+                parts.append(ambient)
+        except Exception as exc:
+            logger.debug(f"Ambient context injection failed (non-critical): {exc}")
+
         # ── Phase 12.6: Project profile injection ──
         try:
             project_profile = await get_project_profile_for_task(task)
@@ -538,6 +556,10 @@ class BaseAgent:
             "ask":          "clarify",
             "question":     "clarify",
             "clarification":"clarify",
+            # → ask_agent
+            "delegate":     "ask_agent",
+            "consult":      "ask_agent",
+            "query_agent":  "ask_agent",
             # → decompose
             "plan":         "decompose",
             "decompose":    "decompose",
@@ -550,6 +572,7 @@ class BaseAgent:
         # ── Tool name used as action, OR wrong action but "tool" key present ──
         if action and action not in (
             "tool_call", "final_answer", "clarify", "decompose",
+            "ask_agent",
             "think", "thinking", "reasoning", "analyze",
             "observation", "reflect", "consider",
         ):
@@ -1364,6 +1387,61 @@ class BaseAgent:
                 await self._save_checkpoint(
                     task_id, iteration + 1, messages, total_cost,
                     used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
+                    completed_tool_ops, format_retries,
+                )
+                continue
+
+            # ── ASK AGENT (inter-agent query) ──
+            if action_type == "ask_agent":
+                import asyncio as _asyncio
+                target_type = parsed.get("target", "researcher")
+                question = parsed.get("question", "")
+                logger.info(
+                    f"[Task #{task_id}] 🤝 ask_agent → {target_type}: "
+                    f"{question[:80]}"
+                )
+                try:
+                    from ..agents import get_agent as _get_agent
+                    target_agent = _get_agent(target_type)
+                    inline_task = {
+                        "id": f"{task_id}_inline_{iteration}",
+                        "title": f"[Inline query from {self.name}]",
+                        "description": question,
+                        "goal_id": goal_id,
+                        "context": json.dumps({"tool_depth": 1}),
+                    }
+                    inline_result = await _asyncio.wait_for(
+                        target_agent.execute(inline_task), timeout=300
+                    )
+                    agent_answer = inline_result.get("result", "(no answer)")
+                    agent_cost = inline_result.get("cost", 0)
+                    total_cost += agent_cost
+                    tool_output = (
+                        f"## Answer from {target_type} agent:\n\n{agent_answer}"
+                    )
+                    logger.info(
+                        f"[Task #{task_id}] ✅ ask_agent from {target_type} "
+                        f"completed (${agent_cost:.4f})"
+                    )
+                except _asyncio.TimeoutError:
+                    tool_output = f"❌ ask_agent timeout: {target_type} did not respond within 5 minutes"
+                    logger.warning(f"[Task #{task_id}] ask_agent timeout ({target_type})")
+                except Exception as exc:
+                    tool_output = f"❌ ask_agent error: {exc}"
+                    logger.warning(f"[Task #{task_id}] ask_agent error: {exc}")
+
+                messages.append({"role": "assistant", "content": content})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"{tool_output}\n\n"
+                        f"Continue working. Iteration {iteration + 2}/{self.max_iterations}."
+                    ),
+                })
+                await self._save_checkpoint(
+                    task_id, iteration + 1, messages, total_cost,
+                    used_model, reqs, tools_used,
+                    custom_validation_retried or task_type_validation_retried,
                     completed_tool_ops, format_retries,
                 )
                 continue

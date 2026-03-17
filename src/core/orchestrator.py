@@ -1522,6 +1522,37 @@ class Orchestrator:
                 for t in completed[-10:]
             )
 
+            # Phase 7.4: Generate and save goal completion summary
+            try:
+                from src.infra.progress import add_note, NOTE_MILESTONE
+                await add_note(
+                    content=f"Goal completed: {len(completed)} tasks done, {len(failed)} failed",
+                    note_type=NOTE_MILESTONE,
+                    goal_id=goal_id,
+                )
+                goal_info = await get_goal(goal_id)
+                summary_lines = [
+                    f"# Goal #{goal_id} Summary",
+                    f"**Title:** {goal_info.get('title', 'Unknown') if goal_info else 'Unknown'}",
+                    f"**Completed:** {datetime.now().isoformat()[:19]}",
+                    f"**Tasks:** {len(completed)} completed, {len(failed)} failed",
+                    "",
+                    "## Results",
+                ]
+                for t in completed[-20:]:
+                    result_text = (t.get('result') or '')[:300]
+                    summary_lines.append(f"### {t['title']}\n{result_text}\n")
+                summary_content = "\n".join(summary_lines)
+                import os
+                results_dir = os.path.join("workspace", "results")
+                os.makedirs(results_dir, exist_ok=True)
+                summary_path = os.path.join(results_dir, f"goal_{goal_id}_summary.md")
+                with open(summary_path, "w", encoding="utf-8") as f:
+                    f.write(summary_content)
+                logger.info(f"[Goal #{goal_id}] Completion summary saved to {summary_path}")
+            except Exception as exc:
+                logger.debug(f"[Goal #{goal_id}] Summary generation failed: {exc}")
+
             await self.telegram.send_notification(
                 f"🎯 *Goal Completed!*\n\n"
                 f"Tasks: {len(completed)} completed, {len(failed)} failed\n\n"

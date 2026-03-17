@@ -59,6 +59,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("modelstats", self.cmd_model_stats))  # Phase 4
         self.app.add_handler(CommandHandler("workspace", self.cmd_workspace))  # Phase 6
         self.app.add_handler(CommandHandler("project", self.cmd_project))      # Phase 6
+        self.app.add_handler(CommandHandler("projects", self.cmd_projects))   # Phase 7.1
+        self.app.add_handler(CommandHandler("progress", self.cmd_progress))   # Phase 7.2
         self.app.add_handler(CommandHandler("ingest", self.cmd_ingest))        # Phase 11.5
         self.app.add_handler(CommandHandler("wfstatus", self.cmd_wfstatus))  # Workflow status
         self.app.add_handler(CommandHandler("product", self.cmd_product))    # Start product workflow
@@ -96,6 +98,8 @@ class TelegramInterface:
             "/modelstats — View model performance stats\n"
             "/workspace — View goal workspaces\n"
             "/project [name] — List/view projects\n"
+            "/projects — List all projects\n"
+            "/progress [goal\\_id] — Show progress notes\n"
             "/ingest <url\\_or\\_path> — Ingest a document into knowledge base\n"
             "/product <idea> — Start idea-to-product workflow\n"
             "/wfstatus <goal\\_id> — View workflow progress\n"
@@ -638,6 +642,48 @@ class TelegramInterface:
             f"Conventions: {project.get('conventions', 'N/A')}",
             parse_mode="Markdown",
         )
+
+    async def cmd_projects(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List all projects with status badges. /projects"""
+        try:
+            from src.infra.projects import list_projects, format_project_status_badge
+            projects = await list_projects()
+            if not projects:
+                await update.message.reply_text(
+                    "📂 No projects in registry.\n"
+                    "Use /project add <path> to onboard a project."
+                )
+                return
+            lines = ["📂 *Projects Registry*\n"]
+            for p in projects:
+                badge = format_project_status_badge(p.get("status", "active"))
+                lang = p.get("language", "")
+                fw = p.get("framework", "")
+                desc_parts = [f for f in [lang, fw] if f]
+                desc = f" ({', '.join(desc_parts)})" if desc_parts else ""
+                lines.append(f"{badge} `#{p['id']}` *{p['name']}*{desc}")
+            lines.append("\nUse /project <id> for details.")
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    async def cmd_progress(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show progress timeline for a goal or project. /progress [goal_id]"""
+        args = context.args
+        try:
+            from src.infra.progress import get_notes, format_notes_timeline
+            goal_id = int(args[0]) if args else None
+            notes = await get_notes(goal_id=goal_id, limit=20)
+            timeline = format_notes_timeline(notes)
+            header = f"📊 *Progress Notes* (goal #{goal_id})" if goal_id else "📊 *Recent Progress Notes*"
+            msg = f"{header}\n\n{timeline}"
+            if len(msg) > 4000:
+                msg = msg[:4000] + "\n... (truncated)"
+            await update.message.reply_text(msg, parse_mode="Markdown")
+        except (ValueError, IndexError):
+            await update.message.reply_text("Usage: /progress [goal_id]")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
 
     async def cmd_ingest(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Ingest a URL or file into the knowledge base."""

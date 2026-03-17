@@ -278,8 +278,24 @@ async def main():
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
+    # Phase 12.1: Start API server in background if uvicorn available
+    api_port = int(os.getenv("API_PORT", "8000"))
+    try:
+        from .api import start_api_server
+        api_task = asyncio.create_task(
+            start_api_server(host="0.0.0.0", port=api_port),
+            name="api_server",
+        )
+        _log.info("API server task created", port=api_port)
+    except Exception as exc:
+        _log.debug("API server not started", reason=str(exc))
+        api_task = None
+
     orch = Orchestrator(shutdown_event=shutdown_event)
     await orch.start()
+
+    if api_task and not api_task.done():
+        api_task.cancel()
 
 
 if __name__ == "__main__":

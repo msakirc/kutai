@@ -296,6 +296,18 @@ try:
 except Exception as e:
     logger.debug(f"ingest_document tool not available — {type(e).__name__}: {e}")
 
+# Coverage tool
+try:
+    from .coverage import get_coverage_summary
+
+    _optional_tools["coverage"] = {
+        "function": get_coverage_summary,
+        "description": "Run code coverage analysis (pytest --cov or jest --coverage)",
+        "example": '{"action": "tool_call", "tool": "coverage", "args": {"project_path": "myapp", "language": "python"}}',
+    }
+except Exception as e:
+    logger.debug(f"coverage tool not available — {type(e).__name__}: {e}")
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------

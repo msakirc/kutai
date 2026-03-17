@@ -471,3 +471,63 @@ async def assemble_ambient_context(
     if len(text) > max_tokens * 4:
         text = text[:max_tokens * 4]
     return text
+
+
+# ─── Language-Aware Prompt Injection (Phase 10.2) ──────────────────────────────
+
+async def get_language_hints(
+    task: dict,
+    project_root: str | None = None,
+) -> str:
+    """
+    Detect project language and return language-specific prompt hints.
+
+    Used by agents to get idiomatic patterns, test commands, etc.
+    Returns empty string if language can't be detected.
+    """
+    try:
+        import os
+        from ..languages import get_toolkit, detect_language
+
+        # Try to detect from project files
+        language = None
+
+        # First check task context for language hint
+        task_ctx = task.get("context", {})
+        if isinstance(task_ctx, str):
+            import json
+            try:
+                task_ctx = json.loads(task_ctx)
+            except Exception:
+                task_ctx = {}
+        if isinstance(task_ctx, dict):
+            language = task_ctx.get("language")
+
+        # Then try to detect from project_root file extensions
+        if not language and project_root and os.path.isdir(project_root):
+            extensions = set()
+            for fname in os.listdir(project_root):
+                _, ext = os.path.splitext(fname)
+                if ext:
+                    extensions.add(ext.lower())
+            # Also check src/ subdirectory
+            src_dir = os.path.join(project_root, "src")
+            if os.path.isdir(src_dir):
+                for fname in os.listdir(src_dir):
+                    _, ext = os.path.splitext(fname)
+                    if ext:
+                        extensions.add(ext.lower())
+            language = detect_language(list(extensions))
+
+        if not language:
+            return ""
+
+        toolkit = get_toolkit(language)
+        if not toolkit:
+            return ""
+
+        return toolkit.get_prompt_hints()
+
+    except Exception as e:
+        logger.debug(f"Language hints detection failed: {e}")
+        return ""

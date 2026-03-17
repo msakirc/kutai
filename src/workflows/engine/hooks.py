@@ -391,7 +391,7 @@ async def _check_conditional_triggers(
         # Update task statuses in DB for excluded steps
         if excluded:
             try:
-                from ...infra.db import update_task_by_context_field
+                from ...infra.db import update_task_by_context_field, propagate_skips
 
                 for step in excluded:
                     await update_task_by_context_field(
@@ -399,6 +399,12 @@ async def _check_conditional_triggers(
                         field="step_id",
                         value=step,
                         status="skipped",
+                    )
+                # Cascade skips to downstream dependents
+                skipped_count = await propagate_skips(goal_id)
+                if skipped_count:
+                    logger.info(
+                        f"[Workflow Hook] Cascaded skip to {skipped_count} dependent tasks"
                     )
             except (ImportError, Exception) as e:
                 logger.debug(
@@ -422,7 +428,7 @@ async def _trigger_template_expansion(goal_id: int, backlog_text: str) -> None:
     try:
         from .loader import load_workflow
         from .expander import expand_template, expand_steps_to_tasks
-        from ...infra.db import insert_task
+        from ...infra.db import add_task as insert_task, update_task
 
         wf = load_workflow("idea_to_product_v2")
         template = wf.get_template("feature_implementation_template")
@@ -446,17 +452,27 @@ async def _trigger_template_expansion(goal_id: int, backlog_text: str) -> None:
                 expanded, goal_id=goal_id, initial_context={}
             )
 
-            for t in tasks:
-                try:
-                    await insert_task(**t)
-                except Exception as e:
-                    logger.debug(
-                        f"[Workflow Hook] Could not insert expanded task: {e}"
-                    )
+            # Batch insert with rollback on failure
+            inserted_ids = []
+            try:
+                for t in tasks:
+                    task_id = await insert_task(**t)
+                    inserted_ids.append(task_id)
+            except Exception as insert_err:
+                # Rollback: cancel partially inserted tasks
+                for tid in inserted_ids:
+                    try:
+                        await update_task(tid, status="cancelled")
+                    except Exception:
+                        pass
+                logger.error(
+                    f"[Workflow Hook] Partial expansion rollback for '{fid}': {insert_err}"
+                )
+                continue  # Skip this feature, try next one
 
             logger.info(
                 f"[Workflow Hook] Expanded template for feature '{fid}' "
-                f"({len(expanded)} steps → {len(tasks)} tasks)"
+                f"({len(expanded)} steps \u2192 {len(tasks)} tasks)"
             )
 
     except (ImportError, Exception) as e:

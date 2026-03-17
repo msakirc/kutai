@@ -61,6 +61,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("product", self.cmd_product))    # Start product workflow
         self.app.add_handler(CommandHandler("resume", self.cmd_resume))      # Resume workflow
         self.app.add_handler(CommandHandler("credential", self.cmd_credential))  # Credential mgmt
+        self.app.add_handler(CommandHandler("cost", self.cmd_cost))            # Per-goal cost
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.REPLY,
@@ -93,6 +94,7 @@ class TelegramInterface:
             "/wfstatus <goal\\_id> — View workflow progress\n"
             "/resume <goal\\_id> — Resume a failed workflow\n"
             "/credential — Manage API credentials\n"
+            "/cost <goal\\_id> — View per-goal cost breakdown\n"
             "/digest — Get daily digest now\n\n"
             "Or just send a message — I'll figure out what to do.",
             parse_mode="Markdown"
@@ -467,6 +469,46 @@ class TelegramInterface:
             f"Last reset: {today}",
             parse_mode="Markdown"
         )
+
+    async def cmd_cost(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show per-goal cost breakdown."""
+        if not context.args:
+            await update.message.reply_text("Usage: /cost <goal\\_id>",
+                                            parse_mode="Markdown")
+            return
+        try:
+            goal_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("Goal ID must be a number.")
+            return
+
+        try:
+            from ..collaboration.blackboard import read_blackboard
+            cost_data = await read_blackboard(goal_id, "cost_tracking")
+            if not isinstance(cost_data, dict):
+                cost_data = {}
+        except Exception:
+            cost_data = {}
+
+        if not cost_data or cost_data.get("total_cost", 0) == 0:
+            await update.message.reply_text(f"No cost data for goal #{goal_id}")
+            return
+
+        import json as _json
+        total = cost_data.get("total_cost", 0)
+        count = cost_data.get("task_count", 0)
+        by_phase = cost_data.get("by_phase", {})
+
+        lines = [
+            f"*Cost Report — Goal #{goal_id}*",
+            f"Total: ${total:.4f} ({count} tasks)",
+        ]
+        if by_phase:
+            lines.append("\nBy phase:")
+            for phase, pcost in sorted(by_phase.items()):
+                lines.append(f"  {phase}: ${pcost:.4f}")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     async def cmd_model_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show model performance statistics."""

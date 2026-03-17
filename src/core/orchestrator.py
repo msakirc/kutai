@@ -3,6 +3,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import os
 import signal
 from ..app.config import DB_PATH, MAX_CONTEXT_CHAIN_LENGTH, TASK_PRIORITY
 from datetime import datetime, timedelta
@@ -57,7 +58,55 @@ AGENT_TIMEOUTS: dict[str, int] = {
 }
 
 # Maximum number of independent tasks to run concurrently.
-MAX_CONCURRENT_TASKS: int = 2
+MAX_CONCURRENT_TASKS: int = int(os.getenv("MAX_CONCURRENT_TASKS", "3"))
+
+
+def _compute_max_concurrent(tasks: list[dict]) -> int:
+    """Compute how many tasks to run concurrently based on task characteristics.
+
+    - Base = MAX_CONCURRENT_TASKS (default 3)
+    - Multiple independent goals: +2 per additional goal (up to 8 total)
+    - Same goal, phase_8 feature implementations: allow up to 5
+    - Hard cap at 8 to avoid overwhelming API rate limits
+    """
+    if not tasks:
+        return MAX_CONCURRENT_TASKS
+
+    # Gather goal_ids from tasks
+    goal_ids: set[int] = set()
+    for t in tasks:
+        ctx = t.get("context", {})
+        if isinstance(ctx, str):
+            try:
+                ctx = json.loads(ctx)
+            except (json.JSONDecodeError, TypeError):
+                ctx = {}
+        gid = ctx.get("goal_id") or t.get("goal_id")
+        if gid is not None:
+            goal_ids.add(gid)
+
+    base = MAX_CONCURRENT_TASKS
+    num_goals = len(goal_ids)
+
+    if num_goals > 1:
+        # Allow +2 per additional goal beyond the first
+        limit = base + 2 * (num_goals - 1)
+        return min(limit, 8)
+
+    # Single goal (or no goal info) — check for phase_8 feature implementations
+    for t in tasks:
+        ctx = t.get("context", {})
+        if isinstance(ctx, str):
+            try:
+                ctx = json.loads(ctx)
+            except (json.JSONDecodeError, TypeError):
+                ctx = {}
+        wp = ctx.get("workflow_phase", "")
+        step_id = ctx.get("template_step_id", "")
+        if wp == "phase_8" or (isinstance(step_id, str) and step_id.startswith("feat.")):
+            return min(5, 8)
+
+    return min(base, 8)
 
 
 class Orchestrator:
@@ -698,6 +747,7 @@ class Orchestrator:
 
         logger.info(f"[Task #{task_id}] Starting: '{title}' (agent: {agent_type})")
 
+        task_ctx = {}  # initialized here so except handler can safely access it
         try:
             # Atomic claim — if another worker grabbed it first, skip
             claimed = await claim_task(task_id)
@@ -834,6 +884,29 @@ class Orchestrator:
                 await self._auto_commit(task, result)
 
             if status == "completed":
+                # Extract structured pipeline artifacts before the post-hook
+                if agent_type == "pipeline" and is_workflow_step(task_ctx):
+                    try:
+                        from ..workflows.engine.pipeline_artifacts import extract_pipeline_artifacts
+                        from ..workflows.engine.hooks import get_artifact_store
+
+                        ws_path = None
+                        if task.get("goal_id"):
+                            try:
+                                ws_path = get_goal_workspace(task["goal_id"])
+                            except Exception:
+                                pass
+
+                        extra_artifacts = await extract_pipeline_artifacts(task, result, ws_path)
+                        if extra_artifacts:
+                            store = get_artifact_store()
+                            goal_id = task.get("goal_id")
+                            for name, content in extra_artifacts.items():
+                                await store.store(goal_id, name, content)
+                            logger.info(f"[Task #{task_id}] Stored {len(extra_artifacts)} pipeline artifacts")
+                    except Exception as e:
+                        logger.debug(f"[Task #{task_id}] Pipeline artifact extraction failed: {e}")
+
                 # Workflow step post-hook: store output artifacts
                 if is_workflow_step(task_ctx):
                     await post_execute_workflow_step(task, result)
@@ -874,6 +947,18 @@ class Orchestrator:
                 await update_task(task_id, status="failed", error=error_str)
                 await self.telegram.send_error(task_id, title, error_str)
 
+                # ── Fix #9: Workflow step failure notification ──
+                if task_ctx.get("is_workflow_step"):
+                    try:
+                        wf_phase = task_ctx.get("workflow_phase", "?")
+                        await self.telegram.send_notification(
+                            f"Workflow step failed: #{task_id}\n"
+                            f"_{task.get('title', '')[:60]}_\n"
+                            f"Phase: {wf_phase}"
+                        )
+                    except Exception:
+                        pass
+
                 # Phase 11.2: Store failed task in episodic memory
                 try:
                     from ..memory.episodic import store_task_result
@@ -896,6 +981,16 @@ class Orchestrator:
         cost = result.get("cost", 0)
         iterations = result.get("iterations", 1)
 
+        # Parse task context for workflow-aware handling
+        task_ctx = task.get("context", "{}")
+        if isinstance(task_ctx, str):
+            try:
+                task_ctx = json.loads(task_ctx)
+            except (json.JSONDecodeError, ValueError):
+                task_ctx = {}
+        if not isinstance(task_ctx, dict):
+            task_ctx = {}
+
         await update_task(
             task_id, status="completed", result=result_text,
             completed_at=datetime.now().isoformat()
@@ -903,6 +998,35 @@ class Orchestrator:
 
         if task.get("goal_id"):
             await self._check_goal_completion(task["goal_id"])
+
+        # ── Fix #8: Goal cost accumulator ──
+        if task.get("goal_id") and cost > 0:
+            try:
+                from ..collaboration.blackboard import read_blackboard, write_blackboard
+                goal_id = task["goal_id"]
+                current = await read_blackboard(goal_id, "cost_tracking")
+                if not isinstance(current, dict):
+                    current = {"total_cost": 0.0, "task_count": 0, "by_phase": {}}
+                current["total_cost"] = current.get("total_cost", 0.0) + cost
+                current["task_count"] = current.get("task_count", 0) + 1
+                # Track by phase
+                phase = task_ctx.get("workflow_phase", "unknown") if isinstance(task_ctx, dict) else "unknown"
+                phase_costs = current.get("by_phase", {})
+                phase_costs[phase] = phase_costs.get(phase, 0.0) + cost
+                current["by_phase"] = phase_costs
+                await write_blackboard(goal_id, "cost_tracking", current)
+                # Budget warning at milestones
+                if current["total_cost"] > 0:
+                    for threshold in [1.0, 5.0, 10.0]:
+                        prev = current["total_cost"] - cost
+                        if prev < threshold <= current["total_cost"]:
+                            await self.telegram.send_notification(
+                                f"Goal #{goal_id} cost milestone: ${current['total_cost']:.2f}\n"
+                                f"({current['task_count']} tasks completed)"
+                            )
+                            break
+            except Exception as e:
+                logger.debug(f"Cost tracking update failed: {e}")
 
         # Notify for top-level tasks or multi-iteration tasks
                 # Always notify for interactive (critical priority) tasks
@@ -921,6 +1045,30 @@ class Orchestrator:
 
         logger.info(f"[Task #{task_id}] ✅ Complete via {model} "
                      f"(${cost:.4f}, {iterations} iter)")
+
+        # ── Fix #9: Workflow phase completion notification ──
+        if task_ctx.get("is_workflow_step") and task.get("goal_id"):
+            try:
+                from ..workflows.engine.status import compute_phase_progress
+                goal_id = task["goal_id"]
+                workflow_phase = task_ctx.get("workflow_phase", "")
+                all_tasks = await get_tasks_for_goal(goal_id)
+                progress = compute_phase_progress(all_tasks)
+                current_phase = progress.get(workflow_phase, {})
+                if (current_phase.get("completed", 0) == current_phase.get("total", 0)
+                        and current_phase.get("total", 0) > 0):
+                    total_phases = len(progress)
+                    completed_phases = sum(
+                        1 for p in progress.values()
+                        if p.get("completed", 0) == p.get("total", 0)
+                    )
+                    phase_name = current_phase.get("name", workflow_phase)
+                    await self.telegram.send_notification(
+                        f"Phase '{phase_name}' complete for goal #{goal_id}\n"
+                        f"Progress: {completed_phases}/{total_phases} phases"
+                    )
+            except Exception as e:
+                logger.debug(f"Workflow progress notification failed: {e}")
 
         # ── Phase 11.2: Store episodic memory ──
         try:
@@ -1321,7 +1469,10 @@ class Orchestrator:
                     await self.check_scheduled_tasks()
                     self.last_scheduler_check = datetime.now()
 
-                tasks = await get_ready_tasks(limit=MAX_CONCURRENT_TASKS)
+                # Get a generous batch, then compute how many to actually run
+                candidate_tasks = await get_ready_tasks(limit=8)
+                max_concurrent = _compute_max_concurrent(candidate_tasks)
+                tasks = candidate_tasks[:max_concurrent]
 
                 if tasks:
                     task_names = [

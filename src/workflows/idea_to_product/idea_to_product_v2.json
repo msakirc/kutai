@@ -4104,7 +4104,7 @@
       "output_artifacts": [
         "coverage_report"
       ],
-      "instruction": "Execute 'coverage_analysis' per v1 plan specification.",
+      "instruction": "Run the project's test suite with coverage reporting enabled (e.g., `--coverage` flag or equivalent). Analyze the coverage output to identify which modules, functions, and branches are untested. Produce a coverage_report artifact listing: overall line/branch/function coverage percentages, per-module coverage breakdown, and a prioritized list of uncovered critical paths (auth, payment, data mutations). Store results at `workspace/{goal_id}/testing/coverage_report.json`.",
       "done_when": "coverage_report exists."
     },
     {
@@ -4122,7 +4122,7 @@
       "output_artifacts": [
         "critical_path_tests"
       ],
-      "instruction": "Execute 'critical_path_test_gaps' per v1 plan specification.",
+      "instruction": "Review the coverage_report to identify gaps in critical user paths (login, signup, checkout, data CRUD, permission checks). For each gap, write unit or integration tests that exercise the happy path and primary failure mode. Use the project's existing test framework and patterns. Place new test files alongside existing tests following the project's convention. Output critical_path_tests as a manifest listing each new test file and what critical path it covers.",
       "done_when": "critical_path_tests exists."
     },
     {
@@ -4140,7 +4140,7 @@
       "output_artifacts": [
         "negative_tests"
       ],
-      "instruction": "Execute 'negative_scenario_tests' per v1 plan specification.",
+      "instruction": "Write tests for negative scenarios: invalid inputs, unauthorized access attempts, expired tokens, malformed requests, missing required fields, and exceeding rate limits. For each API endpoint and form, create at least one negative test case. Follow the project's test patterns and assertion style. Store tests in the appropriate test directories and output a negative_tests manifest listing each scenario covered.",
       "done_when": "negative_tests exists."
     },
     {
@@ -4158,7 +4158,7 @@
       "output_artifacts": [
         "boundary_tests"
       ],
-      "instruction": "Execute 'boundary_value_tests' per v1 plan specification.",
+      "instruction": "Write boundary value tests for all numeric inputs, string length limits, date ranges, pagination parameters, file size limits, and collection size limits. Test at minimum: zero, one, max, max+1, negative values, and empty strings. Follow the project's test framework conventions. Output boundary_tests as a manifest of new test files and the boundaries they validate.",
       "done_when": "boundary_tests exists."
     },
     {
@@ -4176,7 +4176,7 @@
       "output_artifacts": [
         "concurrency_tests"
       ],
-      "instruction": "Execute 'concurrency_tests' per v1 plan specification.",
+      "instruction": "Write concurrency tests to verify thread safety and race conditions. Test scenarios: simultaneous writes to the same resource, concurrent user sessions, parallel API requests to stateful endpoints, and database transaction conflicts. Use the project's test framework with appropriate async/parallel test utilities. Output concurrency_tests as a manifest documenting each concurrency scenario tested and expected behavior.",
       "done_when": "concurrency_tests exists."
     },
     {
@@ -4194,7 +4194,7 @@
       "output_artifacts": [
         "integrity_tests"
       ],
-      "instruction": "Execute 'data_integrity_tests' per v1 plan specification.",
+      "instruction": "Write data integrity tests verifying: foreign key constraints are enforced, cascading deletes work correctly, unique constraints prevent duplicates, required fields cannot be null, data type validations hold at the database level, and transactions roll back completely on failure. Use the project's ORM or database client for test setup. Output integrity_tests as a manifest of each constraint validated.",
       "done_when": "integrity_tests exists."
     },
     {
@@ -4216,7 +4216,7 @@
       "output_artifacts": [
         "e2e_review_result"
       ],
-      "instruction": "Execute 'e2e_suite_review' per v1 plan specification.",
+      "instruction": "Review the complete E2E test suite by examining all existing E2E tests against the coverage_report and the functional requirements. Identify gaps: user flows without E2E coverage, critical paths only covered by unit tests, and E2E tests that are flaky or incomplete. Produce e2e_review_result listing: total E2E test count, coverage of user stories, identified gaps, and recommended additions ranked by risk.",
       "done_when": "e2e_review_result exists."
     },
     {
@@ -4234,7 +4234,7 @@
       "output_artifacts": [
         "additional_e2e_tests"
       ],
-      "instruction": "Execute 'missing_e2e_tests' per v1 plan specification.",
+      "instruction": "Based on e2e_review_result, write the missing E2E tests identified during the review. Each test should simulate a complete user flow from entry to completion, including UI interactions, API calls, and database state verification. Use the project's E2E framework (Playwright, Cypress, or equivalent). Output additional_e2e_tests as a manifest of new E2E test files and the user flows they cover.",
       "done_when": "additional_e2e_tests exists."
     },
     {
@@ -4252,7 +4252,7 @@
       "output_artifacts": [
         "performance_test_scripts"
       ],
-      "instruction": "Execute 'performance_test_creation' per v1 plan specification.",
+      "instruction": "Create performance test scripts using k6, Artillery, or the project's preferred load testing tool. Write scripts for: API endpoint response time benchmarks, database query performance under load, concurrent user simulation (10, 50, 100, 500 users), and throughput tests for the highest-traffic endpoints. Reference nfr_performance for target metrics. Store scripts at `workspace/{goal_id}/testing/performance/` and output performance_test_scripts as a manifest.",
       "done_when": "performance_test_scripts exists."
     },
     {
@@ -4270,7 +4270,7 @@
       "output_artifacts": [
         "baseline_performance_results"
       ],
-      "instruction": "Execute 'baseline_performance_test' per v1 plan specification.",
+      "instruction": "Execute the performance_test_scripts against the staging environment to establish baseline metrics. Run each test scenario at normal expected load levels. Capture: p50/p95/p99 response times, throughput (requests/sec), error rates, CPU/memory utilization, and database query times. Store raw results and produce baseline_performance_results with a summary table comparing each metric against the NFR targets.",
       "done_when": "baseline_performance_results exists."
     },
     {
@@ -4288,7 +4288,7 @@
       "output_artifacts": [
         "stress_test_results"
       ],
-      "instruction": "Execute 'stress_test' per v1 plan specification.",
+      "instruction": "Execute stress tests by running the performance_test_scripts at 2x, 5x, and 10x the expected load. Identify the breaking point where error rates exceed 1% or response times exceed SLA thresholds. Document: maximum concurrent users before degradation, first bottleneck (CPU, memory, database connections, or network), behavior under sustained high load (10 minutes), and recovery time after load removal. Output stress_test_results with findings.",
       "done_when": "stress_test_results exists."
     },
     {
@@ -4308,7 +4308,7 @@
       "output_artifacts": [
         "performance_analysis_report"
       ],
-      "instruction": "Execute 'performance_analysis' per v1 plan specification.",
+      "instruction": "Analyze baseline_performance_results and stress_test_results together. Identify: which endpoints fail NFR targets, the primary bottlenecks (slow queries, missing indexes, unoptimized algorithms, connection pool exhaustion), correlation between load increase and degradation, and memory leak indicators. Produce performance_analysis_report with a prioritized list of optimizations, estimated impact of each, and recommended implementation order.",
       "done_when": "performance_analysis_report exists."
     },
     {
@@ -4326,7 +4326,7 @@
       "output_artifacts": [
         "performance_optimizations"
       ],
-      "instruction": "Execute 'performance_optimization' per v1 plan specification.",
+      "instruction": "Implement the optimizations recommended in performance_analysis_report, starting with highest-impact items. Common fixes include: adding database indexes, implementing query result caching, optimizing N+1 queries, adding connection pooling, enabling compression, implementing pagination for large datasets, and lazy-loading heavy resources. Document each change and its expected improvement. Output performance_optimizations listing each fix applied.",
       "done_when": "performance_optimizations exists."
     },
     {
@@ -4344,7 +4344,7 @@
       "output_artifacts": [
         "post_optimization_results"
       ],
-      "instruction": "Execute 'post_optimization_verification' per v1 plan specification.",
+      "instruction": "Re-run the same performance_test_scripts from step 9.10 to verify the optimizations worked. Compare results against baseline_performance_results to quantify improvement for each metric. Verify that no new regressions were introduced. Produce post_optimization_results with a before/after comparison table and confirmation that all NFR performance targets are now met (or document remaining gaps with justification).",
       "done_when": "post_optimization_results exists."
     },
     {
@@ -4362,7 +4362,7 @@
       "output_artifacts": [
         "cross_browser_results"
       ],
-      "instruction": "Execute 'cross_browser_testing' per v1 plan specification.",
+      "instruction": "Run the full test suite and key user flows in the target browsers specified in platform_requirements (typically Chrome, Firefox, Safari, Edge). Verify: layout renders correctly, JavaScript functionality works, forms submit properly, animations/transitions perform well, and no console errors appear. Use browser automation tools or a cross-browser testing service. Output cross_browser_results listing pass/fail per browser with screenshots of any failures.",
       "done_when": "cross_browser_results exists."
     },
     {
@@ -4380,7 +4380,7 @@
       "output_artifacts": [
         "mobile_test_results"
       ],
-      "instruction": "Execute 'mobile_device_testing' per v1 plan specification.",
+      "instruction": "Test the application on mobile devices and screen sizes specified in platform_requirements. Verify: responsive layouts render correctly at 320px, 375px, 414px, and 768px widths; touch interactions work (tap, swipe, pinch-zoom); virtual keyboard does not obscure inputs; and performance is acceptable on mid-range devices. Use device emulators or real devices. Output mobile_test_results listing pass/fail per device profile with screenshots.",
       "done_when": "mobile_test_results exists."
     },
     {
@@ -4400,7 +4400,7 @@
       "output_artifacts": [
         "responsive_visual_review"
       ],
-      "instruction": "Execute 'responsive_visual_check' per v1 plan specification.",
+      "instruction": "Review cross_browser_results and mobile_test_results visually. Compare screenshots across browsers and devices to identify: layout inconsistencies, font rendering differences, spacing/alignment issues, broken responsive breakpoints, overlapping elements, and truncated text. Produce responsive_visual_review with annotated screenshots highlighting every visual discrepancy and its severity (critical, major, minor).",
       "done_when": "responsive_visual_review exists."
     },
     {
@@ -4418,7 +4418,7 @@
       "output_artifacts": [
         "cross_platform_fixes"
       ],
-      "instruction": "Execute 'cross_platform_fixes' per v1 plan specification.",
+      "instruction": "Fix all issues identified in responsive_visual_review, starting with critical and major severity. Apply CSS fixes, add vendor prefixes, fix flexbox/grid fallbacks, adjust responsive breakpoints, and resolve touch target sizing issues. Verify each fix in the affected browser/device. Output cross_platform_fixes listing each issue resolved with before/after verification notes.",
       "done_when": "cross_platform_fixes exists."
     },
     {
@@ -4436,7 +4436,7 @@
       "output_artifacts": [
         "a11y_scan_results"
       ],
-      "instruction": "Execute 'automated_a11y_scan' per v1 plan specification.",
+      "instruction": "Run automated accessibility scanning using axe-core, Pa11y, or Lighthouse accessibility audit on all pages. Test against WCAG 2.1 AA compliance as the minimum standard. Capture: total violations by severity (critical, serious, moderate, minor), violation categories (images, forms, navigation, color, ARIA), and affected elements with DOM selectors. Output a11y_scan_results with the full violation report.",
       "done_when": "a11y_scan_results exists."
     },
     {
@@ -4454,7 +4454,7 @@
       "output_artifacts": [
         "keyboard_test_results"
       ],
-      "instruction": "Execute 'keyboard_navigation_test' per v1 plan specification.",
+      "instruction": "Manually test keyboard navigation through all interactive elements. Verify: every interactive element is reachable via Tab key, focus order follows logical reading order, focus indicators are visible, modal dialogs trap focus correctly, dropdown menus are navigable with arrow keys, Escape key closes overlays, and skip-navigation links work. Output keyboard_test_results listing each page/component tested and any failures found.",
       "done_when": "keyboard_test_results exists."
     },
     {
@@ -4472,7 +4472,7 @@
       "output_artifacts": [
         "screen_reader_test_results"
       ],
-      "instruction": "Execute 'screen_reader_test' per v1 plan specification.",
+      "instruction": "Test all pages with a screen reader (NVDA, VoiceOver, or equivalent). Verify: page headings create a logical outline, images have meaningful alt text, form labels are correctly associated, error messages are announced, dynamic content updates are communicated via ARIA live regions, and interactive components announce their role and state. Output screen_reader_test_results with findings per page.",
       "done_when": "screen_reader_test_results exists."
     },
     {
@@ -4491,7 +4491,7 @@
       "output_artifacts": [
         "contrast_check_results"
       ],
-      "instruction": "Execute 'color_contrast_check' per v1 plan specification.",
+      "instruction": "Analyze the a11y_scan_results and design_tokens to verify color contrast compliance. Check all text/background color combinations against WCAG 2.1 AA minimum ratios (4.5:1 for normal text, 3:1 for large text). Also verify: focus indicator contrast, icon-only button contrast, disabled state distinguishability, and link color distinction from body text. Output contrast_check_results listing every failing combination with current ratio and required ratio.",
       "done_when": "contrast_check_results exists."
     },
     {
@@ -4515,7 +4515,7 @@
       "output_artifacts": [
         "a11y_fixes_applied"
       ],
-      "instruction": "Execute 'a11y_fixes' per v1 plan specification.",
+      "instruction": "Fix all accessibility issues found in a11y_scan_results, keyboard_test_results, screen_reader_test_results, and contrast_check_results. Priority order: critical violations first (missing form labels, keyboard traps, zero-contrast text), then serious (missing alt text, broken ARIA), then moderate. Re-run the axe-core scan after fixes to verify resolution. Output a11y_fixes_applied listing each fix with the violation it resolves.",
       "done_when": "a11y_fixes_applied exists."
     },
     {
@@ -4537,7 +4537,7 @@
       "output_artifacts": [
         "regression_results"
       ],
-      "instruction": "Execute 'full_regression_suite' per v1 plan specification.",
+      "instruction": "Run the complete test suite including unit tests, integration tests, E2E tests, performance tests, and accessibility tests as a full regression after all Phase 9 fixes (performance optimizations, cross-platform fixes, accessibility fixes). All tests must pass. If any fail, investigate whether they are pre-existing flaky tests or regressions from the fixes. Output regression_results with total pass/fail counts, any failures with stack traces, and overall go/no-go assessment.",
       "done_when": "regression_results exists."
     },
     {
@@ -4555,7 +4555,7 @@
       "output_artifacts": [
         "bug_report"
       ],
-      "instruction": "Execute 'bug_compilation' per v1 plan specification.",
+      "instruction": "Compile all bugs discovered during Phase 9 testing into a structured bug_report. For each bug: assign a unique ID, severity (P0-P3), category (functional, performance, accessibility, visual, security), reproduction steps, expected vs actual behavior, affected browsers/devices, and suggested fix approach. Sort by severity. Include a summary: total bug count by severity, estimated fix effort, and recommendation on whether to fix before launch or defer.",
       "done_when": "bug_report exists."
     },
     {
@@ -4574,7 +4574,7 @@
       "output_artifacts": [
         "owasp_audit_result"
       ],
-      "instruction": "Execute 'owasp_audit' per v1 plan specification.",
+      "instruction": "Conduct a systematic OWASP Top 10 security audit of the application. Review the codebase and running application against each category: Injection, Broken Authentication, Sensitive Data Exposure, XXE, Broken Access Control, Security Misconfiguration, XSS, Insecure Deserialization, Vulnerable Components, Insufficient Logging. For each category, document: risk level (high/medium/low/not-applicable), evidence found, and remediation steps. Output owasp_audit_result at `workspace/{goal_id}/security/owasp_audit.json`.",
       "done_when": "owasp_audit_result exists."
     },
     {
@@ -4592,7 +4592,7 @@
       "output_artifacts": [
         "injection_test_result"
       ],
-      "instruction": "Execute 'injection_testing' per v1 plan specification.",
+      "instruction": "Test all user input points for SQL injection, NoSQL injection, LDAP injection, OS command injection, and ORM injection vulnerabilities. Test: API parameters, query strings, form fields, HTTP headers (especially Host, User-Agent, Referer), and file upload filenames. Verify that parameterized queries or ORM methods are used everywhere. Output injection_test_result documenting each input point tested and its result.",
       "done_when": "injection_test_result exists."
     },
     {
@@ -4610,7 +4610,7 @@
       "output_artifacts": [
         "xss_test_result"
       ],
-      "instruction": "Execute 'xss_testing' per v1 plan specification.",
+      "instruction": "Test all output points for reflected XSS, stored XSS, and DOM-based XSS vulnerabilities. Test: user-generated content rendering, URL parameter reflection, error message display, search results, profile fields, and markdown/rich-text rendering. Verify that output encoding is applied consistently and Content-Security-Policy headers block inline scripts. Output xss_test_result with findings per component.",
       "done_when": "xss_test_result exists."
     },
     {
@@ -4628,7 +4628,7 @@
       "output_artifacts": [
         "csrf_test_result"
       ],
-      "instruction": "Execute 'csrf_testing' per v1 plan specification.",
+      "instruction": "Test all state-changing endpoints for CSRF vulnerabilities. Verify: CSRF tokens are present on all forms and validated server-side, SameSite cookie attribute is set to Strict or Lax, custom headers (X-Requested-With) are required for AJAX requests, and token rotation occurs after authentication. Test by crafting cross-origin requests without valid tokens. Output csrf_test_result documenting each endpoint's CSRF protection status.",
       "done_when": "csrf_test_result exists."
     },
     {
@@ -4647,7 +4647,7 @@
       "output_artifacts": [
         "auth_security_result"
       ],
-      "instruction": "Execute 'auth_security_review' per v1 plan specification.",
+      "instruction": "Review the authentication implementation against auth_design. Verify: password hashing uses bcrypt/scrypt/argon2 with appropriate cost factors, session tokens are cryptographically random and sufficiently long, token expiration and refresh mechanisms work correctly, account lockout engages after failed attempts, password reset flow does not leak user existence, and multi-factor authentication (if applicable) cannot be bypassed. Output auth_security_result with findings and recommendations.",
       "done_when": "auth_security_result exists."
     },
     {
@@ -4666,7 +4666,7 @@
       "output_artifacts": [
         "authz_test_result"
       ],
-      "instruction": "Execute 'authorization_testing' per v1 plan specification.",
+      "instruction": "Test the authorization system against authz_design. Verify: horizontal privilege escalation is prevented (user A cannot access user B's resources), vertical privilege escalation is prevented (regular user cannot access admin endpoints), IDOR vulnerabilities are mitigated (sequential IDs cannot be guessed to access others' data), API endpoints enforce authorization consistently, and role-based access control is correctly implemented at both API and data layers. Output authz_test_result with test results per role and resource.",
       "done_when": "authz_test_result exists."
     },
     {
@@ -4685,7 +4685,7 @@
       "output_artifacts": [
         "api_security_result"
       ],
-      "instruction": "Execute 'api_security_review' per v1 plan specification.",
+      "instruction": "Review all API endpoints from api_endpoints for security. Verify: authentication is required on all non-public endpoints, request body validation rejects unexpected fields, response bodies do not leak internal details (stack traces, internal IDs, database column names), rate limiting is applied, request size limits are enforced, and API versioning does not expose deprecated insecure endpoints. Output api_security_result listing each endpoint with its security posture.",
       "done_when": "api_security_result exists."
     },
     {
@@ -4703,7 +4703,7 @@
       "output_artifacts": [
         "dependency_scan_result"
       ],
-      "instruction": "Execute 'dependency_vulnerability_scan' per v1 plan specification.",
+      "instruction": "Run dependency vulnerability scanning using `npm audit`, `pip audit`, `cargo audit`, or the project's equivalent tool. Also run Snyk or Trivy if available. Identify all dependencies with known CVEs, categorize by severity (critical, high, medium, low), and determine if each vulnerability is exploitable in the project's usage context. Output dependency_scan_result listing each vulnerable dependency, CVE ID, severity, and whether an upgrade is available.",
       "done_when": "dependency_scan_result exists."
     },
     {
@@ -4721,7 +4721,7 @@
       "output_artifacts": [
         "dependency_fixes"
       ],
-      "instruction": "Execute 'dependency_vulnerability_fixes' per v1 plan specification.",
+      "instruction": "Fix all critical and high severity dependency vulnerabilities from dependency_scan_result. For each: upgrade to the patched version if available, or if a major version upgrade is needed, assess breaking changes. If no fix is available, implement a workaround or document the accepted risk with justification. Run the full test suite after each upgrade to catch regressions. Output dependency_fixes listing each vulnerability addressed and the action taken.",
       "done_when": "dependency_fixes exists."
     },
     {
@@ -4739,7 +4739,7 @@
       "output_artifacts": [
         "security_headers_audit_result"
       ],
-      "instruction": "Execute 'security_headers_audit' per v1 plan specification.",
+      "instruction": "Audit all HTTP security headers served by the application. Check for: Content-Security-Policy (strict, no unsafe-inline), X-Content-Type-Options (nosniff), X-Frame-Options (DENY or SAMEORIGIN), Strict-Transport-Security (max-age >= 1 year, includeSubDomains), Referrer-Policy (strict-origin-when-cross-origin), Permissions-Policy (restrict camera, microphone, geolocation), and X-XSS-Protection. Test both HTML pages and API responses. Output security_headers_audit_result with current values and recommendations.",
       "done_when": "security_headers_audit_result exists."
     },
     {
@@ -4757,7 +4757,7 @@
       "output_artifacts": [
         "security_headers_implemented"
       ],
-      "instruction": "Execute 'security_headers_fix' per v1 plan specification.",
+      "instruction": "Implement all missing or misconfigured security headers identified in security_headers_audit_result. Add server middleware or configuration to set: CSP header with nonce-based script allowlisting, HSTS header with 1-year max-age, X-Content-Type-Options nosniff, X-Frame-Options DENY, Referrer-Policy strict-origin-when-cross-origin, and Permissions-Policy restricting unused browser features. Verify headers are served on all responses. Output security_headers_implemented confirming each header is in place.",
       "done_when": "security_headers_implemented exists."
     },
     {
@@ -4775,7 +4775,7 @@
       "output_artifacts": [
         "encryption_verification_result"
       ],
-      "instruction": "Execute 'encryption_verification' per v1 plan specification.",
+      "instruction": "Verify encryption is correctly implemented. Check: all data in transit uses TLS 1.2+ (no SSLv3 or TLS 1.0/1.1), sensitive data at rest is encrypted (passwords, PII, tokens), database connections use SSL, encryption keys are stored securely (not in code), key rotation procedures exist, and backup data is encrypted. Use tools like testssl.sh or ssllabs.com for TLS verification. Output encryption_verification_result documenting each encryption checkpoint.",
       "done_when": "encryption_verification_result exists."
     },
     {
@@ -4793,7 +4793,7 @@
       "output_artifacts": [
         "secrets_audit_result"
       ],
-      "instruction": "Execute 'secrets_audit' per v1 plan specification.",
+      "instruction": "Scan the entire codebase and git history for exposed secrets: API keys, database credentials, JWT secrets, private keys, OAuth client secrets, and tokens. Use tools like gitleaks, truffleHog, or detect-secrets. Check: .env files are gitignored, no secrets in docker-compose.yml committed to repo, CI/CD secrets are injected via environment (not hardcoded), and configuration files use placeholders. Output secrets_audit_result listing any exposed secrets and required remediation.",
       "done_when": "secrets_audit_result exists."
     },
     {
@@ -4812,7 +4812,7 @@
       "output_artifacts": [
         "logging_security_result"
       ],
-      "instruction": "Execute 'logging_security_review' per v1 plan specification.",
+      "instruction": "Review the logging implementation against logging_strategy for security concerns. Verify: passwords and tokens are never logged, PII is masked or excluded from logs, log injection attacks are prevented (user input is sanitized before logging), log files have appropriate access permissions, sensitive API request/response bodies are redacted, and error logs do not expose internal system details to users. Output logging_security_result with findings and remediation steps.",
       "done_when": "logging_security_result exists."
     },
     {
@@ -4831,7 +4831,7 @@
       "output_artifacts": [
         "file_upload_security_result"
       ],
-      "instruction": "Execute 'file_upload_security' per v1 plan specification.",
+      "instruction": "Review the file upload implementation against file_storage_design. Verify: file type validation is performed server-side (not just client-side), uploaded files are scanned for malware signatures, file size limits are enforced, filenames are sanitized to prevent path traversal, uploaded files are stored outside the web root, content-disposition headers force download (not inline execution), and image files are re-encoded to strip EXIF/metadata. Output file_upload_security_result with findings.",
       "done_when": "file_upload_security_result exists."
     },
     {
@@ -4858,7 +4858,7 @@
       "output_artifacts": [
         "security_fixes_applied"
       ],
-      "instruction": "Execute 'security_fixes' per v1 plan specification.",
+      "instruction": "Implement fixes for all security vulnerabilities discovered in steps 10.2 through 10.15. Prioritize by severity: critical vulnerabilities first (injection, auth bypass, data exposure), then high (XSS, CSRF, IDOR), then medium (missing headers, verbose errors). For each fix, document the vulnerability, the remediation applied, and verification that the fix works. Ensure fixes do not break existing functionality by running relevant tests. Output security_fixes_applied listing every fix.",
       "done_when": "security_fixes_applied exists."
     },
     {
@@ -4876,7 +4876,7 @@
       "output_artifacts": [
         "security_retest_results"
       ],
-      "instruction": "Execute 'security_retest' per v1 plan specification.",
+      "instruction": "Re-run all security tests from steps 10.1-10.15 to verify that the fixes in security_fixes_applied resolved the vulnerabilities without introducing new ones. Specifically re-test: injection points, XSS vectors, CSRF endpoints, authentication flows, authorization boundaries, and security headers. Compare results against original findings. Output security_retest_results confirming each previously-found vulnerability is resolved and no new issues appeared.",
       "done_when": "security_retest_results exists."
     },
     {
@@ -4894,7 +4894,7 @@
       "output_artifacts": [
         "security_audit_report"
       ],
-      "instruction": "Execute 'security_audit_report' per v1 plan specification.",
+      "instruction": "Write a comprehensive security audit report summarizing the entire Phase 10 process. Include: executive summary with overall security posture rating, methodology used, vulnerabilities found by category and severity, remediation actions taken, current status of each finding (fixed, accepted risk, deferred), remaining risks with mitigation strategies, and recommendations for ongoing security practices. Store at `workspace/{goal_id}/security/security_audit_report.md`.",
       "done_when": "security_audit_report exists."
     },
     {
@@ -4912,7 +4912,7 @@
       "output_artifacts": [
         "api_docs"
       ],
-      "instruction": "Execute 'api_documentation' per v1 plan specification.",
+      "instruction": "Generate comprehensive API documentation from the openapi_spec. For each endpoint, document: HTTP method and path, description of purpose, request parameters with types and validation rules, request body schema with examples, response schemas for success and error cases with examples, authentication requirements, and rate limits. Use a standard format (OpenAPI-rendered HTML or Markdown). Store at `workspace/{goal_id}/docs/api/` and output api_docs.",
       "done_when": "api_docs exists."
     },
     {
@@ -4930,7 +4930,7 @@
       "output_artifacts": [
         "user_getting_started"
       ],
-      "instruction": "Execute 'user_getting_started' per v1 plan specification.",
+      "instruction": "Write a getting-started guide for new users based on user_flow_onboarding. Cover: account creation/signup process, initial configuration steps, first-time use walkthrough with screenshots/descriptions of each screen, key concepts users need to understand, and links to deeper documentation for each feature. Write in a friendly, step-by-step format targeting non-technical users. Store at `workspace/{goal_id}/docs/user/getting-started.md`.",
       "done_when": "user_getting_started exists."
     },
     {
@@ -4948,7 +4948,7 @@
       "output_artifacts": [
         "feature_docs"
       ],
-      "instruction": "Execute 'feature_documentation' per v1 plan specification.",
+      "instruction": "Write detailed feature documentation covering every MVP feature from mvp_scope. For each feature: explain what it does, when and why to use it, step-by-step usage instructions, configuration options, limitations and known constraints, common troubleshooting tips, and related features. Organize by feature area with a table of contents. Store at `workspace/{goal_id}/docs/user/features/` with one file per feature area.",
       "done_when": "feature_docs exists."
     },
     {
@@ -4968,7 +4968,7 @@
       "output_artifacts": [
         "faq_doc"
       ],
-      "instruction": "Execute 'faq' per v1 plan specification.",
+      "instruction": "Compile a FAQ document addressing the most common questions a user would have based on user_getting_started and feature_docs. Cover: account management questions, billing/payment questions (if applicable), feature capability questions, troubleshooting common errors, data privacy/security questions, and integration/API questions. Aim for 20-30 entries. Store at `workspace/{goal_id}/docs/user/faq.md`.",
       "done_when": "faq_doc exists."
     },
     {
@@ -4986,7 +4986,7 @@
       "output_artifacts": [
         "onboarding_copy"
       ],
-      "instruction": "Execute 'in_app_copy_onboarding' per v1 plan specification.",
+      "instruction": "Write all in-app onboarding copy: welcome screen text, tooltip content for first-time feature discovery, empty state messages with calls-to-action, progress indicators text, and completion/success messages. Follow the project's tone of voice and reference the user_flow_onboarding for flow sequence. Format as a structured JSON/YAML file keyed by screen and component ID for easy integration. Store at `workspace/{goal_id}/docs/copy/onboarding-copy.json`.",
       "done_when": "onboarding_copy exists."
     },
     {
@@ -5004,7 +5004,7 @@
       "output_artifacts": [
         "error_copy"
       ],
-      "instruction": "Execute 'in_app_copy_errors' per v1 plan specification.",
+      "instruction": "Write user-friendly error messages for every error state in error_handling_strategy. For each error: write a clear, non-technical message explaining what happened, a suggested action the user can take to resolve it, and an error code for support reference. Avoid jargon, blame language, and exposing internal details. Format as a structured file keyed by error code. Store at `workspace/{goal_id}/docs/copy/error-messages.json`.",
       "done_when": "error_copy exists."
     },
     {
@@ -5022,7 +5022,7 @@
       "output_artifacts": [
         "notification_copy"
       ],
-      "instruction": "Execute 'in_app_copy_notifications' per v1 plan specification.",
+      "instruction": "Write copy for all notification templates from email_system_design: transactional emails (welcome, password reset, email verification), notification emails (activity alerts, digest summaries), and in-app notifications (toasts, banners, badge text). Include subject lines, body text, and call-to-action button text for each. Follow the project's tone of voice. Store at `workspace/{goal_id}/docs/copy/notification-copy.json`.",
       "done_when": "notification_copy exists."
     },
     {
@@ -5040,7 +5040,7 @@
       "output_artifacts": [
         "developer_setup_guide"
       ],
-      "instruction": "Execute 'developer_setup_guide' per v1 plan specification.",
+      "instruction": "Write a developer setup guide covering: prerequisites (language runtime versions, tools, accounts needed), repository cloning and initial setup, environment variable configuration with descriptions of each variable, dependency installation, database setup and migration, running the development server, running tests, common development tasks (creating a new feature, adding an API endpoint, adding a migration), and IDE/editor recommended settings. Store at `workspace/{goal_id}/docs/dev/setup-guide.md`.",
       "done_when": "developer_setup_guide exists."
     },
     {
@@ -5058,7 +5058,7 @@
       "output_artifacts": [
         "architecture_overview"
       ],
-      "instruction": "Execute 'architecture_overview_doc' per v1 plan specification.",
+      "instruction": "Write an architecture overview document from technical_design_document. Cover: high-level system architecture diagram (described in text/mermaid), technology stack with rationale for each choice, data flow through the system, directory structure with purpose of each top-level folder, key design patterns used and why, external service integrations, and infrastructure topology. Target audience is new developers joining the project. Store at `workspace/{goal_id}/docs/dev/architecture.md`.",
       "done_when": "architecture_overview exists."
     },
     {
@@ -5076,7 +5076,7 @@
       "output_artifacts": [
         "contributing_guide"
       ],
-      "instruction": "Execute 'contributing_guide' per v1 plan specification.",
+      "instruction": "Write a contributing guide based on developer_setup_guide. Cover: how to pick an issue to work on, branch naming convention, code style guidelines and linting setup, commit message format, how to write tests for new features, pull request template and review process, CI/CD pipeline expectations, and how to request a review. Include a code of conduct section. Store at `workspace/{goal_id}/CONTRIBUTING.md`.",
       "done_when": "contributing_guide exists."
     },
     {
@@ -5094,7 +5094,7 @@
       "output_artifacts": [
         "deployment_runbook"
       ],
-      "instruction": "Execute 'deployment_runbook' per v1 plan specification.",
+      "instruction": "Write a deployment runbook based on cd_production_config. Cover: pre-deployment checklist (tests pass, migrations reviewed, config verified), step-by-step deployment procedure for each environment (staging, production), how to verify a successful deployment (health checks, smoke tests), rollback procedure with exact commands, database migration deployment steps, environment-specific configuration differences, and emergency contacts. Store at `workspace/{goal_id}/docs/ops/deployment-runbook.md`.",
       "done_when": "deployment_runbook exists."
     },
     {
@@ -5113,7 +5113,7 @@
       "output_artifacts": [
         "incident_playbook"
       ],
-      "instruction": "Execute 'incident_response_playbook' per v1 plan specification.",
+      "instruction": "Write an incident response playbook based on deployment_runbook and disaster_recovery_plan. Cover: severity classification (P0-P3) with response time SLAs, on-call escalation chain, incident communication templates (status page updates, stakeholder notifications), common incident scenarios with resolution steps (database down, high error rate, memory leak, DDoS), post-incident review template, and data recovery procedures. Store at `workspace/{goal_id}/docs/ops/incident-playbook.md`.",
       "done_when": "incident_playbook exists."
     },
     {
@@ -5131,7 +5131,7 @@
       "output_artifacts": [
         "database_docs"
       ],
-      "instruction": "Execute 'database_documentation' per v1 plan specification.",
+      "instruction": "Write database documentation based on database_schema. Cover: entity-relationship diagram (described in text/mermaid), table descriptions with purpose of each table, column descriptions with data types and constraints, index strategy and rationale, migration history and versioning approach, common query patterns, data archival/retention policies, and backup/restore procedures. Store at `workspace/{goal_id}/docs/dev/database.md`.",
       "done_when": "database_docs exists."
     },
     {
@@ -5149,7 +5149,7 @@
       "output_artifacts": [
         "env_var_docs"
       ],
-      "instruction": "Execute 'env_var_documentation' per v1 plan specification.",
+      "instruction": "Document every environment variable used by the application from env_config. For each variable: name, description of what it controls, data type and format, whether it is required or optional, default value (if any), example value, which service or module uses it, and sensitivity level (secret vs public). Include a template .env.example file with all variables and placeholder values. Store at `workspace/{goal_id}/docs/dev/environment-variables.md`.",
       "done_when": "env_var_docs exists."
     },
     {
@@ -5169,7 +5169,7 @@
       "output_artifacts": [
         "readme"
       ],
-      "instruction": "Execute 'readme' per v1 plan specification.",
+      "instruction": "Write the project README combining developer_setup_guide and architecture_overview. Include: project name and one-line description, badges (build status, coverage, license), what the project does (3-5 sentences), quick start instructions (clone, install, run in under 5 commands), link to full documentation, technology stack summary, contributing link, and license information. Keep it concise and scannable. Store at `workspace/{goal_id}/README.md`.",
       "done_when": "readme exists."
     },
     {
@@ -5187,7 +5187,7 @@
       "output_artifacts": [
         "changelog"
       ],
-      "instruction": "Execute 'changelog' per v1 plan specification.",
+      "instruction": "Create a CHANGELOG following the Keep a Changelog format. Review the implementation_backlog and git history to document all changes made during development. Organize by version/release with sections: Added (new features), Changed (modifications), Fixed (bug fixes), Removed (deprecated features removed), Security (vulnerability fixes). Start with the initial release version. Store at `workspace/{goal_id}/CHANGELOG.md`.",
       "done_when": "changelog exists."
     },
     {
@@ -5223,7 +5223,7 @@
       "output_artifacts": [
         "docs_review_result"
       ],
-      "instruction": "Execute 'documentation_review' per v1 plan specification.",
+      "instruction": "Review all documentation produced in Phase 11 for quality. Check: technical accuracy (do code examples work? are API docs up to date?), completeness (are all features documented? any missing sections?), consistency (is terminology consistent across docs?), readability (is the writing clear for the target audience?), formatting (do links work? are code blocks formatted? is markdown valid?). Produce docs_review_result listing issues found per document, categorized by severity.",
       "done_when": "docs_review_result exists."
     },
     {
@@ -5241,7 +5241,7 @@
       "output_artifacts": [
         "documentation_fixed"
       ],
-      "instruction": "Execute 'documentation_fixes' per v1 plan specification.",
+      "instruction": "Fix all issues identified in docs_review_result. Update incorrect code examples, fill in missing sections, fix broken links, standardize terminology, improve unclear explanations, and correct formatting errors. Verify each fix by re-reading the affected section. Output documentation_fixed confirming all review issues are resolved.",
       "done_when": "documentation_fixed exists."
     },
     {
@@ -5259,7 +5259,7 @@
       "output_artifacts": [
         "terms_of_service"
       ],
-      "instruction": "Execute 'terms_of_service' per v1 plan specification.",
+      "instruction": "Draft Terms of Service based on prd_final. Cover: service description, user eligibility, account responsibilities, acceptable use policy, intellectual property rights, limitation of liability, dispute resolution, termination conditions, and modification policy. Use clear language accessible to non-lawyers while maintaining legal coverage. Add placeholder sections marked [LEGAL REVIEW REQUIRED] for jurisdiction-specific clauses. Store at `workspace/{goal_id}/legal/terms-of-service.md`.",
       "done_when": "terms_of_service exists."
     },
     {
@@ -5277,7 +5277,7 @@
       "output_artifacts": [
         "privacy_policy"
       ],
-      "instruction": "Execute 'privacy_policy' per v1 plan specification.",
+      "instruction": "Draft a Privacy Policy based on data_requirements. Cover: what personal data is collected and why, legal basis for processing (consent, legitimate interest, contract), how data is stored and protected, third-party data sharing (analytics, payment processors, cloud providers), user rights (access, deletion, portability, objection), data retention periods, cookie usage, children's privacy (COPPA if applicable), and contact information for privacy inquiries. Store at `workspace/{goal_id}/legal/privacy-policy.md`.",
       "done_when": "privacy_policy exists."
     },
     {
@@ -5295,7 +5295,7 @@
       "output_artifacts": [
         "cookie_policy"
       ],
-      "instruction": "Execute 'cookie_policy' per v1 plan specification.",
+      "instruction": "Draft a Cookie Policy based on integration_requirements. Catalog every cookie and tracking technology used: name, purpose, type (essential, functional, analytics, marketing), duration, and third-party origin. Classify each as strictly necessary vs optional. Document the legal basis for each cookie category and explain how users can manage their preferences. Store at `workspace/{goal_id}/legal/cookie-policy.md`.",
       "done_when": "cookie_policy exists."
     },
     {
@@ -5313,7 +5313,7 @@
       "output_artifacts": [
         "cookie_consent_implementation"
       ],
-      "instruction": "Execute 'cookie_consent_implementation' per v1 plan specification.",
+      "instruction": "Implement a cookie consent banner and preference management system based on cookie_policy. Build: a consent banner that appears on first visit with accept/reject options, a preference center allowing granular cookie category control, logic to only set non-essential cookies after consent, consent state persistence and API for checking consent status, and a mechanism to withdraw consent. Ensure the implementation blocks tracking scripts until consent is given. Output cookie_consent_implementation documenting the implementation.",
       "done_when": "cookie_consent_implementation exists."
     },
     {
@@ -5335,7 +5335,7 @@
       "output_artifacts": [
         "gdpr_compliance_result"
       ],
-      "instruction": "Execute 'gdpr_compliance_check' per v1 plan specification.",
+      "instruction": "Review terms_of_service, privacy_policy, and cookie_consent_implementation for GDPR compliance. Check: lawful basis documented for all data processing, right to erasure is technically implementable, data portability (export) is available, consent is freely given and withdrawable, privacy by design principles are followed, data processing agreements exist for third parties, breach notification procedures are documented, and Data Protection Officer appointment is addressed if required. Output gdpr_compliance_result with checklist status.",
       "done_when": "gdpr_compliance_result exists."
     },
     {
@@ -5353,7 +5353,7 @@
       "output_artifacts": [
         "ccpa_compliance_result"
       ],
-      "instruction": "Execute 'ccpa_compliance_check' per v1 plan specification.",
+      "instruction": "Review the privacy_policy for CCPA compliance. Verify: categories of personal information collected are disclosed, purposes of collection are stated, consumer rights are documented (right to know, delete, opt-out of sale), a 'Do Not Sell My Personal Information' mechanism is provided (if applicable), financial incentive programs are disclosed, verification procedures for consumer requests exist, and the policy has been updated within the last 12 months. Output ccpa_compliance_result with checklist status.",
       "done_when": "ccpa_compliance_result exists."
     },
     {
@@ -5371,7 +5371,7 @@
       "output_artifacts": [
         "license_audit_result"
       ],
-      "instruction": "Execute 'license_audit' per v1 plan specification.",
+      "instruction": "Audit all project dependencies for license compliance. For each dependency: identify its license type (MIT, Apache 2.0, GPL, LGPL, BSD, proprietary), check compatibility with the project's intended license, verify attribution requirements are met, flag any copyleft licenses that could affect distribution, and check for dependencies with no license (which are all-rights-reserved by default). Use a tool like license-checker or licensee. Output license_audit_result listing each dependency with its license and any conflicts.",
       "done_when": "license_audit_result exists."
     },
     {
@@ -5389,7 +5389,7 @@
       "output_artifacts": [
         "license_decision"
       ],
-      "instruction": "Execute 'product_license_selection' per v1 plan specification.",
+      "instruction": "Based on license_audit_result, recommend a license for the product. Present options based on: whether the project is open-source or proprietary, compatibility with dependency licenses, business model constraints, and desired contribution model. If copyleft dependencies conflict with the intended license, propose alternatives (replace the dependency, negotiate a commercial license, or change the project license). Trigger needs_clarification to get human decision on the final license choice. Output license_decision with the chosen license and rationale.",
       "done_when": "license_decision exists."
     },
     {
@@ -5419,7 +5419,7 @@
       "output_artifacts": [
         "legal_review_result"
       ],
-      "instruction": "Execute 'legal_review' per v1 plan specification.",
+      "instruction": "Conduct a final legal review across all legal documents: terms_of_service, privacy_policy, cookie_policy, GDPR compliance, CCPA compliance, license audit, and license decision. Verify: all documents are internally consistent, no contradictions between ToS and privacy policy, all third-party services mentioned in privacy policy are actually used, all user rights mentioned are technically implementable, and all placeholder sections are flagged for professional legal review. Trigger needs_clarification for any items requiring human/legal counsel decision. Output legal_review_result.",
       "done_when": "legal_review_result exists."
     },
     {
@@ -5440,7 +5440,7 @@
       "output_artifacts": [
         "production_compute"
       ],
-      "instruction": "Execute 'production_compute' per v1 plan specification.",
+      "instruction": "Provision production compute infrastructure based on scalability_plan. Use the `service_call` tool to set up the production environment: create compute instances or container orchestration (ECS, Kubernetes, or equivalent), configure networking (VPC, subnets, security groups), set up load balancing, and configure environment variables for production. Document all infrastructure resources created, their configuration, and access details. Output production_compute at `workspace/{goal_id}/infrastructure/production-compute.json`.",
       "done_when": "production_compute exists."
     },
     {
@@ -5458,7 +5458,7 @@
       "output_artifacts": [
         "production_database"
       ],
-      "instruction": "Execute 'production_database' per v1 plan specification.",
+      "instruction": "Provision the production database based on nfr_scalability. Use the `service_call` tool to create a managed database instance with: appropriate instance size for expected load, automated backups enabled (daily with 30-day retention), read replicas if required by scalability plan, encryption at rest enabled, connection pooling configured, and monitoring/alerting on connection count and query performance. Document connection details (without credentials). Output production_database.",
       "done_when": "production_database exists."
     },
     {
@@ -5476,7 +5476,7 @@
       "output_artifacts": [
         "production_cache"
       ],
-      "instruction": "Execute 'production_cache' per v1 plan specification.",
+      "instruction": "Provision production caching infrastructure based on caching_strategy. Use the `service_call` tool to set up a managed cache service (Redis, Memcached, or equivalent) with: appropriate memory allocation, cluster mode if needed for high availability, encryption in transit, access restricted to application security group, eviction policy configured per caching_strategy, and monitoring enabled. Document the cache endpoint and configuration. Output production_cache.",
       "done_when": "production_cache exists."
     },
     {
@@ -5494,7 +5494,7 @@
       "output_artifacts": [
         "dns_configuration"
       ],
-      "instruction": "Execute 'dns_configuration' per v1 plan specification.",
+      "instruction": "Configure DNS for the production domain based on system_architecture. Use the `service_call` tool to set up: A/AAAA records pointing to the load balancer, CNAME records for subdomains (api., app., www.), MX records for email if applicable, TXT records for domain verification (SPF, DKIM, DMARC for email security), and appropriate TTL values. Verify DNS propagation after configuration. Output dns_configuration documenting all DNS records created.",
       "done_when": "dns_configuration exists."
     },
     {
@@ -5512,7 +5512,7 @@
       "output_artifacts": [
         "ssl_configuration"
       ],
-      "instruction": "Execute 'ssl_tls_setup' per v1 plan specification.",
+      "instruction": "Set up SSL/TLS certificates for all production domains based on dns_configuration. Use the `service_call` tool to: provision certificates via Let's Encrypt or AWS ACM, configure auto-renewal, enforce HTTPS redirection at the load balancer level, configure TLS 1.2 as minimum version, enable HSTS preloading, and verify certificate chain is correct. Test with SSL Labs or equivalent to achieve an A+ rating. Output ssl_configuration documenting certificate details and SSL test results.",
       "done_when": "ssl_configuration exists."
     },
     {
@@ -5530,7 +5530,7 @@
       "output_artifacts": [
         "cdn_configuration"
       ],
-      "instruction": "Execute 'cdn_configuration' per v1 plan specification.",
+      "instruction": "Configure a CDN based on ssl_configuration. Use the `service_call` tool to set up: CDN distribution for static assets (JS, CSS, images, fonts), appropriate cache control headers and TTLs, origin configuration pointing to the application servers, custom domain and SSL certificate attachment, gzip/brotli compression enabled, cache invalidation mechanism documented, and geographic distribution configured. Output cdn_configuration documenting the CDN setup and cache rules.",
       "done_when": "cdn_configuration exists."
     },
     {
@@ -5548,7 +5548,7 @@
       "output_artifacts": [
         "email_delivery_config"
       ],
-      "instruction": "Execute 'email_delivery_setup' per v1 plan specification.",
+      "instruction": "Set up email delivery infrastructure based on email_system_design. Use the `service_call` tool to configure: a transactional email service (SendGrid, SES, Postmark, or equivalent), SPF, DKIM, and DMARC DNS records for email authentication, email templates for transactional messages, bounce and complaint handling webhooks, sending rate limits and warm-up plan, and suppression list management. Verify deliverability with a test email. Output email_delivery_config.",
       "done_when": "email_delivery_config exists."
     },
     {
@@ -5566,7 +5566,7 @@
       "output_artifacts": [
         "waf_configuration"
       ],
-      "instruction": "Execute 'waf_ddos_setup' per v1 plan specification.",
+      "instruction": "Set up Web Application Firewall and DDoS protection based on security_requirements. Use the `service_call` tool to configure: WAF rules blocking common attack patterns (OWASP rule set), DDoS protection tier appropriate for the application, IP reputation blocking, rate limiting at the edge level, bot detection rules, and geographic restrictions if applicable. Test that legitimate traffic is not blocked. Output waf_configuration documenting all rules and thresholds.",
       "done_when": "waf_configuration exists."
     },
     {
@@ -5584,7 +5584,7 @@
       "output_artifacts": [
         "rate_limit_config"
       ],
-      "instruction": "Execute 'rate_limiting_production' per v1 plan specification.",
+      "instruction": "Configure production rate limiting for all API endpoints from api_endpoints. Implement tiered rate limits: global rate limit per IP, per-user rate limits for authenticated endpoints, stricter limits for sensitive endpoints (login, password reset, signup), and higher limits for read-only endpoints. Configure appropriate response headers (X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset) and 429 Too Many Requests responses. Output rate_limit_config documenting each endpoint's rate limit.",
       "done_when": "rate_limit_config exists."
     },
     {
@@ -5602,7 +5602,7 @@
       "output_artifacts": [
         "autoscaling_config"
       ],
-      "instruction": "Execute 'autoscaling_configuration' per v1 plan specification.",
+      "instruction": "Configure autoscaling for production infrastructure based on scalability_plan. Set up: horizontal autoscaling policies based on CPU utilization, memory usage, and request count; minimum and maximum instance counts; scale-up and scale-down cooldown periods to prevent flapping; and scheduled scaling for predictable traffic patterns if applicable. Test by simulating load increases. Output autoscaling_config documenting all scaling policies and thresholds.",
       "done_when": "autoscaling_config exists."
     },
     {
@@ -5620,7 +5620,7 @@
       "output_artifacts": [
         "apm_setup"
       ],
-      "instruction": "Execute 'apm_setup' per v1 plan specification.",
+      "instruction": "Set up Application Performance Monitoring based on monitoring_strategy. Use the `service_call` tool to configure an APM tool (Datadog, New Relic, or equivalent): instrument the application code for request tracing, enable distributed tracing for microservices, configure transaction grouping and naming, set performance baselines from Phase 9 results, and set up slow-transaction alerts. Verify traces appear in the dashboard. Output apm_setup documenting the APM configuration.",
       "done_when": "apm_setup exists."
     },
     {
@@ -5640,7 +5640,7 @@
       "output_artifacts": [
         "infra_monitoring"
       ],
-      "instruction": "Execute 'infrastructure_monitoring' per v1 plan specification.",
+      "instruction": "Set up infrastructure monitoring for production_compute, production_database, and production_cache. Configure: CPU, memory, disk, and network metrics collection for all instances; database-specific metrics (connections, query time, replication lag, dead tuples); cache metrics (hit rate, eviction rate, memory usage); and container metrics (restart count, OOM kills) if applicable. Create a unified infrastructure dashboard. Output infra_monitoring documenting all monitored resources and metrics.",
       "done_when": "infra_monitoring exists."
     },
     {
@@ -5658,7 +5658,7 @@
       "output_artifacts": [
         "error_tracking_setup"
       ],
-      "instruction": "Execute 'error_tracking_setup' per v1 plan specification.",
+      "instruction": "Set up error tracking based on error_handling_strategy. Configure a service like Sentry, Bugsnag, or Rollbar: instrument the application to capture unhandled exceptions with full stack traces, configure source map upload for frontend errors, set up error grouping and deduplication, configure alert thresholds (new error types, error rate spikes), and set up integrations for notifications. Verify errors are captured by triggering a test exception. Output error_tracking_setup.",
       "done_when": "error_tracking_setup exists."
     },
     {
@@ -5676,7 +5676,7 @@
       "output_artifacts": [
         "log_aggregation_setup"
       ],
-      "instruction": "Execute 'log_aggregation_setup' per v1 plan specification.",
+      "instruction": "Set up centralized log aggregation based on logging_strategy. Configure a service like ELK Stack, CloudWatch Logs, or Datadog Logs: ship application logs from all instances, configure structured log parsing (JSON format), set up log retention policies (30-day hot storage, 1-year cold), create saved searches for common debugging queries, and verify sensitive data is not present in logs (per step 10.14). Output log_aggregation_setup documenting the configuration.",
       "done_when": "log_aggregation_setup exists."
     },
     {
@@ -5694,7 +5694,7 @@
       "output_artifacts": [
         "uptime_monitoring"
       ],
-      "instruction": "Execute 'uptime_monitoring' per v1 plan specification.",
+      "instruction": "Set up uptime monitoring for all production endpoints based on nfr_availability. Configure synthetic monitoring (Pingdom, UptimeRobot, or equivalent) to: ping health check endpoints every 1-5 minutes from multiple geographic locations, verify SSL certificate validity and expiration warnings, monitor response time degradation, alert on downtime via email/Slack/PagerDuty, and publish a public status page if required. Output uptime_monitoring documenting all monitored endpoints and alert configurations.",
       "done_when": "uptime_monitoring exists."
     },
     {
@@ -5716,7 +5716,7 @@
       "output_artifacts": [
         "alert_rules"
       ],
-      "instruction": "Execute 'alert_rules_configuration' per v1 plan specification.",
+      "instruction": "Configure alerting rules across all monitoring systems based on monitoring_strategy. Define alerts for: error rate exceeding threshold (e.g., >1% 5xx responses), response time degradation (p95 > 2x baseline), infrastructure resource exhaustion (CPU >80%, memory >85%, disk >90%), database connection pool exhaustion, cache hit rate drop, certificate expiration approaching, and uptime check failures. Route alerts to appropriate channels with severity-based escalation. Output alert_rules.",
       "done_when": "alert_rules exists."
     },
     {
@@ -5734,7 +5734,7 @@
       "output_artifacts": [
         "operational_dashboard"
       ],
-      "instruction": "Execute 'operational_dashboard' per v1 plan specification.",
+      "instruction": "Build an operational dashboard combining key metrics from all monitoring sources. Include panels for: real-time request rate and error rate, response time percentiles (p50, p95, p99), active users and concurrent sessions, infrastructure resource utilization, database query performance, cache hit rates, deployment markers, and business metrics from analytics. Use Grafana, Datadog dashboards, or the monitoring tool's native dashboarding. Output operational_dashboard with the dashboard URL/config.",
       "done_when": "operational_dashboard exists."
     },
     {
@@ -5752,7 +5752,7 @@
       "output_artifacts": [
         "analytics_integration"
       ],
-      "instruction": "Execute 'analytics_integration' per v1 plan specification.",
+      "instruction": "Integrate analytics tracking based on success_metrics. Implement: a product analytics tool (Mixpanel, Amplitude, PostHog, or GA4), user identification and property setting, page view tracking for all routes, and the analytics SDK initialization with appropriate configuration. Ensure analytics respects cookie consent preferences from step 12.4. Verify events appear in the analytics dashboard. Output analytics_integration documenting the integration.",
       "done_when": "analytics_integration exists."
     },
     {
@@ -5770,7 +5770,7 @@
       "output_artifacts": [
         "event_tracking"
       ],
-      "instruction": "Execute 'event_tracking_implementation' per v1 plan specification.",
+      "instruction": "Implement event tracking for all key user actions defined in success_metrics. Track: signup completion, onboarding step progression, core feature usage events, conversion events (upgrade, purchase), engagement events (return visits, feature discovery), and error events visible to users. For each event, include relevant properties (event name, user ID, timestamp, contextual data). Verify events fire correctly in staging. Output event_tracking documenting each tracked event.",
       "done_when": "event_tracking exists."
     },
     {
@@ -5788,7 +5788,7 @@
       "output_artifacts": [
         "analytics_dashboards"
       ],
-      "instruction": "Execute 'analytics_funnels' per v1 plan specification.",
+      "instruction": "Configure analytics funnels and dashboards based on success_metrics. Create: conversion funnels for key user journeys (signup-to-activation, trial-to-paid), retention cohort analysis, feature adoption tracking, and KPI dashboard showing all success_metrics in real-time. Set up automated reports for weekly metric summaries. Output analytics_dashboards documenting each funnel, dashboard, and automated report created.",
       "done_when": "analytics_dashboards exists."
     },
     {
@@ -5806,7 +5806,7 @@
       "output_artifacts": [
         "feature_flags_production"
       ],
-      "instruction": "Execute 'feature_flags_production' per v1 plan specification.",
+      "instruction": "Configure feature flags for production deployment based on mvp_scope. Set up a feature flag system (LaunchDarkly, Unleash, or environment-based flags): create flags for each major feature allowing independent enable/disable, configure percentage rollout capability for gradual releases, set up user segment targeting for beta features, and document the flag management process. Verify flags work in staging. Output feature_flags_production documenting all flags and their default states.",
       "done_when": "feature_flags_production exists."
     },
     {
@@ -5824,7 +5824,7 @@
       "output_artifacts": [
         "production_migration_result"
       ],
-      "instruction": "Execute 'production_migration' per v1 plan specification.",
+      "instruction": "Run database migrations against the production database from database_schema. Use the `service_call` tool to: execute all pending migrations in order, verify each migration completes without errors, confirm the production schema matches the expected state, run post-migration data integrity checks, and document the migration execution log. If migrations involve data transformations, verify data correctness after migration. Output production_migration_result.",
       "done_when": "production_migration_result exists."
     },
     {
@@ -5842,7 +5842,7 @@
       "output_artifacts": [
         "production_seed_result"
       ],
-      "instruction": "Execute 'production_seed_data' per v1 plan specification.",
+      "instruction": "Seed the production database with required initial data from database_schema. Insert: system configuration values, default roles and permissions, admin user account (with secure credentials stored in secrets manager), lookup table data (countries, categories, etc.), and any required reference data. Do NOT seed test data or dummy data. Verify all seeds were applied correctly by querying key tables. Output production_seed_result documenting what was seeded.",
       "done_when": "production_seed_result exists."
     },
     {
@@ -5860,7 +5860,7 @@
       "output_artifacts": [
         "final_regression_results"
       ],
-      "instruction": "Execute 'staging_final_regression' per v1 plan specification.",
+      "instruction": "Run a full regression test suite against the staging environment with production-like configuration and feature flags enabled. Execute: all unit tests, integration tests, E2E tests, and smoke tests from the implementation_backlog test artifacts. Verify all critical user flows work end-to-end with production feature flag states. Output final_regression_results with pass/fail counts and any failures requiring attention before launch.",
       "done_when": "final_regression_results exists."
     },
     {
@@ -5882,7 +5882,7 @@
       "output_artifacts": [
         "production_performance_results"
       ],
-      "instruction": "Execute 'production_performance_test' per v1 plan specification.",
+      "instruction": "Run performance tests against production infrastructure using performance_test_scripts with production-scale data. Compare results against nfr_performance targets and the baseline_performance_results from Phase 9. Verify that production infrastructure meets all performance SLAs: response time targets, throughput requirements, and concurrent user capacity. Identify any production-specific bottlenecks not seen in staging. Output production_performance_results.",
       "done_when": "production_performance_results exists."
     },
     {
@@ -5901,7 +5901,7 @@
       "output_artifacts": [
         "production_security_scan"
       ],
-      "instruction": "Execute 'production_security_scan' per v1 plan specification.",
+      "instruction": "Run a final security scan against the production environment. Verify: SSL/TLS configuration scores A+ on SSL Labs, security headers are correctly set in production, WAF rules are active and blocking test payloads, rate limiting is enforced, no development/debug endpoints are exposed, error pages do not leak sensitive information, and all findings from the Phase 10 security audit remain resolved. Output production_security_scan documenting results and confirming production security posture.",
       "done_when": "production_security_scan exists."
     },
     {
@@ -5919,7 +5919,7 @@
       "output_artifacts": [
         "seo_implementation"
       ],
-      "instruction": "Execute 'seo_implementation' per v1 plan specification.",
+      "instruction": "Implement SEO optimizations based on information_architecture. Add: unique title tags and meta descriptions for all public pages, Open Graph and Twitter Card meta tags, structured data (JSON-LD) for relevant content types, canonical URLs to prevent duplicate content, XML sitemap generation, robots.txt configuration, semantic HTML5 elements (header, nav, main, article), and descriptive alt text for all images. Verify with Google's Rich Results Test. Output seo_implementation.",
       "done_when": "seo_implementation exists."
     },
     {
@@ -5937,7 +5937,7 @@
       "output_artifacts": [
         "social_preview_results"
       ],
-      "instruction": "Execute 'social_preview_test' per v1 plan specification.",
+      "instruction": "Test social media sharing previews for all public pages from seo_implementation. Verify: Open Graph tags render correctly on Facebook, Twitter, and LinkedIn; preview images are the correct size and not cropped unexpectedly; titles and descriptions are compelling and within character limits; URLs resolve correctly when shared; and the favicon appears correctly. Use Facebook Sharing Debugger and Twitter Card Validator. Output social_preview_results with screenshots from each platform.",
       "done_when": "social_preview_results exists."
     },
     {
@@ -5955,7 +5955,7 @@
       "output_artifacts": [
         "email_deliverability_results"
       ],
-      "instruction": "Execute 'email_deliverability_test' per v1 plan specification.",
+      "instruction": "Test email deliverability for all transactional email types from email_delivery_config. Send test emails to major providers (Gmail, Outlook, Yahoo) and verify: emails arrive in inbox (not spam), SPF/DKIM/DMARC authentication passes (check email headers), HTML rendering is correct across email clients, links in emails work correctly, unsubscribe links function, and bounce handling processes returned emails correctly. Output email_deliverability_results documenting results per email type and provider.",
       "done_when": "email_deliverability_results exists."
     },
     {
@@ -5974,7 +5974,7 @@
       "output_artifacts": [
         "payment_flow_results"
       ],
-      "instruction": "Execute 'payment_flow_test' per v1 plan specification.",
+      "instruction": "Test the complete payment flow end-to-end based on monetization_strategy. In the payment provider's test/sandbox mode, verify: checkout flow completes successfully, payment confirmations are received and processed, subscription creation and management work, upgrade/downgrade paths function correctly, cancellation and refund flows work, webhook processing handles all payment events, and receipts/invoices are generated correctly. Trigger needs_clarification for any payment configuration requiring human credentials. Output payment_flow_results.",
       "done_when": "payment_flow_results exists."
     },
     {
@@ -5992,7 +5992,7 @@
       "output_artifacts": [
         "backup_verification"
       ],
-      "instruction": "Execute 'backup_verification' per v1 plan specification.",
+      "instruction": "Verify backup and recovery procedures from disaster_recovery_plan. Use the `service_call` tool to: trigger a manual database backup, restore the backup to a separate test instance, verify data integrity of the restored database by comparing row counts and checksums on key tables, measure restore time against the RTO (Recovery Time Objective) target, and verify backup encryption is working. Document the tested recovery procedure. Output backup_verification.",
       "done_when": "backup_verification exists."
     },
     {
@@ -6010,7 +6010,7 @@
       "output_artifacts": [
         "rollback_verification"
       ],
-      "instruction": "Execute 'rollback_verification' per v1 plan specification.",
+      "instruction": "Verify the rollback procedure from cd_production_config. Use the `service_call` tool to: deploy the current version to staging, deploy a simulated broken version, execute the rollback procedure to return to the previous version, verify the application is functional after rollback, measure rollback time, and confirm that database migrations can be reversed if needed. Document the exact rollback commands and procedure. Output rollback_verification.",
       "done_when": "rollback_verification exists."
     },
     {
@@ -6039,7 +6039,7 @@
       "output_artifacts": [
         "launch_go_no_go"
       ],
-      "instruction": "Execute 'launch_go_no_go' per v1 plan specification.",
+      "instruction": "Compile all pre-launch verification results into a go/no-go assessment. Review: final_regression_results (all tests passing?), production_performance_results (all SLAs met?), production_security_scan (no critical vulnerabilities?), email_deliverability_results (emails reaching inbox?), backup_verification (recovery works?), and rollback_verification (can revert if needed?). Create a go/no-go checklist with status for each criterion. Trigger needs_clarification to present the assessment to the human for final launch approval. Output launch_go_no_go.",
       "done_when": "launch_go_no_go exists."
     },
     {
@@ -6057,7 +6057,7 @@
       "output_artifacts": [
         "launch_checklist"
       ],
-      "instruction": "Execute 'launch_checklist' per v1 plan specification.",
+      "instruction": "Create a detailed launch checklist based on launch_go_no_go approval. Include time-sequenced steps: pre-launch (final backup, enable maintenance mode, deploy, run migrations, disable maintenance mode), during-launch (smoke test, monitor error rates, verify all integrations), post-launch (remove feature flags for GA features, enable analytics, send launch emails, post announcements). Assign each step a responsible agent and estimated duration. Output launch_checklist.",
       "done_when": "launch_checklist exists."
     },
     {
@@ -6075,7 +6075,7 @@
       "output_artifacts": [
         "checklist_review"
       ],
-      "instruction": "Execute 'launch_checklist_review' per v1 plan specification.",
+      "instruction": "Review the launch_checklist for completeness and correctness. Verify: all steps have clear success criteria, rollback triggers are defined (e.g., error rate >5% for 5 minutes triggers rollback), timing is realistic, dependencies between steps are correct, communication plan is included (who gets notified at each stage), and nothing from the pre-launch phases was missed. Output checklist_review with any additions or corrections needed.",
       "done_when": "checklist_review exists."
     },
     {
@@ -6093,7 +6093,7 @@
       "output_artifacts": [
         "launch_timing"
       ],
-      "instruction": "Execute 'launch_timing' per v1 plan specification.",
+      "instruction": "Determine the optimal launch timing based on checklist_review. Consider: target audience timezone distribution, avoid launching on Fridays or before holidays, ensure team availability for monitoring during and after launch, allow sufficient time for monitoring before end of business day, and coordinate with any external dependencies (payment processor go-live, DNS propagation). Trigger needs_clarification to confirm the launch date and time with the human. Output launch_timing with the confirmed schedule.",
       "done_when": "launch_timing exists."
     },
     {
@@ -6111,7 +6111,7 @@
       "output_artifacts": [
         "payment_live"
       ],
-      "instruction": "Execute 'execute_launch_payment' per v1 plan specification.",
+      "instruction": "Switch the payment system from test/sandbox mode to live production mode based on monetization_strategy. Use the `service_call` tool to: update payment provider API keys to production keys, verify webhook endpoints are configured for production events, confirm pricing and subscription plans are correctly configured, enable live payment processing, and perform a real minimal-amount test transaction if possible. Output payment_live confirming the payment system is live.",
       "done_when": "payment_live exists."
     },
     {
@@ -6129,7 +6129,7 @@
       "output_artifacts": [
         "launch_enabled"
       ],
-      "instruction": "Execute 'execute_launch_enable' per v1 plan specification.",
+      "instruction": "Execute the production launch following launch_checklist. Use the `deploy` tool to: trigger the production deployment pipeline, run database migrations, verify health checks pass, execute smoke tests against production, confirm all integrations are functional (payments, email, analytics, monitoring), and update the deployment status. Monitor error rates and response times for the first 30 minutes. Output launch_enabled confirming the application is live and stable.",
       "done_when": "launch_enabled exists."
     },
     {
@@ -6147,7 +6147,7 @@
       "output_artifacts": [
         "launch_monitoring_log"
       ],
-      "instruction": "Execute 'launch_monitoring' per v1 plan specification.",
+      "instruction": "Monitor the launched application intensively during the first critical hours. Watch: real-time error rates and new error types in error tracking, response time percentiles in APM, infrastructure resource utilization, database performance metrics, user signup and activation rates, and any alerts triggered. Log all observations including anomalies, even if they resolve on their own. Output launch_monitoring_log with timestamped observations for the monitoring period.",
       "done_when": "launch_monitoring_log exists."
     },
     {
@@ -6165,7 +6165,7 @@
       "output_artifacts": [
         "stability_assessment"
       ],
-      "instruction": "Execute 'launch_stability_assessment' per v1 plan specification.",
+      "instruction": "Analyze launch_monitoring_log to assess post-launch stability. Evaluate: error rate trend (increasing, stable, or decreasing), response time consistency, infrastructure headroom (are we close to scaling thresholds?), user behavior patterns (any unexpected flows?), and any incidents that occurred. Classify overall launch stability as: green (all metrics nominal), yellow (minor issues that need attention), or red (critical issues requiring immediate action). Trigger needs_clarification if stability is yellow or red. Output stability_assessment.",
       "done_when": "stability_assessment exists."
     },
     {
@@ -6183,7 +6183,7 @@
       "output_artifacts": [
         "marketing_site_live"
       ],
-      "instruction": "Execute 'marketing_site_publish' per v1 plan specification.",
+      "instruction": "Publish the marketing/landing site to production based on stability_assessment confirmation. Use the `deploy` tool to: deploy the marketing site to its production domain, verify all links point to the live application, confirm signup flow from marketing site to app works end-to-end, verify analytics tracking on the marketing site is active, and confirm social sharing previews work. Output marketing_site_live confirming the marketing site is live and functional.",
       "done_when": "marketing_site_live exists."
     },
     {
@@ -6202,7 +6202,7 @@
       "output_artifacts": [
         "product_hunt_launch"
       ],
-      "instruction": "Execute 'product_hunt_launch' per v1 plan specification.",
+      "instruction": "Draft the Product Hunt launch post based on product_vision and unique_selling_proposition. Write: a compelling tagline (under 60 characters), a concise description (under 260 characters), a detailed first comment explaining the product story and what makes it unique, suggested categories/topics for listing, and a list of key features to highlight. Format ready for submission. Output product_hunt_launch at `workspace/{goal_id}/launch/product-hunt-draft.md`.",
       "done_when": "product_hunt_launch exists."
     },
     {
@@ -6220,7 +6220,7 @@
       "output_artifacts": [
         "social_launch_posts"
       ],
-      "instruction": "Execute 'social_media_launch' per v1 plan specification.",
+      "instruction": "Draft social media launch posts for Twitter/X, LinkedIn, and other relevant platforms based on product_vision. For each platform: write platform-appropriate copy (respecting character limits and tone), include relevant hashtags, suggest optimal posting times, and draft 3-5 follow-up engagement posts for the first week. Include a launch thread concept for Twitter. Output social_launch_posts at `workspace/{goal_id}/launch/social-media-posts.md`.",
       "done_when": "social_launch_posts exists."
     },
     {
@@ -6238,7 +6238,7 @@
       "output_artifacts": [
         "launch_email"
       ],
-      "instruction": "Execute 'email_launch' per v1 plan specification.",
+      "instruction": "Draft the launch email for the waitlist/mailing list based on product_vision. Write: a compelling subject line (and A/B test variant), preview text, email body with product introduction and key value propositions, clear CTA button linking to the product, and an unsubscribe link. Format as HTML email template compatible with the email delivery service. Output launch_email at `workspace/{goal_id}/launch/launch-email.html`.",
       "done_when": "launch_email exists."
     },
     {
@@ -6256,7 +6256,7 @@
       "output_artifacts": [
         "app_store_submission"
       ],
-      "instruction": "Execute 'app_store_submission' per v1 plan specification.",
+      "instruction": "Prepare and submit app store listing materials based on platform_requirements. For each app store (iOS App Store, Google Play): write the app title, subtitle, description, keywords, and category selection; prepare screenshot descriptions for required device sizes; write the privacy policy URL and data safety questionnaire responses; and document the submission process and review timeline. Trigger needs_clarification for developer account credentials and signing certificates. Output app_store_submission.",
       "done_when": "app_store_submission exists."
     },
     {
@@ -6277,7 +6277,7 @@
       "output_artifacts": [
         "launch_retrospective"
       ],
-      "instruction": "Execute 'launch_retrospective' per v1 plan specification.",
+      "instruction": "Conduct a launch retrospective analyzing the entire launch process. Review: launch_monitoring_log for what went well and what didn't, analytics_dashboards for initial user metrics, time from launch to first user signup, any incidents or near-misses, accuracy of pre-launch testing (did it catch real issues?), and effectiveness of the monitoring setup. Document lessons learned and improvements for future releases. Output launch_retrospective at `workspace/{goal_id}/launch/retrospective.md`.",
       "done_when": "launch_retrospective exists."
     },
     {
@@ -6295,7 +6295,7 @@
       "output_artifacts": [
         "error_monitoring_log"
       ],
-      "instruction": "Execute 'post_launch_error_monitoring' per v1 plan specification.",
+      "instruction": "Monitor production error tracking from error_tracking_setup continuously. Review all new errors and exceptions: categorize by severity (P0 crash, P1 data loss, P2 feature broken, P3 cosmetic), identify patterns (do errors correlate with specific user actions, browsers, or API endpoints?), track error rate trends, and escalate P0/P1 issues immediately. Produce an error_monitoring_log summarizing: new errors found, recurring errors, resolved errors, and current error rate baseline.",
       "done_when": "error_monitoring_log exists.",
       "type": "recurring",
       "trigger": "Continuous during first week, then triggered by alerts"
@@ -6316,7 +6316,7 @@
       "output_artifacts": [
         "performance_report"
       ],
-      "instruction": "Execute 'post_launch_performance_monitoring' per v1 plan specification.",
+      "instruction": "Review production performance metrics from apm_setup against nfr_performance targets. Analyze: response time trends (are they degrading over time?), throughput capacity vs actual traffic, database query performance under real load, cache hit rates, memory usage patterns (check for leaks), and resource utilization forecasts. Flag any metrics trending toward SLA breach. Produce performance_report with current state, trends, and any action items.",
       "done_when": "performance_report exists.",
       "type": "recurring",
       "trigger": "Daily during first week, weekly thereafter"
@@ -6336,7 +6336,7 @@
       "output_artifacts": [
         "feedback_system"
       ],
-      "instruction": "Execute 'feedback_collection_implementation' per v1 plan specification.",
+      "instruction": "Implement a user feedback collection system. Add: an in-app feedback widget (rate experience, report bugs, suggest features) accessible from all pages, a feedback API endpoint that stores submissions with context (current page, user segment, browser), NPS or satisfaction survey triggered after key milestones, and a feedback admin view for reviewing and categorizing submissions. Store feedback data in the database. Output feedback_system documenting the implementation.",
       "done_when": "feedback_system exists."
     },
     {
@@ -6354,7 +6354,7 @@
       "output_artifacts": [
         "feedback_analysis_report"
       ],
-      "instruction": "Execute 'feedback_analysis' per v1 plan specification.",
+      "instruction": "Analyze collected user feedback from feedback_system. Categorize feedback into: bug reports, feature requests, usability complaints, positive feedback, and support questions. For each category: count occurrences, identify patterns and themes, extract specific user quotes, and note the user segments providing feedback. Produce feedback_analysis_report with categorized insights and trending topics.",
       "done_when": "feedback_analysis_report exists.",
       "type": "recurring",
       "trigger": "Weekly"
@@ -6375,7 +6375,7 @@
       "output_artifacts": [
         "daily_health_report"
       ],
-      "instruction": "Execute 'daily_health_report' per v1 plan specification.",
+      "instruction": "Generate a daily health report summarizing system status from monitoring_strategy and analytics_dashboards. Include: uptime percentage for the past 24 hours, error rate and new error count, response time p95, active users and new signups, key business metric movements, infrastructure resource utilization, and any incidents or alerts triggered. Format as a concise summary suitable for stakeholder communication. Output daily_health_report.",
       "done_when": "daily_health_report exists.",
       "type": "recurring",
       "trigger": "Daily during first week"
@@ -6395,7 +6395,7 @@
       "output_artifacts": [
         "incident_report"
       ],
-      "instruction": "Execute 'incident_response' per v1 plan specification.",
+      "instruction": "Respond to monitoring alerts following incident_playbook procedures. For each incident: classify severity (P0-P3), acknowledge the alert, investigate root cause using logs, traces, and metrics, apply the fix (hotfix, config change, or rollback), verify resolution, and document the incident. Write an incident report covering: timeline, root cause, impact (users affected, duration), resolution steps, and preventive measures. Output incident_report.",
       "done_when": "incident_report exists.",
       "type": "recurring",
       "trigger": "Triggered by monitoring alerts"
@@ -6416,7 +6416,7 @@
       "output_artifacts": [
         "weekly_analytics"
       ],
-      "instruction": "Execute 'weekly_analytics_review' per v1 plan specification.",
+      "instruction": "Review product analytics from success_metrics and analytics_dashboards for the past week. Analyze: user acquisition (new signups, traffic sources, conversion rates), engagement (DAU/WAU/MAU, session duration, feature usage), retention (D1, D7, D30 cohorts), conversion funnel completion rates, and business metrics (revenue if applicable). Compare against targets set in success_metrics. Produce weekly_analytics with data, insights, and recommended actions.",
       "done_when": "weekly_analytics exists.",
       "type": "recurring",
       "trigger": "Weekly"
@@ -6436,7 +6436,7 @@
       "output_artifacts": [
         "weekly_summary_report"
       ],
-      "instruction": "Execute 'weekly_summary' per v1 plan specification.",
+      "instruction": "Write a weekly summary report combining weekly_analytics with other operational data. Include: key metric highlights with week-over-week comparisons, notable user feedback themes, bugs fixed and outstanding, infrastructure health summary, upcoming planned work, and decisions or approvals needed from stakeholders. Format for stakeholder consumption (non-technical, focused on outcomes). Trigger needs_clarification if any decisions need human input. Output weekly_summary_report.",
       "done_when": "weekly_summary_report exists.",
       "type": "recurring",
       "trigger": "Weekly, after analytics review"
@@ -6456,7 +6456,7 @@
       "output_artifacts": [
         "weekly_feedback_report"
       ],
-      "instruction": "Execute 'user_feedback_analysis' per v1 plan specification.",
+      "instruction": "Perform deep analysis on feedback_analysis_report to identify actionable patterns. Segment feedback by user cohort (new vs returning, free vs paid, power users vs casual). Identify: the most requested features by segment, the most common pain points, churn risk indicators, upsell opportunities, and usability improvements that would improve retention. Produce weekly_feedback_report with prioritized recommendations backed by data.",
       "done_when": "weekly_feedback_report exists.",
       "type": "recurring",
       "trigger": "Weekly"
@@ -6476,7 +6476,7 @@
       "output_artifacts": [
         "feature_request_backlog"
       ],
-      "instruction": "Execute 'feature_request_prioritization' per v1 plan specification.",
+      "instruction": "Prioritize feature requests from weekly_feedback_report into a ranked backlog. Score each request using: frequency of request, strategic alignment with product vision, estimated implementation effort (S/M/L/XL), expected user impact, revenue potential, and technical feasibility. Apply an ICE (Impact, Confidence, Ease) or RICE scoring model. Produce feature_request_backlog as a ranked list with scores, estimated effort, and recommended sprint assignment.",
       "done_when": "feature_request_backlog exists.",
       "type": "recurring",
       "trigger": "Weekly, after feedback analysis"
@@ -6498,7 +6498,7 @@
       "output_artifacts": [
         "bug_triage_report"
       ],
-      "instruction": "Execute 'bug_triage' per v1 plan specification.",
+      "instruction": "Triage bugs from feedback_analysis_report and error_monitoring_log. For each bug: assign severity (P0-P3), determine affected user count, identify reproduction steps, assess root cause complexity, and assign to a sprint based on severity. P0 bugs should be flagged for immediate hotfix. Group related bugs. Produce bug_triage_report as a prioritized list with severity, affected users, estimated fix time, and sprint assignment.",
       "done_when": "bug_triage_report exists.",
       "type": "recurring",
       "trigger": "Weekly"
@@ -6518,7 +6518,7 @@
       "output_artifacts": [
         "bug_fix_log"
       ],
-      "instruction": "Execute 'bug_fixing' per v1 plan specification.",
+      "instruction": "Fix bugs from bug_triage_report in priority order. For each bug: reproduce the issue, identify the root cause in code, implement the fix following project conventions, write or update tests to prevent regression, verify the fix resolves the issue, and document the resolution. Produce bug_fix_log listing each bug fixed with: bug ID, root cause, fix description, tests added, and verification status.",
       "done_when": "bug_fix_log exists.",
       "type": "recurring",
       "trigger": "Continuous, based on triage priority"
@@ -6538,7 +6538,7 @@
       "output_artifacts": [
         "dependency_update_log"
       ],
-      "instruction": "Execute 'dependency_updates' per v1 plan specification.",
+      "instruction": "Run dependency update checks and apply safe updates. Use the package manager's update tools to: identify outdated dependencies, categorize updates as patch/minor/major, apply all patch updates automatically, evaluate minor updates for breaking changes before applying, flag major updates for manual review, run the full test suite after each batch of updates, and scan for new vulnerabilities. Produce dependency_update_log listing each dependency updated and any issues encountered.",
       "done_when": "dependency_update_log exists.",
       "type": "recurring",
       "trigger": "Monthly"
@@ -6558,7 +6558,7 @@
       "output_artifacts": [
         "database_maintenance_log"
       ],
-      "instruction": "Execute 'database_maintenance' per v1 plan specification.",
+      "instruction": "Perform monthly database maintenance from database_schema. Execute: analyze/vacuum operations to update query planner statistics, review slow query logs and add missing indexes, check table and index bloat and run cleanup if needed, verify backup integrity by restoring latest backup to test instance, review storage growth trends and forecast capacity needs, and archive old data per retention policies. Produce database_maintenance_log documenting actions taken and health metrics.",
       "done_when": "database_maintenance_log exists.",
       "type": "recurring",
       "trigger": "Monthly"
@@ -6578,7 +6578,7 @@
       "output_artifacts": [
         "infrastructure_cost_report"
       ],
-      "instruction": "Execute 'infrastructure_cost_review' per v1 plan specification.",
+      "instruction": "Review infrastructure costs from production_compute for the past month. Analyze: compute costs by service, database costs (storage, I/O, backup), network/bandwidth costs, CDN costs, monitoring/logging tool costs, and any unexpected cost spikes. Compare against budget/projections. Identify optimization opportunities: right-sizing instances, reserved instance commitments, unused resource cleanup, and storage tier optimization. Trigger needs_clarification if cost exceeds budget thresholds. Produce infrastructure_cost_report.",
       "done_when": "infrastructure_cost_report exists.",
       "type": "recurring",
       "trigger": "Monthly"
@@ -6600,7 +6600,7 @@
       "output_artifacts": [
         "performance_optimization_log"
       ],
-      "instruction": "Execute 'performance_optimization' per v1 plan specification.",
+      "instruction": "Implement performance optimizations based on performance_report and database_maintenance_log findings. Apply: database query optimizations (add indexes, rewrite slow queries, implement query caching), application-level caching for frequently accessed data, API response optimization (reduce payload sizes, implement pagination), frontend bundle size reduction, and image/asset optimization. Verify each optimization with before/after metrics. Produce performance_optimization_log.",
       "done_when": "performance_optimization_log exists.",
       "type": "recurring",
       "trigger": "Monthly"
@@ -6620,7 +6620,7 @@
       "output_artifacts": [
         "technical_debt_register"
       ],
-      "instruction": "Execute 'technical_debt_tracking' per v1 plan specification.",
+      "instruction": "Track and catalog technical debt from implementation_backlog and codebase. Identify: TODO/FIXME/HACK comments in code, deprecated API usage, outdated patterns that should be refactored, test coverage gaps in critical modules, known architecture limitations, and areas where shortcuts were taken during implementation. Score each item by risk (likelihood of causing issues) and effort to resolve. Produce technical_debt_register as a prioritized list for inclusion in sprint planning.",
       "done_when": "technical_debt_register exists.",
       "type": "recurring",
       "trigger": "Monthly"
@@ -6640,7 +6640,7 @@
       "output_artifacts": [
         "security_patch_log"
       ],
-      "instruction": "Execute 'security_patching' per v1 plan specification.",
+      "instruction": "Review security advisories and apply patches from security_audit_report. Check: dependency vulnerability databases for new CVEs affecting project dependencies, framework security announcements, infrastructure platform security bulletins, and SSL certificate expiration status. For critical vulnerabilities: apply patches immediately, test for regressions, and deploy hotfixes. For non-critical: add to next sprint. Produce security_patch_log documenting each advisory reviewed and action taken.",
       "done_when": "security_patch_log exists.",
       "type": "recurring",
       "trigger": "Weekly monitoring, immediate for critical"
@@ -6660,7 +6660,7 @@
       "output_artifacts": [
         "feature_specification"
       ],
-      "instruction": "Execute 'new_feature_specification' per v1 plan specification.",
+      "instruction": "Write a feature specification for the highest-priority item from feature_request_backlog. Document: problem statement (what user need this addresses), target user persona, proposed solution with user flow description, acceptance criteria (specific, testable requirements), out-of-scope items for this iteration, technical considerations and dependencies, and estimated effort breakdown by task. Output feature_specification at `workspace/{goal_id}/features/`.",
       "done_when": "feature_specification exists."
     },
     {
@@ -6679,7 +6679,7 @@
       "output_artifacts": [
         "feature_design"
       ],
-      "instruction": "Execute 'new_feature_design' per v1 plan specification.",
+      "instruction": "Create the UX/UI design for the feature in feature_specification, building on the existing design_handoff patterns. Document: wireframes or detailed descriptions of new screens/components, interaction patterns (hover states, transitions, loading states), responsive behavior across breakpoints, component reuse from existing design system, new design tokens needed (if any), and accessibility considerations. Output feature_design.",
       "done_when": "feature_design exists."
     },
     {
@@ -6698,7 +6698,7 @@
       "output_artifacts": [
         "design_review"
       ],
-      "instruction": "Execute 'new_feature_design_review' per v1 plan specification.",
+      "instruction": "Review feature_design against design_handoff standards and the existing application. Check: visual consistency with existing UI, interaction pattern consistency, accessibility compliance (WCAG 2.1 AA), responsive design completeness, edge case handling (empty states, error states, loading states), and technical feasibility. Trigger needs_clarification if the design requires product decisions not covered by the specification. Output design_review with approved/changes-requested status.",
       "done_when": "design_review exists."
     },
     {
@@ -6717,7 +6717,7 @@
       "output_artifacts": [
         "feature_implementation"
       ],
-      "instruction": "Execute 'new_feature_implementation' per v1 plan specification.",
+      "instruction": "Implement the feature from feature_design following the project's implementation patterns from implementation_context. Create: necessary database migrations, API endpoints, frontend components, tests (unit, integration, and E2E), and documentation updates. Follow the project's branching strategy, code style, and review process. Ensure the feature is behind a feature flag for safe rollout. Output feature_implementation listing all files created/modified.",
       "done_when": "feature_implementation exists."
     },
     {
@@ -6737,7 +6737,7 @@
       "output_artifacts": [
         "release_plan"
       ],
-      "instruction": "Execute 'release_planning' per v1 plan specification.",
+      "instruction": "Plan the next release including feature_implementation and bug_fix_log changes. Define: release version number (following semver), included changes (features, fixes, improvements), release timeline (code freeze, QA, deploy dates), rollout strategy (percentage rollout, canary, or full release), rollback criteria, and team responsibilities. Verify all included changes have passing tests. Output release_plan.",
       "done_when": "release_plan exists."
     },
     {
@@ -6755,7 +6755,7 @@
       "output_artifacts": [
         "release_notes"
       ],
-      "instruction": "Execute 'release_notes' per v1 plan specification.",
+      "instruction": "Write release notes for the upcoming release from release_plan. Include: version number and release date, new features with user-facing descriptions, bug fixes with brief descriptions, known issues and workarounds, breaking changes (if any) with migration instructions, and acknowledgments. Write two versions: a technical changelog for developers and a user-facing announcement for end users. Output release_notes at `workspace/{goal_id}/releases/`.",
       "done_when": "release_notes exists."
     },
     {
@@ -6774,7 +6774,7 @@
       "output_artifacts": [
         "release_deployment_log"
       ],
-      "instruction": "Execute 'release_deployment' per v1 plan specification.",
+      "instruction": "Execute the release deployment following release_plan and cd_production_config. Use the `deploy` tool to: trigger the production deployment pipeline, run pre-deployment health checks, execute database migrations, deploy the new version with the configured rollout strategy, verify health checks pass post-deployment, run post-deployment smoke tests, and monitor error rates for the first 30 minutes. Output release_deployment_log with timestamped deployment steps and verification results.",
       "done_when": "release_deployment_log exists."
     },
     {
@@ -6793,7 +6793,7 @@
       "output_artifacts": [
         "release_announcement"
       ],
-      "instruction": "Execute 'release_announcement' per v1 plan specification.",
+      "instruction": "Draft release announcements based on release_deployment_log and release_notes. Write: a blog post or changelog entry summarizing the release for users, social media posts highlighting key new features, in-app notification copy for active users, and email notification for opted-in users. Tailor messaging to each channel's audience and format constraints. Output release_announcement at `workspace/{goal_id}/releases/`.",
       "done_when": "release_announcement exists."
     },
     {
@@ -6811,7 +6811,7 @@
       "output_artifacts": [
         "post_release_monitoring"
       ],
-      "instruction": "Execute 'post_release_monitoring' per v1 plan specification.",
+      "instruction": "Monitor the application closely after the release deployment from release_deployment_log. Track: new error types or increased error rates compared to pre-release baseline, performance metric changes, user behavior anomalies, feature flag engagement metrics for newly released features, and user feedback on new features. Watch for 24-48 hours post-release. Output post_release_monitoring with observations and any issues requiring attention.",
       "done_when": "post_release_monitoring exists."
     },
     {
@@ -6830,7 +6830,7 @@
       "output_artifacts": [
         "iteration_retrospective"
       ],
-      "instruction": "Execute 'iteration_retrospective' per v1 plan specification.",
+      "instruction": "Conduct a retrospective on the release cycle based on post_release_monitoring and release_plan. Evaluate: was the release smooth or were there issues?, did the rollout strategy work as intended?, were there unexpected bugs or regressions?, how accurate were effort estimates?, what could be improved in the development and release process?, and are there process changes to adopt for next iteration? Output iteration_retrospective with lessons learned and action items.",
       "done_when": "iteration_retrospective exists."
     },
     {
@@ -6854,7 +6854,7 @@
       "output_artifacts": [
         "quarterly_roadmap"
       ],
-      "instruction": "Execute 'roadmap_update' per v1 plan specification.",
+      "instruction": "Update the product roadmap based on weekly_analytics, weekly_feedback_report, feature_request_backlog, and iteration_retrospective. Reassess: feature priorities based on latest user data and feedback, capacity and velocity based on iteration retrospective, strategic direction based on market changes, technical investments needed (debt reduction, infrastructure), and timeline projections for upcoming features. Trigger needs_clarification to present the updated roadmap for human approval. Output quarterly_roadmap.",
       "done_when": "quarterly_roadmap exists.",
       "type": "recurring",
       "trigger": "Quarterly"

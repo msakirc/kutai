@@ -62,6 +62,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("resume", self.cmd_resume))      # Resume workflow
         self.app.add_handler(CommandHandler("credential", self.cmd_credential))  # Credential mgmt
         self.app.add_handler(CommandHandler("cost", self.cmd_cost))            # Per-goal cost
+        self.app.add_handler(CommandHandler("preview", self.cmd_preview))      # Workflow preview
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.REPLY,
@@ -95,6 +96,7 @@ class TelegramInterface:
             "/resume <goal\\_id> — Resume a failed workflow\n"
             "/credential — Manage API credentials\n"
             "/cost <goal\\_id> — View per-goal cost breakdown\n"
+            "/preview <idea> — Preview workflow steps & cost estimate\n"
             "/digest — Get daily digest now\n\n"
             "Or just send a message — I'll figure out what to do.",
             parse_mode="Markdown"
@@ -817,6 +819,47 @@ class TelegramInterface:
             await update.message.reply_text(
                 f"Error fetching workflow status: {type(e).__name__}: {e}"
             )
+
+    async def cmd_preview(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Preview workflow steps and estimated cost before starting."""
+        args = context.args
+        idea_text = " ".join(args) if args else ""
+
+        if not idea_text:
+            await update.message.reply_text("Usage: /preview <idea description>")
+            return
+
+        try:
+            from ..workflows.engine.runner import WorkflowRunner
+
+            runner = WorkflowRunner()
+            preview = await runner.preview(
+                "idea_to_product_v2",
+                initial_input={"raw_idea": idea_text},
+            )
+
+            lines = [
+                "\U0001f4cb *Workflow Preview*",
+                f"_{preview['title']}_\n",
+                f"\U0001f4ca *{preview['direct_steps']}* direct steps + ~*{preview['template_estimated_steps']}* from templates",
+                f"\U0001f504 *{preview['recurring_steps']}* recurring monitors",
+                f"\U0001f4b0 Estimated cost: *${preview['estimated_cost']:.2f}*\n",
+                "*Phases:*",
+            ]
+            for p in preview["phases"]:
+                agents_str = ", ".join(p["agents"])
+                lines.append(
+                    f"  \u2022 {p['phase_name']}: {p['step_count']} steps ({agents_str})"
+                )
+
+            truncated = idea_text[:50]
+            lines.append(f"\nUse /product {truncated}... to start")
+
+            await update.message.reply_text(
+                "\n".join(lines), parse_mode="Markdown"
+            )
+        except Exception as e:
+            await update.message.reply_text(f"Preview failed: {e}")
 
     async def cmd_product(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start a new idea-to-product workflow."""

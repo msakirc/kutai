@@ -215,6 +215,83 @@ class WorkflowRunner:
         )
         return goal_id
 
+    async def preview(
+        self,
+        workflow_name: str,
+        initial_input: Optional[dict] = None,
+        existing_codebase_path: Optional[str] = None,
+    ) -> dict:
+        """Preview what a workflow would create without actually starting it.
+
+        Returns a dict with:
+        - total_steps: int
+        - phases: list of {phase_id, phase_name, step_count, agents}
+        - estimated_cost: float (rough estimate based on step count and agent types)
+        - recurring_steps: int
+        - conditional_groups: int
+        - templates: int
+        """
+        wf = load_workflow(workflow_name)
+
+        has_existing = existing_codebase_path is not None
+        filtered_steps = filter_steps_for_context(wf.steps, has_existing_codebase=has_existing)
+
+        recurring = [s for s in filtered_steps if s.get("type") == "recurring"]
+        non_recurring = [s for s in filtered_steps if s.get("type") != "recurring"]
+
+        # Group by phase
+        phases: dict[str, dict] = {}
+        for step in non_recurring:
+            phase = step.get("phase", "unknown")
+            if phase not in phases:
+                phases[phase] = {"phase_id": phase, "steps": [], "agents": set()}
+            phases[phase]["steps"].append(step)
+            phases[phase]["agents"].add(step.get("agent", "executor"))
+
+        # Count template expansion estimate
+        template_step_count = 0
+        for tmpl in wf.templates:
+            steps_in_template = len(tmpl.get("steps", []))
+            # Estimate 3 features average if we don't have backlog yet
+            estimated_features = 3
+            template_step_count += steps_in_template * estimated_features
+
+        # Cost estimate: rough heuristic
+        # cheap tier ~ $0.001/step, auto ~ $0.01/step, expensive ~ $0.05/step
+        COST_PER_STEP = {"cheap": 0.001, "auto": 0.01, "expensive": 0.05}
+        estimated_cost = 0.0
+        for step in non_recurring:
+            tier = step.get("tier", "auto")
+            estimated_cost += COST_PER_STEP.get(tier, 0.01)
+        estimated_cost += template_step_count * COST_PER_STEP["auto"]
+
+        # Build phase summaries
+        from .status import PHASE_NAMES
+
+        phase_list = []
+        for phase_id in sorted(phases.keys()):
+            p = phases[phase_id]
+            phase_name = PHASE_NAMES.get(phase_id, phase_id)
+            phase_list.append({
+                "phase_id": phase_id,
+                "phase_name": phase_name,
+                "step_count": len(p["steps"]),
+                "agents": sorted(p["agents"]),
+            })
+
+        return {
+            "workflow_name": workflow_name,
+            "title": wf.metadata.get("title", workflow_name),
+            "total_steps": len(non_recurring) + template_step_count,
+            "direct_steps": len(non_recurring),
+            "template_estimated_steps": template_step_count,
+            "phases": phase_list,
+            "recurring_steps": len(recurring),
+            "conditional_groups": len(wf.conditional_groups),
+            "templates": len(wf.templates),
+            "estimated_cost": round(estimated_cost, 2),
+        }
+
     async def start(
         self,
         workflow_name: str,

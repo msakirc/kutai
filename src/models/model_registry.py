@@ -92,6 +92,7 @@ class ModelInfo:
 
     # Runtime state
     is_loaded: bool = False
+    demoted: bool = False
     api_base: Optional[str] = None
 
     def score_for(self, cap: str) -> float:

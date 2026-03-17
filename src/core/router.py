@@ -695,7 +695,13 @@ async def call_model(
 
         # ── Build completion kwargs ──
         is_thinking = model.thinking_model
-        temperature = None if is_thinking else 0.3
+        if is_thinking:
+            temperature = None   # thinking models control sampling internally
+        else:
+            from ..models.model_profiles import get_task_params
+            _task = reqs.effective_task or reqs.primary_capability
+            temperature = get_task_params(_task).get("temperature", 0.3)
+            logger.debug("task params applied", task=_task, temperature=temperature)
 
         timeout_val = 60
         if model.is_local:

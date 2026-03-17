@@ -1265,3 +1265,46 @@ if _YAML_PATH.exists():
         pass  # pyyaml not installed — YAML overrides disabled
     except Exception as _e:
         logging.getLogger(__name__).warning(f"Failed to load model_families.yaml: {_e}")
+
+
+# ─── Task Parameter Profiles ──────────────────────────────────────────────────
+# Per-task-type generation parameters. Applied in router.py after model selection.
+# Thinking/reasoning models always override temperature to None (model controls it).
+
+_TASK_PARAM_DEFAULTS: dict[str, dict] = {
+    # Low temp for precise, deterministic output
+    "coding":      {"temperature": 0.15, "top_p": 0.9},
+    "debugging":   {"temperature": 0.10, "top_p": 0.9},
+    "testing":     {"temperature": 0.15, "top_p": 0.9},
+    # Medium temp for analysis + planning
+    "analysis":    {"temperature": 0.30, "top_p": 0.95},
+    "planning":    {"temperature": 0.35, "top_p": 0.95},
+    "research":    {"temperature": 0.30, "top_p": 0.95},
+    "review":      {"temperature": 0.25, "top_p": 0.95},
+    # Higher temp for creative/generative tasks
+    "writing":     {"temperature": 0.65, "top_p": 0.95},
+    "creative":    {"temperature": 0.80, "top_p": 0.95},
+    # Conservative for factual/tool tasks
+    "tool_use":    {"temperature": 0.10, "top_p": 0.9},
+    "extraction":  {"temperature": 0.10, "top_p": 0.9},
+    # Defaults
+    "general":     {"temperature": 0.30, "top_p": 0.95},
+}
+
+_DEFAULT_PARAMS: dict = {"temperature": 0.30, "top_p": 0.95}
+
+
+def get_task_params(task_type: str | None) -> dict:
+    """
+    Return generation parameters for a given task type.
+
+    Usage in router:
+        params = get_task_params(reqs.effective_task)
+        completion_kwargs["temperature"] = params["temperature"]
+
+    Callers should skip setting temperature entirely for thinking models
+    (check model.thinking_model first).
+    """
+    if not task_type:
+        return dict(_DEFAULT_PARAMS)
+    return dict(_TASK_PARAM_DEFAULTS.get(task_type, _DEFAULT_PARAMS))

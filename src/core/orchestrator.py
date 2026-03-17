@@ -1062,6 +1062,22 @@ class Orchestrator:
                 except Exception as dlq_err:
                     logger.error("dlq quarantine failed", task_id=task_id, error=str(dlq_err))
 
+                # Record failure for model health monitoring
+                try:
+                    from ..infra.db import update_model_stats
+                    agent_type = task.get("agent_type", "executor")
+                    model = result.get("model", "unknown") if isinstance(result, dict) else "unknown"
+                    await update_model_stats(
+                        model=model,
+                        agent_type=agent_type,
+                        success=False,
+                        cost=0,
+                        latency_ms=0,
+                        grade=0.0,
+                    )
+                except Exception as _e:
+                    logger.debug("update_model_stats failed", error=str(_e))
+
     # ─── Result Handlers ─────────────────────────────────────────────────
 
     async def _handle_complete(self, task, result):
@@ -1183,6 +1199,22 @@ class Orchestrator:
                 await self._process_recovery_result(task, result_text)
             except Exception as e:
                 logger.warning(f"[Task #{task_id}] Recovery result processing failed: {e}")
+
+        # Record model performance for health monitoring and routing
+        try:
+            from ..infra.db import update_model_stats
+            agent_type = task.get("agent_type", "executor")
+            grade = result.get("grade", 3.0)  # agents may include a self-grade
+            await update_model_stats(
+                model=model,
+                agent_type=agent_type,
+                success=True,
+                cost=cost,
+                latency_ms=int(iterations * 2000),  # rough proxy: iterations * avg_ms
+                grade=grade,
+            )
+        except Exception as _e:
+            logger.debug("update_model_stats failed", error=str(_e))
 
     async def _handle_subtasks(self, task, result):
         task_id = task["id"]

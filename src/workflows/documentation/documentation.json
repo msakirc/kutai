@@ -1,0 +1,77 @@
+{
+  "plan_id": "documentation",
+  "version": "1.0",
+  "metadata": {
+    "description": "Documentation generator: analyze codebase → generate README, API docs, architecture overview, setup guide → review → deliver",
+    "agents_required": ["analyst", "writer", "reviewer", "summarizer"],
+    "trigger": "on-demand or on goal completion"
+  },
+  "phases": [
+    {"id": "phase_1", "name": "Analysis", "description": "Analyze codebase structure and existing docs"},
+    {"id": "phase_2", "name": "Generation", "description": "Generate documentation sections"},
+    {"id": "phase_3", "name": "Review", "description": "Review and polish documentation"},
+    {"id": "phase_4", "name": "Delivery", "description": "Save and deliver documentation"}
+  ],
+  "steps": [
+    {
+      "id": "step_analyze_codebase",
+      "phase": "phase_1",
+      "title": "Analyze codebase structure",
+      "description": "Use file_tree and read_file to understand the codebase. Identify: main entry points, key modules, public API, configuration options, dependencies. Note any existing README or docs.",
+      "agent_type": "analyst",
+      "output_artifacts": ["codebase_analysis"]
+    },
+    {
+      "id": "step_generate_readme",
+      "phase": "phase_2",
+      "title": "Generate README",
+      "description": "Write a comprehensive README.md including: project description, features, installation, quick start, usage examples, configuration, contributing guide. Save to workspace.",
+      "agent_type": "writer",
+      "depends_on": ["step_analyze_codebase"],
+      "input_artifacts": ["codebase_analysis"],
+      "output_artifacts": ["readme_doc"]
+    },
+    {
+      "id": "step_generate_api_docs",
+      "phase": "phase_2",
+      "title": "Generate API documentation",
+      "description": "Document all public functions, classes, and endpoints. Include parameter types, return values, and usage examples. Save to docs/api.md.",
+      "agent_type": "writer",
+      "depends_on": ["step_analyze_codebase"],
+      "input_artifacts": ["codebase_analysis"],
+      "output_artifacts": ["api_docs"]
+    },
+    {
+      "id": "step_generate_architecture",
+      "phase": "phase_2",
+      "title": "Generate architecture overview",
+      "description": "Write an architecture overview explaining the system design, key components, data flow, and design decisions. Include ASCII diagrams where helpful. Save to docs/architecture.md.",
+      "agent_type": "writer",
+      "depends_on": ["step_analyze_codebase"],
+      "input_artifacts": ["codebase_analysis"],
+      "output_artifacts": ["architecture_doc"]
+    },
+    {
+      "id": "step_review_docs",
+      "phase": "phase_3",
+      "title": "Review documentation",
+      "description": "Review all generated documentation for accuracy, completeness, and clarity. Check that code examples are correct. Suggest improvements.",
+      "agent_type": "reviewer",
+      "depends_on": ["step_generate_readme", "step_generate_api_docs", "step_generate_architecture"],
+      "input_artifacts": ["readme_doc", "api_docs", "architecture_doc"],
+      "output_artifacts": ["doc_review"]
+    },
+    {
+      "id": "step_finalize_docs",
+      "phase": "phase_4",
+      "title": "Finalize and summarize documentation",
+      "description": "Apply any review feedback to the documentation. Create a summary of what was documented and where files were saved.",
+      "agent_type": "writer",
+      "depends_on": ["step_review_docs"],
+      "input_artifacts": ["doc_review"],
+      "output_artifacts": ["documentation_summary"]
+    }
+  ],
+  "templates": [],
+  "conditional_groups": []
+}

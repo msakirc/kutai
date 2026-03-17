@@ -1,0 +1,77 @@
+{
+  "plan_id": "bugfix",
+  "version": "1.0",
+  "metadata": {
+    "description": "Bug investigation pipeline: reproduce → root cause analysis → implement fix → regression test → review → PR",
+    "agents_required": ["planner", "analyst", "coder", "fixer", "test_generator", "reviewer"],
+    "trigger": "on-demand via /goal describing a bug"
+  },
+  "phases": [
+    {"id": "phase_1", "name": "Reproduction", "description": "Reproduce the bug and gather evidence"},
+    {"id": "phase_2", "name": "Root Cause", "description": "Identify the root cause"},
+    {"id": "phase_3", "name": "Fix", "description": "Implement the fix"},
+    {"id": "phase_4", "name": "Verification", "description": "Test and verify the fix"}
+  ],
+  "steps": [
+    {
+      "id": "step_clarify_bug",
+      "phase": "phase_1",
+      "title": "Clarify and document bug report",
+      "description": "Review the bug report. If it's vague, use needs_clarification to ask for: steps to reproduce, expected vs actual behavior, error messages, environment details. Document the bug clearly.",
+      "agent_type": "planner",
+      "output_artifacts": ["bug_report"]
+    },
+    {
+      "id": "step_reproduce",
+      "phase": "phase_1",
+      "title": "Reproduce the bug",
+      "description": "Use shell to run the code and reproduce the bug. Check logs. Run existing tests to see which fail. Document exact reproduction steps and error output.",
+      "agent_type": "analyst",
+      "depends_on": ["step_clarify_bug"],
+      "input_artifacts": ["bug_report"],
+      "output_artifacts": ["reproduction_evidence"]
+    },
+    {
+      "id": "step_root_cause",
+      "phase": "phase_2",
+      "title": "Root cause analysis",
+      "description": "Read the relevant source files. Trace the code path that leads to the bug. Identify the specific line(s) causing the issue. Explain the root cause clearly.",
+      "agent_type": "analyst",
+      "depends_on": ["step_reproduce"],
+      "input_artifacts": ["reproduction_evidence"],
+      "output_artifacts": ["root_cause_analysis"]
+    },
+    {
+      "id": "step_implement_fix",
+      "phase": "phase_3",
+      "title": "Implement the fix",
+      "description": "Based on root cause analysis, implement the fix. Make minimal, targeted changes. Add inline comments explaining why the fix works. Run lint after changes.",
+      "agent_type": "fixer",
+      "depends_on": ["step_root_cause"],
+      "input_artifacts": ["root_cause_analysis"],
+      "output_artifacts": ["fix_implementation"]
+    },
+    {
+      "id": "step_add_regression_test",
+      "phase": "phase_4",
+      "title": "Add regression test",
+      "description": "Write a test that would have caught this bug. The test should fail before the fix and pass after. Add it to the appropriate test file.",
+      "agent_type": "test_generator",
+      "depends_on": ["step_implement_fix"],
+      "input_artifacts": ["fix_implementation", "root_cause_analysis"],
+      "output_artifacts": ["regression_test"]
+    },
+    {
+      "id": "step_verify_fix",
+      "phase": "phase_4",
+      "title": "Verify the fix and run tests",
+      "description": "Run the full test suite. Verify the original bug is fixed. Check that no regressions were introduced. Report test results.",
+      "agent_type": "reviewer",
+      "depends_on": ["step_add_regression_test"],
+      "input_artifacts": ["fix_implementation", "regression_test"],
+      "output_artifacts": ["fix_verification"]
+    }
+  ],
+  "templates": [],
+  "conditional_groups": []
+}

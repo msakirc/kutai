@@ -23,6 +23,7 @@ try:
     from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Header
     from fastapi.middleware.cors import CORSMiddleware
     from pydantic import BaseModel
+    from starlette.responses import PlainTextResponse
     _FASTAPI_AVAILABLE = True
 except ImportError:
     _FASTAPI_AVAILABLE = False
@@ -220,6 +221,108 @@ def create_app() -> Any:
             }
             for name, m in registry.models.items()
         }
+
+    # ── LLM Live Metrics ────────────────────────────────────────────────────
+
+    @app.get("/llm")
+    async def get_llm_metrics(_: None = Depends(_check_api_key)):
+        """Live llama-server performance: token rates, KV cache, queue depth."""
+        from src.models.local_model_manager import get_local_manager
+        manager = get_local_manager()
+        return await manager.get_metrics()
+
+    # ── Prometheus Metrics ────────────────────────────────────────────────
+
+    @app.get("/metrics", response_class=PlainTextResponse)
+    async def prometheus_metrics():
+        """Prometheus-compatible metrics endpoint. No auth — Prometheus needs open access."""
+        from src.infra.metrics import get_all_counters
+        from src.models.local_model_manager import get_local_manager
+
+        lines = []
+
+        # ── Orchestrator counters ──
+        counters = get_all_counters()
+        tasks_ok = int(counters.get("tasks_completed", 0))
+        tasks_fail = int(counters.get("tasks_failed", 0))
+        queue = int(counters.get("queue_depth", 0))
+        cost = float(counters.get("cost_total", 0.0))
+
+        lines.append(f"# HELP kutay_tasks_completed_total Total tasks completed")
+        lines.append(f"# TYPE kutay_tasks_completed_total counter")
+        lines.append(f"kutay_tasks_completed_total {tasks_ok}")
+
+        lines.append(f"# HELP kutay_tasks_failed_total Total tasks failed")
+        lines.append(f"# TYPE kutay_tasks_failed_total counter")
+        lines.append(f"kutay_tasks_failed_total {tasks_fail}")
+
+        lines.append(f"# HELP kutay_queue_depth Current task queue depth")
+        lines.append(f"# TYPE kutay_queue_depth gauge")
+        lines.append(f"kutay_queue_depth {queue}")
+
+        lines.append(f"# HELP kutay_cost_total_usd Total inference cost in USD")
+        lines.append(f"# TYPE kutay_cost_total_usd counter")
+        lines.append(f"kutay_cost_total_usd {cost:.6f}")
+
+        # Per-model call counts and tokens
+        model_calls = {k.split(":", 1)[1]: int(v)
+                       for k, v in counters.items() if k.startswith("model_calls:")}
+        if model_calls:
+            lines.append(f"# HELP kutay_model_calls_total Model call count by model")
+            lines.append(f"# TYPE kutay_model_calls_total counter")
+            for model, count in model_calls.items():
+                safe = model.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+                lines.append(f'kutay_model_calls_total{{model="{safe}"}} {count}')
+
+        model_tokens = {k.split(":", 1)[1]: int(v)
+                        for k, v in counters.items() if k.startswith("tokens:")}
+        if model_tokens:
+            lines.append(f"# HELP kutay_tokens_total Token count by model")
+            lines.append(f"# TYPE kutay_tokens_total counter")
+            for model, tokens in model_tokens.items():
+                safe = model.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+                lines.append(f'kutay_tokens_total{{model="{safe}"}} {tokens}')
+
+        # ── Local model manager status ──
+        try:
+            mgr = get_local_manager()
+            status = mgr.get_status()
+            loaded = status.get("loaded_model") or ""
+            healthy = 1 if status.get("healthy") else 0
+            swaps = status.get("total_swaps", 0)
+            idle = status.get("idle_seconds", 0)
+            busy = 1 if status.get("inference_busy") else 0
+
+            lines.append(f"# HELP kutay_model_healthy Is the local model healthy")
+            lines.append(f"# TYPE kutay_model_healthy gauge")
+            lines.append(f'kutay_model_healthy{{model="{loaded}"}} {healthy}')
+
+            lines.append(f"# HELP kutay_model_swaps_total Total model swaps")
+            lines.append(f"# TYPE kutay_model_swaps_total counter")
+            lines.append(f"kutay_model_swaps_total {swaps}")
+
+            lines.append(f"# HELP kutay_model_idle_seconds Seconds since last inference")
+            lines.append(f"# TYPE kutay_model_idle_seconds gauge")
+            lines.append(f"kutay_model_idle_seconds {idle:.1f}")
+
+            lines.append(f"# HELP kutay_model_inference_busy Is inference currently running")
+            lines.append(f"# TYPE kutay_model_inference_busy gauge")
+            lines.append(f"kutay_model_inference_busy {busy}")
+        except Exception as e:
+            logger.debug(f"Model manager metrics unavailable: {e}")
+            lines.append("# HELP kutay_model_healthy Is the local model healthy")
+            lines.append("# TYPE kutay_model_healthy gauge")
+            lines.append('kutay_model_healthy{model=""} 0')
+
+        # ── Auto-tuner quality metrics ──
+        try:
+            from src.models.auto_tuner import get_prometheus_lines
+            lines.extend(get_prometheus_lines())
+        except Exception as e:
+            logger.debug(f"Auto-tuner metrics unavailable: {e}")
+
+        lines.append("")
+        return "\n".join(lines)
 
     # ── Projects ─────────────────────────────────────────────────────────────
 

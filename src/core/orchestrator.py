@@ -12,7 +12,7 @@ from ..infra.db import (
     get_active_goals, get_tasks_for_goal, update_goal, get_daily_stats,
     store_memory, compute_task_hash,
     get_due_scheduled_tasks, update_scheduled_task,
-    cancel_task, get_task,
+    cancel_task, get_task, get_goal,
     save_workspace_snapshot, release_task_locks, release_goal_locks,
 )
 from src.infra.logging_config import get_logger
@@ -37,7 +37,7 @@ logger = get_logger("core.orchestrator")
     # Default timeouts per agent type (seconds).  Override via
     # tasks.timeout_seconds column for per-task control.
 AGENT_TIMEOUTS: dict[str, int] = {
-    "planner":        120,
+    "planner":        300,
     "architect":      180,
     "coder":          300,
     "implementer":    300,
@@ -886,6 +886,34 @@ class Orchestrator:
                 except Exception as e:
                     logger.error("human gate error", task_id=task_id, error=str(e))
 
+            # ── Phase 14.2: Risk assessment gate ──
+            try:
+                from ..security.risk_assessor import assess_risk, format_risk_assessment
+                risk = assess_risk(
+                    task_title=task.get("title", ""),
+                    task_description=task.get("description", ""),
+                )
+                if risk["needs_approval"] and not task_ctx.get("human_gate"):
+                    logger.info(
+                        "risk gate triggered",
+                        task_id=task_id,
+                        risk_score=risk["score"],
+                        factors=risk["risk_factors"],
+                    )
+                    approved = await self.telegram.request_approval(
+                        task_id,
+                        task.get("title", ""),
+                        format_risk_assessment(risk),
+                        tier=task.get("tier", "auto"),
+                        goal_id=task.get("goal_id"),
+                    )
+                    if not approved:
+                        logger.info("risk gate rejected", task_id=task_id)
+                        await update_task(task_id, status="paused")
+                        return
+            except Exception as e:
+                logger.debug(f"Risk assessment skipped: {e}")
+
             # ── Phase 6: Snapshot workspace before coder/pipeline tasks ──
             goal_id = task.get("goal_id")
             if goal_id and agent_type in ("coder", "pipeline", "implementer", "fixer"):
@@ -1413,6 +1441,22 @@ class Orchestrator:
         # but we only want ONE recovery task per failed task
         stable_title = f"Error recovery: task#{task_id}"
 
+        # If the failure was a timeout, the local model is likely the problem.
+        # Route error recovery to cloud/fast models to avoid repeating the timeout.
+        is_timeout = "timed out" in error_str.lower() or "timeout" in error_str.lower()
+
+        # Find which model the failed task used — exclude it from recovery routing
+        failed_model = None
+        try:
+            from ..infra.db import get_last_model_for_task
+            failed_model = await get_last_model_for_task(task_id)
+            if failed_model:
+                logger.info(
+                    f"[Task #{task_id}] Error recovery will exclude model: {failed_model}"
+                )
+        except Exception as e:
+            logger.debug(f"[Task #{task_id}] Could not look up failed model: {e}")
+
         try:
             recovery_task_id = await add_task(
                 title=stable_title,
@@ -1427,6 +1471,8 @@ class Orchestrator:
                     "failed_agent_type": agent_type,
                     "error": error_str,
                     "original_title": title,
+                    "prefer_speed": is_timeout,
+                    "exclude_models": [failed_model] if failed_model else [],
                 },
             )
             if recovery_task_id:
@@ -1658,6 +1704,13 @@ class Orchestrator:
                 max_concurrent = _compute_max_concurrent(candidate_tasks)
                 tasks = candidate_tasks[:max_concurrent]
 
+                # Update queue depth metric for Prometheus/Grafana
+                try:
+                    from src.infra.metrics import record_queue_depth
+                    record_queue_depth(len(candidate_tasks))
+                except Exception:
+                    pass
+
                 if tasks:
                     task_names = [
                         f"#{t['id']}({t.get('agent_type','?')})"
@@ -1763,6 +1816,13 @@ class Orchestrator:
                 except Exception:
                     pass
 
+                # Phase 2.4: Auto-tune model capability scores
+                try:
+                    from src.models.auto_tuner import maybe_run_tuning
+                    await maybe_run_tuning()
+                except Exception as e:
+                    logger.debug(f"Auto-tuning cycle failed: {e}")
+
             except Exception as e:
                 logger.error(f"Loop error: {e}", exc_info=True)
                 await asyncio.sleep(30)
@@ -1828,6 +1888,13 @@ class Orchestrator:
                             logger.warning(
                                 f"⚠️ Task error during shutdown: {e}"
                             )
+
+                    # Stop llama-server if running
+                    try:
+                        await manager._stop_server()
+                        logger.info("🦙 llama-server stopped")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Error stopping llama-server: {e}")
 
                     logger.info("👋 Orchestrator stopped")
 

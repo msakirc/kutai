@@ -208,43 +208,118 @@ class _BaseFetcher:
 
 class ArtificialAnalysisFetcher(_BaseFetcher):
     """
-    Artificial Analysis — DISABLED (API endpoint retired).
-    Kept as placeholder for future re-enablement if a new API is published.
+    Fetches from artificialanalysis.ai API.
+
+    Covers: MMLU-Pro, GPQA, MATH, HumanEval, IFEval, context benchmarks.
+    Maps to: reasoning, domain_knowledge, code_generation, instruction_adherence.
+
+    API: https://artificialanalysis.ai/api/text/v1/leaderboard
     """
     source_name = "artificial_analysis"
+    API_URL = "https://artificialanalysis.ai/api/text/v1/leaderboard"
+
+    # Maps their benchmark keys → our capability dimensions + normalization ranges
+    BENCHMARK_MAP = {
+        "mmlu_pro":    {"cap": "domain_knowledge",      "min": 20, "max": 90},
+        "gpqa":        {"cap": "reasoning",              "min": 25, "max": 75},
+        "math":        {"cap": "reasoning",              "min": 10, "max": 95},  # secondary
+        "humaneval":   {"cap": "code_generation",        "min": 30, "max": 98},
+        "ifeval":      {"cap": "instruction_adherence",  "min": 30, "max": 95},
+        "bigbench":    {"cap": "analysis",               "min": 30, "max": 90},
+    }
 
     def fetch_bulk(self, cache: BenchmarkCache) -> dict[str, dict]:
-        return {}
+        cached = cache.get_all_models(self.source_name)
+        if cached and "models" in cached:
+            return cached["models"]
+
+        try:
+            import httpx
+            resp = httpx.get(self.API_URL, timeout=30.0, follow_redirects=True)
+            if resp.status_code != 200:
+                logger.warning(f"Artificial Analysis API returned {resp.status_code}")
+                return {}
+
+            data = resp.json()
+            models_data = data if isinstance(data, list) else data.get("data", data.get("models", []))
+
+            result = {}
+            for entry in models_data:
+                model_name = entry.get("model", entry.get("name", ""))
+                if not model_name:
+                    continue
+
+                mapped = {}
+                for bench_key, mapping in self.BENCHMARK_MAP.items():
+                    score = entry.get(bench_key) or entry.get(f"{bench_key}_score")
+                    if score is not None:
+                        try:
+                            score = float(score)
+                            cap = mapping["cap"]
+                            norm = _normalize_score(score, mapping["min"], mapping["max"], 2.0, 10.0)
+                            # If capability already has a value, average them
+                            if cap in mapped:
+                                mapped[cap] = round((mapped[cap] + norm) / 2, 1)
+                            else:
+                                mapped[cap] = norm
+                        except (ValueError, TypeError):
+                            pass
+
+                if mapped:
+                    result[model_name] = mapped
+
+            cache.put_all_models(self.source_name, {"models": result})
+            logger.info(f"Artificial Analysis: fetched {len(result)} models")
+            return result
+
+        except ImportError:
+            logger.warning("httpx not available for Artificial Analysis fetch")
+            return {}
+        except Exception as e:
+            logger.warning(f"Artificial Analysis fetch failed: {e}")
+            return {}
 
     def fetch(self, model_id: str, cache: BenchmarkCache) -> Optional[BenchmarkResult]:
-        return None
+        all_models = self.fetch_bulk(cache)
+        if not all_models:
+            return None
+
+        matched_key = _fuzzy_match_model(model_id, list(all_models.keys()))
+        if not matched_key:
+            return None
+
+        return BenchmarkResult(
+            source=self.source_name,
+            model_id=model_id,
+            raw_scores={},
+            mapped_capabilities=all_models[matched_key],
+            timestamp=time.time(),
+            confidence=0.85,
+        )
 
 
 class HuggingFaceLeaderboardFetcher(_BaseFetcher):
     """
-    HuggingFace Open LLM Leaderboard — DISABLED (API endpoint retired / unstable).
-    The leaderboard is now a Gradio Space without a stable data API.
+    Fetches from the HuggingFace Open LLM Leaderboard v2.
+
+    Covers: IFEval, BBH, MATH-Hard, GPQA, MUSR, MMLU-Pro
+    Maps to: instruction_adherence, reasoning, analysis, domain_knowledge
+
+    API: HuggingFace datasets API
     """
     source_name = "hf_leaderboard"
+    API_URL = "https://huggingface.co/api/datasets/open-llm-leaderboard/contents/data"
+    # Alternative: use the spaces API
+    RESULTS_URL = "https://huggingface.co/datasets/open-llm-leaderboard/results/resolve/main/"
 
-    def fetch_bulk(self, cache: BenchmarkCache) -> dict[str, dict]:
-        return {}
-
-    def fetch(self, model_id: str, cache: BenchmarkCache) -> Optional[BenchmarkResult]:
-        return None
-
-
-class LiveCodeBenchFetcher(_BaseFetcher):
-    """
-    Fetches from LiveCodeBench results.
-
-    Covers: pass@1 on live coding problems
-    Maps to: code_generation, code_reasoning
-
-    Source: LiveCodeBench GitHub Pages build data (per-question, aggregated here)
-    """
-    source_name = "livecodebench"
-    URL = "https://raw.githubusercontent.com/LiveCodeBench/LiveCodeBench.github.io/main/build/v5.json"
+    BENCHMARK_MAP = {
+        "ifeval":       {"cap": "instruction_adherence", "min": 20, "max": 90},
+        "bbh":          {"cap": "reasoning",             "min": 20, "max": 85},
+        "math_hard":    {"cap": "reasoning",             "min": 5,  "max": 75},
+        "gpqa":         {"cap": "reasoning",             "min": 25, "max": 55},
+        "musr":         {"cap": "analysis",              "min": 20, "max": 70},
+        "mmlu_pro":     {"cap": "domain_knowledge",      "min": 20, "max": 85},
+    }
 
     def fetch_bulk(self, cache: BenchmarkCache) -> dict[str, dict]:
         cached = cache.get_all_models(self.source_name)
@@ -254,48 +329,160 @@ class LiveCodeBenchFetcher(_BaseFetcher):
         try:
             import httpx
 
-            resp = httpx.get(self.URL, timeout=30.0, follow_redirects=True)
+            # Try the leaderboard API endpoint
+            url = "https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard/api/predict"
+            # Alternative: fetch from the dataset directly
+            dataset_url = "https://datasets-server.huggingface.co/rows?dataset=open-llm-leaderboard%2Fresults&config=default&split=train&offset=0&length=200"
+
+            resp = httpx.get(dataset_url, timeout=30.0, follow_redirects=True)
             if resp.status_code != 200:
-                logger.warning(f"LiveCodeBench returned {resp.status_code}")
-                return {}
+                logger.debug(f"HF Leaderboard returned {resp.status_code}, trying fallback")
+                return self._fetch_from_spaces(cache)
 
             data = resp.json()
-            performances = data.get("performances", [])
-            if not performances:
-                return {}
-
-            # Aggregate pass@1 by model (data is per-question)
-            model_scores: dict[str, list[float]] = {}
-            for perf in performances:
-                model = perf.get("model", "")
-                pass1 = perf.get("pass@1")
-                if model and pass1 is not None:
-                    try:
-                        score = float(pass1)
-                        model_scores.setdefault(model, []).append(score)
-                    except (ValueError, TypeError):
-                        pass
+            rows = data.get("rows", [])
 
             result = {}
-            for model_name, scores in model_scores.items():
-                if len(scores) < 5:
-                    continue  # skip models with too few data points
-                avg_pass = sum(scores) / len(scores)
-                code_gen = _normalize_score(avg_pass, 10.0, 80.0, 2.0, 10.0)
-                code_reason = round(code_gen * 0.9, 1)
-                result[model_name] = {
-                    "code_generation": code_gen,
-                    "code_reasoning": code_reason,
-                }
+            for row in rows:
+                entry = row.get("row", row)
+                model_name = entry.get("model_name_for_query", entry.get("fullname", ""))
+                if not model_name:
+                    continue
+
+                mapped = {}
+                for bench_key, mapping in self.BENCHMARK_MAP.items():
+                    for possible_key in [bench_key, f"{bench_key}_norm", f"leaderboard_{bench_key}"]:
+                        score = entry.get(possible_key)
+                        if score is not None:
+                            try:
+                                score = float(score)
+                                if score > 1 and score <= 100:
+                                    # Percentage
+                                    pass
+                                elif score <= 1:
+                                    score *= 100  # Convert to percentage
+                                cap = mapping["cap"]
+                                norm = _normalize_score(score, mapping["min"], mapping["max"], 2.0, 10.0)
+                                if cap in mapped:
+                                    mapped[cap] = round((mapped[cap] + norm) / 2, 1)
+                                else:
+                                    mapped[cap] = norm
+                            except (ValueError, TypeError):
+                                pass
+                            break
+
+                if mapped:
+                    result[model_name] = mapped
+
+            if result:
+                cache.put_all_models(self.source_name, {"models": result})
+                logger.info(f"HF Leaderboard: fetched {len(result)} models")
+            return result
+
+        except Exception as e:
+            logger.warning(f"HF Leaderboard fetch failed: {e}")
+            return {}
+
+    def _fetch_from_spaces(self, cache: BenchmarkCache) -> dict[str, dict]:
+        """Fallback: try the Spaces Gradio API."""
+        try:
+            import httpx
+            resp = httpx.post(
+                "https://open-llm-leaderboard-open-llm-leaderboard.hf.space/api/predict",
+                json={"fn_index": 0, "data": []},
+                timeout=30.0,
+            )
+            if resp.status_code == 200:
+                # Parse Gradio response format
+                data = resp.json()
+                # This varies by Gradio version; structure may change
+                logger.debug("HF Spaces API responded, but format parsing is best-effort")
+            return {}
+        except Exception:
+            return {}
+
+    def fetch(self, model_id: str, cache: BenchmarkCache) -> Optional[BenchmarkResult]:
+        all_models = self.fetch_bulk(cache)
+        if not all_models:
+            return None
+        matched = _fuzzy_match_model(model_id, list(all_models.keys()))
+        if not matched:
+            return None
+        return BenchmarkResult(
+            source=self.source_name,
+            model_id=model_id,
+            raw_scores={},
+            mapped_capabilities=all_models[matched],
+            timestamp=time.time(),
+            confidence=0.80,
+        )
+
+
+class LiveCodeBenchFetcher(_BaseFetcher):
+    """
+    Fetches from LiveCodeBench results.
+
+    Covers: pass@1 on live coding problems
+    Maps to: code_generation, code_reasoning
+
+    Source: GitHub releases / website
+    """
+    source_name = "livecodebench"
+    URL = "https://livecodebench.github.io/assets/data/results.json"
+    FALLBACK_URL = "https://raw.githubusercontent.com/LiveCodeBench/LiveCodeBench/main/docs/assets/data/results.json"
+
+    def fetch_bulk(self, cache: BenchmarkCache) -> dict[str, dict]:
+        cached = cache.get_all_models(self.source_name)
+        if cached and "models" in cached:
+            return cached["models"]
+
+        try:
+            import httpx
+
+            data = None
+            for url in [self.URL, self.FALLBACK_URL]:
+                try:
+                    resp = httpx.get(url, timeout=20.0, follow_redirects=True)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        break
+                except Exception:
+                    continue
+
+            if not data:
+                return {}
+
+            result = {}
+            entries = data if isinstance(data, list) else data.get("results", data.get("data", []))
+
+            for entry in entries:
+                model_name = entry.get("model", entry.get("name", ""))
+                if not model_name:
+                    continue
+
+                pass_at_1 = entry.get("pass@1", entry.get("pass_at_1"))
+                if pass_at_1 is not None:
+                    try:
+                        score = float(pass_at_1)
+                        if score <= 1.0:
+                            score *= 100  # Convert to percentage
+
+                        code_gen = _normalize_score(score, 10.0, 80.0, 2.0, 10.0)
+                        # Code reasoning is usually slightly below generation
+                        code_reason = round(code_gen * 0.9, 1)
+
+                        result[model_name] = {
+                            "code_generation": code_gen,
+                            "code_reasoning": code_reason,
+                        }
+                    except (ValueError, TypeError):
+                        pass
 
             if result:
                 cache.put_all_models(self.source_name, {"models": result})
                 logger.info(f"LiveCodeBench: fetched {len(result)} models")
             return result
 
-        except ImportError:
-            logger.warning("httpx not available for LiveCodeBench fetch")
-            return {}
         except Exception as e:
             logger.warning(f"LiveCodeBench fetch failed: {e}")
             return {}
@@ -319,30 +506,194 @@ class LiveCodeBenchFetcher(_BaseFetcher):
 
 class BFCLFetcher(_BaseFetcher):
     """
-    Berkeley Function Calling Leaderboard — DISABLED (data files removed from repo).
-    The leaderboard moved to a live web app without a stable data export.
+    Berkeley Function Calling Leaderboard.
+
+    Covers: function calling accuracy
+    Maps to: tool_use, structured_output
+
+    Source: https://gorilla.cs.berkeley.edu/leaderboard.html
     """
     source_name = "bfcl"
+    URL = "https://raw.githubusercontent.com/ShishirPatil/gorilla/main/berkeley-function-call-leaderboard/data/leaderboard_output.json"
+    FALLBACK_URL = "https://gorilla.cs.berkeley.edu/api/leaderboard"
 
     def fetch_bulk(self, cache: BenchmarkCache) -> dict[str, dict]:
-        return {}
+        cached = cache.get_all_models(self.source_name)
+        if cached and "models" in cached:
+            return cached["models"]
+
+        try:
+            import httpx
+
+            data = None
+            for url in [self.URL, self.FALLBACK_URL]:
+                try:
+                    resp = httpx.get(url, timeout=20.0, follow_redirects=True)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        break
+                except Exception:
+                    continue
+
+            if not data:
+                return {}
+
+            result = {}
+            entries = data if isinstance(data, list) else data.get("data", [])
+
+            for entry in entries:
+                model_name = entry.get("model", entry.get("Model", ""))
+                if not model_name:
+                    continue
+
+                # Overall accuracy
+                overall = entry.get("overall_accuracy", entry.get("Overall Acc", entry.get("score")))
+                if overall is not None:
+                    try:
+                        score = float(overall)
+                        if score <= 1.0:
+                            score *= 100
+
+                        tool_score = _normalize_score(score, 30.0, 95.0, 2.0, 10.0)
+                        struct_score = round(tool_score * 0.85, 1)  # Correlated but distinct
+
+                        result[model_name] = {
+                            "tool_use": tool_score,
+                            "structured_output": struct_score,
+                        }
+                    except (ValueError, TypeError):
+                        pass
+
+            if result:
+                cache.put_all_models(self.source_name, {"models": result})
+                logger.info(f"BFCL: fetched {len(result)} models")
+            return result
+
+        except Exception as e:
+            logger.warning(f"BFCL fetch failed: {e}")
+            return {}
 
     def fetch(self, model_id: str, cache: BenchmarkCache) -> Optional[BenchmarkResult]:
-        return None
+        all_models = self.fetch_bulk(cache)
+        if not all_models:
+            return None
+        matched = _fuzzy_match_model(model_id, list(all_models.keys()))
+        if not matched:
+            return None
+        return BenchmarkResult(
+            source=self.source_name,
+            model_id=model_id,
+            raw_scores={},
+            mapped_capabilities=all_models[matched],
+            timestamp=time.time(),
+            confidence=0.90,
+        )
 
 
 class LMSysArenaFetcher(_BaseFetcher):
     """
-    LMSys / LMArena Chatbot Arena — DISABLED (dataset now private/gated).
-    Elo ratings are no longer available via public API.
+    LMSys Chatbot Arena Elo ratings.
+
+    Covers: overall quality, conversation, writing
+    Maps to: conversation, prose_quality, and general quality validation
+
+    Source: HuggingFace dataset
     """
     source_name = "lmsys_arena"
+    URL = "https://huggingface.co/spaces/lmsys/chatbot-arena-leaderboard/resolve/main/elo_results.json"
+    FALLBACK_URL = "https://raw.githubusercontent.com/lm-sys/FastChat/main/fastchat/serve/monitor/elo_results.json"
 
     def fetch_bulk(self, cache: BenchmarkCache) -> dict[str, dict]:
-        return {}
+        cached = cache.get_all_models(self.source_name)
+        if cached and "models" in cached:
+            return cached["models"]
+
+        try:
+            import httpx
+
+            data = None
+            for url in [self.URL, self.FALLBACK_URL]:
+                try:
+                    resp = httpx.get(url, timeout=20.0, follow_redirects=True)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        break
+                except Exception:
+                    continue
+
+            if not data:
+                return {}
+
+            result = {}
+
+            # LMSys format varies; handle different structures
+            # Common: {"text": {"model_name": {"rating": 1234}}}
+            categories = {}
+            if isinstance(data, dict):
+                for category_key in ["full", "text", "coding", "hard_prompts", "english"]:
+                    if category_key in data:
+                        categories[category_key] = data[category_key]
+                if not categories:
+                    # Maybe it's already flat
+                    categories["full"] = data
+
+            for cat_name, cat_data in categories.items():
+                if not isinstance(cat_data, dict):
+                    continue
+
+                for model_name, model_data in cat_data.items():
+                    if isinstance(model_data, dict):
+                        elo = model_data.get("rating", model_data.get("elo"))
+                    elif isinstance(model_data, (int, float)):
+                        elo = model_data
+                    else:
+                        continue
+
+                    if elo is None:
+                        continue
+
+                    try:
+                        elo = float(elo)
+                    except (ValueError, TypeError):
+                        continue
+
+                    if model_name not in result:
+                        result[model_name] = {}
+
+                    score = _normalize_elo(elo)
+
+                    if cat_name in ("text", "english", "full"):
+                        result[model_name]["conversation"] = score
+                        result[model_name]["prose_quality"] = round(score * 0.95, 1)
+                    elif cat_name == "coding":
+                        result[model_name]["code_generation"] = score
+                    elif cat_name == "hard_prompts":
+                        result[model_name]["reasoning"] = score
+
+            if result:
+                cache.put_all_models(self.source_name, {"models": result})
+                logger.info(f"LMSys Arena: fetched {len(result)} models")
+            return result
+
+        except Exception as e:
+            logger.warning(f"LMSys Arena fetch failed: {e}")
+            return {}
 
     def fetch(self, model_id: str, cache: BenchmarkCache) -> Optional[BenchmarkResult]:
-        return None
+        all_models = self.fetch_bulk(cache)
+        if not all_models:
+            return None
+        matched = _fuzzy_match_model(model_id, list(all_models.keys()))
+        if not matched:
+            return None
+        return BenchmarkResult(
+            source=self.source_name,
+            model_id=model_id,
+            raw_scores={},
+            mapped_capabilities=all_models[matched],
+            timestamp=time.time(),
+            confidence=0.75,  # Arena is preference-based, less precise
+        )
 
 
 class AiderLeaderboardFetcher(_BaseFetcher):
@@ -451,12 +802,10 @@ class BigCodeBenchFetcher(_BaseFetcher):
     Covers: function-level code generation with complex instructions
     Maps to: code_generation, instruction_adherence
 
-    Source: HuggingFace dataset bigcode/bigcodebench-results
+    Source: https://bigcode-bench.github.io/
     """
     source_name = "bigcodebench"
-    # HuggingFace datasets API — paginate with offset/length
-    BASE_URL = "https://datasets-server.huggingface.co/rows?dataset=bigcode%2Fbigcodebench-results&config=default&split=train"
-    PAGE_SIZE = 100
+    URL = "https://raw.githubusercontent.com/bigcode-project/bigcodebench/main/docs/assets/data/results.json"
 
     def fetch_bulk(self, cache: BenchmarkCache) -> dict[str, dict]:
         cached = cache.get_all_models(self.source_name)
@@ -465,63 +814,37 @@ class BigCodeBenchFetcher(_BaseFetcher):
 
         try:
             import httpx
+            resp = httpx.get(self.URL, timeout=20.0, follow_redirects=True)
+            if resp.status_code != 200:
+                return {}
 
+            data = resp.json()
             result = {}
-            offset = 0
+            entries = data if isinstance(data, list) else data.get("results", [])
 
-            while True:
-                url = f"{self.BASE_URL}&offset={offset}&length={self.PAGE_SIZE}"
-                resp = httpx.get(url, timeout=20.0, follow_redirects=True)
-                if resp.status_code != 200:
-                    break
+            for entry in entries:
+                model_name = entry.get("model", entry.get("name", ""))
+                score = entry.get("pass@1", entry.get("complete", entry.get("score")))
 
-                data = resp.json()
-                rows = data.get("rows", [])
-                if not rows:
-                    break
+                if model_name and score is not None:
+                    try:
+                        score = float(score)
+                        if score <= 1.0:
+                            score *= 100
 
-                for row in rows:
-                    entry = row.get("row", row)
-                    model_name = entry.get("model", "")
-                    if not model_name:
-                        continue
-
-                    # BigCodeBench has 'complete' and 'instruct' scores (percentages)
-                    complete = entry.get("complete")
-                    instruct = entry.get("instruct")
-
-                    best_score = None
-                    if complete is not None and instruct is not None:
-                        try:
-                            best_score = max(float(complete), float(instruct))
-                        except (ValueError, TypeError):
-                            pass
-                    elif complete is not None:
-                        try:
-                            best_score = float(complete)
-                        except (ValueError, TypeError):
-                            pass
-
-                    if best_score is not None:
-                        code_gen = _normalize_score(best_score, 10.0, 75.0, 2.0, 10.0)
+                        code_gen = _normalize_score(score, 10.0, 75.0, 2.0, 10.0)
                         result[model_name] = {
                             "code_generation": code_gen,
                             "instruction_adherence": round(code_gen * 0.9, 1),
                         }
-
-                total = data.get("num_rows_total", 0)
-                offset += self.PAGE_SIZE
-                if offset >= total:
-                    break
+                    except (ValueError, TypeError):
+                        pass
 
             if result:
                 cache.put_all_models(self.source_name, {"models": result})
                 logger.info(f"BigCodeBench: fetched {len(result)} models")
             return result
 
-        except ImportError:
-            logger.warning("httpx not available for BigCodeBench fetch")
-            return {}
         except Exception as e:
             logger.warning(f"BigCodeBench fetch failed: {e}")
             return {}
@@ -757,7 +1080,7 @@ def enrich_registry_with_benchmarks(
         if not bench_caps:
             continue
 
-        # Store raw benchmark scores before blending (for auto-tuner)
+        # Store raw benchmark scores for auto-tuner provenance
         model_info.benchmark_scores = dict(bench_caps)
 
         # Blend benchmark data with existing profile estimates

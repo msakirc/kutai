@@ -331,107 +331,22 @@ def calculate_gpu_layers(
     available_vram_mb: int,
     context_length: int = 8192,
 ) -> int:
-    """
-    Calculate how many layers can fit in VRAM.
-
-    Only the weight tensors for offloaded layers live in VRAM.
-    KV cache for GPU layers also lives in VRAM, but KV for CPU
-    layers stays in RAM — so we only count KV for the layers we offload.
-
-    Maximizing GPU layers is critical for inference speed: every
-    layer on CPU is ~10-50x slower than on GPU.
-    """
+    """Calculate how many layers can fit in VRAM."""
     if n_layers <= 0 or file_size_mb <= 0 or available_vram_mb <= 0:
         return 0
 
-    CUDA_OVERHEAD_MB = 400  # CUDA context + scratch buffers
-    weight_per_layer_mb = file_size_mb / n_layers
-    kv_per_layer_mb = (context_length / 1024) * 0.5  # KV cache per layer
+    cuda_overhead_mb = 500
+    kv_per_layer_mb = (context_length / 1024) * 0.5
 
-    usable_vram = available_vram_mb - CUDA_OVERHEAD_MB
+    usable_vram = (available_vram_mb - cuda_overhead_mb) * 0.90
     if usable_vram <= 0:
         return 0
 
-    # Each GPU layer costs: weight + KV cache (both in VRAM)
+    weight_per_layer_mb = file_size_mb / n_layers
     cost_per_layer = weight_per_layer_mb + kv_per_layer_mb
+
     max_layers = int(usable_vram / cost_per_layer)
     return min(max_layers, n_layers)
-
-
-def calculate_dynamic_context(
-    file_size_mb: float,
-    n_layers: int,
-    gpu_layers: int,
-    available_ram_mb: int,
-    available_vram_mb: int,
-    family_key: str | None = None,
-    max_context: int | None = None,
-) -> int:
-    """
-    Calculate the largest safe context length given current memory.
-
-    Called at swap time (after stopping old server) so memory readings
-    reflect the true free state.
-
-    KV cache cost model:
-        kv_per_token = n_layers * 0.5 KB  (conservative estimate for Q4/Q8 KV)
-        total_kv = kv_per_token * context_length
-
-    Memory budget:
-        offloaded_weight = file_size_mb * (gpu_layers / n_layers)  → lives in VRAM
-        ram_weight = file_size_mb - offloaded_weight                → lives in RAM
-        ram_budget = (available_ram - ram_weight - 4096) * 0.80     → 4GB OS reserve
-        vram_budget = (available_vram - offloaded_weight - 500) * 0.80  → 500MB CUDA overhead
-        kv_budget = ram_budget + vram_budget                        → KV can split across both
-    """
-    if n_layers <= 0 or file_size_mb <= 0:
-        return 4096
-
-    # Weight distribution
-    gpu_frac = gpu_layers / n_layers if n_layers > 0 else 0
-    vram_weights_mb = file_size_mb * gpu_frac
-    ram_weights_mb = file_size_mb * (1 - gpu_frac)
-
-    # Available memory after loading weights
-    OS_RESERVE_MB = 4096
-    CUDA_OVERHEAD_MB = 500
-    SAFETY = 0.80
-
-    ram_for_kv = max(0, (available_ram_mb - ram_weights_mb - OS_RESERVE_MB)) * SAFETY
-    vram_for_kv = max(0, (available_vram_mb - vram_weights_mb - CUDA_OVERHEAD_MB)) * SAFETY
-    kv_budget_mb = ram_for_kv + vram_for_kv
-
-    # KV cache cost: n_layers * 0.5 MB per 1024 tokens
-    kv_per_1k_tokens = n_layers * 0.5  # MB
-    if kv_per_1k_tokens <= 0:
-        return 4096
-
-    max_ctx_from_memory = int((kv_budget_mb / kv_per_1k_tokens) * 1024)
-
-    # Cap at family default or explicit max
-    if max_context is None and family_key and family_key in FAMILY_PROFILES:
-        max_context = FAMILY_PROFILES[family_key].context_default
-    if max_context is None:
-        max_context = 131072
-
-    # ── Practical cap for large dense models ──
-    # Even if memory allows 64K context, a 27B dense model with mostly
-    # CPU layers will be painfully slow (< 2 tok/s).  Cap context to
-    # keep inference usable.  MoE models don't need this because they
-    # only activate a fraction of parameters.
-    ram_frac = 1 - gpu_frac  # fraction of layers on CPU
-    if ram_frac > 0.5 and n_layers >= 40:
-        # Mostly CPU-bound — aggressive context cap
-        practical_cap = 16384 if n_layers >= 60 else 24576
-        if max_ctx_from_memory > practical_cap:
-            max_ctx_from_memory = practical_cap
-
-    # Floor at 4096, round down to nearest 1024
-    ctx = min(max_ctx_from_memory, max_context)
-    ctx = max(ctx, 4096)
-    ctx = (ctx // 1024) * 1024
-
-    return ctx
 
 
 # ─── Vision Detection ───────────────────────────────────────────────────────
@@ -481,7 +396,7 @@ def detect_vision_support(
 
 # Families known to have native tool-call chat templates
 _TOOL_CALL_FAMILIES = {
-    "qwen3", "qwen35", "qwen3_coder", "qwen25", "qwen25_coder", "qwen2",
+    "qwen3", "qwen3_coder", "qwen25", "qwen25_coder", "qwen2",
     "llama33", "llama32", "llama31",
     "mistral", "mixtral",
     "phi4", "phi4_mini",
@@ -489,7 +404,6 @@ _TOOL_CALL_FAMILIES = {
     "deepseek_v3", "deepseek_r1",
     "command_r",
     "internlm",
-    "glm4", "glm4_flash",
 }
 
 
@@ -505,7 +419,7 @@ def detect_function_calling(family_key: str | None, gguf_metadata: dict) -> bool
 
 # ─── Thinking Model Detection ───────────────────────────────────────────────
 
-_THINKING_FAMILIES = {"qwen3", "qwen35", "qwen3_coder", "qwq", "deepseek_r1", "glm4_flash"}
+_THINKING_FAMILIES = {"qwen3", "qwen3_coder", "qwq", "deepseek_r1", "glm4_flash"}
 _THINKING_NAME_PATTERNS = ["o1", "o3", "o4", "qwq", "deepseek-r1", "gemini-2.5", "glm"]
 
 
@@ -833,7 +747,6 @@ class ModelRegistry:
         self.models: dict[str, ModelInfo] = {}
         self.personal_projects: list[str] = []
         self._raw_config: dict = {}
-        self._overrides: dict = {}
         self._lock = threading.RLock()
         self._loaded = False
 
@@ -899,7 +812,6 @@ class ModelRegistry:
                 self._raw_config = {}
 
             overrides = self._raw_config.get("overrides", {})
-            self._overrides = overrides
             self.personal_projects = self._raw_config.get("personal_projects", [])
 
             # ── 1. Scan local GGUF directory ──
@@ -940,7 +852,7 @@ class ModelRegistry:
 
             self.models = new_models
 
-            # ── Snapshot profile scores before benchmark enrichment ──
+            # ── 5.5. Snapshot profile scores before benchmark enrichment ──
             for m in new_models.values():
                 m.profile_scores = dict(m.capabilities)
 
@@ -1001,19 +913,8 @@ class ModelRegistry:
                 has_vision_hint=raw["has_vision"],
             )
 
-            # Context length — dynamic based on available memory
-            if "context_length" in model_overrides:
-                context_length = model_overrides["context_length"]
-            else:
-                state = get_gpu_monitor().get_state()
-                context_length = calculate_dynamic_context(
-                    file_size_mb=raw["file_size_mb"],
-                    n_layers=raw["n_layers"],
-                    gpu_layers=0,  # not yet calculated at this point
-                    available_ram_mb=state.ram_available_mb if state else 16384,
-                    available_vram_mb=available_vram,
-                    family_key=raw["family_key"],
-                )
+            # Context length (override > native)
+            context_length = model_overrides.get("context_length", raw["native_ctx"])
 
             # GPU layers
             gpu_layers = model_overrides.get("gpu_layers") or calculate_gpu_layers(
@@ -1217,8 +1118,6 @@ class ModelRegistry:
                 f"| {detected.get('tier', '?')} "
                 f"| ctx={detected['context_length']} "
                 f"| best={model.best_score():.1f}"
-                f"| fc={'✓' if model.supports_function_calling else '✗'}"
-                f"| json={'✓' if model.supports_json_mode else '✗'}"
                 f"{'| 👁️' if model.has_vision else ''}"
                 f"{'| 🧠' if model.thinking_model else ''}"
             )
@@ -1419,10 +1318,6 @@ class ModelRegistry:
         models = self.models
         return models.get(name)
 
-    def get_overrides(self, model_name: str) -> dict:
-        """Return user overrides from models.yaml for a given model name."""
-        return self._overrides.get(model_name, {})
-
     def find_by_litellm_name(self, litellm_name: str) -> ModelInfo | None:
         models = self.models
         for m in models.values():
@@ -1516,26 +1411,6 @@ class ModelRegistry:
                 self.models[name].is_loaded = False
                 self.models[name].api_base = None
 
-    def demote_model(self, name: str, duration: float = 300) -> None:
-        """Temporarily demote a model so the router skips it."""
-        with self._lock:
-            if name in self.models:
-                self.models[name].demoted = True
-                logger.info(f"Model {name} demoted for {duration}s")
-
-                # Schedule un-demotion
-                import threading
-                def _restore():
-                    import time as _t
-                    _t.sleep(duration)
-                    with self._lock:
-                        if name in self.models:
-                            self.models[name].demoted = False
-                            logger.info(f"Model {name} restored from demotion")
-
-                t = threading.Thread(target=_restore, daemon=True)
-                t.start()
-
     def currently_loaded(self) -> ModelInfo | None:
         for m in self.models.values():
             if m.location == "local" and m.is_loaded:
@@ -1618,23 +1493,7 @@ class ModelRegistry:
         # Show task routing preview
         print(f"\n  🎯 Task Routing Preview")
         print(f"  {'─' * 76}")
-        for task in [
-            "planner",
-            "architect",
-            "coder",
-            "implementer",
-            "fixer",
-            "test_generator",
-            "reviewer",
-            "visual_reviewer",
-            "researcher",
-            "analyst",
-            "writer",
-            "summarizer",
-            "assistant",
-            "executor",
-            "error_recovery",
-        ]:
+        for task in ["planner", "coder", "fixer", "reviewer", "writer", "executor"]:
             ranked = self.best_for_task(task, top_k=3)
             if ranked:
                 models_str = " → ".join(f"{n}({s:.1f})" for n, s in ranked)

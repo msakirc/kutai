@@ -139,7 +139,7 @@ def compute_grading_scores(
 
 # ─── Tuning Cycle ────────────────────────────────────────────────────────────
 
-async def run_tuning_cycle(force: bool = False) -> dict[str, Any]:
+async def run_tuning_cycle() -> dict[str, Any]:
     """
     Batch recalibration of all model capability vectors.
 
@@ -181,8 +181,12 @@ async def run_tuning_cycle(force: bool = False) -> dict[str, Any]:
             # Fall back to current capabilities as benchmark baseline
             benchmark_scores = dict(model_info.capabilities)
 
-        # Grading scores from DB
+        # Grading scores from DB — try registry name first, then litellm_name
         model_stats = stats_by_model.get(model_name, [])
+        if not model_stats:
+            litellm_name = getattr(model_info, "litellm_name", "")
+            if litellm_name and litellm_name != model_name:
+                model_stats = stats_by_model.get(litellm_name, [])
         grading_scores, grading_calls = compute_grading_scores(
             model_name, model_stats
         )
@@ -228,10 +232,10 @@ async def run_tuning_cycle(force: bool = False) -> dict[str, Any]:
     return report
 
 
-async def maybe_run_tuning() -> dict[str, Any] | None:
-    """Only runs if 6+ hours since last run."""
+async def maybe_run_tuning(force: bool = False) -> dict[str, Any] | None:
+    """Run tuning if 6+ hours since last run, or if force=True."""
     global _last_run_ts
-    if time.time() - _last_run_ts < TUNING_INTERVAL_SECONDS:
+    if not force and time.time() - _last_run_ts < TUNING_INTERVAL_SECONDS:
         return None
     return await run_tuning_cycle()
 
@@ -253,6 +257,9 @@ def get_prometheus_lines() -> list[str]:
     registry = get_registry()
     lines: list[str] = []
 
+    # ── kutay_model_capability ──
+    lines.append("# HELP kutay_model_capability Model capability score by dimension")
+    lines.append("# TYPE kutay_model_capability gauge")
     for model_name, model_info in registry.models.items():
         caps = model_info.capabilities
         for cap_name, cap_val in caps.items():
@@ -260,14 +267,26 @@ def get_prometheus_lines() -> list[str]:
                 f'kutay_model_capability{{model="{model_name}",'
                 f'capability="{cap_name}"}} {cap_val}'
             )
-        # Average quality across all caps
+
+    # ── kutay_model_quality_avg ──
+    lines.append("# HELP kutay_model_quality_avg Average capability score across all dimensions")
+    lines.append("# TYPE kutay_model_quality_avg gauge")
+    for model_name, model_info in registry.models.items():
+        caps = model_info.capabilities
         if caps:
             avg = round(sum(caps.values()) / len(caps), 2)
             lines.append(
                 f'kutay_model_quality_avg{{model="{model_name}"}} {avg}'
             )
 
+    # ── kutay_autotuner_last_run_timestamp ──
+    lines.append("# HELP kutay_autotuner_last_run_timestamp Unix timestamp of last tuning run")
+    lines.append("# TYPE kutay_autotuner_last_run_timestamp gauge")
     lines.append(f"kutay_autotuner_last_run_timestamp {_last_run_ts}")
+
+    # ── kutay_autotuner_interval_seconds ──
+    lines.append("# HELP kutay_autotuner_interval_seconds Configured tuning interval in seconds")
+    lines.append("# TYPE kutay_autotuner_interval_seconds gauge")
     lines.append(f"kutay_autotuner_interval_seconds {TUNING_INTERVAL_SECONDS}")
 
     return lines

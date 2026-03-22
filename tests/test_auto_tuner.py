@@ -324,7 +324,7 @@ class TestRunTuningCycle(unittest.TestCase):
             import src.models.auto_tuner as at_mod
             orig_last = at_mod._last_run_ts
             try:
-                report = self._run(run_tuning_cycle(force=True))
+                report = self._run(run_tuning_cycle())
             finally:
                 at_mod._last_run_ts = orig_last
 
@@ -441,11 +441,21 @@ class TestPrometheusLines(unittest.TestCase):
         with patch("src.models.model_registry.get_registry", return_value=fake_registry):
             lines = get_prometheus_lines()
 
-        # Should have per-cap lines + avg + last_run + interval
-        self.assertGreaterEqual(len(lines), 4)
+        text = "\n".join(lines)
 
-        # Check capability lines
-        cap_lines = [l for l in lines if "kutay_model_capability" in l]
+        # Check HELP and TYPE headers for each metric family
+        self.assertIn("# HELP kutay_model_capability", text)
+        self.assertIn("# TYPE kutay_model_capability gauge", text)
+        self.assertIn("# HELP kutay_model_quality_avg", text)
+        self.assertIn("# TYPE kutay_model_quality_avg gauge", text)
+        self.assertIn("# HELP kutay_autotuner_last_run_timestamp", text)
+        self.assertIn("# TYPE kutay_autotuner_last_run_timestamp gauge", text)
+        self.assertIn("# HELP kutay_autotuner_interval_seconds", text)
+        self.assertIn("# TYPE kutay_autotuner_interval_seconds gauge", text)
+
+        # Check capability data lines (exclude comments)
+        cap_lines = [l for l in lines
+                     if l.startswith("kutay_model_capability{")]
         self.assertEqual(len(cap_lines), 2)  # two capabilities
 
         for line in cap_lines:
@@ -456,29 +466,177 @@ class TestPrometheusLines(unittest.TestCase):
             float(parts[1])  # should not raise
 
         # Check avg quality line
-        avg_lines = [l for l in lines if "kutay_model_quality_avg" in l]
+        avg_lines = [l for l in lines
+                     if l.startswith("kutay_model_quality_avg{")]
         self.assertEqual(len(avg_lines), 1)
         avg_val = float(avg_lines[0].rsplit(" ", 1)[1])
         self.assertAlmostEqual(avg_val, 7.75, places=2)
 
         # Check autotuner metadata
-        ts_lines = [l for l in lines if "kutay_autotuner_last_run_timestamp" in l]
+        ts_lines = [l for l in lines
+                    if l.startswith("kutay_autotuner_last_run_timestamp ")]
         self.assertEqual(len(ts_lines), 1)
 
-        interval_lines = [l for l in lines if "kutay_autotuner_interval_seconds" in l]
+        interval_lines = [l for l in lines
+                          if l.startswith("kutay_autotuner_interval_seconds ")]
         self.assertEqual(len(interval_lines), 1)
         interval_val = float(interval_lines[0].rsplit(" ", 1)[1])
         self.assertEqual(interval_val, TUNING_INTERVAL_SECONDS)
 
     def test_no_models(self):
-        """Works with an empty registry."""
+        """Works with an empty registry — still emits headers + metadata."""
         fake_registry = FakeRegistry({})
 
         with patch("src.models.model_registry.get_registry", return_value=fake_registry):
             lines = get_prometheus_lines()
 
-        # Should still have the two autotuner metadata lines
-        self.assertEqual(len(lines), 2)
+        # 4 metric families x 2 header lines = 8, plus 2 data lines for
+        # last_run_timestamp and interval_seconds = 10 total
+        self.assertEqual(len(lines), 10)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 7 — litellm_name fallback
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestLitellmNameFallback(unittest.TestCase):
+
+    def _run(self, coro):
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    def test_stats_found_via_litellm_name(self):
+        """When model_stats are keyed by litellm_name, tuning still finds them."""
+        model = FakeModelInfo(
+            name="gemini-flash",
+            litellm_name="gemini/gemini-2.0-flash",
+            capabilities=_make_caps(5.0),
+        )
+        fake_registry = FakeRegistry({"gemini-flash": model})
+
+        # Stats recorded under the litellm_name, not the registry name
+        stats = [{
+            "model": "gemini/gemini-2.0-flash",
+            "agent_type": "coder",
+            "avg_grade": 5.0,
+            "success_rate": 1.0,
+            "total_calls": 60,
+        }]
+
+        mock_get_stats = AsyncMock(return_value=stats)
+
+        with patch("src.infra.db.get_model_stats", mock_get_stats), \
+             patch("src.models.model_registry.get_registry", return_value=fake_registry):
+            import src.models.auto_tuner as at_mod
+            orig = at_mod._last_run_ts
+            try:
+                report = self._run(run_tuning_cycle())
+            finally:
+                at_mod._last_run_ts = orig
+
+        # The model should have been tuned (not skipped), because the
+        # litellm_name fallback found the stats.
+        self.assertIn("gemini-flash", report["tuned_models"])
+        self.assertEqual(
+            report["tuned_models"]["gemini-flash"]["grading_calls"], 60
+        )
+
+    def test_no_fallback_when_registry_name_has_stats(self):
+        """When stats exist under registry name, litellm_name is not used."""
+        model = FakeModelInfo(
+            name="my-model",
+            litellm_name="openai/gpt-4o",
+            capabilities=_make_caps(5.0),
+        )
+        fake_registry = FakeRegistry({"my-model": model})
+
+        stats = [
+            {
+                "model": "my-model",
+                "agent_type": "coder",
+                "avg_grade": 5.0,
+                "success_rate": 1.0,
+                "total_calls": 60,
+            },
+            {
+                "model": "openai/gpt-4o",
+                "agent_type": "coder",
+                "avg_grade": 1.0,
+                "success_rate": 0.1,
+                "total_calls": 100,
+            },
+        ]
+
+        mock_get_stats = AsyncMock(return_value=stats)
+
+        with patch("src.infra.db.get_model_stats", mock_get_stats), \
+             patch("src.models.model_registry.get_registry", return_value=fake_registry):
+            import src.models.auto_tuner as at_mod
+            orig = at_mod._last_run_ts
+            try:
+                report = self._run(run_tuning_cycle())
+            finally:
+                at_mod._last_run_ts = orig
+
+        # Should use the registry-name stats (60 calls), not litellm (100)
+        self.assertIn("my-model", report["tuned_models"])
+        self.assertEqual(
+            report["tuned_models"]["my-model"]["grading_calls"], 60
+        )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 8 — _last_run_ts update & force bypass
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestLastRunTimestamp(unittest.TestCase):
+
+    def _run(self, coro):
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    def test_run_tuning_cycle_updates_last_run_ts(self):
+        """run_tuning_cycle sets _last_run_ts to a recent timestamp."""
+        model = FakeModelInfo(name="m1", capabilities=_make_caps(5.0))
+        fake_registry = FakeRegistry({"m1": model})
+        mock_get_stats = AsyncMock(return_value=[])
+
+        import src.models.auto_tuner as at_mod
+        orig = at_mod._last_run_ts
+        try:
+            at_mod._last_run_ts = 0.0
+            before = time.time()
+            with patch("src.infra.db.get_model_stats", mock_get_stats), \
+                 patch("src.models.model_registry.get_registry", return_value=fake_registry):
+                report = self._run(run_tuning_cycle())
+            after = time.time()
+
+            self.assertGreaterEqual(at_mod._last_run_ts, before)
+            self.assertLessEqual(at_mod._last_run_ts, after)
+            self.assertEqual(report["timestamp"], at_mod._last_run_ts)
+        finally:
+            at_mod._last_run_ts = orig
+
+    def test_maybe_run_tuning_force_bypasses_interval(self):
+        """force=True on maybe_run_tuning runs even if interval hasn't elapsed."""
+        model = FakeModelInfo(name="m1", capabilities=_make_caps(5.0))
+        fake_registry = FakeRegistry({"m1": model})
+        mock_get_stats = AsyncMock(return_value=[])
+
+        import src.models.auto_tuner as at_mod
+        orig = at_mod._last_run_ts
+        try:
+            at_mod._last_run_ts = time.time()  # just ran
+            with patch("src.infra.db.get_model_stats", mock_get_stats), \
+                 patch("src.models.model_registry.get_registry", return_value=fake_registry):
+                # Without force, should return None
+                result_no_force = self._run(maybe_run_tuning(force=False))
+                self.assertIsNone(result_no_force)
+
+                # With force, should run
+                result_forced = self._run(maybe_run_tuning(force=True))
+                self.assertIsNotNone(result_forced)
+                self.assertIn("tuned_models", result_forced)
+        finally:
+            at_mod._last_run_ts = orig
 
 
 if __name__ == "__main__":

@@ -250,8 +250,8 @@ class TestComputeGradingScores(unittest.TestCase):
         self.assertEqual(scores, {})
         self.assertEqual(total, 0)
 
-    def test_multiple_agent_types_averaged(self):
-        """Scores from multiple agent_types are averaged per capability."""
+    def test_multiple_agent_types_call_weighted(self):
+        """Scores from multiple agent_types use call-count-weighted averaging."""
         rows = [
             {
                 "model": "m1",
@@ -271,12 +271,14 @@ class TestComputeGradingScores(unittest.TestCase):
         scores, total = compute_grading_scores("m1", rows)
         self.assertEqual(total, 30)
 
-        # Both coder and fixer contribute to "reasoning" (weight 0.5 and 0.8)
-        # coder reasoning: 8.0 * 0.5 = 4.0
-        # fixer reasoning: 6.0 * 0.8 = 4.8
-        # average = (4.0 + 4.8) / 2 = 4.4
+        # Both coder and fixer contribute to "reasoning".
+        # coder: quality=8.0, profile_weight=0.5, eff_calls=min(20,50)=20
+        #   w = 0.5*20 = 10,  numerator += 8.0*10 = 80
+        # fixer: quality=6.0, profile_weight=0.8, eff_calls=min(10,50)=10
+        #   w = 0.8*10 = 8,   numerator += 6.0*8 = 48
+        # weighted_avg = (80+48) / (10+8) = 128/18 ≈ 7.11
         self.assertIn("reasoning", scores)
-        self.assertAlmostEqual(scores["reasoning"], 4.4, places=1)
+        self.assertAlmostEqual(scores["reasoning"], 128.0 / 18.0, places=1)
 
     def test_scores_clamped(self):
         """Output scores are clamped to 0-10."""
@@ -637,6 +639,120 @@ class TestLastRunTimestamp(unittest.TestCase):
                 self.assertIn("tuned_models", result_forced)
         finally:
             at_mod._last_run_ts = orig
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 9 — compute_grading_scores model_name filtering
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestGradingScoresModelFiltering(unittest.TestCase):
+
+    def test_filters_by_model_name(self):
+        """Only rows matching the given model_name are used."""
+        rows = [
+            {
+                "model": "gpt-4o",
+                "agent_type": "coder",
+                "avg_grade": 5.0,
+                "success_rate": 1.0,
+                "total_calls": 30,
+            },
+            {
+                "model": "claude-sonnet",
+                "agent_type": "coder",
+                "avg_grade": 2.0,
+                "success_rate": 0.5,
+                "total_calls": 20,
+            },
+        ]
+        scores, total = compute_grading_scores("gpt-4o", rows)
+
+        # Only gpt-4o's 30 calls should count
+        self.assertEqual(total, 30)
+        # quality = 5.0 * 2.0 * (0.5 + 0.5*1.0) = 10.0
+        # code_generation weight=1.0 → 10.0
+        self.assertAlmostEqual(scores["code_generation"], 10.0, places=1)
+
+    def test_empty_when_no_matching_model(self):
+        """Returns empty scores when no rows match model_name."""
+        rows = [{
+            "model": "other-model",
+            "agent_type": "coder",
+            "avg_grade": 5.0,
+            "success_rate": 1.0,
+            "total_calls": 50,
+        }]
+        scores, total = compute_grading_scores("my-model", rows)
+        self.assertEqual(scores, {})
+        self.assertEqual(total, 0)
+
+    def test_call_count_capped_at_50(self):
+        """effective_calls is capped at 50 even with more actual calls."""
+        # Two agent types with different call counts: 100 and 10
+        rows = [
+            {
+                "model": "m1",
+                "agent_type": "coder",
+                "avg_grade": 4.0,
+                "success_rate": 1.0,
+                "total_calls": 100,  # capped to 50
+            },
+            {
+                "model": "m1",
+                "agent_type": "fixer",
+                "avg_grade": 2.0,
+                "success_rate": 1.0,
+                "total_calls": 10,
+            },
+        ]
+        scores, total = compute_grading_scores("m1", rows)
+        self.assertEqual(total, 110)
+
+        # For code_generation: only coder contributes (fixer weight=0.6)
+        # coder: quality=8.0, weight=1.0, eff_calls=50 → w=50, num=8.0*50=400
+        # fixer: quality=4.0, weight=0.6, eff_calls=10 → w=6, num=4.0*6=24
+        # result = (400+24)/(50+6) = 424/56 ≈ 7.57
+        self.assertIn("code_generation", scores)
+        self.assertAlmostEqual(scores["code_generation"], 424.0 / 56.0, places=1)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 10 — Prometheus label escaping
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestPrometheusLabelEscaping(unittest.TestCase):
+
+    def test_backslash_and_quote_escaped(self):
+        """Model names with backslash and double-quote are escaped."""
+        from src.models.auto_tuner import _prom_escape_label
+        caps = {"reasoning": 5.0}
+        model = FakeModelInfo(
+            name='model\\"weird',
+            capabilities=caps,
+        )
+        fake_registry = FakeRegistry({'model\\"weird': model})
+
+        with patch("src.models.model_registry.get_registry", return_value=fake_registry):
+            lines = get_prometheus_lines()
+
+        cap_lines = [l for l in lines if l.startswith("kutay_model_capability{")]
+        self.assertEqual(len(cap_lines), 1)
+        # The backslash should become \\\\ and " should become \\"
+        self.assertIn('model="model\\\\\\"weird"', cap_lines[0])
+
+    def test_newline_escaped(self):
+        """Newlines in label values are escaped to \\n."""
+        from src.models.auto_tuner import _prom_escape_label
+        self.assertEqual(_prom_escape_label("line1\nline2"), "line1\\nline2")
+        self.assertEqual(_prom_escape_label('a"b'), 'a\\"b')
+        self.assertEqual(_prom_escape_label("a\\b"), "a\\\\b")
+
+    def test_normal_names_unchanged(self):
+        """Normal model names pass through unmodified."""
+        from src.models.auto_tuner import _prom_escape_label
+        self.assertEqual(_prom_escape_label("gpt-4o"), "gpt-4o")
+        self.assertEqual(_prom_escape_label("gemini/gemini-2.0-flash"),
+                         "gemini/gemini-2.0-flash")
 
 
 if __name__ == "__main__":

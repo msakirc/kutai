@@ -93,18 +93,30 @@ def compute_grading_scores(
     Each row has: model, agent_type, avg_grade (1-5), success_rate (0-1),
     total_calls.
 
+    Only rows whose ``model`` field matches *model_name* are considered
+    (defensive filtering — callers may pass the full stats list).
+
     Steps:
-    1. Map agent_type → TASK_PROFILES → find dominant capabilities (weight >= 0.3)
-    2. Convert grade to quality: avg_grade * 2.0 * (0.5 + 0.5 * success_rate)
-    3. Distribute quality across capabilities weighted by profile weights.
-    4. Average per-capability across all agent_types that contributed.
+    1. Filter rows to matching model_name.
+    2. Map agent_type -> TASK_PROFILES -> find dominant capabilities (weight >= 0.3).
+    3. Convert grade to quality: avg_grade * 2.0 * (0.5 + 0.5 * success_rate).
+    4. Distribute quality across capabilities weighted by profile weights.
+    5. Call-count-weighted average per capability: each agent_type's
+       contribution is weighted by ``min(calls, 50)`` so agent_types with
+       more observations have more influence.
 
     Returns (scores_dict, total_call_count).
     """
-    cap_accum: dict[str, list[float]] = {}
+    # Accumulate (weighted_quality * effective_weight, effective_weight) per cap
+    cap_weighted_sum: dict[str, float] = {}
+    cap_weight_total: dict[str, float] = {}
     total_calls = 0
 
     for row in stats_rows:
+        row_model = row.get("model", "")
+        if row_model != model_name:
+            continue
+
         agent_type = row.get("agent_type", "")
         avg_grade = row.get("avg_grade", 0.0)
         success_rate = row.get("success_rate", 0.0)
@@ -120,19 +132,27 @@ def compute_grading_scores(
         # quality on 0-10 scale
         quality = avg_grade * 2.0 * (0.5 + 0.5 * success_rate)
 
+        # effective_weight: more calls = more influence, capped at 50
+        effective_calls = min(calls, 50)
+
         for cap_key, weight in profile.items():
             cap_name = cap_key.value if isinstance(cap_key, Cap) else cap_key
             if weight < 0.3:
                 continue
-            weighted_quality = quality * weight
-            if cap_name not in cap_accum:
-                cap_accum[cap_name] = []
-            cap_accum[cap_name].append(weighted_quality)
+            w = weight * effective_calls
+            cap_weighted_sum[cap_name] = (
+                cap_weighted_sum.get(cap_name, 0.0) + quality * w
+            )
+            cap_weight_total[cap_name] = (
+                cap_weight_total.get(cap_name, 0.0) + w
+            )
 
-    # Average contributions per capability
+    # Weighted average per capability
     scores: dict[str, float] = {}
-    for cap_name, values in cap_accum.items():
-        scores[cap_name] = round(min(10.0, max(0.0, sum(values) / len(values))), 2)
+    for cap_name, ws in cap_weighted_sum.items():
+        wt = cap_weight_total[cap_name]
+        if wt > 0:
+            scores[cap_name] = round(min(10.0, max(0.0, ws / wt)), 2)
 
     return scores, total_calls
 
@@ -182,13 +202,16 @@ async def run_tuning_cycle() -> dict[str, Any]:
             benchmark_scores = dict(model_info.capabilities)
 
         # Grading scores from DB — try registry name first, then litellm_name
+        stats_key = model_name
         model_stats = stats_by_model.get(model_name, [])
         if not model_stats:
             litellm_name = getattr(model_info, "litellm_name", "")
             if litellm_name and litellm_name != model_name:
                 model_stats = stats_by_model.get(litellm_name, [])
+                if model_stats:
+                    stats_key = litellm_name
         grading_scores, grading_calls = compute_grading_scores(
-            model_name, model_stats
+            stats_key, model_stats
         )
 
         if not grading_scores and not benchmark_scores:
@@ -242,6 +265,16 @@ async def maybe_run_tuning(force: bool = False) -> dict[str, Any] | None:
 
 # ─── Prometheus Metrics ──────────────────────────────────────────────────────
 
+
+def _prom_escape_label(value: str) -> str:
+    """Escape a Prometheus label value (inside double quotes).
+
+    Per the exposition format spec, backslash, double-quote, and newline
+    must be escaped.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
 def get_prometheus_lines() -> list[str]:
     """
     Generate Prometheus-format gauge lines for all model capabilities.
@@ -261,22 +294,27 @@ def get_prometheus_lines() -> list[str]:
     lines.append("# HELP kutay_model_capability Model capability score by dimension")
     lines.append("# TYPE kutay_model_capability gauge")
     for model_name, model_info in registry.models.items():
+        m = _prom_escape_label(model_name)
         caps = model_info.capabilities
         for cap_name, cap_val in caps.items():
+            c = _prom_escape_label(
+                cap_name.value if isinstance(cap_name, Cap) else str(cap_name)
+            )
             lines.append(
-                f'kutay_model_capability{{model="{model_name}",'
-                f'capability="{cap_name}"}} {cap_val}'
+                f'kutay_model_capability{{model="{m}",'
+                f'capability="{c}"}} {cap_val}'
             )
 
     # ── kutay_model_quality_avg ──
     lines.append("# HELP kutay_model_quality_avg Average capability score across all dimensions")
     lines.append("# TYPE kutay_model_quality_avg gauge")
     for model_name, model_info in registry.models.items():
+        m = _prom_escape_label(model_name)
         caps = model_info.capabilities
         if caps:
             avg = round(sum(caps.values()) / len(caps), 2)
             lines.append(
-                f'kutay_model_quality_avg{{model="{model_name}"}} {avg}'
+                f'kutay_model_quality_avg{{model="{m}"}} {avg}'
             )
 
     # ── kutay_autotuner_last_run_timestamp ──

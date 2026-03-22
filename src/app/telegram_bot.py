@@ -74,6 +74,9 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("preview", self.cmd_preview))      # Workflow preview
         self.app.add_handler(CommandHandler("dlq", self.cmd_dlq))                # Dead-letter queue
         self.app.add_handler(CommandHandler("load", self.cmd_load))              # GPU load mode
+        self.app.add_handler(CommandHandler("tune", self.cmd_tune))              # Phase 2.4
+        self.app.add_handler(CommandHandler("feedback", self.cmd_feedback))    # Phase 13.3
+        self.app.add_handler(CommandHandler("autonomy", self.cmd_autonomy))    # Phase 14.2
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.REPLY,
@@ -114,6 +117,8 @@ class TelegramInterface:
             "/credential — Manage API credentials\n"
             "/cost <goal\\_id> — View per-goal cost breakdown\n"
             "/preview <idea> — Preview workflow steps & cost estimate\n"
+            "/feedback <task\\_id> <good|bad|partial> [reason] — Rate a task\n"
+            "/autonomy <low|medium|high|paranoid> — Set risk autonomy level\n"
             "/digest — Get daily digest now\n\n"
             "Or just send a message — I'll figure out what to do.",
             parse_mode="Markdown"
@@ -738,6 +743,69 @@ class TelegramInterface:
         except Exception as e:
             await update.message.reply_text(f"❌ Error: {e}")
 
+    async def cmd_feedback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Rate a completed task. /feedback <task_id> <good|bad|partial> [reason]"""
+        args = context.args
+        if len(args) < 2:
+            await update.message.reply_text("Usage: /feedback <task_id> <good|bad|partial> [reason]")
+            return
+        try:
+            from src.memory.feedback import record_feedback
+            task_id = int(args[0])
+            rating = args[1].lower()
+            if rating not in ("good", "bad", "partial"):
+                await update.message.reply_text("Rating must be: good, bad, or partial")
+                return
+            reason = " ".join(args[2:]) if len(args) > 2 else None
+            await record_feedback(task_id=task_id, feedback_type=rating, reason=reason)
+            emoji = {"good": "👍", "bad": "👎", "partial": "🤷"}[rating]
+            msg = f"{emoji} Feedback recorded for task #{task_id}: *{rating}*"
+            if reason:
+                msg += f"\nReason: _{reason}_"
+            await update.message.reply_text(msg, parse_mode="Markdown")
+        except (ValueError, IndexError):
+            await update.message.reply_text("Usage: /feedback <task_id> <good|bad|partial> [reason]")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    async def cmd_autonomy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Set or view risk autonomy threshold. /autonomy [low|medium|high|paranoid]"""
+        args = context.args
+        try:
+            from src.security.risk_assessor import set_autonomy_threshold, get_autonomy_threshold
+            levels = {
+                "paranoid": 2,
+                "low": 4,
+                "medium": 6,
+                "high": 8,
+            }
+            if not args:
+                current = get_autonomy_threshold()
+                level_name = next((k for k, v in levels.items() if v == current), f"custom ({current})")
+                await update.message.reply_text(
+                    f"🛡️ *Autonomy Level*\n\nCurrent threshold: *{level_name}* (score ≥{current} requires approval)",
+                    parse_mode="Markdown",
+                )
+                return
+            level = args[0].lower()
+            if level not in levels:
+                await update.message.reply_text(f"Unknown level. Choose: {', '.join(levels.keys())}")
+                return
+            threshold = levels[level]
+            set_autonomy_threshold(threshold)
+            desc = {
+                "paranoid": "require approval for almost everything",
+                "low": "require approval for medium+ risk tasks",
+                "medium": "require approval for high-risk tasks only",
+                "high": "require approval only for very dangerous tasks",
+            }[level]
+            await update.message.reply_text(
+                f"🛡️ Autonomy set to *{level}* — will {desc}.",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+
     async def cmd_ingest(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Ingest a URL or file into the knowledge base."""
         if not context.args:
@@ -1140,6 +1208,33 @@ class TelegramInterface:
         msg = await set_load_mode(args[0].lower())
         await update.message.reply_text(msg, parse_mode="Markdown")
         logger.info("load mode changed via command", mode=args[0])
+
+    async def cmd_tune(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/tune — force an auto-tuning cycle and report results."""
+        await update.message.reply_text("Running tuning cycle...")
+        try:
+            from src.models.auto_tuner import maybe_run_tuning
+            report = await maybe_run_tuning(force=True)
+
+            tuned = report.get("tuned_models", {}) if report else {}
+            if not tuned:
+                await update.message.reply_text("No models needed tuning adjustment.")
+                return
+
+            lines = ["*Auto-Tuning Report*\n"]
+            for model, info in tuned.items():
+                changes = info["changes"]
+                gw = info["grading_weight"]
+                lines.append(f"*{model}* (grading weight: {gw:.0%})")
+                for cap, vals in changes.items():
+                    arrow = "\u2191" if vals["new"] > vals["old"] else "\u2193"
+                    lines.append(f"  {cap}: {vals['old']:.1f} {arrow} {vals['new']:.1f}")
+            lines.append(f"\n_{len(report.get('skipped', []))} models skipped (no data)_")
+
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        except Exception as e:
+            logger.error("tune command failed", error=str(e))
+            await update.message.reply_text(f"Tuning failed: {e}")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Smart handler: detect if it's a goal or simple task, or handle file uploads."""

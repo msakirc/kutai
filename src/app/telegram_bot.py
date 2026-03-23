@@ -42,11 +42,13 @@ class TelegramInterface:
         self.user_last_task_id = {}
         # Explicit clarification tracking: chat_id → task_id
         self._pending_clarifications: dict[int, int] = {}
+        self._pending_goal_refinements: dict[int, dict] = {}  # Phase 14.5
 
 
     def _setup_handlers(self):
         self.app.add_handler(CommandHandler("start", self.cmd_start))
         self.app.add_handler(CommandHandler("goal", self.cmd_add_goal))
+        self.app.add_handler(CommandHandler("goalforce", self.cmd_add_goal_force))  # Phase 14.5
         self.app.add_handler(CommandHandler("task", self.cmd_add_task))
         self.app.add_handler(CommandHandler("goals", self.cmd_list_goals))
         self.app.add_handler(CommandHandler("queue", self.cmd_view_queue))
@@ -80,6 +82,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("tune", self.cmd_tune))              # Phase 2.4
         self.app.add_handler(CommandHandler("feedback", self.cmd_feedback))    # Phase 13.3
         self.app.add_handler(CommandHandler("improve", self.cmd_improve))      # Phase 13.4
+        self.app.add_handler(CommandHandler("remember", self.cmd_remember))    # Phase 14.4
+        self.app.add_handler(CommandHandler("recall", self.cmd_recall))        # Phase 14.4
         self.app.add_handler(CommandHandler("autonomy", self.cmd_autonomy))    # Phase 14.2
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(
@@ -139,15 +143,83 @@ class TelegramInterface:
             return
 
         description = " ".join(context.args)
+        chat_id = update.message.chat_id
+
+        # Phase 14.5: Proactive goal refinement for vague goals
+        if await self._is_vague_goal(description):
+            questions = await self._generate_goal_questions(description)
+            if questions:
+                self._pending_goal_refinements[chat_id] = {
+                    "original": description,
+                    "questions": questions,
+                }
+                await update.message.reply_text(
+                    f"🤔 Your goal seems broad. Let me ask a few questions "
+                    f"to help plan it better:\n\n{questions}\n\n"
+                    f"_Reply with answers, or send_ `/goalforce {description}` "
+                    f"_to skip refinement and create as-is._",
+                    parse_mode="Markdown",
+                )
+                return
+
+        await self._create_goal(update, description)
+
+    async def _is_vague_goal(self, description: str) -> bool:
+        """Heuristic check: is the goal too vague for effective planning?"""
+        words = description.split()
+        # Very short goals are likely vague
+        if len(words) <= 5:
+            return True
+        # If it has numbers, URLs, file paths, or specific tech terms → probably specific enough
+        import re
+        if re.search(r'\d+|https?://|/\w+\.\w+|\.py|\.js|\.ts|API|endpoint|database|deploy', description, re.I):
+            return False
+        # Medium-length but no concrete nouns → check with heuristic
+        if len(words) <= 10:
+            return True
+        return False
+
+    async def _generate_goal_questions(self, description: str) -> str | None:
+        """Use LLM to generate clarifying questions for a vague goal."""
+        try:
+            from ..core.router import ModelRequirements, call_model
+            reqs = ModelRequirements(
+                task="router",
+                agent_type="goal_refiner",
+                difficulty=3,
+                prefer_speed=True,
+                priority=2,
+                estimated_input_tokens=200,
+                estimated_output_tokens=200,
+            )
+            messages = [{
+                "role": "user",
+                "content": (
+                    f"A user wants to set this goal for an AI assistant:\n"
+                    f"\"{description}\"\n\n"
+                    f"This goal is vague. Generate 2-3 short clarifying questions "
+                    f"that would help create a concrete, actionable plan. "
+                    f"Number them. Be concise. No preamble."
+                ),
+            }]
+            response = await call_model(reqs, messages)
+            return response.get("content", "").strip() or None
+        except Exception as e:
+            logger.debug(f"Goal refinement LLM call failed: {e}")
+            return None
+
+    async def _create_goal(self, update: Update, description: str, extra_context: str = ""):
+        """Actually create and plan a goal."""
+        full_desc = f"{description}\n\nAdditional context: {extra_context}" if extra_context else description
         title = description[:80]
-        goal_id = await add_goal(title=title, description=description, priority=7)
+        goal_id = await add_goal(title=title, description=full_desc, priority=7)
 
         # Phase 7.1: Auto-link goal to active project
         await self._try_link_goal_to_project(goal_id)
 
         # Trigger planning
         if self.orchestrator:
-            await self.orchestrator.plan_goal(goal_id, title, description)
+            await self.orchestrator.plan_goal(goal_id, title, full_desc)
 
         await update.message.reply_text(
             f" *Goal #{goal_id} created*\n\n"
@@ -156,6 +228,16 @@ class TelegramInterface:
             f"I'll update you on progress._",
             parse_mode="Markdown"
         )
+
+    async def cmd_add_goal_force(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Create a goal immediately, skipping vagueness refinement."""
+        if not context.args:
+            await update.message.reply_text("Usage: /goalforce <description>")
+            return
+        description = " ".join(context.args)
+        chat_id = update.message.chat_id
+        self._pending_goal_refinements.pop(chat_id, None)
+        await self._create_goal(update, description)
 
     async def cmd_add_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not context.args:
@@ -1290,6 +1372,65 @@ class TelegramInterface:
             logger.error("improve command failed", error=str(e))
             await update.message.reply_text(f"Analysis failed: {e}")
 
+    # ── Phase 14.4: /remember and /recall ─────────────────────────────────────
+
+    async def cmd_remember(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Store a user fact in the knowledge base for later recall."""
+        text = " ".join(context.args) if context.args else ""
+        if not text:
+            await update.message.reply_text(
+                "Usage: `/remember <fact or note>`\n"
+                "Example: `/remember The staging server is at 10.0.1.50`",
+                parse_mode="Markdown",
+            )
+            return
+        try:
+            from ..memory.rag import store_fact
+            doc_id = await store_fact(
+                text,
+                category="user_knowledge",
+                source="telegram",
+                importance=8,
+            )
+            await update.message.reply_text(
+                f"✅ Remembered! (id: `{doc_id or 'stored'}`)\n"
+                f"Use `/recall` to search your notes later.",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            logger.error("remember command failed", error=str(e))
+            await update.message.reply_text(f"Failed to store: {e}")
+
+    async def cmd_recall(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Search the knowledge base for previously stored facts."""
+        query_text = " ".join(context.args) if context.args else ""
+        if not query_text:
+            await update.message.reply_text(
+                "Usage: `/recall <search query>`\n"
+                "Example: `/recall staging server address`",
+                parse_mode="Markdown",
+            )
+            return
+        try:
+            from ..memory.vector_store import query as vs_query
+            results = await vs_query(query_text, collection="semantic", top_k=5)
+            if not results:
+                await update.message.reply_text("No matching memories found.")
+                return
+            lines = ["🔍 *Recall results:*\n"]
+            for i, r in enumerate(results, 1):
+                text = r.get("text", r.get("document", ""))[:200]
+                score = r.get("score", r.get("distance", 0))
+                cat = r.get("metadata", {}).get("category", "")
+                tag = f" [{cat}]" if cat else ""
+                lines.append(f"{i}. {text}{tag}")
+                if score:
+                    lines.append(f"   _relevance: {score:.2f}_")
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        except Exception as e:
+            logger.error("recall command failed", error=str(e))
+            await update.message.reply_text(f"Recall failed: {e}")
+
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Smart handler: LLM-classified message routing with clarification priority."""
         chat_id = update.message.chat_id
@@ -1342,6 +1483,15 @@ class TelegramInterface:
                     self._pending_clarifications.pop(chat_id, None)
             except Exception:
                 self._pending_clarifications.pop(chat_id, None)
+
+        # ═══════════════════════════════════════════════════════
+        # PRIORITY 1.5: Check for pending goal refinement
+        # ═══════════════════════════════════════════════════════
+        refinement = self._pending_goal_refinements.pop(chat_id, None)
+        if refinement:
+            # User answered the clarifying questions — create goal with enriched context
+            await self._create_goal(update, refinement["original"], extra_context=text)
+            return
 
         # Also check DB for ANY task in needs_clarification (handles bot restart)
         try:

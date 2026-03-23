@@ -1735,21 +1735,55 @@ class Orchestrator:
     # ─── Daily Digest ────────────────────────────────────────────────────
 
     async def daily_digest(self):
-        """Send daily status summary."""
+        """Phase 14.1: Enhanced morning briefing with overnight results and system health."""
         stats = await get_daily_stats()
         goals = await get_active_goals()
 
-        goals_text = "\n".join(f"  • {g['title']}" for g in goals[:5]) or "  None"
+        goals_text = "\n".join(f"  - {g['title']}" for g in goals[:5]) or "  None"
+
+        # Gather additional intelligence
+        pending_approvals = 0
+        try:
+            from ..infra.db import get_db
+            db = await get_db()
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = 'awaiting_approval'"
+            )
+            row = await cursor.fetchone()
+            pending_approvals = row[0] if row else 0
+        except Exception:
+            pass
+
+        # System health indicators
+        health_lines = []
+        try:
+            from ..infra.load_manager import get_load_mode
+            mode = await get_load_mode()
+            health_lines.append(f"  GPU: {mode} mode")
+        except Exception:
+            pass
+        try:
+            from ..infra.metrics import get_all_counters
+            counters = get_all_counters()
+            queue = int(counters.get("queue_depth", 0))
+            health_lines.append(f"  Queue: {queue} tasks")
+        except Exception:
+            pass
+
+        health_text = "\n".join(health_lines) if health_lines else "  All systems normal"
+        approval_line = f"\n*Pending approvals:* {pending_approvals}" if pending_approvals else ""
 
         await self.telegram.send_notification(
-            f"📊 *Daily Digest*\n\n"
-            f"**Tasks today:**\n"
-            f"  ✅ Completed: {stats['completed']}\n"
-            f"  ⏳ Pending: {stats['pending']}\n"
-            f"  ⚙️ Processing: {stats['processing']}\n"
-            f"  ❌ Failed: {stats['failed']}\n"
-            f"  💰 Cost today: ${stats['today_cost']:.4f}\n\n"
-            f"**Active goals:**\n{goals_text}"
+            f"*Morning Briefing*\n\n"
+            f"*Tasks (last 24h):*\n"
+            f"  Completed: {stats['completed']}\n"
+            f"  Pending: {stats['pending']}\n"
+            f"  Processing: {stats['processing']}\n"
+            f"  Failed: {stats['failed']}\n"
+            f"  Cost: ${stats['today_cost']:.4f}\n\n"
+            f"*Active goals:*\n{goals_text}"
+            f"{approval_line}\n\n"
+            f"*System health:*\n{health_text}"
         )
 
     # ─── Main Loop ───────────────────────────────────────────────────────
@@ -1875,10 +1909,13 @@ class Orchestrator:
                         logger.info(f"[Cycle {self.cycle_count}] Idle")
                     await asyncio.sleep(3)
 
-                hours_since_digest = (datetime.now() - self.last_digest).total_seconds() / 3600
-                if hours_since_digest >= 24:
+                # Phase 14.1: Time-based morning briefing (default 9:00 local)
+                now = datetime.now()
+                briefing_hour = int(os.environ.get("BRIEFING_HOUR", "9"))
+                if (now.hour == briefing_hour
+                        and now.date() > self.last_digest.date()):
                     await self.daily_digest()
-                    self.last_digest = datetime.now()
+                    self.last_digest = now
 
                 # ── Phase 11.6: Memory decay (weekly) ──
                 days_since_decay = (

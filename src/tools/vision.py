@@ -27,7 +27,7 @@ async def analyze_image(filepath: str, question: str = "Describe what you see in
             return "Error: no vision-capable model available"
 
         logger.info("analyzing image", filepath=filepath, model=vision_model.name)
-        response = await litellm.acompletion(
+        kwargs = dict(
             model=vision_model.litellm_name,
             messages=[{"role": "user", "content": [
                 {"type": "text", "text": question},
@@ -35,6 +35,11 @@ async def analyze_image(filepath: str, question: str = "Describe what you see in
             ]}],
             max_tokens=1024,
         )
+        if vision_model.is_local and vision_model.location != "ollama":
+            kwargs["api_key"] = "sk-no-key"
+        if vision_model.api_base:
+            kwargs["api_base"] = vision_model.api_base
+        response = await litellm.acompletion(**kwargs)
         return response.choices[0].message.content
     except Exception as e:
         logger.error("vision analysis failed", filepath=filepath, error=str(e))

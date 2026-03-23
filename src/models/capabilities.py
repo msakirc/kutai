@@ -366,13 +366,13 @@ def score_model_for_task(
     ops = model_operational
 
     # ── Hard constraint filtering ──
+    # NOTE: function_calling & vision are true hard requirements.
+    # needs_thinking and needs_json_mode are SOFT preferences —
+    # handled via scoring bonuses, not hard rejection.
+    # The router's outer filter loop already enforces the real hard ones.
     if requirements.needs_function_calling and not ops.get("supports_function_calling", False):
         return -1.0
-    if requirements.needs_json_mode and not ops.get("supports_json_mode", False):
-        return -1.0
     if requirements.needs_vision and model_capabilities.get(Cap.VISION, 0) < 1.0:
-        return -1.0
-    if requirements.needs_thinking and not ops.get("thinking_model", False):
         return -1.0
     if requirements.min_context and ops.get("context_length", 0) < requirements.min_context:
         return -1.0
@@ -404,8 +404,23 @@ def score_model_for_task(
 
     base_score = weighted_sum / weight_total  # 0-10 scale
 
-    # ── Soft preference modifiers (±10% max) ──
+    # ── Soft preference modifiers (±15% max) ──
     modifier = 1.0
+
+    # Thinking model bonus — prefer thinking models for complex tasks
+    # but don't exclude non-thinking models (groq-llama-70b is fine)
+    if requirements.needs_thinking:
+        if ops.get("thinking_model", False):
+            modifier += 0.08  # thinking model gets a nice boost
+        else:
+            modifier -= 0.03  # mild penalty, not exclusion
+
+    # JSON mode bonus — prefer models that support it, but don't exclude
+    if requirements.needs_json_mode:
+        if ops.get("supports_json_mode", False):
+            modifier += 0.03
+        else:
+            modifier -= 0.02
 
     if requirements.prefer_local and ops.get("location") == "local":
         modifier += 0.05

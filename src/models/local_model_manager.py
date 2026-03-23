@@ -162,6 +162,12 @@ class LocalModelManager:
         Returns True if the new model is healthy.
         """
         async with self._swap_lock:
+            # Re-check after acquiring lock — another task may have already
+            # loaded the model while we were waiting.
+            if self.current_model == model_name and await self._health_check():
+                logger.debug(f"Model {model_name} already healthy (resolved under lock)")
+                return True
+
             registry = get_registry()
             model_info = registry.get(model_name)
 
@@ -193,6 +199,46 @@ class LocalModelManager:
             # Stop existing server
             await self._stop_server()
 
+            # ── Recalculate context + gpu_layers with live memory state ──
+            # Server is stopped, so readings reflect true free memory.
+            gpu_monitor.invalidate_cache()  # force fresh reading
+            fresh_state = gpu_monitor.get_state()
+
+            from .model_registry import calculate_dynamic_context, calculate_gpu_layers
+
+            # Check for user override in models.yaml
+            registry_overrides = registry.get_overrides(model_name)
+
+            if "context_length" not in registry_overrides:
+                new_ctx = calculate_dynamic_context(
+                    file_size_mb=model_info.file_size_mb,
+                    n_layers=model_info.total_layers,
+                    gpu_layers=model_info.gpu_layers,
+                    available_ram_mb=fresh_state.ram_available_mb,
+                    available_vram_mb=fresh_state.gpu.vram_free_mb,
+                    family_key=model_info.family,
+                )
+                if new_ctx != model_info.context_length:
+                    logger.info(
+                        f"📐 Dynamic context: {model_info.context_length} → {new_ctx} "
+                        f"(RAM free: {fresh_state.ram_available_mb}MB, "
+                        f"VRAM free: {fresh_state.gpu.vram_free_mb}MB)"
+                    )
+                    model_info.context_length = new_ctx
+
+            if "gpu_layers" not in registry_overrides:
+                new_layers = calculate_gpu_layers(
+                    file_size_mb=model_info.file_size_mb,
+                    n_layers=model_info.total_layers,
+                    available_vram_mb=fresh_state.gpu.vram_free_mb,
+                    context_length=model_info.context_length,
+                )
+                if new_layers != model_info.gpu_layers:
+                    logger.info(
+                        f"📐 Dynamic GPU layers: {model_info.gpu_layers} → {new_layers}"
+                    )
+                    model_info.gpu_layers = new_layers
+
             # Start new server
             success = await self._start_server(model_info)
 
@@ -211,10 +257,27 @@ class LocalModelManager:
             else:
                 self.current_model = None
                 registry.mark_unloaded(model_name)
+                # Demote failed model so the router skips it on retry
+                registry.demote_model(model_name, duration=300)
                 logger.error(
-                    f"❌ Failed to load {model_name} after {swap_duration:.1f}s"
+                    f"❌ Failed to load {model_name} after {swap_duration:.1f}s "
+                    f"(demoted for 5 min)"
                 )
                 return False
+
+    @staticmethod
+    def _get_inference_threads() -> int:
+        """Use physical core count for inference threads (not hyperthreads)."""
+        try:
+            import psutil
+            # physical cores only — hyperthreads hurt llama.cpp performance
+            physical = psutil.cpu_count(logical=False) or 4
+            # Reserve 2 cores for the orchestrator + OS
+            return max(2, physical - 2)
+        except ImportError:
+            import os
+            # Fallback: logical cores / 2 as rough estimate of physical
+            return max(2, (os.cpu_count() or 4) // 2 - 1)
 
     async def _start_server(self, model: ModelInfo) -> bool:
         """
@@ -227,15 +290,21 @@ class LocalModelManager:
             "--host", "127.0.0.1",
             "--n-gpu-layers", str(model.gpu_layers),
             "--ctx-size", str(model.context_length),
-            "--flash-attn",
+            "--flash-attn", "auto",
             "--metrics",
+            # ── Performance flags ──
+            "--mlock",              # lock model weights in RAM (prevent swap to disk)
+            "--no-mmap",            # load weights into RAM upfront (faster inference, slower startup)
+            "--threads", str(self._get_inference_threads()),
+            "--batch-size", "512",  # prompt processing batch size
+            "--ubatch-size", "256", # micro-batch for generation
         ]
 
         # MoE models benefit from these flags
         if model.model_type == "moe":
             cmd.extend(["--override-kv", "tokenizer.ggml.eos_token_id=int:151645"])
 
-        logger.info(f"Starting llama-server: {' '.join(cmd[:8])}...")
+        logger.info(f"Starting llama-server: {' '.join(cmd)}...")
 
         try:
             # Use CREATE_NO_WINDOW on Windows to hide the console
@@ -347,6 +416,72 @@ class LocalModelManager:
                     check_interval += 0.5
 
         return False
+
+    async def get_metrics(self) -> dict:
+        """
+        Fetch live metrics from llama-server's /metrics (Prometheus format).
+        Returns parsed dict with key performance indicators.
+        """
+        result = {
+            **self.get_status(),
+            "prompt_tokens_total": 0,
+            "generation_tokens_total": 0,
+            "prompt_seconds_total": 0.0,
+            "generation_seconds_total": 0.0,
+            "prompt_tokens_per_second": 0.0,
+            "generation_tokens_per_second": 0.0,
+            "requests_processing": 0,
+            "requests_pending": 0,
+            "kv_cache_usage_percent": 0.0,
+        }
+        if not self.is_loaded:
+            return result
+
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"{self.api_base}/metrics", timeout=3.0)
+                if resp.status_code != 200:
+                    return result
+
+                for line in resp.text.splitlines():
+                    if line.startswith("#"):
+                        continue
+                    # Parse Prometheus lines: metric_name{labels} value
+                    parts = line.split()
+                    if len(parts) < 2:
+                        continue
+                    metric = parts[0].split("{")[0]
+                    try:
+                        val = float(parts[-1])
+                    except ValueError:
+                        continue
+
+                    # Normalize metric name: llama.cpp uses either colons or
+                    # underscores depending on version (e.g., llamacpp:foo or llamacpp_foo)
+                    m = metric.replace(":", "_")
+
+                    if m == "llamacpp_prompt_tokens_total":
+                        result["prompt_tokens_total"] = int(val)
+                    elif m == "llamacpp_tokens_predicted_total":
+                        result["generation_tokens_total"] = int(val)
+                    elif m == "llamacpp_prompt_seconds_total":
+                        result["prompt_seconds_total"] = round(val, 2)
+                    elif m == "llamacpp_tokens_predicted_seconds_total":
+                        result["generation_seconds_total"] = round(val, 2)
+                    elif m == "llamacpp_prompt_tokens_seconds":
+                        result["prompt_tokens_per_second"] = round(val, 1)
+                    elif m == "llamacpp_tokens_predicted_seconds":
+                        result["generation_tokens_per_second"] = round(val, 1)
+                    elif m == "llamacpp_requests_processing":
+                        result["requests_processing"] = int(val)
+                    elif m == "llamacpp_requests_pending":
+                        result["requests_pending"] = int(val)
+                    elif m == "llamacpp_kv_cache_usage_ratio":
+                        result["kv_cache_usage_percent"] = round(val * 100, 1)
+        except Exception as e:
+            logger.debug(f"Failed to fetch llama-server metrics: {e}")
+
+        return result
 
     async def _health_check(self) -> bool:
         """Quick health check — is the server responding?"""

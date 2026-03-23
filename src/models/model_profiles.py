@@ -43,6 +43,8 @@ FAMILY_PATTERNS: list[tuple[list[str], str]] = [
     (["codellama"],                          "codellama"),
     (["deepseek", "coder"],                  "deepseek_coder"),
     (["starcoder"],                          "starcoder"),
+    (["python", "coder"],                   "generic_coder"),
+    (["coder"],                             "generic_coder"),  # catch-all for *-coder models
 
     # Vision models
     (["llava"],                              "llava"),
@@ -824,6 +826,28 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              3.0,
             "vision":                0.0,
             "conversation":          2.0,
+        },
+    ),
+    "generic_coder": FamilyProfile(
+        anchor_params_b=7,
+        specialty="coding",
+        function_calling=False,             # unknown architecture — don't assume
+        context_default=8192,
+        base_capabilities={
+            "reasoning":             5.0,
+            "planning":              4.0,
+            "analysis":              4.5,
+            "code_generation":       7.5,
+            "code_reasoning":        6.5,
+            "system_design":         4.5,
+            "prose_quality":         3.0,
+            "instruction_adherence": 5.5,
+            "domain_knowledge":      4.0,
+            "context_utilization":   5.0,
+            "structured_output":     5.0,
+            "tool_use":              3.5,
+            "vision":                0.0,
+            "conversation":          2.5,
         },
     ),
     "command_r": FamilyProfile(

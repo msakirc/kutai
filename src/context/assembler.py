@@ -426,7 +426,7 @@ async def assemble_ambient_context(
     # System load mode
     try:
         from ..infra.load_manager import get_load_mode
-        mode = get_load_mode()
+        mode = await get_load_mode()
         parts.append(f"- System load mode: {mode}")
     except Exception:
         pass

@@ -7,15 +7,11 @@ set agent_type, difficulty, and feature flags before execution.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from dataclasses import dataclass
 
-import litellm
-
 from src.infra.logging_config import get_logger
-from .router import ModelRequirements, select_model
-from ..models.rate_limiter import get_rate_limit_manager
+from .router import ModelRequirements, call_model
 
 logger = get_logger("core.task_classifier")
 
@@ -98,69 +94,28 @@ async def classify_task(title: str, description: str) -> TaskClassification:
 # ─── LLM-Based Classification ─────────────────────────────────────────────
 
 async def _classify_with_llm(title: str, description: str) -> TaskClassification:
-    """Classify using a cheap/fast model via select_model."""
+    """Classify using the standard router — just another LLM call."""
     reqs = ModelRequirements(
         task="router",
+        agent_type="classifier",
         difficulty=3,
-        prefer_local=True,
         prefer_speed=True,
+        needs_json_mode=True,
+        priority=3,                    # yield to real work tasks on GPU
         estimated_input_tokens=500,
         estimated_output_tokens=200,
     )
 
-    candidates = select_model(reqs)
-    if not candidates:
-        raise RuntimeError("No models available for classification")
+    messages = [{
+        "role": "user",
+        "content": CLASSIFIER_PROMPT.format(
+            task_description=f"{title}: {description[:500]}"
+        ),
+    }]
 
-    model = candidates[0].model
+    response = await call_model(reqs, messages)
 
-    # Prefer cloud if local model isn't loaded (avoid swap for classification)
-    if model.is_local and not model.is_loaded:
-        cloud = [c for c in candidates if not c.model.is_local]
-        if cloud:
-            model = cloud[0].model
-
-    # Rate limiting for cloud models
-    if not model.is_local:
-        rl_manager = get_rate_limit_manager()
-        await rl_manager.wait_and_acquire(
-            litellm_name=model.litellm_name,
-            provider=model.provider,
-            estimated_tokens=700,
-        )
-
-    completion_kwargs = dict(
-        model=model.litellm_name,
-        messages=[{
-            "role": "user",
-            "content": CLASSIFIER_PROMPT.format(
-                task_description=f"{title}: {description[:500]}"
-            ),
-        }],
-        max_tokens=200,
-        temperature=0,
-    )
-    if model.api_base:
-        completion_kwargs["api_base"] = model.api_base
-
-    response = await asyncio.wait_for(
-        litellm.acompletion(**completion_kwargs),
-        timeout=30,
-    )
-
-    # Record token usage for rate limiting
-    if not model.is_local and response.usage:
-        total_tokens = (
-            (response.usage.prompt_tokens or 0)
-            + (response.usage.completion_tokens or 0)
-        )
-        get_rate_limit_manager().record_tokens(
-            model.litellm_name,
-            model.provider,
-            total_tokens,
-        )
-
-    raw = response.choices[0].message.content.strip()
+    raw = response.get("content", "").strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
         raw = raw.rsplit("```", 1)[0]

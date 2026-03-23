@@ -18,7 +18,7 @@ AGENT_PERMISSIONS: dict[str, Optional[set[str]]] = {
     # Planning agents — read-only, no shell execution
     "planner": {
         "file_tree", "read_file", "read_blackboard", "write_blackboard",
-        "git_log", "list_workspace",
+        "git_log", "list_workspace", "project_info", "web_search",
     },
     "architect": {
         "file_tree", "read_file", "read_blackboard", "write_blackboard",

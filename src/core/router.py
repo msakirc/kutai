@@ -319,34 +319,60 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
         # Hard Filters
         # ═════════════════════════════════════════
 
+        def _skip(reason: str) -> bool:
+            logger.debug("model filtered", model_name=name, reason=reason,
+                         task=effective_task)
+            return True
+
         if model.litellm_name in reqs.exclude_models:
-            continue
+            _skip("excluded"); continue
+        if model.demoted:
+            _skip("demoted"); continue
         if reqs.local_only and not model.is_local:
-            continue
+            _skip("local_only"); continue
 
         needed_ctx = reqs.effective_context_needed
         if needed_ctx > 0 and model.context_length < needed_ctx:
-            continue
+            _skip(f"ctx({model.context_length}<{needed_ctx})"); continue
         if reqs.needs_function_calling and not model.supports_function_calling:
-            continue
+            _skip("no_function_calling"); continue
         if reqs.needs_json_mode and not model.supports_json_mode:
-            continue
-        if reqs.needs_thinking and not model.thinking_model:
-            continue
+            _skip("no_json_mode"); continue
+        # needs_thinking is a SOFT preference, not a hard filter.
+        # Thinking models get a bonus in scoring below, but we don't
+        # exclude capable non-thinking cloud models (e.g. groq-llama-70b
+        # is perfectly fine for planning, just without CoT).
+        # Only needs_vision stays hard — you can't do vision without it.
         if reqs.needs_vision and not model.has_vision:
-            continue
+            _skip("no_vision"); continue
 
         if reqs.max_cost > 0 and not model.is_free:
             est_cost = model.estimated_cost(
                 reqs.estimated_input_tokens, reqs.estimated_output_tokens
             )
             if est_cost > reqs.max_cost:
-                continue
+                _skip(f"cost({est_cost:.4f}>{reqs.max_cost:.4f})"); continue
 
         if not model.is_local:
             cb = _get_circuit_breaker(model.provider)
             if cb.is_degraded:
-                continue
+                _skip(f"circuit_breaker({model.provider})"); continue
+
+        # ── Load mode enforcement ──
+        if model.is_local:
+            from src.infra.load_manager import is_local_inference_allowed, get_vram_budget_fraction
+            if not is_local_inference_allowed():
+                _skip("load_mode_minimal"); continue
+            _vram_budget = get_vram_budget_fraction()
+            if 0 < _vram_budget < 1.0:
+                _model_vram = getattr(model, 'vram_required_mb', 0) or 0
+                if _model_vram > 0:
+                    from src.models.gpu_monitor import get_gpu_monitor
+                    _gpu = get_gpu_monitor().get_state().gpu
+                    if _gpu.available:
+                        _budget_mb = int(_gpu.vram_total_mb * _vram_budget)
+                        if _model_vram > _budget_mb:
+                            _skip(f"vram_budget({_model_vram}>{_budget_mb}MB)"); continue
 
         # ═════════════════════════════════════════
         # 1. CAPABILITY FIT (0-100)
@@ -368,9 +394,9 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
         )
 
         if cap_score_raw < 0:
-            continue
+            _skip("capability_reject"); continue
         if min_score > 0 and cap_score_raw < min_score:
-            continue
+            _skip(f"below_min_score({cap_score_raw:.1f}<{min_score})"); continue
 
         cap_score = min(cap_score_raw * 10, 100)
         reasons.append(f"cap={cap_score_raw:.1f}")
@@ -382,10 +408,15 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
         # ═════════════════════════════════════════
 
         if model.is_local:
-            cost_score = 95 if model.is_loaded else 70
+            cost_score = 95 if model.is_loaded else 90  # still free even when unloaded
             if not model.is_loaded:
                 reasons.append("needs_swap")
             reasons.append("local")
+            # Load mode penalty: reduce local preference in shared/heavy modes
+            _vb = get_vram_budget_fraction()
+            if _vb < 1.0:
+                cost_score = int(cost_score * (0.5 + _vb * 0.5))
+                reasons.append(f"load_pen={_vb:.1f}")
         elif model.is_free:
             cost_score = 85
             reasons.append("free_cloud")
@@ -420,7 +451,7 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
                 reasons.append("loaded")
             else:
                 swap_time = model.load_time_seconds
-                avail_score = 60 if swap_time < 10 else (40 if swap_time < 30 else 20)
+                avail_score = 75 if swap_time < 10 else (55 if swap_time < 30 else 35)
                 reasons.append(f"swap_{swap_time:.0f}s")
         else:
             rl_manager = get_rate_limit_manager()
@@ -481,11 +512,48 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
             if tps >= 50:
                 speed_score = 100
             elif tps >= 20:
-                speed_score = 70
-            elif tps > 0:
+                speed_score = 80
+            elif tps >= 10:
+                speed_score = 60
+            elif tps >= 5:
                 speed_score = 40
+            elif tps >= 2:
+                speed_score = 20
+            elif tps > 0:
+                speed_score = 10  # < 2 tok/s is basically unusable
             else:
-                speed_score = 80 if model.total_params_b < 5 else (50 if model.total_params_b < 15 else 30)
+                # No measured tps yet — estimate from model size
+                # MoE models (active_params < total_params * 0.5) are much faster
+                active = getattr(model, 'active_params_b', 0) or model.total_params_b
+                if active < 5:
+                    speed_score = 75
+                elif active < 10:
+                    speed_score = 55
+                elif active < 20:
+                    speed_score = 35
+                else:
+                    speed_score = 15
+
+            # ── Output-length penalty for slow local models ──
+            # A 2 tok/s model generating 2000 tokens takes 17 minutes.
+            # Penalize proportionally so long-output tasks route to
+            # smaller (faster) local models or fall through to cloud.
+            est_out = reqs.estimated_output_tokens
+            effective_tps = tps if tps > 0 else (
+                15 if model.total_params_b < 5
+                else 8 if model.total_params_b < 15
+                else 3
+            )
+            est_generation_secs = est_out / effective_tps
+            if est_generation_secs > 300:        # >5 min: severe penalty
+                speed_score = max(0, speed_score - 50)
+                reasons.append(f"very_slow({est_generation_secs:.0f}s)")
+            elif est_generation_secs > 120:      # >2 min: moderate penalty
+                speed_score = max(0, speed_score - 30)
+                reasons.append(f"slow({est_generation_secs:.0f}s)")
+            elif est_generation_secs > 60:       # >1 min: mild penalty
+                speed_score = max(0, speed_score - 15)
+                reasons.append(f"moderate({est_generation_secs:.0f}s)")
         else:
             speed_map = {
                 "groq": 95, "cerebras": 95, "sambanova": 80,
@@ -498,15 +566,17 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
         # ═════════════════════════════════════════
 
         # Base weights from difficulty
+        # Speed matters more than before — a 0.8 tok/s model is useless
+        # for any real task regardless of capability.
         d = reqs.difficulty
         if d <= 3:
-            weights = {"capability": 15, "cost": 50, "availability": 20, "performance": 10, "speed": 5}
+            weights = {"capability": 20, "cost": 35, "availability": 20, "performance": 10, "speed": 15}
         elif d <= 5:
-            weights = {"capability": 30, "cost": 30, "availability": 20, "performance": 15, "speed": 5}
+            weights = {"capability": 30, "cost": 20, "availability": 20, "performance": 15, "speed": 15}
         elif d <= 7:
-            weights = {"capability": 40, "cost": 20, "availability": 20, "performance": 15, "speed": 5}
+            weights = {"capability": 35, "cost": 15, "availability": 15, "performance": 15, "speed": 20}
         else:
-            weights = {"capability": 55, "cost": 5, "availability": 15, "performance": 20, "speed": 5}
+            weights = {"capability": 45, "cost": 5, "availability": 10, "performance": 20, "speed": 20}
 
         # Modifiers
         if reqs.prefer_speed:
@@ -515,6 +585,10 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
         if reqs.prefer_quality:
             weights["capability"] += 10
             weights["cost"] -= 10
+        if reqs.prefer_local:
+            weights["cost"] += 10          # amplify local's cost advantage
+            weights["speed"] -= 5
+            weights["availability"] -= 5
         if reqs.local_only:
             weights["availability"] += 10
             weights["cost"] -= 10
@@ -527,6 +601,28 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
             + perf_score * weights["performance"]
             + speed_score * weights["speed"]
         ) / total_weight
+
+        # Thinking bonus: reward thinking models when thinking is requested
+        if reqs.needs_thinking and model.thinking_model:
+            composite *= 1.20
+            reasons.append("thinking_bonus")
+
+        # Specialty bonus: models specialized for this task type get a boost
+        if model.specialty and effective_task:
+            specialty_match = {
+                "coding": {"coder", "implementer", "fixer", "test_generator"},
+                "reasoning": {"planner", "architect", "analyst"},
+                "vision": {"visual_reviewer"},
+            }
+            matched_tasks = specialty_match.get(model.specialty, set())
+            if effective_task in matched_tasks:
+                composite *= 1.15
+                reasons.append(f"specialty={model.specialty}")
+
+        # Prefer local: boost all local models when the agent prefers local
+        if reqs.prefer_local and model.is_local:
+            composite *= 1.15
+            reasons.append("prefer_local")
 
         # Swap stickiness: prefer already-loaded local model to avoid swap cost
         if model.is_local and model.is_loaded:
@@ -723,6 +819,10 @@ async def call_model(
             completion_kwargs["temperature"] = temperature
         if model.api_base:
             completion_kwargs["api_base"] = model.api_base
+        if model.is_local and model.location != "ollama":
+            # Local llama-server doesn't need a real key, but LiteLLM's
+            # OpenAI provider requires one to be set.
+            completion_kwargs["api_key"] = "sk-no-key"
 
         if use_tools:
             completion_kwargs["tools"] = use_tools
@@ -827,12 +927,22 @@ async def call_model(
                     if not model.is_local:
                         _update_limits_from_response(response, model, rl_manager)
 
-                    # Update measured speed
+                    # Update measured speed + log performance
                     if model.is_local and response.usage:
+                        prompt_tokens = response.usage.prompt_tokens or 0
                         output_tokens = response.usage.completion_tokens or 0
                         if output_tokens > 0 and call_latency > 0:
+                            tok_per_sec = output_tokens / call_latency
                             registry = get_registry()
-                            registry.update_speed(model.name, output_tokens / call_latency)
+                            registry.update_speed(model.name, tok_per_sec)
+                            logger.info(
+                                "llm performance",
+                                model_name=model.name,
+                                prompt_tokens=prompt_tokens,
+                                output_tokens=output_tokens,
+                                latency=f"{call_latency:.1f}s",
+                                speed=f"{tok_per_sec:.1f} tok/s",
+                            )
 
                     # Extract tool calls
                     msg = response.choices[0].message
@@ -855,6 +965,21 @@ async def call_model(
 
                     if not model.is_local:
                         _get_circuit_breaker(model.provider).record_success()
+
+                    # Record metrics for Prometheus
+                    try:
+                        from src.infra.metrics import record_model_call as _record_metrics
+                        _total_tokens = 0
+                        if response.usage:
+                            _total_tokens = (response.usage.prompt_tokens or 0) + (response.usage.completion_tokens or 0)
+                        _record_metrics(
+                            model=model.name,
+                            cost=cost or 0.0,
+                            latency_ms=call_latency * 1000,
+                            tokens=_total_tokens,
+                        )
+                    except Exception:
+                        pass
 
                     return {
                         "content": msg.content or "",
@@ -1078,19 +1203,22 @@ async def check_cost_budget() -> dict:
 # ─── Agent Requirement Templates ─────────────────────────────────────────────
 
 AGENT_REQUIREMENTS: dict[str, ModelRequirements] = {
-    "planner":        ModelRequirements(task="planner",        difficulty=7, estimated_output_tokens=2000, prefer_quality=True, needs_json_mode=True),
+    # ── Difficult / sensitive → cloud (better quality, rate-limited) ──
+    "planner":        ModelRequirements(task="planner",        difficulty=7, estimated_output_tokens=2000, prefer_quality=True),
     "architect":      ModelRequirements(task="architect",      difficulty=7, estimated_output_tokens=3000, prefer_quality=True),
     "coder":          ModelRequirements(task="coder",          difficulty=6, estimated_output_tokens=4000, needs_function_calling=True),
-    "implementer":    ModelRequirements(task="implementer",    difficulty=5, estimated_output_tokens=4000, needs_function_calling=True),
     "fixer":          ModelRequirements(task="fixer",          difficulty=6, estimated_output_tokens=3000, needs_function_calling=True),
-    "test_generator": ModelRequirements(task="test_generator", difficulty=5, estimated_output_tokens=3000, needs_function_calling=True),
     "reviewer":       ModelRequirements(task="reviewer",       difficulty=6, estimated_output_tokens=2000),
-    "researcher":     ModelRequirements(task="researcher",     difficulty=5, estimated_output_tokens=2000, needs_function_calling=True),
     "analyst":        ModelRequirements(task="analyst",        difficulty=6, estimated_output_tokens=3000, needs_function_calling=True),
+    "error_recovery": ModelRequirements(task="error_recovery", difficulty=6, estimated_output_tokens=2000, needs_function_calling=True),
+    # ── Moderate → let the scorer decide (local if free, cloud if rate OK) ──
+    "implementer":    ModelRequirements(task="implementer",    difficulty=5, estimated_output_tokens=4000, needs_function_calling=True),
+    "test_generator": ModelRequirements(task="test_generator", difficulty=5, estimated_output_tokens=3000, needs_function_calling=True),
+    "researcher":     ModelRequirements(task="researcher",     difficulty=5, estimated_output_tokens=2000, needs_function_calling=True),
     "writer":         ModelRequirements(task="writer",         difficulty=5, estimated_output_tokens=3000),
-    "executor":       ModelRequirements(task="executor",       difficulty=3, estimated_output_tokens=1000, needs_function_calling=True, prefer_speed=True),
     "visual_reviewer": ModelRequirements(task="visual_reviewer", difficulty=5, estimated_output_tokens=2000, needs_vision=True),
     "assistant":       ModelRequirements(task="assistant",       difficulty=5, estimated_output_tokens=2000),
-    "summarizer":      ModelRequirements(task="summarizer",      difficulty=4, estimated_output_tokens=2000, prefer_speed=True),
-    "error_recovery":  ModelRequirements(task="error_recovery",  difficulty=6, estimated_output_tokens=2000, needs_function_calling=True),
+    # ── Easy / short-output → prefer local (save rate limits for hard tasks) ──
+    "executor":       ModelRequirements(task="executor",       difficulty=3, estimated_output_tokens=1000, needs_function_calling=True, prefer_speed=True, prefer_local=True),
+    "summarizer":     ModelRequirements(task="summarizer",     difficulty=4, estimated_output_tokens=2000, prefer_speed=True, prefer_local=True),
 }

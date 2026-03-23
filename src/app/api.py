@@ -321,6 +321,50 @@ def create_app() -> Any:
         except Exception as e:
             logger.debug(f"Auto-tuner metrics unavailable: {e}")
 
+        # ── GPU load mode metrics ──
+        try:
+            from src.infra.load_manager import get_load_mode, get_vram_budget_fraction, is_auto_managed
+            mode = await get_load_mode()
+            budget = get_vram_budget_fraction()
+            auto = 1 if is_auto_managed() else 0
+
+            mode_val = {"minimal": 0, "shared": 1, "heavy": 2, "full": 3}.get(mode, 3)
+            lines.append("# HELP kutay_gpu_load_mode Current GPU load mode (0=minimal,1=shared,2=heavy,3=full)")
+            lines.append("# TYPE kutay_gpu_load_mode gauge")
+            lines.append(f"kutay_gpu_load_mode {mode_val}")
+
+            lines.append("# HELP kutay_gpu_load_mode_info GPU load mode as label")
+            lines.append("# TYPE kutay_gpu_load_mode_info gauge")
+            lines.append(f'kutay_gpu_load_mode_info{{mode="{mode}"}} 1')
+
+            lines.append("# HELP kutay_gpu_vram_budget_fraction VRAM budget fraction 0.0-1.0")
+            lines.append("# TYPE kutay_gpu_vram_budget_fraction gauge")
+            lines.append(f"kutay_gpu_vram_budget_fraction {budget:.2f}")
+
+            lines.append("# HELP kutay_gpu_auto_managed Whether GPU mode is auto-managed")
+            lines.append("# TYPE kutay_gpu_auto_managed gauge")
+            lines.append(f"kutay_gpu_auto_managed {auto}")
+        except Exception as e:
+            logger.debug(f"Load mode metrics unavailable: {e}")
+
+        # ── External GPU usage metrics ──
+        try:
+            from src.models.gpu_monitor import get_gpu_monitor
+            ext = get_gpu_monitor().detect_external_gpu_usage()
+            lines.append("# HELP kutay_gpu_external_vram_mb External process VRAM usage in MB")
+            lines.append("# TYPE kutay_gpu_external_vram_mb gauge")
+            lines.append(f"kutay_gpu_external_vram_mb {ext.external_vram_mb}")
+
+            lines.append("# HELP kutay_gpu_external_processes Number of external GPU processes")
+            lines.append("# TYPE kutay_gpu_external_processes gauge")
+            lines.append(f"kutay_gpu_external_processes {ext.external_process_count}")
+
+            lines.append("# HELP kutay_gpu_external_vram_fraction External VRAM as fraction of total")
+            lines.append("# TYPE kutay_gpu_external_vram_fraction gauge")
+            lines.append(f"kutay_gpu_external_vram_fraction {ext.external_vram_fraction:.4f}")
+        except Exception as e:
+            logger.debug(f"External GPU metrics unavailable: {e}")
+
         lines.append("")
         return "\n".join(lines)
 

@@ -1190,24 +1190,38 @@ class TelegramInterface:
             await update.message.reply_text(f"\u274c Error: {e}")
 
     async def cmd_load(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/load full|shared|minimal — set GPU load mode"""
+        """/load full|heavy|shared|minimal|auto — set GPU load mode"""
         args = context.args or []
         if not args:
-            from src.infra.load_manager import get_load_mode
+            from src.infra.load_manager import get_load_mode, is_auto_managed
             current = await get_load_mode()
+            auto_str = " (auto-managed)" if is_auto_managed() else " (manual)"
             await update.message.reply_text(
-                f"Current load mode: *{current}*\n\n"
-                "Usage: `/load full` | `/load shared` | `/load minimal`\n"
+                f"Current load mode: *{current}*{auto_str}\n\n"
+                "Usage: `/load full|heavy|shared|minimal|auto`\n"
                 "• *full* — all GPU available\n"
+                "• *heavy* — 90% VRAM cap\n"
                 "• *shared* — 50% VRAM cap\n"
-                "• *minimal* — cloud only, no local GPU",
+                "• *minimal* — cloud only\n"
+                "• *auto* — enable auto-detection based on external GPU usage",
                 parse_mode="Markdown",
             )
             return
+        choice = args[0].lower()
+        if choice == "auto":
+            from src.infra.load_manager import enable_auto_management
+            await enable_auto_management()
+            await update.message.reply_text(
+                "GPU load mode set to *auto-managed*. "
+                "Will adjust based on external GPU usage.",
+                parse_mode="Markdown",
+            )
+            logger.info("load mode set to auto via command")
+            return
         from src.infra.load_manager import set_load_mode
-        msg = await set_load_mode(args[0].lower())
+        msg = await set_load_mode(choice, source="user")
         await update.message.reply_text(msg, parse_mode="Markdown")
-        logger.info("load mode changed via command", mode=args[0])
+        logger.info("load mode changed via command", mode=choice)
 
     async def cmd_tune(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/tune — force an auto-tuning cycle and report results."""

@@ -5,14 +5,16 @@ import subprocess
 import sys
 import time
 from dotenv import load_dotenv
+
 load_dotenv()
+
+from src.app.config import DOCKER_CONTAINER_NAME, print_config
 
 # ── Logging must be initialized before any other import that might log ────────
 from src.infra.logging_config import init_logging, get_logger
 init_logging()
 _log = get_logger("app.run")
 
-from .config import print_config, DOCKER_CONTAINER_NAME
 from src.core.orchestrator import Orchestrator
 from src.infra.runtime_state import runtime_state, mark_degraded
 
@@ -281,21 +283,70 @@ async def main():
     # Phase 12.1: Start API server in background if uvicorn available
     api_port = int(os.getenv("API_PORT", "8000"))
     try:
-        from .api import start_api_server
+        try:
+            from .api import start_api_server
+        except ImportError:
+            # Running as script, not as package — use absolute import
+            from src.app.api import start_api_server
         api_task = asyncio.create_task(
             start_api_server(host="0.0.0.0", port=api_port),
             name="api_server",
         )
         _log.info("API server task created", port=api_port)
     except Exception as exc:
-        _log.debug("API server not started", reason=str(exc))
+        _log.warning("API server not started", reason=str(exc))
         api_task = None
+
+    # Phase 14.3: Start monitoring loop in background
+    monitor_task = None
+    try:
+        from ..infra.monitoring import run_monitoring_loop
+        monitor_task = asyncio.create_task(
+            run_monitoring_loop(),
+            name="monitoring_loop",
+        )
+        _log.info("Monitoring loop started")
+    except Exception as exc:
+        _log.debug("Monitoring loop not started", reason=str(exc))
+
+    # Phase 3: Start GPU auto-detect loop
+    gpu_detect_task = None
+    try:
+        from ..infra.load_manager import run_gpu_autodetect_loop
+
+        async def _notify_gpu_change(msg: str):
+            try:
+                from .config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID
+                if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_CHAT_ID:
+                    return
+                import aiohttp
+                url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+                async with aiohttp.ClientSession() as s:
+                    await s.post(url, json={
+                        "chat_id": TELEGRAM_ADMIN_CHAT_ID,
+                        "text": msg,
+                        "parse_mode": "Markdown",
+                    }, timeout=aiohttp.ClientTimeout(total=5))
+            except Exception:
+                pass
+
+        gpu_detect_task = asyncio.create_task(
+            run_gpu_autodetect_loop(notify_fn=_notify_gpu_change),
+            name="gpu_autodetect_loop",
+        )
+        _log.info("GPU auto-detect loop started")
+    except Exception as exc:
+        _log.debug("GPU auto-detect loop not started", reason=str(exc))
 
     orch = Orchestrator(shutdown_event=shutdown_event)
     await orch.start()
 
     if api_task and not api_task.done():
         api_task.cancel()
+    if monitor_task and not monitor_task.done():
+        monitor_task.cancel()
+    if gpu_detect_task and not gpu_detect_task.done():
+        gpu_detect_task.cancel()
 
 
 if __name__ == "__main__":

@@ -1440,6 +1440,13 @@ class BaseAgent:
                         except Exception:
                             pass
 
+                        # Phase 9.1: Record tool call metric
+                        try:
+                            from ..infra.metrics import record_tool_call
+                            record_tool_call(tool=tool_name)
+                        except Exception:
+                            pass
+
                         # Cache results
                         if tool_name in SIDE_EFFECT_TOOLS:
                             completed_tool_ops[idem_key] = tool_output

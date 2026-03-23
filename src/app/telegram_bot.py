@@ -139,6 +139,9 @@ class TelegramInterface:
         title = description[:80]
         goal_id = await add_goal(title=title, description=description, priority=7)
 
+        # Phase 7.1: Auto-link goal to active project
+        await self._try_link_goal_to_project(goal_id)
+
         # Trigger planning
         if self.orchestrator:
             await self.orchestrator.plan_goal(goal_id, title, description)
@@ -1394,6 +1397,7 @@ class TelegramInterface:
                  "write a report", "compare", "plan", "strategy"])
         ):
             goal_id = await add_goal(title=text[:80], description=text, priority=5)
+            await self._try_link_goal_to_project(goal_id)
             if self.orchestrator:
                 await self.orchestrator.plan_goal(goal_id, text[:80], text)
             await update.message.reply_text(
@@ -1439,6 +1443,16 @@ Context: {context}
 Message: {message}
 
 Respond as: {{"type": "task", "confidence": 0.8}}"""
+
+    async def _try_link_goal_to_project(self, goal_id: int) -> None:
+        """Auto-link a goal to the active project if exactly one exists."""
+        try:
+            from ..infra.projects import list_projects, link_goal_to_project
+            active = await list_projects(status="active")
+            if len(active) == 1:
+                await link_goal_to_project(goal_id, active[0]["id"])
+        except Exception:
+            pass  # best-effort, don't block goal creation
 
     async def _classify_user_message(self, text: str) -> str:
         """Classify user message using LLM with keyword fallback."""

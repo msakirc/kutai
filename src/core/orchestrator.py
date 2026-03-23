@@ -1876,6 +1876,13 @@ class Orchestrator:
                 except Exception:
                     pass
 
+                # Phase 9.1: Persist in-memory metrics hourly
+                try:
+                    from src.infra.metrics import maybe_persist
+                    await maybe_persist()
+                except Exception:
+                    pass
+
                 # Phase 2.4: Auto-tune model capability scores
                 try:
                     from src.models.auto_tuner import maybe_run_tuning

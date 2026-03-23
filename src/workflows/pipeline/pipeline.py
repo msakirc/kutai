@@ -21,6 +21,7 @@ Original Stages:
 7. Committer -> git_commit
 """
 import json
+import os
 from typing import Any, Dict
 
 from src.infra.logging_config import get_logger
@@ -307,6 +308,37 @@ class CodingPipeline:
             stages_run.append("test")
 
         # ─────────────────────────────────────────────────────────
+        #  Stage: COVERAGE (quality gate after tests)
+        # ─────────────────────────────────────────────────────────
+        if "test" in stages_run:
+            try:
+                from src.tools.coverage import get_coverage_summary
+                from src.languages import detect_language
+                # Detect project language from implementation files
+                impl_exts = [
+                    os.path.splitext(f)[1]
+                    for f in files_to_implement if os.path.splitext(f)[1]
+                ]
+                proj_lang = detect_language(impl_exts) or "python"
+                cov_report = await get_coverage_summary(
+                    project_root=pipe_ctx.workspace or ".",
+                    language=proj_lang,
+                )
+                if cov_report:
+                    result_log.append(f"Coverage: {cov_report[:200]}")
+                    pipe_ctx.record_stage(StageResult(
+                        stage_name="coverage",
+                        agent_type="tool",
+                        model_used="",
+                        result_text=cov_report,
+                        cost=0,
+                    ))
+                    stages_run.append("coverage")
+                    logger.info(f"   [Coverage] {cov_report[:100]}")
+            except Exception as cov_err:
+                logger.debug(f"Coverage check skipped: {cov_err}")
+
+        # ─────────────────────────────────────────────────────────
         #  Stage: REVIEW + FIX loop (with diversity + escalation)
         # ─────────────────────────────────────────────────────────
         qa_iteration = 1
@@ -350,9 +382,28 @@ class CodingPipeline:
                     f"Review {qa_iteration}: {review_summary[:100]}..."
                 )
 
-                if (
-                    "✅ Good" in review_summary
-                    or "passed" in review_summary.lower()
+                # Phase 10.3: Parse structured reviewer JSON
+                review_verdict = ""
+                review_issues: list[dict] = []
+                try:
+                    # Reviewer should return JSON; try to parse
+                    _raw = review_summary.strip()
+                    if _raw.startswith("```"):
+                        _raw = _raw.split("\n", 1)[1] if "\n" in _raw else _raw[3:]
+                        _raw = _raw.rsplit("```", 1)[0]
+                    parsed_review = json.loads(_raw)
+                    review_verdict = parsed_review.get("verdict", "")
+                    review_issues = parsed_review.get("issues", [])
+                except (json.JSONDecodeError, AttributeError):
+                    # Fallback: treat as prose
+                    pass
+
+                # Determine pass/fail from structured verdict or string heuristics
+                if review_verdict == "pass" or (
+                    not review_verdict and (
+                        "✅ Good" in review_summary
+                        or "passed" in review_summary.lower()
+                    )
                 ):
                     logger.info("   [QA Passed] Implementation is solid.")
                     review_passed = True
@@ -370,11 +421,31 @@ class CodingPipeline:
                     if qa_iteration >= 3:
                         fix_ctx_dict["prefer_quality"] = True
 
+                    # Build structured issue description for fixer
+                    if review_issues:
+                        issue_lines = ["## Issues to Fix\n"]
+                        for i, iss in enumerate(review_issues, 1):
+                            sev = iss.get("severity", "medium").upper()
+                            fname = iss.get("file", "unknown")
+                            line = iss.get("line", "")
+                            desc = iss.get("description", "")
+                            fix_hint = iss.get("suggested_fix", "")
+                            loc = f"{fname}:{line}" if line else fname
+                            issue_lines.append(
+                                f"{i}. [{sev}] {loc}: {desc}"
+                            )
+                            if fix_hint:
+                                issue_lines.append(f"   Suggested: {fix_hint}")
+                        structured_issues = "\n".join(issue_lines)
+                    else:
+                        structured_issues = review_summary
+
                     fix_task = {
                         "title": f"Fix QA Issues: {base_title}",
                         "description": (
                             f"The code reviewer found issues. "
                             f"Fix them all.\n\n"
+                            f"{structured_issues}\n\n"
                             f"{fix_stage_ctx}"
                         ),
                         "goal_id": original_goal,

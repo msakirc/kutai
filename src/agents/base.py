@@ -9,6 +9,8 @@ import dataclasses
 import hashlib
 import json
 import re
+import time
+from typing import Callable
 
 from ..collaboration.blackboard import get_or_create_blackboard, \
     format_blackboard_for_prompt
@@ -414,6 +416,17 @@ class BaseAgent:
                     parts.append(bb_block)
             except Exception as exc:
                 logger.debug(f"Blackboard injection failed (non-critical): {exc}")
+
+        # ── Phase 13.2: Skill library injection ──
+        try:
+            from ..memory.skills import find_relevant_skills, format_skills_for_prompt
+            task_text = f"{task.get('title', '')} {task.get('description', '')}"
+            relevant_skills = await find_relevant_skills(task_text, limit=3)
+            skills_block = format_skills_for_prompt(relevant_skills)
+            if skills_block:
+                parts.append(skills_block)
+        except Exception as exc:
+            logger.debug(f"Skill library injection failed (non-critical): {exc}")
 
         # ── Phase 11.3: RAG context injection ──
         try:
@@ -853,10 +866,15 @@ class BaseAgent:
     # ------------------------------------------------------------------ #
     #  Main execution loop                                                #
     # ------------------------------------------------------------------ #
-    async def execute(self, task: dict) -> dict:
+    # ── Phase 4.6: Progress streaming callback ──
+    progress_callback: Callable | None = None
+
+    async def execute(self, task: dict, progress_callback: Callable | None = None) -> dict:
         """
         Route to appropriate execution pattern, then run.
+        progress_callback: async fn(task_id, iteration, max_iter, summary)
         """
+        self.progress_callback = progress_callback
         # ── Phase 5: execution pattern routing ──
         if self.execution_pattern == "single_shot":
             return await self.execute_single_shot(task)
@@ -948,11 +966,32 @@ class BaseAgent:
         consecutive_tool_failures = 0
         escalated = False
 
+        _progress_last_sent = 0.0
+
         for iteration in range(start_iteration, self.max_iterations):
             logger.info(
                 f"[Task #{task_id}] Agent '{self.name}' iteration "
                 f"{iteration + 1}/{self.max_iterations}"
             )
+
+            # ── Phase 4.6: Progress streaming ──
+            _now = time.time()
+            if (self.progress_callback
+                    and iteration > 0
+                    and _now - _progress_last_sent >= 30):
+                try:
+                    # Summarize last action from messages
+                    _last_action = ""
+                    for _m in reversed(messages):
+                        if _m.get("role") == "assistant":
+                            _last_action = (_m.get("content") or "")[:100]
+                            break
+                    await self.progress_callback(
+                        task_id, iteration + 1, self.max_iterations, _last_action
+                    )
+                    _progress_last_sent = _now
+                except Exception:
+                    pass
 
             # ── Update token estimates ──
             estimation_model = used_model if used_model != "unknown" else "gpt-4o-mini"
@@ -1179,11 +1218,34 @@ class BaseAgent:
                     f"{iteration + 1} iteration(s)"
                 )
 
-                if parsed.get("subtasks"):
+                # Debug: show what keys the parsed response has
+                parsed_keys = list(parsed.keys()) if isinstance(parsed, dict) else "not-dict"
+                has_subtasks = bool(parsed.get("subtasks")) if isinstance(parsed, dict) else False
+                logger.debug(
+                    f"[Task #{task_id}] Parsed keys: {parsed_keys}, "
+                    f"has_subtasks={has_subtasks}, "
+                    f"can_create_subtasks={self.can_create_subtasks}"
+                )
+
+                # Normalize subtask keys — LLMs sometimes use "tasks",
+                # "steps", "plan" instead of "subtasks"
+                subtasks = parsed.get("subtasks")
+                if not subtasks and self.can_create_subtasks:
+                    for alt_key in ("tasks", "steps", "plan", "sub_tasks"):
+                        candidate = parsed.get(alt_key)
+                        if isinstance(candidate, list) and candidate:
+                            subtasks = candidate
+                            logger.debug(
+                                f"[Task #{task_id}] Found subtasks under "
+                                f"alt key '{alt_key}' ({len(candidate)} items)"
+                            )
+                            break
+
+                if subtasks:
                     await self._clear_checkpoint_safe(task_id)
                     return {
                         "status":       "needs_subtasks",
-                        "subtasks":     parsed["subtasks"],
+                        "subtasks":     subtasks,
                         "plan_summary": parsed.get("plan_summary", ""),
                         "model":        used_model,
                         "cost":         total_cost,
@@ -1542,20 +1604,32 @@ class BaseAgent:
         description = task.get("description", "").lower()
         priority = task.get("priority", 5)
 
-        # ── Build from classification if available ──
-        classification = task_ctx.get("classification", {})
+        # ── Start from curated AGENT_REQUIREMENTS template ──
+        from src.core.router import AGENT_REQUIREMENTS
+        import copy
 
-        reqs = ModelRequirements(
-            task=classification.get("agent_type", self.name),
-            difficulty=classification.get("difficulty", 5),
-            agent_type=self.name,
-            priority=priority,
-            needs_function_calling=classification.get("needs_tools", False),
-            needs_vision=classification.get("needs_vision", False),
-            needs_thinking=classification.get("needs_thinking", False),
-            local_only=classification.get("local_only", False),
-            prefer_local=True,
+        classification = task_ctx.get("classification", {})
+        agent_type = classification.get("agent_type", self.name)
+
+        template = AGENT_REQUIREMENTS.get(agent_type) or AGENT_REQUIREMENTS.get(
+            self.name, ModelRequirements(task=agent_type, difficulty=5)
         )
+        reqs = copy.deepcopy(template)
+        reqs.agent_type = self.name
+        reqs.priority = priority
+
+        # Overlay classification signals (only upgrade, never downgrade)
+        cls_difficulty = classification.get("difficulty", 5)
+        reqs.difficulty = max(reqs.difficulty, cls_difficulty)
+
+        if classification.get("needs_tools"):
+            reqs.needs_function_calling = True
+        if classification.get("needs_vision"):
+            reqs.needs_vision = True
+        if classification.get("needs_thinking"):
+            reqs.needs_thinking = True
+        if classification.get("local_only"):
+            reqs.local_only = True
 
         # ── Adjust for task priority ──
         if priority >= 10:
@@ -1576,6 +1650,9 @@ class BaseAgent:
             reqs.local_only = True
         if task_ctx.get("prefer_quality"):
             reqs.prefer_quality = True
+        if task_ctx.get("prefer_speed"):
+            reqs.prefer_speed = True
+            reqs.prefer_local = False
 
         # ── Model diversity ──
         exclude = task_ctx.get("exclude_models", [])
@@ -1592,10 +1669,18 @@ class BaseAgent:
 
         estimated_input = (desc_len + ctx_len) // 4  # rough char-to-token
         reqs.estimated_input_tokens = max(estimated_input, 1000)
-        reqs.estimated_output_tokens = 2000
+        # Keep template's estimated_output_tokens — it's set per agent type
+        # (e.g. coder=4000, planner=2000) for accurate speed scoring.
 
         # ── Tools needed? (agent-level override) ──
-        if self.allowed_tools is None or len(self.allowed_tools or []) > 0:
+        # Only upgrade to function_calling, don't force it if the
+        # template doesn't need it (e.g., planner, writer, reviewer).
+        # The template already sets needs_function_calling=True for
+        # agents that genuinely need tool use (coder, fixer, executor).
+        if reqs.needs_function_calling:
+            pass  # already set by template or classification
+        elif self.allowed_tools and len(self.allowed_tools) > 0:
+            # Agent explicitly declares tool list → it needs function calling
             reqs.needs_function_calling = True
 
         # ── Vision needed? (keyword override) ──

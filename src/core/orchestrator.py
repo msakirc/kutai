@@ -954,7 +954,19 @@ class Orchestrator:
                     tier=task.get('tier', 'auto'),
                     timeout_seconds=timeout_seconds,
                 )
-                coro = agent.execute(task)
+                # Phase 4.6: Wire progress streaming
+                async def _progress_cb(tid, iteration, max_iter, summary):
+                    if self.telegram:
+                        msg = (
+                            f"\U0001f504 *Task #{tid}* — iteration {iteration}/{max_iter}\n"
+                            f"{summary[:200]}"
+                        )
+                        try:
+                            await self.telegram.send_notification(msg)
+                        except Exception:
+                            pass
+
+                coro = agent.execute(task, progress_callback=_progress_cb)
 
             # Wrap with timeout
             try:

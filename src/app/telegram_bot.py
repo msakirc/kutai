@@ -39,6 +39,8 @@ class TelegramInterface:
         self._approval_events = {}
         self._clarification_events = {}
         self.user_last_task_id = {}
+        # Explicit clarification tracking: chat_id → task_id
+        self._pending_clarifications: dict[int, int] = {}
 
 
     def _setup_handlers(self):
@@ -1251,7 +1253,7 @@ class TelegramInterface:
             await update.message.reply_text(f"Tuning failed: {e}")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Smart handler: detect if it's a goal or simple task, or handle file uploads."""
+        """Smart handler: LLM-classified message routing with clarification priority."""
         chat_id = update.message.chat_id
 
         # Handle file uploads
@@ -1260,7 +1262,6 @@ class TelegramInterface:
                 uploads_dir = Path("workspace/uploads")
                 uploads_dir.mkdir(parents=True, exist_ok=True)
 
-                # Download file
                 file_obj = await context.bot.get_file(update.message.document.file_id)
                 filename = update.message.document.file_name or f"file_{update.message.document.file_id}"
                 filepath = uploads_dir / filename
@@ -1268,7 +1269,7 @@ class TelegramInterface:
                 await file_obj.download_to_drive(str(filepath))
 
                 await update.message.reply_text(
-                    f"📎 File received: `{filename}`\n"
+                    f"\U0001f4ce File received: `{filename}`\n"
                     f"Use `/ingest {filepath}` to add to knowledge base.",
                     parse_mode="Markdown"
                 )
@@ -1283,11 +1284,100 @@ class TelegramInterface:
         if not text:
             return
 
+        logger.info("Message received", user_id=chat_id, text_preview=text[:50])
+
+        # ═══════════════════════════════════════════════════════
+        # PRIORITY 1: Check for pending clarification (state-based)
+        # ═══════════════════════════════════════════════════════
+        pending_task_id = self._pending_clarifications.get(chat_id)
+        if pending_task_id:
+            # Also check DB to confirm task is still in needs_clarification
+            try:
+                task_info = await get_task(pending_task_id)
+                if task_info and task_info.get("status") == "needs_clarification":
+                    await self._resume_with_clarification(
+                        chat_id, pending_task_id, text, task_info, update
+                    )
+                    return
+                else:
+                    # Task no longer waiting — stale entry
+                    self._pending_clarifications.pop(chat_id, None)
+            except Exception:
+                self._pending_clarifications.pop(chat_id, None)
+
+        # Also check DB for ANY task in needs_clarification (handles bot restart)
+        try:
+            db = await get_db()
+            cursor = await db.execute(
+                """SELECT id, title, description, status, context FROM tasks
+                   WHERE status = 'needs_clarification'
+                   ORDER BY created_at DESC LIMIT 1"""
+            )
+            row = await cursor.fetchone()
+            if row:
+                waiting_task = dict(row)
+                # LLM check: is this message likely a response to the pending question?
+                is_response = await self._is_likely_clarification_response(
+                    text, waiting_task
+                )
+                if is_response:
+                    await self._resume_with_clarification(
+                        chat_id, waiting_task["id"], text, waiting_task, update
+                    )
+                    return
+        except Exception as e:
+            logger.debug("clarification DB check failed", error=str(e))
+
+        # ═══════════════════════════════════════════════════════
+        # PRIORITY 2: LLM-based message classification
+        # ═══════════════════════════════════════════════════════
+        msg_type = await self._classify_user_message(text)
+        logger.info("message classified", msg_type=msg_type, text_preview=text[:50])
+
+        # ── Route by classification ──
+
+        if msg_type in ("bug_report", "feature_request", "ui_note", "feedback"):
+            await self._handle_user_input(msg_type, text, chat_id, update)
+            return
+
+        if msg_type == "progress_inquiry":
+            # Delegate to the /progress command logic
+            await self.cmd_progress(update, context)
+            return
+
+        if msg_type == "casual":
+            # Quick assistant response — don't create a task for chitchat
+            await self._handle_casual(text, update)
+            return
+
+        if msg_type == "load_control":
+            # Natural language load control: "I'm going to game"
+            await self._handle_load_control(text, update)
+            return
+
+        if msg_type in ("followup", "clarification_response"):
+            # Embedding-based follow-up to find parent
+            parent_id = await self._find_followup_parent(chat_id, text)
+            if parent_id:
+                task_context = {"followup_to": parent_id}
+                task_id = await add_task(
+                    title=f"Follow-up to #{parent_id}: {text[:40]}",
+                    description=text,
+                    tier="auto",
+                    parent_task_id=parent_id,
+                    priority=TASK_PRIORITY.get("high", 8),
+                    context=task_context,
+                )
+                self.user_last_task_id[chat_id] = task_id
+                await update.message.reply_text(
+                    f"Continuing task #{parent_id}. Queued as #{task_id}."
+                )
+                return
+
+        # ═══════════════════════════════════════════════════════
+        # PRIORITY 3: Goal vs task (for goal/task/question types)
+        # ═══════════════════════════════════════════════════════
         parent_id = self.user_last_task_id.get(chat_id)
-
-        logger.info("Message received", user_id=chat_id, command=text[:50] if text else "")
-
-        # Phase 11.4: Embedding-based follow-up detection
         recent_context = None
         try:
             followup = await find_followup_context(chat_id, text)
@@ -1296,16 +1386,18 @@ class TelegramInterface:
             if followup.get("context"):
                 recent_context = format_recent_context(followup["context"])
         except Exception:
-            pass  # fallback to user_last_task_id
+            pass
 
-        if len(text) > 200 or any(kw in text.lower() for kw in
-            ["research", "create a", "build", "analyze", "develop",
-             "write a report", "compare", "plan", "strategy"]):
+        if msg_type == "goal" or (
+            len(text) > 200 and any(kw in text.lower() for kw in
+                ["research", "create a", "build", "analyze", "develop",
+                 "write a report", "compare", "plan", "strategy"])
+        ):
             goal_id = await add_goal(title=text[:80], description=text, priority=5)
             if self.orchestrator:
                 await self.orchestrator.plan_goal(goal_id, text[:80], text)
             await update.message.reply_text(
-                f" Interpreted as Goal #{goal_id}. Planning now..."
+                f"Interpreted as Goal #{goal_id}. Planning now..."
             )
             self.user_last_task_id.pop(chat_id, None)
         else:
@@ -1322,49 +1414,296 @@ class TelegramInterface:
                 context=task_context if task_context else None,
             )
             self.user_last_task_id[chat_id] = task_id
-            await update.message.reply_text(f"✅ Task #{task_id} queued.")
+            await update.message.reply_text(f"\u2705 Task #{task_id} queued.")
+
+    # ─── Message Classification Helpers ───────────────────────────────────────
+
+    MESSAGE_CLASSIFIER_PROMPT = """Classify this user message to an AI orchestrator. Respond with ONLY valid JSON.
+
+Categories:
+- "goal": complex multi-step project request
+- "task": specific actionable request
+- "question": asking for information
+- "bug_report": reporting a bug or error
+- "feature_request": suggesting a new feature
+- "ui_note": UI/UX feedback
+- "feedback": general feedback on system behavior
+- "progress_inquiry": asking about status of work
+- "followup": continuing a previous conversation or task
+- "clarification_response": answering a question the system asked
+- "load_control": wanting to control GPU/resources (e.g. "I'm going to game", "free up GPU")
+- "casual": greeting, thanks, small talk
+
+Context: {context}
+
+Message: {message}
+
+Respond as: {{"type": "task", "confidence": 0.8}}"""
+
+    async def _classify_user_message(self, text: str) -> str:
+        """Classify user message using LLM with keyword fallback."""
+        try:
+            from ..core.router import ModelRequirements, call_model
+
+            # Build context hint
+            context_parts = []
+            if self._pending_clarifications:
+                context_parts.append("System has pending clarification requests")
+
+            reqs = ModelRequirements(
+                task="router",
+                agent_type="classifier",
+                difficulty=2,
+                prefer_speed=True,
+                needs_json_mode=True,
+                priority=2,
+                estimated_input_tokens=300,
+                estimated_output_tokens=50,
+            )
+            messages = [{
+                "role": "user",
+                "content": self.MESSAGE_CLASSIFIER_PROMPT.format(
+                    message=text[:300],
+                    context="; ".join(context_parts) if context_parts else "none",
+                ),
+            }]
+            response = await call_model(reqs, messages)
+            import json
+            raw = response.get("content", "").strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+                raw = raw.rsplit("```", 1)[0]
+            result = json.loads(raw)
+            msg_type = result.get("type", "task")
+            confidence = result.get("confidence", 0.5)
+            logger.debug("llm message classification",
+                         type=msg_type, confidence=confidence)
+            if confidence < 0.4:
+                return "task"  # low confidence → default to task
+            return msg_type
+        except Exception as e:
+            logger.debug("message classification failed, using keyword fallback",
+                         error=str(e))
+            return self._classify_message_by_keywords(text)
+
+    @staticmethod
+    def _classify_message_by_keywords(text: str) -> str:
+        """Fast keyword fallback for message classification."""
+        lower = text.lower()
+        if any(w in lower for w in ["bug", "error", "broken", "crash", "doesn't work"]):
+            return "bug_report"
+        if any(w in lower for w in ["feature", "could you add", "would be nice", "suggestion"]):
+            return "feature_request"
+        if any(w in lower for w in ["how's", "status", "progress", "how far", "eta"]):
+            return "progress_inquiry"
+        if any(w in lower for w in ["hi ", "hello", "thanks", "thank you", "hey", "good morning"]):
+            return "casual"
+        if any(w in lower for w in ["game", "gaming", "free up gpu", "gpu"]):
+            return "load_control"
+        if len(text) > 200 or any(w in lower for w in
+                ["research", "create a", "build", "analyze", "develop", "plan"]):
+            return "goal"
+        return "task"
+
+    async def _is_likely_clarification_response(
+        self, text: str, waiting_task: dict
+    ) -> bool:
+        """Check if message is likely a response to a pending clarification.
+        Uses heuristics first (fast), then LLM if uncertain."""
+        # Heuristic: short responses are very likely clarification answers
+        if len(text) < 100:
+            return True
+        # Heuristic: if it looks like a command or new task, probably not
+        lower = text.lower()
+        if any(kw in lower for kw in [
+            "research", "create a", "build", "new project", "new goal"
+        ]):
+            return False
+        # Default: if there's a pending clarification, assume it's an answer
+        return True
+
+    async def _resume_with_clarification(
+        self, chat_id: int, task_id: int, answer: str,
+        task_info: dict, update: Update
+    ):
+        """Resume a task that was waiting for clarification."""
+        # Update the task: inject answer into context, reset to pending
+        try:
+            import json as _json
+            existing_ctx = task_info.get("context", "{}")
+            if isinstance(existing_ctx, str):
+                try:
+                    ctx = _json.loads(existing_ctx)
+                except (ValueError, TypeError):
+                    ctx = {}
+            else:
+                ctx = existing_ctx or {}
+
+            # Append clarification to context
+            ctx["user_clarification"] = answer
+            clarifications = ctx.get("clarification_history", [])
+            clarifications.append(answer)
+            ctx["clarification_history"] = clarifications
+
+            await update_task(
+                task_id,
+                status="pending",
+                context=_json.dumps(ctx),
+            )
+
+            # Clean up tracking
+            self._pending_clarifications.pop(chat_id, None)
+
+            await update.message.reply_text(
+                f"\u21a9\ufe0f Got it. Resuming task #{task_id} with your input."
+            )
+            logger.info("clarification received, task resumed",
+                        task_id=task_id, answer_preview=answer[:50])
+
+            # Record feedback
+            try:
+                await record_feedback(task_info, "modified", details=answer)
+            except Exception:
+                pass
+
+        except Exception as e:
+            logger.error("failed to resume clarification",
+                         task_id=task_id, error=str(e))
+            await update.message.reply_text(
+                f"Failed to resume task #{task_id}: {e}"
+            )
+
+    async def _handle_user_input(
+        self, msg_type: str, text: str, chat_id: int, update: Update
+    ):
+        """Route bug reports, feature requests, feedback to user_inputs."""
+        type_map = {
+            "bug_report": "bug",
+            "feature_request": "feature",
+            "ui_note": "ui_note",
+            "feedback": "feedback",
+        }
+        input_type = type_map.get(msg_type, "feedback")
+
+        try:
+            from ..infra.user_inputs import log_input
+            # Try to find related goal
+            related_goal = None
+            try:
+                goals = await get_active_goals()
+                if goals:
+                    # Simple fuzzy: check if any goal title words appear in the message
+                    lower = text.lower()
+                    for g in goals:
+                        title_words = g["title"].lower().split()
+                        if any(w in lower for w in title_words if len(w) > 3):
+                            related_goal = g["id"]
+                            break
+            except Exception:
+                pass
+
+            input_id = await log_input(
+                input_type=input_type,
+                content=text,
+                related_goal_id=related_goal,
+            )
+
+            type_emoji = {
+                "bug": "\U0001f41b", "feature": "\U0001f4a1",
+                "ui_note": "\U0001f3a8", "feedback": "\U0001f4ac",
+            }
+            emoji = type_emoji.get(input_type, "\U0001f4ac")
+            goal_str = f" Linked to Goal #{related_goal}." if related_goal else ""
+            await update.message.reply_text(
+                f"{emoji} Logged as {input_type} #{input_id}.{goal_str}"
+            )
+        except Exception as e:
+            logger.error("failed to log user input", error=str(e))
+            await update.message.reply_text(f"Logged your {input_type}. (DB save failed: {e})")
+
+    async def _handle_casual(self, text: str, update: Update):
+        """Handle casual messages with a quick LLM response (no task creation)."""
+        try:
+            from ..core.router import ModelRequirements, call_model
+            reqs = ModelRequirements(
+                task="assistant",
+                agent_type="assistant",
+                difficulty=2,
+                prefer_speed=True,
+                priority=1,
+                estimated_input_tokens=100,
+                estimated_output_tokens=100,
+            )
+            response = await call_model(reqs, [{"role": "user", "content": text}])
+            reply = response.get("content", "Hey! How can I help?")
+            await update.message.reply_text(reply[:1000])
+        except Exception:
+            await update.message.reply_text("Hey! Send me a task or goal to work on.")
+
+    async def _handle_load_control(self, text: str, update: Update):
+        """Handle natural language GPU load control."""
+        lower = text.lower()
+        if any(w in lower for w in ["game", "gaming", "play"]):
+            from ..infra.load_manager import set_load_mode
+            msg = await set_load_mode("minimal", source="user")
+            await update.message.reply_text(
+                f"\U0001f3ae Switching to minimal mode for gaming.\n{msg}\n"
+                "Use `/load auto` when you're done.",
+                parse_mode="Markdown",
+            )
+        elif any(w in lower for w in ["free", "done", "finished", "back"]):
+            from ..infra.load_manager import enable_auto_management
+            await enable_auto_management()
+            await update.message.reply_text(
+                "GPU auto-management re-enabled. I'll use what's available."
+            )
+        else:
+            await update.message.reply_text(
+                "Use `/load full|heavy|shared|minimal|auto` to control GPU usage.",
+                parse_mode="Markdown",
+            )
+
+    async def _find_followup_parent(self, chat_id: int, text: str) -> int | None:
+        """Find parent task for follow-up messages."""
+        try:
+            followup = await find_followup_context(chat_id, text)
+            if followup.get("is_followup") and followup.get("parent_task_id"):
+                return int(followup["parent_task_id"])
+        except Exception:
+            pass
+        return self.user_last_task_id.get(chat_id)
 
     async def handle_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle replies to clarification requests."""
+        """Handle Telegram reply-to-message — catches explicit replies to clarification messages."""
         replied_to = update.message.reply_to_message
         if not replied_to:
             return
 
-        # Check if this is a reply to a clarification
         text = replied_to.text or ""
+        answer = update.message.text
+        chat_id = update.message.chat_id
+
+        # Check if this is a reply to a clarification request
         if "Clarification needed" in text:
-            # Extract task ID from the message
             import re
             match = re.search(r"Task #(\d+)", text)
             if match:
                 task_id = int(match.group(1))
-                answer = update.message.text
+                task_info = await get_task(task_id)
+                if task_info and task_info.get("status") == "needs_clarification":
+                    await self._resume_with_clarification(
+                        chat_id, task_id, answer, task_info, update
+                    )
+                    return
 
-                # Resume task with clarification
-                await add_task(
-                    title=f"Continue #{task_id} with clarification",
-                    description=(
-                        f"Continue the previous task with this clarification "
-                        f"from the human:\n\n{answer}"
-                    ),
-                    goal_id=None,
-                    parent_task_id=task_id,
-                    tier="auto"
-                )
-                await update.message.reply_text(
-                    f"↩️ Got it. Resuming task #{task_id} with your input."
-                )
+        # Check if replying to an approval request
+        if "Approval Required" in text:
+            # Let handle_callback deal with button presses; text replies here
+            # just fall through to normal message handling
+            pass
 
-                # Phase 11.7: Record modified feedback
-                try:
-                    task_info = await get_task(task_id)
-                    if task_info:
-                        await record_feedback(
-                            task_info, "modified",
-                            details=answer,
-                        )
-                except Exception:
-                    pass
+        # Not a known reply type — treat as normal message
+        await self.handle_message(update, context)
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -1506,11 +1845,19 @@ class TelegramInterface:
         )
 
     async def request_clarification(self, task_id, title, question):
+        # Track this as a pending clarification so handle_message can catch it
+        chat_id = TELEGRAM_ADMIN_CHAT_ID
+        if chat_id:
+            try:
+                self._pending_clarifications[int(chat_id)] = task_id
+            except (ValueError, TypeError):
+                pass
+
         await self.send_notification(
-            f"❓ *Clarification needed — Task #{task_id}*\n"
+            f"\u2753 *Clarification needed \u2014 Task #{task_id}*\n"
             f"**{title}**\n\n"
             f"{question}\n\n"
-            f"_Reply to this message with your answer._"
+            f"_Reply to this message or just type your answer._"
         )
 
     async def request_approval(self, task_id, title, plan, tier,

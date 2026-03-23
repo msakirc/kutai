@@ -1,5 +1,6 @@
 # telegram_bot.py
 import asyncio
+from datetime import datetime
 from pathlib import Path
 from src.infra.logging_config import get_logger
 from .config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, TASK_PRIORITY
@@ -78,6 +79,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("load", self.cmd_load))              # GPU load mode
         self.app.add_handler(CommandHandler("tune", self.cmd_tune))              # Phase 2.4
         self.app.add_handler(CommandHandler("feedback", self.cmd_feedback))    # Phase 13.3
+        self.app.add_handler(CommandHandler("improve", self.cmd_improve))      # Phase 13.4
         self.app.add_handler(CommandHandler("autonomy", self.cmd_autonomy))    # Phase 14.2
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(
@@ -120,6 +122,7 @@ class TelegramInterface:
             "/cost <goal\\_id> — View per-goal cost breakdown\n"
             "/preview <idea> — Preview workflow steps & cost estimate\n"
             "/feedback <task\\_id> <good|bad|partial> [reason] — Rate a task\n"
+            "/improve — Run self-improvement analysis\n"
             "/autonomy <low|medium|high|paranoid> — Set risk autonomy level\n"
             "/digest — Get daily digest now\n\n"
             "Or just send a message — I'll figure out what to do.",
@@ -1254,6 +1257,38 @@ class TelegramInterface:
         except Exception as e:
             logger.error("tune command failed", error=str(e))
             await update.message.reply_text(f"Tuning failed: {e}")
+
+    async def cmd_improve(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/improve — run self-improvement analysis and show proposals."""
+        await update.message.reply_text("Analyzing system performance...")
+        try:
+            from ..memory.self_improvement import (
+                analyze_and_propose, format_proposals_for_telegram
+            )
+            proposals = await analyze_and_propose()
+            msg = format_proposals_for_telegram(proposals)
+            # Split if too long
+            if len(msg) > 4000:
+                await update.message.reply_text(msg[:4000], parse_mode="Markdown")
+            else:
+                await update.message.reply_text(msg, parse_mode="Markdown")
+
+            # Save full report
+            if proposals:
+                try:
+                    from ..memory.self_improvement import format_proposals_for_file
+                    import os
+                    report = await format_proposals_for_file(proposals)
+                    os.makedirs("workspace/results", exist_ok=True)
+                    path = f"workspace/results/improvement_report_{datetime.now().strftime('%Y%m%d')}.md"
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(report)
+                    await update.message.reply_text(f"Full report saved: {path}")
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error("improve command failed", error=str(e))
+            await update.message.reply_text(f"Analysis failed: {e}")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Smart handler: LLM-classified message routing with clarification priority."""

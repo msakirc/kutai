@@ -1,0 +1,186 @@
+# Plan v5 — Long-Term Roadmap & Known Gaps
+
+Generated: 2026-03-23
+Context: After completing plan_v4 Phases 2-11 implementation pass.
+
+---
+
+## A. Deferred / Skipped Items from v4
+
+### Phase 1: Logging Polish (Low Priority — Functional but Not Perfect)
+
+1. **1.16 — Exception Discipline Pass**: Systematic audit of all `except: pass` blocks.
+   Currently many try/except blocks use bare `pass` for best-effort operations (metrics,
+   tracing, audit). These are intentional for non-critical paths, but a full audit should
+   add at least `logger.debug()` to every suppression point.
+
+2. **1.17 — print() Elimination**: Some `print()` calls may still exist in utility scripts
+   and benchmark CLI. Low priority since the main runtime paths use structlog.
+
+3. **1.20 — Frontail Container**: Browser-based log viewer. The docker-compose.yml has a
+   placeholder but it's not fully wired. Nice-to-have for mobile debugging.
+
+4. **1.21 — System resource logging**: Periodic CPU/RAM/disk metrics in logs. Currently
+   GPU is monitored but host resources are not logged periodically.
+
+### Phase 5: Tool Gaps
+
+5. **5.3 — Browser Automation (Playwright)**: `src/tools/browser.py` does not exist.
+   Would enable visual testing, screenshot-based review, and web scraping beyond text.
+   Requires Playwright + Chromium in sandbox Dockerfile.
+
+6. **5.5 — Document Processing**: `src/tools/documents.py` does not exist. PDF/DOCX/XLSX
+   reading would improve research workflows. Libraries: PyMuPDF, python-docx, openpyxl.
+
+7. **5.7 — MCP Client**: `src/tools/mcp_client.py` does not exist. Would allow dynamic
+   tool registration from external MCP servers (filesystem, GitHub, etc.). Medium priority
+   as the tool registry is already rich.
+
+### Phase 10: Coding Pipeline Gaps
+
+8. **10.2 — Language Prompt YAML**: Language-specific prompt hints are embedded in
+   `LanguageToolkit.get_prompt_hints()` Python methods. A centralized
+   `config/language_prompts.yaml` would be more maintainable but is not critical since
+   the current approach works.
+
+9. **10.4 — Unified Type Checker Tool**: `src/tools/type_checker.py` does not exist as a
+   standalone tool. Type checking is available via language toolkits but agents can't
+   invoke it directly as a named tool. Create a thin wrapper that delegates to
+   `toolkit.typecheck_command()`.
+
+10. **10.6 — PR Approval Flow via Telegram**: PR creation via `gh pr create` is wired
+    into the pipeline, but the Telegram approve/modify/reject inline buttons for PR
+    merging are not implemented. Currently PRs are created but must be merged manually.
+
+### Phase 12: API & Dashboard (Skipped Entirely)
+
+11. **12.1 — FastAPI Endpoints**: `src/app/api.py` exists with basic CRUD + Prometheus
+    /metrics endpoint, but many planned endpoints are missing: /ws/stream, /artifacts,
+    /projects API.
+
+12. **12.2 — WebSocket Live Streaming**: Not implemented. Would allow real-time task
+    execution viewing from a web dashboard.
+
+13. **12.3 — Web Dashboard**: No HTMX/Jinja2 dashboard exists. Telegram is the sole UI.
+
+---
+
+## B. Weaknesses Found During Implementation Audit
+
+### Architecture & Design
+
+14. **Two `record_model_call` functions with same name**: `src/infra/metrics.py` has a
+    sync in-memory counter version, `src/infra/db.py` has an async DB version. Both are
+    called from different places (router vs base.py). Should consolidate or rename to
+    avoid confusion. Suggested: rename metrics.py version to `increment_model_metric()`.
+
+15. **Cost tracking fragmented across 3 systems**: Per-task cost in `tasks.cost` column,
+    per-goal cost in blackboard `cost_tracking`, and in-memory counters in `metrics.py`.
+    These can drift. Need a single source of truth with derived views.
+
+16. **No graceful shutdown**: When the orchestrator is killed, in-progress tasks may be
+    left in `running` status with no cleanup. Need an atexit handler that: persists
+    in-memory metrics, marks running tasks as `interrupted`, flushes audit log.
+
+17. **SQLite under concurrency**: The system uses aiosqlite for all persistence. Under
+    heavy concurrent load (multiple agents writing), WAL mode helps but SQLite is not
+    designed for high write concurrency. Monitor for `database is locked` errors. Long-
+    term: consider PostgreSQL for production deployments.
+
+### Agent Quality
+
+18. **Fixer agent still receives prose context**: Even though pipeline.py now formats
+    structured issues, the fixer agent's system prompt doesn't explicitly tell it to
+    parse the `## Issues to Fix` section. It works because the format is clear, but
+    adding explicit JSON parsing in the fixer prompt would improve reliability.
+
+19. **Reviewer JSON output not validated**: The pipeline parses reviewer output as JSON
+    but falls back to prose silently. No schema validation (e.g., required fields like
+    `verdict`, `issues`). Should add a lightweight JSON schema check with retry on
+    malformed output.
+
+20. **Agent iteration limits vary without clear rationale**: base agent max=10, reviewer
+    max=4, etc. These are tuned by feel. Should be informed by actual performance data
+    from the tracing system.
+
+### Security
+
+21. **Secret redaction is regex-only**: The `redact_secrets()` function catches known
+    patterns (API keys, card numbers, etc.) but cannot detect novel secret formats or
+    generic base64-encoded credentials. Consider adding entropy-based detection for
+    high-entropy strings in sensitive contexts.
+
+22. **No prompt injection defense**: Agent system prompts don't include guards against
+    prompt injection from user-supplied task descriptions. A malicious task description
+    could instruct the agent to ignore its system prompt. Add a post-processing check
+    or sandboxed execution boundary.
+
+23. **Shell allowlist is command-level, not argument-level**: The allowlist checks the
+    first token of shell commands (e.g., `git` is allowed) but doesn't restrict
+    arguments (e.g., `git push --force` is permitted). For destructive commands, need
+    argument-level restrictions.
+
+### Observability
+
+24. **Metrics not exposed for external scraping**: Prometheus metrics are at `/metrics`
+    in the FastAPI app, but the app may not be running or accessible from a Prometheus
+    instance. No Prometheus scrape config exists in the monitoring stack.
+
+25. **No distributed tracing**: Task traces are per-task in the DB. When a task spawns
+    subtasks or inline agent queries, there's no parent-child trace correlation. A
+    trace_id propagation mechanism would help debug complex goal executions.
+
+26. **Alert rules are hardcoded**: `src/infra/alerting.py` has 3 rules with hardcoded
+    thresholds. Should load from `config/alerts.yaml` as plan_v4 specified. Easy fix.
+
+### Workflow Engine
+
+27. **Utility workflows (bugfix, research, documentation, refactor) untested**: These
+    JSON workflow definitions exist but may not have been exercised end-to-end. Need
+    integration tests or at least a manual test run for each.
+
+28. **No workflow versioning/migration**: When a workflow JSON is updated, in-progress
+    goals using the old version have no migration path. The runner resumes from
+    checkpoints but new steps added to the JSON won't appear in running goals.
+
+29. **Template expansion is one-shot**: The `feature_implementation_template` expands
+    once when `implementation_backlog` is produced. If the backlog changes mid-execution
+    (e.g., new features discovered), there's no re-expansion mechanism.
+
+### Performance
+
+30. **Context assembly does DB + embedding queries every iteration**: `assemble_context()`
+    runs vector search, git queries, and DB lookups on every agent iteration. For agents
+    with 10 iterations, this is 10x the cost. Should cache context per-task and only
+    refresh on explicit invalidation.
+
+31. **No model response streaming**: All model calls use `acompletion()` which waits for
+    the full response. For long outputs (architecture docs, code generation), streaming
+    would improve perceived latency and allow early cancellation.
+
+32. **Sandbox cold start**: The Docker sandbox container starts fresh for each shell
+    command. If the container isn't running, there's startup latency. Should ensure
+    the sandbox stays warm and reuse between commands.
+
+---
+
+## C. Future Features (Beyond v4 Scope)
+
+33. **Multi-user support**: Currently single-user (one Telegram admin). Support multiple
+    users with separate goal spaces, cost budgets, and permission levels.
+
+34. **Goal templates**: Pre-defined goal structures for common tasks ("build a REST API",
+    "create a CLI tool"). User picks template, fills in params, system plans and executes.
+
+35. **Model A/B testing**: Run the same task on two models, compare results, auto-select
+    winner. Feed into auto-tuner for continuous improvement.
+
+36. **Workspace snapshots**: Before destructive operations, snapshot the workspace (git
+    stash or tarball). Enable rollback if a goal produces worse code than before.
+
+37. **Cost prediction before execution**: Before starting a goal, estimate total cost
+    based on similar past goals (from metrics DB). Show user: "This will cost ~$2.50
+    and take ~45 minutes. Proceed?"
+
+38. **External webhook triggers**: Start goals/tasks from GitHub webhooks (new issue →
+    auto-investigate), CI failures (auto-create bugfix task), or cron schedules.

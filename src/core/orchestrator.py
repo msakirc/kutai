@@ -1200,6 +1200,29 @@ class Orchestrator:
 
         logger.info("task completed", task_id=task_id, model=model, cost=cost, iterations=iterations)
 
+        # Phase 13.2: Extract skill from successful multi-iteration tasks
+        if iterations >= 3 and cost > 0:
+            try:
+                from ..memory.skills import add_skill
+                # Extract a reusable skill pattern
+                agent_type = task.get("agent_type", "executor")
+                title = task.get("title", "")
+                desc = task.get("description", "")[:200]
+                # Build trigger pattern from key words in the title
+                words = [w for w in title.lower().split() if len(w) > 3 and w.isalpha()]
+                if len(words) >= 2:
+                    trigger = "|".join(words[:5])
+                    skill_name = f"auto:{agent_type}:{title[:40]}"
+                    await add_skill(
+                        name=skill_name,
+                        description=f"Learned from task #{task_id}: {title}",
+                        trigger_pattern=trigger,
+                        tool_sequence=f"agent={agent_type}, iterations={iterations}, model={model}",
+                        examples=desc,
+                    )
+            except Exception:
+                pass
+
         # ── Fix #9: Workflow phase completion notification ──
         if task_ctx.get("is_workflow_step") and task.get("goal_id"):
             try:
@@ -1890,6 +1913,22 @@ class Orchestrator:
                 except Exception as e:
                     logger.debug(f"Auto-tuning cycle failed: {e}")
 
+                # Phase 13.4: Weekly self-improvement analysis
+                try:
+                    if not hasattr(self, '_last_improvement_check'):
+                        self._last_improvement_check = datetime.now()
+                    elif (datetime.now() - self._last_improvement_check).total_seconds() > 604800:  # 7 days
+                        from src.memory.self_improvement import (
+                            analyze_and_propose, format_proposals_for_telegram
+                        )
+                        proposals = await analyze_and_propose()
+                        if proposals:
+                            msg = format_proposals_for_telegram(proposals)
+                            await self.telegram.send_notification(msg)
+                        self._last_improvement_check = datetime.now()
+                except Exception as e:
+                    logger.debug(f"Self-improvement check failed: {e}")
+
             except Exception as e:
                 logger.error(f"Loop error: {e}", exc_info=True)
                 await asyncio.sleep(30)
@@ -1909,6 +1948,15 @@ class Orchestrator:
             asyncio.create_task(manager.run_health_watchdog()),
             asyncio.create_task(bp_queue.run_processor()),
         ]
+
+        # Phase 13.1: Seed prompt versions from hardcoded prompts on first run
+        try:
+            from ..memory.prompt_versions import seed_from_agents
+            seeded = await seed_from_agents()
+            if seeded:
+                logger.info(f"Seeded {seeded} prompt versions from hardcoded agents")
+        except Exception as e:
+            logger.debug(f"Prompt seeding skipped: {e}")
 
         async with self.telegram.app:
             await self.telegram.app.start()

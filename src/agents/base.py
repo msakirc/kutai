@@ -209,7 +209,11 @@ class BaseAgent:
     #  Full system prompt assembly                                        #
     # ------------------------------------------------------------------ #
     def _build_full_system_prompt(self, task: dict) -> str:
-        parts = [self.get_system_prompt(task)]
+        # Phase 13.1: Use DB-versioned prompt if available, else hardcoded
+        if self._prompt_version_override:
+            parts = [self._prompt_version_override]
+        else:
+            parts = [self.get_system_prompt(task)]
 
         tools_block = self._get_available_tools_prompt()
         if tools_block:
@@ -877,12 +881,26 @@ class BaseAgent:
     # ── Phase 4.6: Progress streaming callback ──
     progress_callback: Callable | None = None
 
+    # Phase 13.1: Cached prompt override from DB (set per-execution)
+    _prompt_version_override: str | None = None
+
     async def execute(self, task: dict, progress_callback: Callable | None = None) -> dict:
         """
         Route to appropriate execution pattern, then run.
         progress_callback: async fn(task_id, iteration, max_iter, summary)
         """
         self.progress_callback = progress_callback
+
+        # Phase 13.1: Load active prompt version from DB (if available)
+        self._prompt_version_override = None
+        try:
+            from ..memory.prompt_versions import get_active_prompt
+            db_prompt = await get_active_prompt(self.name)
+            if db_prompt:
+                self._prompt_version_override = db_prompt
+        except Exception:
+            pass
+
         # ── Phase 5: execution pattern routing ──
         if self.execution_pattern == "single_shot":
             return await self.execute_single_shot(task)

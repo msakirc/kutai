@@ -38,7 +38,7 @@ from src.infra.logging_config import get_logger
 
 logger = get_logger("models.benchmark.fetcher")
 
-CACHE_TTL_HOURS = 72  # Re-fetch after 3 days
+CACHE_TTL_HOURS = 48  # Re-fetch after 2 days
 
 
 @dataclass
@@ -153,6 +153,10 @@ _MODEL_ALIASES: dict[str, list[str]] = {
     "deepseek-r1":     ["DeepSeek-R1", "deepseek-ai/DeepSeek-R1"],
     "mistral-24b":     ["Mistral-Small-24B", "mistralai/Mistral-Small-24B-Instruct"],
     "qwq-32b":         ["QwQ-32B", "Qwen/QwQ-32B"],
+    "qwen3.5-32b":     ["Qwen3.5-32B", "Qwen/Qwen3.5-32B"],
+    "qwen3-coder-32b": ["Qwen3-Coder-32B", "Qwen/Qwen3-Coder-32B-Instruct"],
+    "gemma3-27b":      ["Gemma-3-27B", "google/gemma-3-27b-it"],
+    "phi4-14b":        ["Phi-4-14B", "microsoft/Phi-4"],
 }
 
 
@@ -866,6 +870,96 @@ class BigCodeBenchFetcher(_BaseFetcher):
         )
 
 
+class OpenRouterRankingsFetcher(_BaseFetcher):
+    """
+    OpenRouter model rankings — context length & model availability data.
+
+    Covers: context_length data across many models.
+    Maps to: context_utilization (derived from context_length tiers).
+
+    Source: https://openrouter.ai/api/v1/models (public, no auth needed)
+    """
+    source_name = "openrouter"
+    URL = "https://openrouter.ai/api/v1/models"
+
+    @staticmethod
+    def _context_length_to_score(ctx_len: int) -> float:
+        """Map context_length to a context_utilization score."""
+        if ctx_len >= 128_000:
+            return 9.0
+        elif ctx_len >= 32_000:
+            return 7.0
+        elif ctx_len >= 8_000:
+            return 5.0
+        else:
+            return 3.0
+
+    def fetch_bulk(self, cache: BenchmarkCache) -> dict[str, dict]:
+        cached = cache.get_all_models(self.source_name)
+        if cached and "models" in cached:
+            return cached["models"]
+
+        try:
+            import urllib.request
+
+            req = urllib.request.Request(
+                self.URL,
+                headers={"User-Agent": "kutay-benchmark-fetcher/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                raw = resp.read().decode("utf-8")
+
+            data = json.loads(raw)
+            models_list = data.get("data", [])
+
+            result: dict[str, dict] = {}
+            for model in models_list:
+                model_id = model.get("id", "")
+                ctx_len = model.get("context_length")
+                pricing = model.get("pricing")
+
+                # Skip models with no pricing data
+                if not pricing:
+                    continue
+                if not model_id or ctx_len is None:
+                    continue
+
+                try:
+                    ctx_len = int(ctx_len)
+                except (ValueError, TypeError):
+                    continue
+
+                score = self._context_length_to_score(ctx_len)
+                result[model_id] = {
+                    "context_utilization": score,
+                }
+
+            if result:
+                cache.put_all_models(self.source_name, {"models": result})
+                logger.info(f"OpenRouter: fetched {len(result)} models")
+            return result
+
+        except Exception as e:
+            logger.warning(f"OpenRouter fetch failed: {e}")
+            return {}
+
+    def fetch(self, model_id: str, cache: BenchmarkCache) -> Optional[BenchmarkResult]:
+        all_models = self.fetch_bulk(cache)
+        if not all_models:
+            return None
+        matched = _fuzzy_match_model(model_id, list(all_models.keys()))
+        if not matched:
+            return None
+        return BenchmarkResult(
+            source=self.source_name,
+            model_id=model_id,
+            raw_scores={},
+            mapped_capabilities=all_models[matched],
+            timestamp=time.time(),
+            confidence=0.60,
+        )
+
+
 # ─── Main Fetcher Orchestrator ───────────────────────────────────────────────
 
 class BenchmarkFetcher:
@@ -895,6 +989,7 @@ class BenchmarkFetcher:
             LMSysArenaFetcher(),
             AiderLeaderboardFetcher(),
             BigCodeBenchFetcher(),
+            OpenRouterRankingsFetcher(),
         ]
 
     def fetch_model(self, model_id: str) -> dict[str, float]:
@@ -941,6 +1036,7 @@ class BenchmarkFetcher:
                         "lmsys_arena": 0.75,
                         "aider": 0.90,
                         "bigcodebench": 0.85,
+                        "openrouter": 0.60,
                     }
                     source_confidence[fetcher.source_name] = conf_map.get(
                         fetcher.source_name, 0.75

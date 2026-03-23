@@ -47,6 +47,30 @@ async def close_db() -> None:
 async def init_db():
     db = await get_db()
 
+    # Migration: goals → missions
+    try:
+        cursor = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='goals'")
+        if await cursor.fetchone():
+            await db.execute("ALTER TABLE goals RENAME TO missions")
+            await db.commit()
+            logger.info("Migrated: goals → missions")
+    except Exception as e:
+        logger.debug(f"goals→missions migration skipped: {e}")
+
+    # Migration: goal_id → mission_id in all tables
+    _GOAL_ID_TABLES = ["tasks", "memory", "file_locks", "approval_requests",
+                        "workspace_snapshots", "workflow_checkpoints"]
+    for tbl in _GOAL_ID_TABLES:
+        try:
+            await db.execute(f"ALTER TABLE {tbl} RENAME COLUMN goal_id TO mission_id")
+        except Exception:
+            pass
+    try:
+        await db.execute("ALTER TABLE blackboards RENAME COLUMN goal_id TO mission_id")
+    except Exception:
+        pass
+    await db.commit()
+
     # Check if we need to migrate by checking for old schema
     try:
         cursor = await db.execute("PRAGMA table_info(tasks)")
@@ -60,9 +84,9 @@ async def init_db():
     except Exception as e:
         logger.info(f"Fresh database, no migration needed: {e}")
 
-    # Goals
+    # Missions
     await db.execute("""
-        CREATE TABLE IF NOT EXISTS goals (
+        CREATE TABLE IF NOT EXISTS missions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
             description TEXT,
@@ -78,7 +102,7 @@ async def init_db():
     await db.execute("""
         CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            goal_id INTEGER,
+            mission_id INTEGER,
             parent_task_id INTEGER,
             title TEXT NOT NULL,
             description TEXT,
@@ -96,7 +120,7 @@ async def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             started_at TIMESTAMP,
             completed_at TIMESTAMP,
-            FOREIGN KEY (goal_id) REFERENCES goals(id),
+            FOREIGN KEY (mission_id) REFERENCES missions(id),
             FOREIGN KEY (parent_task_id) REFERENCES tasks(id)
         )
     """)
@@ -120,7 +144,7 @@ async def init_db():
     await db.execute("""
         CREATE TABLE IF NOT EXISTS memory (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            goal_id INTEGER,
+            mission_id INTEGER,
             key TEXT NOT NULL,
             value TEXT NOT NULL,
             category TEXT DEFAULT 'general',
@@ -148,7 +172,7 @@ async def init_db():
     # Blackboards (Phase 13.1)
     await db.execute("""
         CREATE TABLE IF NOT EXISTS blackboards (
-            goal_id INTEGER PRIMARY KEY,
+            mission_id INTEGER PRIMARY KEY,
             data JSON NOT NULL,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -194,7 +218,7 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS file_locks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             filepath TEXT NOT NULL,
-            goal_id INTEGER,
+            mission_id INTEGER,
             task_id INTEGER,
             agent_type TEXT,
             acquired_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -206,7 +230,7 @@ async def init_db():
     await db.execute("""
         CREATE TABLE IF NOT EXISTS approval_requests (
             task_id INTEGER PRIMARY KEY,
-            goal_id INTEGER,
+            mission_id INTEGER,
             title TEXT,
             details TEXT,
             status TEXT DEFAULT 'pending',
@@ -219,7 +243,7 @@ async def init_db():
     await db.execute("""
         CREATE TABLE IF NOT EXISTS workspace_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            goal_id INTEGER NOT NULL,
+            mission_id INTEGER NOT NULL,
             task_id INTEGER,
             file_hashes JSON NOT NULL DEFAULT '{}',
             branch_name TEXT,
@@ -241,7 +265,7 @@ async def init_db():
 
     await db.execute("""
         CREATE TABLE IF NOT EXISTS workflow_checkpoints (
-            goal_id INTEGER PRIMARY KEY,
+            mission_id INTEGER PRIMARY KEY,
             workflow_name TEXT NOT NULL,
             current_phase TEXT,
             completed_phases TEXT DEFAULT '[]',
@@ -338,17 +362,17 @@ async def init_db():
     # ── Performance indexes on common query patterns ──
     _indexes = [
         ("idx_tasks_status", "tasks", "status"),
-        ("idx_tasks_goal_id", "tasks", "goal_id"),
+        ("idx_tasks_mission_id", "tasks", "mission_id"),
         ("idx_tasks_status_priority", "tasks", "status, priority DESC"),
-        ("idx_tasks_goal_status", "tasks", "goal_id, status"),
+        ("idx_tasks_mission_status", "tasks", "mission_id, status"),
         ("idx_tasks_hash", "tasks", "task_hash"),
         ("idx_tasks_parent", "tasks", "parent_task_id"),
         ("idx_tasks_created", "tasks", "created_at"),
-        ("idx_goals_status", "goals", "status"),
+        ("idx_missions_status", "missions", "status"),
         ("idx_conversations_task_id", "conversations", "task_id"),
-        ("idx_memory_goal_category", "memory", "goal_id, category"),
+        ("idx_memory_mission_category", "memory", "mission_id, category"),
         ("idx_model_stats_model_agent", "model_stats", "model, agent_type"),
-        ("idx_blackboards_goal", "blackboards", "goal_id"),
+        ("idx_blackboards_mission", "blackboards", "mission_id"),
         ("idx_credentials_service", "credentials", "service_name"),
     ]
     for idx_name, table, columns_str in _indexes:
@@ -360,34 +384,34 @@ async def init_db():
             logger.debug(f"Index {idx_name} creation skipped: {e}")
     await db.commit()
 
-# --- Goal Operations ---
+# --- Mission Operations ---
 
-async def add_goal(title, description, priority=5, context=None):
+async def add_mission(title, description, priority=5, context=None):
     db = await get_db()
     cursor = await db.execute(
-        "INSERT INTO goals (title, description, priority, context) VALUES (?, ?, ?, ?)",
+        "INSERT INTO missions (title, description, priority, context) VALUES (?, ?, ?, ?)",
         (title, description, priority, json.dumps(context or {}))
     )
     await db.commit()
     return cursor.lastrowid
 
-async def get_goal(goal_id):
-    """Fetch a single goal by ID."""
+async def get_mission(mission_id):
+    """Fetch a single mission by ID."""
     db = await get_db()
-    cursor = await db.execute("SELECT * FROM goals WHERE id = ?", (goal_id,))
+    cursor = await db.execute("SELECT * FROM missions WHERE id = ?", (mission_id,))
     row = await cursor.fetchone()
     return dict(row) if row else None
 
-async def get_active_goals():
+async def get_active_missions():
     db = await get_db()
     cursor = await db.execute(
-        "SELECT * FROM goals WHERE status = 'active' ORDER BY priority DESC"
+        "SELECT * FROM missions WHERE status = 'active' ORDER BY priority DESC"
     )
     return [dict(row) for row in await cursor.fetchall()]
 
 # ─── Column whitelists (prevent SQL injection via dynamic kwargs) ─────────
 
-_GOAL_COLUMNS = frozenset({
+_MISSION_COLUMNS = frozenset({
     "title", "description", "status", "priority",
     "completed_at", "context",
 })
@@ -410,21 +434,21 @@ def _validate_columns(kwargs: dict, whitelist: frozenset, table: str) -> None:
         )
 
 
-async def update_goal(goal_id, **kwargs):
-    _validate_columns(kwargs, _GOAL_COLUMNS, "goals")
+async def update_mission(mission_id, **kwargs):
+    _validate_columns(kwargs, _MISSION_COLUMNS, "missions")
     db = await get_db()
     sets = ", ".join(f"{k} = ?" for k in kwargs)
-    values = list(kwargs.values()) + [goal_id]
-    await db.execute(f"UPDATE goals SET {sets} WHERE id = ?", values)
+    values = list(kwargs.values()) + [mission_id]
+    await db.execute(f"UPDATE missions SET {sets} WHERE id = ?", values)
     await db.commit()
 
 
 # --- Task Operations ---
 
 def compute_task_hash(title: str, description: str, agent_type: str,
-    goal_id=None, parent_task_id=None) -> str:
+    mission_id=None, parent_task_id=None) -> str:
     """Compute a SHA-256 hash for task deduplication."""
-    raw = f"{title or ''}|{description or ''}|{agent_type or ''}|{goal_id or ''}|{parent_task_id or ''}"
+    raw = f"{title or ''}|{description or ''}|{agent_type or ''}|{mission_id or ''}|{parent_task_id or ''}"
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
@@ -442,14 +466,16 @@ async def find_duplicate_task(task_hash: str) -> dict | None:
     return dict(row) if row else None
 
 
-async def add_task(title, description, goal_id=None, parent_task_id=None,
+async def add_task(title, description, mission_id=None, parent_task_id=None,
                    agent_type="executor", tier="auto", priority=5,
-                   requires_approval=False, depends_on=None, context=None):
+                   requires_approval=False, depends_on=None, context=None,
+                   goal_id=None):  # backward compat
+    mission_id = mission_id or goal_id
     db = await get_db()
 
     # Atomic dedup + insert — wrapped in explicit transaction to prevent
     # race conditions between concurrent async coroutines.
-    task_hash = compute_task_hash(title, description, agent_type, goal_id, parent_task_id)
+    task_hash = compute_task_hash(title, description, agent_type, mission_id, parent_task_id)
 
     try:
         await db.execute("BEGIN IMMEDIATE")
@@ -473,11 +499,11 @@ async def add_task(title, description, goal_id=None, parent_task_id=None,
 
         cursor = await db.execute(
             """INSERT INTO tasks
-               (goal_id, parent_task_id, title, description, agent_type,
+               (mission_id, parent_task_id, title, description, agent_type,
                 tier, priority, requires_approval, depends_on, context,
                 task_hash)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (goal_id, parent_task_id, title, description, agent_type,
+            (mission_id, parent_task_id, title, description, agent_type,
              tier, priority, requires_approval,
              json.dumps(depends_on or []), json.dumps(context or {}),
              task_hash)
@@ -614,11 +640,11 @@ async def get_task(task_id):
     row = await cursor.fetchone()
     return dict(row) if row else None
 
-async def get_tasks_for_goal(goal_id):
+async def get_tasks_for_mission(mission_id):
     db = await get_db()
     cursor = await db.execute(
-        "SELECT * FROM tasks WHERE goal_id = ? ORDER BY created_at",
-        (goal_id,)
+        "SELECT * FROM tasks WHERE mission_id = ? ORDER BY created_at",
+        (mission_id,)
     )
     return [dict(row) for row in await cursor.fetchall()]
 
@@ -669,7 +695,7 @@ async def claim_task(task_id: int) -> bool:
 async def add_subtasks_atomically(
     parent_task_id: int,
     subtasks: list[dict],
-    goal_id: int | None = None,
+    mission_id: int | None = None,
     parent_status: str = "waiting_subtasks",
     parent_result: str | None = None,
 ) -> list[int]:
@@ -694,7 +720,7 @@ async def add_subtasks_atomically(
             description = st.get("description", "")
             agent_type = st.get("agent_type", "executor")
             task_hash = compute_task_hash(
-                title, description, agent_type, goal_id, parent_task_id
+                title, description, agent_type, mission_id, parent_task_id
             )
 
             # Dedup check within transaction
@@ -711,11 +737,11 @@ async def add_subtasks_atomically(
 
             cursor = await db.execute(
                 """INSERT INTO tasks
-                   (goal_id, parent_task_id, title, description, agent_type,
+                   (mission_id, parent_task_id, title, description, agent_type,
                     tier, priority, requires_approval, depends_on, context,
                     task_hash)
                    VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, '{}', ?)""",
-                (goal_id, parent_task_id, title, description, agent_type,
+                (mission_id, parent_task_id, title, description, agent_type,
                  st.get("tier", "auto"), st.get("priority", 5),
                  json.dumps(st.get("depends_on", [])),
                  task_hash)
@@ -743,9 +769,9 @@ async def add_subtasks_atomically(
 
 async def insert_tasks_atomically(
     tasks: list[dict],
-    goal_id: int,
+    mission_id: int,
 ) -> list[int]:
-    """Insert multiple tasks for a goal in a single transaction.
+    """Insert multiple tasks for a mission in a single transaction.
 
     Each task dict may have: title, description, agent_type, tier, priority,
     depends_on (list of task IDs), context (dict).
@@ -768,7 +794,7 @@ async def insert_tasks_atomically(
             description = t.get("description", "")
             agent_type = t.get("agent_type", "executor")
             task_hash = compute_task_hash(
-                title, description, agent_type, goal_id, None
+                title, description, agent_type, mission_id, None
             )
 
             # Dedup within this batch
@@ -791,11 +817,11 @@ async def insert_tasks_atomically(
 
             cursor = await db.execute(
                 """INSERT INTO tasks
-                   (goal_id, parent_task_id, title, description, agent_type,
+                   (mission_id, parent_task_id, title, description, agent_type,
                     tier, priority, requires_approval, depends_on, context,
                     task_hash)
                    VALUES (?, NULL, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
-                (goal_id, title, description, agent_type,
+                (mission_id, title, description, agent_type,
                  t.get("tier", "auto"), t.get("priority", 5),
                  json.dumps(t.get("depends_on", [])),
                  json.dumps(t.get("context", {})),
@@ -813,7 +839,7 @@ async def insert_tasks_atomically(
 
 # ─── Skip propagation (transitive closure) ────────────────────────────────────
 
-async def propagate_skips(goal_id: int) -> int:
+async def propagate_skips(mission_id: int) -> int:
     """Propagate skip status transitively through dependency chains.
 
     For each pending task whose depends_on contains a skipped dep:
@@ -830,20 +856,20 @@ async def propagate_skips(goal_id: int) -> int:
     total_skipped = 0
 
     while True:
-        # Collect all skipped task IDs for this goal
+        # Collect all skipped task IDs for this mission
         cursor = await db.execute(
-            "SELECT id FROM tasks WHERE goal_id = ? AND status = 'skipped'",
-            (goal_id,)
+            "SELECT id FROM tasks WHERE mission_id = ? AND status = 'skipped'",
+            (mission_id,)
         )
         skipped_ids = {row[0] for row in await cursor.fetchall()}
 
         if not skipped_ids:
             break
 
-        # Get all pending tasks for this goal
+        # Get all pending tasks for this mission
         cursor = await db.execute(
-            "SELECT id, depends_on FROM tasks WHERE goal_id = ? AND status = 'pending'",
-            (goal_id,)
+            "SELECT id, depends_on FROM tasks WHERE mission_id = ? AND status = 'pending'",
+            (mission_id,)
         )
         pending_tasks = await cursor.fetchall()
 
@@ -913,7 +939,7 @@ async def propagate_skips(goal_id: int) -> int:
 
     if total_skipped > 0:
         await db.commit()
-        logger.info(f"Skip propagation: {total_skipped} tasks skipped for goal #{goal_id}")
+        logger.info(f"Skip propagation: {total_skipped} tasks skipped for mission #{mission_id}")
 
     return total_skipped
 
@@ -998,12 +1024,12 @@ async def get_recent_completed_tasks(limit=5):
 
 # --- Memory Operations ---
 
-async def store_memory(key, value, category="general", goal_id=None):
+async def store_memory(key, value, category="general", mission_id=None):
     db = await get_db()
     # Upsert
     existing = await db.execute(
-        "SELECT id FROM memory WHERE key = ? AND goal_id IS ?",
-        (key, goal_id)
+        "SELECT id FROM memory WHERE key = ? AND mission_id IS ?",
+        (key, mission_id)
     )
     row = await existing.fetchone()
     if row:
@@ -1013,21 +1039,21 @@ async def store_memory(key, value, category="general", goal_id=None):
         )
     else:
         await db.execute(
-            "INSERT INTO memory (key, value, category, goal_id) VALUES (?, ?, ?, ?)",
-            (key, value, category, goal_id)
+            "INSERT INTO memory (key, value, category, mission_id) VALUES (?, ?, ?, ?)",
+            (key, value, category, mission_id)
         )
     await db.commit()
 
-async def recall_memory(category=None, goal_id=None, limit=20):
+async def recall_memory(category=None, mission_id=None, limit=20):
     db = await get_db()
     query = "SELECT * FROM memory WHERE 1=1"
     params = []
     if category:
         query += " AND category = ?"
         params.append(category)
-    if goal_id:
-        query += " AND (goal_id = ? OR goal_id IS NULL)"
-        params.append(goal_id)
+    if mission_id:
+        query += " AND (mission_id = ? OR mission_id IS NULL)"
+        params.append(mission_id)
     query += " ORDER BY updated_at DESC LIMIT ?"
     params.append(limit)
     cursor = await db.execute(query, params)
@@ -1177,16 +1203,16 @@ async def reprioritize_task(task_id: int, new_priority: int) -> bool:
 
 # --- Dependency Graph ---
 
-async def get_task_tree(goal_id: int) -> list[dict]:
-    """Get all tasks for a goal, including parent-child relationships."""
+async def get_task_tree(mission_id: int) -> list[dict]:
+    """Get all tasks for a mission, including parent-child relationships."""
     db = await get_db()
     cursor = await db.execute(
         """SELECT id, parent_task_id, title, status, agent_type,
                   priority, depends_on
            FROM tasks
-           WHERE goal_id = ?
+           WHERE mission_id = ?
            ORDER BY id""",
-        (goal_id,)
+        (mission_id,)
     )
     return [dict(row) for row in await cursor.fetchall()]
 
@@ -1426,7 +1452,7 @@ async def check_budget(
 
 async def acquire_file_lock(
     filepath: str,
-    goal_id: int | None = None,
+    mission_id: int | None = None,
     task_id: int | None = None,
     agent_type: str | None = None,
 ) -> bool:
@@ -1434,9 +1460,9 @@ async def acquire_file_lock(
     db = await get_db()
     try:
         await db.execute(
-            "INSERT INTO file_locks (filepath, goal_id, task_id, agent_type) "
+            "INSERT INTO file_locks (filepath, mission_id, task_id, agent_type) "
             "VALUES (?, ?, ?, ?)",
-            (filepath, goal_id, task_id, agent_type),
+            (filepath, mission_id, task_id, agent_type),
         )
         await db.commit()
         return True
@@ -1459,10 +1485,10 @@ async def release_task_locks(task_id: int) -> None:
     await db.commit()
 
 
-async def release_goal_locks(goal_id: int) -> None:
-    """Release all locks held by a specific goal."""
+async def release_mission_locks(mission_id: int) -> None:
+    """Release all locks held by a specific mission."""
     db = await get_db()
-    await db.execute("DELETE FROM file_locks WHERE goal_id = ?", (goal_id,))
+    await db.execute("DELETE FROM file_locks WHERE mission_id = ?", (mission_id,))
     await db.commit()
 
 
@@ -1476,11 +1502,11 @@ async def get_file_lock(filepath: str) -> dict | None:
     return dict(row) if row else None
 
 
-async def get_goal_locks(goal_id: int) -> list[dict]:
-    """List all locks held by a goal."""
+async def get_mission_locks(mission_id: int) -> list[dict]:
+    """List all locks held by a mission."""
     db = await get_db()
     cursor = await db.execute(
-        "SELECT * FROM file_locks WHERE goal_id = ?", (goal_id,)
+        "SELECT * FROM file_locks WHERE mission_id = ?", (mission_id,)
     )
     return [dict(r) for r in await cursor.fetchall()]
 
@@ -1488,7 +1514,7 @@ async def get_goal_locks(goal_id: int) -> list[dict]:
 # ─── Phase 6: Workspace Snapshots ───────────────────────────────────────────
 
 async def save_workspace_snapshot(
-    goal_id: int,
+    mission_id: int,
     file_hashes: dict,
     task_id: int | None = None,
     branch_name: str | None = None,
@@ -1498,21 +1524,21 @@ async def save_workspace_snapshot(
     db = await get_db()
     cursor = await db.execute(
         "INSERT INTO workspace_snapshots "
-        "(goal_id, task_id, file_hashes, branch_name, commit_sha) "
+        "(mission_id, task_id, file_hashes, branch_name, commit_sha) "
         "VALUES (?, ?, ?, ?, ?)",
-        (goal_id, task_id, json.dumps(file_hashes), branch_name, commit_sha),
+        (mission_id, task_id, json.dumps(file_hashes), branch_name, commit_sha),
     )
     await db.commit()
     return cursor.lastrowid
 
 
-async def get_latest_snapshot(goal_id: int) -> dict | None:
-    """Get the most recent snapshot for a goal."""
+async def get_latest_snapshot(mission_id: int) -> dict | None:
+    """Get the most recent snapshot for a mission."""
     db = await get_db()
     cursor = await db.execute(
-        "SELECT * FROM workspace_snapshots WHERE goal_id = ? "
+        "SELECT * FROM workspace_snapshots WHERE mission_id = ? "
         "ORDER BY id DESC LIMIT 1",
-        (goal_id,),
+        (mission_id,),
     )
     row = await cursor.fetchone()
     if row:
@@ -1552,15 +1578,15 @@ async def get_task_cost(task_id: int) -> float:
     return float(row["total"]) if row else 0.0
 
 
-async def get_goal_total_cost(goal_id: int) -> float:
-    """Sum up all conversation costs across all tasks in a goal."""
+async def get_mission_total_cost(mission_id: int) -> float:
+    """Sum up all conversation costs across all tasks in a mission."""
     db = await get_db()
     cursor = await db.execute(
         "SELECT COALESCE(SUM(c.cost_estimate), 0) as total "
         "FROM conversations c "
         "JOIN tasks t ON c.task_id = t.id "
-        "WHERE t.goal_id = ?",
-        (goal_id,),
+        "WHERE t.mission_id = ?",
+        (mission_id,),
     )
     row = await cursor.fetchone()
     return float(row["total"]) if row else 0.0
@@ -1596,15 +1622,15 @@ async def check_task_budget(task_id: int, additional_cost: float = 0.0) -> dict:
 
 # ─── Approval Requests ────────────────────────────────────────────────────────
 
-async def insert_approval_request(task_id: int, goal_id: int | None,
+async def insert_approval_request(task_id: int, mission_id: int | None,
                                   title: str, details: str):
     """Persist an approval request to the DB."""
     db = await get_db()
     await db.execute(
         """INSERT OR REPLACE INTO approval_requests
-           (task_id, goal_id, title, details, status, created_at)
+           (task_id, mission_id, title, details, status, created_at)
            VALUES (?, ?, ?, ?, 'pending', ?)""",
-        (task_id, goal_id, title, details, datetime.now().isoformat()),
+        (task_id, mission_id, title, details, datetime.now().isoformat()),
     )
     await db.commit()
 
@@ -1635,24 +1661,24 @@ async def get_pending_approvals() -> list[dict]:
 
 
 async def upsert_workflow_checkpoint(
-    goal_id: int,
+    mission_id: int,
     workflow_name: str,
     current_phase: str = None,
     completed_phases: list = None,
     failed_step_id: str = None,
     metadata: dict = None,
 ) -> None:
-    """Create or update a workflow checkpoint for the given goal."""
+    """Create or update a workflow checkpoint for the given mission."""
     from datetime import datetime
 
     db = await get_db()
     await db.execute(
         """INSERT OR REPLACE INTO workflow_checkpoints
-           (goal_id, workflow_name, current_phase, completed_phases,
+           (mission_id, workflow_name, current_phase, completed_phases,
             failed_step_id, checkpoint_at, metadata)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (
-            goal_id,
+            mission_id,
             workflow_name,
             current_phase,
             json.dumps(completed_phases or []),
@@ -1664,12 +1690,12 @@ async def upsert_workflow_checkpoint(
     await db.commit()
 
 
-async def get_workflow_checkpoint(goal_id: int) -> dict | None:
-    """Get the workflow checkpoint for a goal, or None if not found."""
+async def get_workflow_checkpoint(mission_id: int) -> dict | None:
+    """Get the workflow checkpoint for a mission, or None if not found."""
     db = await get_db()
     cursor = await db.execute(
-        "SELECT * FROM workflow_checkpoints WHERE goal_id = ?",
-        (goal_id,),
+        "SELECT * FROM workflow_checkpoints WHERE mission_id = ?",
+        (mission_id,),
     )
     row = await cursor.fetchone()
     if row is None:
@@ -1717,3 +1743,14 @@ async def update_model_stats(
         await db.commit()
     except Exception:
         pass  # best-effort
+
+
+# Backward compatibility aliases (will be removed after full migration)
+add_goal = add_mission
+get_goal = get_mission
+get_active_goals = get_active_missions
+update_goal = update_mission
+get_tasks_for_goal = get_tasks_for_mission
+get_goal_total_cost = get_mission_total_cost
+release_goal_locks = release_mission_locks
+get_goal_locks = get_mission_locks

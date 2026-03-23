@@ -809,9 +809,23 @@ async def call_model(
         if tools and model.supports_function_calling:
             use_tools = tools
 
+        # Phase 8.3: Redact secrets from messages sent to cloud models
+        _messages = messages
+        if not model.is_local:
+            try:
+                from ..security.sensitivity import redact_secrets
+                _messages = []
+                for msg in messages:
+                    _m = dict(msg)
+                    if isinstance(_m.get("content"), str):
+                        _m["content"] = redact_secrets(_m["content"])
+                    _messages.append(_m)
+            except Exception:
+                _messages = messages
+
         completion_kwargs = dict(
             model=model.litellm_name,
-            messages=messages,
+            messages=_messages,
             max_tokens=min(reqs.estimated_output_tokens * 2, model.max_tokens),
         )
 

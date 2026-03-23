@@ -1759,6 +1759,13 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
     async def send_notification(self, text: str, retries: int = 2):
         import asyncio as _asyncio
 
+        # Phase 8.3: Redact secrets from outgoing messages
+        try:
+            from ..security.sensitivity import redact_secrets
+            text = redact_secrets(text)
+        except Exception:
+            pass
+
         for attempt in range(retries + 1):
             try:
                 await self.app.bot.send_message(

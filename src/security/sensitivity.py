@@ -142,6 +142,41 @@ def detect_sensitivity(text: str) -> SensitivityResult:
         return SensitivityResult(SensitivityLevel.PUBLIC, [])
 
 
+# ─── Secret Redaction ──────────────────────────────────────────────────────
+
+# Compiled patterns for redaction (SECRET-level only)
+_REDACT_PATTERNS: list[tuple[re.Pattern, str]] = []
+
+def _build_redact_patterns() -> list[tuple[re.Pattern, str]]:
+    """Compile all SECRET-level patterns once for reuse."""
+    if _REDACT_PATTERNS:
+        return _REDACT_PATTERNS
+    all_secret = (
+        _API_KEY_PATTERNS
+        + _PRIVATE_KEY_PATTERNS
+        + _CREDIT_CARD_PATTERNS
+        + _SSN_PATTERNS
+        + _PASSWORD_PATTERNS
+    )
+    for pattern_str, desc in all_secret:
+        _REDACT_PATTERNS.append((re.compile(pattern_str, re.IGNORECASE), desc))
+    return _REDACT_PATTERNS
+
+
+def redact_secrets(text: str, placeholder: str = "[REDACTED]") -> str:
+    """
+    Replace all SECRET-level sensitive patterns in text with a placeholder.
+
+    Returns the redacted text. Safe to call on any outgoing message.
+    """
+    if not text:
+        return text
+    result = text
+    for compiled, _desc in _build_redact_patterns():
+        result = compiled.sub(placeholder, result)
+    return result
+
+
 def scan_task(
     title: str,
     description: str,

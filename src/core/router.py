@@ -991,6 +991,8 @@ async def call_model(
                         "latency": call_latency,
                         "thinking": thinking_content,
                         "is_local": model.is_local,
+                        "ran_on": "local" if model.is_local else model.provider,
+                        "provider": model.provider,
                         "task": task_label,
                         "capability_score": scored.capability_score,
                         "difficulty": reqs.difficulty,

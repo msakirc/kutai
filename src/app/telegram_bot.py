@@ -31,6 +31,110 @@ from ..tools.workspace import (
 
 pending_clarifications = {}  # task_id -> asyncio.Event + response
 
+# ─── Interactive Menu Definitions ─────────────────────────────────────────
+# Each category: (emoji_label, key, [(button_label, command, needs_arg, arg_prompt)])
+MENU_CATEGORIES = [
+    ("🎯 Goals & Tasks", "goals_tasks", [
+        ("🎯 New Goal", "goal", True, "What's your goal? Describe it:"),
+        ("⚡ Force Goal", "goalforce", True, "Describe the goal (skip refinement):"),
+        ("📝 New Task", "task", True, "What task should I do?"),
+        ("📋 List Goals", "goals", False, None),
+        ("📬 Queue", "queue", False, None),
+        ("🚫 Cancel", "cancel", True, "Which task or goal ID to cancel?"),
+        ("🔢 Priority", "priority", True, "Enter: <task_id> <priority 1-10>"),
+        ("⏸️ Pause", "pause", True, "Which goal ID to pause?"),
+        ("▶️ Resume", "resume", True, "Which goal ID to resume?"),
+        ("🌳 Graph", "graph", True, "Which goal ID to show graph for?"),
+    ]),
+    ("📊 Monitoring", "monitoring", [
+        ("📊 Status", "status", False, None),
+        ("📰 Digest", "digest", False, None),
+        ("📈 Progress", "progress", True, "Which goal ID? (empty for all)"),
+        ("📉 Metrics", "metrics", False, None),
+        ("🔍 Audit", "audit", True, "Which task ID to audit?"),
+        ("🔁 Replay", "replay", True, "Which task ID to replay?"),
+        ("💰 Cost", "cost", True, "Which goal ID for cost breakdown?"),
+        ("🤖 Model Stats", "modelstats", False, None),
+        ("💵 Budget", "budget", True, "Enter daily budget limit (empty to view):"),
+    ]),
+    ("🏗️ Projects", "projects", [
+        ("📁 Project", "project", True, "Which project name? (empty to list)"),
+        ("📂 All Projects", "projects", False, None),
+        ("🗂️ Workspaces", "workspace", False, None),
+        ("🚀 Product", "product", True, "Describe your product idea:"),
+        ("👁️ Preview", "preview", True, "Describe the idea to preview:"),
+        ("📋 WF Status", "wfstatus", True, "Which goal ID for workflow status?"),
+    ]),
+    ("🧠 Knowledge", "knowledge", [
+        ("💾 Remember", "remember", True, "What should I remember?"),
+        ("🔎 Recall", "recall", True, "What do you want to recall?"),
+        ("📥 Ingest", "ingest", True, "Send a URL or file path to ingest:"),
+        ("⭐ Feedback", "feedback", True, "Enter: <task_id> <good|bad|partial> [reason]"),
+    ]),
+    ("⚙️ System", "system", [
+        ("🎚️ Autonomy", "autonomy", True, "Set level: low, medium, high, or paranoid"),
+        ("🔑 Credential", "credential", True, "Credential key=value (or key to view):"),
+        ("🎛️ Tune", "tune", True, "What setting to tune?"),
+        ("🖥️ Load", "load", True, "Set load mode (minimal/normal/auto):"),
+        ("🧪 Improve", "improve", False, None),
+        ("📭 DLQ", "dlq", False, None),
+    ]),
+    ("🔴 Danger Zone", "danger", [
+        ("🐛 Debug", "debug", False, None),
+        ("♻️ Reset", "reset", True, "Reset what? (task ID, 'failed', 'stuck', 'blocked')"),
+        ("☢️ Reset All", "resetall", False, None),
+    ]),
+]
+
+
+def _build_category_keyboard() -> InlineKeyboardMarkup:
+    """Build the top-level category selection keyboard."""
+    rows = []
+    for i in range(0, len(MENU_CATEGORIES), 2):
+        row = []
+        for cat_label, cat_key, _ in MENU_CATEGORIES[i:i+2]:
+            row.append(InlineKeyboardButton(cat_label, callback_data=f"menu_cat:{cat_key}"))
+        rows.append(row)
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_command_keyboard(cat_key: str) -> InlineKeyboardMarkup:
+    """Build the command buttons for a specific category."""
+    for _, key, commands in MENU_CATEGORIES:
+        if key == cat_key:
+            rows = []
+            row = []
+            for btn_label, cmd, needs_arg, prompt in commands:
+                cb = f"menu_ask:{cmd}" if needs_arg else f"menu_cmd:{cmd}"
+                row.append(InlineKeyboardButton(btn_label, callback_data=cb))
+                if len(row) >= 3:
+                    rows.append(row)
+                    row = []
+            if row:
+                rows.append(row)
+            rows.append([InlineKeyboardButton("⬅️ Back", callback_data="menu_back")])
+            return InlineKeyboardMarkup(rows)
+    return _build_category_keyboard()  # fallback
+
+
+# Map command -> prompt for conversation flow
+_CMD_ARG_PROMPTS: dict[str, str] = {}
+for _, _, cmds in MENU_CATEGORIES:
+    for _, cmd, needs_arg, prompt in cmds:
+        if needs_arg and prompt:
+            _CMD_ARG_PROMPTS[cmd] = prompt
+
+# Map command string -> actual method name (where they differ)
+_CMD_METHOD_MAP: dict[str, str] = {
+    "goal": "cmd_add_goal",
+    "goalforce": "cmd_add_goal_force",
+    "task": "cmd_add_task",
+    "goals": "cmd_list_goals",
+    "queue": "cmd_view_queue",
+    "modelstats": "cmd_model_stats",
+    "resetall": "cmd_reset_all",
+}
+
 
 class TelegramInterface:
     def __init__(self, orchestrator=None):
@@ -43,6 +147,13 @@ class TelegramInterface:
         # Explicit clarification tracking: chat_id → task_id
         self._pending_clarifications: dict[int, int] = {}
         self._pending_goal_refinements: dict[int, dict] = {}  # Phase 14.5
+        # Conversation flow: chat_id → {"command": str} for button-initiated arg prompts
+        self._pending_action: dict[int, dict] = {}
+
+    def _resolve_cmd_handler(self, cmd: str):
+        """Resolve a command string to its handler method."""
+        method_name = _CMD_METHOD_MAP.get(cmd, f"cmd_{cmd}")
+        return getattr(self, method_name, None)
 
 
     def _setup_handlers(self):
@@ -97,40 +208,13 @@ class TelegramInterface:
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
-            " *Autonomous AI Orchestrator*\n\n"
+            "🤖 *Autonomous AI Orchestrator*\n\n"
             "I work 24/7 and only bug you when needed.\n\n"
-            "*Commands:*\n"
-            "/goal <description> — Set a high-level goal\n"
-            "/task <description> — Add a one-off task\n"
-            "/goals — View active goals\n"
-            "/queue — View pending tasks\n"
-            "/status — System stats\n"
-            "/cancel <id> — Cancel a task\n"
-            "/priority <id> <1-10> — Reprioritize\n"
-            "/graph <goal\\_id> — Show task dependency graph\n"
-            "/budget [daily\\_limit] — View/set cost budget\n"
-            "/modelstats — View model performance stats\n"
-            "/workspace — View goal workspaces\n"
-            "/project [name] — List/view projects\n"
-            "/projects — List all projects\n"
-            "/progress [goal\\_id] — Show progress notes\n"
-            "/audit [task\\_id] — Show audit log\n"
-            "/metrics — System metrics\n"
-            "/replay <task\\_id> — Replay task trace\n"
-            "/ingest <url\\_or\\_path> — Ingest a document into knowledge base\n"
-            "/product <idea> — Start idea-to-product workflow\n"
-            "/wfstatus <goal\\_id> — View workflow progress\n"
-            "/resume <goal\\_id> — Resume a failed workflow\n"
-            "/pause <goal\\_id> — Pause pending/processing tasks for a goal\n"
-            "/credential — Manage API credentials\n"
-            "/cost <goal\\_id> — View per-goal cost breakdown\n"
-            "/preview <idea> — Preview workflow steps & cost estimate\n"
-            "/feedback <task\\_id> <good|bad|partial> [reason] — Rate a task\n"
-            "/improve — Run self-improvement analysis\n"
-            "/autonomy <low|medium|high|paranoid> — Set risk autonomy level\n"
-            "/digest — Get daily digest now\n\n"
-            "Or just send a message — I'll figure out what to do.",
-            parse_mode="Markdown"
+            "Tap a category below, or just send a message — "
+            "I understand goals, tasks, bug reports, feature requests, "
+            "status questions, feedback, and more.",
+            parse_mode="Markdown",
+            reply_markup=_build_category_keyboard()
         )
 
     async def cmd_add_goal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1466,6 +1550,22 @@ class TelegramInterface:
         logger.info("Message received", user_id=chat_id, text_preview=text[:50])
 
         # ═══════════════════════════════════════════════════════
+        # PRIORITY 0: Button-initiated conversation flow
+        # ═══════════════════════════════════════════════════════
+        pending_action = self._pending_action.pop(chat_id, None)
+        if pending_action:
+            cmd = pending_action["command"]
+            handler = self._resolve_cmd_handler(cmd)
+            if handler:
+                # Simulate command with text as args
+                context.args = text.split() if text.strip() else []
+                try:
+                    await handler(update, context)
+                except Exception as e:
+                    await update.message.reply_text(f"❌ Error running /{cmd}: {e}")
+                return
+
+        # ═══════════════════════════════════════════════════════
         # PRIORITY 1: Check for pending clarification (state-based)
         # ═══════════════════════════════════════════════════════
         pending_task_id = self._pending_clarifications.get(chat_id)
@@ -1524,27 +1624,47 @@ class TelegramInterface:
 
         # ── Route by classification ──
 
+        # Map classification → emoji for user feedback
+        _TYPE_EMOJI = {
+            "bug_report": "🐛", "feature_request": "🔦",
+            "ui_note": "🎨", "feedback": "💬",
+            "progress_inquiry": "📊", "casual": "👋",
+            "load_control": "🖥️", "followup": "🔗",
+            "clarification_response": "💡", "question": "❓",
+            "goal": "🎯", "task": "📝",
+        }
+
         if msg_type in ("bug_report", "feature_request", "ui_note", "feedback"):
             await self._handle_user_input(msg_type, text, chat_id, update)
             return
 
         if msg_type == "progress_inquiry":
-            # Delegate to the /progress command logic
+            await update.message.reply_text("📊 Understood as a status question.")
             await self.cmd_progress(update, context)
             return
 
+        if msg_type == "question":
+            # Questions about system → treat as quick task with assistant agent
+            await update.message.reply_text("❓ Got your question — looking into it...")
+            task_id = await add_task(
+                title=f"Q: {text[:50]}",
+                description=text,
+                tier="auto",
+                priority=TASK_PRIORITY.get("high", 8),
+                agent_type="assistant",
+            )
+            self.user_last_task_id[chat_id] = task_id
+            return
+
         if msg_type == "casual":
-            # Quick assistant response — don't create a task for chitchat
             await self._handle_casual(text, update)
             return
 
         if msg_type == "load_control":
-            # Natural language load control: "I'm going to game"
             await self._handle_load_control(text, update)
             return
 
         if msg_type in ("followup", "clarification_response"):
-            # Embedding-based follow-up to find parent
             parent_id = await self._find_followup_parent(chat_id, text)
             if parent_id:
                 task_context = {"followup_to": parent_id}
@@ -1558,7 +1678,7 @@ class TelegramInterface:
                 )
                 self.user_last_task_id[chat_id] = task_id
                 await update.message.reply_text(
-                    f"Continuing task #{parent_id}. Queued as #{task_id}."
+                    f"🔗 Continuing task #{parent_id}. Queued as #{task_id}."
                 )
                 return
 
@@ -1586,7 +1706,7 @@ class TelegramInterface:
             if self.orchestrator:
                 await self.orchestrator.plan_goal(goal_id, text[:80], text)
             await update.message.reply_text(
-                f"Interpreted as Goal #{goal_id}. Planning now..."
+                f"🎯 Interpreted as Goal #{goal_id}. Planning now..."
             )
             self.user_last_task_id.pop(chat_id, None)
         else:
@@ -1689,18 +1809,52 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
     def _classify_message_by_keywords(text: str) -> str:
         """Fast keyword fallback for message classification."""
         lower = text.lower()
-        if any(w in lower for w in ["bug", "error", "broken", "crash", "doesn't work"]):
+        # Bug reports
+        if any(w in lower for w in [
+            "bug", "error", "broken", "crash", "doesn't work", "not working",
+            "failed", "exception", "traceback", "issue with",
+        ]):
             return "bug_report"
-        if any(w in lower for w in ["feature", "could you add", "would be nice", "suggestion"]):
+        # Feature requests
+        if any(w in lower for w in [
+            "feature", "could you add", "would be nice", "suggestion",
+            "it would help if", "can we have", "please add", "wish list",
+        ]):
             return "feature_request"
-        if any(w in lower for w in ["how's", "status", "progress", "how far", "eta"]):
+        # Feedback
+        if any(w in lower for w in [
+            "good job", "well done", "not great", "could be better",
+            "i think", "in my opinion", "the output was",
+        ]):
+            return "feedback"
+        # Status / progress questions
+        if any(w in lower for w in [
+            "how's", "status", "progress", "how far", "eta", "update on",
+            "what's happening", "is it done", "still running", "where are we",
+        ]):
             return "progress_inquiry"
-        if any(w in lower for w in ["hi ", "hello", "thanks", "thank you", "hey", "good morning"]):
+        # Questions
+        if any(w in lower for w in [
+            "what is", "how do", "why does", "can you explain", "what does",
+            "how does", "tell me about", "?",
+        ]):
+            return "question"
+        # Casual
+        if any(w in lower for w in [
+            "hi ", "hello", "thanks", "thank you", "hey", "good morning",
+            "good night", "bye", "see you", "sup", "yo ",
+        ]):
             return "casual"
-        if any(w in lower for w in ["game", "gaming", "free up gpu", "gpu"]):
+        # GPU/load control
+        if any(w in lower for w in [
+            "game", "gaming", "free up gpu", "gpu", "i'm going to play",
+        ]):
             return "load_control"
-        if len(text) > 200 or any(w in lower for w in
-                ["research", "create a", "build", "analyze", "develop", "plan"]):
+        # Goal (long or project-like)
+        if len(text) > 200 or any(w in lower for w in [
+            "research", "create a", "build", "analyze", "develop", "plan",
+            "design a", "implement a", "set up", "write a report", "strategy",
+        ]):
             return "goal"
         return "task"
 
@@ -1909,6 +2063,60 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
         await query.answer()
         data = query.data
 
+        # ── Interactive Menu Callbacks ──────────────────────────
+        if data == "menu_back":
+            await query.edit_message_text(
+                "🤖 *Autonomous AI Orchestrator*\n\n"
+                "Tap a category below, or just send a message.",
+                parse_mode="Markdown",
+                reply_markup=_build_category_keyboard()
+            )
+            return
+
+        if data.startswith("menu_cat:"):
+            cat_key = data.split(":", 1)[1]
+            # Find category label
+            cat_label = cat_key
+            for label, key, _ in MENU_CATEGORIES:
+                if key == cat_key:
+                    cat_label = label
+                    break
+            await query.edit_message_text(
+                f"{cat_label}\n\nTap a command:",
+                reply_markup=_build_command_keyboard(cat_key)
+            )
+            return
+
+        if data.startswith("menu_cmd:"):
+            cmd = data.split(":", 1)[1]
+            handler = self._resolve_cmd_handler(cmd)
+            if handler:
+                context.args = []
+                # Send a message so the handler has something to reply_text on
+                msg = await query.message.reply_text(f"⏳ /{cmd}...")
+                # Wrap in a lightweight object matching what handlers expect
+                class _CallbackUpdate:
+                    """Minimal update shim so cmd_* handlers work from callbacks."""
+                    def __init__(self, message):
+                        self.message = message
+                        self.effective_chat = message.chat
+                try:
+                    await handler(_CallbackUpdate(msg), context)
+                except Exception as e:
+                    await msg.reply_text(f"❌ Error: {e}")
+            else:
+                await query.message.reply_text(f"Unknown command: /{cmd}")
+            return
+
+        if data.startswith("menu_ask:"):
+            cmd = data.split(":", 1)[1]
+            prompt = _CMD_ARG_PROMPTS.get(cmd, f"Enter argument for /{cmd}:")
+            chat_id = query.message.chat_id
+            self._pending_action[chat_id] = {"command": cmd}
+            await query.message.reply_text(f"💬 {prompt}")
+            return
+
+        # ── Legacy Callbacks (approval, resetall confirm) ──────
         if data == "resetall_confirm":
             db = await get_db()
             await db.execute("DELETE FROM conversations")
@@ -1922,22 +2130,27 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
             await query.edit_message_text("Cancelled.")
             return
 
-        action, task_id_str = data.split("_", 1)
-        task_id = int(task_id_str)
+        # Approval/rejection buttons (approve_<id>, reject_<id>)
+        if "_" in data:
+            action, task_id_str = data.split("_", 1)
+            try:
+                task_id = int(task_id_str)
+            except ValueError:
+                return
 
-        if action == "approve":
-            await update_approval_status(task_id, "approved")
-            if task_id in self._approval_events:
-                self._approval_events[task_id]["result"] = "approved"
-                self._approval_events[task_id]["event"].set()
-            await query.edit_message_text(f"✅ Task #{task_id} approved.")
-        elif action == "reject":
-            await update_approval_status(task_id, "rejected")
-            if task_id in self._approval_events:
-                self._approval_events[task_id]["result"] = "rejected"
-                self._approval_events[task_id]["event"].set()
-            await update_task(task_id, status="rejected")
-            await query.edit_message_text(f"❌ Task #{task_id} rejected.")
+            if action == "approve":
+                await update_approval_status(task_id, "approved")
+                if task_id in self._approval_events:
+                    self._approval_events[task_id]["result"] = "approved"
+                    self._approval_events[task_id]["event"].set()
+                await query.edit_message_text(f"✅ Task #{task_id} approved.")
+            elif action == "reject":
+                await update_approval_status(task_id, "rejected")
+                if task_id in self._approval_events:
+                    self._approval_events[task_id]["result"] = "rejected"
+                    self._approval_events[task_id]["event"].set()
+                await update_task(task_id, status="rejected")
+                await query.edit_message_text(f"❌ Task #{task_id} rejected.")
 
     # --- Outbound notifications ---
 

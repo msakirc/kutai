@@ -906,6 +906,8 @@ class BaseAgent:
 
         # ── Build initial ModelRequirements ──
         reqs = await self._build_model_requirements(task, _task_ctx)
+        # Phase 9.2: Attach task_id for tracing in router
+        reqs._task_id = int(task_id) if str(task_id).isdigit() else None
         if model_override:
             reqs.model_override = model_override
 
@@ -1403,7 +1405,9 @@ class BaseAgent:
                             f"{', '.join(f'{k}={repr(v)[:50]}' for k, v in tool_args.items())})"
                         )
                         try:
-                            tool_output = await execute_tool(tool_name, **tool_args)
+                            tool_output = await execute_tool(
+                                tool_name, agent_type=self.name, **tool_args
+                            )
                         except Exception as exc:
                             tool_output = f"\u274c Tool execution error: {exc}"
 
@@ -1419,6 +1423,20 @@ class BaseAgent:
                                 task_id=_tid,
                                 goal_id=goal_id,
                             )
+                        except Exception:
+                            pass
+
+                        # Phase 9.2: Trace tool execution
+                        try:
+                            _tid = int(task_id) if str(task_id).isdigit() else None
+                            if _tid:
+                                from ..infra.tracing import append_trace
+                                await append_trace(
+                                    task_id=_tid,
+                                    entry_type="tool",
+                                    input_summary=f"{tool_name}({', '.join(f'{k}={repr(v)[:30]}' for k, v in tool_args.items())})",
+                                    output_summary=tool_output[:200] if tool_output else "",
+                                )
                         except Exception:
                             pass
 

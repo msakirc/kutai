@@ -1147,7 +1147,8 @@ class Orchestrator:
 
         await update_task(
             task_id, status="completed", result=result_text,
-            completed_at=datetime.now().isoformat()
+            completed_at=datetime.now().isoformat(),
+            cost=cost,
         )
 
         if task.get("goal_id"):
@@ -1598,6 +1599,8 @@ class Orchestrator:
             )
 
             # Phase 7.4: Generate and save goal completion summary
+            total_cost = 0.0
+            elapsed_str = ""
             try:
                 from src.infra.progress import add_note, NOTE_MILESTONE
                 await add_note(
@@ -1606,17 +1609,59 @@ class Orchestrator:
                     goal_id=goal_id,
                 )
                 goal_info = await get_goal(goal_id)
+                goal_title = goal_info.get('title', 'Unknown') if goal_info else 'Unknown'
+                goal_created = goal_info.get('created_at', '') if goal_info else ''
+                now = datetime.now()
+
+                # Calculate elapsed time
+                elapsed_str = ""
+                if goal_created:
+                    try:
+                        from datetime import datetime as _dt
+                        created_dt = _dt.fromisoformat(str(goal_created))
+                        delta = now - created_dt
+                        hours, rem = divmod(int(delta.total_seconds()), 3600)
+                        minutes = rem // 60
+                        if hours > 0:
+                            elapsed_str = f"{hours}h {minutes}m"
+                        else:
+                            elapsed_str = f"{minutes}m"
+                    except Exception:
+                        pass
+
+                # Fetch cost data from blackboard
+                total_cost = 0.0
+                phase_costs: dict = {}
+                try:
+                    from ..collaboration.blackboard import read_blackboard
+                    cost_data = await read_blackboard(goal_id, "cost_tracking")
+                    if isinstance(cost_data, dict):
+                        total_cost = cost_data.get("total_cost", 0.0)
+                        phase_costs = cost_data.get("by_phase", {})
+                except Exception:
+                    pass
+
                 summary_lines = [
                     f"# Goal #{goal_id} Summary",
-                    f"**Title:** {goal_info.get('title', 'Unknown') if goal_info else 'Unknown'}",
-                    f"**Completed:** {datetime.now().isoformat()[:19]}",
+                    f"**Title:** {goal_title}",
+                    f"**Completed:** {now.isoformat()[:19]}",
                     f"**Tasks:** {len(completed)} completed, {len(failed)} failed",
-                    "",
-                    "## Results",
                 ]
+                if elapsed_str:
+                    summary_lines.append(f"**Duration:** {elapsed_str}")
+                if total_cost > 0:
+                    summary_lines.append(f"**Total Cost:** ${total_cost:.4f}")
+                summary_lines += ["", "## Results"]
+
                 for t in completed[-20:]:
                     result_text = (t.get('result') or '')[:300]
                     summary_lines.append(f"### {t['title']}\n{result_text}\n")
+
+                # Per-phase cost breakdown
+                if phase_costs:
+                    summary_lines.append("## Cost Breakdown by Phase")
+                    for phase_name, phase_cost in sorted(phase_costs.items(), key=lambda x: -x[1]):
+                        summary_lines.append(f"- **{phase_name}:** ${phase_cost:.4f}")
                 summary_content = "\n".join(summary_lines)
                 import os
                 results_dir = os.path.join("workspace", "results")
@@ -1628,9 +1673,12 @@ class Orchestrator:
             except Exception as exc:
                 logger.debug(f"[Goal #{goal_id}] Summary generation failed: {exc}")
 
+            cost_line = f"\nCost: ${total_cost:.4f}" if total_cost > 0 else ""
+            time_line = f"\nDuration: {elapsed_str}" if elapsed_str else ""
             await self.telegram.send_notification(
                 f"🎯 *Goal Completed!*\n\n"
-                f"Tasks: {len(completed)} completed, {len(failed)} failed\n\n"
+                f"Tasks: {len(completed)} completed, {len(failed)} failed"
+                f"{cost_line}{time_line}\n\n"
                 f"Results:\n{results_summary}"
             )
 

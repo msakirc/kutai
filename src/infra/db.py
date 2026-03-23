@@ -320,9 +320,20 @@ async def init_db():
                 "ALTER TABLE tasks ADD COLUMN max_cost REAL DEFAULT NULL"
             )
             await db.commit()
-            logger.info("📊 Added max_cost column to tasks table")
+            logger.info("Added max_cost column to tasks table")
         except Exception as e:
             logger.debug(f"max_cost column migration skipped: {e}")
+
+    # Migration: add cost column for per-task cost tracking (Phase 9.4)
+    if "cost" not in columns:
+        try:
+            await db.execute(
+                "ALTER TABLE tasks ADD COLUMN cost REAL DEFAULT 0"
+            )
+            await db.commit()
+            logger.info("Added cost column to tasks table")
+        except Exception as e:
+            logger.debug(f"cost column migration skipped: {e}")
 
     # ── Performance indexes on common query patterns ──
     _indexes = [
@@ -385,7 +396,7 @@ _TASK_COLUMNS = frozenset({
     "title", "description", "agent_type", "status", "tier", "priority",
     "requires_approval", "depends_on", "result", "error", "error_category",
     "context", "retry_count", "max_retries", "started_at", "completed_at",
-    "task_hash", "max_cost",
+    "task_hash", "max_cost", "cost", "quality_score",
 })
 
 
@@ -945,6 +956,19 @@ async def clear_task_checkpoint(task_id: int) -> None:
         (task_id,)
     )
     await db.commit()
+
+async def get_last_model_for_task(task_id: int) -> str | None:
+    """Get the last model used for a task from conversation log."""
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT model_used FROM conversations
+           WHERE task_id = ? AND model_used IS NOT NULL
+           ORDER BY id DESC LIMIT 1""",
+        (task_id,),
+    )
+    row = await cursor.fetchone()
+    return row[0] if row else None
+
 
 async def log_conversation(task_id, role, content, model_used=None,
                            agent_type=None, cost=0):
@@ -1660,3 +1684,36 @@ async def get_workflow_checkpoint(goal_id: int) -> dict | None:
         except (json.JSONDecodeError, TypeError):
             result[field] = [] if field == "completed_phases" else {}
     return result
+
+
+async def update_model_stats(
+    model: str,
+    agent_type: str,
+    success: bool,
+    cost: float = 0.0,
+    latency_ms: float = 0.0,
+    grade: float = 0.0,
+) -> None:
+    """Record model performance stats for health monitoring."""
+    try:
+        db = await get_db()
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS model_stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model TEXT NOT NULL,
+                agent_type TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                cost REAL DEFAULT 0,
+                latency_ms REAL DEFAULT 0,
+                grade REAL DEFAULT 0,
+                recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute(
+            "INSERT INTO model_stats (model, agent_type, success, cost, latency_ms, grade) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (model, agent_type, int(success), cost, latency_ms, grade),
+        )
+        await db.commit()
+    except Exception:
+        pass  # best-effort

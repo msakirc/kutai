@@ -981,6 +981,32 @@ async def call_model(
                     except Exception:
                         pass
 
+                    # Phase 8.4+9.2: Audit + trace model calls
+                    try:
+                        from src.infra.audit import audit, ACTOR_AGENT, ACTION_MODEL_CALL
+                        await audit(
+                            actor=f"{ACTOR_AGENT}:{reqs.agent_type or 'unknown'}",
+                            action=ACTION_MODEL_CALL,
+                            target=model.litellm_name,
+                            details=f"task={task_label} cost=${cost or 0:.4f} latency={call_latency:.1f}s",
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        from src.infra.tracing import append_trace
+                        _trace_task_id = getattr(reqs, '_task_id', None)
+                        if _trace_task_id:
+                            await append_trace(
+                                task_id=_trace_task_id,
+                                entry_type="model_call",
+                                input_summary=f"{model.name} ({task_label})",
+                                output_summary=(msg.content or "")[:200],
+                                cost=cost or 0.0,
+                                duration_ms=call_latency * 1000,
+                            )
+                    except Exception:
+                        pass
+
                     return {
                         "content": msg.content or "",
                         "model": model.litellm_name,

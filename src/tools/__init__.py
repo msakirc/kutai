@@ -729,7 +729,7 @@ def _trigger_reindex(filepath: str | None) -> None:
         pass
 
 
-async def execute_tool(tool_name: str, **kwargs: Any) -> str:
+async def execute_tool(tool_name: str, agent_type: str | None = None, **kwargs: Any) -> str:
     """
     Execute a registered tool by name.
 
@@ -738,8 +738,9 @@ async def execute_tool(tool_name: str, **kwargs: Any) -> str:
     the underlying function.
 
     Args:
-        tool_name: Key in TOOL_REGISTRY.
-        **kwargs:  Arguments forwarded to the tool function.
+        tool_name:  Key in TOOL_REGISTRY.
+        agent_type: The calling agent's type (for per-agent shell allowlists).
+        **kwargs:   Arguments forwarded to the tool function.
 
     Returns:
         The tool's string output, or a descriptive error message.
@@ -747,6 +748,20 @@ async def execute_tool(tool_name: str, **kwargs: Any) -> str:
     if tool_name not in TOOL_REGISTRY:
         available = ", ".join(sorted(TOOL_REGISTRY.keys()))
         return f"❌ Unknown tool: '{tool_name}'. Available: {available}"
+
+    # Phase 8.2: Per-agent shell command allowlist enforcement
+    if agent_type and tool_name in ("shell", "shell_stdin", "shell_sequential"):
+        _cmd = kwargs.get("command", "") or kwargs.get("commands", "")
+        if isinstance(_cmd, str) and _cmd.strip():
+            try:
+                from .shell import _is_command_allowed_for_agent
+                if not _is_command_allowed_for_agent(_cmd, agent_type):
+                    return (
+                        f"🚫 BLOCKED: Command not in allowlist for agent type "
+                        f"'{agent_type}'. Use only approved commands."
+                    )
+            except ImportError:
+                pass
 
     func = TOOL_REGISTRY[tool_name]["function"]
 

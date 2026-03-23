@@ -55,6 +55,14 @@ SIDE_EFFECT_TOOLS: frozenset[str] = frozenset({
     "git_init", "git_commit", "git_branch", "git_rollback",
 })
 
+# Phase 5.6: Read-only tools whose results can be cached within a single
+# agent execution. Cache is invalidated when any SIDE_EFFECT_TOOL runs.
+CACHEABLE_READ_TOOLS: frozenset[str] = frozenset({
+    "read_file", "file_tree", "git_status", "git_log", "git_diff",
+    "web_search", "extract_url", "read_pdf", "read_docx",
+    "read_spreadsheet", "extract_text",
+})
+
 # Max JSON format-correction retries before falling through to final_answer.
 MAX_FORMAT_RETRIES: int = 2
 
@@ -1378,23 +1386,26 @@ class BaseAgent:
                             continue
 
                     idem_key = self._tool_idempotency_key(tool_name, tool_args)
-                    cached = (
-                        completed_tool_ops.get(idem_key)
-                        if tool_name in SIDE_EFFECT_TOOLS
-                        else None
-                    )
+
+                    # Check caches: side-effect idempotency OR read-only result cache
+                    cached = None
+                    if tool_name in SIDE_EFFECT_TOOLS:
+                        cached = completed_tool_ops.get(idem_key)
+                    elif tool_name in CACHEABLE_READ_TOOLS:
+                        cached = completed_tool_ops.get(f"rc:{idem_key}")
 
                     if cached is not None:
                         tool_output = cached
+                        logger.debug(f"[Task #{task_id}] cache hit: {tool_name}")
                     else:
                         logger.info(
-                            f"[Task #{task_id}] 🔧 {tool_name}("
+                            f"[Task #{task_id}] \U0001f527 {tool_name}("
                             f"{', '.join(f'{k}={repr(v)[:50]}' for k, v in tool_args.items())})"
                         )
                         try:
                             tool_output = await execute_tool(tool_name, **tool_args)
                         except Exception as exc:
-                            tool_output = f"❌ Tool execution error: {exc}"
+                            tool_output = f"\u274c Tool execution error: {exc}"
 
                         # Phase 8.4: Audit log tool execution
                         try:
@@ -1411,8 +1422,15 @@ class BaseAgent:
                         except Exception:
                             pass
 
+                        # Cache results
                         if tool_name in SIDE_EFFECT_TOOLS:
                             completed_tool_ops[idem_key] = tool_output
+                            # Invalidate read-only cache on side effects
+                            _to_remove = [k for k in completed_tool_ops if k.startswith("rc:")]
+                            for k in _to_remove:
+                                del completed_tool_ops[k]
+                        elif tool_name in CACHEABLE_READ_TOOLS:
+                            completed_tool_ops[f"rc:{idem_key}"] = tool_output
 
                 if len(tool_output) > MAX_TOOL_OUTPUT_LENGTH:
                     tool_output = (

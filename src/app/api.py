@@ -314,10 +314,10 @@ def create_app() -> Any:
             lines.append("# TYPE kutay_model_healthy gauge")
             lines.append('kutay_model_healthy{model=""} 0')
 
-        # ── Auto-tuner quality metrics ──
+        # ── Auto-tuner quality + model health metrics ──
         try:
-            from src.models.auto_tuner import get_prometheus_lines
-            lines.extend(get_prometheus_lines())
+            from src.models.auto_tuner import get_prometheus_lines_async
+            lines.extend(await get_prometheus_lines_async())
         except Exception as e:
             logger.debug(f"Auto-tuner metrics unavailable: {e}")
 

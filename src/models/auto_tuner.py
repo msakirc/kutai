@@ -328,3 +328,54 @@ def get_prometheus_lines() -> list[str]:
     lines.append(f"kutay_autotuner_interval_seconds {TUNING_INTERVAL_SECONDS}")
 
     return lines
+
+
+async def get_prometheus_lines_async() -> list[str]:
+    """
+    Extended Prometheus metrics including DB-sourced model_stats.
+
+    Adds to the sync metrics:
+    - kutay_model_success_rate{model,agent_type}
+    - kutay_model_avg_grade{model,agent_type}
+    - kutay_model_total_calls{model,agent_type}
+    - kutay_model_avg_latency_ms{model,agent_type}
+    - kutay_model_avg_cost{model,agent_type}
+    """
+    lines = get_prometheus_lines()
+
+    try:
+        from src.infra.db import get_model_stats
+        stats = await get_model_stats()
+
+        if stats:
+            lines.append("# HELP kutay_model_success_rate Model success rate by agent type")
+            lines.append("# TYPE kutay_model_success_rate gauge")
+            lines.append("# HELP kutay_model_avg_grade Model average grade (1-5) by agent type")
+            lines.append("# TYPE kutay_model_avg_grade gauge")
+            lines.append("# HELP kutay_model_total_calls Model total calls by agent type")
+            lines.append("# TYPE kutay_model_total_calls counter")
+            lines.append("# HELP kutay_model_avg_latency_ms Model average latency by agent type")
+            lines.append("# TYPE kutay_model_avg_latency_ms gauge")
+            lines.append("# HELP kutay_model_avg_cost Model average cost per call by agent type")
+            lines.append("# TYPE kutay_model_avg_cost gauge")
+
+            for row in stats:
+                model = _prom_escape_label(row["model"])
+                agent = _prom_escape_label(row["agent_type"])
+                labels = f'model="{model}",agent_type="{agent}"'
+
+                sr = row.get("success_rate", 0) or 0
+                grade = row.get("avg_grade", 0) or 0
+                calls = row.get("total_calls", 0) or 0
+                latency = row.get("avg_latency", 0) or 0
+                cost = row.get("avg_cost", 0) or 0
+
+                lines.append(f"kutay_model_success_rate{{{labels}}} {sr:.3f}")
+                lines.append(f"kutay_model_avg_grade{{{labels}}} {grade:.2f}")
+                lines.append(f"kutay_model_total_calls{{{labels}}} {calls}")
+                lines.append(f"kutay_model_avg_latency_ms{{{labels}}} {latency:.1f}")
+                lines.append(f"kutay_model_avg_cost{{{labels}}} {cost:.6f}")
+    except Exception as e:
+        log.debug(f"model_stats prometheus export failed: {e}")
+
+    return lines

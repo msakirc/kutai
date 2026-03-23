@@ -65,23 +65,23 @@ class _ContextLogger:
         """Inject context fields as LogRecord extras for JSON formatter."""
         return ctx
 
-    def debug(self, msg: str, **ctx):
-        self._log.debug(self._fmt(msg, **ctx), extra=ctx)
+    def debug(self, msg: str, *args, **ctx):
+        self._log.debug(self._fmt(msg, **ctx), *args, extra=ctx)
 
-    def info(self, msg: str, **ctx):
-        self._log.info(self._fmt(msg, **ctx), extra=ctx)
+    def info(self, msg: str, *args, **ctx):
+        self._log.info(self._fmt(msg, **ctx), *args, extra=ctx)
 
-    def warning(self, msg: str, **ctx):
-        self._log.warning(self._fmt(msg, **ctx), extra=ctx)
+    def warning(self, msg: str, *args, **ctx):
+        self._log.warning(self._fmt(msg, **ctx), *args, extra=ctx)
 
-    def error(self, msg: str, **ctx):
-        self._log.error(self._fmt(msg, **ctx), extra=ctx)
+    def error(self, msg: str, *args, **ctx):
+        self._log.error(self._fmt(msg, **ctx), *args, extra=ctx)
 
-    def critical(self, msg: str, **ctx):
-        self._log.critical(self._fmt(msg, **ctx), extra=ctx)
+    def critical(self, msg: str, *args, **ctx):
+        self._log.critical(self._fmt(msg, **ctx), *args, extra=ctx)
 
-    def exception(self, msg: str, **ctx):
-        self._log.exception(self._fmt(msg, **ctx), extra=ctx)
+    def exception(self, msg: str, *args, **ctx):
+        self._log.exception(self._fmt(msg, **ctx), *args, extra=ctx)
 
     def bind(self, **ctx) -> "_BoundLogger":
         return _BoundLogger(self, ctx)

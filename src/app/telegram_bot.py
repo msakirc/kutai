@@ -930,8 +930,18 @@ class TelegramInterface:
             if rating not in ("good", "bad", "partial"):
                 await update.message.reply_text("Rating must be: good, bad, or partial")
                 return
-            reason = " ".join(args[2:]) if len(args) > 2 else None
-            await record_feedback(task_id=task_id, feedback_type=rating, reason=reason)
+            reason = " ".join(args[2:]) if len(args) > 2 else ""
+            # Enrich with model/agent info from the task record
+            task_info = await get_task(task_id)
+            model_used = ""
+            agent_type = ""
+            if task_info:
+                model_used = task_info.get("model", "")
+                agent_type = task_info.get("agent_type", "")
+            await record_feedback(
+                task_id=task_id, feedback_type=rating, reason=reason,
+                model_used=model_used, agent_type=agent_type,
+            )
             emoji = {"good": "👍", "bad": "👎", "partial": "🤷"}[rating]
             msg = f"{emoji} Feedback recorded for task #{task_id}: *{rating}*"
             if reason:
@@ -1240,6 +1250,7 @@ class TelegramInterface:
                 f"Use /wfstatus {goal_id} to track progress."
             )
         except Exception as e:
+            logger.error("workflow runner failed ", error=e)
             await update.message.reply_text(
                 f"Failed to start product workflow: {type(e).__name__}: {e}"
             )

@@ -28,7 +28,8 @@ NTFY_TOPIC_LOGS   = "orchestrator-logs"     # INFO/WARNING/ERROR, phone OFF
 
 # ─── Core Settings ───────────────────────────────────────────────────────────
 
-DB_PATH = "orchestrator.db"
+DB_PATH = os.getenv("DB_PATH", "orchestrator.db")
+
 WORKSPACE_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "workspace")
 )

@@ -5,7 +5,7 @@
 settings:
   benchmark_cache_dir: ".benchmark_cache"
   enrich_with_benchmarks: true          # auto-fetch benchmarks on load
-  benchmark_min_sources: 2              # require 2+ sources for benchmark override
+  benchmark_min_sources: 1              # require 1+ source for benchmark override (3 active sources: Aider, LiveCodeBench, BigCodeBench)
 
 # ─── Personal projects (local-only routing) ──────────────────────────────────
 personal_projects:

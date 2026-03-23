@@ -101,15 +101,16 @@ Modify src/core/orchestrator.py. Every 100 tasks (or hourly, whichever comes fir
 Phase 3: Resource Management — GPU Load Control & Cloud Hybrid
 
 3.1 — User-Controlled GPU Load Modes
-Create src/infra/load_manager.py. Three modes:
+Create src/infra/load_manager.py. Four modes:
 
 Full — use all available GPU/RAM (default when idle).
-Shared — cap at 50% VRAM, reduce ngl (Phase 2.2 recalculates), prefer smaller models or cloud.
+Heavy - Use max %90 available vram+ram. 
+Shared — cap at 50% VRAM+RAM, reduce ngl (Phase 2.2 recalculates), prefer smaller models or cloud.
 Minimal — zero local GPU. All inference offloaded to cloud. Local used only for orchestration.
-Persist current mode in DB. On mode change: trigger gpu_scheduler to recalculate all model params, potentially unload current model via llama-swap API. Modify src/app/telegram_bot.py to add /load full|shared|minimal command. Also handle natural language via the message classifier: "I'm going to game" → switch to Minimal, send confirmation.
+Persist current mode in DB. On mode change: trigger gpu_scheduler to recalculate all model params, potentially unload current model via llama-swap API. Modify src/app/telegram_bot.py to add /load full|heavy|shared|minimal command. Also handle natural language via the message classifier: "I'm going to game" → switch to Minimal, send confirmation.
 
 3.2 — Automatic Load Detection
-Modify src/models/gpu_monitor.py. Add detect_external_gpu_usage() -> bool using pynvml or nvidia-smi: if non-orchestrator processes are using >30% GPU compute or >2GB VRAM, flag it. When detected: if mode is Full, auto-downgrade to Shared. Send Telegram: "Detected external GPU usage. Switched to Shared. Reply /load full when free." When external usage drops for 5 minutes, notify and offer to restore. Never auto-restore to Full — always ask.
+Modify src/models/gpu_monitor.py. Add detect_external_gpu_usage() -> bool using pynvml or nvidia-smi: if non-orchestrator processes are using >30% GPU compute or >2GB VRAM, flag it. When detected: if mode is Full, auto-downgrade. Send Telegram: "Detected external GPU usage. Switched to Shared. Reply /load full when free." When external usage drops for 5 minutes, notify and offer to restore. Never auto-restore to Full — always ask.
 
 3.3 — Cloud Provider Pool
 Create src/models/cloud_pool.py and config/cloud_providers.yaml. Define providers:

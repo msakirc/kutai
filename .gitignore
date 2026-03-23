@@ -1,13 +1,13 @@
 # Virtual environments
 venv/
-.env/
-.env*/
 
 # Python cache
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# Logs
 logs/
 
 # Packaging
@@ -19,7 +19,19 @@ build/
 .DS_Store
 Thumbs.db
 
-.env
+# IDE
 .idea/
 
+# Environment (keep .env.example)
+.env
+!.env.example
+
+# Database
 *.db
+*.db-shm
+*.db-wal
+
+# Runtime
+workspace/
+.benchmark_cache/
+monitoring/

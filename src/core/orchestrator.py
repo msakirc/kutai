@@ -1203,12 +1203,10 @@ class Orchestrator:
         # Phase 13.2: Extract skill from successful multi-iteration tasks
         if iterations >= 3 and cost > 0:
             try:
-                from ..memory.skills import add_skill
-                # Extract a reusable skill pattern
+                from ..memory.skills import add_skill, record_skill_outcome
                 agent_type = task.get("agent_type", "executor")
                 title = task.get("title", "")
                 desc = task.get("description", "")[:200]
-                # Build trigger pattern from key words in the title
                 words = [w for w in title.lower().split() if len(w) > 3 and w.isalpha()]
                 if len(words) >= 2:
                     trigger = "|".join(words[:5])
@@ -1220,6 +1218,8 @@ class Orchestrator:
                         tool_sequence=f"agent={agent_type}, iterations={iterations}, model={model}",
                         examples=desc,
                     )
+                    # Record success so find_relevant_skills can discover it
+                    await record_skill_outcome(skill_name, success=True)
             except Exception:
                 pass
 

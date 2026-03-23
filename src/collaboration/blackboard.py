@@ -56,36 +56,39 @@ def _get_lock(goal_id: int) -> asyncio.Lock:
 
 # ── Core API ─────────────────────────────────────────────────────────────────
 
+async def _load_board(goal_id: int) -> dict:
+    """Load board from cache or DB. Caller MUST hold _get_lock(goal_id)."""
+    if goal_id in _BLACKBOARD_CACHE:
+        return _BLACKBOARD_CACHE[goal_id]
+
+    try:
+        db = await get_db()
+        await _ensure_table(db)
+        cursor = await db.execute(
+            "SELECT data FROM blackboards WHERE goal_id = ?", (goal_id,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            board = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+        else:
+            board = json.loads(json.dumps(DEFAULT_BLACKBOARD))  # deep copy
+            await db.execute(
+                "INSERT INTO blackboards (goal_id, data) VALUES (?, ?)",
+                (goal_id, json.dumps(board)),
+            )
+            await db.commit()
+    except Exception as exc:
+        logger.debug(f"Blackboard DB access failed, using defaults: {exc}")
+        board = json.loads(json.dumps(DEFAULT_BLACKBOARD))
+
+    _BLACKBOARD_CACHE[goal_id] = board
+    return board
+
+
 async def get_or_create_blackboard(goal_id: int) -> dict:
     """Load the blackboard for a goal, creating a fresh one if needed."""
     async with _get_lock(goal_id):
-        if goal_id in _BLACKBOARD_CACHE:
-            return _BLACKBOARD_CACHE[goal_id]
-
-        try:
-            db = await get_db()
-
-            await _ensure_table(db)
-
-            cursor = await db.execute(
-                "SELECT data FROM blackboards WHERE goal_id = ?", (goal_id,)
-            )
-            row = await cursor.fetchone()
-            if row:
-                board = json.loads(row[0]) if isinstance(row[0], str) else row[0]
-            else:
-                board = json.loads(json.dumps(DEFAULT_BLACKBOARD))  # deep copy
-                await db.execute(
-                    "INSERT INTO blackboards (goal_id, data) VALUES (?, ?)",
-                    (goal_id, json.dumps(board)),
-                )
-                await db.commit()
-        except Exception as exc:
-            logger.debug(f"Blackboard DB access failed, using defaults: {exc}")
-            board = json.loads(json.dumps(DEFAULT_BLACKBOARD))
-
-        _BLACKBOARD_CACHE[goal_id] = board
-        return board
+        return await _load_board(goal_id)
 
 
 async def read_blackboard(goal_id: int, key: Optional[str] = None) -> Any:
@@ -99,9 +102,8 @@ async def read_blackboard(goal_id: int, key: Optional[str] = None) -> Any:
 async def write_blackboard(goal_id: int, key: str, value: Any) -> None:
     """Overwrite a top-level key in the blackboard."""
     async with _get_lock(goal_id):
-        board = await get_or_create_blackboard(goal_id)
+        board = await _load_board(goal_id)
         board[key] = value
-        # Automatically increment version on every write (except when writing to "version" key directly)
         if key != "version":
             board["version"] = board.get("version", 0) + 1
         _BLACKBOARD_CACHE[goal_id] = board
@@ -113,7 +115,7 @@ async def update_blackboard_entry(
 ) -> None:
     """Update a nested entry (e.g., files["app.py"] = {...})."""
     async with _get_lock(goal_id):
-        board = await get_or_create_blackboard(goal_id)
+        board = await _load_board(goal_id)
         section = board.get(key)
         if isinstance(section, dict):
             section[sub_key] = value
@@ -128,7 +130,7 @@ async def update_blackboard_entry(
 async def append_blackboard(goal_id: int, key: str, item: Any) -> None:
     """Append an item to a list-typed key (decisions, open_issues, etc.)."""
     async with _get_lock(goal_id):
-        board = await get_or_create_blackboard(goal_id)
+        board = await _load_board(goal_id)
         section = board.get(key, [])
         if not isinstance(section, list):
             section = [section]
@@ -146,7 +148,7 @@ async def write_blackboard_versioned(
     Raises ValueError if the blackboard version doesn't match expected_version.
     """
     async with _get_lock(goal_id):
-        board = await get_or_create_blackboard(goal_id)
+        board = await _load_board(goal_id)
         current_version = board.get("version", 0)
         if current_version != expected_version:
             raise ValueError(
@@ -154,7 +156,6 @@ async def write_blackboard_versioned(
                 f"got {current_version}"
             )
         board[key] = value
-        # Increment version after successful write
         board["version"] = current_version + 1
         _BLACKBOARD_CACHE[goal_id] = board
     await _persist(goal_id, board)

@@ -1,5 +1,9 @@
 version: "3.8"
 
+# ─── Kutay Orchestrator — All services in one file ───────────────────────────
+# Monitoring configs (Prometheus + Grafana provisioning) are inlined below.
+# Only the Grafana dashboard JSON is kept as a separate file (kutay-dashboard.json).
+
 services:
   sandbox:
     build: .
@@ -12,9 +16,37 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1024M
-          cpus: "1.0"
+          memory: 256M
     restart: unless-stopped
+
+  ntfy:
+    image: binwiederhier/ntfy
+    container_name: ntfy
+    restart: unless-stopped
+    ports:
+      - "8083:80"
+    volumes:
+      - ${NTFY_CACHE_DIR:-./data/ntfy/cache}:/var/cache/ntfy
+      - ${NTFY_ETC_DIR:-./data/ntfy/etc}:/etc/ntfy
+    env_file:
+      - ../.env
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "NTFY_PASSWORD=$$NTFY_PASS ntfy user add --role=admin --ignore-exists $$NTFY_USER 2>/dev/null; ntfy serve"
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
+
+  vane:
+    image: itzcrazykns1337/vane:latest
+    container_name: vane
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ${VANE_DATA_DIR:-./data/vane}:/home/vane/data
 
   frontail:
     image: mthenw/frontail
@@ -24,5 +56,105 @@ services:
     ports:
       - "9001:9001"
     command: --ui-highlight --number 1000 /logs/orchestrator.jsonl
+    deploy:
+      resources:
+        limits:
+          memory: 50M
     mem_limit: 50m
     restart: unless-stopped
+
+  # ─── Monitoring: Prometheus ─────────────────────────────────────────────────
+  # Config inlined — no external prometheus.yml needed.
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: kutay-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus_data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cat > /tmp/prometheus.yml << 'CONF'
+        global:
+          scrape_interval: 15s
+          evaluation_interval: 15s
+        scrape_configs:
+          - job_name: "llama-server"
+            metrics_path: /metrics
+            static_configs:
+              - targets: ["host.docker.internal:8080"]
+            scrape_interval: 5s
+          - job_name: "kutay-orchestrator"
+            metrics_path: /metrics
+            static_configs:
+              - targets: ["host.docker.internal:8000"]
+            scrape_interval: 15s
+        CONF
+        /bin/prometheus \
+          --config.file=/tmp/prometheus.yml \
+          --storage.tsdb.path=/prometheus \
+          --web.console.libraries=/etc/prometheus/console_libraries \
+          --web.console.templates=/etc/prometheus/consoles
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+  # ─── Monitoring: Grafana ────────────────────────────────────────────────────
+  # Datasource + dashboard provisioning inlined. Dashboard JSON mounted.
+  grafana:
+    image: grafana/grafana:latest
+    container_name: kutay-grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./kutay-dashboard.json:/var/lib/grafana/dashboards/kutay-overview.json:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mkdir -p /etc/grafana/provisioning/datasources /etc/grafana/provisioning/dashboards
+        cat > /etc/grafana/provisioning/datasources/ds.yml << 'CONF'
+        apiVersion: 1
+        datasources:
+          - name: Prometheus
+            uid: Prometheus
+            type: prometheus
+            access: proxy
+            url: http://prometheus:9090
+            isDefault: true
+            editable: false
+        CONF
+        cat > /etc/grafana/provisioning/dashboards/db.yml << 'CONF'
+        apiVersion: 1
+        providers:
+          - name: "default"
+            orgId: 1
+            folder: ""
+            type: file
+            disableDeletion: false
+            updateIntervalSeconds: 30
+            options:
+              path: /var/lib/grafana/dashboards
+              foldersFromFilesStructure: false
+        CONF
+        /run.sh
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+volumes:
+  prometheus_data:
+  grafana_data:

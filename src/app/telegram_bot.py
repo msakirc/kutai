@@ -14,11 +14,11 @@ from telegram.ext import (
 
 from ..context.onboarding import load_project_profile, format_project_profile, \
     onboard_project, store_project_profile
-from ..infra.db import (add_task, add_goal, get_active_goals, get_ready_tasks,
-                get_daily_stats, update_task, get_recent_completed_tasks,
+from ..infra.db import (add_task, add_goal, add_mission, get_active_goals, get_active_missions,
+                get_ready_tasks, get_daily_stats, update_task, get_recent_completed_tasks,
                 get_db, cancel_task, reprioritize_task, get_task_tree,
-                get_task, get_budget, set_budget, get_model_stats,
-                get_goal_locks, get_goal, get_tasks_for_goal,
+                get_task, get_goal, get_mission, get_budget, set_budget, get_model_stats,
+                get_goal_locks, get_mission_locks, get_tasks_for_goal, get_tasks_for_mission,
                 insert_approval_request, update_approval_status)
 from ..memory.conversations import format_recent_context, find_followup_context, \
     store_exchange
@@ -34,36 +34,29 @@ pending_clarifications = {}  # task_id -> asyncio.Event + response
 # ─── Interactive Menu Definitions ─────────────────────────────────────────
 # Each category: (emoji_label, key, [(button_label, command, needs_arg, arg_prompt)])
 MENU_CATEGORIES = [
-    ("🎯 Goals & Tasks", "goals_tasks", [
-        ("🎯 New Goal", "goal", True, "What's your goal? Describe it:"),
-        ("⚡ Force Goal", "goalforce", True, "Describe the goal (skip refinement):"),
-        ("📝 New Task", "task", True, "What task should I do?"),
-        ("📋 List Goals", "goals", False, None),
+    ("🎯 Missions", "missions", [
+        ("🎯 New Mission", "mission", True, "Describe your mission:"),
+        ("🔄 Workflow Mission", "mission_wf", True, "Describe the product/workflow idea:"),
+        ("📋 List Missions", "missions", False, None),
         ("📬 Queue", "queue", False, None),
-        ("🚫 Cancel", "cancel", True, "Which task or goal ID to cancel?"),
-        ("🔢 Priority", "priority", True, "Enter: <task_id> <priority 1-10>"),
-        ("⏸️ Pause", "pause", True, "Which goal ID to pause?"),
-        ("▶️ Resume", "resume", True, "Which goal ID to resume?"),
-        ("🌳 Graph", "graph", True, "Which goal ID to show graph for?"),
+        ("🚫 Cancel", "cancel", True, "Which mission or task ID to cancel?"),
+        ("🔢 Priority", "priority", True, "Enter: <id> <priority 1-10>"),
+        ("⏸️ Pause", "pause", True, "Which mission ID to pause?"),
+        ("▶️ Resume", "resume", True, "Which mission ID to resume?"),
+        ("🌳 Graph", "graph", True, "Which mission ID to graph?"),
     ]),
     ("📊 Monitoring", "monitoring", [
         ("📊 Status", "status", False, None),
         ("📰 Digest", "digest", False, None),
-        ("📈 Progress", "progress", True, "Which goal ID? (empty for all)"),
+        ("📈 Progress", "progress", True, "Which mission ID? (empty for all)"),
         ("📉 Metrics", "metrics", False, None),
         ("🔍 Audit", "audit", True, "Which task ID to audit?"),
         ("🔁 Replay", "replay", True, "Which task ID to replay?"),
-        ("💰 Cost", "cost", True, "Which goal ID for cost breakdown?"),
+        ("💰 Cost", "cost", True, "Which mission ID for cost breakdown?"),
         ("🤖 Model Stats", "modelstats", False, None),
         ("💵 Budget", "budget", True, "Enter daily budget limit (empty to view):"),
-    ]),
-    ("🏗️ Projects", "projects", [
-        ("📁 Project", "project", True, "Which project name? (empty to list)"),
-        ("📂 All Projects", "projects", False, None),
         ("🗂️ Workspaces", "workspace", False, None),
-        ("🚀 Product", "product", True, "Describe your product idea:"),
-        ("👁️ Preview", "preview", True, "Describe the idea to preview:"),
-        ("📋 WF Status", "wfstatus", True, "Which goal ID for workflow status?"),
+        ("📋 WF Status", "wfstatus", True, "Which mission ID for workflow status?"),
     ]),
     ("🧠 Knowledge", "knowledge", [
         ("💾 Remember", "remember", True, "What should I remember?"),
@@ -126,10 +119,10 @@ for _, _, cmds in MENU_CATEGORIES:
 
 # Map command string -> actual method name (where they differ)
 _CMD_METHOD_MAP: dict[str, str] = {
-    "goal": "cmd_add_goal",
-    "goalforce": "cmd_add_goal_force",
+    "mission": "cmd_mission",
+    "mission_wf": "cmd_mission_workflow",
+    "missions": "cmd_missions",
     "task": "cmd_add_task",
-    "goals": "cmd_list_goals",
     "queue": "cmd_view_queue",
     "modelstats": "cmd_model_stats",
     "resetall": "cmd_reset_all",
@@ -158,44 +151,46 @@ class TelegramInterface:
 
     def _setup_handlers(self):
         self.app.add_handler(CommandHandler("start", self.cmd_start))
-        self.app.add_handler(CommandHandler("goal", self.cmd_add_goal))
-        self.app.add_handler(CommandHandler("goalforce", self.cmd_add_goal_force))  # Phase 14.5
+        # Mission commands (new unified interface)
+        self.app.add_handler(CommandHandler("mission", self.cmd_mission))
+        self.app.add_handler(CommandHandler("mish", self.cmd_mission))      # abbreviation
+        self.app.add_handler(CommandHandler("missions", self.cmd_missions))
+        # Backward compat aliases — old commands redirect to new mission handlers
+        self.app.add_handler(CommandHandler("goal", self.cmd_mission))      # backward compat
+        self.app.add_handler(CommandHandler("goals", self.cmd_missions))    # backward compat
+        # goalforce, project, projects, product removed — use /mission instead
         self.app.add_handler(CommandHandler("task", self.cmd_add_task))
-        self.app.add_handler(CommandHandler("goals", self.cmd_list_goals))
         self.app.add_handler(CommandHandler("queue", self.cmd_view_queue))
         self.app.add_handler(CommandHandler("status", self.cmd_status))
         self.app.add_handler(CommandHandler("digest", self.cmd_digest))
-        self.app.add_handler(CommandHandler("debug", self.cmd_debug))       # NEW
-        self.app.add_handler(CommandHandler("reset", self.cmd_reset))       # NEW
-        self.app.add_handler(CommandHandler("resetall", self.cmd_reset_all)) # NEW
-        self.app.add_handler(CommandHandler("cancel", self.cmd_cancel))     # Phase 3
-        self.app.add_handler(CommandHandler("priority", self.cmd_priority)) # Phase 3
-        self.app.add_handler(CommandHandler("graph", self.cmd_graph))       # Phase 3
-        self.app.add_handler(CommandHandler("budget", self.cmd_budget))     # Phase 4
-        self.app.add_handler(CommandHandler("modelstats", self.cmd_model_stats))  # Phase 4
-        self.app.add_handler(CommandHandler("workspace", self.cmd_workspace))  # Phase 6
-        self.app.add_handler(CommandHandler("project", self.cmd_project))      # Phase 6
-        self.app.add_handler(CommandHandler("projects", self.cmd_projects))   # Phase 7.1
-        self.app.add_handler(CommandHandler("progress", self.cmd_progress))   # Phase 7.2
-        self.app.add_handler(CommandHandler("audit", self.cmd_audit))         # Phase 8.4
-        self.app.add_handler(CommandHandler("metrics", self.cmd_metrics))     # Phase 9.1
-        self.app.add_handler(CommandHandler("replay", self.cmd_replay))       # Phase 9.2
-        self.app.add_handler(CommandHandler("ingest", self.cmd_ingest))        # Phase 11.5
-        self.app.add_handler(CommandHandler("wfstatus", self.cmd_wfstatus))  # Workflow status
-        self.app.add_handler(CommandHandler("product", self.cmd_product))    # Start product workflow
-        self.app.add_handler(CommandHandler("resume", self.cmd_resume))      # Resume workflow
-        self.app.add_handler(CommandHandler("pause", self.cmd_pause))        # Pause workflow
-        self.app.add_handler(CommandHandler("credential", self.cmd_credential))  # Credential mgmt
-        self.app.add_handler(CommandHandler("cost", self.cmd_cost))            # Per-goal cost
-        self.app.add_handler(CommandHandler("preview", self.cmd_preview))      # Workflow preview
-        self.app.add_handler(CommandHandler("dlq", self.cmd_dlq))                # Dead-letter queue
-        self.app.add_handler(CommandHandler("load", self.cmd_load))              # GPU load mode
-        self.app.add_handler(CommandHandler("tune", self.cmd_tune))              # Phase 2.4
-        self.app.add_handler(CommandHandler("feedback", self.cmd_feedback))    # Phase 13.3
-        self.app.add_handler(CommandHandler("improve", self.cmd_improve))      # Phase 13.4
-        self.app.add_handler(CommandHandler("remember", self.cmd_remember))    # Phase 14.4
-        self.app.add_handler(CommandHandler("recall", self.cmd_recall))        # Phase 14.4
-        self.app.add_handler(CommandHandler("autonomy", self.cmd_autonomy))    # Phase 14.2
+        self.app.add_handler(CommandHandler("debug", self.cmd_debug))
+        self.app.add_handler(CommandHandler("reset", self.cmd_reset))
+        self.app.add_handler(CommandHandler("resetall", self.cmd_reset_all))
+        self.app.add_handler(CommandHandler("cancel", self.cmd_cancel))
+        self.app.add_handler(CommandHandler("priority", self.cmd_priority))
+        self.app.add_handler(CommandHandler("graph", self.cmd_graph))
+        self.app.add_handler(CommandHandler("budget", self.cmd_budget))
+        self.app.add_handler(CommandHandler("modelstats", self.cmd_model_stats))
+        self.app.add_handler(CommandHandler("workspace", self.cmd_workspace))
+        self.app.add_handler(CommandHandler("progress", self.cmd_progress))
+        self.app.add_handler(CommandHandler("audit", self.cmd_audit))
+        self.app.add_handler(CommandHandler("metrics", self.cmd_metrics))
+        self.app.add_handler(CommandHandler("replay", self.cmd_replay))
+        self.app.add_handler(CommandHandler("ingest", self.cmd_ingest))
+        self.app.add_handler(CommandHandler("wfstatus", self.cmd_wfstatus))
+        self.app.add_handler(CommandHandler("resume", self.cmd_resume))
+        self.app.add_handler(CommandHandler("pause", self.cmd_pause))
+        self.app.add_handler(CommandHandler("credential", self.cmd_credential))
+        self.app.add_handler(CommandHandler("cost", self.cmd_cost))
+        self.app.add_handler(CommandHandler("preview", self.cmd_preview))
+        self.app.add_handler(CommandHandler("dlq", self.cmd_dlq))
+        self.app.add_handler(CommandHandler("load", self.cmd_load))
+        self.app.add_handler(CommandHandler("tune", self.cmd_tune))
+        self.app.add_handler(CommandHandler("feedback", self.cmd_feedback))
+        self.app.add_handler(CommandHandler("improve", self.cmd_improve))
+        self.app.add_handler(CommandHandler("remember", self.cmd_remember))
+        self.app.add_handler(CommandHandler("recall", self.cmd_recall))
+        self.app.add_handler(CommandHandler("autonomy", self.cmd_autonomy))
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.REPLY,
@@ -211,7 +206,7 @@ class TelegramInterface:
             "🤖 *Autonomous AI Orchestrator*\n\n"
             "I work 24/7 and only bug you when needed.\n\n"
             "Tap a category below, or just send a message — "
-            "I understand goals, tasks, bug reports, feature requests, "
+            "I understand missions, tasks, bug reports, feature requests, "
             "status questions, feedback, and more.",
             parse_mode="Markdown",
             reply_markup=_build_category_keyboard()
@@ -313,15 +308,112 @@ class TelegramInterface:
             parse_mode="Markdown"
         )
 
-    async def cmd_add_goal_force(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Create a goal immediately, skipping vagueness refinement."""
+    async def cmd_add_goal_force(self, update, context):
+        """DEPRECATED: Use /mission instead."""
+        await self.cmd_mission(update, context)
+
+    # ─── Mission Commands (unified interface replacing goal/project/product) ──
+
+    async def cmd_mission(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Create a new mission. /mission <description> or /mish <description>"""
         if not context.args:
-            await update.message.reply_text("Usage: /goalforce <description>")
+            await update.message.reply_text(
+                "Usage: /mission <description>\n"
+                "       /mission --workflow <description>\n"
+                "       /mish <description> (shorthand)\n\n"
+                "Examples:\n"
+                "  /mission Fix the login page bug\n"
+                "  /mission --workflow Build an inventory management app"
+            )
             return
-        description = " ".join(context.args)
+
+        text_args = list(context.args)
+        workflow = None
+
+        if "--workflow" in text_args:
+            text_args.remove("--workflow")
+            workflow = "idea_to_product_v2"
+
+        description = " ".join(text_args)
+        if not description:
+            await update.message.reply_text("Please provide a mission description.")
+            return
+
         chat_id = update.message.chat_id
-        self._pending_goal_refinements.pop(chat_id, None)
-        await self._create_goal(update, description)
+
+        if workflow:
+            # Workflow mission — delegate to workflow runner
+            try:
+                from ..workflows.engine.runner import WorkflowRunner
+                runner = WorkflowRunner(self.orchestrator)
+                mission_id = await runner.start(
+                    workflow_name=workflow,
+                    initial_input={"idea": description, "product_name": description[:50]},
+                    title=description[:80],
+                )
+                await update.message.reply_text(
+                    f"🔄 Workflow mission #{mission_id} created!\n"
+                    f"_{description[:60]}_\n\n"
+                    f"Use /wfstatus {mission_id} to track progress.",
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                logger.error("workflow mission failed", error=str(e))
+                await update.message.reply_text(f"❌ Failed to start workflow: {e}")
+            return
+
+        # Regular mission — create and plan
+        mission_id = await add_mission(
+            title=description[:80],
+            description=description,
+            priority=7,
+        )
+
+        if self.orchestrator:
+            await self.orchestrator.plan_goal(mission_id, description[:80], description)
+
+        await update.message.reply_text(
+            f"🎯 Mission #{mission_id} created. Planning now...\n"
+            f"_{description[:60]}_",
+            parse_mode="Markdown",
+        )
+        self.user_last_task_id[chat_id] = None
+
+    async def cmd_mission_workflow(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Create a workflow mission from menu button."""
+        if not context.args:
+            await update.message.reply_text("Describe your product/workflow idea:")
+            return
+        # Inject --workflow and delegate
+        context.args = ["--workflow"] + list(context.args)
+        await self.cmd_mission(update, context)
+
+    async def cmd_missions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List active missions."""
+        missions = await get_active_missions()
+        if not missions:
+            await update.message.reply_text("No active missions.")
+            return
+
+        lines = ["📋 *Active Missions:*\n"]
+        for m in missions:
+            mid = m["id"]
+            title = m.get("title", "Untitled")[:50]
+            workflow = m.get("workflow", "")
+            # Count tasks
+            try:
+                tasks = await get_tasks_for_mission(mid)
+                total = len(tasks)
+                done = sum(1 for t in tasks if t.get("status") in ("completed", "skipped"))
+                task_info = f" ({done}/{total} tasks)"
+            except Exception:
+                task_info = ""
+
+            badge = "🔄" if workflow else "🎯"
+            wf_tag = f" \\[{workflow}]" if workflow else ""
+            lines.append(f"  {badge} #{mid} {title}{wf_tag}{task_info}")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     async def cmd_add_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not context.args:
@@ -1712,12 +1804,12 @@ class TelegramInterface:
                 ["research", "create a", "build", "analyze", "develop",
                  "write a report", "compare", "plan", "strategy"])
         ):
-            goal_id = await add_goal(title=text[:80], description=text, priority=5)
-            await self._try_link_goal_to_project(goal_id)
+            mission_id = await add_mission(title=text[:80], description=text, priority=5)
+            await self._try_link_goal_to_project(mission_id)
             if self.orchestrator:
-                await self.orchestrator.plan_goal(goal_id, text[:80], text)
+                await self.orchestrator.plan_goal(mission_id, text[:80], text)
             await update.message.reply_text(
-                f"🎯 Interpreted as Goal #{goal_id}. Planning now..."
+                f"🎯 Mission #{mission_id} created. Planning now..."
             )
             self.user_last_task_id.pop(chat_id, None)
         else:

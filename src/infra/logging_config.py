@@ -119,7 +119,7 @@ def get_logger(component: str) -> _ContextLogger:
 import json
 from datetime import datetime, timezone
 
-CONTEXT_FIELDS = {"task_id", "goal_id", "agent_type", "model", "action", "duration_ms"}
+CONTEXT_FIELDS = {"task_id", "mission_id", "agent_type", "model", "action", "duration_ms"}
 
 
 class _JsonFormatter(logging.Formatter):

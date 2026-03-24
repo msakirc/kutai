@@ -12,21 +12,17 @@ from telegram.ext import (
     CallbackQueryHandler, filters, ContextTypes
 )
 
-from ..context.onboarding import load_project_profile, format_project_profile, \
-    onboard_project, store_project_profile
-from ..infra.db import (add_task, add_goal, add_mission, get_active_goals, get_active_missions,
+from ..infra.db import (add_task, add_mission, get_active_missions,
                 get_ready_tasks, get_daily_stats, update_task, get_recent_completed_tasks,
                 get_db, cancel_task, reprioritize_task, get_task_tree,
-                get_task, get_goal, get_mission, get_budget, set_budget, get_model_stats,
-                get_goal_locks, get_mission_locks, get_tasks_for_goal, get_tasks_for_mission,
+                get_task, get_mission, get_budget, set_budget, get_model_stats,
+                get_mission_locks, get_tasks_for_mission,
                 insert_approval_request, update_approval_status)
 from ..memory.conversations import format_recent_context, find_followup_context, \
     store_exchange
 from ..memory.ingest import ingest_document
 from ..memory.preferences import record_feedback
-from ..tools.workspace import (
-    list_goal_workspaces, load_projects_config, get_project,
-)
+from ..tools.workspace import list_mission_workspaces
 
 
 pending_clarifications = {}  # task_id -> asyncio.Event + response
@@ -139,7 +135,6 @@ class TelegramInterface:
         self.user_last_task_id = {}
         # Explicit clarification tracking: chat_id → task_id
         self._pending_clarifications: dict[int, int] = {}
-        self._pending_goal_refinements: dict[int, dict] = {}  # Phase 14.5
         # Conversation flow: chat_id → {"command": str} for button-initiated arg prompts
         self._pending_action: dict[int, dict] = {}
 
@@ -155,10 +150,6 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("mission", self.cmd_mission))
         self.app.add_handler(CommandHandler("mish", self.cmd_mission))      # abbreviation
         self.app.add_handler(CommandHandler("missions", self.cmd_missions))
-        # Backward compat aliases — old commands redirect to new mission handlers
-        self.app.add_handler(CommandHandler("goal", self.cmd_mission))      # backward compat
-        self.app.add_handler(CommandHandler("goals", self.cmd_missions))    # backward compat
-        # goalforce, project, projects, product removed — use /mission instead
         self.app.add_handler(CommandHandler("task", self.cmd_add_task))
         self.app.add_handler(CommandHandler("queue", self.cmd_view_queue))
         self.app.add_handler(CommandHandler("status", self.cmd_status))
@@ -182,7 +173,6 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("pause", self.cmd_pause))
         self.app.add_handler(CommandHandler("credential", self.cmd_credential))
         self.app.add_handler(CommandHandler("cost", self.cmd_cost))
-        self.app.add_handler(CommandHandler("preview", self.cmd_preview))
         self.app.add_handler(CommandHandler("dlq", self.cmd_dlq))
         self.app.add_handler(CommandHandler("load", self.cmd_load))
         self.app.add_handler(CommandHandler("tune", self.cmd_tune))
@@ -212,107 +202,7 @@ class TelegramInterface:
             reply_markup=_build_category_keyboard()
         )
 
-    async def cmd_add_goal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not context.args:
-            await update.message.reply_text(
-                "Usage: /goal <description>\n"
-                "Example: /goal Research the top 5 competitors in the EV market "
-                "and create a comparison report"
-            )
-            return
-
-        description = " ".join(context.args)
-        chat_id = update.message.chat_id
-
-        # Phase 14.5: Proactive goal refinement for vague goals
-        if await self._is_vague_goal(description):
-            questions = await self._generate_goal_questions(description)
-            if questions:
-                self._pending_goal_refinements[chat_id] = {
-                    "original": description,
-                    "questions": questions,
-                }
-                await update.message.reply_text(
-                    f"🤔 Your goal seems broad. Let me ask a few questions "
-                    f"to help plan it better:\n\n{questions}\n\n"
-                    f"_Reply with answers, or send_ `/goalforce {description}` "
-                    f"_to skip refinement and create as-is._",
-                    parse_mode="Markdown",
-                )
-                return
-
-        await self._create_goal(update, description)
-
-    async def _is_vague_goal(self, description: str) -> bool:
-        """Heuristic check: is the goal too vague for effective planning?"""
-        words = description.split()
-        # Very short goals are likely vague
-        if len(words) <= 5:
-            return True
-        # If it has numbers, URLs, file paths, or specific tech terms → probably specific enough
-        import re
-        if re.search(r'\d+|https?://|/\w+\.\w+|\.py|\.js|\.ts|API|endpoint|database|deploy', description, re.I):
-            return False
-        # Medium-length but no concrete nouns → check with heuristic
-        if len(words) <= 10:
-            return True
-        return False
-
-    async def _generate_goal_questions(self, description: str) -> str | None:
-        """Use LLM to generate clarifying questions for a vague goal."""
-        try:
-            from ..core.router import ModelRequirements, call_model
-            reqs = ModelRequirements(
-                task="router",
-                agent_type="goal_refiner",
-                difficulty=3,
-                prefer_speed=True,
-                priority=2,
-                estimated_input_tokens=200,
-                estimated_output_tokens=200,
-            )
-            messages = [{
-                "role": "user",
-                "content": (
-                    f"A user wants to set this goal for an AI assistant:\n"
-                    f"\"{description}\"\n\n"
-                    f"This goal is vague. Generate 2-3 short clarifying questions "
-                    f"that would help create a concrete, actionable plan. "
-                    f"Number them. Be concise. No preamble."
-                ),
-            }]
-            response = await call_model(reqs, messages)
-            return response.get("content", "").strip() or None
-        except Exception as e:
-            logger.debug(f"Goal refinement LLM call failed: {e}")
-            return None
-
-    async def _create_goal(self, update: Update, description: str, extra_context: str = ""):
-        """Actually create and plan a mission (legacy /goal command handler)."""
-        full_desc = f"{description}\n\nAdditional context: {extra_context}" if extra_context else description
-        title = description[:80]
-        mission_id = await add_mission(title=title, description=full_desc, priority=7)
-
-        # Phase 7.1: Auto-link mission to active project
-        await self._try_link_goal_to_project(mission_id)
-
-        # Trigger planning
-        if self.orchestrator:
-            await self.orchestrator.plan_mission(mission_id, title, full_desc)
-
-        await update.message.reply_text(
-            f" *Mission #{mission_id} created*\n\n"
-            f"{description}\n\n"
-            f"_I'll create a plan and start working on it. "
-            f"I'll update you on progress._",
-            parse_mode="Markdown"
-        )
-
-    async def cmd_add_goal_force(self, update, context):
-        """DEPRECATED: Use /mission instead."""
-        await self.cmd_mission(update, context)
-
-    # ─── Mission Commands (unified interface replacing goal/project/product) ──
+    # ─── Mission Commands ──────────────────────────────────────────────────────
 
     async def cmd_mission(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Create a new mission. /mission <description> or /mish <description>"""
@@ -450,10 +340,6 @@ class TelegramInterface:
         await update.message.reply_text(f"✅ Task #{task_id} queued.{pin_msg}")
 
 
-    async def cmd_list_goals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """DEPRECATED: Use /missions instead."""
-        await self.cmd_missions(update, context)
-
     async def cmd_view_queue(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         tasks = await get_ready_tasks(limit=15)
         if not tasks:
@@ -526,7 +412,7 @@ class TelegramInterface:
         for t in tasks:
             icon = status_icons.get(t["status"], "❔")
             deps = t.get("depends_on", "[]")
-            goal_tag = f" M#{t['mission_id']}" if t.get("mission_id") else ""
+            mission_tag = f" M#{t['mission_id']}" if t.get("mission_id") else ""
             parent_tag = f" ←#{t['parent_task_id']}" if t.get("parent_task_id") else ""
             dep_tag = f" deps:{deps}" if deps and deps != "[]" else ""
             err_tag = ""
@@ -536,7 +422,7 @@ class TelegramInterface:
 
             msg += (
                 f"{icon} #{t['id']} [{t['status']}] [{t['agent_type']}|{t['tier']}]"
-                f"{goal_tag}{parent_tag}{dep_tag}{retry_tag}\n"
+                f"{mission_tag}{parent_tag}{dep_tag}{retry_tag}\n"
                 f"    {t['title'][:50]}{err_tag}\n"
             )
 
@@ -611,7 +497,7 @@ class TelegramInterface:
             InlineKeyboardButton("Cancel", callback_data="resetall_cancel"),
         ]]
         await update.message.reply_text(
-            "⚠️ This will delete ALL goals, tasks, memory, and conversations.\n"
+            "⚠️ This will delete ALL missions, tasks, memory, and conversations.\n"
             "Are you sure?",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -673,20 +559,20 @@ class TelegramInterface:
             await update.message.reply_text("Usage: /graph <mission_id>")
             return
         try:
-            goal_id = int(context.args[0])
+            mission_id = int(context.args[0])
         except ValueError:
             await update.message.reply_text("Mission ID must be a number.")
             return
 
-        tasks = await get_task_tree(goal_id)
+        tasks = await get_task_tree(mission_id)
         if not tasks:
             await update.message.reply_text(
-                f"No tasks found for mission #{goal_id}."
+                f"No tasks found for mission #{mission_id}."
             )
             return
 
         # Build text DAG
-        lines = [f"📊 *Task Graph — Mission #{goal_id}*\n"]
+        lines = [f"📊 *Task Graph — Mission #{mission_id}*\n"]
         status_icons = {
             "pending": "⏳", "processing": "⚙️",
             "completed": "✅", "failed": "❌",
@@ -818,7 +704,7 @@ class TelegramInterface:
 
     async def cmd_workspace(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show active mission workspaces."""
-        workspaces = list_goal_workspaces()
+        workspaces = list_mission_workspaces()
         if not workspaces:
             await update.message.reply_text("📁 No mission workspaces active.")
             return
@@ -836,115 +722,13 @@ class TelegramInterface:
             "\n".join(lines), parse_mode="Markdown"
         )
 
-    async def cmd_project(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """List, view, or onboard projects. /project [add <path>|name]"""
-        args = context.args
-        projects = load_projects_config()
-
-        if not args:
-            if not projects:
-                await update.message.reply_text(
-                    "📂 No projects configured.\n"
-                    "Use /project add <path> to onboard a project."
-                )
-                return
-            lines = ["📂 *Projects*\n"]
-            for p in projects:
-                lang = p.get("language", "?")
-                lines.append(f"  `{p['name']}` — {lang} ({p.get('path', '?')})")
-            lines.append("\nUse /project add <path> to onboard a new project.")
-            await update.message.reply_text(
-                "\n".join(lines), parse_mode="Markdown"
-            )
-            return
-
-        # ── Phase 12.6: /project add <path> [name] ──
-        if args[0].lower() == "add":
-            if len(args) < 2:
-                await update.message.reply_text(
-                    "Usage: /project add <path> [name]\n\n"
-                    "Example: /project add /home/user/myapp myapp"
-                )
-                return
-            project_path = args[1]
-            project_name = args[2] if len(args) > 2 else ""
-            await update.message.reply_text(
-                f"🔄 Onboarding project at `{project_path}`...\n"
-                "This may take a moment (indexing, embedding, mapping).",
-                parse_mode="Markdown",
-            )
-            try:
-                profile = await onboard_project(project_path, project_name)
-                if "error" in profile:
-                    await update.message.reply_text(f"❌ {profile['error']}")
-                    return
-                await store_project_profile(profile)
-                summary = format_project_profile(profile)
-                await update.message.reply_text(
-                    f"✅ Project onboarded!\n\n{summary}\n\n"
-                    f"Files: {profile.get('files_indexed', 0)} | "
-                    f"Symbols: {profile.get('symbols_embedded', 0)}",
-                )
-            except Exception as e:
-                await update.message.reply_text(
-                    f"❌ Onboarding error: {type(e).__name__}: {e}"
-                )
-            return
-
-        name = args[0]
-        project = get_project(name)
-        if not project:
-            # Try loading from DB profile
-            try:
-                profile = await load_project_profile(name)
-                if profile:
-                    summary = format_project_profile(profile)
-                    await update.message.reply_text(summary)
-                    return
-            except Exception:
-                pass
-            await update.message.reply_text(f"❌ Project '{name}' not found.")
-            return
-
-        await update.message.reply_text(
-            f"📂 *Project: {project['name']}*\n"
-            f"Path: `{project.get('path', 'N/A')}`\n"
-            f"Language: {project.get('language', 'N/A')}\n"
-            f"Conventions: {project.get('conventions', 'N/A')}",
-            parse_mode="Markdown",
-        )
-
-    async def cmd_projects(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """List all projects with status badges. /projects"""
-        try:
-            from src.infra.projects import list_projects, format_project_status_badge
-            projects = await list_projects()
-            if not projects:
-                await update.message.reply_text(
-                    "📂 No projects in registry.\n"
-                    "Use /project add <path> to onboard a project."
-                )
-                return
-            lines = ["📂 *Projects Registry*\n"]
-            for p in projects:
-                badge = format_project_status_badge(p.get("status", "active"))
-                lang = p.get("language", "")
-                fw = p.get("framework", "")
-                desc_parts = [f for f in [lang, fw] if f]
-                desc = f" ({', '.join(desc_parts)})" if desc_parts else ""
-                lines.append(f"{badge} `#{p['id']}` *{p['name']}*{desc}")
-            lines.append("\nUse /project <id> for details.")
-            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
-
     async def cmd_progress(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show progress timeline for a mission or project. /progress [mission_id]"""
         args = context.args
         try:
             from src.infra.progress import get_notes, format_notes_timeline
             mission_id = int(args[0]) if args else None
-            notes = await get_notes(goal_id=mission_id, limit=20)
+            notes = await get_notes(mission_id=mission_id, limit=20)
             timeline = format_notes_timeline(notes)
             header = f"📊 *Progress Notes* (mission #{mission_id})" if mission_id else "📊 *Recent Progress Notes*"
             msg = f"{header}\n\n{timeline}"
@@ -957,7 +741,7 @@ class TelegramInterface:
             await update.message.reply_text(f"❌ Error: {e}")
 
     async def cmd_audit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show audit log for a task or goal. /audit [task_id]"""
+        """Show audit log for a task. /audit [task_id]"""
         args = context.args
         try:
             from src.infra.audit import get_audit_log, format_audit_log
@@ -1264,83 +1048,6 @@ class TelegramInterface:
                 f"Error fetching workflow status: {type(e).__name__}: {e}"
             )
 
-    async def cmd_preview(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Preview workflow steps and estimated cost before starting."""
-        args = context.args
-        idea_text = " ".join(args) if args else ""
-
-        if not idea_text:
-            await update.message.reply_text("Usage: /preview <idea description>")
-            return
-
-        try:
-            from ..workflows.engine.runner import WorkflowRunner
-
-            runner = WorkflowRunner()
-            preview = await runner.preview(
-                "idea_to_product_v2",
-                initial_input={"raw_idea": idea_text},
-            )
-
-            lines = [
-                "\U0001f4cb *Workflow Preview*",
-                f"_{preview['title']}_\n",
-                f"\U0001f4ca *{preview['direct_steps']}* direct steps + ~*{preview['template_estimated_steps']}* from templates",
-                f"\U0001f504 *{preview['recurring_steps']}* recurring monitors",
-                f"\U0001f4b0 Estimated cost: *${preview['estimated_cost']:.2f}*\n",
-                "*Phases:*",
-            ]
-            for p in preview["phases"]:
-                agents_str = ", ".join(p["agents"])
-                lines.append(
-                    f"  \u2022 {p['phase_name']}: {p['step_count']} steps ({agents_str})"
-                )
-
-            truncated = idea_text[:50]
-            lines.append(f"\nUse /product {truncated}... to start")
-
-            await update.message.reply_text(
-                "\n".join(lines), parse_mode="Markdown"
-            )
-        except Exception as e:
-            await update.message.reply_text(f"Preview failed: {e}")
-
-    async def cmd_product(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start a new idea-to-product workflow."""
-        if not context.args:
-            await update.message.reply_text(
-                "Usage: /product <your product idea>"
-            )
-            return
-
-        idea_text = " ".join(context.args)
-
-        try:
-            from ..workflows.engine.runner import WorkflowRunner
-
-            await update.message.reply_text(
-                f"Starting product workflow for: _{idea_text}_\n"
-                "This may take a moment...",
-                parse_mode="Markdown",
-            )
-
-            runner = WorkflowRunner()
-            mission_id = await runner.start(
-                "idea_to_product_v2",
-                initial_input={"raw_idea": idea_text},
-                title=idea_text[:80],
-            )
-
-            await update.message.reply_text(
-                f"\U0001f680 Product workflow started! Mission #{mission_id}\n"
-                f"Use /wfstatus {mission_id} to track progress."
-            )
-        except Exception as e:
-            logger.error("workflow runner failed ", error=e)
-            await update.message.reply_text(
-                f"Failed to start product workflow: {type(e).__name__}: {e}"
-            )
-
     async def cmd_dlq(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Dead-letter queue management: /dlq [retry <task_id> | discard <task_id>]."""
         from ..infra.dead_letter import (
@@ -1388,7 +1095,7 @@ class TelegramInterface:
                 for t in tasks[:8]:
                     error_preview = (t.get("error") or "")[:60]
                     lines.append(
-                        f"  \u2022 #{t['task_id']} (mission {t.get('mission_id', t.get('goal_id', '?'))}) "
+                        f"  \u2022 #{t['task_id']} (mission {t.get('mission_id', '?')}) "
                         f"[{t.get('error_category', '?')}] {error_preview}"
                     )
                 lines.append(
@@ -1406,7 +1113,7 @@ class TelegramInterface:
     async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Resume a failed or paused workflow."""
         if not context.args:
-            await update.message.reply_text("Usage: /resume <goal\\_id>",
+            await update.message.reply_text("Usage: /resume <mission\\_id>",
                                             parse_mode="Markdown")
             return
 
@@ -1455,7 +1162,7 @@ class TelegramInterface:
             await update.message.reply_text(f"\u23f8 Mission #{mission_id}: paused {count} task(s).")
             logger.info("mission paused via command", mission_id=mission_id, tasks_paused=count)
         except ValueError:
-            await update.message.reply_text("Please provide a valid integer goal ID.")
+            await update.message.reply_text("Please provide a valid integer mission ID.")
         except Exception as e:
             logger.exception("pause command failed", error=str(e))
             await update.message.reply_text(f"\u274c Error: {e}")
@@ -1681,15 +1388,6 @@ class TelegramInterface:
             except Exception:
                 self._pending_clarifications.pop(chat_id, None)
 
-        # ═══════════════════════════════════════════════════════
-        # PRIORITY 1.5: Check for pending goal refinement
-        # ═══════════════════════════════════════════════════════
-        refinement = self._pending_goal_refinements.pop(chat_id, None)
-        if refinement:
-            # User answered the clarifying questions — create goal with enriched context
-            await self._create_goal(update, refinement["original"], extra_context=text)
-            return
-
         # Also check DB for ANY task in needs_clarification (handles bot restart)
         try:
             db = await get_db()
@@ -1780,7 +1478,7 @@ class TelegramInterface:
                 return
 
         # ═══════════════════════════════════════════════════════
-        # PRIORITY 3: Goal vs task (for goal/task/question types)
+        # PRIORITY 3: Mission vs task (for mission/task/question types)
         # ═══════════════════════════════════════════════════════
         parent_id = self.user_last_task_id.get(chat_id)
         recent_context = None
@@ -1799,7 +1497,6 @@ class TelegramInterface:
                  "write a report", "compare", "plan", "strategy"])
         ):
             mission_id = await add_mission(title=text[:80], description=text, priority=5)
-            await self._try_link_goal_to_project(mission_id)
             if self.orchestrator:
                 await self.orchestrator.plan_mission(mission_id, text[:80], text)
             await update.message.reply_text(
@@ -1845,16 +1542,6 @@ Context: {context}
 Message: {message}
 
 Respond as: {{"type": "task", "confidence": 0.8}}"""
-
-    async def _try_link_goal_to_project(self, goal_id: int) -> None:
-        """Auto-link a goal to the active project if exactly one exists."""
-        try:
-            from ..infra.projects import list_projects, link_goal_to_project
-            active = await list_projects(status="active")
-            if len(active) == 1:
-                await link_goal_to_project(goal_id, active[0]["id"])
-        except Exception:
-            pass  # best-effort, don't block goal creation
 
     async def _classify_user_message(self, text: str) -> str:
         """Classify user message using LLM with keyword fallback."""
@@ -1947,7 +1634,7 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
             "game", "gaming", "free up gpu", "gpu", "i'm going to play",
         ]):
             return "load_control"
-        # Goal (long or project-like)
+        # Mission (long or project-like)
         if len(text) > 200 or any(w in lower for w in [
             "research", "create a", "build", "analyze", "develop", "plan",
             "design a", "implement a", "set up", "write a report", "strategy",
@@ -1966,7 +1653,7 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
         # Heuristic: if it looks like a command or new task, probably not
         lower = text.lower()
         if any(kw in lower for kw in [
-            "research", "create a", "build", "new project", "new goal"
+            "research", "create a", "build", "new mission"
         ]):
             return False
         # Default: if there's a pending clarification, assume it's an answer
@@ -2038,7 +1725,7 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
         try:
             from ..infra.user_inputs import log_input
             # Try to find related mission
-            related_goal = None
+            related_mission = None
             try:
                 missions = await get_active_missions()
                 if missions:
@@ -2047,7 +1734,7 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
                     for g in missions:
                         title_words = g["title"].lower().split()
                         if any(w in lower for w in title_words if len(w) > 3):
-                            related_goal = g["id"]
+                            related_mission = g["id"]
                             break
             except Exception:
                 pass
@@ -2055,7 +1742,7 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
             input_id = await log_input(
                 input_type=input_type,
                 content=text,
-                related_goal_id=related_goal,
+                related_mission_id=related_mission,
             )
 
             type_emoji = {
@@ -2063,9 +1750,9 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
                 "ui_note": "\U0001f3a8", "feedback": "\U0001f4ac",
             }
             emoji = type_emoji.get(input_type, "\U0001f4ac")
-            goal_str = f" Linked to Mission #{related_goal}." if related_goal else ""
+            mission_str = f" Linked to Mission #{related_mission}." if related_mission else ""
             await update.message.reply_text(
-                f"{emoji} Logged as {input_type} #{input_id}.{goal_str}"
+                f"{emoji} Logged as {input_type} #{input_id}.{mission_str}"
             )
         except Exception as e:
             logger.error("failed to log user input", error=str(e))
@@ -2088,7 +1775,7 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
             reply = response.get("content", "Hey! How can I help?")
             await update.message.reply_text(reply[:1000])
         except Exception:
-            await update.message.reply_text("Hey! Send me a task or goal to work on.")
+            await update.message.reply_text("Hey! Send me a task or mission to work on.")
 
     async def _handle_load_control(self, text: str, update: Update):
         """Handle natural language GPU load control."""
@@ -2377,10 +2064,10 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
         )
 
     async def request_approval(self, task_id, title, plan, tier,
-                               goal_id=None):
-        # Persist approval request to DB (goal_id param kept for backward compat)
+                               mission_id=None):
+        # Persist approval request to DB
         details = f"Tier: {tier}\n\n{plan[:500]}"
-        await insert_approval_request(task_id, goal_id, title, details)
+        await insert_approval_request(task_id, mission_id, title, details)
 
         keyboard = [[
             InlineKeyboardButton("✅ Approve", callback_data=f"approve_{task_id}"),

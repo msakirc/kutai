@@ -3,7 +3,7 @@
 Phase 13.1 — Shared Blackboard.
 
 Per-mission structured state store with typed entries.  Backed by a
-``blackboards`` DB table (goal_id → data JSON).  Agents read/write
+``blackboards`` DB table (mission_id → data JSON).  Agents read/write
 structured data instead of parsing prior_steps text blobs.
 
 Schema per mission::

@@ -2,8 +2,8 @@
 """
 Phase 12.1 — FastAPI REST API Server
 
-Endpoints: POST /goals, POST /tasks, GET /goals/{id}, GET /tasks/{id},
-GET /queue, GET /stats, GET /models, GET /health, GET /projects,
+Endpoints: POST /missions, POST /tasks, GET /missions/{id}, GET /tasks/{id},
+GET /queue, GET /stats, GET /models, GET /health,
 GET /artifacts/{id}, WebSocket /ws/stream/{task_id}
 
 Requires: pip install fastapi uvicorn
@@ -118,7 +118,6 @@ def create_app() -> Any:
     # ── Missions ────────────────────────────────────────────────────────────
 
     @app.post("/missions", status_code=201)
-    @app.post("/goals", status_code=201)  # backward compat
     async def create_mission(body: MissionCreate, _: None = Depends(_check_api_key)):
         from src.infra.db import get_db
         db = await get_db()
@@ -132,7 +131,6 @@ def create_app() -> Any:
         return {"id": mission_id, "title": body.title, "status": "active"}
 
     @app.get("/missions/{mission_id}")
-    @app.get("/goals/{mission_id}")  # backward compat
     async def get_mission(mission_id: int, _: None = Depends(_check_api_key)):
         from src.infra.db import get_mission as _get_mission
         mission = await _get_mission(mission_id)
@@ -141,7 +139,6 @@ def create_app() -> Any:
         return dict(mission)
 
     @app.get("/missions")
-    @app.get("/goals")  # backward compat
     async def list_missions(_: None = Depends(_check_api_key)):
         from src.infra.db import get_db
         db = await get_db()
@@ -372,16 +369,6 @@ def create_app() -> Any:
 
         lines.append("")
         return "\n".join(lines)
-
-    # ── Projects ─────────────────────────────────────────────────────────────
-
-    @app.get("/projects")
-    async def get_projects(_: None = Depends(_check_api_key)):
-        try:
-            from src.infra.projects import list_projects
-            return await list_projects()
-        except Exception:
-            return []
 
     # ── Artifacts ────────────────────────────────────────────────────────────
 

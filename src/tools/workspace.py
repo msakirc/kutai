@@ -473,8 +473,8 @@ def cleanup_mission_workspace(mission_id: int) -> bool:
     """
     import shutil
     mission_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
-    if os.path.isdir(goal_dir):
-        shutil.rmtree(goal_dir, ignore_errors=True)
+    if os.path.isdir(mission_dir):
+        shutil.rmtree(mission_dir, ignore_errors=True)
         return True
     return False
 
@@ -560,16 +560,4 @@ def load_projects_config() -> list[dict]:
     return []
 
 
-def get_project(name: str) -> dict | None:
-    """Look up a project by name."""
-    projects = load_projects_config()
-    for p in projects:
-        if p.get("name", "").lower() == name.lower():
-            return p
-    return None
 
-# Backward compatibility aliases
-get_goal_workspace = get_mission_workspace
-get_goal_workspace_relative = get_mission_workspace_relative
-list_goal_workspaces = list_mission_workspaces
-cleanup_goal_workspace = cleanup_mission_workspace

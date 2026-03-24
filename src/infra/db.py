@@ -494,9 +494,7 @@ async def find_duplicate_task(task_hash: str) -> dict | None:
 
 async def add_task(title, description, mission_id=None, parent_task_id=None,
                    agent_type="executor", tier="auto", priority=5,
-                   requires_approval=False, depends_on=None, context=None,
-                   goal_id=None):  # backward compat
-    mission_id = mission_id or goal_id
+                   requires_approval=False, depends_on=None, context=None):
     db = await get_db()
 
     # Atomic dedup + insert — wrapped in explicit transaction to prevent
@@ -1771,12 +1769,3 @@ async def update_model_stats(
         pass  # best-effort
 
 
-# Backward compatibility aliases (will be removed after full migration)
-add_goal = add_mission
-get_goal = get_mission
-get_active_goals = get_active_missions
-update_goal = update_mission
-get_tasks_for_goal = get_tasks_for_mission
-get_goal_total_cost = get_mission_total_cost
-release_goal_locks = release_mission_locks
-get_goal_locks = get_mission_locks

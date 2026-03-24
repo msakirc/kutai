@@ -33,7 +33,7 @@ async def init_user_inputs_table():
 async def log_input(
     input_type: str,
     content: str,
-    related_goal_id: int | None = None,
+    related_mission_id: int | None = None,
     priority: str = "normal",
 ) -> int:
     """Store a user input. Returns the new record id."""
@@ -42,7 +42,7 @@ async def log_input(
         cursor = await db.execute(
             """INSERT INTO user_inputs (type, content, related_goal_id, priority)
                VALUES (?, ?, ?, ?)""",
-            (input_type, content, related_goal_id, priority),
+            (input_type, content, related_mission_id, priority),
         )
         await db.commit()
         row_id = cursor.lastrowid

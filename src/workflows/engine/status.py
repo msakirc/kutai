@@ -76,19 +76,19 @@ def compute_phase_progress(tasks: list[dict]) -> dict:
     return progress
 
 
-def format_status_message(workflow_id: str, goal_id: int, progress: dict) -> str:
+def format_status_message(workflow_id: str, mission_id: int, progress: dict) -> str:
     """Format a Telegram-friendly status message for a workflow.
 
     Args:
         workflow_id: Unique workflow identifier.
-        goal_id: Associated goal number.
+        mission_id: Associated mission number.
         progress: Output of :func:`compute_phase_progress`.
 
     Returns:
         Multi-line status string with icons, progress bars, and counts.
     """
     lines: list[str] = [
-        f"\U0001f4ca Workflow Status: {workflow_id} (goal #{goal_id})",
+        f"\U0001f4ca Workflow Status: {workflow_id} (mission #{mission_id})",
         "",
     ]
 

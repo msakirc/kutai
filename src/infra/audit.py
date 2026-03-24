@@ -19,15 +19,15 @@ ACTOR_SYSTEM = "system"
 ACTOR_HUMAN  = "human"
 
 # Action types
-ACTION_TOOL_EXEC     = "tool_exec"
-ACTION_MODEL_CALL    = "model_call"
-ACTION_STATE_CHANGE  = "state_change"
-ACTION_FILE_MODIFY   = "file_modify"
-ACTION_HUMAN_APPROVE = "human_approve"
-ACTION_GOAL_CREATE   = "goal_create"
-ACTION_GOAL_COMPLETE = "goal_complete"
-ACTION_TASK_CREATE   = "task_create"
-ACTION_TASK_COMPLETE = "task_complete"
+ACTION_TOOL_EXEC       = "tool_exec"
+ACTION_MODEL_CALL      = "model_call"
+ACTION_STATE_CHANGE    = "state_change"
+ACTION_FILE_MODIFY     = "file_modify"
+ACTION_HUMAN_APPROVE   = "human_approve"
+ACTION_MISSION_CREATE  = "mission_create"
+ACTION_MISSION_COMPLETE = "mission_complete"
+ACTION_TASK_CREATE     = "task_create"
+ACTION_TASK_COMPLETE   = "task_complete"
 
 
 async def _ensure_table(db) -> None:
@@ -59,7 +59,7 @@ async def audit(
     target: str = "",
     details: str = "",
     task_id: Optional[int] = None,
-    goal_id: Optional[int] = None,
+    mission_id: Optional[int] = None,
 ) -> None:
     """Append an audit log entry. Silently ignores failures."""
     try:
@@ -68,7 +68,7 @@ async def audit(
         await db.execute(
             """INSERT INTO audit_log (actor, action, target, details, task_id, goal_id)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (actor, action, target, details[:2000] if details else "", task_id, goal_id),
+            (actor, action, target, details[:2000] if details else "", task_id, mission_id),
         )
         await db.commit()
     except Exception as exc:
@@ -77,7 +77,7 @@ async def audit(
 
 async def get_audit_log(
     task_id: Optional[int] = None,
-    goal_id: Optional[int] = None,
+    mission_id: Optional[int] = None,
     actor: Optional[str] = None,
     limit: int = 50,
 ) -> list[dict]:
@@ -91,9 +91,9 @@ async def get_audit_log(
         if task_id is not None:
             conditions.append("task_id = ?")
             params.append(task_id)
-        if goal_id is not None:
+        if mission_id is not None:
             conditions.append("goal_id = ?")
-            params.append(goal_id)
+            params.append(mission_id)
         if actor:
             conditions.append("actor = ?")
             params.append(actor)

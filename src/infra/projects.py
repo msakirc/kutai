@@ -58,42 +58,14 @@ async def detect_project_info(path: str) -> dict:
     return info
 
 
-# ── Backward compatibility ──────────────────────────────────────────────────
-# These stubs prevent ImportError in modules that still import old functions.
-# They log deprecation warnings and delegate to the new API where possible.
-
-async def create_project(**kwargs) -> dict:
-    """DEPRECATED: Projects are now mission metadata."""
-    logger.warning("create_project() is deprecated — use add_mission() with repo_path/language/framework")
-    return {"id": 0, "name": kwargs.get("name", ""), "status": "deprecated"}
-
-async def get_project(project_id: int) -> Optional[dict]:
-    """DEPRECATED."""
-    return None
-
-async def get_project_by_name(name: str) -> Optional[dict]:
-    """DEPRECATED."""
-    return None
-
-async def list_projects(status: Optional[str] = None) -> list[dict]:
-    """DEPRECATED: Query missions with repo_path instead."""
+async def list_missions_with_repo() -> list[dict]:
+    """Return missions that have a repo_path set."""
     db = await get_db()
     cursor = await db.execute(
-        "SELECT id, title as name, repo_path, language, framework, status FROM missions WHERE repo_path != '' ORDER BY created_at DESC"
+        "SELECT id, title, repo_path, language, framework, status FROM missions WHERE repo_path != '' ORDER BY created_at DESC"
     )
     return [dict(row) for row in await cursor.fetchall()]
 
-async def update_project(project_id: int, **kwargs) -> None:
-    """DEPRECATED."""
-    pass
-
-async def link_goal_to_project(goal_id: int, project_id: int) -> None:
-    """DEPRECATED: Use set_mission_project() instead."""
-    pass
-
-async def get_project_goals(project_id: int) -> list[dict]:
-    """DEPRECATED."""
-    return []
 
 def format_project_status_badge(status: str) -> str:
     badges = {"active": "🟢", "completed": "✅", "archived": "📦"}

@@ -384,7 +384,7 @@ class BaseAgent:
                 )
 
         # ── Recalled memories ──
-        goal_id = task.get("mission_id")
+        mission_id = task.get("mission_id")
 
         # ── Recent conversation (for follow-up understanding) ──
         if "recent_conversation" in task_context:
@@ -404,7 +404,7 @@ class BaseAgent:
         # ── Phase 6.4: Ambient context injection ──
         try:
             from ..context.assembler import assemble_ambient_context
-            ambient = await assemble_ambient_context(mission_id=goal_id, max_tokens=400)
+            ambient = await assemble_ambient_context(mission_id=mission_id, max_tokens=400)
             if ambient:
                 parts.append(ambient)
         except Exception as exc:
@@ -420,9 +420,9 @@ class BaseAgent:
             logger.debug(f"Project profile injection failed (non-critical): {exc}")
 
         # ── Phase 13.1: Blackboard injection ──
-        if goal_id:
+        if mission_id:
             try:
-                board = await get_or_create_blackboard(goal_id)
+                board = await get_or_create_blackboard(mission_id)
                 bb_block = format_blackboard_for_prompt(board)
                 if bb_block:
                     parts.append(bb_block)
@@ -460,7 +460,7 @@ class BaseAgent:
             logger.debug(f"Preference retrieval failed (non-critical): {exc}")
 
         try:
-            memories = await recall_memory(mission_id=goal_id, limit=15)
+            memories = await recall_memory(mission_id=mission_id, limit=15)
         except Exception as exc:
             logger.warning(f"Failed to recall memory: {exc}")
             memories = []
@@ -909,7 +909,7 @@ class BaseAgent:
     async def _execute_react_loop(self, task: dict) -> dict:
         """ReAct loop with requirements-based model selection."""
         task_id = task.get("id", "?")
-        goal_id = task.get("mission_id")
+        mission_id = task.get("mission_id")
 
         # ── Parse task context ──
         _task_ctx = task.get("context")
@@ -1236,7 +1236,7 @@ class BaseAgent:
                         try:
                             await store_memory(
                                 key, str(value),
-                                category=self.name, mission_id=goal_id,
+                                category=self.name, mission_id=mission_id,
                             )
                         except Exception as exc:
                             logger.warning(f"store_memory failed: {exc}")
@@ -1439,7 +1439,7 @@ class BaseAgent:
                                 target=tool_name,
                                 details=str(tool_args)[:500],
                                 task_id=_tid,
-                                goal_id=goal_id,
+                                mission_id=mission_id,
                             )
                         except Exception:
                             pass
@@ -1562,7 +1562,7 @@ class BaseAgent:
                         "id": f"{task_id}_inline_{iteration}",
                         "title": f"[Inline query from {self.name}]",
                         "description": question,
-                        "mission_id": goal_id,
+                        "mission_id": mission_id,
                         "context": json.dumps({"tool_depth": 1}),
                     }
                     inline_result = await _asyncio.wait_for(

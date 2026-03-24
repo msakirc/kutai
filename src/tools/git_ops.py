@@ -494,5 +494,3 @@ async def list_branches(path: str = "") -> list[str]:
         b.strip().lstrip("* ") for b in out.strip().split("\n") if b.strip()
     ]
 
-# Backward compatibility alias
-create_goal_branch = create_mission_branch

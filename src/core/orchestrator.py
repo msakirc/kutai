@@ -64,15 +64,15 @@ def _compute_max_concurrent(tasks: list[dict]) -> int:
     """Compute how many tasks to run concurrently based on task characteristics.
 
     - Base = MAX_CONCURRENT_TASKS (default 3)
-    - Multiple independent goals: +2 per additional goal (up to 8 total)
-    - Same goal, phase_8 feature implementations: allow up to 5
+    - Multiple independent missions: +2 per additional mission (up to 8 total)
+    - Same mission, phase_8 feature implementations: allow up to 5
     - Hard cap at 8 to avoid overwhelming API rate limits
     """
     if not tasks:
         return MAX_CONCURRENT_TASKS
 
     # Gather mission_ids from tasks
-    goal_ids: set[int] = set()
+    mission_ids: set[int] = set()
     for t in tasks:
         ctx = t.get("context", {})
         if isinstance(ctx, str):
@@ -80,19 +80,19 @@ def _compute_max_concurrent(tasks: list[dict]) -> int:
                 ctx = json.loads(ctx)
             except (json.JSONDecodeError, TypeError):
                 ctx = {}
-        gid = ctx.get("mission_id") or t.get("mission_id")
-        if gid is not None:
-            goal_ids.add(gid)
+        mid = ctx.get("mission_id") or t.get("mission_id")
+        if mid is not None:
+            mission_ids.add(mid)
 
     base = MAX_CONCURRENT_TASKS
-    num_goals = len(goal_ids)
+    num_missions = len(mission_ids)
 
-    if num_goals > 1:
-        # Allow +2 per additional goal beyond the first
-        limit = base + 2 * (num_goals - 1)
+    if num_missions > 1:
+        # Allow +2 per additional mission beyond the first
+        limit = base + 2 * (num_missions - 1)
         return min(limit, 8)
 
-    # Single goal (or no goal info) — check for phase_8 feature implementations
+    # Single mission (or no mission info) — check for phase_8 feature implementations
     for t in tasks:
         ctx = t.get("context", {})
         if isinstance(ctx, str):
@@ -106,6 +106,7 @@ def _compute_max_concurrent(tasks: list[dict]) -> int:
             return min(5, 8)
 
     return min(base, 8)
+
 
 
 class Orchestrator:
@@ -188,20 +189,20 @@ class Orchestrator:
         # For coder/reviewer/writer agents, include the file tree
         # from the mission's isolated workspace if available.
         agent_type = task.get("agent_type", "executor")
-        goal_id = task.get("mission_id")
+        mission_id = task.get("mission_id")
         if agent_type in ("coder", "reviewer", "writer", "planner"):
             try:
                 # Use per-mission workspace if mission_id exists
                 tree_path = (
-                    get_mission_workspace_relative(goal_id)
-                    if goal_id else ""
+                    get_mission_workspace_relative(mission_id)
+                    if mission_id else ""
                 )
                 tree = await get_file_tree(path=tree_path, max_depth=3)
                 if tree and "File not found" not in tree and len(tree.split("\n")) > 1:
                     task_context["workspace_snapshot"] = tree
-                    if goal_id:
+                    if mission_id:
                         task_context["workspace_path"] = (
-                            get_mission_workspace_relative(goal_id)
+                            get_mission_workspace_relative(mission_id)
                         )
             except Exception as e:
                 logger.debug(f"Could not get workspace snapshot: {e}")
@@ -474,12 +475,12 @@ class Orchestrator:
                 elapsed_hours = (datetime.now() - created).total_seconds() / 3600
                 if elapsed_hours > timeout_hours:
                     logger.warning(
-                        "[Watchdog] Goal #%d exceeded timeout (%dh > %dh), pausing",
+                        "[Watchdog] Mission #%d exceeded timeout (%dh > %dh), pausing",
                         goal["id"], int(elapsed_hours), timeout_hours,
                     )
                     await update_mission(goal["id"], status="paused")
                     await self.telegram.send_notification(
-                        f"⏱️ *Workflow timeout*: Goal #{goal['id']} paused after "
+                        f"⏱️ *Workflow timeout*: Mission #{goal['id']} paused after "
                         f"{int(elapsed_hours)}h (limit: {timeout_hours}h).\n"
                         f"*{goal['title']}*\nUse /resume to continue."
                     )
@@ -734,7 +735,7 @@ class Orchestrator:
                     description=sched.get("description", ""),
                     agent_type=sched.get("agent_type", "executor"),
                     tier=sched.get("tier", "cheap"),
-                    goal_id=sched_ctx.get("mission_id"),
+                    mission_id=sched_ctx.get("mission_id"),
                     context=sched_ctx,
                 )
                 if task_id:
@@ -876,7 +877,7 @@ class Orchestrator:
                         task.get("title", ""),
                         task.get("description", "")[:200],
                         tier=task.get("tier", "auto"),
-                        goal_id=task.get("mission_id"),
+                        mission_id=task.get("mission_id"),
                     )
                     if not approved:
                         logger.info("human gate rejected", task_id=task_id)
@@ -905,7 +906,7 @@ class Orchestrator:
                         task.get("title", ""),
                         format_risk_assessment(risk),
                         tier=task.get("tier", "auto"),
-                        goal_id=task.get("mission_id"),
+                        mission_id=task.get("mission_id"),
                     )
                     if not approved:
                         logger.info("risk gate rejected", task_id=task_id)
@@ -915,16 +916,16 @@ class Orchestrator:
                 logger.debug(f"Risk assessment skipped: {e}")
 
             # ── Phase 6: Snapshot workspace before coder/pipeline tasks ──
-            goal_id = task.get("mission_id")
-            if goal_id and agent_type in ("coder", "pipeline", "implementer", "fixer"):
+            mission_id = task.get("mission_id")
+            if mission_id and agent_type in ("coder", "pipeline", "implementer", "fixer"):
                 try:
-                    ws_path = get_mission_workspace(goal_id)
+                    ws_path = get_mission_workspace(mission_id)
                     hashes = compute_workspace_hashes(ws_path)
-                    repo_path = get_mission_workspace_relative(goal_id)
+                    repo_path = get_mission_workspace_relative(mission_id)
                     sha = await get_commit_sha(path=repo_path)
                     branch = await get_current_branch(path=repo_path)
                     await save_workspace_snapshot(
-                        goal_id=goal_id,
+                        mission_id=mission_id,
                         file_hashes=hashes,
                         task_id=task_id,
                         branch_name=branch,
@@ -1008,9 +1009,9 @@ class Orchestrator:
                         extra_artifacts = await extract_pipeline_artifacts(task, result, ws_path)
                         if extra_artifacts:
                             store = get_artifact_store()
-                            goal_id = task.get("mission_id")
+                            mission_id = task.get("mission_id")
                             for name, content in extra_artifacts.items():
-                                await store.store(goal_id, name, content)
+                                await store.store(mission_id, name, content)
                             logger.info(f"[Task #{task_id}] Stored {len(extra_artifacts)} pipeline artifacts")
                     except Exception as e:
                         logger.debug(f"[Task #{task_id}] Pipeline artifact extraction failed: {e}")
@@ -1094,7 +1095,7 @@ class Orchestrator:
                     from ..infra.dead_letter import quarantine_task
                     await quarantine_task(
                         task_id=task_id,
-                        goal_id=task.get("mission_id"),
+                        mission_id=task.get("mission_id"),
                         error=error_str,
                         original_agent=task.get("agent_type", "executor"),
                         retry_count=max_retries,
@@ -1158,8 +1159,8 @@ class Orchestrator:
         if task.get("mission_id") and cost > 0:
             try:
                 from ..collaboration.blackboard import read_blackboard, write_blackboard
-                goal_id = task["mission_id"]
-                current = await read_blackboard(goal_id, "cost_tracking")
+                mission_id = task["mission_id"]
+                current = await read_blackboard(mission_id, "cost_tracking")
                 if not isinstance(current, dict):
                     current = {"total_cost": 0.0, "task_count": 0, "by_phase": {}}
                 current["total_cost"] = current.get("total_cost", 0.0) + cost
@@ -1169,14 +1170,14 @@ class Orchestrator:
                 phase_costs = current.get("by_phase", {})
                 phase_costs[phase] = phase_costs.get(phase, 0.0) + cost
                 current["by_phase"] = phase_costs
-                await write_blackboard(goal_id, "cost_tracking", current)
+                await write_blackboard(mission_id, "cost_tracking", current)
                 # Budget warning at milestones
                 if current["total_cost"] > 0:
                     for threshold in [1.0, 5.0, 10.0]:
                         prev = current["total_cost"] - cost
                         if prev < threshold <= current["total_cost"]:
                             await self.telegram.send_notification(
-                                f"Goal #{goal_id} cost milestone: ${current['total_cost']:.2f}\n"
+                                f"Mission #{mission_id} cost milestone: ${current['total_cost']:.2f}\n"
                                 f"({current['task_count']} tasks completed)"
                             )
                             break
@@ -1227,9 +1228,9 @@ class Orchestrator:
         if task_ctx.get("is_workflow_step") and task.get("mission_id"):
             try:
                 from ..workflows.engine.status import compute_phase_progress
-                goal_id = task["mission_id"]
+                mission_id = task["mission_id"]
                 workflow_phase = task_ctx.get("workflow_phase", "")
-                all_tasks = await get_tasks_for_mission(goal_id)
+                all_tasks = await get_tasks_for_mission(mission_id)
                 progress = compute_phase_progress(all_tasks)
                 current_phase = progress.get(workflow_phase, {})
                 if (current_phase.get("completed", 0) == current_phase.get("total", 0)
@@ -1241,7 +1242,7 @@ class Orchestrator:
                     )
                     phase_name = current_phase.get("name", workflow_phase)
                     await self.telegram.send_notification(
-                        f"Phase '{phase_name}' complete for goal #{goal_id}\n"
+                        f"Phase '{phase_name}' complete for mission #{mission_id}\n"
                         f"Progress: {completed_phases}/{total_phases} phases"
                     )
             except Exception as e:
@@ -1299,7 +1300,7 @@ class Orchestrator:
 
     async def _handle_subtasks(self, task, result):
         task_id = task["id"]
-        goal_id = task.get("mission_id")
+        mission_id = task.get("mission_id")
         subtasks = result.get("subtasks", [])
 
         if not subtasks:
@@ -1369,7 +1370,7 @@ class Orchestrator:
         created_ids = await add_subtasks_atomically(
             parent_task_id=task_id,
             subtasks=processed,
-            goal_id=goal_id,
+            mission_id=mission_id,
             parent_status="waiting_subtasks",
             parent_result=plan_summary,
         )
@@ -1420,7 +1421,7 @@ class Orchestrator:
         review_task_id = await add_task(
             title=f"Review: {task['title'][:40]}",
             description=f"Review this output:\n\n{content}\n\nNote: {review_note}",
-            goal_id=task.get("mission_id"),
+            mission_id=task.get("mission_id"),
             parent_task_id=task_id,
             agent_type="reviewer",
             tier="medium",
@@ -1458,7 +1459,7 @@ class Orchestrator:
 
         title = failed_task.get("title", "Unknown")
         description = failed_task.get("description", "")
-        goal_id = failed_task.get("mission_id")
+        mission_id = failed_task.get("mission_id")
 
         recovery_description = (
             f"## Failed Task Diagnosis\n\n"
@@ -1497,7 +1498,7 @@ class Orchestrator:
             recovery_task_id = await add_task(
                 title=stable_title,
                 description=recovery_description,
-                goal_id=goal_id,
+                mission_id=mission_id,
                 parent_task_id=task_id,
                 agent_type="error_recovery",
                 tier="medium",
@@ -1627,21 +1628,21 @@ class Orchestrator:
             try:
                 from src.infra.progress import add_note, NOTE_MILESTONE
                 await add_note(
-                    content=f"Goal completed: {len(completed)} tasks done, {len(failed)} failed",
+                    content=f"Mission completed: {len(completed)} tasks done, {len(failed)} failed",
                     note_type=NOTE_MILESTONE,
                     mission_id=mission_id,
                 )
-                goal_info = await get_mission(mission_id)
-                goal_title = goal_info.get('title', 'Unknown') if goal_info else 'Unknown'
-                goal_created = goal_info.get('created_at', '') if goal_info else ''
+                mission_info = await get_mission(mission_id)
+                goal_title = mission_info.get('title', 'Unknown') if mission_info else 'Unknown'
+                mission_created = mission_info.get('created_at', '') if mission_info else ''
                 now = datetime.now()
 
                 # Calculate elapsed time
                 elapsed_str = ""
-                if goal_created:
+                if mission_created:
                     try:
                         from datetime import datetime as _dt
-                        created_dt = _dt.fromisoformat(str(goal_created))
+                        created_dt = _dt.fromisoformat(str(mission_created))
                         delta = now - created_dt
                         hours, rem = divmod(int(delta.total_seconds()), 3600)
                         minutes = rem // 60
@@ -1665,7 +1666,7 @@ class Orchestrator:
                     pass
 
                 summary_lines = [
-                    f"# Goal #{mission_id} Summary",
+                    f"# Mission #{mission_id} Summary",
                     f"**Title:** {goal_title}",
                     f"**Completed:** {now.isoformat()[:19]}",
                     f"**Tasks:** {len(completed)} completed, {len(failed)} failed",
@@ -1689,12 +1690,12 @@ class Orchestrator:
                 import os
                 results_dir = os.path.join("workspace", "results")
                 os.makedirs(results_dir, exist_ok=True)
-                summary_path = os.path.join(results_dir, f"goal_{mission_id}_summary.md")
+                summary_path = os.path.join(results_dir, f"mission_{mission_id}_summary.md")
                 with open(summary_path, "w", encoding="utf-8") as f:
                     f.write(summary_content)
-                logger.info(f"[Goal #{mission_id}] Completion summary saved to {summary_path}")
+                logger.info(f"[Mission #{mission_id}] Completion summary saved to {summary_path}")
             except Exception as exc:
-                logger.debug(f"[Goal #{mission_id}] Summary generation failed: {exc}")
+                logger.debug(f"[Mission #{mission_id}] Summary generation failed: {exc}")
 
             cost_line = f"\nCost: ${total_cost:.4f}" if total_cost > 0 else ""
             time_line = f"\nDuration: {elapsed_str}" if elapsed_str else ""

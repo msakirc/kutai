@@ -3,7 +3,7 @@
 Phase 7.2 — Progress Notes
 
 DB table for milestone/blocker/decision/artifact/log notes linked to
-projects, goals, and tasks.
+projects, missions, and tasks.
 """
 from __future__ import annotations
 from typing import Optional
@@ -46,7 +46,7 @@ async def add_note(
     content: str,
     note_type: str = NOTE_LOG,
     project_id: Optional[int] = None,
-    goal_id: Optional[int] = None,
+    mission_id: Optional[int] = None,
     task_id: Optional[int] = None,
 ) -> int:
     """Add a progress note. Returns the note ID."""
@@ -57,7 +57,7 @@ async def add_note(
     cursor = await db.execute(
         """INSERT INTO progress_notes (project_id, goal_id, task_id, note_type, content)
            VALUES (?, ?, ?, ?, ?)""",
-        (project_id, goal_id, task_id, note_type, content),
+        (project_id, mission_id, task_id, note_type, content),
     )
     await db.commit()
     return cursor.lastrowid
@@ -65,7 +65,7 @@ async def add_note(
 
 async def get_notes(
     project_id: Optional[int] = None,
-    goal_id: Optional[int] = None,
+    mission_id: Optional[int] = None,
     task_id: Optional[int] = None,
     note_type: Optional[str] = None,
     limit: int = 50,
@@ -79,9 +79,9 @@ async def get_notes(
     if project_id is not None:
         conditions.append("project_id = ?")
         params.append(project_id)
-    if goal_id is not None:
+    if mission_id is not None:
         conditions.append("goal_id = ?")
-        params.append(goal_id)
+        params.append(mission_id)
     if task_id is not None:
         conditions.append("task_id = ?")
         params.append(task_id)

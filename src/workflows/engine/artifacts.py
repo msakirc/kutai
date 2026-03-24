@@ -30,7 +30,7 @@ class ArtifactStore:
     """In-memory artifact cache with optional blackboard persistence."""
 
     def __init__(self, use_db: bool = True) -> None:
-        self._cache: dict[str, dict[str, str]] = {}  # goal_id_str -> {name: value}
+        self._cache: dict[str, dict[str, str]] = {}  # mission_id_str -> {name: value}
         self._use_db = use_db
 
     def _mission_key(self, mission_id: int | str) -> str:

@@ -200,7 +200,7 @@ class WorkflowRunner:
                 task_id = await add_task(
                     title=task_dict["title"],
                     description=task_dict["description"],
-                    goal_id=task_dict["mission_id"],
+                    mission_id=task_dict["mission_id"],
                     agent_type=task_dict["agent_type"],
                     tier=task_dict["tier"],
                     priority=task_dict["priority"],
@@ -312,7 +312,7 @@ class WorkflowRunner:
         Returns the mission_id.
         """
         # Lazy imports to avoid circular dependencies
-        from src.infra.db import add_goal, add_task
+        from src.infra.db import add_mission, add_task
 
         # 1. Load workflow definition
         wf = load_workflow(workflow_name)
@@ -334,26 +334,26 @@ class WorkflowRunner:
                 workflow_name, dag_errors,
             )
 
-        # 2. Create goal
-        goal_title = title or f"Workflow: {wf.metadata.get('title', workflow_name)}"
-        goal_description = wf.metadata.get("description", "")
+        # 2. Create mission
+        mission_title = title or f"Workflow: {wf.metadata.get('title', workflow_name)}"
+        mission_description = wf.metadata.get("description", "")
         # Workflow-level timeout: default 72 hours for full workflows
         timeout_hours = wf.metadata.get("timeout_hours", 72)
 
-        goal_context = {
+        mission_context = {
             "workflow_name": workflow_name,
             "workflow_version": wf.version,
             "plan_id": wf.plan_id,
             "workflow_timeout_hours": timeout_hours,
         }
         if initial_input:
-            goal_context["initial_input"] = initial_input
+            mission_context["initial_input"] = initial_input
 
-        mission_id = await add_goal(
-            title=goal_title,
-            description=goal_description,
+        mission_id = await add_mission(
+            title=mission_title,
+            description=mission_description,
             priority=8,
-            context=goal_context,
+            context=mission_context,
         )
 
         # 3. Store initial inputs as artifacts
@@ -397,7 +397,7 @@ class WorkflowRunner:
             task_id = await add_task(
                 title=task_dict["title"],
                 description=task_dict["description"],
-                goal_id=task_dict["mission_id"],
+                mission_id=task_dict["mission_id"],
                 agent_type=task_dict["agent_type"],
                 tier=task_dict["tier"],
                 priority=task_dict["priority"],

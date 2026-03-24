@@ -71,6 +71,29 @@ async def init_db():
         pass
     await db.commit()
 
+    # Migration: Add project fields to missions table
+    for col, default in [("workflow", ""), ("repo_path", ""), ("language", ""), ("framework", "")]:
+        try:
+            await db.execute(f"ALTER TABLE missions ADD COLUMN {col} TEXT DEFAULT '{default}'")
+        except Exception:
+            pass  # Column already exists
+
+    # Migrate project data into missions (if projects table exists)
+    try:
+        cursor = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='projects'")
+        if await cursor.fetchone():
+            await db.execute("""
+                UPDATE missions SET
+                    repo_path = COALESCE((SELECT p.repo_path FROM projects p WHERE p.id = missions.project_id), ''),
+                    language = COALESCE((SELECT p.language FROM projects p WHERE p.id = missions.project_id), ''),
+                    framework = COALESCE((SELECT p.framework FROM projects p WHERE p.id = missions.project_id), '')
+                WHERE project_id IS NOT NULL
+            """)
+            await db.commit()
+            logger.info("Migrated project data into missions table")
+    except Exception as e:
+        logger.debug(f"Project migration skipped: {e}")
+
     # Check if we need to migrate by checking for old schema
     try:
         cursor = await db.execute("PRAGMA table_info(tasks)")
@@ -386,11 +409,14 @@ async def init_db():
 
 # --- Mission Operations ---
 
-async def add_mission(title, description, priority=5, context=None):
+async def add_mission(title, description, priority=5, context=None,
+                      workflow=None, repo_path=None, language=None, framework=None):
     db = await get_db()
     cursor = await db.execute(
-        "INSERT INTO missions (title, description, priority, context) VALUES (?, ?, ?, ?)",
-        (title, description, priority, json.dumps(context or {}))
+        """INSERT INTO missions (title, description, priority, context, workflow, repo_path, language, framework)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (title, description, priority, json.dumps(context or {}),
+         workflow or "", repo_path or "", language or "", framework or "")
     )
     await db.commit()
     return cursor.lastrowid
@@ -413,7 +439,7 @@ async def get_active_missions():
 
 _MISSION_COLUMNS = frozenset({
     "title", "description", "status", "priority",
-    "completed_at", "context",
+    "completed_at", "context", "workflow", "repo_path", "language", "framework",
 })
 
 _TASK_COLUMNS = frozenset({

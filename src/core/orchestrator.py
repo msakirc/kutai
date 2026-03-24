@@ -113,12 +113,14 @@ class Orchestrator:
     def __init__(self, shutdown_event=None):
         self.telegram = TelegramInterface(self)
         self.running = False
+        self._shutting_down = False
         self.cycle_count = 0
         self.last_digest = datetime.now()
         self.last_scheduler_check = datetime.min
         self.last_decay_check = datetime.min
         self.shutdown_event = shutdown_event or asyncio.Event()
         self._current_task_future = None
+        self._running_futures: list[asyncio.Task] = []
         self._model_manager_tasks: list[asyncio.Task] = []
 
 
@@ -1842,6 +1844,14 @@ class Orchestrator:
 
         while self.running and not self.shutdown_event.is_set():
             try:
+                # ── Graceful shutdown: stop accepting new tasks ──
+                if self._shutting_down:
+                    logger.info(
+                        "Shutdown flag set — draining running tasks, "
+                        "no new tasks will be accepted"
+                    )
+                    break
+
                 self.cycle_count += 1
 
                 if self.cycle_count % 10 == 0:
@@ -1908,10 +1918,13 @@ class Orchestrator:
                             self._current_task_future = asyncio.ensure_future(
                                 self.process_task(t)
                             )
+                            self._running_futures = [self._current_task_future]
                             await self._current_task_future
                             self._current_task_future = None
+                            self._running_futures = []
                         except Exception as e:
                             self._current_task_future = None
+                            self._running_futures = []
                             logger.error(
                                 f"Task #{t['id']} error: {e}",
                                 exc_info=True,
@@ -1922,9 +1935,11 @@ class Orchestrator:
                             asyncio.ensure_future(self.process_task(t))
                             for t in batch
                         ]
+                        self._running_futures = list(futures)
                         results = await asyncio.gather(
                             *futures, return_exceptions=True
                         )
+                        self._running_futures = []
                         for t, res in zip(batch, results):
                             if isinstance(res, Exception):
                                 logger.error(
@@ -2048,7 +2063,8 @@ class Orchestrator:
             finally:
                 # ── Graceful shutdown ──
                 if self.shutdown_event.is_set():
-                    logger.info("🛑 Graceful shutdown initiated...")
+                    logger.info("Graceful shutdown initiated...")
+                    self._shutting_down = True
                     self.running = False
 
                     # Stop background tasks
@@ -2056,38 +2072,62 @@ class Orchestrator:
                     for t in self._background_tasks:
                         t.cancel()
 
-                    # Wait for current task to finish
-                    if (
-                        self._current_task_future
-                        and not self._current_task_future.done()
-                    ):
+                    # Collect all in-flight task futures
+                    active_futures = [
+                        f for f in self._running_futures
+                        if f and not f.done()
+                    ]
+                    if self._current_task_future and not self._current_task_future.done():
+                        active_futures.append(self._current_task_future)
+
+                    if active_futures:
                         logger.info(
-                            "⏳ Waiting for current task to complete "
-                            "(60s timeout)..."
+                            f"Waiting for {len(active_futures)} running "
+                            f"task(s) to complete (30s timeout)..."
                         )
                         try:
                             await asyncio.wait_for(
-                                asyncio.shield(self._current_task_future),
-                                timeout=60,
+                                asyncio.gather(
+                                    *[asyncio.shield(f) for f in active_futures],
+                                    return_exceptions=True,
+                                ),
+                                timeout=30,
                             )
-                            logger.info("✅ Current task completed cleanly")
+                            logger.info("All running tasks completed cleanly")
                         except asyncio.TimeoutError:
                             logger.warning(
-                                "⚠️ Shutdown timeout — task abandoned"
+                                "Shutdown timeout (30s) — "
+                                f"{sum(1 for f in active_futures if not f.done())} "
+                                "task(s) abandoned"
                             )
                         except Exception as e:
-                            logger.warning(
-                                f"⚠️ Task error during shutdown: {e}"
-                            )
+                            logger.warning(f"Task error during shutdown: {e}")
+
+                    # Release any held task/mission locks so they aren't
+                    # stuck in 'running' status on next startup.
+                    try:
+                        await release_task_locks()
+                        await release_mission_locks()
+                        logger.info("Released all task and mission locks")
+                    except Exception as e:
+                        logger.warning(f"Lock release failed: {e}")
+
+                    # Persist in-memory metrics before exiting
+                    try:
+                        from src.infra.metrics import persist_metrics
+                        await persist_metrics()
+                        logger.info("Final metrics snapshot persisted")
+                    except Exception:
+                        pass
 
                     # Stop llama-server if running
                     try:
                         await manager._stop_server()
-                        logger.info("🦙 llama-server stopped")
+                        logger.info("llama-server stopped")
                     except Exception as e:
-                        logger.warning(f"⚠️ Error stopping llama-server: {e}")
+                        logger.warning(f"Error stopping llama-server: {e}")
 
-                    logger.info("👋 Orchestrator stopped")
+                    logger.info("Graceful shutdown complete")
 
                 await close_db()
                 await self.telegram.app.updater.stop()

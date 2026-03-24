@@ -14,6 +14,8 @@ class ExecutorAgent(BaseAgent):
     description = "General-purpose task executor"
     default_tier = "cheap"
     min_tier = "cheap"
+    # 5 iterations: generic task runner — needs flexibility for varied
+    # tool sequences but not as many rounds as coder/fixer.
     max_iterations = 5
 
     # Focused set — keeps prompt short for small models

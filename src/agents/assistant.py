@@ -14,6 +14,8 @@ class AssistantAgent(BaseAgent):
     description = "General conversation, Q&A, and personal assistance"
     default_tier = "cheap"
     min_tier = "cheap"
+    # 4 iterations: general Q&A agent — (1-2) gather context,
+    # (3-4) compose answer.  Low because most queries are informational.
     max_iterations = 4
 
     allowed_tools = [

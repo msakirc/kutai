@@ -14,6 +14,8 @@ class AnalystAgent(BaseAgent):
     description = "Analyzes data, evaluates feasibility, produces structured reports"
     default_tier = "medium"
     min_tier = "cheap"
+    # 5 iterations: needs extra rounds for data gathering (shell commands,
+    # file reads) before analysis.  One more than reviewer for deeper dives.
     max_iterations = 5
 
     allowed_tools = [

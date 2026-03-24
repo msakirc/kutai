@@ -14,6 +14,9 @@ class ImplementerAgent(BaseAgent):
     description = "Implements a single file based on an architectural plan."
     default_tier = "medium"
     min_tier = "medium"
+    # 6 iterations: similar to coder but typically works from a more
+    # structured spec.  (1) read spec, (2-3) implement, (4-5) test/fix,
+    # (6) final check.  Slightly fewer than coder's 8.
     max_iterations = 6
 
     allowed_tools = [

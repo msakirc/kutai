@@ -15,6 +15,8 @@ class ErrorRecoveryAgent(BaseAgent):
     description = "Diagnoses failed tasks, fixes or escalates with clear analysis"
     default_tier = "medium"
     min_tier = "cheap"
+    # 4 iterations: (1) read error context, (2) diagnose root cause,
+    # (3) attempt fix, (4) verify.  Kept tight to avoid runaway recovery loops.
     max_iterations = 4
     enable_self_reflection = True
 

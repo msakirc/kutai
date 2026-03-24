@@ -1021,11 +1021,11 @@ async def call_model(
 
                     # Record metrics for Prometheus
                     try:
-                        from src.infra.metrics import record_model_call as _record_metrics
+                        from src.infra.metrics import track_model_call_metrics
                         _total_tokens = 0
                         if response.usage:
                             _total_tokens = (response.usage.prompt_tokens or 0) + (response.usage.completion_tokens or 0)
-                        _record_metrics(
+                        track_model_call_metrics(
                             model=model.name,
                             cost=cost or 0.0,
                             latency_ms=call_latency * 1000,

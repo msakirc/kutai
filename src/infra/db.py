@@ -1372,8 +1372,21 @@ async def record_model_call(
 ) -> None:
     """Record a model call for performance tracking.
 
-    Updates running averages in model_stats table.
+    This is the **single entry point** for recording model calls.  It persists
+    stats to the ``model_stats`` DB table *and* updates the in-memory metric
+    counters via ``track_model_call_metrics()`` so both systems stay in sync.
     """
+    # Also update in-memory Prometheus-style counters
+    try:
+        from .metrics import track_model_call_metrics
+        track_model_call_metrics(
+            model=model,
+            cost=cost,
+            latency_ms=latency * 1000 if latency else 0.0,
+        )
+    except Exception:
+        pass  # metrics are best-effort
+
     db = await get_db()
 
     # Upsert: try to get existing row

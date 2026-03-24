@@ -13,7 +13,10 @@ class CoderAgent(BaseAgent):
     description = "Writes, runs, and debugs code. Builds projects."
     default_tier = "medium"
     min_tier = "medium"
-    max_iterations = 8          # write → run → error → fix → run → …
+    # 8 iterations: supports multiple write-run-fix cycles.  Typical flow is
+    # read context (1) → write code (2) → run/test (3) → fix errors (4-7) →
+    # final verification (8).  Matches MAX_AGENT_ITERATIONS default.
+    max_iterations = 8
 
     allowed_tools = [
         "shell",

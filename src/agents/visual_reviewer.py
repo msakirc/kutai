@@ -14,6 +14,8 @@ class VisualReviewerAgent(BaseAgent):
     description = "Analyzes screenshots, UI layouts, diagrams, and visual content"
     default_tier = "medium"
     min_tier = "medium"
+    # 3 iterations: (1) capture screenshot, (2) analyze visual elements,
+    # (3) compile findings.  Minimal tool usage needed.
     max_iterations = 3
 
     allowed_tools = [

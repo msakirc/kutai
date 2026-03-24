@@ -14,6 +14,8 @@ class SummarizerAgent(BaseAgent):
     description = "Condenses long content into structured summaries"
     default_tier = "cheap"
     min_tier = "cheap"
+    # 3 iterations: (1) read source material, (2) draft summary,
+    # (3) refine.  Summarization is mostly single-shot reasoning.
     max_iterations = 3
 
     allowed_tools = [

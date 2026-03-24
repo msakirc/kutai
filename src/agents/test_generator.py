@@ -13,6 +13,9 @@ class TestGeneratorAgent(BaseAgent):
     description = "Writes and executes automated tests for implemented code."
     default_tier = "medium"
     min_tier = "medium"
+    # 6 iterations: (1) read source, (2) read existing tests, (3) generate
+    # tests, (4) run them, (5-6) fix failures.  Needs more than reviewer
+    # because test generation involves write-run-fix cycles.
     max_iterations = 6
 
     allowed_tools = [

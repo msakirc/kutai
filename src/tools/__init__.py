@@ -308,6 +308,13 @@ try:
 except Exception as e:
     logger.debug(f"coverage tool not available — {type(e).__name__}: {e}")
 
+# MCP client singleton (for external tool servers)
+try:
+    from .mcp_client import mcp_client  # noqa: F401 — re-exported
+except Exception as e:
+    mcp_client = None  # type: ignore[assignment]
+    logger.debug(f"MCP client not available — {type(e).__name__}: {e}")
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------

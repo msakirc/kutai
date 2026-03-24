@@ -14,6 +14,8 @@ class FixerAgent(BaseAgent):
     description = "Applies code fixes based on review feedback or test failures."
     default_tier = "medium"
     min_tier = "medium"
+    # 8 iterations: mirrors coder — fix cycles often need multiple
+    # read-fix-test rounds, especially for cascading test failures.
     max_iterations = 8
 
     allowed_tools = [

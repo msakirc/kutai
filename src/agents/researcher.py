@@ -14,7 +14,9 @@ class ResearcherAgent(BaseAgent):
     description = "Researches topics, gathers information, synthesizes findings"
     default_tier = "medium"
     min_tier = "cheap"
-    max_iterations = 4          # multiple searches → synthesize
+    # 4 iterations: (1-3) web/doc searches with different queries,
+    # (4) synthesize findings.  Kept low to bound API search costs.
+    max_iterations = 4
 
     allowed_tools = [
         "web_search",

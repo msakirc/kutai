@@ -14,7 +14,9 @@ class PlannerAgent(BaseAgent):
     description = "Breaks down missions into concrete, ordered subtasks"
     default_tier = "medium"
     min_tier = "medium"
-    max_iterations = 3          # inspect workspace before planning
+    # 3 iterations: (1) inspect workspace/file tree, (2) read key files,
+    # (3) produce the plan.  Planning is mostly reasoning, not tool-heavy.
+    max_iterations = 3
     can_create_subtasks = True
 
     allowed_tools = ["file_tree", "project_info", "read_file", "web_search"]

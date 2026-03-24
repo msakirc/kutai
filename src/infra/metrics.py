@@ -49,7 +49,13 @@ def record_task_failed(model: str = "") -> None:
     increment("tasks_failed")
 
 
-def record_model_call(model: str, cost: float = 0.0, latency_ms: float = 0.0, tokens: int = 0) -> None:
+def track_model_call_metrics(model: str, cost: float = 0.0, latency_ms: float = 0.0, tokens: int = 0) -> None:
+    """Update in-memory counters for a model call (cost, latency, tokens).
+
+    This is the single entry point for in-memory metric tracking.  The DB-level
+    ``record_model_call`` in ``infra.db`` calls this automatically, so most
+    callers should go through that function instead.
+    """
     increment(f"model_calls:{model}")
     if cost > 0:
         increment(f"cost:{model}", cost)

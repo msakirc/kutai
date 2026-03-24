@@ -90,16 +90,18 @@ def create_app() -> Any:
 
     # ── Request/Response models ──────────────────────────────────────────────
 
-    class GoalCreate(BaseModel):
+    class MissionCreate(BaseModel):
         title: str
         description: str = ""
         priority: int = 5
+        workflow: str | None = None
+        repo_path: str | None = None
 
     class TaskCreate(BaseModel):
         title: str
         description: str = ""
         agent_type: str = "executor"
-        goal_id: Optional[int] = None
+        mission_id: Optional[int] = None
         priority: int = 5
 
     # ── Health ──────────────────────────────────────────────────────────────
@@ -113,35 +115,38 @@ def create_app() -> Any:
             "boot_time": runtime_state.get("boot_time"),
         }
 
-    # ── Goals ───────────────────────────────────────────────────────────────
+    # ── Missions ────────────────────────────────────────────────────────────
 
-    @app.post("/goals", status_code=201)
-    async def create_goal(body: GoalCreate, _: None = Depends(_check_api_key)):
+    @app.post("/missions", status_code=201)
+    @app.post("/goals", status_code=201)  # backward compat
+    async def create_mission(body: MissionCreate, _: None = Depends(_check_api_key)):
         from src.infra.db import get_db
         db = await get_db()
         cursor = await db.execute(
-            "INSERT INTO goals (title, description, priority, status) VALUES (?, ?, ?, 'active')",
-            (body.title, body.description, body.priority),
+            "INSERT INTO missions (title, description, priority, workflow, repo_path, status) VALUES (?, ?, ?, ?, ?, 'active')",
+            (body.title, body.description, body.priority, body.workflow, body.repo_path),
         )
         await db.commit()
-        goal_id = cursor.lastrowid
-        logger.info(f"API: Created goal #{goal_id}: {body.title}")
-        return {"id": goal_id, "title": body.title, "status": "active"}
+        mission_id = cursor.lastrowid
+        logger.info(f"API: Created mission #{mission_id}: {body.title}")
+        return {"id": mission_id, "title": body.title, "status": "active"}
 
-    @app.get("/goals/{goal_id}")
-    async def get_goal(goal_id: int, _: None = Depends(_check_api_key)):
-        from src.infra.db import get_goal as _get_goal
-        goal = await _get_goal(goal_id)
-        if not goal:
-            raise HTTPException(status_code=404, detail="Goal not found")
-        return dict(goal)
+    @app.get("/missions/{mission_id}")
+    @app.get("/goals/{mission_id}")  # backward compat
+    async def get_mission(mission_id: int, _: None = Depends(_check_api_key)):
+        from src.infra.db import get_mission as _get_mission
+        mission = await _get_mission(mission_id)
+        if not mission:
+            raise HTTPException(status_code=404, detail="Mission not found")
+        return dict(mission)
 
-    @app.get("/goals")
-    async def list_goals(_: None = Depends(_check_api_key)):
+    @app.get("/missions")
+    @app.get("/goals")  # backward compat
+    async def list_missions(_: None = Depends(_check_api_key)):
         from src.infra.db import get_db
         db = await get_db()
         cursor = await db.execute(
-            "SELECT * FROM goals ORDER BY created_at DESC LIMIT 50"
+            "SELECT * FROM missions ORDER BY created_at DESC LIMIT 50"
         )
         rows = await cursor.fetchall()
         cols = [d[0] for d in cursor.description]
@@ -156,7 +161,7 @@ def create_app() -> Any:
             title=body.title,
             description=body.description,
             agent_type=body.agent_type,
-            goal_id=body.goal_id,
+            mission_id=body.mission_id,
             priority=body.priority,
         )
         return {"id": task_id, "title": body.title, "status": "pending"}
@@ -197,11 +202,11 @@ def create_app() -> Any:
             counters = {}
         from src.infra.db import get_db
         db = await get_db()
-        c1 = await db.execute("SELECT COUNT(*) FROM goals WHERE status = 'active'")
+        c1 = await db.execute("SELECT COUNT(*) FROM missions WHERE status = 'active'")
         c2 = await db.execute("SELECT COUNT(*) FROM tasks WHERE status = 'pending'")
         c3 = await db.execute("SELECT COUNT(*) FROM tasks WHERE status = 'completed'")
         return {
-            "active_goals": (await c1.fetchone())[0],
+            "active_missions": (await c1.fetchone())[0],
             "pending_tasks": (await c2.fetchone())[0],
             "completed_tasks": (await c3.fetchone())[0],
             "metrics": counters,
@@ -380,14 +385,14 @@ def create_app() -> Any:
 
     # ── Artifacts ────────────────────────────────────────────────────────────
 
-    @app.get("/artifacts/{goal_id}")
-    async def get_artifacts(goal_id: int, _: None = Depends(_check_api_key)):
+    @app.get("/artifacts/{mission_id}")
+    async def get_artifacts(mission_id: int, _: None = Depends(_check_api_key)):
         try:
             from src.collaboration.blackboard import read_blackboard
-            artifacts = await read_blackboard(goal_id, key="artifacts")
-            return {"goal_id": goal_id, "artifacts": artifacts or {}}
+            artifacts = await read_blackboard(mission_id, key="artifacts")
+            return {"mission_id": mission_id, "artifacts": artifacts or {}}
         except Exception:
-            return {"goal_id": goal_id, "artifacts": {}}
+            return {"mission_id": mission_id, "artifacts": {}}
 
     # ── WebSocket streaming ──────────────────────────────────────────────────
 

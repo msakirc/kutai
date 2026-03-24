@@ -9,11 +9,11 @@ from datetime import datetime, timedelta
 from ..infra.db import (
     init_db, get_db, close_db, get_ready_tasks, update_task, add_task,
     claim_task, add_subtasks_atomically, log_conversation,
-    get_active_goals, get_tasks_for_goal, update_goal, get_daily_stats,
+    get_active_missions, get_tasks_for_mission, update_mission, get_daily_stats,
     store_memory, compute_task_hash,
     get_due_scheduled_tasks, update_scheduled_task,
-    cancel_task, get_task, get_goal,
-    save_workspace_snapshot, release_task_locks, release_goal_locks,
+    cancel_task, get_task, get_mission,
+    save_workspace_snapshot, release_task_locks, release_mission_locks,
 )
 from src.infra.logging_config import get_logger
 from .router import _circuit_breakers
@@ -21,13 +21,13 @@ from ..agents import get_agent
 from ..tools import execute_tool
 from ..tools.workspace import (
     get_file_tree,
-    get_goal_workspace,
-    get_goal_workspace_relative,
+    get_mission_workspace,
+    get_mission_workspace_relative,
     compute_workspace_hashes,
 )
 from ..tools.git_ops import (
     git_commit, ensure_git_repo,
-    create_goal_branch, get_current_branch, get_commit_sha,
+    create_mission_branch, get_current_branch, get_commit_sha,
 )
 from ..app.telegram_bot import TelegramInterface
 
@@ -141,7 +141,7 @@ class Orchestrator:
 
         # ── Gather completed sibling tasks (same parent or same goal) ──
         parent_id = task.get("parent_task_id")
-        goal_id = task.get("goal_id")
+        mission_id = task.get("goal_id")
 
         prior_steps = []
 
@@ -193,7 +193,7 @@ class Orchestrator:
             try:
                 # Use per-goal workspace if goal_id exists
                 tree_path = (
-                    get_goal_workspace_relative(goal_id)
+                    get_mission_workspace_relative(goal_id)
                     if goal_id else ""
                 )
                 tree = await get_file_tree(path=tree_path, max_depth=3)
@@ -201,7 +201,7 @@ class Orchestrator:
                     task_context["workspace_snapshot"] = tree
                     if goal_id:
                         task_context["workspace_path"] = (
-                            get_goal_workspace_relative(goal_id)
+                            get_mission_workspace_relative(goal_id)
                         )
             except Exception as e:
                 logger.debug(f"Could not get workspace snapshot: {e}")
@@ -216,9 +216,9 @@ class Orchestrator:
         """Auto-commit workspace changes after a successful coder task."""
         try:
             # Use goal-specific workspace path if available
-            goal_id = task.get("goal_id")
+            mission_id = task.get("goal_id")
             repo_path = (
-                get_goal_workspace_relative(goal_id) if goal_id else ""
+                get_mission_workspace_relative(mission_id) if mission_id else ""
             )
             await ensure_git_repo(repo_path)
             commit_msg = f"Task #{task['id']}: {task.get('title', 'untitled')[:60]}"
@@ -477,7 +477,7 @@ class Orchestrator:
                         "[Watchdog] Goal #%d exceeded timeout (%dh > %dh), pausing",
                         goal["id"], int(elapsed_hours), timeout_hours,
                     )
-                    await update_goal(goal["id"], status="paused")
+                    await update_mission(goal["id"], status="paused")
                     await self.telegram.send_notification(
                         f"⏱️ *Workflow timeout*: Goal #{goal['id']} paused after "
                         f"{int(elapsed_hours)}h (limit: {timeout_hours}h).\n"
@@ -918,9 +918,9 @@ class Orchestrator:
             goal_id = task.get("goal_id")
             if goal_id and agent_type in ("coder", "pipeline", "implementer", "fixer"):
                 try:
-                    ws_path = get_goal_workspace(goal_id)
+                    ws_path = get_mission_workspace(goal_id)
                     hashes = compute_workspace_hashes(ws_path)
-                    repo_path = get_goal_workspace_relative(goal_id)
+                    repo_path = get_mission_workspace_relative(goal_id)
                     sha = await get_commit_sha(path=repo_path)
                     branch = await get_current_branch(path=repo_path)
                     await save_workspace_snapshot(
@@ -1001,7 +1001,7 @@ class Orchestrator:
                         ws_path = None
                         if task.get("goal_id"):
                             try:
-                                ws_path = get_goal_workspace(task["goal_id"])
+                                ws_path = get_mission_workspace(task["goal_id"])
                             except Exception:
                                 pass
 
@@ -1152,7 +1152,7 @@ class Orchestrator:
         )
 
         if task.get("goal_id"):
-            await self._check_goal_completion(task["goal_id"])
+            await self._check_mission_completion(task["goal_id"])
 
         # ── Fix #8: Goal cost accumulator ──
         if task.get("goal_id") and cost > 0:
@@ -1229,7 +1229,7 @@ class Orchestrator:
                 from ..workflows.engine.status import compute_phase_progress
                 goal_id = task["goal_id"]
                 workflow_phase = task_ctx.get("workflow_phase", "")
-                all_tasks = await get_tasks_for_goal(goal_id)
+                all_tasks = await get_tasks_for_mission(goal_id)
                 progress = compute_phase_progress(all_tasks)
                 current_phase = progress.get(workflow_phase, {})
                 if (current_phase.get("completed", 0) == current_phase.get("total", 0)
@@ -1594,9 +1594,9 @@ class Orchestrator:
 
     # ─── Goal Completion ─────────────────────────────────────────────────
 
-    async def _check_goal_completion(self, goal_id):
+    async def _check_mission_completion(self, mission_id):
         """Check if all tasks for a goal are done."""
-        tasks = await get_tasks_for_goal(goal_id)
+        tasks = await get_tasks_for_mission(mission_id)
         if not tasks:
             return
 
@@ -1607,12 +1607,12 @@ class Orchestrator:
             completed = [t for t in tasks if t["status"] == "completed"]
             failed = [t for t in tasks if t["status"] == "failed"]
 
-            await update_goal(goal_id, status="completed",
+            await update_mission(mission_id, status="completed",
                               completed_at=datetime.now().isoformat())
 
             # Phase 6: Release all locks held by this goal
             try:
-                await release_goal_locks(goal_id)
+                await release_mission_locks(mission_id)
             except Exception:
                 pass
 
@@ -1629,9 +1629,9 @@ class Orchestrator:
                 await add_note(
                     content=f"Goal completed: {len(completed)} tasks done, {len(failed)} failed",
                     note_type=NOTE_MILESTONE,
-                    goal_id=goal_id,
+                    mission_id=mission_id,
                 )
-                goal_info = await get_goal(goal_id)
+                goal_info = await get_mission(mission_id)
                 goal_title = goal_info.get('title', 'Unknown') if goal_info else 'Unknown'
                 goal_created = goal_info.get('created_at', '') if goal_info else ''
                 now = datetime.now()
@@ -1657,7 +1657,7 @@ class Orchestrator:
                 phase_costs: dict = {}
                 try:
                     from ..collaboration.blackboard import read_blackboard
-                    cost_data = await read_blackboard(goal_id, "cost_tracking")
+                    cost_data = await read_blackboard(mission_id, "cost_tracking")
                     if isinstance(cost_data, dict):
                         total_cost = cost_data.get("total_cost", 0.0)
                         phase_costs = cost_data.get("by_phase", {})
@@ -1665,7 +1665,7 @@ class Orchestrator:
                     pass
 
                 summary_lines = [
-                    f"# Goal #{goal_id} Summary",
+                    f"# Goal #{mission_id} Summary",
                     f"**Title:** {goal_title}",
                     f"**Completed:** {now.isoformat()[:19]}",
                     f"**Tasks:** {len(completed)} completed, {len(failed)} failed",
@@ -1689,12 +1689,12 @@ class Orchestrator:
                 import os
                 results_dir = os.path.join("workspace", "results")
                 os.makedirs(results_dir, exist_ok=True)
-                summary_path = os.path.join(results_dir, f"goal_{goal_id}_summary.md")
+                summary_path = os.path.join(results_dir, f"goal_{mission_id}_summary.md")
                 with open(summary_path, "w", encoding="utf-8") as f:
                     f.write(summary_content)
-                logger.info(f"[Goal #{goal_id}] Completion summary saved to {summary_path}")
+                logger.info(f"[Goal #{mission_id}] Completion summary saved to {summary_path}")
             except Exception as exc:
-                logger.debug(f"[Goal #{goal_id}] Summary generation failed: {exc}")
+                logger.debug(f"[Goal #{mission_id}] Summary generation failed: {exc}")
 
             cost_line = f"\nCost: ${total_cost:.4f}" if total_cost > 0 else ""
             time_line = f"\nDuration: {elapsed_str}" if elapsed_str else ""
@@ -1707,27 +1707,27 @@ class Orchestrator:
 
     # ─── Goal Planning ───────────────────────────────────────────────────
 
-    async def plan_goal(self, goal_id: int, title: str, description: str):
+    async def plan_mission(self, mission_id: int, title: str, description: str):
         """Create initial planning task for a new goal."""
         # ── Phase 6: Set up per-goal workspace + branch ──
         try:
-            goal_ws = get_goal_workspace(goal_id)
-            await ensure_git_repo(get_goal_workspace_relative(goal_id))
-            branch = await create_goal_branch(
-                goal_id, title,
-                path=get_goal_workspace_relative(goal_id),
+            mission_ws = get_mission_workspace(mission_id)
+            await ensure_git_repo(get_mission_workspace_relative(mission_id))
+            branch = await create_mission_branch(
+                mission_id, title,
+                path=get_mission_workspace_relative(mission_id),
             )
             if not branch.startswith("❌"):
                 logger.info(
-                    f"[Goal #{goal_id}] Created workspace + branch: {branch}"
+                    f"[Mission #{mission_id}] Created workspace + branch: {branch}"
                 )
         except Exception as e:
-            logger.debug(f"[Goal #{goal_id}] Workspace setup skipped: {e}")
+            logger.debug(f"[Mission #{mission_id}] Workspace setup skipped: {e}")
 
         await add_task(
             title=f"Plan: {title[:40]}",
-            description=f"Create an execution plan for this goal:\n\n{title}\n\n{description}",
-            goal_id=goal_id,
+            description=f"Create an execution plan for this mission:\n\n{title}\n\n{description}",
+            goal_id=mission_id,
             agent_type="planner",
             priority=TASK_PRIORITY["high"],
         )
@@ -1737,7 +1737,7 @@ class Orchestrator:
     async def daily_digest(self):
         """Phase 14.1: Enhanced morning briefing with overnight results and system health."""
         stats = await get_daily_stats()
-        goals = await get_active_goals()
+        goals = await get_active_missions()
 
         goals_text = "\n".join(f"  - {g['title']}" for g in goals[:5]) or "  None"
 

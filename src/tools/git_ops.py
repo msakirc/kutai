@@ -395,7 +395,7 @@ async def git_status(path: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Phase 6: Branch-per-goal workflow
+# Phase 6: Branch-per-mission workflow
 # ---------------------------------------------------------------------------
 
 def _slugify(text: str, max_len: int = 30) -> str:
@@ -407,12 +407,12 @@ def _slugify(text: str, max_len: int = 30) -> str:
     return slug[:max_len]
 
 
-async def create_goal_branch(
-    goal_id: int,
+async def create_mission_branch(
+    mission_id: int,
     title: str,
     path: str = "",
 ) -> str:
-    """Create a goal-specific branch: goal/{id}-{slug}.
+    """Create a mission-specific branch: mission/{id}-{slug}.
 
     Returns the branch name, or error string starting with '❌'.
     """
@@ -421,7 +421,7 @@ async def create_goal_branch(
         return f"❌ No git repo at {path or 'workspace root'}."
 
     slug = _slugify(title)
-    branch_name = f"goal/{goal_id}-{slug}"
+    branch_name = f"mission/{mission_id}-{slug}"
 
     code, out, err = await _run_git(
         ["checkout", "-b", branch_name], cwd=target,
@@ -493,3 +493,6 @@ async def list_branches(path: str = "") -> list[str]:
     return [
         b.strip().lstrip("* ") for b in out.strip().split("\n") if b.strip()
     ]
+
+# Backward compatibility alias
+create_goal_branch = create_mission_branch

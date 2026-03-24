@@ -65,7 +65,7 @@ def _phase_to_priority(phase: str) -> int:
 
 def expand_steps_to_tasks(
     steps: list[dict],
-    goal_id: str,
+    mission_id: str,
     initial_context: Optional[dict] = None,
 ) -> list[dict]:
     """Convert workflow step dicts into task dicts for DB insertion.
@@ -74,7 +74,7 @@ def expand_steps_to_tasks(
     ----------
     steps:
         List of step dicts from a :class:`WorkflowDefinition`.
-    goal_id:
+    mission_id:
         The goal ID to associate each task with.
     initial_context:
         Optional dict of initial context (e.g. user idea) to propagate
@@ -117,7 +117,7 @@ def expand_steps_to_tasks(
             "title": f"[{step_id}] {step['name']}",
             "description": step.get("instruction", ""),
             "agent_type": map_agent_type(step.get("agent", "executor")),
-            "goal_id": goal_id,
+            "mission_id": mission_id,
             "depends_on_steps": list(step.get("depends_on", [])),
             "context": context,
             "priority": _phase_to_priority(phase),

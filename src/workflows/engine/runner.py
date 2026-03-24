@@ -2,7 +2,7 @@
 
 Usage:
     runner = WorkflowRunner()
-    goal_id = await runner.start("idea_to_product_v2", initial_input={"raw_idea": "Build a ..."})
+    mission_id = await runner.start("idea_to_product_v2", initial_input={"raw_idea": "Build a ..."})
 """
 
 from __future__ import annotations
@@ -113,9 +113,9 @@ class WorkflowRunner:
 
     async def find_resumable(self, workflow_name: str) -> Optional[int]:
         """Find an active goal with a matching workflow checkpoint."""
-        from src.infra.db import get_active_goals, get_workflow_checkpoint
+        from src.infra.db import get_active_missions, get_workflow_checkpoint
 
-        goals = await get_active_goals()
+        goals = await get_active_missions()
         for goal in goals:
             ctx = goal.get("context", "{}")
             if isinstance(ctx, str):
@@ -133,31 +133,31 @@ class WorkflowRunner:
                 return goal["id"]
         return None
 
-    async def resume(self, goal_id: int) -> int:
+    async def resume(self, mission_id: int) -> int:
         """Resume a workflow from its last checkpoint.
 
         Resets failed/stuck tasks to pending, identifies steps not yet
-        created as tasks, and inserts them. Returns goal_id.
+        created as tasks, and inserts them. Returns mission_id.
         Raises ValueError if checkpoint not found.
         """
         from src.infra.db import (
-            get_tasks_for_goal, get_workflow_checkpoint,
+            get_tasks_for_mission, get_workflow_checkpoint,
             update_task, add_task,
         )
 
-        checkpoint = await get_workflow_checkpoint(goal_id)
+        checkpoint = await get_workflow_checkpoint(mission_id)
         if checkpoint is None:
             raise ValueError(
-                f"Goal {goal_id} has no workflow checkpoint — cannot resume"
+                f"Mission {mission_id} has no workflow checkpoint — cannot resume"
             )
 
         wf_name = checkpoint["workflow_name"]
         wf = load_workflow(wf_name)
 
         # Warm artifact cache
-        await self.artifact_store.warm_cache(goal_id)
+        await self.artifact_store.warm_cache(mission_id)
 
-        tasks = await get_tasks_for_goal(goal_id)
+        tasks = await get_tasks_for_mission(mission_id)
 
         # Identify completed step IDs and reset failed tasks
         completed_step_ids: set[str] = set()
@@ -180,7 +180,7 @@ class WorkflowRunner:
         # Find and insert missing steps
         missing_steps = [s for s in wf.steps if s["id"] not in existing_step_ids]
         if missing_steps:
-            task_dicts = expand_steps_to_tasks(missing_steps, goal_id=goal_id, initial_context={})
+            task_dicts = expand_steps_to_tasks(missing_steps, mission_id=mission_id, initial_context={})
             step_to_task: dict[str, int] = {}
             for t in tasks:
                 ctx = t.get("context", "{}")
@@ -200,7 +200,7 @@ class WorkflowRunner:
                 task_id = await add_task(
                     title=task_dict["title"],
                     description=task_dict["description"],
-                    goal_id=task_dict["goal_id"],
+                    goal_id=task_dict["mission_id"],
                     agent_type=task_dict["agent_type"],
                     tier=task_dict["tier"],
                     priority=task_dict["priority"],
@@ -210,10 +210,10 @@ class WorkflowRunner:
                 step_to_task[step_id] = task_id
 
         logger.info(
-            "Workflow '%s' resumed: goal_id=%d, %d completed, %d new tasks inserted",
-            wf_name, goal_id, len(completed_step_ids), len(missing_steps),
+            "Workflow '%s' resumed: mission_id=%d, %d completed, %d new tasks inserted",
+            wf_name, mission_id, len(completed_step_ids), len(missing_steps),
         )
-        return goal_id
+        return mission_id
 
     async def preview(
         self,
@@ -309,7 +309,7 @@ class WorkflowRunner:
     ) -> int:
         """Load a workflow, create a goal, expand steps, and insert tasks.
 
-        Returns the goal_id.
+        Returns the mission_id.
         """
         # Lazy imports to avoid circular dependencies
         from src.infra.db import add_goal, add_task
@@ -349,7 +349,7 @@ class WorkflowRunner:
         if initial_input:
             goal_context["initial_input"] = initial_input
 
-        goal_id = await add_goal(
+        mission_id = await add_goal(
             title=goal_title,
             description=goal_description,
             priority=8,
@@ -360,13 +360,13 @@ class WorkflowRunner:
         if initial_input:
             for key, value in initial_input.items():
                 await self.artifact_store.store(
-                    goal_id, key, value if isinstance(value, str) else json.dumps(value)
+                    mission_id, key, value if isinstance(value, str) else json.dumps(value)
                 )
 
         # 4. Store existing_codebase_path if provided
         if existing_codebase_path:
             await self.artifact_store.store(
-                goal_id, "existing_codebase_path", existing_codebase_path
+                mission_id, "existing_codebase_path", existing_codebase_path
             )
 
         # 5. Filter steps based on context
@@ -380,7 +380,7 @@ class WorkflowRunner:
         # 7. Expand non-recurring steps to tasks
         task_dicts = expand_steps_to_tasks(
             non_recurring_steps,
-            goal_id=goal_id,
+            mission_id=mission_id,
             initial_context=initial_input,
         )
 
@@ -397,7 +397,7 @@ class WorkflowRunner:
             task_id = await add_task(
                 title=task_dict["title"],
                 description=task_dict["description"],
-                goal_id=task_dict["goal_id"],
+                goal_id=task_dict["mission_id"],
                 agent_type=task_dict["agent_type"],
                 tier=task_dict["tier"],
                 priority=task_dict["priority"],
@@ -410,7 +410,7 @@ class WorkflowRunner:
         # 9. Register recurring steps as scheduled tasks
         if recurring_steps:
             await self._register_recurring_steps(
-                recurring_steps, goal_id, wf.plan_id, step_to_task
+                recurring_steps, mission_id, wf.plan_id, step_to_task
             )
 
         # 10. Store workflow metadata artifact
@@ -425,23 +425,23 @@ class WorkflowRunner:
             "step_to_task": step_to_task,
         }
         await self.artifact_store.store(
-            goal_id, "_workflow_metadata", json.dumps(metadata)
+            mission_id, "_workflow_metadata", json.dumps(metadata)
         )
 
         logger.info(
-            "Workflow '%s' started: goal_id=%d, %d tasks created, %d recurring steps",
+            "Workflow '%s' started: mission_id=%d, %d tasks created, %d recurring steps",
             workflow_name,
-            goal_id,
+            mission_id,
             len(task_dicts),
             len(recurring_steps),
         )
 
-        return goal_id
+        return mission_id
 
     async def _register_recurring_steps(
         self,
         recurring_steps: list[dict],
-        goal_id: int,
+        mission_id: int,
         workflow_id: str,
         step_to_task: dict[str, int],
     ) -> None:
@@ -462,7 +462,7 @@ class WorkflowRunner:
 
             context = {
                 "workflow_id": workflow_id,
-                "goal_id": goal_id,
+                "goal_id": mission_id,
                 "workflow_step_id": step_id,
                 "step_to_task": step_to_task,
             }

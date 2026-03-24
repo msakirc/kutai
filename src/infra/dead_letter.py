@@ -26,7 +26,7 @@ from src.infra.logging_config import get_logger
 
 logger = get_logger("infra.dead_letter")
 
-# If this many tasks from the same goal enter the DLQ, pause the goal
+# If this many tasks from the same mission enter the DLQ, pause the mission
 GOAL_DLQ_THRESHOLD = 3
 
 
@@ -39,7 +39,7 @@ async def _ensure_dlq_table() -> None:
         CREATE TABLE IF NOT EXISTS dead_letter_tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             task_id INTEGER NOT NULL,
-            goal_id INTEGER,
+            mission_id INTEGER,
             error TEXT,
             error_category TEXT DEFAULT 'unknown',
             original_agent TEXT,
@@ -55,7 +55,7 @@ async def _ensure_dlq_table() -> None:
 
 async def quarantine_task(
     task_id: int,
-    goal_id: Optional[int],
+    mission_id: Optional[int],
     error: str,
     error_category: str = "unknown",
     original_agent: str = "executor",
@@ -73,11 +73,11 @@ async def quarantine_task(
     try:
         cursor = await db.execute(
             """INSERT OR REPLACE INTO dead_letter_tasks
-               (task_id, goal_id, error, error_category, original_agent,
+               (task_id, mission_id, error, error_category, original_agent,
                 retry_count, quarantined_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
-                task_id, goal_id,
+                task_id, mission_id,
                 error[:2000],  # cap error text
                 _classify_error(error, error_category),
                 original_agent,
@@ -92,39 +92,39 @@ async def quarantine_task(
         raise
 
     logger.warning(
-        f"[DLQ] Task #{task_id} quarantined (goal={goal_id}, "
+        f"[DLQ] Task #{task_id} quarantined (goal={mission_id}, "
         f"category={error_category})"
     )
 
     # Check if goal should be auto-paused
-    if goal_id:
-        await _check_goal_health(goal_id)
+    if mission_id:
+        await _check_mission_health(mission_id)
 
     return dlq_id
 
 
-async def _check_goal_health(goal_id: int) -> None:
-    """If too many tasks from this goal are in the DLQ, pause the goal."""
+async def _check_mission_health(mission_id: int) -> None:
+    """If too many tasks from this mission are in the DLQ, pause the goal."""
     from src.infra.db import get_db, update_goal
 
     db = await get_db()
     cursor = await db.execute(
         """SELECT COUNT(*) FROM dead_letter_tasks
-           WHERE goal_id = ? AND resolved_at IS NULL""",
-        (goal_id,),
+           WHERE mission_id = ? AND resolved_at IS NULL""",
+        (mission_id,),
     )
     row = await cursor.fetchone()
     count = row[0] if row else 0
 
     if count >= GOAL_DLQ_THRESHOLD:
         logger.warning(
-            f"[DLQ] Goal #{goal_id} has {count} quarantined tasks — "
-            f"auto-pausing goal"
+            f"[DLQ] Mission #{mission_id} has {count} quarantined tasks — "
+            f"auto-pausing mission"
         )
         try:
-            await update_goal(goal_id, status="paused")
+            await update_goal(mission_id, status="paused")
         except Exception as e:
-            logger.error(f"[DLQ] Failed to pause goal #{goal_id}: {e}")
+            logger.error(f"[DLQ] Failed to pause mission #{mission_id}: {e}")
 
         # Notify via Telegram
         try:
@@ -132,7 +132,7 @@ async def _check_goal_health(goal_id: int) -> None:
             bot = get_bot()
             if bot:
                 await bot.send_notification(
-                    f"Goal #{goal_id} auto-paused: {count} tasks "
+                    f"Mission #{mission_id} auto-paused: {count} tasks "
                     f"in dead-letter queue (threshold={GOAL_DLQ_THRESHOLD})"
                 )
         except Exception:
@@ -165,7 +165,7 @@ def _classify_error(error: str, provided_category: str) -> str:
 
 
 async def get_dlq_tasks(
-    goal_id: Optional[int] = None,
+    mission_id: Optional[int] = None,
     unresolved_only: bool = True,
 ) -> list[dict]:
     """List dead-letter tasks, optionally filtered by goal."""
@@ -177,9 +177,9 @@ async def get_dlq_tasks(
     query = "SELECT * FROM dead_letter_tasks WHERE 1=1"
     params: list = []
 
-    if goal_id is not None:
-        query += " AND goal_id = ?"
-        params.append(goal_id)
+    if mission_id is not None:
+        query += " AND mission_id = ?"
+        params.append(mission_id)
     if unresolved_only:
         query += " AND resolved_at IS NULL"
 

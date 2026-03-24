@@ -424,32 +424,32 @@ async def detect_project(path: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Phase 6: Per-goal workspace isolation
+# Phase 6: Per-mission workspace isolation
 # ---------------------------------------------------------------------------
 
-def get_goal_workspace(goal_id: int) -> str:
-    """Return the workspace directory for a specific goal.
+def get_mission_workspace(mission_id: int) -> str:
+    """Return the workspace directory for a specific mission.
 
     Creates the directory if it doesn't exist.
-    Structure: workspace/goal_{id}/
+    Structure: workspace/mission_{id}/
     """
-    goal_dir = os.path.join(WORKSPACE_DIR, f"goal_{goal_id}")
-    os.makedirs(goal_dir, exist_ok=True)
-    return goal_dir
+    mission_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+    os.makedirs(mission_dir, exist_ok=True)
+    return mission_dir
 
 
-def get_goal_workspace_relative(goal_id: int) -> str:
-    """Return the relative path (from workspace root) for a goal workspace."""
-    return f"goal_{goal_id}"
+def get_mission_workspace_relative(mission_id: int) -> str:
+    """Return the relative path (from workspace root) for a mission workspace."""
+    return f"mission_{mission_id}"
 
 
-def list_goal_workspaces() -> list[dict]:
-    """List all goal workspaces with basic info."""
+def list_mission_workspaces() -> list[dict]:
+    """List all mission workspaces with basic info."""
     result = []
     if not os.path.isdir(WORKSPACE_DIR):
         return result
     for entry in os.scandir(WORKSPACE_DIR):
-        if entry.is_dir() and entry.name.startswith("goal_"):
+        if entry.is_dir() and entry.name.startswith("mission_"):
             try:
                 gid = int(entry.name.split("_", 1)[1])
             except (ValueError, IndexError):
@@ -459,20 +459,20 @@ def list_goal_workspaces() -> list[dict]:
                 len(files) for _, _, files in os.walk(entry.path)
             )
             result.append({
-                "goal_id": gid,
+                "mission_id": gid,
                 "path": entry.path,
                 "file_count": file_count,
             })
     return result
 
 
-def cleanup_goal_workspace(goal_id: int) -> bool:
-    """Remove a goal's workspace directory (after goal completion).
+def cleanup_mission_workspace(mission_id: int) -> bool:
+    """Remove a mission's workspace directory (after mission completion).
 
     Returns True if cleaned up, False if not found.
     """
     import shutil
-    goal_dir = os.path.join(WORKSPACE_DIR, f"goal_{goal_id}")
+    mission_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
     if os.path.isdir(goal_dir):
         shutil.rmtree(goal_dir, ignore_errors=True)
         return True
@@ -567,3 +567,9 @@ def get_project(name: str) -> dict | None:
         if p.get("name", "").lower() == name.lower():
             return p
     return None
+
+# Backward compatibility aliases
+get_goal_workspace = get_mission_workspace
+get_goal_workspace_relative = get_mission_workspace_relative
+list_goal_workspaces = list_mission_workspaces
+cleanup_goal_workspace = cleanup_mission_workspace

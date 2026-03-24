@@ -109,19 +109,19 @@ async def pre_execute_workflow_step(task: dict) -> dict:
     if not is_workflow_step(ctx):
         return task
 
-    goal_id = ctx.get("goal_id")
+    mission_id = ctx.get("mission_id")
     input_artifact_names: list[str] = ctx.get("input_artifacts", [])
 
     # Fetch artifacts from store
     store = get_artifact_store()
     artifact_contents: dict[str, Optional[str]] = {}
-    if goal_id is not None and input_artifact_names:
-        artifact_contents = await store.collect(goal_id, input_artifact_names)
+    if mission_id is not None and input_artifact_names:
+        artifact_contents = await store.collect(mission_id, input_artifact_names)
 
     # Inject phase summaries from earlier phases
     workflow_phase = ctx.get("workflow_phase")
-    if goal_id is not None and workflow_phase:
-        phase_summaries = await get_phase_summaries(store, goal_id, workflow_phase)
+    if mission_id is not None and workflow_phase:
+        phase_summaries = await get_phase_summaries(store, mission_id, workflow_phase)
         if phase_summaries:
             artifact_contents.update(phase_summaries)
             # Ensure phase summaries are included at reference tier
@@ -162,29 +162,29 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
     if not is_workflow_step(ctx):
         return
 
-    goal_id = ctx.get("goal_id")
+    mission_id = ctx.get("mission_id")
     output_names = extract_output_artifact_names(ctx)
     step_id = ctx.get("step_id", "")
 
-    if not goal_id or not output_names:
+    if not mission_id or not output_names:
         return
 
     store = get_artifact_store()
     output_value = result.get("result", "")
 
     for name in output_names:
-        await store.store(goal_id, name, output_value)
+        await store.store(mission_id, name, output_value)
         logger.info(
             f"[Workflow Hook] Post-execute: stored artifact '{name}' "
-            f"for goal {goal_id} ({len(output_value)} chars)"
+            f"for goal {mission_id} ({len(output_value)} chars)"
         )
 
     # ── Check conditional group triggers ──
-    await _check_conditional_triggers(goal_id, output_names, store)
+    await _check_conditional_triggers(mission_id, output_names, store)
 
     # ── Check template expansion trigger ──
     if "implementation_backlog" in output_names:
-        await _trigger_template_expansion(goal_id, output_value)
+        await _trigger_template_expansion(mission_id, output_value)
 
     # ── Track review status ──
     status = result.get("status", "completed")
@@ -198,25 +198,25 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
 
     # ── Check phase completion for checkpoint/resume support ──
     workflow_phase = ctx.get("workflow_phase")
-    if goal_id and workflow_phase:
-        await _check_phase_completion(goal_id, workflow_phase)
+    if mission_id and workflow_phase:
+        await _check_phase_completion(mission_id, workflow_phase)
 
 
-async def _check_phase_completion(goal_id: int, phase_id: str) -> bool:
+async def _check_phase_completion(mission_id: int, phase_id: str) -> bool:
     """Detect when all tasks in a workflow phase are done and checkpoint it.
 
     Returns True if the phase is complete, False otherwise.
     """
     try:
-        from ...infra.db import get_tasks_for_goal, get_workflow_checkpoint, upsert_workflow_checkpoint
+        from ...infra.db import get_tasks_for_mission, get_workflow_checkpoint, upsert_workflow_checkpoint
     except ImportError as exc:
         logger.debug(f"[Workflow Hook] Phase completion check skipped (import): {exc}")
         return False
 
     try:
-        tasks = await get_tasks_for_goal(goal_id)
+        tasks = await get_tasks_for_mission(mission_id)
     except Exception as exc:
-        logger.debug(f"[Workflow Hook] Could not fetch tasks for goal {goal_id}: {exc}")
+        logger.debug(f"[Workflow Hook] Could not fetch tasks for goal {mission_id}: {exc}")
         return False
 
     terminal_states = {"completed", "skipped", "cancelled"}
@@ -235,7 +235,7 @@ async def _check_phase_completion(goal_id: int, phase_id: str) -> bool:
 
     # Phase complete — update checkpoint
     try:
-        checkpoint = await get_workflow_checkpoint(goal_id)
+        checkpoint = await get_workflow_checkpoint(mission_id)
         completed = checkpoint["completed_phases"] if checkpoint else []
         workflow_name = checkpoint["workflow_name"] if checkpoint else ""
 
@@ -243,55 +243,55 @@ async def _check_phase_completion(goal_id: int, phase_id: str) -> bool:
             completed.append(phase_id)
 
         await upsert_workflow_checkpoint(
-            goal_id=goal_id,
+            mission_id=mission_id,
             workflow_name=workflow_name,
             current_phase=phase_id,
             completed_phases=completed,
         )
         logger.info(
-            f"[Workflow Hook] Phase '{phase_id}' complete for goal {goal_id} "
+            f"[Workflow Hook] Phase '{phase_id}' complete for goal {mission_id} "
             f"({len(phase_tasks)} tasks). Checkpoint updated."
         )
     except Exception as exc:
         logger.debug(f"[Workflow Hook] Could not update checkpoint: {exc}")
 
     # Generate a summary artifact for the completed phase
-    await _generate_phase_summary(goal_id, phase_id, phase_tasks)
+    await _generate_phase_summary(mission_id, phase_id, phase_tasks)
 
     # ── Evaluate quality gate ──
-    await _evaluate_phase_gate(goal_id, phase_id)
+    await _evaluate_phase_gate(mission_id, phase_id)
 
     return True
 
 
-async def _evaluate_phase_gate(goal_id: int, phase_id: str) -> None:
+async def _evaluate_phase_gate(mission_id: int, phase_id: str) -> None:
     """Evaluate the quality gate for a completed phase and store the result."""
     store = get_artifact_store()
     try:
         phase_num = phase_id.replace("phase_", "")
-        passed, details = await evaluate_gate(goal_id, phase_id, store)
+        passed, details = await evaluate_gate(mission_id, phase_id, store)
 
         # Store gate result as artifact
         result_text = format_gate_result(phase_id, passed, details)
-        await store.store(goal_id, f"phase_{phase_num}_gate_result", result_text)
+        await store.store(mission_id, f"phase_{phase_num}_gate_result", result_text)
 
         if details:  # Only log if there was actually a gate
             if passed:
                 logger.info(
                     f"[Workflow Hook] Quality gate for '{phase_id}' PASSED "
-                    f"(goal {goal_id})"
+                    f"(goal {mission_id})"
                 )
             else:
                 logger.warning(
                     f"[Workflow Hook] Quality gate for '{phase_id}' FAILED "
-                    f"(goal {goal_id}): {result_text}"
+                    f"(goal {mission_id}): {result_text}"
                 )
     except Exception as exc:
         logger.debug(f"[Workflow Hook] Quality gate evaluation failed: {exc}")
 
 
 async def _generate_phase_summary(
-    goal_id: int, phase_id: str, phase_tasks: list[dict]
+    mission_id: int, phase_id: str, phase_tasks: list[dict]
 ) -> None:
     """Build a structured summary from a completed phase's output artifacts.
 
@@ -317,7 +317,7 @@ async def _generate_phase_summary(
             unique_names.append(name)
 
     # Fetch artifact contents
-    artifact_contents = await store.collect(goal_id, unique_names)
+    artifact_contents = await store.collect(mission_id, unique_names)
 
     # Build summary text
     phase_name = PHASE_NAMES.get(phase_id, phase_id)
@@ -350,7 +350,7 @@ async def _generate_phase_summary(
     summary_text = "\n".join(lines).rstrip()
 
     summary_artifact_name = f"phase_{phase_num}_summary"
-    await store.store(goal_id, summary_artifact_name, summary_text)
+    await store.store(mission_id, summary_artifact_name, summary_text)
     logger.info(
         f"[Workflow Hook] Generated summary for '{phase_id}' "
         f"({artifact_count} artifacts) -> '{summary_artifact_name}'"
@@ -358,7 +358,7 @@ async def _generate_phase_summary(
 
 
 async def _check_conditional_triggers(
-    goal_id: int, output_names: list[str], store: ArtifactStore
+    mission_id: int, output_names: list[str], store: ArtifactStore
 ) -> None:
     """Evaluate conditional groups when their trigger artifact is produced."""
     try:
@@ -374,7 +374,7 @@ async def _check_conditional_triggers(
         if condition_artifact not in output_names:
             continue
 
-        artifact_value = await store.retrieve(goal_id, condition_artifact)
+        artifact_value = await store.retrieve(mission_id, condition_artifact)
         if artifact_value is None:
             continue
 
@@ -395,13 +395,13 @@ async def _check_conditional_triggers(
 
                 for step in excluded:
                     await update_task_by_context_field(
-                        goal_id=goal_id,
+                        mission_id=mission_id,
                         field="step_id",
                         value=step,
                         status="skipped",
                     )
                 # Cascade skips to downstream dependents
-                skipped_count = await propagate_skips(goal_id)
+                skipped_count = await propagate_skips(mission_id)
                 if skipped_count:
                     logger.info(
                         f"[Workflow Hook] Cascaded skip to {skipped_count} dependent tasks"
@@ -412,7 +412,7 @@ async def _check_conditional_triggers(
                 )
 
 
-async def _trigger_template_expansion(goal_id: int, backlog_text: str) -> None:
+async def _trigger_template_expansion(mission_id: int, backlog_text: str) -> None:
     """Expand feature_implementation_template for each feature in backlog."""
     import json as _json
 
@@ -449,7 +449,7 @@ async def _trigger_template_expansion(goal_id: int, backlog_text: str) -> None:
             )
 
             tasks = expand_steps_to_tasks(
-                expanded, goal_id=goal_id, initial_context={}
+                expanded, mission_id=mission_id, initial_context={}
             )
 
             # Batch insert with rollback on failure

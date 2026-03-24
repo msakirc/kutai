@@ -398,14 +398,14 @@ async def assemble_context(
 # ─── Ambient Context Assembly ──────────────────────────────────────────────────
 
 async def assemble_ambient_context(
-    goal_id: int | None = None,
+    mission_id: int | None = None,
     max_tokens: int = 400,
 ) -> str:
     """
     Assemble a short ambient context block injected into every agent execution.
 
     Includes: time of day, system load mode, active goals count, and recent
-    blackboard decisions if goal_id is provided. Stays under max_tokens.
+    blackboard decisions if mission_id is provided. Stays under max_tokens.
     """
     import datetime
     parts: list[str] = []
@@ -446,10 +446,10 @@ async def assemble_ambient_context(
         pass
 
     # Recent blackboard decisions
-    if goal_id:
+    if mission_id:
         try:
             from ..collaboration.blackboard import read_blackboard
-            decisions = await read_blackboard(goal_id, key="decisions")
+            decisions = await read_blackboard(mission_id, key="decisions")
             if decisions and isinstance(decisions, list) and len(decisions) > 0:
                 recent = decisions[-2:]  # last 2
                 dec_strs = []

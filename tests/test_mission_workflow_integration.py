@@ -238,9 +238,10 @@ class TestWorkflowCreation(unittest.TestCase):
 class TestWorkflowRunnerStart(unittest.IsolatedAsyncioTestCase):
     """Verify WorkflowRunner.start creates a mission with correct context."""
 
+    @patch("src.infra.db.add_scheduled_task", new_callable=AsyncMock, return_value=1)
     @patch("src.infra.db.add_task", new_callable=AsyncMock)
     @patch("src.infra.db.add_mission", new_callable=AsyncMock)
-    async def test_workflow_runner_start(self, mock_add_mission, mock_add_task):
+    async def test_workflow_runner_start(self, mock_add_mission, mock_add_task, mock_add_sched):
         mock_add_mission.return_value = 42
         # Return incrementing task IDs
         task_counter = iter(range(1, 500))

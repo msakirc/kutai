@@ -41,12 +41,16 @@ async def _ensure_table(db) -> None:
             target TEXT,
             details TEXT,
             task_id INTEGER,
-            goal_id INTEGER
+            mission_id INTEGER
         )
     """)
     try:
+        await db.execute("ALTER TABLE audit_log RENAME COLUMN goal_id TO mission_id")
+    except Exception:
+        pass
+    try:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_audit_task ON audit_log(task_id)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_audit_goal ON audit_log(goal_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_audit_mission ON audit_log(mission_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor)")
         await db.commit()
     except Exception:
@@ -66,7 +70,7 @@ async def audit(
         db = await get_db()
         await _ensure_table(db)
         await db.execute(
-            """INSERT INTO audit_log (actor, action, target, details, task_id, goal_id)
+            """INSERT INTO audit_log (actor, action, target, details, task_id, mission_id)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (actor, action, target, details[:2000] if details else "", task_id, mission_id),
         )
@@ -92,7 +96,7 @@ async def get_audit_log(
             conditions.append("task_id = ?")
             params.append(task_id)
         if mission_id is not None:
-            conditions.append("goal_id = ?")
+            conditions.append("mission_id = ?")
             params.append(mission_id)
         if actor:
             conditions.append("actor = ?")

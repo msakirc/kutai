@@ -26,8 +26,7 @@ async def _ensure_table(db) -> None:
     await db.execute("""
         CREATE TABLE IF NOT EXISTS progress_notes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER,
-            goal_id INTEGER,
+            mission_id INTEGER,
             task_id INTEGER,
             note_type TEXT NOT NULL DEFAULT 'log',
             content TEXT NOT NULL,
@@ -35,8 +34,15 @@ async def _ensure_table(db) -> None:
         )
     """)
     try:
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_progress_project ON progress_notes(project_id)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_progress_goal ON progress_notes(goal_id)")
+        await db.execute("ALTER TABLE progress_notes RENAME COLUMN goal_id TO mission_id")
+    except Exception:
+        pass
+    try:
+        await db.execute("ALTER TABLE progress_notes RENAME COLUMN project_id TO _deprecated_project_id")
+    except Exception:
+        pass
+    try:
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_progress_mission ON progress_notes(mission_id)")
         await db.commit()
     except Exception:
         pass
@@ -45,7 +51,6 @@ async def _ensure_table(db) -> None:
 async def add_note(
     content: str,
     note_type: str = NOTE_LOG,
-    project_id: Optional[int] = None,
     mission_id: Optional[int] = None,
     task_id: Optional[int] = None,
 ) -> int:
@@ -55,16 +60,15 @@ async def add_note(
     db = await get_db()
     await _ensure_table(db)
     cursor = await db.execute(
-        """INSERT INTO progress_notes (project_id, goal_id, task_id, note_type, content)
-           VALUES (?, ?, ?, ?, ?)""",
-        (project_id, mission_id, task_id, note_type, content),
+        """INSERT INTO progress_notes (mission_id, task_id, note_type, content)
+           VALUES (?, ?, ?, ?)""",
+        (mission_id, task_id, note_type, content),
     )
     await db.commit()
     return cursor.lastrowid
 
 
 async def get_notes(
-    project_id: Optional[int] = None,
     mission_id: Optional[int] = None,
     task_id: Optional[int] = None,
     note_type: Optional[str] = None,
@@ -76,11 +80,8 @@ async def get_notes(
 
     conditions = []
     params = []
-    if project_id is not None:
-        conditions.append("project_id = ?")
-        params.append(project_id)
     if mission_id is not None:
-        conditions.append("goal_id = ?")
+        conditions.append("mission_id = ?")
         params.append(mission_id)
     if task_id is not None:
         conditions.append("task_id = ?")

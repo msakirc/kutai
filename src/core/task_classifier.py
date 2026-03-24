@@ -8,12 +8,29 @@ set agent_type, difficulty, and feature flags before execution.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 from src.infra.logging_config import get_logger
 from .router import ModelRequirements, call_model
 
 logger = get_logger("core.task_classifier")
+
+
+def _extract_json(text: str) -> dict:
+    """Extract JSON from LLM output that may contain think tags, markdown, or preamble."""
+    # Strip <think>...</think> blocks (Qwen3/DeepSeek thinking)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    # Strip markdown code fences
+    if "```" in text:
+        match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
+        if match:
+            text = match.group(1).strip()
+    # Find first { ... } block
+    match = re.search(r"\{[^{}]*\}", text)
+    if match:
+        return json.loads(match.group(0))
+    raise ValueError(f"No JSON object found in: {text[:200]}")
 
 
 @dataclass
@@ -116,11 +133,7 @@ async def _classify_with_llm(title: str, description: str) -> TaskClassification
     response = await call_model(reqs, messages)
 
     raw = response.get("content", "").strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-        raw = raw.rsplit("```", 1)[0]
-
-    result = json.loads(raw)
+    result = _extract_json(raw)
 
     cls = TaskClassification(
         agent_type=result.get("agent_type", "executor"),
@@ -154,20 +167,22 @@ async def _classify_with_llm(title: str, description: str) -> TaskClassification
 
 _KEYWORD_RULES: list[tuple[str, int, list[str]]] = [
     # (agent_type, difficulty, keywords)
-    ("fixer",          6, ["fix", "bug", "error", "debug", "traceback", "crash"]),
-    ("error_recovery", 6, ["recover", "retry", "fallback", "roll back", "revert failure"]),
-    ("architect",      7, ["architect", "system design", "api design", "scalability"]),
-    ("coder",          7, ["implement", "create", "build", "write code", "refactor"]),
-    ("implementer",    6, ["follow plan", "implement plan", "step by step", "execute plan"]),
-    ("test_generator", 5, ["test", "spec", "coverage", "unit test"]),
-    ("reviewer",       6, ["review", "analyze", "audit", "critique"]),
-    ("planner",        7, ["plan", "design", "roadmap", "schema", "decompose"]),
-    ("visual_reviewer",5, ["screenshot", "image", "visual", "ui review", "layout"]),
-    ("writer",         5, ["write", "document", "email", "report", "readme"]),
-    ("researcher",     5, ["search", "find", "research", "compare", "look up"]),
-    ("analyst",        6, ["analyze", "evaluate", "assess", "feasibility", "risk analysis"]),
-    ("summarizer",     4, ["summarize", "tldr", "key points", "condense"]),
-    ("executor",       4, ["deploy", "run", "install", "execute", "download"]),
+    # Difficulty is a HINT for model quality — keep moderate (3-6) so
+    # available models don't get filtered out. Only genuinely hard tasks get 7+.
+    ("fixer",          5, ["fix", "bug", "error", "debug", "traceback", "crash"]),
+    ("error_recovery", 5, ["recover", "retry", "fallback", "roll back", "revert failure"]),
+    ("architect",      6, ["architect", "system design", "api design", "scalability"]),
+    ("coder",          5, ["implement", "create", "build", "write code", "refactor"]),
+    ("implementer",    5, ["follow plan", "implement plan", "step by step", "execute plan"]),
+    ("test_generator", 4, ["test", "spec", "coverage", "unit test"]),
+    ("reviewer",       5, ["review", "analyze", "audit", "critique"]),
+    ("planner",        5, ["plan", "design", "roadmap", "schema", "decompose"]),
+    ("visual_reviewer",4, ["screenshot", "image", "visual", "ui review", "layout"]),
+    ("writer",         4, ["write", "document", "email", "report", "readme"]),
+    ("researcher",     4, ["search", "find", "research", "compare", "look up"]),
+    ("analyst",        5, ["analyze", "evaluate", "assess", "feasibility", "risk analysis"]),
+    ("summarizer",     3, ["summarize", "tldr", "key points", "condense"]),
+    ("executor",       3, ["deploy", "run", "install", "execute", "download"]),
     ("assistant",      3, ["what is", "what does", "how many", "define", "explain"]),
 ]
 

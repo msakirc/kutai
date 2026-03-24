@@ -1026,6 +1026,13 @@ class Orchestrator:
                 await self._handle_clarification(task, result)
             elif status == "needs_review":
                 await self._handle_review(task, result)
+            elif status == "failed":
+                error_str = result.get("error", result.get("result", "Unknown error"))
+                logger.error("agent returned failure", task_id=task_id,
+                             error=error_str[:200])
+                await update_task(task_id, status="failed",
+                                  error=error_str[:500])
+                await self.telegram.send_error(task_id, title, error_str)
             else:
                 logger.warning("unknown task status", task_id=task_id, status=status)
                 await self._handle_complete(task, result)
@@ -1132,6 +1139,16 @@ class Orchestrator:
     async def _handle_complete(self, task, result):
         task_id = task["id"]
         result_text = result.get("result", "No result")
+
+        # Guard: if result_text is raw JSON with an embedded "result" field,
+        # extract just the human-readable part (prevents showing raw JSON to users).
+        if isinstance(result_text, str) and result_text.lstrip().startswith("{"):
+            try:
+                _parsed_result = json.loads(result_text)
+                if isinstance(_parsed_result, dict) and "result" in _parsed_result:
+                    result_text = _parsed_result["result"]
+            except (json.JSONDecodeError, ValueError):
+                pass
         model = result.get("model", "unknown")
         cost = result.get("cost", 0)
         iterations = result.get("iterations", 1)

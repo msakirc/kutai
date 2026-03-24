@@ -103,109 +103,76 @@ async def startup_health_check() -> bool:
     if not _check("db_writable", _db_writable, critical=True):
         critical_ok = False
 
-    # 4. ntfy reachable (non-critical)
+    # ── Non-critical checks: run concurrently (saves ~20s vs sequential) ──
+
+    async def _async_check(name, coro, state_key=None):
+        """Run one async health check with timeout, log result."""
+        try:
+            ok, detail = await asyncio.wait_for(coro(), timeout=6)
+            if state_key:
+                runtime_state[state_key] = ok
+            if ok:
+                _log.info("Health check passed", check=name, detail=detail)
+            else:
+                _log.warning("Health check degraded", check=name, detail=detail)
+                mark_degraded(name)
+        except Exception as exc:
+            if state_key:
+                runtime_state[state_key] = False
+            _log.warning("Health check raised (non-critical)", check=name, error=str(exc))
+            mark_degraded(name)
+
     async def _ntfy():
         from src.app import config as cfg
         if not cfg.NTFY_URL:
             return False, "NTFY_URL not set"
         async with aiohttp.ClientSession() as s:
             async with s.get(cfg.NTFY_URL, timeout=aiohttp.ClientTimeout(total=5)) as r:
-                ok = r.status < 500
-                runtime_state["ntfy_available"] = ok
-                return ok, f"HTTP {r.status}"
+                return r.status < 500, f"HTTP {r.status}"
 
-    try:
-        ok, detail = await asyncio.wait_for(_ntfy(), timeout=6)
-        ms = 0
-        if ok:
-            _log.info("Health check passed", check="ntfy", detail=detail)
-        else:
-            _log.warning("Health check degraded", check="ntfy", detail=detail)
-            mark_degraded("ntfy")
-    except Exception as exc:
-        _log.warning("Health check raised (non-critical)", check="ntfy", error=str(exc))
-        mark_degraded("ntfy")
-
-    # 5. Docker sandbox alive (non-critical)
-    def _docker():
-        r = subprocess.run(
-            ["docker", "inspect", "--format", "{{.State.Running}}", DOCKER_CONTAINER_NAME],
-            capture_output=True, text=True, timeout=5
-        )
-        running = r.stdout.strip() == "true"
-        runtime_state["sandbox_available"] = running
-        return running, "running" if running else "not running"
-
-    if not _check("docker_sandbox", _docker, critical=False):
-        pass  # already marked degraded inside _check
-
-    # 6. Telegram reachable (non-critical)
     async def _telegram():
-        import aiohttp as _aio
         from src.app import config as cfg
         token = cfg.TELEGRAM_BOT_TOKEN
         if not token:
             return False, "TELEGRAM_BOT_TOKEN not set"
         url = f"https://api.telegram.org/bot{token}/getMe"
-        async with _aio.ClientSession() as s:
-            async with s.get(url, timeout=_aio.ClientTimeout(total=5)) as r:
-                ok = r.status == 200
-                runtime_state["telegram_available"] = ok
-                return ok, f"HTTP {r.status}"
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, timeout=aiohttp.ClientTimeout(total=5)) as r:
+                return r.status == 200, f"HTTP {r.status}"
 
-    try:
-        ok, detail = await asyncio.wait_for(_telegram(), timeout=6)
-        if ok:
-            _log.info("Health check passed", check="telegram", detail=detail)
-        else:
-            _log.warning("Health check degraded", check="telegram", detail=detail)
-            mark_degraded("telegram")
-    except Exception as exc:
-        _log.warning("Health check raised (non-critical)", check="telegram", error=str(exc))
-        mark_degraded("telegram")
-
-    # 7. Perplexica (non-critical)
     async def _perplexica():
-        import aiohttp as _aio
         url = os.getenv("PERPLEXICA_URL", "")
         if not url:
             return False, "PERPLEXICA_URL not set"
-        async with _aio.ClientSession() as s:
-            async with s.get(url, timeout=_aio.ClientTimeout(total=5)) as r:
-                ok = r.status < 500
-                runtime_state["web_search_available"] = ok
-                return ok, f"HTTP {r.status}"
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, timeout=aiohttp.ClientTimeout(total=5)) as r:
+                return r.status < 500, f"HTTP {r.status}"
 
-    try:
-        ok, detail = await asyncio.wait_for(_perplexica(), timeout=6)
-        if ok:
-            _log.info("Health check passed", check="perplexica", detail=detail)
-        else:
-            _log.warning("Health check degraded", check="perplexica", detail=detail)
-            mark_degraded("web_search")
-    except Exception as exc:
-        _log.warning("Health check raised (non-critical)", check="perplexica", error=str(exc))
-        mark_degraded("web_search")
-
-    # 8. Frontail (non-critical)
     async def _frontail():
-        import aiohttp as _aio
-        async with _aio.ClientSession() as s:
-            async with s.get("http://localhost:9001", timeout=_aio.ClientTimeout(total=3)) as r:
-                ok = r.status < 500
-                runtime_state["frontail_available"] = ok
-                return ok, f"HTTP {r.status}"
+        async with aiohttp.ClientSession() as s:
+            async with s.get("http://localhost:9001", timeout=aiohttp.ClientTimeout(total=3)) as r:
+                return r.status < 500, f"HTTP {r.status}"
 
-    try:
-        ok, detail = await asyncio.wait_for(_frontail(), timeout=4)
-        if ok:
-            _log.info("Health check passed", check="frontail", detail=detail)
-        else:
-            _log.warning("Health check degraded", check="frontail", detail=detail)
-            mark_degraded("frontail")
-    except Exception as exc:
-        _log.warning("Health check raised (non-critical)", check="frontail", error=str(exc))
-        mark_degraded("frontail")
+    async def _docker_check():
+        try:
+            r = subprocess.run(
+                ["docker", "inspect", "--format", "{{.State.Running}}", DOCKER_CONTAINER_NAME],
+                capture_output=True, text=True, timeout=5
+            )
+            running = r.stdout.strip() == "true"
+            runtime_state["sandbox_available"] = running
+            return running, "running" if running else "not running"
+        except Exception as e:
+            runtime_state["sandbox_available"] = False
+            return False, str(e)
+
+    await asyncio.gather(
+        _async_check("ntfy", _ntfy, "ntfy_available"),
+        _async_check("telegram", _telegram, "telegram_available"),
+        _async_check("perplexica", _perplexica, "web_search_available"),
+        _async_check("frontail", _frontail, "frontail_available"),
+        _async_check("docker_sandbox", _docker_check),
+    )
 
     # Report summary
     degraded = runtime_state["degraded_capabilities"]
@@ -221,21 +188,29 @@ async def startup_health_check() -> bool:
 
 def build_sandbox_if_needed():
     _log.info("Checking Docker sandbox image")
-    result = subprocess.run(
-        ["docker", "images", "-q", "orchestrator-sandbox"],
-        capture_output=True, text=True
-    )
+    try:
+        result = subprocess.run(
+            ["docker", "images", "-q", "orchestrator-sandbox"],
+            capture_output=True, text=True, timeout=10
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        _log.warning("Docker check failed — shell tool will be unavailable", error=str(e))
+        return False
     if not result.stdout.strip():
         _log.info("Building sandbox image")
         sandbox_dir = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "../../sandbox")
         )
-        build = subprocess.run(
-            ["docker", "build", "-t", "orchestrator-sandbox", sandbox_dir],
-            capture_output=False
-        )
-        if build.returncode != 0:
-            _log.warning("Docker build failed — shell tool will be unavailable")
+        try:
+            build = subprocess.run(
+                ["docker", "build", "-t", "orchestrator-sandbox", sandbox_dir],
+                capture_output=False, timeout=120
+            )
+            if build.returncode != 0:
+                _log.warning("Docker build failed — shell tool will be unavailable")
+                return False
+        except subprocess.TimeoutExpired:
+            _log.warning("Docker build timed out — shell tool will be unavailable")
             return False
     return True
 

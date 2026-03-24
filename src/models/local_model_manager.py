@@ -370,6 +370,18 @@ class LocalModelManager:
             except Exception:
                 pass
 
+        # Close stdout/stderr pipes to avoid ResourceWarning about unclosed files
+        try:
+            if self.process.stdout:
+                self.process.stdout.close()
+        except Exception:
+            pass
+        try:
+            if self.process.stderr:
+                self.process.stderr.close()
+        except Exception:
+            pass
+
         self.process = None
         if old_model:
             get_registry().mark_unloaded(old_model)
@@ -542,6 +554,17 @@ class LocalModelManager:
                     f"llama-server crashed! Restarting {self.current_model}..."
                 )
                 model_name = self.current_model
+                # Close pipes before discarding the process reference
+                try:
+                    if self.process.stdout:
+                        self.process.stdout.close()
+                except Exception:
+                    pass
+                try:
+                    if self.process.stderr:
+                        self.process.stderr.close()
+                except Exception:
+                    pass
                 self.process = None
                 self.current_model = None
                 await self._swap_model(model_name, reason="crash recovery")

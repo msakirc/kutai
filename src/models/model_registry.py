@@ -146,8 +146,66 @@ class ModelInfo:
 
 # ─── GGUF Metadata Reader ───────────────────────────────────────────────────
 
+# Cache GGUF metadata to avoid re-reading large files on every startup.
+# Key: (path, file_size, mtime) → metadata dict
+_GGUF_CACHE_FILE = Path(os.getenv("MODEL_DIR", "")) / ".gguf_metadata_cache.json" \
+    if os.getenv("MODEL_DIR") else None
+
+_gguf_cache: dict[str, dict] = {}
+_gguf_cache_loaded = False
+
+def _load_gguf_cache():
+    global _gguf_cache, _gguf_cache_loaded
+    if _gguf_cache_loaded:
+        return
+    _gguf_cache_loaded = True
+    if _GGUF_CACHE_FILE and _GGUF_CACHE_FILE.exists():
+        try:
+            import json as _json
+            _gguf_cache = _json.loads(_GGUF_CACHE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            _gguf_cache = {}
+
+def _save_gguf_cache():
+    if not _GGUF_CACHE_FILE:
+        return
+    try:
+        import json as _json
+        _GGUF_CACHE_FILE.write_text(
+            _json.dumps(_gguf_cache, indent=1), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+def _gguf_cache_key(path: str) -> str:
+    """Cache key based on path + size + mtime."""
+    try:
+        st = os.stat(path)
+        return f"{path}|{st.st_size}|{int(st.st_mtime)}"
+    except OSError:
+        return ""
+
+
 def read_gguf_metadata(path: str) -> dict:
-    """Read key metadata from a GGUF file header."""
+    """Read key metadata from a GGUF file header. Uses disk cache."""
+    _load_gguf_cache()
+
+    cache_key = _gguf_cache_key(path)
+    if cache_key and cache_key in _gguf_cache:
+        logger.debug(f"GGUF cache hit: {Path(path).name}")
+        return dict(_gguf_cache[cache_key])
+
+    metadata = _read_gguf_metadata_uncached(path)
+
+    if cache_key and metadata:
+        _gguf_cache[cache_key] = metadata
+        _save_gguf_cache()
+
+    return metadata
+
+
+def _read_gguf_metadata_uncached(path: str) -> dict:
+    """Read key metadata from a GGUF file header (no cache)."""
     metadata = {}
     try:
         from gguf import GGUFReader
@@ -169,7 +227,6 @@ def read_gguf_metadata(path: str) -> dict:
                 metadata["expert_used_count"] = int(f.parts[-1][0])
             elif name == "general.file_type":
                 metadata["file_type"] = int(f.parts[-1][0])
-            # Vision detection: look for clip/vision projector metadata
             elif "clip" in name.lower() or "vision" in name.lower():
                 metadata["has_vision_metadata"] = True
             elif "mmproj" in name.lower() or "image" in name.lower():
@@ -323,6 +380,54 @@ def estimate_capabilities(
     return result
 
 
+# ─── Dynamic Context Calculator ────────────────────────────────────────────
+
+def calculate_dynamic_context(
+    file_size_mb: float,
+    n_layers: int,
+    gpu_layers: int,
+    available_ram_mb: int,
+    available_vram_mb: int,
+    family_key: str | None = None,
+) -> int:
+    """Calculate max context length based on available memory.
+
+    KV cache memory grows linearly with context length. We estimate how
+    much memory is left after loading model weights and pick the largest
+    context that fits (capped at the family default).
+    """
+    if n_layers <= 0 or file_size_mb <= 0:
+        return 8192  # safe minimum
+
+    # Family default context cap
+    max_ctx = 32768
+    if family_key and family_key in FAMILY_PROFILES:
+        max_ctx = FAMILY_PROFILES[family_key].context_default
+
+    # Estimate memory used by model weights (split across GPU/CPU)
+    weight_per_layer_mb = file_size_mb / n_layers
+    vram_used_by_weights = gpu_layers * weight_per_layer_mb
+    ram_used_by_weights = (n_layers - gpu_layers) * weight_per_layer_mb
+
+    # Available memory after weights (with safety margin)
+    free_vram = max(0, available_vram_mb - vram_used_by_weights - 500) * 0.85
+    free_ram = max(0, available_ram_mb - ram_used_by_weights - 2000) * 0.70
+
+    # KV cache cost: ~0.5 MB per 1K context per layer (rough estimate)
+    # Split across GPU layers (fast) and CPU layers
+    kv_per_1k_ctx = n_layers * 0.5  # MB per 1K tokens of context
+    if kv_per_1k_ctx <= 0:
+        return max_ctx
+
+    # Total available for KV cache
+    total_free = free_vram + free_ram
+    max_ctx_from_memory = int((total_free / kv_per_1k_ctx) * 1024)
+
+    # Round down to nearest 2048 and clamp
+    result = (max_ctx_from_memory // 2048) * 2048
+    return max(4096, min(result, max_ctx))
+
+
 # ─── GPU Layer Calculator ───────────────────────────────────────────────────
 
 def calculate_gpu_layers(
@@ -396,11 +501,12 @@ def detect_vision_support(
 
 # Families known to have native tool-call chat templates
 _TOOL_CALL_FAMILIES = {
-    "qwen3", "qwen3_coder", "qwen25", "qwen25_coder", "qwen2",
+    "qwen3", "qwen35", "qwen3_coder", "qwen25", "qwen25_coder", "qwen2",
     "llama33", "llama32", "llama31",
     "mistral", "mixtral",
     "phi4", "phi4_mini",
     "gemma3",
+    "glm4", "glm4_flash",
     "deepseek_v3", "deepseek_r1",
     "command_r",
     "internlm",
@@ -419,7 +525,7 @@ def detect_function_calling(family_key: str | None, gguf_metadata: dict) -> bool
 
 # ─── Thinking Model Detection ───────────────────────────────────────────────
 
-_THINKING_FAMILIES = {"qwen3", "qwen3_coder", "qwq", "deepseek_r1", "glm4_flash"}
+_THINKING_FAMILIES = {"qwen3", "qwen35", "qwen3_coder", "qwq", "deepseek_r1", "glm4_flash"}
 _THINKING_NAME_PATTERNS = ["o1", "o3", "o4", "qwq", "deepseek-r1", "gemini-2.5", "glm"]
 
 
@@ -856,22 +962,30 @@ class ModelRegistry:
             for m in new_models.values():
                 m.profile_scores = dict(m.capabilities)
 
-            # ── 6. Enrich with benchmark data (optional) ──
+            # ── 6. Enrich with benchmark data (optional, deferred) ──
+            # Benchmark fetching does synchronous HTTP calls (20-30s timeouts
+            # per source) which would block startup. Run in background thread.
             settings = self._raw_config.get("settings", {})
             if settings.get("enrich_with_benchmarks", False):
-                try:
-                    cache_dir = settings.get("benchmark_cache_dir", ".benchmark_cache")
-                    min_sources = settings.get("benchmark_min_sources", 2)
-                    enrich_registry_with_benchmarks(
-                        registry=self,
-                        cache_dir=cache_dir,
-                        override_existing=False,
-                        min_confidence_sources=min_sources,
-                    )
-                except ImportError:
-                    logger.debug("benchmark_fetcher not available, skipping enrichment")
-                except Exception as e:
-                    logger.warning(f"Benchmark enrichment failed (non-fatal): {e}")
+                import threading
+                cache_dir = settings.get("benchmark_cache_dir", ".benchmark_cache")
+                min_sources = settings.get("benchmark_min_sources", 2)
+                def _enrich_bg():
+                    try:
+                        enrich_registry_with_benchmarks(
+                            registry=self,
+                            cache_dir=cache_dir,
+                            override_existing=False,
+                            min_confidence_sources=min_sources,
+                        )
+                    except ImportError:
+                        logger.debug("benchmark_fetcher not available")
+                    except Exception as e:
+                        logger.warning(f"Benchmark enrichment failed (non-fatal): {e}")
+                t = threading.Thread(target=_enrich_bg, daemon=True,
+                                     name="benchmark-enrich")
+                t.start()
+                logger.info("Benchmark enrichment started in background")
 
             self._loaded = True
 
@@ -1449,6 +1563,10 @@ class ModelRegistry:
             if model_name in self.models:
                 self.models[model_name].tokens_per_second = tokens_per_second
 
+    def get_overrides(self, model_name: str) -> dict:
+        """Return user overrides from models.yaml for a specific model."""
+        return self._raw_config.get("overrides", {}).get(model_name, {})
+
     # ── Diagnostics ──────────────────────────────────────────────────────────
 
     def print_summary(self) -> None:
@@ -1493,7 +1611,25 @@ class ModelRegistry:
         # Show task routing preview
         print(f"\n  🎯 Task Routing Preview")
         print(f"  {'─' * 76}")
-        for task in ["planner", "coder", "fixer", "reviewer", "writer", "executor"]:
+        for task in [
+            "planner",
+            "architect",
+            "coder",
+            "implementer",
+            "fixer",
+            "test_generator",
+            "reviewer",
+            "visual_reviewer",
+            "researcher",
+            "analyst",
+            "writer",
+            "summarizer",
+            "assistant",
+            "executor",
+            "error_recovery",
+            "pipeline",
+            "workflow"
+        ]:
             ranked = self.best_for_task(task, top_k=3)
             if ranked:
                 models_str = " → ".join(f"{n}({s:.1f})" for n, s in ranked)

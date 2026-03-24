@@ -137,7 +137,10 @@ class ModelRequirements:
     def effective_min_score(self) -> float:
         if self.min_score > 0:
             return self.min_score
-        return self.difficulty * 0.7
+        # Gentle curve: difficulty 1→0.3, 5→1.5, 7→2.5, 10→4.5
+        # This ensures available models (groq-llama-70b scores ~3.3) aren't
+        # filtered out for reasonable tasks. Only difficulty 10 needs top-tier.
+        return max(0.0, (self.difficulty - 1) * 0.47)
 
     def escalate(self) -> "ModelRequirements":
         """
@@ -509,6 +512,7 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
 
         if model.is_local:
             tps = model.tokens_per_second
+            active = getattr(model, 'active_params_b', 0) or model.total_params_b
             if tps >= 50:
                 speed_score = 100
             elif tps >= 20:
@@ -524,7 +528,6 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
             else:
                 # No measured tps yet — estimate from model size
                 # MoE models (active_params < total_params * 0.5) are much faster
-                active = getattr(model, 'active_params_b', 0) or model.total_params_b
                 if active < 5:
                     speed_score = 75
                 elif active < 10:
@@ -540,8 +543,9 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
             # smaller (faster) local models or fall through to cloud.
             est_out = reqs.estimated_output_tokens
             effective_tps = tps if tps > 0 else (
-                15 if model.total_params_b < 5
-                else 8 if model.total_params_b < 15
+                25 if active < 5
+                else 12 if active < 15
+                else 5 if active < 30
                 else 3
             )
             est_generation_secs = est_out / effective_tps
@@ -624,9 +628,15 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
             composite *= 1.15
             reasons.append("prefer_local")
 
-        # Swap stickiness: prefer already-loaded local model to avoid swap cost
+        # Swap stickiness: strongly prefer loaded model to avoid 25s+ swap cost.
+        # Only a significantly better model should justify a swap.
         if model.is_local and model.is_loaded:
-            composite *= 1.10
+            composite *= 1.40
+            reasons.append("loaded")
+        elif model.is_local and not model.is_loaded:
+            # Penalize unloaded models — swap is expensive
+            composite *= 0.75
+            reasons.append("needs_swap")
 
         candidates.append(ScoredModel(
             model=model,
@@ -759,13 +769,15 @@ async def call_model(
         candidates = select_model(reqs)
 
     if not candidates:
-        fallback_reqs = ModelRequirements(
-            task="assistant",
-            primary_capability="general",
-            difficulty=1,
-            min_score=0,
-            agent_type=reqs.agent_type,
-        )
+        # Relax min_score but keep original task profile so we still
+        # pick the best-suited model rather than any random one.
+        fallback_reqs = copy.copy(reqs)
+        fallback_reqs.difficulty = 1
+        fallback_reqs.min_score = 0.01  # accept anything above zero
+        fallback_reqs.local_only = False
+        fallback_reqs.needs_thinking = False
+        logger.warning("relaxed fallback", original_task=reqs.effective_task,
+                       agent_type=reqs.agent_type)
         candidates = select_model(fallback_reqs)
 
     if not candidates:
@@ -790,7 +802,10 @@ async def call_model(
                     continue
 
         # ── Build completion kwargs ──
-        is_thinking = model.thinking_model
+        # Only enable thinking when the task EXPLICITLY needs it.
+        # Without this, thinking models waste 95% of tokens on <think>
+        # tags, turning 70 tok/s into 1.4 tok/s effective speed.
+        is_thinking = model.thinking_model and reqs.needs_thinking
         if is_thinking:
             temperature = None   # thinking models control sampling internally
         else:
@@ -804,6 +819,9 @@ async def call_model(
             timeout_val = 120
         if is_thinking:
             timeout_val = max(timeout_val, 180)
+        # Short timeout for trivial tasks (classification, routing)
+        if reqs.difficulty <= 3:
+            timeout_val = min(timeout_val, 20)
 
         use_tools = None
         if tools and model.supports_function_calling:
@@ -823,14 +841,35 @@ async def call_model(
             except Exception:
                 _messages = messages
 
+        # For non-thinking tasks on thinking models, disable thinking via
+        # chat_template_kwargs so the model outputs content directly.
+        _disable_thinking = model.thinking_model and not is_thinking
+
+        _max_tokens = min(reqs.estimated_output_tokens * 2, model.max_tokens)
+
         completion_kwargs = dict(
             model=model.litellm_name,
             messages=_messages,
-            max_tokens=min(reqs.estimated_output_tokens * 2, model.max_tokens),
+            max_tokens=_max_tokens,
+            timeout=float(timeout_val),
         )
+
+        if _disable_thinking and model.is_local:
+            # extra_body is picked up by litellm's add_provider_specific_params
+            # and forwarded to the OpenAI client's create() method, which merges
+            # the contents into the root of the JSON body sent to llama-server.
+            # (Logs may show it as 'extra_json' — that's the OpenAI client's
+            # internal name before the merge, not a separate field.)
+            completion_kwargs["extra_body"] = {
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
 
         if temperature is not None:
             completion_kwargs["temperature"] = temperature
+        elif _disable_thinking:
+            # Thinking models skip temperature when thinking — but when
+            # thinking is disabled we need to set it explicitly.
+            completion_kwargs["temperature"] = 0.3
         if model.api_base:
             completion_kwargs["api_base"] = model.api_base
         if model.is_local and model.location != "ollama":
@@ -1246,8 +1285,8 @@ async def check_cost_budget() -> dict:
 
 AGENT_REQUIREMENTS: dict[str, ModelRequirements] = {
     # ── Difficult / sensitive → cloud (better quality, rate-limited) ──
-    "planner":        ModelRequirements(task="planner",        difficulty=7, estimated_output_tokens=2000, prefer_quality=True),
-    "architect":      ModelRequirements(task="architect",      difficulty=7, estimated_output_tokens=3000, prefer_quality=True),
+    "planner":        ModelRequirements(task="planner",        difficulty=5, estimated_output_tokens=2000, prefer_quality=True),
+    "architect":      ModelRequirements(task="architect",      difficulty=5, estimated_output_tokens=3000, prefer_quality=True),
     "coder":          ModelRequirements(task="coder",          difficulty=6, estimated_output_tokens=4000, needs_function_calling=True),
     "fixer":          ModelRequirements(task="fixer",          difficulty=6, estimated_output_tokens=3000, needs_function_calling=True),
     "reviewer":       ModelRequirements(task="reviewer",       difficulty=6, estimated_output_tokens=2000),
@@ -1256,11 +1295,11 @@ AGENT_REQUIREMENTS: dict[str, ModelRequirements] = {
     # ── Moderate → let the scorer decide (local if free, cloud if rate OK) ──
     "implementer":    ModelRequirements(task="implementer",    difficulty=5, estimated_output_tokens=4000, needs_function_calling=True),
     "test_generator": ModelRequirements(task="test_generator", difficulty=5, estimated_output_tokens=3000, needs_function_calling=True),
-    "researcher":     ModelRequirements(task="researcher",     difficulty=5, estimated_output_tokens=2000, needs_function_calling=True),
     "writer":         ModelRequirements(task="writer",         difficulty=5, estimated_output_tokens=3000),
     "visual_reviewer": ModelRequirements(task="visual_reviewer", difficulty=5, estimated_output_tokens=2000, needs_vision=True),
-    "assistant":       ModelRequirements(task="assistant",       difficulty=5, estimated_output_tokens=2000),
-    # ── Easy / short-output → prefer local (save rate limits for hard tasks) ──
+    # ── Token-heavy / conversational → prefer local (save cloud rate limits) ──
+    "researcher":     ModelRequirements(task="researcher",     difficulty=4, estimated_output_tokens=2000, needs_function_calling=True, prefer_local=True, prefer_speed=True),
+    "assistant":      ModelRequirements(task="assistant",      difficulty=3, estimated_output_tokens=2000, prefer_local=True, prefer_speed=True),
     "executor":       ModelRequirements(task="executor",       difficulty=3, estimated_output_tokens=1000, needs_function_calling=True, prefer_speed=True, prefer_local=True),
     "summarizer":     ModelRequirements(task="summarizer",     difficulty=4, estimated_output_tokens=2000, prefer_speed=True, prefer_local=True),
 }

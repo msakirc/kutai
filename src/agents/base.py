@@ -154,9 +154,12 @@ class BaseAgent:
             return ""
 
         lines = [
-            "## Available Tools",
+            "## Response Format — CRITICAL",
             "",
-            "To use a tool, respond with ONLY a JSON block:",
+            "You MUST respond with ONLY a JSON block. NO prose, NO explanations, NO conversational text.",
+            "Do NOT say things like 'I'd be happy to help' — just output JSON.",
+            "",
+            "To use a tool:",
             "```json",
             "{",
             '  "action": "tool_call",',
@@ -195,6 +198,7 @@ class BaseAgent:
         lines += [
             "",
             "### IMPORTANT RULES:",
+            "- EVERY response must be a single JSON block. Nothing else.",
             "- Use ONE action per response.",
             "- After using a tool you will see the result and can act again.",
             "- Always inspect the workspace (file_tree) before writing code.",
@@ -202,6 +206,8 @@ class BaseAgent:
             "- If you hit an error, read it carefully and fix the code.",
             f"- You have up to {self.max_iterations} iterations — don't waste them.",
             "- When done you MUST respond with the `final_answer` action.",
+            "- If you need more info from the user, use: "
+            '{\"action\": \"clarify\", \"question\": \"...\"}',
         ]
         return "\n".join(lines)
 
@@ -1008,11 +1014,35 @@ class BaseAgent:
                     and iteration > 0
                     and _now - _progress_last_sent >= 30):
                 try:
-                    # Summarize last action from messages
+                    # Summarize last action with meaningful context
                     _last_action = ""
                     for _m in reversed(messages):
                         if _m.get("role") == "assistant":
-                            _last_action = (_m.get("content") or "")[:100]
+                            _content = _m.get("content") or ""
+                            if _m.get("tool_calls"):
+                                _tc = _m["tool_calls"][0]
+                                _fn = _tc.get("function", {}).get("name", "tool")
+                                _last_action = f"Using {_fn}..."
+                            elif _content.lstrip().startswith("{") or _content.lstrip().startswith("["):
+                                import json as _pjson
+                                try:
+                                    _parsed = _pjson.loads(_content)
+                                    _action = _parsed.get("action", "")
+                                    if _action == "tool_call":
+                                        _tool = _parsed.get("tool", "tool")
+                                        _last_action = f"Using {_tool}..."
+                                    elif _action == "final_answer":
+                                        _last_action = "Finalizing answer..."
+                                    elif _action:
+                                        _last_action = f"{_action.replace('_', ' ').capitalize()}..."
+                                    else:
+                                        _last_action = "Processing..."
+                                except Exception:
+                                    _last_action = "Processing..."
+                            else:
+                                # Show a snippet of the LLM's reasoning
+                                _snippet = _content.strip()[:80]
+                                _last_action = f"Thinking: {_snippet}..." if _snippet else "Processing..."
                             break
                     await self.progress_callback(
                         task_id, iteration + 1, self.max_iterations, _last_action
@@ -1050,12 +1080,13 @@ class BaseAgent:
             except Exception as exc:
                 logger.error(f"[Task #{task_id}] Model call failed: {exc}")
                 return {
-                    "status": "completed",
+                    "status": "failed",
                     "result": f"Agent failed after {iteration} iteration(s): {exc}",
+                    "error": str(exc),
                     "model": used_model,
                     "cost": total_cost,
                     "iterations": iteration,
-                    "difficulty": reqs.difficulty,  # compat
+                    "difficulty": reqs.difficulty,
                 }
 
             content    = response.get("content", "")
@@ -1641,13 +1672,15 @@ class BaseAgent:
 
         # ── Exhausted iterations ──
         await self._clear_checkpoint_safe(task_id)
-        last = messages[-1].get("content", "") if messages else ""
+        # Extract last meaningful assistant response for the result
+        last_assistant = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                last_assistant = msg["content"][:3000]
+                break
         return {
             "status": "completed",
-            "result": (
-                f"[Completed after {self.max_iterations} iterations "
-                f"without a final answer]\n\nLast context:\n{last[:3000]}"
-            ),
+            "result": last_assistant or "Task completed but could not produce a final answer.",
             "model": used_model,
             "cost": total_cost,
             "difficulty": reqs.difficulty,
@@ -1791,8 +1824,9 @@ class BaseAgent:
         except Exception as exc:
             logger.error(f"[Task #{task_id}] Single-shot call failed: {exc}")
             return {
-                "status": "completed",
+                "status": "failed",
                 "result": f"Agent failed: {exc}",
+                "error": str(exc),
                 "model": "unknown", "cost": 0, "difficulty": reqs.difficulty,
             }
 

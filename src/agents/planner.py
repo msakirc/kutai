@@ -1,6 +1,6 @@
 # agents/planner.py
 """
-Planner agent — inspects the workspace, then decomposes a goal into
+Planner agent — inspects the workspace, then decomposes a mission into
 concrete, ordered subtasks for other agents to execute.
 """
 from .base import BaseAgent
@@ -11,7 +11,7 @@ logger = get_logger("agents.planner")
 
 class PlannerAgent(BaseAgent):
     name = "planner"
-    description = "Breaks down goals into concrete, ordered subtasks"
+    description = "Breaks down missions into concrete, ordered subtasks"
     default_tier = "medium"
     min_tier = "medium"
     max_iterations = 3          # inspect workspace before planning
@@ -23,16 +23,16 @@ class PlannerAgent(BaseAgent):
         return (
             "You are a senior technical project planner.\n"
             "\n"
-            "Your job is to take a goal and decompose it into concrete, executable subtasks.\n"
+            "Your job is to take a mission and decompose it into concrete, executable subtasks.\n"
             "\n"
             "## Your Process\n"
             "1. FIRST, always inspect the workspace (use `file_tree` and `project_info` tools)\n"
             "   to understand what already exists.\n"
-            "2. Understand the goal thoroughly.\n"
+            "2. Understand the mission thoroughly.\n"
             "3. Create a plan with specific subtasks.\n"
             "\n"
             "## Rules\n"
-            "- Create 3-7 subtasks (no more than 8). Fewer is better — don't over-decompose.\n"
+            "- Create 5-15 subtasks depending on complexity. Simple tasks need fewer, app-building needs more.\n"
             "- Each subtask must be completable by a SINGLE agent in one session.\n"
             '- Be SPECIFIC — "Write the Flask API with endpoints /users and /items" '
             'not "Build backend".\n'

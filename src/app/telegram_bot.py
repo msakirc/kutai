@@ -27,6 +27,50 @@ from ..tools.workspace import list_mission_workspaces
 
 pending_clarifications = {}  # task_id -> asyncio.Event + response
 
+def _friendly_error(error: str) -> str:
+    """Convert raw error strings into user-friendly messages."""
+    e = error.lower()
+    if "import" in e or "module" in e or "attribute" in e:
+        return "Internal configuration error. Check logs for details."
+    if "rate limit" in e or "429" in e:
+        return "Rate limited by the AI provider. Will retry automatically."
+    if "timeout" in e:
+        return "The task timed out. Try again or simplify the request."
+    if "no models available" in e or "no models matched" in e:
+        return "No suitable AI model available right now. Try again later."
+    if "connection" in e or "network" in e:
+        return "Network error. Check connectivity and try again."
+    if any(kw in e for kw in ["typeerror", "keyerror", "valueerror",
+                               "nameerror", "indexerror", "traceback"]):
+        return "Internal error. Check logs for details."
+    if "json" in e or "parsing" in e or "decode" in e:
+        return "Failed to process the response. Will retry."
+    # Generic — show first 100 chars, strip tracebacks and Python internals
+    first_line = error.split("\n")[0][:100]
+    if any(kw in first_line.lower() for kw in ["object has no", "expected", "got an"]):
+        return "Internal error. Check logs for details."
+    return f"Something went wrong. Check logs for details."
+
+# ─── Product/App Detection ────────────────────────────────────────────────
+_PRODUCT_KEYWORDS = [
+    "build ", "create ", "make ", "develop ", "design ",
+    " app ", " app.", " application", " platform", " website", " webapp",
+    " web app", " tool ", " saas", " service ", " system ",
+    " bot ", " dashboard", " portal", " marketplace",
+    " that allows", " that lets", " that enables", " where users",
+    " for users to", " for people to",
+]
+
+def _looks_like_product_idea(description: str) -> bool:
+    """Detect if a mission description is about building a product/app."""
+    desc_lower = f" {description.lower()} "
+    # Need at least one "build" verb AND one "product" noun
+    has_verb = any(kw in desc_lower for kw in _PRODUCT_KEYWORDS[:5])
+    has_noun = any(kw in desc_lower for kw in _PRODUCT_KEYWORDS[5:])
+    # Or contains strong product phrases
+    has_phrase = any(kw in desc_lower for kw in _PRODUCT_KEYWORDS[11:])
+    return (has_verb and has_noun) or has_phrase
+
 # ─── Interactive Menu Definitions ─────────────────────────────────────────
 # Each category: (emoji_label, key, [(button_label, command, needs_arg, arg_prompt)])
 MENU_CATEGORIES = [
@@ -229,6 +273,12 @@ class TelegramInterface:
             await update.message.reply_text("Please provide a mission description.")
             return
 
+        # Let the classifier decide if this needs a workflow
+        if not workflow:
+            classification = await self._classify_user_message(description)
+            if classification.get("workflow") == "idea_to_product":
+                workflow = "idea_to_product_v2"
+
         chat_id = update.message.chat_id
 
         if workflow:
@@ -249,7 +299,7 @@ class TelegramInterface:
                 )
             except Exception as e:
                 logger.error("workflow mission failed", error=str(e))
-                await update.message.reply_text(f"❌ Failed to start workflow: {e}")
+                await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
             return
 
         # Regular mission — create and plan
@@ -738,7 +788,7 @@ class TelegramInterface:
         except (ValueError, IndexError):
             await update.message.reply_text("Usage: /progress [mission_id]")
         except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
 
     async def cmd_audit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show audit log for a task. /audit [task_id]"""
@@ -756,7 +806,7 @@ class TelegramInterface:
         except (ValueError, IndexError):
             await update.message.reply_text("Usage: /audit [task_id]")
         except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
 
     async def cmd_metrics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show system metrics summary. /metrics"""
@@ -765,7 +815,7 @@ class TelegramInterface:
             msg = format_metrics_summary()
             await update.message.reply_text(msg, parse_mode="Markdown")
         except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
 
     async def cmd_replay(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Replay task execution trace. /replay <task_id>"""
@@ -785,7 +835,7 @@ class TelegramInterface:
         except (ValueError, IndexError):
             await update.message.reply_text("Usage: /replay <task_id>")
         except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
 
     async def cmd_feedback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Rate a completed task. /feedback <task_id> <good|bad|partial> [reason]"""
@@ -820,7 +870,7 @@ class TelegramInterface:
         except (ValueError, IndexError):
             await update.message.reply_text("Usage: /feedback <task_id> <good|bad|partial> [reason]")
         except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
 
     async def cmd_autonomy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Set or view risk autonomy threshold. /autonomy [low|medium|high|paranoid]"""
@@ -858,7 +908,7 @@ class TelegramInterface:
                 parse_mode="Markdown",
             )
         except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
 
     async def cmd_ingest(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Ingest a URL or file into the knowledge base."""
@@ -896,7 +946,7 @@ class TelegramInterface:
             )
         except Exception as e:
             await update.message.reply_text(
-                f"❌ Ingestion error: {type(e).__name__}: {e}"
+                f"❌ {_friendly_error(str(e))}"
             )
 
     # ─── Credential Management ────────────────────────────────────────
@@ -934,7 +984,7 @@ class TelegramInterface:
                         "\n".join(lines), parse_mode="Markdown"
                     )
             except Exception as e:
-                await update.message.reply_text(f"Error: {e}")
+                await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
 
         elif sub == "add":
             if len(context.args) < 3:
@@ -967,7 +1017,7 @@ class TelegramInterface:
                     parse_mode="Markdown",
                 )
             except Exception as e:
-                await update.message.reply_text(f"Error storing credential: {e}")
+                await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
 
         elif sub == "remove":
             if len(context.args) < 2:
@@ -991,7 +1041,7 @@ class TelegramInterface:
                         f"No credential found for '{service_name}'."
                     )
             except Exception as e:
-                await update.message.reply_text(f"Error: {e}")
+                await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
 
         else:
             await update.message.reply_text(
@@ -1045,7 +1095,7 @@ class TelegramInterface:
             await update.message.reply_text(msg)
         except Exception as e:
             await update.message.reply_text(
-                f"Error fetching workflow status: {type(e).__name__}: {e}"
+                f"❌ {_friendly_error(str(e))}"
             )
 
     async def cmd_dlq(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1108,7 +1158,7 @@ class TelegramInterface:
                 "\n".join(lines), parse_mode="Markdown"
             )
         except Exception as e:
-            await update.message.reply_text(f"DLQ error: {e}")
+            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
 
     async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Resume a failed or paused workflow."""
@@ -1135,10 +1185,10 @@ class TelegramInterface:
                 f"Use /wfstatus {resumed_id} to track progress."
             )
         except ValueError as e:
-            await update.message.reply_text(f"Cannot resume: {e}")
+            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
         except Exception as e:
             await update.message.reply_text(
-                f"Failed to resume workflow: {type(e).__name__}: {e}"
+                f"❌ {_friendly_error(str(e))}"
             )
 
     async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1165,7 +1215,7 @@ class TelegramInterface:
             await update.message.reply_text("Please provide a valid integer mission ID.")
         except Exception as e:
             logger.exception("pause command failed", error=str(e))
-            await update.message.reply_text(f"\u274c Error: {e}")
+            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
 
     async def cmd_load(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/load full|heavy|shared|minimal|auto — set GPU load mode"""
@@ -1226,7 +1276,7 @@ class TelegramInterface:
             await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             logger.error("tune command failed", error=str(e))
-            await update.message.reply_text(f"Tuning failed: {e}")
+            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
 
     async def cmd_improve(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/improve — run self-improvement analysis and show proposals."""
@@ -1258,7 +1308,7 @@ class TelegramInterface:
                     pass
         except Exception as e:
             logger.error("improve command failed", error=str(e))
-            await update.message.reply_text(f"Analysis failed: {e}")
+            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
 
     # ── Phase 14.4: /remember and /recall ─────────────────────────────────────
 
@@ -1287,7 +1337,7 @@ class TelegramInterface:
             )
         except Exception as e:
             logger.error("remember command failed", error=str(e))
-            await update.message.reply_text(f"Failed to store: {e}")
+            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
 
     async def cmd_recall(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Search the knowledge base for previously stored facts."""
@@ -1317,7 +1367,7 @@ class TelegramInterface:
             await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             logger.error("recall command failed", error=str(e))
-            await update.message.reply_text(f"Recall failed: {e}")
+            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Smart handler: LLM-classified message routing with clarification priority."""
@@ -1344,7 +1394,7 @@ class TelegramInterface:
                 return
             except Exception as e:
                 logger.error(f"Failed to handle file upload: {e}")
-                await update.message.reply_text(f"Failed to save file: {e}")
+                await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
                 return
 
         text = update.message.text
@@ -1366,7 +1416,7 @@ class TelegramInterface:
                 try:
                     await handler(update, context)
                 except Exception as e:
-                    await update.message.reply_text(f"❌ Error running /{cmd}: {e}")
+                    await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
                 return
 
         # ═══════════════════════════════════════════════════════
@@ -1414,20 +1464,13 @@ class TelegramInterface:
         # ═══════════════════════════════════════════════════════
         # PRIORITY 2: LLM-based message classification
         # ═══════════════════════════════════════════════════════
-        msg_type = await self._classify_user_message(text)
-        logger.info("message classified", msg_type=msg_type, text_preview=text[:50])
+        classification = await self._classify_user_message(text)
+        msg_type = classification["type"]
+        msg_workflow = classification.get("workflow")
+        logger.info("message classified", msg_type=msg_type,
+                    workflow=msg_workflow, text_preview=text[:50])
 
         # ── Route by classification ──
-
-        # Map classification → emoji for user feedback
-        _TYPE_EMOJI = {
-            "bug_report": "🐛", "feature_request": "🔦",
-            "ui_note": "🎨", "feedback": "💬",
-            "progress_inquiry": "📊", "casual": "👋",
-            "load_control": "🖥️", "followup": "🔗",
-            "clarification_response": "💡", "question": "❓",
-            "mission": "🎯", "task": "📝",
-        }
 
         if msg_type in ("bug_report", "feature_request", "ui_note", "feedback"):
             await self._handle_user_input(msg_type, text, chat_id, update)
@@ -1439,7 +1482,6 @@ class TelegramInterface:
             return
 
         if msg_type == "question":
-            # Questions about system → treat as quick task with assistant agent
             await update.message.reply_text("❓ Got your question — looking into it...")
             task_id = await add_task(
                 title=f"Q: {text[:50]}",
@@ -1478,7 +1520,7 @@ class TelegramInterface:
                 return
 
         # ═══════════════════════════════════════════════════════
-        # PRIORITY 3: Mission vs task (for mission/task/question types)
+        # PRIORITY 3: Mission vs task
         # ═══════════════════════════════════════════════════════
         parent_id = self.user_last_task_id.get(chat_id)
         recent_context = None
@@ -1491,17 +1533,33 @@ class TelegramInterface:
         except Exception:
             pass
 
-        if msg_type == "mission" or (
-            len(text) > 200 and any(kw in text.lower() for kw in
-                ["research", "create a", "build", "analyze", "develop",
-                 "write a report", "compare", "plan", "strategy"])
-        ):
-            mission_id = await add_mission(title=text[:80], description=text, priority=5)
-            if self.orchestrator:
-                await self.orchestrator.plan_mission(mission_id, text[:80], text)
-            await update.message.reply_text(
-                f"🎯 Mission #{mission_id} created. Planning now..."
-            )
+        if msg_type == "mission":
+            # Classifier decides if this needs workflow engine
+            if msg_workflow == "idea_to_product":
+                try:
+                    from ..workflows.engine.runner import WorkflowRunner
+                    runner = WorkflowRunner(self.orchestrator)
+                    mission_id = await runner.start(
+                        workflow_name="idea_to_product_v2",
+                        initial_input={"idea": text, "product_name": text[:50]},
+                        title=text[:80],
+                    )
+                    await update.message.reply_text(
+                        f"🔄 Workflow mission #{mission_id} created!\n"
+                        f"_{text[:60]}_\n\n"
+                        f"Use /wfstatus {mission_id} to track progress.",
+                        parse_mode="Markdown",
+                    )
+                except Exception as e:
+                    logger.error("workflow mission failed", error=str(e))
+                    await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+            else:
+                mission_id = await add_mission(title=text[:80], description=text, priority=5)
+                if self.orchestrator:
+                    await self.orchestrator.plan_mission(mission_id, text[:80], text)
+                await update.message.reply_text(
+                    f"🎯 Mission #{mission_id} created. Planning now..."
+                )
             self.user_last_task_id.pop(chat_id, None)
         else:
             task_context = {}
@@ -1524,7 +1582,7 @@ class TelegramInterface:
     MESSAGE_CLASSIFIER_PROMPT = """Classify this user message to an AI orchestrator. Respond with ONLY valid JSON.
 
 Categories:
-- "mission": complex multi-step project request
+- "mission": complex multi-step project request (building something, research project, etc.)
 - "task": specific actionable request
 - "question": asking for information
 - "bug_report": reporting a bug or error
@@ -1537,14 +1595,23 @@ Categories:
 - "load_control": wanting to control GPU/resources (e.g. "I'm going to game", "free up GPU")
 - "casual": greeting, thanks, small talk
 
+If type is "mission", also decide if this needs a full product workflow:
+- "workflow": "idea_to_product" if the user wants to BUILD a product, app, website, tool, platform, SaaS, bot, or any software from scratch
+- "workflow": null if it's a simpler mission (research, analysis, fix something, write a report)
+
 Context: {context}
 
 Message: {message}
 
-Respond as: {{"type": "task", "confidence": 0.8}}"""
+Respond as: {{"type": "mission", "confidence": 0.9, "workflow": "idea_to_product"}}
+Or: {{"type": "task", "confidence": 0.8}}"""
 
-    async def _classify_user_message(self, text: str) -> str:
-        """Classify user message using LLM with keyword fallback."""
+    async def _classify_user_message(self, text: str) -> dict:
+        """Classify user message using LLM with keyword fallback.
+
+        Returns dict with at least {"type": str}. May also include
+        "workflow" for mission-type messages that need the workflow engine.
+        """
         try:
             from ..core.router import ModelRequirements, call_model
 
@@ -1571,26 +1638,27 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
                 ),
             }]
             response = await call_model(reqs, messages)
-            import json
+            from ..core.task_classifier import _extract_json
             raw = response.get("content", "").strip()
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-                raw = raw.rsplit("```", 1)[0]
-            result = json.loads(raw)
+            result = _extract_json(raw)
             msg_type = result.get("type", "task")
             confidence = result.get("confidence", 0.5)
+            workflow = result.get("workflow")
             logger.debug("llm message classification",
-                         type=msg_type, confidence=confidence)
+                         type=msg_type, confidence=confidence, workflow=workflow)
             if confidence < 0.4:
-                return "task"  # low confidence → default to task
-            return msg_type
+                return {"type": "task"}
+            classification = {"type": msg_type}
+            if workflow:
+                classification["workflow"] = workflow
+            return classification
         except Exception as e:
             logger.debug("message classification failed, using keyword fallback",
                          error=str(e))
             return self._classify_message_by_keywords(text)
 
     @staticmethod
-    def _classify_message_by_keywords(text: str) -> str:
+    def _classify_message_by_keywords(text: str) -> dict:
         """Fast keyword fallback for message classification."""
         lower = text.lower()
         # Bug reports
@@ -1598,49 +1666,53 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
             "bug", "error", "broken", "crash", "doesn't work", "not working",
             "failed", "exception", "traceback", "issue with",
         ]):
-            return "bug_report"
+            return {"type": "bug_report"}
         # Feature requests
         if any(w in lower for w in [
             "feature", "could you add", "would be nice", "suggestion",
             "it would help if", "can we have", "please add", "wish list",
         ]):
-            return "feature_request"
+            return {"type": "feature_request"}
         # Feedback
         if any(w in lower for w in [
             "good job", "well done", "not great", "could be better",
             "i think", "in my opinion", "the output was",
         ]):
-            return "feedback"
+            return {"type": "feedback"}
         # Status / progress questions
         if any(w in lower for w in [
             "how's", "status", "progress", "how far", "eta", "update on",
             "what's happening", "is it done", "still running", "where are we",
         ]):
-            return "progress_inquiry"
+            return {"type": "progress_inquiry"}
         # Questions
         if any(w in lower for w in [
             "what is", "how do", "why does", "can you explain", "what does",
             "how does", "tell me about", "?",
         ]):
-            return "question"
+            return {"type": "question"}
         # Casual
         if any(w in lower for w in [
             "hi ", "hello", "thanks", "thank you", "hey", "good morning",
             "good night", "bye", "see you", "sup", "yo ",
         ]):
-            return "casual"
+            return {"type": "casual"}
         # GPU/load control
         if any(w in lower for w in [
             "game", "gaming", "free up gpu", "gpu", "i'm going to play",
         ]):
-            return "load_control"
+            return {"type": "load_control"}
         # Mission (long or project-like)
         if len(text) > 200 or any(w in lower for w in [
             "research", "create a", "build", "analyze", "develop", "plan",
             "design a", "implement a", "set up", "write a report", "strategy",
         ]):
-            return "mission"
-        return "task"
+            result = {"type": "mission"}
+            # Keyword fallback for workflow detection
+            if _looks_like_product_idea(text):
+                result["workflow"] = "idea_to_product"
+            return result
+        return {"type": "task"}
 
     async def _is_likely_clarification_response(
         self, text: str, waiting_task: dict
@@ -1707,7 +1779,7 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
             logger.error("failed to resume clarification",
                          task_id=task_id, error=str(e))
             await update.message.reply_text(
-                f"Failed to resume task #{task_id}: {e}"
+                f"❌ {_friendly_error(str(e))}"
             )
 
     async def _handle_user_input(
@@ -1756,7 +1828,7 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
             )
         except Exception as e:
             logger.error("failed to log user input", error=str(e))
-            await update.message.reply_text(f"Logged your {input_type}. (DB save failed: {e})")
+            await update.message.reply_text(f"Logged your {input_type}. (Note: save had an issue, check logs)")
 
     async def _handle_casual(self, text: str, update: Update):
         """Handle casual messages with a quick LLM response (no task creation)."""
@@ -1887,7 +1959,7 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
                 try:
                     await handler(_CallbackUpdate(msg), context)
                 except Exception as e:
-                    await msg.reply_text(f"❌ Error: {e}")
+                    await msg.reply_text(f"❌ {_friendly_error(str(e))}")
             else:
                 await query.message.reply_text(f"Unknown command: /{cmd}")
             return
@@ -2042,9 +2114,11 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
                 pass
 
     async def send_error(self, task_id, title, error):
+        # Show user-friendly message, not raw tracebacks
+        friendly = _friendly_error(error)
         await self.send_notification(
-            f"❌ *Task #{task_id} Failed* (after retries)\n"
-            f"**{title}**\n\nError: {error[:500]}"
+            f"❌ *Task #{task_id} Failed*\n"
+            f"**{title}**\n\n{friendly}"
         )
 
     async def request_clarification(self, task_id, title, question):

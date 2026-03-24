@@ -298,6 +298,28 @@ async def init_db():
         )
     """)
 
+    # Todo items
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS todo_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            priority TEXT DEFAULT 'normal',
+            due_date TIMESTAMP,
+            status TEXT DEFAULT 'pending',
+            source TEXT DEFAULT 'explicit',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP
+        )
+    """)
+
+    await db.commit()
+
+    # Seed todo reminder (every 2h during Turkey daytime: 9,11,13,15,17,19,21)
+    await db.execute("""
+        INSERT OR IGNORE INTO scheduled_tasks (id, title, description, cron_expression, agent_type, enabled, context)
+        VALUES (9999, 'Todo Reminder', 'Send pending todo items to user', '0 9,11,13,15,17,19,21 * * *', 'system', 1, '{"type": "todo_reminder"}')
+    """)
     await db.commit()
 
     # Verify schema
@@ -397,6 +419,8 @@ async def init_db():
         ("idx_model_stats_model_agent", "model_stats", "model, agent_type"),
         ("idx_blackboards_mission", "blackboards", "mission_id"),
         ("idx_credentials_service", "credentials", "service_name"),
+        ("idx_todo_status", "todo_items", "status"),
+        ("idx_todo_created", "todo_items", "created_at"),
     ]
     for idx_name, table, columns_str in _indexes:
         try:
@@ -1157,6 +1181,99 @@ async def get_scheduled_tasks() -> list[dict]:
         "SELECT * FROM scheduled_tasks ORDER BY id"
     )
     return [dict(row) for row in await cursor.fetchall()]
+
+
+# ─── Todo Items ────────────────────────────────────────────────────────────
+
+_TODO_COLUMNS = frozenset({
+    "title", "description", "priority", "due_date",
+    "status", "source", "completed_at",
+})
+
+
+async def add_todo(
+    title: str,
+    description: str = "",
+    priority: str = "normal",
+    due_date: str | None = None,
+    source: str = "explicit",
+) -> int:
+    """Create a new todo item. Returns the new row ID."""
+    db = await get_db()
+    cursor = await db.execute(
+        """INSERT INTO todo_items (title, description, priority, due_date, source)
+           VALUES (?, ?, ?, ?, ?)""",
+        (title, description, priority, due_date, source),
+    )
+    await db.commit()
+    return cursor.lastrowid
+
+
+async def get_todos(status: str | None = None, limit: int = 50) -> list[dict]:
+    """Return todo items, optionally filtered by status."""
+    db = await get_db()
+    if status:
+        cursor = await db.execute(
+            "SELECT * FROM todo_items WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+            (status, limit),
+        )
+    else:
+        cursor = await db.execute(
+            "SELECT * FROM todo_items ORDER BY status ASC, created_at DESC LIMIT ?",
+            (limit,),
+        )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+async def get_todo(todo_id: int) -> dict | None:
+    """Fetch a single todo item by ID."""
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM todo_items WHERE id = ?", (todo_id,))
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def update_todo(todo_id: int, **kwargs) -> None:
+    """Update fields on a todo item."""
+    _validate_columns(kwargs, _TODO_COLUMNS, "todo_items")
+    db = await get_db()
+    sets = ", ".join(f"{k} = ?" for k in kwargs)
+    values = list(kwargs.values()) + [todo_id]
+    await db.execute(f"UPDATE todo_items SET {sets} WHERE id = ?", values)
+    await db.commit()
+
+
+async def toggle_todo(todo_id: int) -> str:
+    """Toggle a todo between 'pending' and 'done'. Returns the new status."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT status FROM todo_items WHERE id = ?", (todo_id,)
+    )
+    row = await cursor.fetchone()
+    if not row:
+        return "pending"
+    current = row["status"]
+    if current == "done":
+        new_status = "pending"
+        await db.execute(
+            "UPDATE todo_items SET status = 'pending', completed_at = NULL WHERE id = ?",
+            (todo_id,),
+        )
+    else:
+        new_status = "done"
+        await db.execute(
+            "UPDATE todo_items SET status = 'done', completed_at = ? WHERE id = ?",
+            (datetime.now().isoformat(), todo_id),
+        )
+    await db.commit()
+    return new_status
+
+
+async def delete_todo(todo_id: int) -> None:
+    """Delete a todo item."""
+    db = await get_db()
+    await db.execute("DELETE FROM todo_items WHERE id = ?", (todo_id,))
+    await db.commit()
 
 
 # --- Task Cancellation ---

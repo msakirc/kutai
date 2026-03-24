@@ -17,7 +17,8 @@ from ..infra.db import (add_task, add_mission, get_active_missions,
                 get_db, cancel_task, reprioritize_task, get_task_tree,
                 get_task, get_mission, get_budget, set_budget, get_model_stats,
                 get_mission_locks, get_tasks_for_mission,
-                insert_approval_request, update_approval_status)
+                insert_approval_request, update_approval_status,
+                add_todo, get_todos, get_todo, toggle_todo, delete_todo)
 from ..memory.conversations import format_recent_context, find_followup_context, \
     store_exchange
 from ..memory.ingest import ingest_document
@@ -98,6 +99,11 @@ MENU_CATEGORIES = [
         ("🗂️ Workspaces", "workspace", False, None),
         ("📋 WF Status", "wfstatus", True, "Which mission ID for workflow status?"),
     ]),
+    ("📝 Personal", "personal", [
+        ("📝 Add Todo", "todo", True, "What do you need to remember?"),
+        ("📋 My Todos", "todos", False, None),
+        ("🗑️ Clear Done", "cleartodos", False, None),
+    ]),
     ("🧠 Knowledge", "knowledge", [
         ("💾 Remember", "remember", True, "What should I remember?"),
         ("🔎 Recall", "recall", True, "What do you want to recall?"),
@@ -166,6 +172,7 @@ _CMD_METHOD_MAP: dict[str, str] = {
     "queue": "cmd_view_queue",
     "modelstats": "cmd_model_stats",
     "resetall": "cmd_reset_all",
+    "cleartodos": "cmd_cleartodos",
 }
 
 
@@ -225,6 +232,9 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("remember", self.cmd_remember))
         self.app.add_handler(CommandHandler("recall", self.cmd_recall))
         self.app.add_handler(CommandHandler("autonomy", self.cmd_autonomy))
+        self.app.add_handler(CommandHandler("todo", self.cmd_todo))
+        self.app.add_handler(CommandHandler("todos", self.cmd_todos))
+        self.app.add_handler(CommandHandler("cleartodos", self.cmd_cleartodos))
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.REPLY,
@@ -1501,6 +1511,10 @@ class TelegramInterface:
             await self._handle_load_control(text, update)
             return
 
+        if msg_type == "todo":
+            await self._handle_todo_from_message(text, chat_id, update)
+            return
+
         if msg_type in ("followup", "clarification_response"):
             parent_id = await self._find_followup_parent(chat_id, text)
             if parent_id:
@@ -1593,6 +1607,7 @@ Categories:
 - "followup": continuing a previous conversation or task
 - "clarification_response": answering a question the system asked
 - "load_control": wanting to control GPU/resources (e.g. "I'm going to game", "free up GPU")
+- "todo": adding a reminder, to-do item, or note to self (e.g., "remind me to buy milk", "don't forget the meeting", "add eggs to my list")
 - "casual": greeting, thanks, small talk
 
 If type is "mission", also decide if this needs a full product workflow:
@@ -1661,6 +1676,13 @@ Or: {{"type": "task", "confidence": 0.8}}"""
     def _classify_message_by_keywords(text: str) -> dict:
         """Fast keyword fallback for message classification."""
         lower = text.lower()
+        # Todo items
+        if any(w in lower for w in [
+            "remind me", "don't forget", "dont forget", "todo",
+            "add to list", "add to my list", "need to buy", "need to get",
+            "remember to", "note to self", "hatirla", "unutma", "listeye ekle",
+        ]):
+            return {"type": "todo"}
         # Bug reports
         if any(w in lower for w in [
             "bug", "error", "broken", "crash", "doesn't work", "not working",
@@ -1872,6 +1894,103 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 parse_mode="Markdown",
             )
 
+    # ─── Todo Commands ──────────────────────────────────────────────────────
+
+    async def cmd_todo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Add a todo item. /todo <title>"""
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /todo <what to remember>\n\n"
+                "Example: /todo Buy groceries"
+            )
+            return
+
+        title = " ".join(context.args)
+        todo_id = await add_todo(title)
+        buttons = [[InlineKeyboardButton(
+            "✅ Done", callback_data=f"todo_toggle:{todo_id}"
+        )]]
+        await update.message.reply_text(
+            f"📝 Added: *{title}*\n(#{todo_id})",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    async def cmd_todos(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List all todos. /todos"""
+        todos = await get_todos()
+        if not todos:
+            await update.message.reply_text("📋 No todo items yet. Use /todo to add one.")
+            return
+
+        lines = ["📋 *Your Todos*\n"]
+        buttons = []
+        for todo in todos:
+            tid = todo["id"]
+            title = todo["title"]
+            status = todo.get("status", "pending")
+            icon = "✅" if status == "done" else "⬜"
+            priority = todo.get("priority", "normal")
+            p_icon = {"high": "🔴", "normal": "🟡", "low": "⚪"}.get(priority, "🟡")
+
+            lines.append(f"  {icon} {p_icon} *#{tid}* — {title}")
+            if status != "done":
+                buttons.append([InlineKeyboardButton(
+                    f"✅ Done: {title[:25]}",
+                    callback_data=f"todo_toggle:{tid}",
+                )])
+
+        text = "\n".join(lines)
+        markup = InlineKeyboardMarkup(buttons) if buttons else None
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=markup)
+
+    async def cmd_cleartodos(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Delete all completed todos. /cleartodos"""
+        done_todos = await get_todos(status="done")
+        if not done_todos:
+            await update.message.reply_text("No completed todos to clear.")
+            return
+
+        for todo in done_todos:
+            await delete_todo(todo["id"])
+
+        await update.message.reply_text(
+            f"🗑️ Cleared {len(done_todos)} completed todo(s)."
+        )
+
+    async def _handle_todo_from_message(self, text: str, chat_id: int, update):
+        """Extract todo title from natural language and create a todo item."""
+        import re
+        # Strip common prefixes to get the actual todo title
+        title = text
+        for prefix in [
+            r"remind me to\s+",
+            r"don'?t forget to\s+",
+            r"dont forget to\s+",
+            r"remember to\s+",
+            r"note to self[:\s]+",
+            r"add to (?:my )?list[:\s]+",
+            r"need to (?:buy|get)\s+",
+            r"todo[:\s]+",
+            r"hatirla[:\s]+",
+            r"unutma[:\s]+",
+            r"listeye ekle[:\s]+",
+        ]:
+            title = re.sub(f"^{prefix}", "", title, flags=re.IGNORECASE).strip()
+
+        if not title:
+            title = text  # Fallback to original if stripping removed everything
+
+        todo_id = await add_todo(title, source="implicit")
+        buttons = [[InlineKeyboardButton(
+            "✅ Done", callback_data=f"todo_toggle:{todo_id}"
+        )]]
+        await update.message.reply_text(
+            f"📝 Added: *{title}*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
     async def _find_followup_parent(self, chat_id: int, text: str) -> int | None:
         """Find parent task for follow-up messages."""
         try:
@@ -1970,6 +2089,38 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             chat_id = query.message.chat_id
             self._pending_action[chat_id] = {"command": cmd}
             await query.message.reply_text(f"💬 {prompt}")
+            return
+
+        # ── Todo Callbacks ─────────────────────────────────────
+        if data.startswith("todo_toggle:"):
+            todo_id = int(data.split(":")[1])
+            new_status = await toggle_todo(todo_id)
+            icon = "✅" if new_status == "done" else "⬜"
+            await query.answer(f"{icon} {'Done!' if new_status == 'done' else 'Reopened'}")
+            # Refresh the message text to reflect the change
+            try:
+                todo = await get_todo(todo_id)
+                if todo:
+                    status_icon = "✅" if new_status == "done" else "📝"
+                    await query.edit_message_text(
+                        f"{status_icon} *#{todo_id}* — {todo['title']}\nStatus: {new_status}",
+                        parse_mode="Markdown",
+                    )
+            except Exception:
+                pass
+            return
+
+        if data.startswith("todo_ai:"):
+            todo_id = int(data.split(":")[1])
+            todo = await get_todo(todo_id)
+            if todo:
+                task_id = await add_task(
+                    title=f"Help with: {todo['title'][:40]}",
+                    description=f"Help the user with this todo item: {todo['title']}\n{todo.get('description', '')}",
+                    tier="auto",
+                    priority=8,
+                )
+                await query.answer(f"Task #{task_id} created!")
             return
 
         # ── Legacy Callbacks (approval, resetall confirm) ──────

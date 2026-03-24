@@ -730,6 +730,27 @@ class Orchestrator:
                     if isinstance(sched.get("context"), str)
                     else sched.get("context", {})
                 )
+
+                # Special handling: todo reminders bypass the task queue
+                if sched_ctx.get("type") == "todo_reminder":
+                    try:
+                        from src.app.reminders import send_todo_reminder
+                        if self.telegram:
+                            await send_todo_reminder(self.telegram)
+                    except Exception as e:
+                        logger.error(f"[Scheduler] Todo reminder failed: {e}")
+                    # Update last_run / next_run and skip task creation
+                    now = datetime.now()
+                    next_run = self._compute_next_run(
+                        sched.get("cron_expression", "0 * * * *"), now
+                    )
+                    await update_scheduled_task(
+                        sched_id,
+                        last_run=now.isoformat(),
+                        next_run=next_run.isoformat() if next_run else None,
+                    )
+                    continue
+
                 task_id = await add_task(
                     title=title,
                     description=sched.get("description", ""),

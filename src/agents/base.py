@@ -384,7 +384,7 @@ class BaseAgent:
                 )
 
         # ── Recalled memories ──
-        goal_id = task.get("goal_id")
+        goal_id = task.get("mission_id")
 
         # ── Recent conversation (for follow-up understanding) ──
         if "recent_conversation" in task_context:
@@ -404,7 +404,7 @@ class BaseAgent:
         # ── Phase 6.4: Ambient context injection ──
         try:
             from ..context.assembler import assemble_ambient_context
-            ambient = await assemble_ambient_context(goal_id=goal_id, max_tokens=400)
+            ambient = await assemble_ambient_context(mission_id=goal_id, max_tokens=400)
             if ambient:
                 parts.append(ambient)
         except Exception as exc:
@@ -460,7 +460,7 @@ class BaseAgent:
             logger.debug(f"Preference retrieval failed (non-critical): {exc}")
 
         try:
-            memories = await recall_memory(goal_id=goal_id, limit=15)
+            memories = await recall_memory(mission_id=goal_id, limit=15)
         except Exception as exc:
             logger.warning(f"Failed to recall memory: {exc}")
             memories = []
@@ -909,7 +909,7 @@ class BaseAgent:
     async def _execute_react_loop(self, task: dict) -> dict:
         """ReAct loop with requirements-based model selection."""
         task_id = task.get("id", "?")
-        goal_id = task.get("goal_id")
+        goal_id = task.get("mission_id")
 
         # ── Parse task context ──
         _task_ctx = task.get("context")
@@ -1236,7 +1236,7 @@ class BaseAgent:
                         try:
                             await store_memory(
                                 key, str(value),
-                                category=self.name, goal_id=goal_id,
+                                category=self.name, mission_id=goal_id,
                             )
                         except Exception as exc:
                             logger.warning(f"store_memory failed: {exc}")
@@ -1562,7 +1562,7 @@ class BaseAgent:
                         "id": f"{task_id}_inline_{iteration}",
                         "title": f"[Inline query from {self.name}]",
                         "description": question,
-                        "goal_id": goal_id,
+                        "mission_id": goal_id,
                         "context": json.dumps({"tool_depth": 1}),
                     }
                     inline_result = await _asyncio.wait_for(

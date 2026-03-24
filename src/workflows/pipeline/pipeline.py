@@ -63,7 +63,7 @@ class CodingPipeline:
         Run the coding pipeline with adaptive stage selection
         and accumulated context between stages.
         """
-        original_goal = task.get("goal_id")
+        original_goal = task.get("mission_id")
         base_title = task.get("title", "Complex Coding Task")
         base_desc = task.get("description", "")
         context = task.get("context", {})
@@ -91,7 +91,7 @@ class CodingPipeline:
         pipe_ctx = PipelineContext(
             goal_title=base_title,
             goal_description=base_desc,
-            goal_id=original_goal,
+            mission_id=original_goal,
             complexity=complexity,
         )
 
@@ -113,7 +113,7 @@ class CodingPipeline:
             arch_task = {
                 "title": f"Plan Architecture: {base_title}",
                 "description": base_desc + extra_context,
-                "goal_id": original_goal,
+                "mission_id": original_goal,
                 "priority": 8,
                 "context": json.dumps({"prefer_quality": True}),
             }
@@ -168,7 +168,7 @@ class CodingPipeline:
                     f"{tdd_context}"
                     + extra_context
                 ),
-                "goal_id": original_goal,
+                "mission_id": original_goal,
             }
             test_result = await self.test_generator.execute(test_task)
             test_text = test_result.get("result", "")
@@ -209,7 +209,7 @@ class CodingPipeline:
                         f"{impl_stage_ctx}"
                         + extra_context
                     ),
-                    "goal_id": original_goal,
+                    "mission_id": original_goal,
                 }
                 impl_result = await self.implementer.execute(impl_task)
                 impl_text = impl_result.get("result", "")
@@ -251,7 +251,7 @@ class CodingPipeline:
                     f"{fix_stage_ctx}"
                     + extra_context
                 ),
-                "goal_id": original_goal,
+                "mission_id": original_goal,
             }
             fix_result = await self.fixer.execute(fix_task)
             fix_text = fix_result.get("result", "")
@@ -292,7 +292,7 @@ class CodingPipeline:
                     f"{test_stage_ctx}"
                     + extra_context
                 ),
-                "goal_id": original_goal,
+                "mission_id": original_goal,
             }
             test_result = await self.test_generator.execute(test_task)
             test_text = test_result.get("result", "")
@@ -365,7 +365,7 @@ class CodingPipeline:
                         f"missing error handling, and test failures.\n\n"
                         f"{review_stage_ctx}"
                     ),
-                    "goal_id": original_goal,
+                    "mission_id": original_goal,
                     "context": json.dumps(review_ctx_dict),
                 }
                 review_result = await self.reviewer.execute(review_task)
@@ -448,7 +448,7 @@ class CodingPipeline:
                             f"{structured_issues}\n\n"
                             f"{fix_stage_ctx}"
                         ),
-                        "goal_id": original_goal,
+                        "mission_id": original_goal,
                         "context": json.dumps(fix_ctx_dict),
                     }
                     fix_result = await self.fixer.execute(fix_task)

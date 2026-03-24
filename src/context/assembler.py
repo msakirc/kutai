@@ -436,12 +436,12 @@ async def assemble_ambient_context(
         from ..infra.db import get_db
         db = await get_db()
         cursor = await db.execute(
-            "SELECT COUNT(*) FROM goals WHERE status IN ('pending','running','in_progress')"
+            "SELECT COUNT(*) FROM missions WHERE status IN ('pending','running','in_progress')"
         )
         row = await cursor.fetchone()
         if row:
             count = row[0]
-            parts.append(f"- Active goals: {count}")
+            parts.append(f"- Active missions: {count}")
     except Exception:
         pass
 

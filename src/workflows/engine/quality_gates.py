@@ -143,7 +143,7 @@ def _check_all_tests_pass(artifact_value: str) -> Optional[bool]:
 # ── Main evaluation ──────────────────────────────────────────────────────────
 
 async def evaluate_gate(
-    goal_id: int,
+    mission_id: int,
     phase_id: str,
     artifact_store: ArtifactStore,
 ) -> tuple[bool, dict]:
@@ -169,8 +169,8 @@ async def evaluate_gate(
     for criterion, threshold in gate.items():
         if criterion == "test_pass_rate":
             artifact = (
-                await artifact_store.retrieve(goal_id, "test_results")
-                or await artifact_store.retrieve(goal_id, f"phase_{phase_num}_test_results")
+                await artifact_store.retrieve(mission_id, "test_results")
+                or await artifact_store.retrieve(mission_id, f"phase_{phase_num}_test_results")
             )
             if artifact is None:
                 details[criterion] = {
@@ -201,7 +201,7 @@ async def evaluate_gate(
                 all_passed = False
 
         elif criterion == "coverage_minimum":
-            artifact = await artifact_store.retrieve(goal_id, "coverage_report")
+            artifact = await artifact_store.retrieve(mission_id, "coverage_report")
             if artifact is None:
                 details[criterion] = {
                     "passed": False,
@@ -231,7 +231,7 @@ async def evaluate_gate(
                 all_passed = False
 
         elif criterion == "security_scan_clean":
-            artifact = await artifact_store.retrieve(goal_id, "security_scan_results")
+            artifact = await artifact_store.retrieve(mission_id, "security_scan_results")
             if artifact is None:
                 details[criterion] = {
                     "passed": False,
@@ -260,7 +260,7 @@ async def evaluate_gate(
                 all_passed = False
 
         elif criterion == "all_tests_pass":
-            artifact = await artifact_store.retrieve(goal_id, "test_results")
+            artifact = await artifact_store.retrieve(mission_id, "test_results")
             if artifact is None:
                 details[criterion] = {
                     "passed": False,
@@ -290,7 +290,7 @@ async def evaluate_gate(
 
         elif criterion == "human_approval":
             artifact = await artifact_store.retrieve(
-                goal_id, f"phase_{phase_num}_human_approval"
+                mission_id, f"phase_{phase_num}_human_approval"
             )
             if artifact is None:
                 details[criterion] = {

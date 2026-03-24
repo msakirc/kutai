@@ -73,7 +73,7 @@ def extract_feature_context(step_context: dict) -> tuple[str, str]:
 def build_pipeline_task(
     step_title: str,
     step_instruction: str,
-    goal_id: str,
+    mission_id: str,
     feature_name: str,
     artifact_context: str = "",
 ) -> dict:
@@ -82,19 +82,19 @@ def build_pipeline_task(
     Args:
         step_title: Human-readable title for the task.
         step_instruction: The instruction text from the template step.
-        goal_id: The parent goal identifier.
+        mission_id: The parent mission identifier.
         feature_name: Name of the feature being implemented.
         artifact_context: Optional additional context from prior artifacts.
 
     Returns:
-        A dict with keys ``title``, ``description``, ``goal_id``, and ``context``.
+        A dict with keys ``title``, ``description``, ``mission_id``, and ``context``.
     """
     description = f"Feature: {feature_name}\n\n{step_instruction}\n\n## Context\n{artifact_context}"
 
     return {
         "title": step_title,
         "description": description,
-        "goal_id": goal_id,
+        "mission_id": mission_id,
         "context": {
             "pipeline_mode": "feature",
             "prefer_quality": True,

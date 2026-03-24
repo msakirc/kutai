@@ -163,20 +163,20 @@ try:
         write_blackboard as _write_blackboard_fn,
     )
 
-    async def _tool_read_blackboard(goal_id: int, key: str = "") -> str:
+    async def _tool_read_blackboard(mission_id: int, key: str = "") -> str:
         """Read from the shared project blackboard."""
         import json as _json
-        result = await _read_blackboard_fn(int(goal_id), key=key or None)
+        result = await _read_blackboard_fn(int(mission_id), key=key or None)
         return _json.dumps(result, indent=2) if result else "{}"
 
-    async def _tool_write_blackboard(goal_id: int, key: str, value: str) -> str:
+    async def _tool_write_blackboard(mission_id: int, key: str, value: str) -> str:
         """Write to the shared project blackboard."""
         import json as _json
         try:
             parsed_value = _json.loads(value)
         except (ValueError, TypeError):
             parsed_value = value
-        await _write_blackboard_fn(int(goal_id), key, parsed_value)
+        await _write_blackboard_fn(int(mission_id), key, parsed_value)
         return f"✅ Blackboard key '{key}' updated."
 
     _optional_tools["read_blackboard"] = {
@@ -184,24 +184,24 @@ try:
         "description": (
             "Read from the shared project blackboard (structured state shared "
             "between agents). "
-            "Args: goal_id (int), key (str, optional — e.g. 'architecture', "
+            "Args: mission_id (int), key (str, optional — e.g. 'architecture', "
             "'files', 'decisions', 'open_issues', 'constraints')"
         ),
         "example": (
             '{"action": "tool_call", "tool": "read_blackboard", '
-            '"args": {"goal_id": 1, "key": "decisions"}}'
+            '"args": {"mission_id": 1, "key": "decisions"}}'
         ),
     }
     _optional_tools["write_blackboard"] = {
         "function": _tool_write_blackboard,
         "description": (
             "Write to the shared project blackboard. "
-            "Args: goal_id (int), key (str — 'architecture'|'files'|'decisions'"
+            "Args: mission_id (int), key (str — 'architecture'|'files'|'decisions'"
             "|'open_issues'|'constraints'), value (str — JSON string)"
         ),
         "example": (
             '{"action": "tool_call", "tool": "write_blackboard", '
-            '"args": {"goal_id": 1, "key": "decisions", '
+            '"args": {"mission_id": 1, "key": "decisions", '
             '"value": "[{\\"what\\": \\"Use FastAPI\\", \\"why\\": \\"speed\\", \\"by\\": \\"architect\\"}]"}}'
         ),
     }
@@ -262,7 +262,7 @@ try:
             "Args: target (str: 'vercel' or 'railway'), "
             "project_path (str: path to project), "
             "env_vars (dict, optional: environment variables), "
-            "goal_id (int, optional: workflow goal ID for validation)"
+            "mission_id (int, optional: workflow mission ID for validation)"
         ),
         "example": (
             '{"action": "tool_call", "tool": "deploy", '

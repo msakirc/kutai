@@ -71,7 +71,7 @@ def _compute_max_concurrent(tasks: list[dict]) -> int:
     if not tasks:
         return MAX_CONCURRENT_TASKS
 
-    # Gather goal_ids from tasks
+    # Gather mission_ids from tasks
     goal_ids: set[int] = set()
     for t in tasks:
         ctx = t.get("context", {})
@@ -80,7 +80,7 @@ def _compute_max_concurrent(tasks: list[dict]) -> int:
                 ctx = json.loads(ctx)
             except (json.JSONDecodeError, TypeError):
                 ctx = {}
-        gid = ctx.get("goal_id") or t.get("goal_id")
+        gid = ctx.get("mission_id") or t.get("mission_id")
         if gid is not None:
             goal_ids.add(gid)
 
@@ -141,7 +141,7 @@ class Orchestrator:
 
         # ── Gather completed sibling tasks (same parent or same goal) ──
         parent_id = task.get("parent_task_id")
-        mission_id = task.get("goal_id")
+        mission_id = task.get("mission_id")
 
         prior_steps = []
 
@@ -184,14 +184,14 @@ class Orchestrator:
         if prior_steps:
             task_context["prior_steps"] = prior_steps
 
-        # ── Workspace snapshot (Phase 6: per-goal workspace) ──
+        # ── Workspace snapshot (Phase 6: per-mission workspace) ──
         # For coder/reviewer/writer agents, include the file tree
-        # from the goal's isolated workspace if available.
+        # from the mission's isolated workspace if available.
         agent_type = task.get("agent_type", "executor")
-        goal_id = task.get("goal_id")
+        goal_id = task.get("mission_id")
         if agent_type in ("coder", "reviewer", "writer", "planner"):
             try:
-                # Use per-goal workspace if goal_id exists
+                # Use per-mission workspace if mission_id exists
                 tree_path = (
                     get_mission_workspace_relative(goal_id)
                     if goal_id else ""
@@ -215,8 +215,8 @@ class Orchestrator:
     async def _auto_commit(self, task: dict, result: dict):
         """Auto-commit workspace changes after a successful coder task."""
         try:
-            # Use goal-specific workspace path if available
-            mission_id = task.get("goal_id")
+            # Use mission-specific workspace path if available
+            mission_id = task.get("mission_id")
             repo_path = (
                 get_mission_workspace_relative(mission_id) if mission_id else ""
             )
@@ -448,7 +448,7 @@ class Orchestrator:
         # 5. Workflow-level timeout check — pause workflows running too long
         try:
             goal_cursor = await db.execute(
-                """SELECT id, title, context, created_at FROM goals
+                """SELECT id, title, context, created_at FROM missions
                    WHERE status = 'active'"""
             )
             active_goals = [dict(row) for row in await goal_cursor.fetchall()]
@@ -734,7 +734,7 @@ class Orchestrator:
                     description=sched.get("description", ""),
                     agent_type=sched.get("agent_type", "executor"),
                     tier=sched.get("tier", "cheap"),
-                    goal_id=sched_ctx.get("goal_id"),
+                    goal_id=sched_ctx.get("mission_id"),
                     context=sched_ctx,
                 )
                 if task_id:
@@ -876,7 +876,7 @@ class Orchestrator:
                         task.get("title", ""),
                         task.get("description", "")[:200],
                         tier=task.get("tier", "auto"),
-                        goal_id=task.get("goal_id"),
+                        goal_id=task.get("mission_id"),
                     )
                     if not approved:
                         logger.info("human gate rejected", task_id=task_id)
@@ -905,7 +905,7 @@ class Orchestrator:
                         task.get("title", ""),
                         format_risk_assessment(risk),
                         tier=task.get("tier", "auto"),
-                        goal_id=task.get("goal_id"),
+                        goal_id=task.get("mission_id"),
                     )
                     if not approved:
                         logger.info("risk gate rejected", task_id=task_id)
@@ -915,7 +915,7 @@ class Orchestrator:
                 logger.debug(f"Risk assessment skipped: {e}")
 
             # ── Phase 6: Snapshot workspace before coder/pipeline tasks ──
-            goal_id = task.get("goal_id")
+            goal_id = task.get("mission_id")
             if goal_id and agent_type in ("coder", "pipeline", "implementer", "fixer"):
                 try:
                     ws_path = get_mission_workspace(goal_id)
@@ -999,16 +999,16 @@ class Orchestrator:
                         from ..workflows.engine.hooks import get_artifact_store
 
                         ws_path = None
-                        if task.get("goal_id"):
+                        if task.get("mission_id"):
                             try:
-                                ws_path = get_mission_workspace(task["goal_id"])
+                                ws_path = get_mission_workspace(task["mission_id"])
                             except Exception:
                                 pass
 
                         extra_artifacts = await extract_pipeline_artifacts(task, result, ws_path)
                         if extra_artifacts:
                             store = get_artifact_store()
-                            goal_id = task.get("goal_id")
+                            goal_id = task.get("mission_id")
                             for name, content in extra_artifacts.items():
                                 await store.store(goal_id, name, content)
                             logger.info(f"[Task #{task_id}] Stored {len(extra_artifacts)} pipeline artifacts")
@@ -1094,7 +1094,7 @@ class Orchestrator:
                     from ..infra.dead_letter import quarantine_task
                     await quarantine_task(
                         task_id=task_id,
-                        goal_id=task.get("goal_id"),
+                        goal_id=task.get("mission_id"),
                         error=error_str,
                         original_agent=task.get("agent_type", "executor"),
                         retry_count=max_retries,
@@ -1151,14 +1151,14 @@ class Orchestrator:
             cost=cost,
         )
 
-        if task.get("goal_id"):
-            await self._check_mission_completion(task["goal_id"])
+        if task.get("mission_id"):
+            await self._check_mission_completion(task["mission_id"])
 
-        # ── Fix #8: Goal cost accumulator ──
-        if task.get("goal_id") and cost > 0:
+        # ── Fix #8: Mission cost accumulator ──
+        if task.get("mission_id") and cost > 0:
             try:
                 from ..collaboration.blackboard import read_blackboard, write_blackboard
-                goal_id = task["goal_id"]
+                goal_id = task["mission_id"]
                 current = await read_blackboard(goal_id, "cost_tracking")
                 if not isinstance(current, dict):
                     current = {"total_cost": 0.0, "task_count": 0, "by_phase": {}}
@@ -1187,7 +1187,7 @@ class Orchestrator:
                 # Always notify for interactive (critical priority) tasks
         # Skip only background subtasks from goal decomposition
         is_interactive = task.get("priority", 5) >= TASK_PRIORITY.get("critical", 10)
-        is_goal_subtask = task.get("goal_id") and task.get("parent_task_id")
+        is_goal_subtask = task.get("mission_id") and task.get("parent_task_id")
 
         if is_interactive or not is_goal_subtask:
             await self.telegram.send_result(task_id, task["title"],
@@ -1224,10 +1224,10 @@ class Orchestrator:
                 pass
 
         # ── Fix #9: Workflow phase completion notification ──
-        if task_ctx.get("is_workflow_step") and task.get("goal_id"):
+        if task_ctx.get("is_workflow_step") and task.get("mission_id"):
             try:
                 from ..workflows.engine.status import compute_phase_progress
-                goal_id = task["goal_id"]
+                goal_id = task["mission_id"]
                 workflow_phase = task_ctx.get("workflow_phase", "")
                 all_tasks = await get_tasks_for_mission(goal_id)
                 progress = compute_phase_progress(all_tasks)
@@ -1299,7 +1299,7 @@ class Orchestrator:
 
     async def _handle_subtasks(self, task, result):
         task_id = task["id"]
-        goal_id = task.get("goal_id")
+        goal_id = task.get("mission_id")
         subtasks = result.get("subtasks", [])
 
         if not subtasks:
@@ -1420,7 +1420,7 @@ class Orchestrator:
         review_task_id = await add_task(
             title=f"Review: {task['title'][:40]}",
             description=f"Review this output:\n\n{content}\n\nNote: {review_note}",
-            goal_id=task.get("goal_id"),
+            goal_id=task.get("mission_id"),
             parent_task_id=task_id,
             agent_type="reviewer",
             tier="medium",
@@ -1458,7 +1458,7 @@ class Orchestrator:
 
         title = failed_task.get("title", "Unknown")
         description = failed_task.get("description", "")
-        goal_id = failed_task.get("goal_id")
+        goal_id = failed_task.get("mission_id")
 
         recovery_description = (
             f"## Failed Task Diagnosis\n\n"
@@ -1727,7 +1727,7 @@ class Orchestrator:
         await add_task(
             title=f"Plan: {title[:40]}",
             description=f"Create an execution plan for this mission:\n\n{title}\n\n{description}",
-            goal_id=mission_id,
+            mission_id=mission_id,
             agent_type="planner",
             priority=TASK_PRIORITY["high"],
         )

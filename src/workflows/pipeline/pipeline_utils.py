@@ -76,14 +76,14 @@ def get_stages_for_complexity(complexity: str) -> list[str]:
 
 # ─── Incremental Progress ────────────────────────────────────────────────────
 
-def _load_progress(goal_id: Optional[int]) -> dict:
+def _load_progress(mission_id: Optional[int]) -> dict:
     """Load incremental progress from workspace."""
-    if not goal_id:
+    if not mission_id:
         return {}
     try:
         import tools.workspace as _ws
         progress_file = os.path.join(
-            _ws.WORKSPACE_DIR, f".pipeline_progress_{goal_id}.json"
+            _ws.WORKSPACE_DIR, f".pipeline_progress_{mission_id}.json"
         )
         if os.path.isfile(progress_file):
             with open(progress_file, encoding="utf-8") as f:
@@ -93,14 +93,14 @@ def _load_progress(goal_id: Optional[int]) -> dict:
     return {}
 
 
-def _save_progress(goal_id: Optional[int], progress: dict) -> None:
+def _save_progress(mission_id: Optional[int], progress: dict) -> None:
     """Save incremental progress to workspace."""
-    if not goal_id:
+    if not mission_id:
         return
     try:
         import tools.workspace as _ws
         progress_file = os.path.join(
-            _ws.WORKSPACE_DIR, f".pipeline_progress_{goal_id}.json"
+            _ws.WORKSPACE_DIR, f".pipeline_progress_{mission_id}.json"
         )
         with open(progress_file, "w", encoding="utf-8") as f:
             json.dump(progress, f, indent=2)
@@ -108,14 +108,14 @@ def _save_progress(goal_id: Optional[int], progress: dict) -> None:
         pass
 
 
-def _cleanup_progress(goal_id: Optional[int]) -> None:
+def _cleanup_progress(mission_id: Optional[int]) -> None:
     """Remove progress file on successful completion."""
-    if not goal_id:
+    if not mission_id:
         return
     try:
         import tools.workspace as _ws
         progress_file = os.path.join(
-            _ws.WORKSPACE_DIR, f".pipeline_progress_{goal_id}.json"
+            _ws.WORKSPACE_DIR, f".pipeline_progress_{mission_id}.json"
         )
         if os.path.isfile(progress_file):
             os.remove(progress_file)

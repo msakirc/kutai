@@ -36,7 +36,7 @@ class PipelineContext:
     """
     goal_title: str = ""
     goal_description: str = ""
-    goal_id: int | None = None
+    mission_id: int | None = None
     complexity: str = "feature"
 
     architecture_plan: str = ""

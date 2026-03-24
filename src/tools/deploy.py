@@ -30,12 +30,12 @@ async def _check_credential(target: str) -> dict | None:
         return None
 
 
-async def _check_quality_gate(goal_id: int, artifact_store: Any) -> tuple[bool, str]:
+async def _check_quality_gate(mission_id: int, artifact_store: Any) -> tuple[bool, str]:
     """Check that the phase_13 quality gate has passed.
 
     Returns (passed, message).
     """
-    result = await artifact_store.retrieve(goal_id, "phase_13_gate_result")
+    result = await artifact_store.retrieve(mission_id, "phase_13_gate_result")
     if result is None:
         return False, "Quality gate artifact 'phase_13_gate_result' not found"
 
@@ -159,7 +159,7 @@ async def deploy(
     target: str,
     project_path: str,
     env_vars: dict | None = None,
-    goal_id: int | None = None,
+    mission_id: int | None = None,
 ) -> dict:
     """Deploy a project to the target platform.
 
@@ -167,7 +167,7 @@ async def deploy(
     1. Pre-deploy validation (credentials, quality gate)
     2. Execute deployment via integration layer
     3. Post-deploy verification (health check)
-    4. Store result as artifact if goal_id provided
+    4. Store result as artifact if mission_id provided
 
     Returns a result dict with status, url, verification, and error info.
     """
@@ -185,12 +185,12 @@ async def deploy(
             "error": f"No credentials found for '{target}'. Use /credential add to store them.",
         }
 
-    # Quality gate check (only when goal_id is provided)
-    if goal_id is not None:
+    # Quality gate check (only when mission_id is provided)
+    if mission_id is not None:
         try:
             from ..workflows.engine.artifacts import ArtifactStore
             artifact_store = ArtifactStore(use_db=True)
-            gate_passed, gate_msg = await _check_quality_gate(goal_id, artifact_store)
+            gate_passed, gate_msg = await _check_quality_gate(mission_id, artifact_store)
             if not gate_passed:
                 return {
                     "status": "error",
@@ -276,12 +276,12 @@ async def deploy(
         "deploy_response": result,
     }
 
-    if goal_id is not None:
+    if mission_id is not None:
         try:
             from ..workflows.engine.artifacts import ArtifactStore
             artifact_store = ArtifactStore(use_db=True)
             await artifact_store.store(
-                goal_id, "deployment_result", json.dumps(deploy_result, default=str)
+                mission_id, "deployment_result", json.dumps(deploy_result, default=str)
             )
         except Exception as exc:
             logger.warning("Failed to store deployment artifact: %s", exc)

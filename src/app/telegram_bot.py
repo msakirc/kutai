@@ -288,20 +288,20 @@ class TelegramInterface:
             return None
 
     async def _create_goal(self, update: Update, description: str, extra_context: str = ""):
-        """Actually create and plan a goal."""
+        """Actually create and plan a mission (legacy /goal command handler)."""
         full_desc = f"{description}\n\nAdditional context: {extra_context}" if extra_context else description
         title = description[:80]
-        goal_id = await add_goal(title=title, description=full_desc, priority=7)
+        mission_id = await add_mission(title=title, description=full_desc, priority=7)
 
-        # Phase 7.1: Auto-link goal to active project
-        await self._try_link_goal_to_project(goal_id)
+        # Phase 7.1: Auto-link mission to active project
+        await self._try_link_goal_to_project(mission_id)
 
         # Trigger planning
         if self.orchestrator:
-            await self.orchestrator.plan_goal(goal_id, title, full_desc)
+            await self.orchestrator.plan_mission(mission_id, title, full_desc)
 
         await update.message.reply_text(
-            f" *Goal #{goal_id} created*\n\n"
+            f" *Mission #{mission_id} created*\n\n"
             f"{description}\n\n"
             f"_I'll create a plan and start working on it. "
             f"I'll update you on progress._",
@@ -370,7 +370,7 @@ class TelegramInterface:
         )
 
         if self.orchestrator:
-            await self.orchestrator.plan_goal(mission_id, description[:80], description)
+            await self.orchestrator.plan_mission(mission_id, description[:80], description)
 
         await update.message.reply_text(
             f"🎯 Mission #{mission_id} created. Planning now...\n"
@@ -451,14 +451,8 @@ class TelegramInterface:
 
 
     async def cmd_list_goals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        goals = await get_active_goals()
-        if not goals:
-            await update.message.reply_text("No active goals. Use /goal to set one.")
-            return
-        msg = " *Active Goals:*\n\n"
-        for g in goals:
-            msg += f"#{g['id']} [P{g['priority']}] {g['title']}\n"
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        """DEPRECATED: Use /missions instead."""
+        await self.cmd_missions(update, context)
 
     async def cmd_view_queue(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         tasks = await get_ready_tasks(limit=15)
@@ -495,27 +489,27 @@ class TelegramInterface:
 
         # All tasks
         cursor = await db.execute(
-            """SELECT id, goal_id, parent_task_id, title, agent_type,
+            """SELECT id, mission_id, parent_task_id, title, agent_type,
                       status, tier, depends_on, error, retry_count
                FROM tasks ORDER BY id"""
         )
         tasks = [dict(row) for row in await cursor.fetchall()]
 
-        # All goals
-        cursor2 = await db.execute("SELECT id, title, status FROM goals ORDER BY id")
-        goals = [dict(row) for row in await cursor2.fetchall()]
+        # All missions
+        cursor2 = await db.execute("SELECT id, title, status FROM missions ORDER BY id")
+        missions = [dict(row) for row in await cursor2.fetchall()]
 
-        if not tasks and not goals:
+        if not tasks and not missions:
             await update.message.reply_text("Database is empty.")
             return
 
         msg = "🔍 *FULL SYSTEM DEBUG*\n\n"
 
-        if goals:
-            msg += "*Goals:*\n"
-            for g in goals:
+        if missions:
+            msg += "*Missions:*\n"
+            for g in missions:
                 icon = "🎯" if g["status"] == "active" else "✅" if g["status"] == "completed" else "❌"
-                msg += f"{icon} G#{g['id']} [{g['status']}] {g['title'][:40]}\n"
+                msg += f"{icon} M#{g['id']} [{g['status']}] {g['title'][:40]}\n"
             msg += "\n"
 
         msg += "*All Tasks:*\n"
@@ -532,7 +526,7 @@ class TelegramInterface:
         for t in tasks:
             icon = status_icons.get(t["status"], "❔")
             deps = t.get("depends_on", "[]")
-            goal_tag = f" G#{t['goal_id']}" if t.get("goal_id") else ""
+            goal_tag = f" M#{t['mission_id']}" if t.get("mission_id") else ""
             parent_tag = f" ←#{t['parent_task_id']}" if t.get("parent_task_id") else ""
             dep_tag = f" deps:{deps}" if deps and deps != "[]" else ""
             err_tag = ""
@@ -674,25 +668,25 @@ class TelegramInterface:
             )
 
     async def cmd_graph(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show text DAG of task dependencies for a goal."""
+        """Show text DAG of task dependencies for a mission."""
         if not context.args:
-            await update.message.reply_text("Usage: /graph <goal_id>")
+            await update.message.reply_text("Usage: /graph <mission_id>")
             return
         try:
             goal_id = int(context.args[0])
         except ValueError:
-            await update.message.reply_text("Goal ID must be a number.")
+            await update.message.reply_text("Mission ID must be a number.")
             return
 
         tasks = await get_task_tree(goal_id)
         if not tasks:
             await update.message.reply_text(
-                f"No tasks found for goal #{goal_id}."
+                f"No tasks found for mission #{goal_id}."
             )
             return
 
         # Build text DAG
-        lines = [f"📊 *Task Graph — Goal #{goal_id}*\n"]
+        lines = [f"📊 *Task Graph — Mission #{goal_id}*\n"]
         status_icons = {
             "pending": "⏳", "processing": "⚙️",
             "completed": "✅", "failed": "❌",
@@ -761,27 +755,27 @@ class TelegramInterface:
         )
 
     async def cmd_cost(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show per-goal cost breakdown."""
+        """Show per-mission cost breakdown."""
         if not context.args:
-            await update.message.reply_text("Usage: /cost <goal\\_id>",
+            await update.message.reply_text("Usage: /cost <mission\\_id>",
                                             parse_mode="Markdown")
             return
         try:
-            goal_id = int(context.args[0])
+            mission_id = int(context.args[0])
         except ValueError:
-            await update.message.reply_text("Goal ID must be a number.")
+            await update.message.reply_text("Mission ID must be a number.")
             return
 
         try:
             from ..collaboration.blackboard import read_blackboard
-            cost_data = await read_blackboard(goal_id, "cost_tracking")
+            cost_data = await read_blackboard(mission_id, "cost_tracking")
             if not isinstance(cost_data, dict):
                 cost_data = {}
         except Exception:
             cost_data = {}
 
         if not cost_data or cost_data.get("total_cost", 0) == 0:
-            await update.message.reply_text(f"No cost data for goal #{goal_id}")
+            await update.message.reply_text(f"No cost data for mission #{mission_id}")
             return
 
         import json as _json
@@ -790,7 +784,7 @@ class TelegramInterface:
         by_phase = cost_data.get("by_phase", {})
 
         lines = [
-            f"*Cost Report — Goal #{goal_id}*",
+            f"*Cost Report — Mission #{mission_id}*",
             f"Total: ${total:.4f} ({count} tasks)",
         ]
         if by_phase:
@@ -823,18 +817,18 @@ class TelegramInterface:
         )
 
     async def cmd_workspace(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show active goal workspaces."""
+        """Show active mission workspaces."""
         workspaces = list_goal_workspaces()
         if not workspaces:
-            await update.message.reply_text("📁 No goal workspaces active.")
+            await update.message.reply_text("📁 No mission workspaces active.")
             return
 
-        lines = ["📁 *Goal Workspaces*\n"]
+        lines = ["📁 *Mission Workspaces*\n"]
         for ws in workspaces:
-            locks = await get_goal_locks(ws["goal_id"])
+            locks = await get_mission_locks(ws["mission_id"])
             lock_str = f" ({len(locks)} locks)" if locks else ""
             lines.append(
-                f"  Goal #{ws['goal_id']}: "
+                f"  Mission #{ws['mission_id']}: "
                 f"{ws['file_count']} files{lock_str}"
             )
 
@@ -945,20 +939,20 @@ class TelegramInterface:
             await update.message.reply_text(f"❌ Error: {e}")
 
     async def cmd_progress(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show progress timeline for a goal or project. /progress [goal_id]"""
+        """Show progress timeline for a mission or project. /progress [mission_id]"""
         args = context.args
         try:
             from src.infra.progress import get_notes, format_notes_timeline
-            goal_id = int(args[0]) if args else None
-            notes = await get_notes(goal_id=goal_id, limit=20)
+            mission_id = int(args[0]) if args else None
+            notes = await get_notes(goal_id=mission_id, limit=20)
             timeline = format_notes_timeline(notes)
-            header = f"📊 *Progress Notes* (goal #{goal_id})" if goal_id else "📊 *Recent Progress Notes*"
+            header = f"📊 *Progress Notes* (mission #{mission_id})" if mission_id else "📊 *Recent Progress Notes*"
             msg = f"{header}\n\n{timeline}"
             if len(msg) > 4000:
                 msg = msg[:4000] + "\n... (truncated)"
             await update.message.reply_text(msg, parse_mode="Markdown")
         except (ValueError, IndexError):
-            await update.message.reply_text("Usage: /progress [goal_id]")
+            await update.message.reply_text("Usage: /progress [mission_id]")
         except Exception as e:
             await update.message.reply_text(f"❌ Error: {e}")
 
@@ -1223,16 +1217,16 @@ class TelegramInterface:
     # ─── Workflow Commands ──────────────────────────────────────────────
 
     async def cmd_wfstatus(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show workflow progress for a goal."""
+        """Show workflow progress for a mission."""
         if not context.args:
-            await update.message.reply_text("Usage: /wfstatus <goal\\_id>",
+            await update.message.reply_text("Usage: /wfstatus <mission\\_id>",
                                             parse_mode="Markdown")
             return
 
         try:
-            goal_id = int(context.args[0])
+            mission_id = int(context.args[0])
         except ValueError:
-            await update.message.reply_text("Goal ID must be a number.")
+            await update.message.reply_text("Mission ID must be a number.")
             return
 
         try:
@@ -1240,30 +1234,30 @@ class TelegramInterface:
                 compute_phase_progress, format_status_message,
             )
 
-            goal = await get_goal(goal_id)
-            if not goal:
-                await update.message.reply_text(f"Goal #{goal_id} not found.")
+            mission = await get_mission(mission_id)
+            if not mission:
+                await update.message.reply_text(f"Mission #{mission_id} not found.")
                 return
 
-            tasks = await get_tasks_for_goal(goal_id)
+            tasks = await get_tasks_for_mission(mission_id)
             if not tasks:
                 await update.message.reply_text(
-                    f"No tasks found for goal #{goal_id}."
+                    f"No tasks found for mission #{mission_id}."
                 )
                 return
 
-            # Determine workflow name from goal context
-            goal_ctx = goal.get("context", "{}")
-            if isinstance(goal_ctx, str):
+            # Determine workflow name from mission context
+            mission_ctx = mission.get("context", "{}")
+            if isinstance(mission_ctx, str):
                 import json as _json
                 try:
-                    goal_ctx = _json.loads(goal_ctx)
+                    mission_ctx = _json.loads(mission_ctx)
                 except (ValueError, TypeError):
-                    goal_ctx = {}
-            workflow_name = goal_ctx.get("workflow_name", "idea_to_product_v2")
+                    mission_ctx = {}
+            workflow_name = mission_ctx.get("workflow_name", "idea_to_product_v2")
 
             progress = compute_phase_progress(tasks)
-            msg = format_status_message(workflow_name, goal_id, progress)
+            msg = format_status_message(workflow_name, mission_id, progress)
             await update.message.reply_text(msg)
         except Exception as e:
             await update.message.reply_text(
@@ -1331,15 +1325,15 @@ class TelegramInterface:
             )
 
             runner = WorkflowRunner()
-            goal_id = await runner.start(
+            mission_id = await runner.start(
                 "idea_to_product_v2",
                 initial_input={"raw_idea": idea_text},
                 title=idea_text[:80],
             )
 
             await update.message.reply_text(
-                f"\U0001f680 Product workflow started! Goal #{goal_id}\n"
-                f"Use /wfstatus {goal_id} to track progress."
+                f"\U0001f680 Product workflow started! Mission #{mission_id}\n"
+                f"Use /wfstatus {mission_id} to track progress."
             )
         except Exception as e:
             logger.error("workflow runner failed ", error=e)
@@ -1394,7 +1388,7 @@ class TelegramInterface:
                 for t in tasks[:8]:
                     error_preview = (t.get("error") or "")[:60]
                     lines.append(
-                        f"  \u2022 #{t['task_id']} (goal {t.get('goal_id', '?')}) "
+                        f"  \u2022 #{t['task_id']} (mission {t.get('mission_id', t.get('goal_id', '?'))}) "
                         f"[{t.get('error_category', '?')}] {error_preview}"
                     )
                 lines.append(
@@ -1417,20 +1411,20 @@ class TelegramInterface:
             return
 
         try:
-            goal_id_str = context.args[0]
-            goal_id = int(goal_id_str)
+            mission_id_str = context.args[0]
+            mission_id = int(mission_id_str)
         except ValueError:
-            await update.message.reply_text("Goal ID must be a number.")
+            await update.message.reply_text("Mission ID must be a number.")
             return
 
         try:
             from ..workflows.engine.runner import WorkflowRunner
 
             runner = WorkflowRunner()
-            resumed_id = await runner.resume(goal_id)
+            resumed_id = await runner.resume(mission_id)
 
             await update.message.reply_text(
-                f"\u25b6\ufe0f Workflow resumed for goal #{resumed_id}\n"
+                f"\u25b6\ufe0f Workflow resumed for mission #{resumed_id}\n"
                 f"Use /wfstatus {resumed_id} to track progress."
             )
         except ValueError as e:
@@ -1441,25 +1435,25 @@ class TelegramInterface:
             )
 
     async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Pause a task or goal: /pause <goal_id|task_id>"""
+        """Pause a task or mission: /pause <mission_id|task_id>"""
         args = context.args or []
         if not args:
-            await update.message.reply_text("Usage: /pause <goal\\_id>\nPauses all pending/processing tasks for the goal.",
+            await update.message.reply_text("Usage: /pause <mission\\_id>\nPauses all pending/processing tasks for the mission.",
                                            parse_mode="Markdown")
             return
         try:
-            goal_id = int(args[0])
+            mission_id = int(args[0])
             from ..infra.db import get_db
             async with get_db() as db:
                 result = await db.execute(
                     """UPDATE tasks SET status = 'paused'
-                       WHERE goal_id = ? AND status IN ('pending', 'processing')""",
-                    (goal_id,)
+                       WHERE mission_id = ? AND status IN ('pending', 'processing')""",
+                    (mission_id,)
                 )
                 await db.commit()
                 count = result.rowcount
-            await update.message.reply_text(f"\u23f8 Goal #{goal_id}: paused {count} task(s).")
-            logger.info("goal paused via command", goal_id=goal_id, tasks_paused=count)
+            await update.message.reply_text(f"\u23f8 Mission #{mission_id}: paused {count} task(s).")
+            logger.info("mission paused via command", mission_id=mission_id, tasks_paused=count)
         except ValueError:
             await update.message.reply_text("Please provide a valid integer goal ID.")
         except Exception as e:
@@ -1807,7 +1801,7 @@ class TelegramInterface:
             mission_id = await add_mission(title=text[:80], description=text, priority=5)
             await self._try_link_goal_to_project(mission_id)
             if self.orchestrator:
-                await self.orchestrator.plan_goal(mission_id, text[:80], text)
+                await self.orchestrator.plan_mission(mission_id, text[:80], text)
             await update.message.reply_text(
                 f"🎯 Mission #{mission_id} created. Planning now..."
             )
@@ -2043,14 +2037,14 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
 
         try:
             from ..infra.user_inputs import log_input
-            # Try to find related goal
+            # Try to find related mission
             related_goal = None
             try:
-                goals = await get_active_goals()
-                if goals:
-                    # Simple fuzzy: check if any goal title words appear in the message
+                missions = await get_active_missions()
+                if missions:
+                    # Simple fuzzy: check if any mission title words appear in the message
                     lower = text.lower()
-                    for g in goals:
+                    for g in missions:
                         title_words = g["title"].lower().split()
                         if any(w in lower for w in title_words if len(w) > 3):
                             related_goal = g["id"]
@@ -2069,7 +2063,7 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
                 "ui_note": "\U0001f3a8", "feedback": "\U0001f4ac",
             }
             emoji = type_emoji.get(input_type, "\U0001f4ac")
-            goal_str = f" Linked to Goal #{related_goal}." if related_goal else ""
+            goal_str = f" Linked to Mission #{related_goal}." if related_goal else ""
             await update.message.reply_text(
                 f"{emoji} Logged as {input_type} #{input_id}.{goal_str}"
             )
@@ -2224,7 +2218,7 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
             db = await get_db()
             await db.execute("DELETE FROM conversations")
             await db.execute("DELETE FROM tasks")
-            await db.execute("DELETE FROM goals")
+            await db.execute("DELETE FROM missions")
             await db.execute("DELETE FROM memory")
             await db.commit()
             await query.edit_message_text("☢️ Everything wiped. Fresh start.")
@@ -2384,7 +2378,7 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
 
     async def request_approval(self, task_id, title, plan, tier,
                                goal_id=None):
-        # Persist approval request to DB
+        # Persist approval request to DB (goal_id param kept for backward compat)
         details = f"Tier: {tier}\n\n{plan[:500]}"
         await insert_approval_request(task_id, goal_id, title, details)
 

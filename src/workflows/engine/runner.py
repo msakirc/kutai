@@ -462,7 +462,7 @@ class WorkflowRunner:
 
             context = {
                 "workflow_id": workflow_id,
-                "goal_id": mission_id,
+                "mission_id": mission_id,
                 "workflow_step_id": step_id,
                 "step_to_task": step_to_task,
             }

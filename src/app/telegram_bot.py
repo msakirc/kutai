@@ -1734,7 +1734,7 @@ class TelegramInterface:
             "progress_inquiry": "📊", "casual": "👋",
             "load_control": "🖥️", "followup": "🔗",
             "clarification_response": "💡", "question": "❓",
-            "goal": "🎯", "task": "📝",
+            "mission": "🎯", "task": "📝",
         }
 
         if msg_type in ("bug_report", "feature_request", "ui_note", "feedback"):
@@ -1799,7 +1799,7 @@ class TelegramInterface:
         except Exception:
             pass
 
-        if msg_type == "goal" or (
+        if msg_type == "mission" or (
             len(text) > 200 and any(kw in text.lower() for kw in
                 ["research", "create a", "build", "analyze", "develop",
                  "write a report", "compare", "plan", "strategy"])
@@ -1833,7 +1833,7 @@ class TelegramInterface:
     MESSAGE_CLASSIFIER_PROMPT = """Classify this user message to an AI orchestrator. Respond with ONLY valid JSON.
 
 Categories:
-- "goal": complex multi-step project request
+- "mission": complex multi-step project request
 - "task": specific actionable request
 - "question": asking for information
 - "bug_report": reporting a bug or error
@@ -1958,7 +1958,7 @@ Respond as: {{"type": "task", "confidence": 0.8}}"""
             "research", "create a", "build", "analyze", "develop", "plan",
             "design a", "implement a", "set up", "write a report", "strategy",
         ]):
-            return "goal"
+            return "mission"
         return "task"
 
     async def _is_likely_clarification_response(

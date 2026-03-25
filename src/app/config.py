@@ -36,6 +36,8 @@ WORKSPACE_ROOT = os.path.abspath(
 DOCKER_CONTAINER_NAME = "orchestrator-sandbox"
 MODEL_DIR = os.getenv("MODEL_DIR", "")
 
+# Global upper bound for agent iterations.  Individual agents override with
+# lower values; see each agent class for per-agent rationale comments.
 MAX_AGENT_ITERATIONS = 8
 MAX_TOOL_OUTPUT_LENGTH = 4000
 MAX_CONTEXT_CHAIN_LENGTH = 12000

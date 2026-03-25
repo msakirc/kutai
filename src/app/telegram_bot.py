@@ -1536,16 +1536,21 @@ class TelegramInterface:
         # ═══════════════════════════════════════════════════════
         # PRIORITY 3: Mission vs task
         # ═══════════════════════════════════════════════════════
-        parent_id = self.user_last_task_id.get(chat_id)
+        # Only link to parent task if the message was classified as a followup.
+        # New tasks ("task" type) should NOT inherit context from previous tasks —
+        # "Can you do a web search" after a shoes task should not search for shoes.
+        parent_id = None
         recent_context = None
-        try:
-            followup = await find_followup_context(chat_id, text)
-            if followup.get("is_followup") and followup.get("parent_task_id"):
-                parent_id = int(followup["parent_task_id"])
-            if followup.get("context"):
-                recent_context = format_recent_context(followup["context"])
-        except Exception:
-            pass
+        if msg_type == "followup":
+            parent_id = self.user_last_task_id.get(chat_id)
+            try:
+                followup = await find_followup_context(chat_id, text)
+                if followup.get("is_followup") and followup.get("parent_task_id"):
+                    parent_id = int(followup["parent_task_id"])
+                if followup.get("context"):
+                    recent_context = format_recent_context(followup["context"])
+            except Exception:
+                pass
 
         if msg_type == "mission":
             # Classifier decides if this needs workflow engine

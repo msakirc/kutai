@@ -31,7 +31,9 @@ except ImportError:
 # Cached Perplexica provider config (populated on first call)
 _perplexica_models: dict | None = None
 _perplexica_fail_count: int = 0
-_PERPLEXICA_MAX_FAILURES = 3  # Disable Perplexica after this many consecutive failures
+_perplexica_disabled_at: float = 0.0
+_PERPLEXICA_MAX_FAILURES = 3      # Disable after N consecutive failures
+_PERPLEXICA_RETRY_AFTER = 300.0   # Re-enable after 5 minutes
 
 
 async def _discover_perplexica_models(base_url: str) -> dict | None:
@@ -148,10 +150,20 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
     if not perplexica_url:
         return None
 
-    # Skip if too many consecutive failures
+    # Skip if too many consecutive failures (re-enable after 5 min)
+    global _perplexica_disabled_at
+    import time as _time
     if _perplexica_fail_count >= _PERPLEXICA_MAX_FAILURES:
-        logger.debug("perplexica: disabled after repeated failures, using fallback")
-        return None
+        if _perplexica_disabled_at == 0:
+            _perplexica_disabled_at = _time.time()
+        if _time.time() - _perplexica_disabled_at < _PERPLEXICA_RETRY_AFTER:
+            logger.debug("perplexica: disabled after repeated failures, using fallback")
+            return None
+        else:
+            # Reset and retry
+            _perplexica_fail_count = 0
+            _perplexica_disabled_at = 0.0
+            logger.info("perplexica: re-enabling after cooldown")
 
     # Discover available models
     models = await _discover_perplexica_models(perplexica_url)

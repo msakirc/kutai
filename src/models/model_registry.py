@@ -423,15 +423,19 @@ def calculate_dynamic_context(
     total_free = free_vram + free_ram
     max_ctx_from_memory = int((total_free / kv_per_1k_ctx) * 1024)
 
-    # Cap context based on GPU offload ratio — models running mostly on CPU
-    # are too slow for large contexts. Huge KV cache wastes RAM for no benefit.
+    # Hard cap: 32K for all local models unless overridden in models.yaml.
+    # llama-server pre-allocates KV cache for the full context window —
+    # 131K eats all VRAM even for a 361-token prompt. No agent task needs
+    # more than ~4K tokens, so 32K is generous with room for tool outputs.
+    # Models with >50% GPU can go up to 32K; CPU-heavy models get 16K.
     gpu_ratio = gpu_layers / max(n_layers, 1)
     if gpu_ratio < 0.3:
-        # Mostly CPU: cap at 16K — inference is slow, big context hurts
-        max_ctx = min(max_ctx, 16384)
+        hard_cap = 8192
     elif gpu_ratio < 0.5:
-        # Half-offloaded: cap at 32K
-        max_ctx = min(max_ctx, 32768)
+        hard_cap = 16384
+    else:
+        hard_cap = 32768
+    max_ctx = min(max_ctx, hard_cap)
 
     # Round down to nearest 2048 and clamp
     result = (max_ctx_from_memory // 2048) * 2048

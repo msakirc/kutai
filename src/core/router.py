@@ -611,7 +611,9 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
             composite *= 1.20
             reasons.append("thinking_bonus")
 
-        # Specialty bonus: models specialized for this task type get a boost
+        # Specialty bonus/penalty: reward matches, penalize mismatches.
+        # Coding models output XML function calls instead of JSON — they
+        # should NEVER be picked for classification, research, or general tasks.
         if model.specialty and effective_task:
             specialty_match = {
                 "coding": {"coder", "implementer", "fixer", "test_generator"},
@@ -622,6 +624,10 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
             if effective_task in matched_tasks:
                 composite *= 1.15
                 reasons.append(f"specialty={model.specialty}")
+            elif model.specialty == "coding":
+                # Coding models are harmful for non-coding tasks
+                composite *= 0.50
+                reasons.append("coding_model_mismatch")
 
         # Prefer local: boost all local models when the agent prefers local
         if reqs.prefer_local and model.is_local:

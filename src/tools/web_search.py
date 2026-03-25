@@ -62,25 +62,15 @@ async def _discover_perplexica_models(base_url: str) -> dict | None:
         chat_model = None
         embedding_model = None
 
-        # Preferred chat models in priority order.
-        # Groq compound models route to appropriate backends and tend to
-        # handle structured output (response_format) better than raw models.
-        preferred_chat = [
-            "groq/compound",
-            "groq/compound-mini",
-            "llama-3.3-70b-versatile",
-            "llama-3.1-8b-instant",
-            "qwen/qwen3-32b",
-            "meta-llama/llama-4-scout-17b-16e-instruct",
-        ]
         # Models to skip (not actual chat models)
         skip_models = {
-            "whisper-large-v3", "whisper-large-v3-turbo",  # audio models
-            "meta-llama/llama-prompt-guard-2-22m",  # classifier
-            "meta-llama/llama-prompt-guard-2-86m",  # classifier
-            "openai/gpt-oss-safeguard-20b",  # safety model
-            "canopylabs/orpheus-arabic-saudi",  # TTS
-            "canopylabs/orpheus-v1-english",  # TTS
+            "whisper-large-v3", "whisper-large-v3-turbo",
+            "meta-llama/llama-prompt-guard-2-22m",
+            "meta-llama/llama-prompt-guard-2-86m",
+            "openai/gpt-oss-safeguard-20b",
+            "canopylabs/orpheus-arabic-saudi",
+            "canopylabs/orpheus-v1-english",
+            "groq/compound", "groq/compound-mini",  # hangs on Vane
         }
 
         # Collect all available chat models with their provider IDs
@@ -95,17 +85,19 @@ async def _discover_perplexica_models(base_url: str) -> dict | None:
                 if em.get("key") and em.get("key") != "error" and not embedding_model:
                     embedding_model = {"providerId": pid, "key": em["key"]}
 
-        # Select chat model: prefer known-good models, fall back to first available
-        if all_chat_models:
-            for pref in preferred_chat:
-                for cm in all_chat_models:
-                    if cm["key"] == pref:
-                        chat_model = cm
-                        break
-                if chat_model:
-                    break
-            if not chat_model:
-                chat_model = all_chat_models[0]
+        # Prefer local llama-server (supports response_format, no cloud cost).
+        # llama-server ignores the model name — serves whatever is loaded.
+        local_provider = next(
+            (p for p in providers if "local" in p.get("id", "").lower()),
+            None,
+        )
+        if local_provider:
+            chat_model = {
+                "providerId": local_provider["id"],
+                "key": "local-model",
+            }
+        elif all_chat_models:
+            chat_model = all_chat_models[0]
 
         if chat_model and embedding_model:
             _perplexica_models = {
@@ -192,7 +184,7 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
             async with session.post(
                 f"{perplexica_url}/api/search",
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=15),
+                timeout=aiohttp.ClientTimeout(total=90),
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
@@ -236,7 +228,7 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
 
     except asyncio.TimeoutError:
         _perplexica_fail_count += 1
-        logger.warning("perplexica search timeout (15s)", query=query)
+        logger.warning("perplexica search timeout (90s)", query=query)
     except Exception as e:
         _perplexica_fail_count += 1
         logger.warning("perplexica search error", error=f"{type(e).__name__}: {e}", query=query)

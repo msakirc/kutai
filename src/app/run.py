@@ -325,4 +325,8 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except SystemExit as e:
+        # Propagate exit code (42 = restart, 0 = stop) to the wrapper
+        sys.exit(e.code)

@@ -122,6 +122,8 @@ MENU_CATEGORIES = [
         ("🐛 Debug", "debug", False, None),
         ("♻️ Reset", "reset", True, "Reset what? (task ID, 'failed', 'stuck', 'blocked')"),
         ("☢️ Reset All", "resetall", False, None),
+        ("🔄 Restart", "kutai_restart", False, None),
+        ("⏹ Stop", "kutai_stop", False, None),
     ]),
 ]
 
@@ -561,6 +563,23 @@ class TelegramInterface:
             "Are you sure?",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+
+    # ─── Wrapper Control Commands ─────────────────────────────────────
+
+    async def cmd_kutai_restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Restart KutAI via the wrapper (exit code 42)."""
+        await update.message.reply_text("🔄 Restarting KutAI...")
+        import sys
+        # Give Telegram time to send the message
+        await asyncio.sleep(1)
+        sys.exit(42)
+
+    async def cmd_kutai_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Stop KutAI via the wrapper (exit code 0)."""
+        await update.message.reply_text("⏹ Stopping KutAI...")
+        import sys
+        await asyncio.sleep(1)
+        sys.exit(0)
 
     # ─── Phase 3 Commands ──────────────────────────────────────────────
 

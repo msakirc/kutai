@@ -139,16 +139,16 @@ class TestWfstatusCommand(unittest.TestCase):
         self.assertIn("mission #1", msg)
 
 
-# ── /product tests ───────────────────────────────────────────────────────────
+# ── /mission --workflow tests ────────────────────────────────────────────────
 
 
-class TestProductCommand(unittest.TestCase):
-    """Tests for /product command."""
+class TestMissionWorkflowCommand(unittest.TestCase):
+    """Tests for /mission --workflow command (replaces old /product)."""
 
     def test_no_args_shows_usage(self):
         bot = _make_bot()
         update, context = _make_update_context(args=[])
-        run_async(bot.cmd_product(update, context))
+        run_async(bot.cmd_mission(update, context))
 
         update.message.reply_text.assert_called_once()
         msg = update.message.reply_text.call_args[0][0]
@@ -158,33 +158,36 @@ class TestProductCommand(unittest.TestCase):
            new_callable=AsyncMock)
     def test_starts_workflow(self, mock_start):
         bot = _make_bot()
-        update, context = _make_update_context(args=["Build", "a", "chat", "app"])
+        update, context = _make_update_context(
+            args=["--workflow", "Build", "a", "chat", "app"]
+        )
         mock_start.return_value = 42
 
-        run_async(bot.cmd_product(update, context))
+        run_async(bot.cmd_mission(update, context))
 
-        # Two messages: "starting..." then success
-        self.assertEqual(update.message.reply_text.call_count, 2)
-        final_msg = update.message.reply_text.call_args_list[1][0][0]
-        self.assertIn("42", final_msg)
-        self.assertIn("/wfstatus 42", final_msg)
+        update.message.reply_text.assert_called_once()
+        msg = update.message.reply_text.call_args[0][0]
+        self.assertIn("42", msg)
+        self.assertIn("/wfstatus 42", msg)
 
         mock_start.assert_called_once()
         call_kwargs = mock_start.call_args[1]
-        self.assertEqual(call_kwargs["initial_input"]["raw_idea"],
+        self.assertEqual(call_kwargs["initial_input"]["idea"],
                          "Build a chat app")
 
     @patch("src.workflows.engine.runner.WorkflowRunner.start",
            new_callable=AsyncMock)
     def test_handles_error(self, mock_start):
         bot = _make_bot()
-        update, context = _make_update_context(args=["Bad", "idea"])
+        update, context = _make_update_context(
+            args=["--workflow", "Bad", "idea"]
+        )
         mock_start.side_effect = RuntimeError("Workflow not found")
 
-        run_async(bot.cmd_product(update, context))
+        run_async(bot.cmd_mission(update, context))
 
         final_msg = update.message.reply_text.call_args_list[-1][0][0]
-        self.assertIn("Failed to start", final_msg)
+        self.assertIn("❌", final_msg)
 
 
 # ── /resume tests ────────────────────────────────────────────────────────────

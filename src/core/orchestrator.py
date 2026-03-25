@@ -119,6 +119,7 @@ class Orchestrator:
         self.last_scheduler_check = datetime.min
         self.last_decay_check = datetime.min
         self.shutdown_event = shutdown_event or asyncio.Event()
+        self.requested_exit_code: int | None = None  # Set by /kutai_restart (42) or /kutai_stop (0)
         self._current_task_future = None
         self._running_futures: list[asyncio.Task] = []
         self._model_manager_tasks: list[asyncio.Task] = []

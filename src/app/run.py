@@ -323,6 +323,10 @@ async def main():
     if gpu_detect_task and not gpu_detect_task.done():
         gpu_detect_task.cancel()
 
+    # Propagate exit code to wrapper (42 = restart, 0 = stop)
+    if orch.requested_exit_code is not None:
+        sys.exit(orch.requested_exit_code)
+
 
 if __name__ == "__main__":
     try:

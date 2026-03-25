@@ -71,8 +71,9 @@ class KutAIWrapper:
         print(f"  Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"{'='*60}\n")
 
+        run_script = str(Path(__file__).parent / "src" / "app" / "run.py")
         self.process = await asyncio.create_subprocess_exec(
-            venv_python, "-m", "src.app.run",
+            venv_python, run_script,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(Path(__file__).parent),
@@ -296,33 +297,20 @@ class KutAIWrapper:
             exit_code = await self.wait_for_exit()
             self._maybe_reset_backoff()
 
-            if exit_code == 0 and self._stop_requested:
-                # Clean stop via /kutai_stop
-                print("[Wrapper] KutAI stopped cleanly.")
-                await self._notify_stopped()
-                await self._start_telegram_poller()
-                # Wait for /kutai_start via Telegram
-                while not self._shutdown and not self.running:
-                    await asyncio.sleep(1)
-                if self.running:
-                    await self._notify_started()
-                continue
-
-            elif exit_code == RESTART_EXIT_CODE:
+            if exit_code == RESTART_EXIT_CODE:
                 # Restart requested via /kutai_restart
                 print("[Wrapper] Restart requested (exit 42). Restarting...")
                 await self._send_telegram("♻️ *KutAI Restarting...*")
-                await asyncio.sleep(2)  # Brief pause
+                await asyncio.sleep(2)
                 await self.start_kutai()
                 await self._notify_started()
                 continue
 
             elif exit_code == 0:
-                # Clean exit (Ctrl+C or signal)
-                print("[Wrapper] KutAI exited cleanly (0).")
-                if not self.auto_restart:
-                    break
+                # Clean stop via /kutai_stop or Ctrl+C
+                print("[Wrapper] KutAI stopped cleanly (exit 0).")
                 await self._notify_stopped()
+                # Wait for /kutai_start via Telegram
                 await self._start_telegram_poller()
                 while not self._shutdown and not self.running:
                     await asyncio.sleep(1)
@@ -331,7 +319,7 @@ class KutAIWrapper:
                 continue
 
             else:
-                # Crash
+                # Crash (any non-zero, non-42 exit code)
                 self.crash_count += 1
                 self.total_crashes += 1
                 self.last_crash_time = time.time()

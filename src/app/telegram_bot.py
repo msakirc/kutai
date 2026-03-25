@@ -569,17 +569,16 @@ class TelegramInterface:
     async def cmd_kutai_restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Restart KutAI via the wrapper (exit code 42)."""
         await update.message.reply_text("🔄 Restarting KutAI...")
-        import sys
-        # Give Telegram time to send the message
-        await asyncio.sleep(1)
-        sys.exit(42)
+        if self.orchestrator:
+            self.orchestrator.requested_exit_code = 42
+            self.orchestrator.shutdown_event.set()
 
     async def cmd_kutai_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Stop KutAI via the wrapper (exit code 0)."""
         await update.message.reply_text("⏹ Stopping KutAI...")
-        import sys
-        await asyncio.sleep(1)
-        sys.exit(0)
+        if self.orchestrator:
+            self.orchestrator.requested_exit_code = 0
+            self.orchestrator.shutdown_event.set()
 
     # ─── Phase 3 Commands ──────────────────────────────────────────────
 

@@ -185,7 +185,7 @@ class TestPreExecuteWorkflowStep(unittest.TestCase):
             "description": "Implement feature",
             "context": json.dumps({
                 "is_workflow_step": True,
-                "goal_id": 42,
+                "mission_id": 42,
                 "input_artifacts": ["spec"],
             }),
         }
@@ -218,7 +218,7 @@ class TestPostExecuteWorkflowStep(unittest.TestCase):
         task = {
             "context": json.dumps({
                 "is_workflow_step": True,
-                "goal_id": 100,
+                "mission_id": 100,
                 "output_artifacts": ["analysis"],
             }),
         }
@@ -234,7 +234,7 @@ class TestPostExecuteWorkflowStep(unittest.TestCase):
         task = {
             "context": json.dumps({
                 "is_workflow_step": True,
-                "goal_id": 101,
+                "mission_id": 101,
                 "output_artifacts": ["doc_a", "doc_b"],
             }),
         }

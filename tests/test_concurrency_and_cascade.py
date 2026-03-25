@@ -47,7 +47,7 @@ def _load_compute_fn():
         if not tasks:
             return MAX_CONCURRENT_TASKS
 
-        goal_ids = set()
+        mission_ids = set()
         for t in tasks:
             ctx = t.get("context", {})
             if isinstance(ctx, str):
@@ -55,15 +55,15 @@ def _load_compute_fn():
                     ctx = _json.loads(ctx)
                 except (_json.JSONDecodeError, TypeError):
                     ctx = {}
-            gid = ctx.get("goal_id") or t.get("goal_id")
+            gid = ctx.get("mission_id") or t.get("mission_id")
             if gid is not None:
-                goal_ids.add(gid)
+                mission_ids.add(gid)
 
         base = MAX_CONCURRENT_TASKS
-        num_goals = len(goal_ids)
+        num_missions = len(mission_ids)
 
-        if num_goals > 1:
-            limit = base + 2 * (num_goals - 1)
+        if num_missions > 1:
+            limit = base + 2 * (num_missions - 1)
             return min(limit, 8)
 
         for t in tasks:
@@ -89,71 +89,71 @@ _compute_max_concurrent, _MAX = _load_compute_fn()
 class TestComputeMaxConcurrent(unittest.TestCase):
     """Tests for _compute_max_concurrent()."""
 
-    def _make_task(self, goal_id=1, workflow_phase=None, template_step_id=None):
-        ctx = {"goal_id": goal_id}
+    def _make_task(self, mission_id=1, workflow_phase=None, template_step_id=None):
+        ctx = {"mission_id": mission_id}
         if workflow_phase:
             ctx["workflow_phase"] = workflow_phase
         if template_step_id:
             ctx["template_step_id"] = template_step_id
-        return {"context": ctx, "goal_id": goal_id}
+        return {"context": ctx, "mission_id": mission_id}
 
-    def _make_task_str_ctx(self, goal_id=1, workflow_phase=None, template_step_id=None):
-        ctx = {"goal_id": goal_id}
+    def _make_task_str_ctx(self, mission_id=1, workflow_phase=None, template_step_id=None):
+        ctx = {"mission_id": mission_id}
         if workflow_phase:
             ctx["workflow_phase"] = workflow_phase
         if template_step_id:
             ctx["template_step_id"] = template_step_id
-        return {"context": json.dumps(ctx), "goal_id": goal_id}
+        return {"context": json.dumps(ctx), "mission_id": mission_id}
 
     def test_empty_tasks_returns_base(self):
         self.assertEqual(_compute_max_concurrent([]), _MAX)
 
     def test_base_concurrent_is_3(self):
-        """Single goal, non-phase-8 tasks -> returns 3."""
-        tasks = [self._make_task(goal_id=1) for _ in range(3)]
+        """Single mission, non-phase-8 tasks -> returns 3."""
+        tasks = [self._make_task(mission_id=1) for _ in range(3)]
         self.assertEqual(_compute_max_concurrent(tasks), 3)
 
-    def test_multi_goal_increases_limit(self):
-        """2 different goal_ids -> base(3) + 2 = 5."""
+    def test_multi_mission_increases_limit(self):
+        """2 different mission_ids -> base(3) + 2 = 5."""
         tasks = [
-            self._make_task(goal_id=1),
-            self._make_task(goal_id=1),
-            self._make_task(goal_id=2),
+            self._make_task(mission_id=1),
+            self._make_task(mission_id=1),
+            self._make_task(mission_id=2),
         ]
         self.assertEqual(_compute_max_concurrent(tasks), 5)
 
     def test_phase_8_allows_5(self):
-        """All tasks from same goal in phase_8 -> returns 5."""
+        """All tasks from same mission in phase_8 -> returns 5."""
         tasks = [
-            self._make_task(goal_id=1, workflow_phase="phase_8"),
-            self._make_task(goal_id=1, workflow_phase="phase_8"),
+            self._make_task(mission_id=1, workflow_phase="phase_8"),
+            self._make_task(mission_id=1, workflow_phase="phase_8"),
         ]
         self.assertEqual(_compute_max_concurrent(tasks), 5)
 
     def test_feat_step_id_allows_5(self):
         """Tasks with template_step_id starting with 'feat.' -> returns 5."""
         tasks = [
-            self._make_task(goal_id=1, template_step_id="feat.auth.1"),
-            self._make_task(goal_id=1, template_step_id="feat.auth.2"),
+            self._make_task(mission_id=1, template_step_id="feat.auth.1"),
+            self._make_task(mission_id=1, template_step_id="feat.auth.2"),
         ]
         self.assertEqual(_compute_max_concurrent(tasks), 5)
 
     def test_cap_at_8(self):
-        """5 different goals -> base + 2*4 = 11, capped at 8."""
-        tasks = [self._make_task(goal_id=i) for i in range(1, 6)]
+        """5 different missions -> base + 2*4 = 11, capped at 8."""
+        tasks = [self._make_task(mission_id=i) for i in range(1, 6)]
         self.assertEqual(_compute_max_concurrent(tasks), 8)
 
     def test_string_context_parsed(self):
         """Task with JSON string context is parsed correctly."""
-        tasks = [self._make_task_str_ctx(goal_id=1, workflow_phase="phase_8")]
+        tasks = [self._make_task_str_ctx(mission_id=1, workflow_phase="phase_8")]
         self.assertEqual(_compute_max_concurrent(tasks), 5)
 
-    def test_three_goals(self):
-        """3 goals -> base(3) + 2*2 = 7."""
+    def test_three_missions(self):
+        """3 missions -> base(3) + 2*2 = 7."""
         tasks = [
-            self._make_task(goal_id=1),
-            self._make_task(goal_id=2),
-            self._make_task(goal_id=3),
+            self._make_task(mission_id=1),
+            self._make_task(mission_id=2),
+            self._make_task(mission_id=3),
         ]
         self.assertEqual(_compute_max_concurrent(tasks), 7)
 
@@ -200,12 +200,12 @@ class TestCascadeSkipIntegration(unittest.TestCase):
                 mock_propagate, create=True,
             ):
                 await hooks_mod._check_conditional_triggers(
-                    goal_id=42,
+                    mission_id=42,
                     output_names=["trigger_artifact"],
                     store=mock_store,
                 )
 
-            # Verify propagate_skips was called with correct goal_id
+            # Verify propagate_skips was called with correct mission_id
             mock_propagate.assert_called_once_with(42)
             # Verify update_task_by_context_field was called for each excluded step
             self.assertEqual(mock_update_ctx.call_count, 2)
@@ -237,9 +237,9 @@ class TestTransactionalExpansion(unittest.TestCase):
             mock_wf.get_template.return_value = mock_template
 
             fake_tasks = [
-                {"description": "task1", "goal_id": 1},
-                {"description": "task2", "goal_id": 1},
-                {"description": "task3", "goal_id": 1},
+                {"description": "task1", "mission_id": 1},
+                {"description": "task2", "mission_id": 1},
+                {"description": "task3", "mission_id": 1},
             ]
 
             backlog = json.dumps([
@@ -265,7 +265,7 @@ class TestTransactionalExpansion(unittest.TestCase):
                 mock_update,
             ):
                 await hooks_mod._trigger_template_expansion(
-                    goal_id=1, backlog_text=backlog
+                    mission_id=1, backlog_text=backlog
                 )
 
             # The first 2 inserted tasks (101, 102) should be cancelled
@@ -292,8 +292,8 @@ class TestTransactionalExpansion(unittest.TestCase):
             mock_wf.get_template.return_value = mock_template
 
             fake_tasks = [
-                {"description": "task1", "goal_id": 1},
-                {"description": "task2", "goal_id": 1},
+                {"description": "task1", "mission_id": 1},
+                {"description": "task2", "mission_id": 1},
             ]
 
             backlog = json.dumps([
@@ -319,7 +319,7 @@ class TestTransactionalExpansion(unittest.TestCase):
                 mock_update,
             ):
                 await hooks_mod._trigger_template_expansion(
-                    goal_id=1, backlog_text=backlog
+                    mission_id=1, backlog_text=backlog
                 )
 
             # No rollback — update_task should not be called

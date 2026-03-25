@@ -84,12 +84,12 @@ class TestExpandStepsToTasks(unittest.TestCase):
             self._make_step(id="0.1", name="step_a", depends_on=[]),
             self._make_step(id="0.2", name="step_b", depends_on=["0.1"]),
         ]
-        tasks = expand_steps_to_tasks(steps, goal_id="g1")
+        tasks = expand_steps_to_tasks(steps, mission_id="g1")
         self.assertEqual(len(tasks), 2)
         self.assertEqual(tasks[0]["title"], "[0.1] step_a")
         self.assertEqual(tasks[1]["title"], "[0.2] step_b")
         self.assertEqual(tasks[1]["depends_on_steps"], ["0.1"])
-        self.assertEqual(tasks[0]["goal_id"], "g1")
+        self.assertEqual(tasks[0]["mission_id"], "g1")
 
     def test_expand_maps_v2_agents(self):
         """router maps to executor, others pass through."""
@@ -97,7 +97,7 @@ class TestExpandStepsToTasks(unittest.TestCase):
             self._make_step(id="1.1", agent="router"),
             self._make_step(id="1.2", agent="planner"),
         ]
-        tasks = expand_steps_to_tasks(steps, goal_id="g1")
+        tasks = expand_steps_to_tasks(steps, mission_id="g1")
         self.assertEqual(tasks[0]["agent_type"], "executor")
         self.assertEqual(tasks[1]["agent_type"], "planner")
 
@@ -108,26 +108,26 @@ class TestExpandStepsToTasks(unittest.TestCase):
             type="recurring",
             trigger="Execute at sprint boundary",
         )
-        tasks = expand_steps_to_tasks([step], goal_id="g1")
+        tasks = expand_steps_to_tasks([step], mission_id="g1")
         ctx = tasks[0]["context"]
         self.assertEqual(ctx["step_type"], "recurring")
         self.assertEqual(ctx["trigger"], "Execute at sprint boundary")
 
     def test_expand_preserves_may_need_clarification(self):
         step = self._make_step(may_need_clarification=True)
-        tasks = expand_steps_to_tasks([step], goal_id="g1")
+        tasks = expand_steps_to_tasks([step], mission_id="g1")
         self.assertTrue(tasks[0]["context"]["may_need_clarification"])
 
     def test_expand_with_initial_context(self):
         """Initial context is propagated into workflow_context."""
         step = self._make_step()
-        tasks = expand_steps_to_tasks([step], goal_id="g1", initial_context={"user_idea": "build X"})
+        tasks = expand_steps_to_tasks([step], mission_id="g1", initial_context={"user_idea": "build X"})
         self.assertEqual(tasks[0]["context"]["workflow_context"], {"user_idea": "build X"})
 
     def test_expand_without_initial_context(self):
         """Without initial_context, workflow_context is absent."""
         step = self._make_step()
-        tasks = expand_steps_to_tasks([step], goal_id="g1")
+        tasks = expand_steps_to_tasks([step], mission_id="g1")
         self.assertNotIn("workflow_context", tasks[0]["context"])
 
     def test_expand_context_fields(self):
@@ -138,7 +138,7 @@ class TestExpandStepsToTasks(unittest.TestCase):
             done_when="Brief completed",
             condition="Only if needed",
         )
-        tasks = expand_steps_to_tasks([step], goal_id="g1")
+        tasks = expand_steps_to_tasks([step], mission_id="g1")
         ctx = tasks[0]["context"]
         self.assertEqual(ctx["workflow_step_id"], "2.1")
         self.assertEqual(ctx["workflow_phase"], "phase_2")
@@ -151,7 +151,7 @@ class TestExpandStepsToTasks(unittest.TestCase):
 
     def test_tier_is_auto(self):
         step = self._make_step()
-        tasks = expand_steps_to_tasks([step], goal_id="g1")
+        tasks = expand_steps_to_tasks([step], mission_id="g1")
         self.assertEqual(tasks[0]["tier"], "auto")
 
     def test_priority_from_phase(self):
@@ -162,7 +162,7 @@ class TestExpandStepsToTasks(unittest.TestCase):
             self._make_step(id="7.1", phase="phase_7"),
             self._make_step(id="15.1", phase="phase_15"),
         ]
-        tasks = expand_steps_to_tasks(steps, goal_id="g1")
+        tasks = expand_steps_to_tasks(steps, mission_id="g1")
         priorities = {t["context"]["workflow_step_id"]: t["priority"] for t in tasks}
         self.assertEqual(priorities["-1.1"], 10)
         self.assertEqual(priorities["0.1"], 10)

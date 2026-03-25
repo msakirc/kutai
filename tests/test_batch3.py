@@ -40,10 +40,10 @@ class TestDBIndexes:
         source = inspect.getsource(db_module.init_db)
         # Verify key indexes are defined
         assert "idx_tasks_status" in source
-        assert "idx_tasks_goal_id" in source
+        assert "idx_tasks_mission_id" in source
         assert "idx_tasks_status_priority" in source
         assert "idx_conversations_task_id" in source
-        assert "idx_memory_goal_category" in source
+        assert "idx_memory_mission_category" in source
 
 
 class TestCredentialExpiration:

@@ -9,7 +9,7 @@ Covers:
 - URL parameter encoding (prevents path traversal in integrations)
 - Error recovery dedup (stable titles prevent duplicate recovery tasks)
 - Subtask cap notification (warns when subtasks are dropped)
-- Workflow timeout (pauses goals exceeding timeout_hours)
+- Workflow timeout (pauses missions exceeding timeout_hours)
 """
 
 import asyncio
@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 class TestSQLColumnWhitelist(unittest.TestCase):
-    """Test that update_task/update_goal reject invalid column names."""
+    """Test that update_task/update_mission reject invalid column names."""
 
     def test_valid_task_columns_accepted(self):
         from src.infra.db import _validate_columns, _TASK_COLUMNS
@@ -40,14 +40,14 @@ class TestSQLColumnWhitelist(unittest.TestCase):
             )
         self.assertIn("Invalid column", str(ctx.exception))
 
-    def test_valid_goal_columns_accepted(self):
-        from src.infra.db import _validate_columns, _GOAL_COLUMNS
-        _validate_columns({"title": "new", "status": "done"}, _GOAL_COLUMNS, "goals")
+    def test_valid_mission_columns_accepted(self):
+        from src.infra.db import _validate_columns, _MISSION_COLUMNS
+        _validate_columns({"title": "new", "status": "done"}, _MISSION_COLUMNS, "missions")
 
-    def test_invalid_goal_column_rejected(self):
-        from src.infra.db import _validate_columns, _GOAL_COLUMNS
+    def test_invalid_mission_column_rejected(self):
+        from src.infra.db import _validate_columns, _MISSION_COLUMNS
         with self.assertRaises(ValueError):
-            _validate_columns({"password": "secret"}, _GOAL_COLUMNS, "goals")
+            _validate_columns({"password": "secret"}, _MISSION_COLUMNS, "missions")
 
     def test_empty_kwargs_accepted(self):
         from src.infra.db import _validate_columns, _TASK_COLUMNS
@@ -64,7 +64,7 @@ class TestSQLColumnWhitelist(unittest.TestCase):
 
 
 class TestBlackboardLocking(unittest.TestCase):
-    """Test that blackboard cache uses per-goal locks."""
+    """Test that blackboard cache uses per-mission locks."""
 
     def test_lock_creation(self):
         from src.collaboration.blackboard import _get_lock, _BLACKBOARD_LOCKS
@@ -72,8 +72,8 @@ class TestBlackboardLocking(unittest.TestCase):
         lock1 = _get_lock(1)
         lock2 = _get_lock(1)
         lock3 = _get_lock(2)
-        self.assertIs(lock1, lock2)  # Same goal → same lock
-        self.assertIsNot(lock1, lock3)  # Different goal → different lock
+        self.assertIs(lock1, lock2)  # Same mission → same lock
+        self.assertIsNot(lock1, lock3)  # Different mission → different lock
         self.assertIsInstance(lock1, asyncio.Lock)
 
     def test_clear_cache_clears_locks(self):
@@ -265,7 +265,7 @@ class TestDBIndexes(unittest.TestCase):
         source = inspect.getsource(init_db)
         self.assertIn("idx_tasks_hash", source)
         self.assertIn("idx_tasks_parent", source)
-        self.assertIn("idx_goals_status", source)
+        self.assertIn("idx_missions_status", source)
         self.assertIn("idx_credentials_service", source)
 
 

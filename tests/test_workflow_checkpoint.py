@@ -37,7 +37,7 @@ class TestUpsertWorkflowCheckpoint(unittest.TestCase):
         mock_get_db.return_value = mock_db
 
         self._run(upsert_workflow_checkpoint(
-            goal_id=1,
+            mission_id=1,
             workflow_name="idea_to_product_v2",
             current_phase="phase_1",
             completed_phases=["phase_0"],
@@ -50,7 +50,7 @@ class TestUpsertWorkflowCheckpoint(unittest.TestCase):
         params = call_args[0][1]
 
         self.assertIn("INSERT OR REPLACE", sql)
-        self.assertEqual(params[0], 1)  # goal_id
+        self.assertEqual(params[0], 1)  # mission_id
         self.assertEqual(params[1], "idea_to_product_v2")  # workflow_name
         self.assertEqual(params[2], "phase_1")  # current_phase
         self.assertEqual(json.loads(params[3]), ["phase_0"])  # completed_phases
@@ -67,7 +67,7 @@ class TestUpsertWorkflowCheckpoint(unittest.TestCase):
         mock_get_db.return_value = mock_db
 
         self._run(upsert_workflow_checkpoint(
-            goal_id=5,
+            mission_id=5,
             workflow_name="test_wf",
         ))
 
@@ -94,11 +94,11 @@ class TestCheckPhaseCompletion(unittest.TestCase):
 
     @patch("src.workflows.engine.hooks.upsert_workflow_checkpoint", new_callable=AsyncMock, create=True)
     @patch("src.workflows.engine.hooks.get_workflow_checkpoint", new_callable=AsyncMock, create=True)
-    @patch("src.workflows.engine.hooks.get_tasks_for_goal", new_callable=AsyncMock, create=True)
+    @patch("src.workflows.engine.hooks.get_tasks_for_mission", new_callable=AsyncMock, create=True)
     def test_phase_complete_when_all_done(self, mock_get_tasks, mock_get_cp, mock_upsert):
         """Returns True and checkpoints when all phase tasks are terminal."""
         # We need to patch at the import point inside the function
-        with patch("src.infra.db.get_tasks_for_goal", new_callable=AsyncMock) as m_tasks, \
+        with patch("src.infra.db.get_tasks_for_mission", new_callable=AsyncMock) as m_tasks, \
              patch("src.infra.db.get_workflow_checkpoint", new_callable=AsyncMock) as m_cp, \
              patch("src.infra.db.upsert_workflow_checkpoint", new_callable=AsyncMock) as m_upsert:
 
@@ -122,7 +122,7 @@ class TestCheckPhaseCompletion(unittest.TestCase):
 
     def test_phase_incomplete_when_tasks_pending(self):
         """Returns False when some phase tasks are still pending."""
-        with patch("src.infra.db.get_tasks_for_goal", new_callable=AsyncMock) as m_tasks, \
+        with patch("src.infra.db.get_tasks_for_mission", new_callable=AsyncMock) as m_tasks, \
              patch("src.infra.db.get_workflow_checkpoint", new_callable=AsyncMock), \
              patch("src.infra.db.upsert_workflow_checkpoint", new_callable=AsyncMock) as m_upsert:
 
@@ -139,7 +139,7 @@ class TestCheckPhaseCompletion(unittest.TestCase):
 
     def test_phase_no_tasks_returns_false(self):
         """Returns False when no tasks match the phase."""
-        with patch("src.infra.db.get_tasks_for_goal", new_callable=AsyncMock) as m_tasks, \
+        with patch("src.infra.db.get_tasks_for_mission", new_callable=AsyncMock) as m_tasks, \
              patch("src.infra.db.get_workflow_checkpoint", new_callable=AsyncMock), \
              patch("src.infra.db.upsert_workflow_checkpoint", new_callable=AsyncMock):
 
@@ -154,7 +154,7 @@ class TestCheckPhaseCompletion(unittest.TestCase):
 
     def test_cancelled_tasks_count_as_terminal(self):
         """Cancelled tasks are considered terminal."""
-        with patch("src.infra.db.get_tasks_for_goal", new_callable=AsyncMock) as m_tasks, \
+        with patch("src.infra.db.get_tasks_for_mission", new_callable=AsyncMock) as m_tasks, \
              patch("src.infra.db.get_workflow_checkpoint", new_callable=AsyncMock) as m_cp, \
              patch("src.infra.db.upsert_workflow_checkpoint", new_callable=AsyncMock):
 
@@ -186,23 +186,23 @@ class TestFindResumable(unittest.TestCase):
         return self.loop.run_until_complete(coro)
 
     @patch("src.infra.db.get_workflow_checkpoint", new_callable=AsyncMock)
-    @patch("src.infra.db.get_active_goals", new_callable=AsyncMock)
-    def test_returns_none_when_no_active_workflow(self, mock_goals, mock_cp):
-        """Returns None when no active goals."""
+    @patch("src.infra.db.get_active_missions", new_callable=AsyncMock)
+    def test_returns_none_when_no_active_workflow(self, mock_missions, mock_cp):
+        """Returns None when no active missions."""
         from src.workflows.engine.runner import WorkflowRunner
 
-        mock_goals.return_value = []
+        mock_missions.return_value = []
         runner = WorkflowRunner()
         result = self._run(runner.find_resumable("idea_to_product_v2"))
         self.assertIsNone(result)
 
     @patch("src.infra.db.get_workflow_checkpoint", new_callable=AsyncMock)
-    @patch("src.infra.db.get_active_goals", new_callable=AsyncMock)
-    def test_returns_goal_id_when_checkpoint_exists(self, mock_goals, mock_cp):
-        """Returns goal_id when an active goal has a checkpoint."""
+    @patch("src.infra.db.get_active_missions", new_callable=AsyncMock)
+    def test_returns_mission_id_when_checkpoint_exists(self, mock_missions, mock_cp):
+        """Returns mission_id when an active mission has a checkpoint."""
         from src.workflows.engine.runner import WorkflowRunner
 
-        mock_goals.return_value = [
+        mock_missions.return_value = [
             {"id": 42, "context": json.dumps({"workflow_name": "idea_to_product_v2"})},
         ]
         mock_cp.return_value = {"workflow_name": "idea_to_product_v2", "completed_phases": []}
@@ -211,12 +211,12 @@ class TestFindResumable(unittest.TestCase):
         self.assertEqual(result, 42)
 
     @patch("src.infra.db.get_workflow_checkpoint", new_callable=AsyncMock)
-    @patch("src.infra.db.get_active_goals", new_callable=AsyncMock)
-    def test_skips_goals_without_checkpoint(self, mock_goals, mock_cp):
-        """Skips active goals that have no checkpoint."""
+    @patch("src.infra.db.get_active_missions", new_callable=AsyncMock)
+    def test_skips_missions_without_checkpoint(self, mock_missions, mock_cp):
+        """Skips active missions that have no checkpoint."""
         from src.workflows.engine.runner import WorkflowRunner
 
-        mock_goals.return_value = [
+        mock_missions.return_value = [
             {"id": 10, "context": json.dumps({"workflow_name": "idea_to_product_v2"})},
         ]
         mock_cp.return_value = None
@@ -225,12 +225,12 @@ class TestFindResumable(unittest.TestCase):
         self.assertIsNone(result)
 
     @patch("src.infra.db.get_workflow_checkpoint", new_callable=AsyncMock)
-    @patch("src.infra.db.get_active_goals", new_callable=AsyncMock)
-    def test_skips_wrong_workflow_name(self, mock_goals, mock_cp):
-        """Skips active goals with a different workflow_name."""
+    @patch("src.infra.db.get_active_missions", new_callable=AsyncMock)
+    def test_skips_wrong_workflow_name(self, mock_missions, mock_cp):
+        """Skips active missions with a different workflow_name."""
         from src.workflows.engine.runner import WorkflowRunner
 
-        mock_goals.return_value = [
+        mock_missions.return_value = [
             {"id": 10, "context": json.dumps({"workflow_name": "other_workflow"})},
         ]
         runner = WorkflowRunner()
@@ -255,7 +255,7 @@ class TestResume(unittest.TestCase):
     @patch("src.infra.db.add_task", new_callable=AsyncMock)
     @patch("src.infra.db.update_task", new_callable=AsyncMock)
     @patch("src.infra.db.get_workflow_checkpoint", new_callable=AsyncMock)
-    @patch("src.infra.db.get_tasks_for_goal", new_callable=AsyncMock)
+    @patch("src.infra.db.get_tasks_for_mission", new_callable=AsyncMock)
     def test_resume_resets_failed_tasks(self, mock_tasks, mock_cp, mock_update, mock_add):
         """Failed tasks are reset to pending."""
         from src.workflows.engine.runner import WorkflowRunner
@@ -286,7 +286,7 @@ class TestResume(unittest.TestCase):
         mock_update.assert_called_once_with(11, status="pending", retry_count=0, error=None)
 
     @patch("src.infra.db.get_workflow_checkpoint", new_callable=AsyncMock)
-    @patch("src.infra.db.get_tasks_for_goal", new_callable=AsyncMock)
+    @patch("src.infra.db.get_tasks_for_mission", new_callable=AsyncMock)
     def test_resume_raises_on_missing_checkpoint(self, mock_tasks, mock_cp):
         """Raises ValueError if no checkpoint exists."""
         from src.workflows.engine.runner import WorkflowRunner
@@ -302,7 +302,7 @@ class TestResume(unittest.TestCase):
     @patch("src.infra.db.add_task", new_callable=AsyncMock)
     @patch("src.infra.db.update_task", new_callable=AsyncMock)
     @patch("src.infra.db.get_workflow_checkpoint", new_callable=AsyncMock)
-    @patch("src.infra.db.get_tasks_for_goal", new_callable=AsyncMock)
+    @patch("src.infra.db.get_tasks_for_mission", new_callable=AsyncMock)
     def test_resume_warms_artifact_cache(self, mock_tasks, mock_cp, mock_update, mock_add):
         """warm_cache is called during resume."""
         from src.workflows.engine.runner import WorkflowRunner

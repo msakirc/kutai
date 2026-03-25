@@ -11,8 +11,8 @@ from src.infra.dead_letter import (
     resolve_dlq_task,
     retry_dlq_task,
     _classify_error,
-    _check_goal_health,
-    GOAL_DLQ_THRESHOLD,
+    _check_mission_health,
+    MISSION_DLQ_THRESHOLD,
 )
 
 # Patch target: get_db is imported from src.infra.db inside each function
@@ -35,7 +35,7 @@ class TestErrorClassification:
         assert _classify_error("401 Unauthorized", "unknown") == "auth_failure"
 
     def test_budget(self):
-        assert _classify_error("Budget exceeded for goal #5", "unknown") == "budget_exceeded"
+        assert _classify_error("Budget exceeded for mission #5", "unknown") == "budget_exceeded"
 
     def test_parse_error(self):
         assert _classify_error("JSON parse error at line 5", "unknown") == "parse_error"
@@ -72,10 +72,10 @@ class TestDLQOperations:
     def test_quarantine_task(self):
         mock_db, cursor = _make_mock_db()
         with patch(DB_PATCH, AsyncMock(return_value=mock_db)):
-            with patch("src.infra.dead_letter._check_goal_health", AsyncMock()):
+            with patch("src.infra.dead_letter._check_mission_health", AsyncMock()):
                 dlq_id = _run(quarantine_task(
                     task_id=42,
-                    goal_id=10,
+                    mission_id=10,
                     error="Test error",
                     original_agent="executor",
                     retry_count=3,
@@ -86,7 +86,7 @@ class TestDLQOperations:
     def test_get_dlq_tasks_empty(self):
         mock_db, cursor = _make_mock_db()
         with patch(DB_PATCH, AsyncMock(return_value=mock_db)):
-            tasks = _run(get_dlq_tasks(goal_id=10))
+            tasks = _run(get_dlq_tasks(mission_id=10))
             assert tasks == []
 
     def test_resolve_dlq_task(self):
@@ -124,10 +124,10 @@ class TestDLQOperations:
         """Quarantine should auto-classify rate limit errors."""
         mock_db, cursor = _make_mock_db()
         with patch(DB_PATCH, AsyncMock(return_value=mock_db)):
-            with patch("src.infra.dead_letter._check_goal_health", AsyncMock()):
+            with patch("src.infra.dead_letter._check_mission_health", AsyncMock()):
                 _run(quarantine_task(
                     task_id=99,
-                    goal_id=5,
+                    mission_id=5,
                     error="429 rate limit exceeded for model",
                 ))
                 # Check the INSERT call includes rate_limit category
@@ -138,15 +138,15 @@ class TestDLQOperations:
                 assert len(insert_call) >= 1
 
 
-class TestGoalHealthCheck:
-    def test_goal_paused_on_threshold(self):
-        """Goal should be paused when DLQ threshold is reached."""
+class TestMissionHealthCheck:
+    def test_mission_paused_on_threshold(self):
+        """Mission should be paused when DLQ threshold is reached."""
         mock_db, cursor = _make_mock_db()
-        cursor.fetchone = AsyncMock(return_value=(GOAL_DLQ_THRESHOLD,))
+        cursor.fetchone = AsyncMock(return_value=(MISSION_DLQ_THRESHOLD,))
 
-        mock_update_goal = AsyncMock()
+        mock_update_mission = AsyncMock()
 
-        # Mock get_bot at the import site inside _check_goal_health
+        # Mock get_bot at the import site inside _check_mission_health
         mock_telegram = MagicMock()
         mock_telegram.get_bot = MagicMock(return_value=None)
 
@@ -155,20 +155,20 @@ class TestGoalHealthCheck:
         sys.modules.setdefault("telegram.ext", MagicMock())
 
         with patch(DB_PATCH, AsyncMock(return_value=mock_db)):
-            with patch("src.infra.db.update_goal", mock_update_goal):
-                # Patch at the point where _check_goal_health imports it
+            with patch("src.infra.db.update_mission", mock_update_mission):
+                # Patch at the point where _check_mission_health imports it
                 with patch.dict("sys.modules", {"src.app.telegram_bot": mock_telegram}):
-                    _run(_check_goal_health(goal_id=10))
-                    mock_update_goal.assert_called_once_with(10, status="paused")
+                    _run(_check_mission_health(mission_id=10))
+                    mock_update_mission.assert_called_once_with(10, status="paused")
 
-    def test_goal_not_paused_below_threshold(self):
-        """Goal should NOT be paused when below threshold."""
+    def test_mission_not_paused_below_threshold(self):
+        """Mission should NOT be paused when below threshold."""
         mock_db, cursor = _make_mock_db()
-        cursor.fetchone = AsyncMock(return_value=(GOAL_DLQ_THRESHOLD - 1,))
+        cursor.fetchone = AsyncMock(return_value=(MISSION_DLQ_THRESHOLD - 1,))
 
-        mock_update_goal = AsyncMock()
+        mock_update_mission = AsyncMock()
 
         with patch(DB_PATCH, AsyncMock(return_value=mock_db)):
-            with patch("src.infra.db.update_goal", mock_update_goal):
-                _run(_check_goal_health(goal_id=10))
-                mock_update_goal.assert_not_called()
+            with patch("src.infra.db.update_mission", mock_update_mission):
+                _run(_check_mission_health(mission_id=10))
+                mock_update_mission.assert_not_called()

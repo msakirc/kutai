@@ -56,7 +56,7 @@ class TestFormatStatusMessage(unittest.TestCase):
     """Tests for format_status_message."""
 
     def test_format_status_message(self):
-        """Output has header with workflow_id and goal_id, and phase names."""
+        """Output has header with workflow_id and mission_id, and phase names."""
         progress = {
             "phase_0": {"completed": 1, "total": 2, "name": "Idea Capture & Clarification"},
         }

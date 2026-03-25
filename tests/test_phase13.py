@@ -58,7 +58,7 @@ class TestBlackboardOperations(unittest.TestCase):
     def setUp(self):
         from collaboration.blackboard import _BLACKBOARD_CACHE, DEFAULT_BLACKBOARD
         import json
-        # Set up a fresh in-memory blackboard for goal_id=99
+        # Set up a fresh in-memory blackboard for mission_id=99
         _BLACKBOARD_CACHE[99] = json.loads(json.dumps(DEFAULT_BLACKBOARD))
 
     def tearDown(self):
@@ -293,12 +293,12 @@ class TestPlanVerificationModule(unittest.TestCase):
             {"title": "B", "agent_type": "coder", "depends_on_step": 0},
             {"title": "C", "agent_type": "writer", "depends_on_step": 1},
         ]
-        issues = verify_plan(subtasks, goal_budget=10.0)
+        issues = verify_plan(subtasks, mission_budget=10.0)
         self.assertEqual(len(issues), 0, f"Expected no issues: {issues}")
 
     def test_verify_empty_plan(self):
         from collaboration.plan_verification import verify_plan
-        issues = verify_plan([], goal_budget=10.0)
+        issues = verify_plan([], mission_budget=10.0)
         self.assertEqual(len(issues), 0)
 
 
@@ -312,7 +312,7 @@ class TestPlanVerificationCycles(unittest.TestCase):
             {"title": "B", "agent_type": "coder", "depends_on_step": 0},
             {"title": "C", "agent_type": "coder", "depends_on_step": 1},
         ]
-        issues = verify_plan(subtasks, goal_budget=10.0)
+        issues = verify_plan(subtasks, mission_budget=10.0)
         cycle_issues = [i for i in issues if "cycl" in i.lower()]
         self.assertEqual(len(cycle_issues), 0)
 
@@ -323,7 +323,7 @@ class TestPlanVerificationCycles(unittest.TestCase):
             {"title": "B", "agent_type": "coder", "depends_on_step": 0},
             {"title": "C", "agent_type": "coder", "depends_on_step": 1},
         ]
-        issues = verify_plan(subtasks, goal_budget=10.0)
+        issues = verify_plan(subtasks, mission_budget=10.0)
         self.assertTrue(any("cycl" in i.lower() for i in issues))
 
     def test_self_dependency(self):
@@ -331,7 +331,7 @@ class TestPlanVerificationCycles(unittest.TestCase):
         subtasks = [
             {"title": "A", "agent_type": "coder", "depends_on_step": 0},  # self-dep
         ]
-        issues = verify_plan(subtasks, goal_budget=10.0)
+        issues = verify_plan(subtasks, mission_budget=10.0)
         self.assertTrue(any("cycl" in i.lower() for i in issues))
 
     def test_parallel_no_deps(self):
@@ -341,7 +341,7 @@ class TestPlanVerificationCycles(unittest.TestCase):
             {"title": "B", "agent_type": "coder", "depends_on_step": None},
             {"title": "C", "agent_type": "coder", "depends_on_step": None},
         ]
-        issues = verify_plan(subtasks, goal_budget=10.0)
+        issues = verify_plan(subtasks, mission_budget=10.0)
         cycle_issues = [i for i in issues if "cycl" in i.lower()]
         self.assertEqual(len(cycle_issues), 0)
 
@@ -356,7 +356,7 @@ class TestPlanVerificationAgentTypes(unittest.TestCase):
              "description": "Write unit tests for auth.py",
              "agent_type": "writer"},
         ]
-        issues = verify_plan(subtasks, goal_budget=10.0)
+        issues = verify_plan(subtasks, mission_budget=10.0)
         self.assertTrue(any("agent" in i.lower() for i in issues))
 
     def test_research_task_with_researcher_ok(self):
@@ -366,7 +366,7 @@ class TestPlanVerificationAgentTypes(unittest.TestCase):
              "description": "Compare Flask and FastAPI",
              "agent_type": "researcher"},
         ]
-        issues = verify_plan(subtasks, goal_budget=10.0)
+        issues = verify_plan(subtasks, mission_budget=10.0)
         agent_issues = [i for i in issues if "agent" in i.lower()]
         self.assertEqual(len(agent_issues), 0)
 
@@ -377,7 +377,7 @@ class TestPlanVerificationAgentTypes(unittest.TestCase):
              "description": "Create endpoints",
              "agent_type": "executor"},
         ]
-        issues = verify_plan(subtasks, goal_budget=10.0)
+        issues = verify_plan(subtasks, mission_budget=10.0)
         agent_issues = [i for i in issues if "agent" in i.lower()]
         self.assertEqual(len(agent_issues), 0)
 
@@ -391,7 +391,7 @@ class TestPlanVerificationDuplicates(unittest.TestCase):
             {"title": "Build the API", "agent_type": "coder"},
             {"title": "Build the API", "agent_type": "coder"},
         ]
-        issues = verify_plan(subtasks, goal_budget=10.0)
+        issues = verify_plan(subtasks, mission_budget=10.0)
         self.assertTrue(any("duplicate" in i.lower() for i in issues))
 
     def test_unique_titles(self):
@@ -400,7 +400,7 @@ class TestPlanVerificationDuplicates(unittest.TestCase):
             {"title": "Build the API", "agent_type": "coder"},
             {"title": "Write the docs", "agent_type": "writer"},
         ]
-        issues = verify_plan(subtasks, goal_budget=10.0)
+        issues = verify_plan(subtasks, mission_budget=10.0)
         dup_issues = [i for i in issues if "duplicate" in i.lower()]
         self.assertEqual(len(dup_issues), 0)
 
@@ -414,7 +414,7 @@ class TestPlanVerificationBudget(unittest.TestCase):
             {"title": "A", "agent_type": "coder", "tier": "cheap"},
             {"title": "B", "agent_type": "coder", "tier": "cheap"},
         ]
-        issues = verify_plan(subtasks, goal_budget=10.0)
+        issues = verify_plan(subtasks, mission_budget=10.0)
         budget_issues = [i for i in issues if "budget" in i.lower()]
         self.assertEqual(len(budget_issues), 0)
 
@@ -424,7 +424,7 @@ class TestPlanVerificationBudget(unittest.TestCase):
             {"title": f"Task {i}", "agent_type": "coder", "tier": "expensive"}
             for i in range(100)
         ]
-        issues = verify_plan(subtasks, goal_budget=0.01)
+        issues = verify_plan(subtasks, mission_budget=0.01)
         self.assertTrue(any("budget" in i.lower() for i in issues))
 
 
@@ -510,19 +510,19 @@ class TestParallelTasks(unittest.TestCase):
     def test_compute_max_concurrent(self):
         from orchestrator import _compute_max_concurrent
         tasks = [
-            {"goal_id": 1, "title": "A"},
-            {"goal_id": 2, "title": "B"},
-            {"goal_id": 3, "title": "C"},
+            {"mission_id": 1, "title": "A"},
+            {"mission_id": 2, "title": "B"},
+            {"mission_id": 3, "title": "C"},
         ]
         result = _compute_max_concurrent(tasks)
         self.assertGreaterEqual(result, 2)
         self.assertLessEqual(result, 4)
 
-    def test_compute_max_concurrent_single_goal(self):
+    def test_compute_max_concurrent_single_mission(self):
         from orchestrator import _compute_max_concurrent
         tasks = [
-            {"goal_id": 1, "title": "A"},
-            {"goal_id": 1, "title": "B"},
+            {"mission_id": 1, "title": "A"},
+            {"mission_id": 1, "title": "B"},
         ]
         result = _compute_max_concurrent(tasks)
         self.assertEqual(result, 2)  # base MAX_CONCURRENT_TASKS

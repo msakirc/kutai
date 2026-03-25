@@ -70,7 +70,7 @@ async def _run_human_gate_logic(task, request_approval, update_task_fn):
                 task.get("title", ""),
                 task.get("description", "")[:200],
                 tier=task.get("tier", "auto"),
-                goal_id=task.get("goal_id"),
+                mission_id=task.get("mission_id"),
             )
             if not approved:
                 await update_task_fn(task["id"], status="paused")
@@ -166,15 +166,15 @@ class _DBTestBase(unittest.TestCase):
 class TestHumanGateDetection(unittest.TestCase):
 
     def test_human_gate_true_detected(self):
-        ctx = {"is_workflow_step": True, "human_gate": True, "goal_id": 42}
+        ctx = {"is_workflow_step": True, "human_gate": True, "mission_id": 42}
         self.assertTrue(ctx.get("human_gate"))
 
     def test_human_gate_absent_skips(self):
-        ctx = {"is_workflow_step": True, "goal_id": 42}
+        ctx = {"is_workflow_step": True, "mission_id": 42}
         self.assertFalse(ctx.get("human_gate"))
 
     def test_human_gate_false_skips(self):
-        ctx = {"is_workflow_step": True, "human_gate": False, "goal_id": 42}
+        ctx = {"is_workflow_step": True, "human_gate": False, "mission_id": 42}
         self.assertFalse(ctx.get("human_gate"))
 
     def test_human_gate_from_json_context(self):
@@ -199,7 +199,7 @@ class TestHumanGateBlocks(unittest.TestCase):
             "title": "Deploy to prod",
             "description": "Deploy the application to production",
             "tier": "auto",
-            "goal_id": None,
+            "mission_id": None,
             "context": json.dumps({"human_gate": True}),
         }
 
@@ -221,7 +221,7 @@ class TestHumanGateBlocks(unittest.TestCase):
             "title": "Deploy to prod",
             "description": "Deploy the application to production",
             "tier": "auto",
-            "goal_id": 5,
+            "mission_id": 5,
             "context": json.dumps({"human_gate": True}),
         }
 
@@ -229,9 +229,9 @@ class TestHumanGateBlocks(unittest.TestCase):
 
         self.assertEqual(result, "approved")
         request_approval.assert_called_once()
-        # Verify goal_id is passed through
+        # Verify mission_id is passed through
         call_kwargs = request_approval.call_args[1]
-        self.assertEqual(call_kwargs["goal_id"], 5)
+        self.assertEqual(call_kwargs["mission_id"], 5)
         update_task.assert_not_called()
 
 
@@ -248,7 +248,7 @@ class TestHumanGateSkipped(unittest.TestCase):
             "title": "Simple task",
             "description": "No gate needed",
             "tier": "auto",
-            "goal_id": None,
+            "mission_id": None,
             "context": "{}",
         }
 
@@ -268,7 +268,7 @@ class TestHumanGateSkipped(unittest.TestCase):
             "title": "Simple task",
             "description": "No gate needed",
             "tier": "auto",
-            "goal_id": None,
+            "mission_id": None,
             "context": json.dumps({"human_gate": False}),
         }
 
@@ -291,7 +291,7 @@ class TestHumanGateErrorHandling(unittest.TestCase):
             "title": "Important task",
             "description": "Gate should fail gracefully",
             "tier": "auto",
-            "goal_id": None,
+            "mission_id": None,
             "context": json.dumps({"human_gate": True}),
         }
 

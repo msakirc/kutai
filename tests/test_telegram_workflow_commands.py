@@ -90,24 +90,24 @@ class TestWfstatusCommand(unittest.TestCase):
         msg = update.message.reply_text.call_args[0][0]
         self.assertIn("number", msg.lower())
 
-    @patch("src.app.telegram_bot.get_goal", new_callable=AsyncMock)
-    @patch("src.app.telegram_bot.get_tasks_for_goal", new_callable=AsyncMock)
-    def test_goal_not_found(self, mock_tasks, mock_goal):
+    @patch("src.app.telegram_bot.get_mission", new_callable=AsyncMock)
+    @patch("src.app.telegram_bot.get_tasks_for_mission", new_callable=AsyncMock)
+    def test_mission_not_found(self, mock_tasks, mock_mission):
         bot = _make_bot()
         update, context = _make_update_context(args=["999"])
-        mock_goal.return_value = None
+        mock_mission.return_value = None
 
         run_async(bot.cmd_wfstatus(update, context))
 
         msg = update.message.reply_text.call_args[0][0]
         self.assertIn("not found", msg)
 
-    @patch("src.app.telegram_bot.get_goal", new_callable=AsyncMock)
-    @patch("src.app.telegram_bot.get_tasks_for_goal", new_callable=AsyncMock)
-    def test_no_tasks(self, mock_tasks, mock_goal):
+    @patch("src.app.telegram_bot.get_mission", new_callable=AsyncMock)
+    @patch("src.app.telegram_bot.get_tasks_for_mission", new_callable=AsyncMock)
+    def test_no_tasks(self, mock_tasks, mock_mission):
         bot = _make_bot()
         update, context = _make_update_context(args=["1"])
-        mock_goal.return_value = {"id": 1, "title": "T", "context": "{}"}
+        mock_mission.return_value = {"id": 1, "title": "T", "context": "{}"}
         mock_tasks.return_value = []
 
         run_async(bot.cmd_wfstatus(update, context))
@@ -115,12 +115,12 @@ class TestWfstatusCommand(unittest.TestCase):
         msg = update.message.reply_text.call_args[0][0]
         self.assertIn("No tasks found", msg)
 
-    @patch("src.app.telegram_bot.get_goal", new_callable=AsyncMock)
-    @patch("src.app.telegram_bot.get_tasks_for_goal", new_callable=AsyncMock)
-    def test_valid_goal_returns_status(self, mock_tasks, mock_goal):
+    @patch("src.app.telegram_bot.get_mission", new_callable=AsyncMock)
+    @patch("src.app.telegram_bot.get_tasks_for_mission", new_callable=AsyncMock)
+    def test_valid_mission_returns_status(self, mock_tasks, mock_mission):
         bot = _make_bot()
         update, context = _make_update_context(args=["1"])
-        mock_goal.return_value = {
+        mock_mission.return_value = {
             "id": 1,
             "title": "Test",
             "context": '{"workflow_name": "idea_to_product_v2"}',
@@ -136,7 +136,7 @@ class TestWfstatusCommand(unittest.TestCase):
 
         msg = update.message.reply_text.call_args[0][0]
         self.assertIn("Workflow Status", msg)
-        self.assertIn("goal #1", msg)
+        self.assertIn("mission #1", msg)
 
 
 # ── /product tests ───────────────────────────────────────────────────────────
@@ -212,7 +212,7 @@ class TestResumeCommand(unittest.TestCase):
 
     @patch("src.workflows.engine.runner.WorkflowRunner.resume",
            new_callable=AsyncMock)
-    def test_valid_goal_resumes(self, mock_resume):
+    def test_valid_mission_resumes(self, mock_resume):
         bot = _make_bot()
         update, context = _make_update_context(args=["5"])
         mock_resume.return_value = 5
@@ -226,10 +226,10 @@ class TestResumeCommand(unittest.TestCase):
 
     @patch("src.workflows.engine.runner.WorkflowRunner.resume",
            new_callable=AsyncMock)
-    def test_goal_not_found(self, mock_resume):
+    def test_mission_not_found(self, mock_resume):
         bot = _make_bot()
         update, context = _make_update_context(args=["999"])
-        mock_resume.side_effect = ValueError("Goal #999 not found")
+        mock_resume.side_effect = ValueError("Mission #999 not found")
 
         run_async(bot.cmd_resume(update, context))
 
@@ -242,7 +242,7 @@ class TestResumeCommand(unittest.TestCase):
         bot = _make_bot()
         update, context = _make_update_context(args=["3"])
         mock_resume.side_effect = ValueError(
-            "Goal #3 has no failed or paused tasks to resume"
+            "Mission #3 has no failed or paused tasks to resume"
         )
 
         run_async(bot.cmd_resume(update, context))

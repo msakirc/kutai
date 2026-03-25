@@ -118,10 +118,10 @@ class TestPhaseSummaryInjection(unittest.TestCase):
     def test_injects_phase_summaries(self):
         from src.workflows.engine.hooks import pre_execute_workflow_step, get_artifact_store
         store = get_artifact_store()
-        goal_id = 200
-        self._run(store.store(goal_id, "phase_0_summary", "Phase 0 decisions: use React"))
+        mission_id = 200
+        self._run(store.store(mission_id, "phase_0_summary", "Phase 0 decisions: use React"))
         task = {"description": "Build the frontend",
-            "context": json.dumps({"is_workflow_step": True, "goal_id": goal_id,
+            "context": json.dumps({"is_workflow_step": True, "mission_id": mission_id,
                 "workflow_phase": "phase_1", "input_artifacts": []})}
         result = self._run(pre_execute_workflow_step(task))
         self.assertIn("Phase 0 decisions", result["description"])
@@ -129,7 +129,7 @@ class TestPhaseSummaryInjection(unittest.TestCase):
     def test_no_injection_when_no_summaries(self):
         from src.workflows.engine.hooks import pre_execute_workflow_step
         task = {"description": "Initial step",
-            "context": json.dumps({"is_workflow_step": True, "goal_id": 201,
+            "context": json.dumps({"is_workflow_step": True, "mission_id": 201,
                 "workflow_phase": "phase_0", "input_artifacts": []})}
         result = self._run(pre_execute_workflow_step(task))
         self.assertIn("Initial step", result["description"])

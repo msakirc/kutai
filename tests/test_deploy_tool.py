@@ -54,13 +54,13 @@ class TestPreDeployValidation(unittest.TestCase):
 
     @patch(_PATCH_HEALTH, new_callable=AsyncMock, return_value=_ok_health())
     @patch(_PATCH_GET_CRED, new_callable=AsyncMock, return_value={"token": "tok"})
-    def test_quality_gate_checked_when_goal_id_provided(self, mock_cred, mock_health):
-        """When goal_id is given and gate artifact is missing, deploy should fail."""
+    def test_quality_gate_checked_when_mission_id_provided(self, mock_cred, mock_health):
+        """When mission_id is given and gate artifact is missing, deploy should fail."""
         store = ArtifactStore(use_db=False)
 
         with patch("src.workflows.engine.artifacts.ArtifactStore", return_value=store):
             # No phase_13_gate_result artifact stored -> gate fails
-            result = run_async(deploy("vercel", "/app", goal_id=1))
+            result = run_async(deploy("vercel", "/app", mission_id=1))
             self.assertEqual(result["status"], "error")
             self.assertIn("quality gate", result["error"].lower())
 
@@ -81,7 +81,7 @@ class TestPreDeployValidation(unittest.TestCase):
 
         with patch("src.workflows.engine.artifacts.ArtifactStore", return_value=store), \
              patch(_PATCH_REGISTRY, return_value=mock_registry):
-            result = run_async(deploy("vercel", "/app", goal_id=1))
+            result = run_async(deploy("vercel", "/app", mission_id=1))
             self.assertEqual(result["status"], "ok")
 
 
@@ -304,7 +304,7 @@ class TestDeployStoresArtifact(unittest.TestCase):
     @patch(_PATCH_HEALTH, new_callable=AsyncMock, return_value=_ok_health())
     @patch(_PATCH_GET_CRED, new_callable=AsyncMock, return_value={"token": "tok"})
     def test_stores_deployment_result_artifact(self, mock_cred, mock_health):
-        """When goal_id is given and deploy succeeds, result is stored as artifact."""
+        """When mission_id is given and deploy succeeds, result is stored as artifact."""
         store = ArtifactStore(use_db=False)
         run_async(store.store(1, "phase_13_gate_result", "PASSED"))
 
@@ -318,7 +318,7 @@ class TestDeployStoresArtifact(unittest.TestCase):
 
         with patch("src.workflows.engine.artifacts.ArtifactStore", return_value=store), \
              patch(_PATCH_REGISTRY, return_value=mock_registry):
-            result = run_async(deploy("vercel", "/app", goal_id=1))
+            result = run_async(deploy("vercel", "/app", mission_id=1))
             self.assertEqual(result["status"], "ok")
 
             # Verify artifact was stored

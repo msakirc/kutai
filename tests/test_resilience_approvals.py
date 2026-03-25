@@ -71,28 +71,28 @@ class _DBTestBase(unittest.TestCase):
             except OSError:
                 pass
 
-    async def _create_goal(self, title="Test Goal"):
+    async def _create_mission(self, title="Test Mission"):
         db = await self.db_mod.get_db()
         cursor = await db.execute(
-            "INSERT INTO goals (title) VALUES (?)", (title,)
+            "INSERT INTO missions (title) VALUES (?)", (title,)
         )
         await db.commit()
         return cursor.lastrowid
 
-    async def _create_task(self, goal_id, title, status="pending",
+    async def _create_task(self, mission_id, title, status="pending",
                            context=None, started_at=None):
         db = await self.db_mod.get_db()
         task_hash = self.db_mod.compute_task_hash(
-            title, "", "executor", goal_id, None
+            title, "", "executor", mission_id, None
         )
         ctx = json.dumps(context or {})
         sa = started_at or datetime.now().isoformat()
         cursor = await db.execute(
             """INSERT INTO tasks
-               (goal_id, title, description, agent_type, status,
+               (mission_id, title, description, agent_type, status,
                 depends_on, task_hash, context, started_at)
                VALUES (?, ?, '', 'executor', ?, '[]', ?, ?, ?)""",
-            (goal_id, title, status, task_hash, ctx, sa)
+            (mission_id, title, status, task_hash, ctx, sa)
         )
         await db.commit()
         return cursor.lastrowid
@@ -107,7 +107,7 @@ class TestApprovalDBPersistence(_DBTestBase):
         async def go():
             from src.infra.db import insert_approval_request, get_db
             await insert_approval_request(
-                task_id=42, goal_id=1,
+                task_id=42, mission_id=1,
                 title="Test Approval", details="Some details",
             )
             db = await get_db()
@@ -118,7 +118,7 @@ class TestApprovalDBPersistence(_DBTestBase):
             self.assertIsNotNone(row)
             self.assertEqual(row["status"], "pending")
             self.assertEqual(row["title"], "Test Approval")
-            self.assertEqual(row["goal_id"], 1)
+            self.assertEqual(row["mission_id"], 1)
             self.assertIsNone(row["resolved_at"])
 
         run_async(go())
@@ -130,7 +130,7 @@ class TestApprovalDBPersistence(_DBTestBase):
                 insert_approval_request, update_approval_status, get_db,
             )
             await insert_approval_request(
-                task_id=10, goal_id=2,
+                task_id=10, mission_id=2,
                 title="Approve me", details="plan text",
             )
             await update_approval_status(10, "approved")
@@ -152,7 +152,7 @@ class TestApprovalDBPersistence(_DBTestBase):
                 insert_approval_request, update_approval_status, get_db,
             )
             await insert_approval_request(
-                task_id=11, goal_id=3,
+                task_id=11, mission_id=3,
                 title="Reject me", details="bad plan",
             )
             await update_approval_status(11, "rejected")
@@ -291,10 +291,10 @@ class TestEscalationTiers(_DBTestBase):
     def test_tier1_escalation_at_24h(self):
         """After 24h with escalation_count=0, send reminder and set count=1."""
         async def go():
-            goal_id = await self._create_goal()
+            mission_id = await self._create_mission()
             started = (datetime.now() - timedelta(hours=25)).isoformat()
             task_id = await self._create_task(
-                goal_id, "Stuck task",
+                mission_id, "Stuck task",
                 status="needs_clarification",
                 context={"escalation_count": 0},
                 started_at=started,
@@ -318,10 +318,10 @@ class TestEscalationTiers(_DBTestBase):
     def test_tier2_escalation_at_48h(self):
         """After 48h with escalation_count=1, send urgent and set count=2."""
         async def go():
-            goal_id = await self._create_goal()
+            mission_id = await self._create_mission()
             started = (datetime.now() - timedelta(hours=49)).isoformat()
             task_id = await self._create_task(
-                goal_id, "Really stuck task",
+                mission_id, "Really stuck task",
                 status="needs_clarification",
                 context={"escalation_count": 1},
                 started_at=started,
@@ -345,10 +345,10 @@ class TestEscalationTiers(_DBTestBase):
     def test_tier3_cancel_at_72h(self):
         """After 72h with escalation_count=2, cancel with notification."""
         async def go():
-            goal_id = await self._create_goal()
+            mission_id = await self._create_mission()
             started = (datetime.now() - timedelta(hours=73)).isoformat()
             task_id = await self._create_task(
-                goal_id, "Very stuck task",
+                mission_id, "Very stuck task",
                 status="needs_clarification",
                 context={"escalation_count": 2},
                 started_at=started,
@@ -372,10 +372,10 @@ class TestEscalationTiers(_DBTestBase):
     def test_no_escalation_before_24h(self):
         """Tasks less than 24h old should not be escalated."""
         async def go():
-            goal_id = await self._create_goal()
+            mission_id = await self._create_mission()
             started = (datetime.now() - timedelta(hours=12)).isoformat()
             task_id = await self._create_task(
-                goal_id, "Fresh task",
+                mission_id, "Fresh task",
                 status="needs_clarification",
                 context={"escalation_count": 0},
                 started_at=started,
@@ -394,10 +394,10 @@ class TestEscalationTiers(_DBTestBase):
     def test_escalation_count_increments_sequentially(self):
         """Running escalation multiple times increments count correctly."""
         async def go():
-            goal_id = await self._create_goal()
+            mission_id = await self._create_mission()
             started = (datetime.now() - timedelta(hours=25)).isoformat()
             task_id = await self._create_task(
-                goal_id, "Sequential escalation",
+                mission_id, "Sequential escalation",
                 status="needs_clarification",
                 context={"escalation_count": 0},
                 started_at=started,

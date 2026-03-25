@@ -2,9 +2,9 @@
 """
 Tests for Phase 6: Workspace & Isolation
 
-  6.1 Per-goal workspace directories
+  6.1 Per-mission workspace directories
   6.2 File locking mechanism
-  6.3 Branch-per-goal git workflow
+  6.3 Branch-per-mission git workflow
   6.4 Workspace snapshots (file hashing)
   6.5 Multi-project support
   6.6 Orchestrator integration
@@ -71,10 +71,10 @@ class _DBTestBase(unittest.TestCase):
                 pass
 
 
-# ─── 6.1 Per-Goal Workspace Directories ──────────────────────────────────
+# ─── 6.1 Per-Mission Workspace Directories ──────────────────────────────────
 
-class TestGoalWorkspace(unittest.TestCase):
-    """Test per-goal workspace directory creation and management."""
+class TestMissionWorkspace(unittest.TestCase):
+    """Test per-mission workspace directory creation and management."""
 
     def setUp(self):
         self.tmp_dir = tempfile.mkdtemp()
@@ -88,56 +88,56 @@ class TestGoalWorkspace(unittest.TestCase):
         ws_mod.WORKSPACE_DIR = self._orig_ws
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
-    def test_get_goal_workspace_creates_dir(self):
-        from tools.workspace import get_goal_workspace
-        path = get_goal_workspace(42)
+    def test_get_mission_workspace_creates_dir(self):
+        from tools.workspace import get_mission_workspace
+        path = get_mission_workspace(42)
         self.assertTrue(os.path.isdir(path))
-        self.assertTrue(path.endswith("goal_42"))
+        self.assertTrue(path.endswith("mission_42"))
 
-    def test_get_goal_workspace_idempotent(self):
-        from tools.workspace import get_goal_workspace
-        p1 = get_goal_workspace(7)
-        p2 = get_goal_workspace(7)
+    def test_get_mission_workspace_idempotent(self):
+        from tools.workspace import get_mission_workspace
+        p1 = get_mission_workspace(7)
+        p2 = get_mission_workspace(7)
         self.assertEqual(p1, p2)
 
-    def test_get_goal_workspace_relative(self):
-        from tools.workspace import get_goal_workspace_relative
-        self.assertEqual(get_goal_workspace_relative(5), "goal_5")
+    def test_get_mission_workspace_relative(self):
+        from tools.workspace import get_mission_workspace_relative
+        self.assertEqual(get_mission_workspace_relative(5), "mission_5")
 
-    def test_list_goal_workspaces_empty(self):
-        from tools.workspace import list_goal_workspaces
-        self.assertEqual(list_goal_workspaces(), [])
+    def test_list_mission_workspaces_empty(self):
+        from tools.workspace import list_mission_workspaces
+        self.assertEqual(list_mission_workspaces(), [])
 
-    def test_list_goal_workspaces_with_goals(self):
-        from tools.workspace import get_goal_workspace, list_goal_workspaces
-        get_goal_workspace(1)
-        get_goal_workspace(3)
-        # Create a file in goal_1
-        with open(os.path.join(self.tmp_dir, "goal_1", "test.py"), "w") as f:
+    def test_list_mission_workspaces_with_missions(self):
+        from tools.workspace import get_mission_workspace, list_mission_workspaces
+        get_mission_workspace(1)
+        get_mission_workspace(3)
+        # Create a file in mission_1
+        with open(os.path.join(self.tmp_dir, "mission_1", "test.py"), "w") as f:
             f.write("# test")
-        result = list_goal_workspaces()
+        result = list_mission_workspaces()
         self.assertEqual(len(result), 2)
-        ids = {w["goal_id"] for w in result}
+        ids = {w["mission_id"] for w in result}
         self.assertEqual(ids, {1, 3})
-        # goal_1 should have 1 file
-        g1 = [w for w in result if w["goal_id"] == 1][0]
+        # mission_1 should have 1 file
+        g1 = [w for w in result if w["mission_id"] == 1][0]
         self.assertEqual(g1["file_count"], 1)
 
-    def test_cleanup_goal_workspace(self):
-        from tools.workspace import get_goal_workspace, cleanup_goal_workspace
-        get_goal_workspace(10)
+    def test_cleanup_mission_workspace(self):
+        from tools.workspace import get_mission_workspace, cleanup_mission_workspace
+        get_mission_workspace(10)
         self.assertTrue(os.path.isdir(
-            os.path.join(self.tmp_dir, "goal_10")
+            os.path.join(self.tmp_dir, "mission_10")
         ))
-        result = cleanup_goal_workspace(10)
+        result = cleanup_mission_workspace(10)
         self.assertTrue(result)
         self.assertFalse(os.path.isdir(
-            os.path.join(self.tmp_dir, "goal_10")
+            os.path.join(self.tmp_dir, "mission_10")
         ))
 
     def test_cleanup_nonexistent_workspace(self):
-        from tools.workspace import cleanup_goal_workspace
-        self.assertFalse(cleanup_goal_workspace(999))
+        from tools.workspace import cleanup_mission_workspace
+        self.assertFalse(cleanup_mission_workspace(999))
 
 
 # ─── 6.2 File Locking ────────────────────────────────────────────────────
@@ -147,36 +147,36 @@ class TestFileLocking(_DBTestBase):
 
     def test_acquire_lock(self):
         result = run_async(
-            self.db_mod.acquire_file_lock("src/main.py", goal_id=1, task_id=10)
+            self.db_mod.acquire_file_lock("src/main.py", mission_id=1, task_id=10)
         )
         self.assertTrue(result)
 
     def test_acquire_lock_twice_fails(self):
         run_async(
-            self.db_mod.acquire_file_lock("src/main.py", goal_id=1, task_id=10)
+            self.db_mod.acquire_file_lock("src/main.py", mission_id=1, task_id=10)
         )
         result = run_async(
-            self.db_mod.acquire_file_lock("src/main.py", goal_id=2, task_id=20)
+            self.db_mod.acquire_file_lock("src/main.py", mission_id=2, task_id=20)
         )
         self.assertFalse(result)
 
     def test_release_lock(self):
         run_async(
-            self.db_mod.acquire_file_lock("src/main.py", goal_id=1, task_id=10)
+            self.db_mod.acquire_file_lock("src/main.py", mission_id=1, task_id=10)
         )
         run_async(self.db_mod.release_file_lock("src/main.py"))
         # Should be acquirable again
         result = run_async(
-            self.db_mod.acquire_file_lock("src/main.py", goal_id=2)
+            self.db_mod.acquire_file_lock("src/main.py", mission_id=2)
         )
         self.assertTrue(result)
 
     def test_release_task_locks(self):
         run_async(
-            self.db_mod.acquire_file_lock("a.py", goal_id=1, task_id=5)
+            self.db_mod.acquire_file_lock("a.py", mission_id=1, task_id=5)
         )
         run_async(
-            self.db_mod.acquire_file_lock("b.py", goal_id=1, task_id=5)
+            self.db_mod.acquire_file_lock("b.py", mission_id=1, task_id=5)
         )
         run_async(self.db_mod.release_task_locks(5))
         # Both should be available now
@@ -187,14 +187,14 @@ class TestFileLocking(_DBTestBase):
             run_async(self.db_mod.acquire_file_lock("b.py"))
         )
 
-    def test_release_goal_locks(self):
+    def test_release_mission_locks(self):
         run_async(
-            self.db_mod.acquire_file_lock("x.py", goal_id=3, task_id=10)
+            self.db_mod.acquire_file_lock("x.py", mission_id=3, task_id=10)
         )
         run_async(
-            self.db_mod.acquire_file_lock("y.py", goal_id=3, task_id=11)
+            self.db_mod.acquire_file_lock("y.py", mission_id=3, task_id=11)
         )
-        run_async(self.db_mod.release_goal_locks(3))
+        run_async(self.db_mod.release_mission_locks(3))
         self.assertTrue(
             run_async(self.db_mod.acquire_file_lock("x.py"))
         )
@@ -202,13 +202,13 @@ class TestFileLocking(_DBTestBase):
     def test_get_file_lock(self):
         run_async(
             self.db_mod.acquire_file_lock(
-                "test.py", goal_id=1, task_id=5, agent_type="coder"
+                "test.py", mission_id=1, task_id=5, agent_type="coder"
             )
         )
         lock = run_async(self.db_mod.get_file_lock("test.py"))
         self.assertIsNotNone(lock)
         self.assertEqual(lock["filepath"], "test.py")
-        self.assertEqual(lock["goal_id"], 1)
+        self.assertEqual(lock["mission_id"], 1)
         self.assertEqual(lock["task_id"], 5)
         self.assertEqual(lock["agent_type"], "coder")
 
@@ -216,23 +216,23 @@ class TestFileLocking(_DBTestBase):
         lock = run_async(self.db_mod.get_file_lock("nonexistent.py"))
         self.assertIsNone(lock)
 
-    def test_get_goal_locks(self):
+    def test_get_mission_locks(self):
         run_async(
-            self.db_mod.acquire_file_lock("a.py", goal_id=2, task_id=1)
+            self.db_mod.acquire_file_lock("a.py", mission_id=2, task_id=1)
         )
         run_async(
-            self.db_mod.acquire_file_lock("b.py", goal_id=2, task_id=2)
+            self.db_mod.acquire_file_lock("b.py", mission_id=2, task_id=2)
         )
         run_async(
-            self.db_mod.acquire_file_lock("c.py", goal_id=9, task_id=3)
+            self.db_mod.acquire_file_lock("c.py", mission_id=9, task_id=3)
         )
-        locks = run_async(self.db_mod.get_goal_locks(2))
+        locks = run_async(self.db_mod.get_mission_locks(2))
         self.assertEqual(len(locks), 2)
 
 
-# ─── 6.3 Branch-per-Goal Git Workflow ─────────────────────────────────────
+# ─── 6.3 Branch-per-Mission Git Workflow ─────────────────────────────────────
 
-class TestBranchPerGoal(unittest.TestCase):
+class TestBranchPerMission(unittest.TestCase):
     """Test branch name generation (pure function)."""
 
     def test_slugify(self):
@@ -329,10 +329,10 @@ class TestSnapshotDB(_DBTestBase):
 
     def test_save_snapshot(self):
         sid = run_async(self.db_mod.save_workspace_snapshot(
-            goal_id=1,
+            mission_id=1,
             file_hashes={"a.py": "abc123", "b.py": "def456"},
             task_id=10,
-            branch_name="goal/1-test",
+            branch_name="mission/1-test",
             commit_sha="abc123def456",
         ))
         self.assertIsNotNone(sid)
@@ -340,12 +340,12 @@ class TestSnapshotDB(_DBTestBase):
 
     def test_get_latest_snapshot(self):
         run_async(self.db_mod.save_workspace_snapshot(
-            goal_id=1,
+            mission_id=1,
             file_hashes={"a.py": "111"},
             task_id=5,
         ))
         run_async(self.db_mod.save_workspace_snapshot(
-            goal_id=1,
+            mission_id=1,
             file_hashes={"a.py": "222", "b.py": "333"},
             task_id=6,
         ))
@@ -360,12 +360,12 @@ class TestSnapshotDB(_DBTestBase):
 
     def test_get_snapshot_by_id(self):
         sid = run_async(self.db_mod.save_workspace_snapshot(
-            goal_id=2,
+            mission_id=2,
             file_hashes={"x.py": "aaa"},
         ))
         snap = run_async(self.db_mod.get_snapshot(sid))
         self.assertIsNotNone(snap)
-        self.assertEqual(snap["goal_id"], 2)
+        self.assertEqual(snap["mission_id"], 2)
         self.assertIn("x.py", snap["file_hashes"])
 
 
@@ -439,10 +439,10 @@ class TestMultiProjectMissing(unittest.TestCase):
 class TestPhase6Config(unittest.TestCase):
     """Verify Phase 6 config constants."""
 
-    def test_max_concurrent_goals(self):
-        from config import MAX_CONCURRENT_GOALS
-        self.assertIsInstance(MAX_CONCURRENT_GOALS, int)
-        self.assertGreater(MAX_CONCURRENT_GOALS, 0)
+    def test_max_concurrent_missions(self):
+        from config import MAX_CONCURRENT_MISSIONS
+        self.assertIsInstance(MAX_CONCURRENT_MISSIONS, int)
+        self.assertGreater(MAX_CONCURRENT_MISSIONS, 0)
 
     def test_projects_config_path(self):
         from config import PROJECTS_CONFIG_PATH
@@ -464,18 +464,18 @@ class TestOrchestratorIntegration(unittest.TestCase):
             self.src = f.read()
 
     def test_imports_workspace_functions(self):
-        self.assertIn("get_goal_workspace", self.src)
+        self.assertIn("get_mission_workspace", self.src)
         self.assertIn("compute_workspace_hashes", self.src)
         self.assertIn("save_workspace_snapshot", self.src)
 
     def test_imports_git_branch_functions(self):
-        self.assertIn("create_goal_branch", self.src)
+        self.assertIn("create_mission_branch", self.src)
         self.assertIn("get_current_branch", self.src)
         self.assertIn("get_commit_sha", self.src)
 
-    def test_plan_goal_creates_workspace(self):
-        self.assertIn("get_goal_workspace(goal_id)", self.src)
-        self.assertIn("create_goal_branch", self.src)
+    def test_plan_mission_creates_workspace(self):
+        self.assertIn("get_mission_workspace(mission_id)", self.src)
+        self.assertIn("create_mission_branch", self.src)
 
     def test_process_task_snapshots(self):
         self.assertIn("compute_workspace_hashes", self.src)
@@ -484,8 +484,8 @@ class TestOrchestratorIntegration(unittest.TestCase):
     def test_process_task_releases_locks(self):
         self.assertIn("release_task_locks", self.src)
 
-    def test_goal_completion_releases_locks(self):
-        self.assertIn("release_goal_locks", self.src)
+    def test_mission_completion_releases_locks(self):
+        self.assertIn("release_mission_locks", self.src)
 
     def test_workspace_snapshot_for_coder_tasks(self):
         # The snapshot should only happen for coder/pipeline/fixer agents
@@ -508,7 +508,7 @@ class TestPhase6Schema(_DBTestBase):
 
         cols = run_async(check())
         self.assertIn("filepath", cols)
-        self.assertIn("goal_id", cols)
+        self.assertIn("mission_id", cols)
         self.assertIn("task_id", cols)
         self.assertIn("agent_type", cols)
 
@@ -520,7 +520,7 @@ class TestPhase6Schema(_DBTestBase):
             return cols
 
         cols = run_async(check())
-        self.assertIn("goal_id", cols)
+        self.assertIn("mission_id", cols)
         self.assertIn("file_hashes", cols)
         self.assertIn("branch_name", cols)
         self.assertIn("commit_sha", cols)

@@ -232,9 +232,9 @@ class TestCircuitBreaker(unittest.TestCase):
 
 # ─── 1.5 Task Deduplication ──────────────────────────────────────────────
 
-def compute_task_hash(title, description, goal_id=None):
+def compute_task_hash(title, description, mission_id=None):
     """Replicated from db.py for testing without aiosqlite."""
-    raw = f"{title or ''}|{description or ''}|{goal_id or ''}"
+    raw = f"{title or ''}|{description or ''}|{mission_id or ''}"
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
@@ -250,12 +250,12 @@ class TestTaskDedup(unittest.TestCase):
         h2 = compute_task_hash("Fix bugs", "Create REST endpoints", 1)
         self.assertNotEqual(h1, h2)
 
-    def test_different_goal_different_hash(self):
+    def test_different_mission_different_hash(self):
         h1 = compute_task_hash("Build API", "Create REST endpoints", 1)
         h2 = compute_task_hash("Build API", "Create REST endpoints", 2)
         self.assertNotEqual(h1, h2)
 
-    def test_none_goal_consistent(self):
+    def test_none_mission_consistent(self):
         h1 = compute_task_hash("Build API", "desc", None)
         h2 = compute_task_hash("Build API", "desc", None)
         self.assertEqual(h1, h2)

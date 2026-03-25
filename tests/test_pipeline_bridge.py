@@ -124,7 +124,7 @@ class TestBuildPipelineTask(unittest.TestCase):
         task = build_pipeline_task(
             step_title="Implement API endpoints",
             step_instruction="Create REST endpoints for user CRUD.",
-            goal_id="G-001",
+            mission_id="G-001",
             feature_name="User Management",
             artifact_context="Existing models: User, Role",
         )
@@ -132,7 +132,7 @@ class TestBuildPipelineTask(unittest.TestCase):
         self.assertIn("Feature: User Management", task["description"])
         self.assertIn("Create REST endpoints for user CRUD.", task["description"])
         self.assertIn("Existing models: User, Role", task["description"])
-        self.assertEqual(task["goal_id"], "G-001")
+        self.assertEqual(task["mission_id"], "G-001")
         self.assertEqual(task["context"]["pipeline_mode"], "feature")
         self.assertTrue(task["context"]["prefer_quality"])
 
@@ -141,14 +141,14 @@ class TestBuildPipelineTask(unittest.TestCase):
         task = build_pipeline_task(
             step_title="Build UI component",
             step_instruction="Create a React form.",
-            goal_id="G-002",
+            mission_id="G-002",
             feature_name="Settings Page",
             artifact_context="",
         )
         self.assertEqual(task["title"], "Build UI component")
         self.assertIn("Feature: Settings Page", task["description"])
         self.assertIn("Create a React form.", task["description"])
-        self.assertEqual(task["goal_id"], "G-002")
+        self.assertEqual(task["mission_id"], "G-002")
         self.assertEqual(task["context"]["pipeline_mode"], "feature")
         self.assertTrue(task["context"]["prefer_quality"])
 
@@ -157,7 +157,7 @@ class TestBuildPipelineTask(unittest.TestCase):
         task = build_pipeline_task(
             step_title="Title",
             step_instruction="Instruction",
-            goal_id="G-003",
+            mission_id="G-003",
             feature_name="Feature",
         )
         self.assertIn("Feature: Feature", task["description"])

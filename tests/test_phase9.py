@@ -303,7 +303,7 @@ class TestTaskTypeValidators(unittest.TestCase):
 
     def test_planner_task_valid_with_subtasks(self):
         from models import validate_task_output
-        errors = validate_task_output("planner", "Created 3 subtasks for this goal")
+        errors = validate_task_output("planner", "Created 3 subtasks for this mission")
         self.assertEqual(errors, [])
 
     def test_planner_task_invalid_no_structure(self):
@@ -693,7 +693,7 @@ class TestWALCheckpoint(unittest.TestCase):
 # ─── 9.5 Per-Task Cost Budgets ───────────────────────────────────────────────
 
 class TestPerTaskBudgets(unittest.TestCase):
-    """Test per-task and per-goal cost budget functions."""
+    """Test per-task and per-mission cost budget functions."""
 
     def setUp(self):
         """Set up a fresh in-memory DB for testing."""
@@ -753,16 +753,16 @@ class TestPerTaskBudgets(unittest.TestCase):
         cost = run_async(setup_and_check())
         self.assertAlmostEqual(cost, 0.15, places=4)
 
-    def test_get_goal_total_cost(self):
+    def test_get_mission_total_cost(self):
         import db as db_mod
 
         async def setup_and_check():
-            goal_id = await db_mod.add_goal("Test goal", "desc")
-            task1 = await db_mod.add_task("T1", "d", goal_id=goal_id)
-            task2 = await db_mod.add_task("T2", "d", goal_id=goal_id)
+            mission_id = await db_mod.add_mission("Test mission", "desc")
+            task1 = await db_mod.add_task("T1", "d", mission_id=mission_id)
+            task2 = await db_mod.add_task("T2", "d", mission_id=mission_id)
             await db_mod.log_conversation(task1, "assistant", "r1", cost=0.10)
             await db_mod.log_conversation(task2, "assistant", "r2", cost=0.20)
-            return await db_mod.get_goal_total_cost(goal_id)
+            return await db_mod.get_mission_total_cost(mission_id)
 
         cost = run_async(setup_and_check())
         self.assertAlmostEqual(cost, 0.30, places=4)

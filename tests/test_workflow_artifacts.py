@@ -51,7 +51,7 @@ class TestArtifactStore(unittest.TestCase):
         self.assertEqual(sorted(names), ["alpha", "beta"])
 
     def test_list_artifacts_empty(self):
-        """list_artifacts for unknown goal returns empty list."""
+        """list_artifacts for unknown mission returns empty list."""
         names = self._run(self.store.list_artifacts(999))
         self.assertEqual(names, [])
 

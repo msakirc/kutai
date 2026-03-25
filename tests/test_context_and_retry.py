@@ -93,14 +93,14 @@ class TestPhaseSummaryBudget:
         store = ArtifactStore(use_db=False)
 
         # Manually populate cache with large summaries
-        goal_id = 1
-        key = store._goal_key(goal_id)
+        mission_id = 1
+        key = store._mission_key(mission_id)
         store._cache[key] = {}
         # Each summary is large
         for n in range(15):
             store._cache[key][f"phase_{n}_summary"] = "x" * 20000
 
-        summaries = _run(get_phase_summaries(store, goal_id, "phase_15"))
+        summaries = _run(get_phase_summaries(store, mission_id, "phase_15"))
         total_chars = sum(len(v) for v in summaries.values())
         total_tokens = estimate_tokens("".join(summaries.values()))
         # Should be within the summary budget (1/4 of injection budget)

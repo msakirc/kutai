@@ -242,13 +242,13 @@ class TestCostBudget(_DBTestBase):
             self.assertIn("Total budget", result["reason"])
         run_async(_test())
 
-    def test_goal_scope_budget(self):
+    def test_mission_scope_budget(self):
         async def _test():
             await self.db_mod.set_budget(
-                "goal", scope_id="42", daily_limit=0.0,
+                "mission", scope_id="42", daily_limit=0.0,
                 total_limit=5.0,
             )
-            budget = await self.db_mod.get_budget("goal", "42")
+            budget = await self.db_mod.get_budget("mission", "42")
             self.assertIsNotNone(budget)
             self.assertAlmostEqual(budget["total_limit"], 5.0)
         run_async(_test())

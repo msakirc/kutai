@@ -80,8 +80,8 @@ class TestToolIdempotencyKey(unittest.TestCase):
 # Inline from db.py
 
 def compute_task_hash(title, description, agent_type,
-                      goal_id=None, parent_task_id=None):
-    raw = f"{title or ''}|{description or ''}|{agent_type or ''}|{goal_id or ''}|{parent_task_id or ''}"
+                      mission_id=None, parent_task_id=None):
+    raw = f"{title or ''}|{description or ''}|{agent_type or ''}|{mission_id or ''}|{parent_task_id or ''}"
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 

@@ -239,13 +239,13 @@ class TestTaskTree(_DBTestBase):
 
     def test_get_task_tree(self):
         async def _test():
-            from db import add_goal
-            gid = await add_goal("Test goal", "desc")
+            from db import add_mission
+            gid = await add_mission("Test mission", "desc")
             t1 = await self.db_mod.add_task(
-                "Step 1", "d", goal_id=gid, agent_type="coder"
+                "Step 1", "d", mission_id=gid, agent_type="coder"
             )
             t2 = await self.db_mod.add_task(
-                "Step 2", "d", goal_id=gid, agent_type="researcher"
+                "Step 2", "d", mission_id=gid, agent_type="researcher"
             )
             tree = await self.db_mod.get_task_tree(gid)
             self.assertEqual(len(tree), 2)

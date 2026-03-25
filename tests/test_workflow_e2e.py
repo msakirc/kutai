@@ -260,11 +260,11 @@ class TestArtifactStoreRoundtrip(unittest.TestCase):
         self.assertEqual(result["beta"], "B")
         self.assertIsNone(result["gamma"])
 
-    def test_multiple_goals_isolated(self):
-        self._run(self.store.store(1, "doc", "Goal 1 doc"))
-        self._run(self.store.store(2, "doc", "Goal 2 doc"))
-        self.assertEqual(self._run(self.store.retrieve(1, "doc")), "Goal 1 doc")
-        self.assertEqual(self._run(self.store.retrieve(2, "doc")), "Goal 2 doc")
+    def test_multiple_missions_isolated(self):
+        self._run(self.store.store(1, "doc", "Mission 1 doc"))
+        self._run(self.store.store(2, "doc", "Mission 2 doc"))
+        self.assertEqual(self._run(self.store.retrieve(1, "doc")), "Mission 1 doc")
+        self.assertEqual(self._run(self.store.retrieve(2, "doc")), "Mission 2 doc")
 
     def test_list_artifacts(self):
         self._run(self.store.store(1, "x", "1"))
@@ -391,7 +391,7 @@ class TestStatusWithRealWorkflow(unittest.TestCase):
         progress = compute_phase_progress(tasks)
         msg = format_status_message("idea_to_product_v2", 42, progress)
 
-        # Should contain the workflow ID and goal ID
+        # Should contain the workflow ID and mission ID
         self.assertIn("idea_to_product_v2", msg)
         self.assertIn("42", msg)
 

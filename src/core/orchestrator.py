@@ -734,14 +734,19 @@ class Orchestrator:
                     else sched.get("context", {})
                 )
 
-                # Special handling: todo reminders bypass the task queue
+                # Special handling: todo reminders create suggestion tasks first
                 if sched_ctx.get("type") == "todo_reminder":
                     try:
-                        from src.app.reminders import send_todo_reminder
-                        if self.telegram:
-                            await send_todo_reminder(self.telegram)
+                        await self._start_todo_suggestions()
                     except Exception as e:
-                        logger.error(f"[Scheduler] Todo reminder failed: {e}")
+                        logger.error(f"[Scheduler] Todo suggestion creation failed: {e}")
+                        # Fallback: send reminder without suggestions
+                        try:
+                            from src.app.reminders import send_todo_reminder
+                            if self.telegram:
+                                await send_todo_reminder(self.telegram)
+                        except Exception:
+                            pass
                     # Update last_run / next_run and skip task creation
                     now = datetime.now()
                     next_run = self._compute_next_run(
@@ -781,6 +786,96 @@ class Orchestrator:
 
         except Exception as e:
             logger.error(f"[Scheduler] Error checking schedules: {e}")
+
+    async def _start_todo_suggestions(self):
+        """Create one suggestion task per pending todo item."""
+        from src.infra.db import get_todos, add_task
+        todos = await get_todos(status="pending")
+        if not todos:
+            return
+
+        batch_id = f"todo_suggest_{int(datetime.now().timestamp())}"
+        task_ids = []
+
+        for todo in todos:
+            task_id = await add_task(
+                title=f"Suggest action for: {todo['title'][:50]}",
+                description=(
+                    f"The user has this todo item: \"{todo['title']}\"\n"
+                    f"Description: {todo.get('description') or '(none)'}\n\n"
+                    f"Suggest ONE concrete, actionable way you (an AI assistant) could help. "
+                    f"Be creative — even mundane items like 'buy milk' could mean "
+                    f"price comparison or online ordering. "
+                    f"If you genuinely cannot help, just say 'no suggestion'. "
+                    f"Reply with ONLY the suggestion, one sentence, no preamble."
+                ),
+                agent_type="assistant",
+                tier="auto",
+                priority=3,  # low — background work
+                context={
+                    "local_only": True,
+                    "prefer_quality": True,
+                    "silent": True,
+                    "todo_suggest_batch": batch_id,
+                    "todo_id": todo["id"],
+                    "todo_count": len(todos),
+                },
+            )
+            if task_id:
+                task_ids.append(task_id)
+
+        if task_ids:
+            logger.info(
+                f"[Todo] Created {len(task_ids)} suggestion tasks, batch={batch_id}"
+            )
+        else:
+            # All deduped or failed — send reminder without suggestions
+            from src.app.reminders import send_todo_reminder
+            if self.telegram:
+                await send_todo_reminder(self.telegram)
+
+    async def _check_todo_suggestions_complete(self, task_ctx):
+        """Check if all suggestion tasks in this batch are done. If so, send reminder."""
+        batch_id = task_ctx["todo_suggest_batch"]
+        todo_count = task_ctx.get("todo_count", 0)
+
+        # Query all tasks in this batch
+        db = await get_db()
+        cursor = await db.execute(
+            """SELECT id, status, result, context FROM tasks
+               WHERE context LIKE ?""",
+            (f'%"{batch_id}"%',),
+        )
+        rows = [dict(r) for r in await cursor.fetchall()]
+
+        # Check if all are terminal (completed or failed)
+        terminal = [r for r in rows if r["status"] in ("completed", "failed")]
+        if len(terminal) < todo_count and len(terminal) < len(rows):
+            return  # Still waiting
+
+        # Collect suggestions
+        suggestions = {}
+        for row in rows:
+            ctx = row.get("context", "{}")
+            if isinstance(ctx, str):
+                ctx = json.loads(ctx)
+            todo_id = ctx.get("todo_id")
+            result = row.get("result", "")
+            if todo_id and result and "no suggestion" not in result.lower():
+                # Clean up the suggestion text
+                suggestion = result.strip().strip('"').strip("'")
+                if len(suggestion) > 5:  # Skip empty/trivial
+                    suggestions[todo_id] = suggestion
+
+        # Send reminder with suggestions
+        from src.app.reminders import send_todo_reminder
+        if self.telegram:
+            await send_todo_reminder(self.telegram, suggestions=suggestions)
+
+        logger.info(
+            f"[Todo] Reminder sent with {len(suggestions)}/{len(rows)} suggestions, "
+            f"batch={batch_id}"
+        )
 
     @staticmethod
     def _compute_next_run(
@@ -1242,12 +1337,20 @@ class Orchestrator:
                 logger.debug(f"Cost tracking update failed: {e}")
 
         # Notify for top-level tasks or multi-iteration tasks
-                # Always notify for interactive (critical priority) tasks
+        # Always notify for interactive (critical priority) tasks
         # Skip only background subtasks from goal decomposition
+        # Silent tasks (e.g., todo suggestions) skip Telegram notification entirely
+        task_ctx_raw = task.get("context", "{}")
+        if isinstance(task_ctx_raw, str):
+            task_ctx_parsed = json.loads(task_ctx_raw)
+        else:
+            task_ctx_parsed = task_ctx_raw
         is_interactive = task.get("priority", 5) >= TASK_PRIORITY.get("critical", 10)
         is_goal_subtask = task.get("mission_id") and task.get("parent_task_id")
 
-        if is_interactive or not is_goal_subtask:
+        if task_ctx_parsed.get("silent"):
+            logger.info("task completed (silent)", task_id=task_id, model=model, cost=cost)
+        elif is_interactive or not is_goal_subtask:
             await self.telegram.send_result(task_id, task["title"],
                                             result_text, model, cost)
         elif iterations > 3:
@@ -1257,6 +1360,14 @@ class Orchestrator:
             )
 
         logger.info("task completed", task_id=task_id, model=model, cost=cost, iterations=iterations)
+
+        # Check if this is a todo suggestion task — trigger reminder when all done
+        task_ctx = task.get("context", {})
+        if isinstance(task_ctx, str):
+            import json
+            task_ctx = json.loads(task_ctx)
+        if task_ctx.get("todo_suggest_batch"):
+            await self._check_todo_suggestions_complete(task_ctx)
 
         # Phase 13.2: Extract skill from successful multi-iteration tasks
         if iterations >= 3 and cost > 0:
@@ -2106,7 +2217,7 @@ class Orchestrator:
 
             # Send persistent keyboard on startup so buttons are always visible
             try:
-                from .config import TELEGRAM_ADMIN_CHAT_ID
+                from ..app.config import TELEGRAM_ADMIN_CHAT_ID
                 from ..app.telegram_bot import REPLY_KEYBOARD
                 if TELEGRAM_ADMIN_CHAT_ID:
                     await self.telegram.app.bot.send_message(
@@ -2162,12 +2273,12 @@ class Orchestrator:
                         except Exception as e:
                             logger.warning(f"Task error during shutdown: {e}")
 
-                    # Release any held task/mission locks so they aren't
-                    # stuck in 'running' status on next startup.
+                    # Release all file locks so they aren't stuck on next startup.
                     try:
-                        await release_task_locks()
-                        await release_mission_locks()
-                        logger.info("Released all task and mission locks")
+                        db = await get_db()
+                        await db.execute("DELETE FROM file_locks")
+                        await db.commit()
+                        logger.info("Released all file locks")
                     except Exception as e:
                         logger.warning(f"Lock release failed: {e}")
 

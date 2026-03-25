@@ -34,8 +34,8 @@ class PipelineContext:
     Each stage appends its result. Subsequent stages receive
     a formatted summary of everything that happened before them.
     """
-    goal_title: str = ""
-    goal_description: str = ""
+    mission_title: str = ""
+    mission_description: str = ""
     mission_id: int | None = None
     complexity: str = "feature"
 

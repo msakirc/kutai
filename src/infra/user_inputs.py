@@ -13,12 +13,20 @@ logger = get_logger("infra.user_inputs")
 async def init_user_inputs_table():
     """Create user_inputs table if it doesn't exist."""
     async with get_db() as db:
+        # Migration: rename legacy column
+        try:
+            await db.execute(
+                "ALTER TABLE user_inputs RENAME COLUMN related_goal_id TO related_mission_id"
+            )
+            await db.commit()
+        except Exception:
+            pass  # column already renamed or table doesn't exist yet
         await db.execute("""
             CREATE TABLE IF NOT EXISTS user_inputs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 type TEXT NOT NULL,          -- 'bug' | 'feature' | 'ui_note' | 'review' | 'feedback'
                 content TEXT NOT NULL,
-                related_goal_id INTEGER,
+                related_mission_id INTEGER,
                 priority TEXT DEFAULT 'normal',  -- 'low' | 'normal' | 'high' | 'critical'
                 status TEXT DEFAULT 'new',   -- 'new' | 'triaged' | 'in_progress' | 'done'
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -40,7 +48,7 @@ async def log_input(
     await init_user_inputs_table()
     async with get_db() as db:
         cursor = await db.execute(
-            """INSERT INTO user_inputs (type, content, related_goal_id, priority)
+            """INSERT INTO user_inputs (type, content, related_mission_id, priority)
                VALUES (?, ?, ?, ?)""",
             (input_type, content, related_mission_id, priority),
         )

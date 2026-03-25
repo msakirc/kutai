@@ -241,7 +241,7 @@ class Orchestrator:
         Task-level:
           - Tasks stuck in processing
           - Tasks blocked by failed dependencies
-          - Goals with all children done but still waiting
+          - Missions with all children done but still waiting
 
         Resource-level:
           - Crashed llama-server → auto-restart
@@ -306,7 +306,7 @@ class Orchestrator:
                     (task["id"],),
                 )
 
-        # 3. Goals with all children done but parent still waiting
+        # 3. Missions with all children done but parent still waiting
         cursor3 = await db.execute(
             "SELECT id, title FROM tasks "
             "WHERE status = 'waiting_subtasks'"
@@ -451,11 +451,11 @@ class Orchestrator:
 
         # 5. Workflow-level timeout check — pause workflows running too long
         try:
-            goal_cursor = await db.execute(
+            mission_cursor = await db.execute(
                 """SELECT id, title, context, created_at FROM missions
                    WHERE status = 'active'"""
             )
-            active_missions = [dict(row) for row in await goal_cursor.fetchall()]
+            active_missions = [dict(row) for row in await mission_cursor.fetchall()]
             for mission in active_missions:
                 raw_gctx = mission.get("context", "{}")
                 if isinstance(raw_gctx, str):
@@ -1346,11 +1346,11 @@ class Orchestrator:
         else:
             task_ctx_parsed = task_ctx_raw
         is_interactive = task.get("priority", 5) >= TASK_PRIORITY.get("critical", 10)
-        is_goal_subtask = task.get("mission_id") and task.get("parent_task_id")
+        is_mission_subtask = task.get("mission_id") and task.get("parent_task_id")
 
         if task_ctx_parsed.get("silent"):
             logger.info("task completed (silent)", task_id=task_id, model=model, cost=cost)
-        elif is_interactive or not is_goal_subtask:
+        elif is_interactive or not is_mission_subtask:
             await self.telegram.send_result(task_id, task["title"],
                                             result_text, model, cost)
         elif iterations > 3:
@@ -1497,7 +1497,7 @@ class Orchestrator:
         # ── Phase 13.2: Plan verification ──
         try:
             from ..collaboration.plan_verification import verify_plan
-            issues = verify_plan(subtasks, goal_budget=10.0)
+            issues = verify_plan(subtasks, mission_budget=10.0)
             if issues:
                 logger.warning(
                     f"[Task #{task_id}] Plan verification found "
@@ -1801,7 +1801,7 @@ class Orchestrator:
                     mission_id=mission_id,
                 )
                 mission_info = await get_mission(mission_id)
-                goal_title = mission_info.get('title', 'Unknown') if mission_info else 'Unknown'
+                mission_title = mission_info.get('title', 'Unknown') if mission_info else 'Unknown'
                 mission_created = mission_info.get('created_at', '') if mission_info else ''
                 now = datetime.now()
 
@@ -1835,7 +1835,7 @@ class Orchestrator:
 
                 summary_lines = [
                     f"# Mission #{mission_id} Summary",
-                    f"**Title:** {goal_title}",
+                    f"**Title:** {mission_title}",
                     f"**Completed:** {now.isoformat()[:19]}",
                     f"**Tasks:** {len(completed)} completed, {len(failed)} failed",
                 ]

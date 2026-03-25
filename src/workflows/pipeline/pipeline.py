@@ -63,7 +63,7 @@ class CodingPipeline:
         Run the coding pipeline with adaptive stage selection
         and accumulated context between stages.
         """
-        original_goal = task.get("mission_id")
+        original_mission = task.get("mission_id")
         base_title = task.get("title", "Complex Coding Task")
         base_desc = task.get("description", "")
         context = task.get("context", {})
@@ -89,14 +89,14 @@ class CodingPipeline:
 
         # ── Initialize pipeline context ──
         pipe_ctx = PipelineContext(
-            goal_title=base_title,
-            goal_description=base_desc,
-            mission_id=original_goal,
+            mission_title=base_title,
+            mission_description=base_desc,
+            mission_id=original_mission,
             complexity=complexity,
         )
 
         # ── Load incremental progress ──
-        progress = _load_progress(original_goal)
+        progress = _load_progress(original_mission)
         completed_files = set(progress.get("completed_files", []))
 
         # ── Convention + codebase context (static, computed once) ──
@@ -113,7 +113,7 @@ class CodingPipeline:
             arch_task = {
                 "title": f"Plan Architecture: {base_title}",
                 "description": base_desc + extra_context,
-                "mission_id": original_goal,
+                "mission_id": original_mission,
                 "priority": 8,
                 "context": json.dumps({"prefer_quality": True}),
             }
@@ -160,7 +160,7 @@ class CodingPipeline:
             test_task = {
                 "title": f"Write Tests (TDD): {base_title}",
                 "description": (
-                    f"Goal: {base_desc}\n\n"
+                    f"Mission: {base_desc}\n\n"
                     f"TDD MODE: Write comprehensive tests FIRST based on the "
                     f"architecture plan. The implementation will follow.\n"
                     f"Files to be implemented: {', '.join(files_to_implement)}\n"
@@ -168,7 +168,7 @@ class CodingPipeline:
                     f"{tdd_context}"
                     + extra_context
                 ),
-                "mission_id": original_goal,
+                "mission_id": original_mission,
             }
             test_result = await self.test_generator.execute(test_task)
             test_text = test_result.get("result", "")
@@ -203,13 +203,13 @@ class CodingPipeline:
                 impl_task = {
                     "title": f"Implement {f}",
                     "description": (
-                        f"Overall Goal: {base_desc}\n\n"
+                        f"Overall Mission: {base_desc}\n\n"
                         f"Your specific assignment is to implement: {f}\n"
                         f"Strictly follow the interfaces designed in ARCHITECTURE.md.\n\n"
                         f"{impl_stage_ctx}"
                         + extra_context
                     ),
-                    "mission_id": original_goal,
+                    "mission_id": original_mission,
                 }
                 impl_result = await self.implementer.execute(impl_task)
                 impl_text = impl_result.get("result", "")
@@ -226,7 +226,7 @@ class CodingPipeline:
                 result_log.append(f"Implementer ({f}): {impl_text}")
 
                 completed_files.add(f)
-                _save_progress(original_goal, {
+                _save_progress(original_mission, {
                     "completed_files": list(completed_files),
                     "stage": "implement",
                 })
@@ -251,7 +251,7 @@ class CodingPipeline:
                     f"{fix_stage_ctx}"
                     + extra_context
                 ),
-                "mission_id": original_goal,
+                "mission_id": original_mission,
             }
             fix_result = await self.fixer.execute(fix_task)
             fix_text = fix_result.get("result", "")
@@ -286,13 +286,13 @@ class CodingPipeline:
             test_task = {
                 "title": f"Write Tests: {base_title}",
                 "description": (
-                    f"Goal: {base_desc}\n\n"
+                    f"Mission: {base_desc}\n\n"
                     f"We just implemented {len(files_to_implement)} files. "
                     f"Write tests for them and run pytest.\n\n"
                     f"{test_stage_ctx}"
                     + extra_context
                 ),
-                "mission_id": original_goal,
+                "mission_id": original_mission,
             }
             test_result = await self.test_generator.execute(test_task)
             test_text = test_result.get("result", "")
@@ -365,7 +365,7 @@ class CodingPipeline:
                         f"missing error handling, and test failures.\n\n"
                         f"{review_stage_ctx}"
                     ),
-                    "mission_id": original_goal,
+                    "mission_id": original_mission,
                     "context": json.dumps(review_ctx_dict),
                 }
                 review_result = await self.reviewer.execute(review_task)
@@ -448,7 +448,7 @@ class CodingPipeline:
                             f"{structured_issues}\n\n"
                             f"{fix_stage_ctx}"
                         ),
-                        "mission_id": original_goal,
+                        "mission_id": original_mission,
                         "context": json.dumps(fix_ctx_dict),
                     }
                     fix_result = await self.fixer.execute(fix_task)
@@ -539,7 +539,7 @@ class CodingPipeline:
             logger.debug(f"PR creation failed (non-critical): {pr_err}")
 
         # ── Cleanup ──
-        _cleanup_progress(original_goal)
+        _cleanup_progress(original_mission)
 
         logger.info(
             f"🏁 Pipeline Complete: {base_title} "

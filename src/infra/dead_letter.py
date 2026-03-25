@@ -27,7 +27,7 @@ from src.infra.logging_config import get_logger
 logger = get_logger("infra.dead_letter")
 
 # If this many tasks from the same mission enter the DLQ, pause the mission
-GOAL_DLQ_THRESHOLD = 3
+MISSION_DLQ_THRESHOLD = 3
 
 
 async def _ensure_dlq_table() -> None:
@@ -116,7 +116,7 @@ async def _check_mission_health(mission_id: int) -> None:
     row = await cursor.fetchone()
     count = row[0] if row else 0
 
-    if count >= GOAL_DLQ_THRESHOLD:
+    if count >= MISSION_DLQ_THRESHOLD:
         logger.warning(
             f"[DLQ] Mission #{mission_id} has {count} quarantined tasks — "
             f"auto-pausing mission"
@@ -133,7 +133,7 @@ async def _check_mission_health(mission_id: int) -> None:
             if bot:
                 await bot.send_notification(
                     f"Mission #{mission_id} auto-paused: {count} tasks "
-                    f"in dead-letter queue (threshold={GOAL_DLQ_THRESHOLD})"
+                    f"in dead-letter queue (threshold={MISSION_DLQ_THRESHOLD})"
                 )
         except Exception:
             pass

@@ -100,15 +100,15 @@ class ArtifactStore:
             return
         from src.collaboration.blackboard import update_blackboard_entry
 
-        for goal_key, artifacts in self._cache.items():
-            mission_id = int(goal_key)
+        for mission_key, artifacts in self._cache.items():
+            mission_id = int(mission_key)
             for name, value in artifacts.items():
                 try:
                     await update_blackboard_entry(mission_id, "artifacts", name, value)
                 except Exception as exc:
                     logger.warning(
                         "flush_cache: failed to persist artifact %s for mission %s: %s",
-                        name, goal_key, exc,
+                        name, mission_key, exc,
                     )
 
     async def warm_cache(self, mission_id: int | str) -> None:

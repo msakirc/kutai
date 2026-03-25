@@ -57,7 +57,7 @@ _TIER_COST_ESTIMATE: dict[str, float] = {
 
 def verify_plan(
     subtasks: list[dict],
-    goal_budget: float = 10.0,
+    mission_budget: float = 10.0,
 ) -> list[str]:
     """Verify a plan's subtasks, returning a list of issue strings.
 
@@ -97,10 +97,10 @@ def verify_plan(
         _TIER_COST_ESTIMATE.get(st.get("tier", "auto"), 0.03)
         for st in subtasks
     )
-    if total_cost > goal_budget:
+    if total_cost > mission_budget:
         issues.append(
             f"Estimated plan cost ${total_cost:.2f} exceeds budget "
-            f"${goal_budget:.2f}"
+            f"${mission_budget:.2f}"
         )
 
     # 5. File reference consistency

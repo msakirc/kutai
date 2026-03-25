@@ -23,7 +23,7 @@ class Cap(str, Enum):
     """
     # ── Reasoning & Planning ──
     REASONING           = "reasoning"            # Multi-step logic, CoT, math, formal reasoning
-    PLANNING            = "planning"             # Goal decomposition, step ordering, foresight
+    PLANNING            = "planning"             # Mission decomposition, step ordering, foresight
     ANALYSIS            = "analysis"             # Pattern recognition, root-cause, comparison
 
     # ── Code ──

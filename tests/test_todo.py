@@ -306,5 +306,20 @@ class TestTodoTitleExtraction(unittest.TestCase):
         )
 
 
+from datetime import datetime, timedelta
+
+
+def test_format_age():
+    from src.app.reminders import _format_age
+    now = datetime(2026, 3, 26, 12, 0, 0)
+    assert _format_age(now - timedelta(minutes=30), now) == "30m ago"
+    assert _format_age(now - timedelta(hours=3), now) == "3h ago"
+    assert _format_age(now - timedelta(days=2), now) == "2d ago"
+    assert _format_age(now - timedelta(weeks=3), now) == "3w ago"
+    assert _format_age(now - timedelta(minutes=2), now) == "2m ago"
+    # Edge: just created
+    assert _format_age(now, now) == "now"
+
+
 if __name__ == "__main__":
     unittest.main()

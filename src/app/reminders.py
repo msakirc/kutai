@@ -1,7 +1,7 @@
 # reminders.py
 """Todo reminder notifications sent via Telegram."""
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from datetime import datetime
 
 from ..infra.db import get_todos
 from ..infra.logging_config import get_logger
@@ -22,8 +22,32 @@ _PRIORITY_ICONS = {
 }
 
 
+def _format_age(created_at, now=None):
+    """Return compact relative time: '2m ago', '3h ago', '5d ago', '2w ago'."""
+    if isinstance(created_at, str):
+        created_at = datetime.fromisoformat(created_at)
+    if now is None:
+        now = datetime.now()
+    diff = now - created_at
+    minutes = int(diff.total_seconds() / 60)
+    if minutes < 1:
+        return "now"
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h ago"
+    days = hours // 24
+    if days < 14:
+        return f"{days}d ago"
+    weeks = days // 7
+    return f"{weeks}w ago"
+
+
 async def send_todo_reminder(telegram):
     """Fetch pending todos, format with inline buttons, send to Telegram."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
     try:
         todos = await get_todos(status="pending")
         if not todos:

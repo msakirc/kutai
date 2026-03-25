@@ -1,4 +1,4 @@
-"""Workflow runner -- creates goals and tasks from workflow definitions.
+"""Workflow runner -- creates missions and tasks from workflow definitions.
 
 Usage:
     runner = WorkflowRunner()
@@ -112,12 +112,12 @@ class WorkflowRunner:
         self.artifact_store = ArtifactStore(use_db=True)
 
     async def find_resumable(self, workflow_name: str) -> Optional[int]:
-        """Find an active goal with a matching workflow checkpoint."""
+        """Find an active mission with a matching workflow checkpoint."""
         from src.infra.db import get_active_missions, get_workflow_checkpoint
 
-        goals = await get_active_missions()
-        for goal in goals:
-            ctx = goal.get("context", "{}")
+        missions = await get_active_missions()
+        for mission in missions:
+            ctx = mission.get("context", "{}")
             if isinstance(ctx, str):
                 try:
                     ctx = json.loads(ctx)
@@ -128,9 +128,9 @@ class WorkflowRunner:
             if ctx.get("workflow_name") != workflow_name:
                 continue
 
-            checkpoint = await get_workflow_checkpoint(goal["id"])
+            checkpoint = await get_workflow_checkpoint(mission["id"])
             if checkpoint and checkpoint.get("workflow_name") == workflow_name:
-                return goal["id"]
+                return mission["id"]
         return None
 
     async def resume(self, mission_id: int) -> int:
@@ -307,7 +307,7 @@ class WorkflowRunner:
         title: Optional[str] = None,
         existing_codebase_path: Optional[str] = None,
     ) -> int:
-        """Load a workflow, create a goal, expand steps, and insert tasks.
+        """Load a workflow, create a mission, expand steps, and insert tasks.
 
         Returns the mission_id.
         """

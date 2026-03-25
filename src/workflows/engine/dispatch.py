@@ -24,7 +24,7 @@ WORKFLOW_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 _ONBOARD_RE = re.compile(
-    r"^(?:/product\s+)?onboard\s+(.+)$", re.IGNORECASE
+    r"^(?:/(?:product|mission)\s+)?onboard\s+(.+)$", re.IGNORECASE
 )
 
 
@@ -43,8 +43,11 @@ def detect_onboarding_path(message: str) -> Optional[str]:
 
 
 def extract_idea_text(message: str) -> str:
-    """Strip /product prefix if present, return remaining text."""
+    """Strip /product or /mission prefix if present, return remaining text."""
     text = message.strip()
-    if text.lower().startswith("/product"):
+    lower = text.lower()
+    if lower.startswith("/mission"):
+        text = text[len("/mission"):].strip()
+    elif lower.startswith("/product"):
         text = text[len("/product"):].strip()
     return text

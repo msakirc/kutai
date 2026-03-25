@@ -52,7 +52,7 @@ CLASSIFIER_PROMPT = """You are a task classifier for an AI agent system. Classif
 Respond ONLY with valid JSON, no markdown.
 
 Available agent types:
-- "planner": goal decomposition, project planning, step ordering
+- "planner": mission decomposition, project planning, step ordering
 - "architect": system design, API design, technology decisions
 - "coder": writing new code from specs
 - "implementer": following detailed implementation plans exactly

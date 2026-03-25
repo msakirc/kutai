@@ -176,7 +176,7 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
         await store.store(mission_id, name, output_value)
         logger.info(
             f"[Workflow Hook] Post-execute: stored artifact '{name}' "
-            f"for goal {mission_id} ({len(output_value)} chars)"
+            f"for mission {mission_id} ({len(output_value)} chars)"
         )
 
     # ── Check conditional group triggers ──
@@ -216,7 +216,7 @@ async def _check_phase_completion(mission_id: int, phase_id: str) -> bool:
     try:
         tasks = await get_tasks_for_mission(mission_id)
     except Exception as exc:
-        logger.debug(f"[Workflow Hook] Could not fetch tasks for goal {mission_id}: {exc}")
+        logger.debug(f"[Workflow Hook] Could not fetch tasks for mission {mission_id}: {exc}")
         return False
 
     terminal_states = {"completed", "skipped", "cancelled"}
@@ -249,7 +249,7 @@ async def _check_phase_completion(mission_id: int, phase_id: str) -> bool:
             completed_phases=completed,
         )
         logger.info(
-            f"[Workflow Hook] Phase '{phase_id}' complete for goal {mission_id} "
+            f"[Workflow Hook] Phase '{phase_id}' complete for mission {mission_id} "
             f"({len(phase_tasks)} tasks). Checkpoint updated."
         )
     except Exception as exc:
@@ -279,12 +279,12 @@ async def _evaluate_phase_gate(mission_id: int, phase_id: str) -> None:
             if passed:
                 logger.info(
                     f"[Workflow Hook] Quality gate for '{phase_id}' PASSED "
-                    f"(goal {mission_id})"
+                    f"(mission {mission_id})"
                 )
             else:
                 logger.warning(
                     f"[Workflow Hook] Quality gate for '{phase_id}' FAILED "
-                    f"(goal {mission_id}): {result_text}"
+                    f"(mission {mission_id}): {result_text}"
                 )
     except Exception as exc:
         logger.debug(f"[Workflow Hook] Quality gate evaluation failed: {exc}")

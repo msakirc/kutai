@@ -48,7 +48,7 @@ def should_delegate_to_pipeline(template_step_id: str, agent_type: str) -> bool:
 def extract_feature_context(step_context: dict) -> tuple[str, str]:
     """Extract feature_id and feature_name from a step context dict.
 
-    Parses the step ID pattern ``<goal>.<feature_id>.feat.<N>`` to pull out
+    Parses the step ID pattern ``<mission>.<feature_id>.feat.<N>`` to pull out
     the feature_id segment.  The feature_name is read from
     ``step_context["workflow_context"]["feature_name"]`` when available,
     falling back to feature_id.

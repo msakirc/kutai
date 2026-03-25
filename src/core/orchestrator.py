@@ -130,7 +130,7 @@ class Orchestrator:
     async def _inject_chain_context(self, task: dict) -> dict:
         """
         Before executing a task, inject results from completed sibling tasks
-        (prior steps in the same goal) and a workspace snapshot into its context.
+        (prior steps in the same mission) and a workspace snapshot into its context.
         This is how step 5 knows what steps 1-4 produced.
         """
         task_context = {}
@@ -143,7 +143,7 @@ class Orchestrator:
         elif isinstance(raw_context, dict):
             task_context = raw_context
 
-        # ── Gather completed sibling tasks (same parent or same goal) ──
+        # ── Gather completed sibling tasks (same parent or same mission) ──
         parent_id = task.get("parent_task_id")
         mission_id = task.get("mission_id")
 
@@ -455,9 +455,9 @@ class Orchestrator:
                 """SELECT id, title, context, created_at FROM missions
                    WHERE status = 'active'"""
             )
-            active_goals = [dict(row) for row in await goal_cursor.fetchall()]
-            for goal in active_goals:
-                raw_gctx = goal.get("context", "{}")
+            active_missions = [dict(row) for row in await goal_cursor.fetchall()]
+            for mission in active_missions:
+                raw_gctx = mission.get("context", "{}")
                 if isinstance(raw_gctx, str):
                     try:
                         gctx = json.loads(raw_gctx)
@@ -471,7 +471,7 @@ class Orchestrator:
                     continue
 
                 try:
-                    created = datetime.fromisoformat(goal["created_at"])
+                    created = datetime.fromisoformat(mission["created_at"])
                 except (ValueError, TypeError):
                     continue
 
@@ -479,13 +479,13 @@ class Orchestrator:
                 if elapsed_hours > timeout_hours:
                     logger.warning(
                         "[Watchdog] Mission #%d exceeded timeout (%dh > %dh), pausing",
-                        goal["id"], int(elapsed_hours), timeout_hours,
+                        mission["id"], int(elapsed_hours), timeout_hours,
                     )
-                    await update_mission(goal["id"], status="paused")
+                    await update_mission(mission["id"], status="paused")
                     await self.telegram.send_notification(
-                        f"⏱️ *Workflow timeout*: Mission #{goal['id']} paused after "
+                        f"⏱️ *Workflow timeout*: Mission #{mission['id']} paused after "
                         f"{int(elapsed_hours)}h (limit: {timeout_hours}h).\n"
-                        f"*{goal['title']}*\nUse /resume to continue."
+                        f"*{mission['title']}*\nUse /resume to continue."
                     )
         except Exception as e:
             logger.warning(f"[Watchdog] Workflow timeout check failed: {e}")
@@ -1338,7 +1338,7 @@ class Orchestrator:
 
         # Notify for top-level tasks or multi-iteration tasks
         # Always notify for interactive (critical priority) tasks
-        # Skip only background subtasks from goal decomposition
+        # Skip only background subtasks from mission decomposition
         # Silent tasks (e.g., todo suggestions) skip Telegram notification entirely
         task_ctx_raw = task.get("context", "{}")
         if isinstance(task_ctx_raw, str):
@@ -1761,10 +1761,10 @@ class Orchestrator:
         except Exception:
             pass
 
-    # ─── Goal Completion ─────────────────────────────────────────────────
+    # ─── Mission Completion ───────────────────────────────────────────────
 
     async def _check_mission_completion(self, mission_id):
-        """Check if all tasks for a goal are done."""
+        """Check if all tasks for a mission are done."""
         tasks = await get_tasks_for_mission(mission_id)
         if not tasks:
             return
@@ -1779,7 +1779,7 @@ class Orchestrator:
             await update_mission(mission_id, status="completed",
                               completed_at=datetime.now().isoformat())
 
-            # Phase 6: Release all locks held by this goal
+            # Phase 6: Release all locks held by this mission
             try:
                 await release_mission_locks(mission_id)
             except Exception:
@@ -1790,7 +1790,7 @@ class Orchestrator:
                 for t in completed[-10:]
             )
 
-            # Phase 7.4: Generate and save goal completion summary
+            # Phase 7.4: Generate and save mission completion summary
             total_cost = 0.0
             elapsed_str = ""
             try:
@@ -1868,17 +1868,17 @@ class Orchestrator:
             cost_line = f"\nCost: ${total_cost:.4f}" if total_cost > 0 else ""
             time_line = f"\nDuration: {elapsed_str}" if elapsed_str else ""
             await self.telegram.send_notification(
-                f"🎯 *Goal Completed!*\n\n"
+                f"🎯 *Mission Completed!*\n\n"
                 f"Tasks: {len(completed)} completed, {len(failed)} failed"
                 f"{cost_line}{time_line}\n\n"
                 f"Results:\n{results_summary}"
             )
 
-    # ─── Goal Planning ───────────────────────────────────────────────────
+    # ─── Mission Planning ─────────────────────────────────────────────────
 
     async def plan_mission(self, mission_id: int, title: str, description: str):
-        """Create initial planning task for a new goal."""
-        # ── Phase 6: Set up per-goal workspace + branch ──
+        """Create initial planning task for a new mission."""
+        # ── Phase 6: Set up per-mission workspace + branch ──
         try:
             mission_ws = get_mission_workspace(mission_id)
             await ensure_git_repo(get_mission_workspace_relative(mission_id))
@@ -1906,9 +1906,9 @@ class Orchestrator:
     async def daily_digest(self):
         """Phase 14.1: Enhanced morning briefing with overnight results and system health."""
         stats = await get_daily_stats()
-        goals = await get_active_missions()
+        missions = await get_active_missions()
 
-        goals_text = "\n".join(f"  - {g['title']}" for g in goals[:5]) or "  None"
+        missions_text = "\n".join(f"  - {g['title']}" for g in missions[:5]) or "  None"
 
         # Gather additional intelligence
         pending_approvals = 0
@@ -1950,7 +1950,7 @@ class Orchestrator:
             f"  Processing: {stats['processing']}\n"
             f"  Failed: {stats['failed']}\n"
             f"  Cost: ${stats['today_cost']:.4f}\n\n"
-            f"*Active goals:*\n{goals_text}"
+            f"*Active missions:*\n{missions_text}"
             f"{approval_line}\n\n"
             f"*System health:*\n{health_text}"
         )

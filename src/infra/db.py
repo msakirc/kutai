@@ -1484,7 +1484,7 @@ async def get_model_performance_ranking(agent_type: str) -> list[dict]:
 # --- Cost Budget ---
 
 async def get_budget(scope: str, scope_id: str | None = None) -> dict | None:
-    """Get budget info for a scope (e.g. 'daily', 'goal')."""
+    """Get budget info for a scope (e.g. 'daily', 'mission')."""
     db = await get_db()
     if scope_id:
         cursor = await db.execute(

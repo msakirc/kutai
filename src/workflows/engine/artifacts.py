@@ -1,6 +1,6 @@
 """Artifact store for workflow step inputs/outputs.
 
-Artifacts are stored on the goal's blackboard under the "artifacts" key.
+Artifacts are stored on the mission's blackboard under the "artifacts" key.
 In-memory cache for fast access. Supports v2 context_strategy for
 tiered artifact loading (primary > reference > full_only_if_needed).
 """
@@ -85,7 +85,7 @@ class ArtifactStore:
         return result
 
     async def list_artifacts(self, mission_id: int | str) -> list[str]:
-        """List cached artifact names for a goal."""
+        """List cached artifact names for a mission."""
         key = self._mission_key(mission_id)
         if key in self._cache:
             return list(self._cache[key].keys())
@@ -107,7 +107,7 @@ class ArtifactStore:
                     await update_blackboard_entry(mission_id, "artifacts", name, value)
                 except Exception as exc:
                     logger.warning(
-                        "flush_cache: failed to persist artifact %s for goal %s: %s",
+                        "flush_cache: failed to persist artifact %s for mission %s: %s",
                         name, goal_key, exc,
                     )
 
@@ -229,7 +229,7 @@ async def get_phase_summaries(
     store:
         The :class:`ArtifactStore` to query.
     mission_id:
-        Workflow goal identifier.
+        Workflow mission identifier.
     up_to_phase:
         Phase identifier like ``"phase_3"``.  Summaries for all phases with
         a number strictly less than the parsed value are returned.

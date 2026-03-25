@@ -75,7 +75,7 @@ def expand_steps_to_tasks(
     steps:
         List of step dicts from a :class:`WorkflowDefinition`.
     mission_id:
-        The goal ID to associate each task with.
+        The mission ID to associate each task with.
     initial_context:
         Optional dict of initial context (e.g. user idea) to propagate
         into each task's ``workflow_context``.

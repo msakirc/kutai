@@ -501,12 +501,12 @@ class CodingPipeline:
         )
         result_log.append(f"\n{pr_summary}")
 
-        # ── Phase 10.6: Create PR if on a goal branch ──
+        # ── Phase 10.6: Create PR if on a mission branch ──
         try:
             from src.tools.git_ops import get_current_branch
             from src.tools.shell import run_shell
             branch = await get_current_branch(pipe_ctx.workspace or "")
-            if branch and branch.startswith("goal/") and branch != "main":
+            if branch and branch.startswith("mission/") and branch != "main":
                 # Push branch and create PR via gh CLI
                 push_out = await run_shell(
                     f"git push -u origin {branch} 2>&1 || true",

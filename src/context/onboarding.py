@@ -2,7 +2,7 @@
 """
 Phase 12.6 — Project Onboarding.
 
-When a project is registered via ``/project add <path>``, this module:
+When a project is registered via ``/mission`` (or legacy ``/project add <path>``), this module:
 1. Detects language & framework
 2. Runs structural index (tree-sitter)
 3. Builds code embeddings

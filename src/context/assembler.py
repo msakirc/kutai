@@ -404,7 +404,7 @@ async def assemble_ambient_context(
     """
     Assemble a short ambient context block injected into every agent execution.
 
-    Includes: time of day, system load mode, active goals count, and recent
+    Includes: time of day, system load mode, active missions count, and recent
     blackboard decisions if mission_id is provided. Stays under max_tokens.
     """
     import datetime
@@ -431,7 +431,7 @@ async def assemble_ambient_context(
     except Exception:
         pass
 
-    # Active goals
+    # Active missions
     try:
         from ..infra.db import get_db
         db = await get_db()

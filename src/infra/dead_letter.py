@@ -9,7 +9,7 @@ The DLQ:
 - Quarantines tasks so they don't block downstream work
 - Notifies via Telegram
 - Provides `/dlq` command to inspect / retry / discard
-- Auto-pauses a workflow goal if too many tasks land here
+- Auto-pauses a workflow mission if too many tasks land here
 
 Integration with existing systems:
 - BackpressureQueue handles *transient* model call failures (rate limits)
@@ -92,11 +92,11 @@ async def quarantine_task(
         raise
 
     logger.warning(
-        f"[DLQ] Task #{task_id} quarantined (goal={mission_id}, "
+        f"[DLQ] Task #{task_id} quarantined (mission={mission_id}, "
         f"category={error_category})"
     )
 
-    # Check if goal should be auto-paused
+    # Check if mission should be auto-paused
     if mission_id:
         await _check_mission_health(mission_id)
 
@@ -104,7 +104,7 @@ async def quarantine_task(
 
 
 async def _check_mission_health(mission_id: int) -> None:
-    """If too many tasks from this mission are in the DLQ, pause the goal."""
+    """If too many tasks from this mission are in the DLQ, pause the mission."""
     from src.infra.db import get_db, update_mission
 
     db = await get_db()
@@ -168,7 +168,7 @@ async def get_dlq_tasks(
     mission_id: Optional[int] = None,
     unresolved_only: bool = True,
 ) -> list[dict]:
-    """List dead-letter tasks, optionally filtered by goal."""
+    """List dead-letter tasks, optionally filtered by mission."""
     from src.infra.db import get_db
 
     await _ensure_dlq_table()

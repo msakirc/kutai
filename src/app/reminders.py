@@ -8,13 +8,6 @@ from ..infra.logging_config import get_logger
 
 logger = get_logger("app.reminders")
 
-# Heuristic: if title contains these words, KutAI can likely help
-_AI_HELPABLE_KEYWORDS = [
-    "research", "find", "search", "compare", "check",
-    "analyze", "summarize", "look up", "investigate",
-    "ara", "bul", "karsilastir", "kontrol",
-]
-
 _PRIORITY_ICONS = {
     "high": "🔴",
     "normal": "🟡",
@@ -44,55 +37,65 @@ def _format_age(created_at, now=None):
     return f"{weeks}w ago"
 
 
-async def send_todo_reminder(telegram):
-    """Fetch pending todos, format with inline buttons, send to Telegram."""
+async def send_todo_reminder(telegram, suggestions=None):
+    """Fetch pending todos, format with inline buttons, send to Telegram.
+
+    Args:
+        telegram: TelegramBot instance.
+        suggestions: Optional dict {todo_id: suggestion_str} from suggestion tasks.
+    """
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
     try:
         todos = await get_todos(status="pending")
         if not todos:
-            return  # Nothing pending — skip reminder
+            return
 
+        suggestions = suggestions or {}
         lines = ["📝 *Pending Todos*\n"]
-        buttons = []
+        done_buttons = []
+        help_buttons = []
 
         for todo in todos:
             tid = todo["id"]
             title = todo["title"]
             priority = todo.get("priority", "normal")
             p_icon = _PRIORITY_ICONS.get(priority, "🟡")
+            age = _format_age(todo["created_at"])
 
-            lines.append(f"  {p_icon} *#{tid}* — {title}")
+            lines.append(f"  {p_icon} *#{tid}* — {title} ({age})")
 
-            # Toggle done button
-            buttons.append(
-                [InlineKeyboardButton(
-                    f"✅ Done: {title[:25]}",
-                    callback_data=f"todo_toggle:{tid}",
-                )]
+            suggestion = suggestions.get(tid)
+            if suggestion:
+                lines.append(f"   💡 {suggestion}")
+
+            done_buttons.append(
+                InlineKeyboardButton(f"✅ #{tid}", callback_data=f"todo_toggle:{tid}")
             )
-
-            # Check if AI can help
-            title_lower = title.lower()
-            if any(kw in title_lower for kw in _AI_HELPABLE_KEYWORDS):
-                buttons.append(
-                    [InlineKeyboardButton(
-                        f"🤖 Help: {title[:20]}",
-                        callback_data=f"todo_ai:{tid}",
-                    )]
+            if suggestion:
+                help_buttons.append(
+                    InlineKeyboardButton(f"🤖 #{tid}", callback_data=f"todo_help:{tid}")
                 )
 
         text = "\n".join(lines)
-        markup = InlineKeyboardMarkup(buttons) if buttons else None
+        rows = []
+        # Pack done buttons, max 4 per row
+        for i in range(0, len(done_buttons), 4):
+            rows.append(done_buttons[i:i + 4])
+        if help_buttons:
+            for i in range(0, len(help_buttons), 4):
+                rows.append(help_buttons[i:i + 4])
+        rows.append([InlineKeyboardButton("🔙 Close", callback_data="todo_close")])
+
+        markup = InlineKeyboardMarkup(rows)
 
         await telegram.app.bot.send_message(
-            chat_id=telegram.app.bot.defaults and telegram.app.bot.defaults.chat_id
-            or _get_admin_chat_id(),
+            chat_id=_get_admin_chat_id(),
             text=text,
             parse_mode="Markdown",
             reply_markup=markup,
         )
-        logger.info("todo reminder sent", count=len(todos))
+        logger.info("todo reminder sent", count=len(todos), suggestions=len(suggestions))
 
     except Exception as e:
         logger.error("failed to send todo reminder", error=str(e))

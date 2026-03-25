@@ -342,7 +342,7 @@ class TelegramInterface:
             # Workflow mission — delegate to workflow runner
             try:
                 from ..workflows.engine.runner import WorkflowRunner
-                runner = WorkflowRunner(self.orchestrator)
+                runner = WorkflowRunner()
                 mission_id = await runner.start(
                     workflow_name=workflow,
                     initial_input={"idea": description, "product_name": description[:50]},
@@ -1482,6 +1482,10 @@ class TelegramInterface:
         pending_action = self._pending_action.pop(chat_id, None)
         if pending_action:
             cmd = pending_action["command"]
+            if cmd == "_todo_help":
+                self._last_todo_help = pending_action
+                await self.cmd__todo_help(update, context)
+                return
             handler = self._resolve_cmd_handler(cmd)
             if handler:
                 # Simulate command with text as args
@@ -1620,7 +1624,7 @@ class TelegramInterface:
             if msg_workflow == "idea_to_product":
                 try:
                     from ..workflows.engine.runner import WorkflowRunner
-                    runner = WorkflowRunner(self.orchestrator)
+                    runner = WorkflowRunner()
                     mission_id = await runner.start(
                         workflow_name="idea_to_product_v2",
                         initial_input={"idea": text, "product_name": text[:50]},
@@ -1679,8 +1683,10 @@ Categories:
 - "casual": greeting, thanks, small talk
 
 If type is "mission", also decide if this needs a full product workflow:
-- "workflow": "idea_to_product" if the user wants to BUILD a product, app, website, tool, platform, SaaS, bot, or any software from scratch
+- "workflow": "idea_to_product" ONLY if the user explicitly wants to BUILD/CREATE/DEVELOP a new product from scratch
 - "workflow": null if it's a simpler mission (research, analysis, fix something, write a report)
+
+IMPORTANT: Asking about existing apps/tools ("are there any good apps for X", "what's the best tool for X", "recommend an app") is a research TASK or QUESTION, NOT a mission. Only use "mission" when the user wants something BUILT.
 
 Context: {context}
 
@@ -2199,6 +2205,61 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 await query.answer(f"Task #{task_id} created!")
             return
 
+        if data == "todo_close":
+            try:
+                await query.delete_message()
+            except Exception:
+                await query.edit_message_text("(closed)")
+            return
+
+        if data.startswith("todo_help:"):
+            todo_id = int(data.split(":")[1])
+            todo = await get_todo(todo_id)
+            if not todo:
+                await query.answer("Todo not found")
+                return
+            # Get suggestion from the reminder message text
+            suggestion = self._extract_suggestion_from_message(
+                query.message.text, todo_id
+            )
+            prompt_text = suggestion or f"Help me with: {todo['title']}"
+            # Store pending help action so reply is routed correctly
+            chat_id = query.message.chat_id
+            self._pending_action[chat_id] = {
+                "command": "_todo_help",
+                "todo_id": todo_id,
+                "todo_title": todo["title"],
+            }
+            from telegram import ForceReply
+            await query.message.reply_text(
+                f"🤖 *Help with: {todo['title']}*\n"
+                f"Suggested action: _{suggestion or 'Help me with this'}_\n\n"
+                f"Edit below and send, or tap Cancel.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("❌ Cancel", callback_data="todo_help_cancel")
+                ]]),
+            )
+            # ForceReply with the suggestion as placeholder to guide input
+            await query.message.get_bot().send_message(
+                chat_id=query.message.chat_id,
+                text=prompt_text,
+                reply_markup=ForceReply(
+                    selective=True,
+                    input_field_placeholder="Edit and send...",
+                ),
+            )
+            return
+
+        if data == "todo_help_cancel":
+            chat_id = query.message.chat_id
+            self._pending_action.pop(chat_id, None)
+            try:
+                await query.delete_message()
+            except Exception:
+                await query.edit_message_text("(cancelled)")
+            return
+
         # ── Legacy Callbacks (approval, resetall confirm) ──────
         if data == "resetall_confirm":
             db = await get_db()
@@ -2394,3 +2455,36 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             return False
         finally:
             self._approval_events.pop(task_id, None)
+
+    @staticmethod
+    def _extract_suggestion_from_message(message_text, todo_id):
+        """Extract the 💡 suggestion line for a given todo from the reminder message."""
+        if not message_text:
+            return None
+        marker = f"*#{todo_id}*"
+        lines = message_text.split("\n")
+        for i, line in enumerate(lines):
+            if marker in line and i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if next_line.startswith("💡"):
+                    return next_line[2:].strip()
+        return None
+
+    async def cmd__todo_help(self, update, context):
+        """Handle the user's reply to a todo help suggestion."""
+        text = update.message.text or ""
+        todo_info = getattr(self, "_last_todo_help", None)
+        if not todo_info:
+            await update.message.reply_text("❌ Help session expired. Try again from the reminder.")
+            return
+        self._last_todo_help = None
+        todo_id = todo_info["todo_id"]
+        todo_title = todo_info["todo_title"]
+        task_id = await add_task(
+            title=f"Help with: {todo_title[:40]}",
+            description=text,
+            tier="auto",
+            priority=8,
+            context={"todo_id": todo_id, "local_only": True, "prefer_quality": True},
+        )
+        await update.message.reply_text(f"✅ Task #{task_id} created!")

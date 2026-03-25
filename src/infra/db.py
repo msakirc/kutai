@@ -117,7 +117,11 @@ async def init_db():
             priority INTEGER DEFAULT 5,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             completed_at TIMESTAMP,
-            context JSON DEFAULT '{}'
+            context JSON DEFAULT '{}',
+            workflow TEXT DEFAULT '',
+            repo_path TEXT DEFAULT '',
+            language TEXT DEFAULT '',
+            framework TEXT DEFAULT ''
         )
     """)
 

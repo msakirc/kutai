@@ -812,8 +812,24 @@ class Orchestrator:
                 return candidate
 
             if minute != "*" and hour != "*":
-                # Daily at H:M
-                m, h = int(minute), int(hour)
+                m = int(minute)
+                # Handle comma-separated hours (e.g., "9,11,13,15,17,19,21")
+                if "," in hour:
+                    hours = sorted(int(h) for h in hour.split(","))
+                    # Find next hour that's still in the future today
+                    for h in hours:
+                        candidate = after.replace(
+                            hour=h, minute=m, second=0, microsecond=0
+                        )
+                        if candidate > after:
+                            return candidate
+                    # All hours passed today — first hour tomorrow
+                    candidate = after.replace(
+                        hour=hours[0], minute=m, second=0, microsecond=0
+                    )
+                    return candidate + timedelta(days=1)
+                # Single hour: daily at H:M
+                h = int(hour)
                 candidate = after.replace(
                     hour=h, minute=m, second=0, microsecond=0
                 )

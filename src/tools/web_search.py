@@ -2,6 +2,7 @@
 """
 Web search using Perplexica/Vane (primary) — with DuckDuckGo and curl fallback.
 """
+import asyncio
 import json
 import os
 import urllib.parse
@@ -221,9 +222,12 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
                 )
                 return result
 
+    except asyncio.TimeoutError:
+        _perplexica_fail_count += 1
+        logger.warning("perplexica search timeout (15s)", query=query)
     except Exception as e:
         _perplexica_fail_count += 1
-        logger.warning("perplexica search error", error=str(e), query=query)
+        logger.warning("perplexica search error", error=f"{type(e).__name__}: {e}", query=query)
         return None
 
 

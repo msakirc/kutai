@@ -5,6 +5,13 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+# Ensure the project root is on sys.path so `from src.…` imports work
+# regardless of how this script is launched.
+_project_root = str(Path(__file__).resolve().parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 # Prevent UnicodeEncodeError on Windows consoles using cp1252 / legacy codepages
 if sys.stdout and hasattr(sys.stdout, "buffer"):
@@ -331,14 +338,12 @@ async def main():
     if gpu_detect_task and not gpu_detect_task.done():
         gpu_detect_task.cancel()
 
-    # Propagate exit code to wrapper (42 = restart, 0 = stop)
+    # Propagate exit code to wrapper (42 = restart, 0 = stop).
+    # Use os._exit() to bypass asyncio/uvicorn cleanup that can swallow
+    # the exit code or cause CancelledError cascades on Windows.
     if orch.requested_exit_code is not None:
-        sys.exit(orch.requested_exit_code)
+        os._exit(orch.requested_exit_code)
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except SystemExit as e:
-        # Propagate exit code (42 = restart, 0 = stop) to the wrapper
-        sys.exit(e.code)
+    asyncio.run(main())

@@ -1013,7 +1013,7 @@ class BaseAgent:
         consecutive_tool_failures = 0
         escalated = False
 
-        _progress_last_sent = 0.0
+        _progress_last_sent = time.time()
 
         for iteration in range(start_iteration, self.max_iterations):
             logger.info(
@@ -1036,10 +1036,13 @@ class BaseAgent:
                                 _tc = _m["tool_calls"][0]
                                 _fn = _tc.get("function", {}).get("name", "tool")
                                 _last_action = f"Using {_fn}..."
-                            elif _content.lstrip().startswith("{") or _content.lstrip().startswith("["):
+                            elif _content.lstrip().startswith(("{", "[", "```")):
                                 import json as _pjson
+                                import re as _re
+                                # Strip markdown code fences before parsing
+                                _raw = _re.sub(r"^```(?:json)?\s*|\s*```$", "", _content.strip())
                                 try:
-                                    _parsed = _pjson.loads(_content)
+                                    _parsed = _pjson.loads(_raw)
                                     _action = _parsed.get("action", "")
                                     if _action == "tool_call":
                                         _tool = _parsed.get("tool", "tool")

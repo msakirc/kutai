@@ -69,24 +69,36 @@ class LocalModelManager:
         self._last_request_time: float = 0.0
         self._started_at: float = 0.0
         self._total_swaps: int = 0
+        self._thinking_enabled: bool = False  # tracks server-side thinking state
 
         self._scheduler = get_gpu_scheduler()
 
     # ── Public API ──────────────────────────────────────────────
 
-    async def ensure_model(self, model_name: str, reason: str = "") -> bool:
+    async def ensure_model(
+        self,
+        model_name: str,
+        reason: str = "",
+        enable_thinking: bool = False,
+    ) -> bool:
         """
         Ensure the specified model is loaded and healthy.
-        If already loaded, returns immediately.
-        If different model is loaded, swaps (blocks until ready).
+        If already loaded with the same thinking state, returns immediately.
+        If different model or thinking state differs, swaps (blocks until ready).
         """
         if self.current_model == model_name:
-            if await self._health_check():
+            if self._thinking_enabled == enable_thinking and await self._health_check():
                 return True
-            # Loaded but unhealthy — restart
-            logger.warning(f"Model {model_name} unhealthy, restarting")
+            if self._thinking_enabled != enable_thinking:
+                logger.info(
+                    f"Thinking state change: {self._thinking_enabled} -> {enable_thinking}, "
+                    f"restarting {model_name}"
+                )
+            else:
+                # Loaded but unhealthy — restart
+                logger.warning(f"Model {model_name} unhealthy, restarting")
 
-        return await self._swap_model(model_name, reason)
+        return await self._swap_model(model_name, reason, enable_thinking=enable_thinking)
 
     async def acquire_inference_slot(
         self,
@@ -156,7 +168,7 @@ class LocalModelManager:
 
     # ── Model Swapping ─────────────────────────────────────────
 
-    async def _swap_model(self, model_name: str, reason: str = "") -> bool:
+    async def _swap_model(self, model_name: str, reason: str = "", enable_thinking: bool = False) -> bool:
         """
         Stop current model, start new one. Protected by lock.
         Returns True if the new model is healthy.
@@ -240,13 +252,14 @@ class LocalModelManager:
                     model_info.gpu_layers = new_layers
 
             # Start new server
-            success = await self._start_server(model_info)
+            success = await self._start_server(model_info, enable_thinking=enable_thinking)
 
             swap_duration = time.time() - swap_start
             self._total_swaps += 1
 
             if success:
                 self.current_model = model_name
+                self._thinking_enabled = enable_thinking
                 self._started_at = time.time()
                 registry.mark_loaded(model_name, self.api_base)
                 logger.info(
@@ -279,7 +292,7 @@ class LocalModelManager:
             # Fallback: logical cores / 2 as rough estimate of physical
             return max(2, (os.cpu_count() or 4) // 2 - 1)
 
-    async def _start_server(self, model: ModelInfo) -> bool:
+    async def _start_server(self, model: ModelInfo, enable_thinking: bool = False) -> bool:
         """
         Launch llama-server process and wait for it to become healthy.
         """
@@ -294,11 +307,19 @@ class LocalModelManager:
             "--metrics",
             # ── Performance flags ──
             "--mlock",              # lock model weights in RAM (prevent swap to disk)
-            "--no-mmap",            # load weights into RAM upfront (faster inference, slower startup)
             "--threads", str(self._get_inference_threads()),
-            "--batch-size", "512",  # prompt processing batch size
-            "--ubatch-size", "256", # micro-batch for generation
+            "--batch-size", "2048", # prompt processing batch size (higher = faster prefill)
+            "--ubatch-size", "512", # micro-batch for generation
         ]
+
+        # Control thinking via chat_template_kwargs (server-level flag,
+        # not supported per-request by llama-server).
+        if model.thinking_model:
+            import json as _json
+            cmd.extend([
+                "--chat-template-kwargs",
+                _json.dumps({"enable_thinking": enable_thinking}),
+            ])
 
         # MoE models benefit from these flags
         if model.model_type == "moe":

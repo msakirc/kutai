@@ -64,7 +64,12 @@ def send_ntfy(
         _handler_error_logger.warning("send_ntfy: NTFY_URL not configured, skipping")
         return None
 
-    url = f"{base_url.rstrip('/')}/{topic}"
+    # Strip any path from NTFY_URL — ntfy topics must be at the root.
+    # e.g. "http://localhost:8083/kutai" → "http://localhost:8083"
+    from urllib.parse import urlparse, urlunparse
+    parsed = urlparse(base_url)
+    base_url = urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
+    url = f"{base_url}/{topic}"
     headers = {
         "Title": title[:250],
         "Priority": str(priority),
@@ -148,7 +153,7 @@ class NtfyBatchHandler(logging.Handler):
     """
 
     FLUSH_INTERVAL = 30       # seconds between automatic flushes
-    MAX_BUFFER     = 50       # flush early if buffer hits this
+    MAX_BUFFER     = 20       # flush early if buffer hits this
     RETRY_DELAY    = 5        # seconds before one retry on flush failure
 
     PRIORITY_FOR = {
@@ -162,6 +167,8 @@ class NtfyBatchHandler(logging.Handler):
         self._buffer: list[tuple[int, str]] = []   # (levelno, formatted_line)
         self._lock = threading.Lock()
         self._timer: threading.Timer | None = None
+        self._emit_count = 0
+        self._flush_count = 0
         self._start_timer()
         atexit.register(self._flush)
 
@@ -173,13 +180,17 @@ class NtfyBatchHandler(logging.Handler):
         self._timer.start()
 
     def _timer_flush(self):
-        self._flush()
+        try:
+            self._flush()
+        except Exception as exc:
+            _handler_error_logger.error("NtfyBatchHandler._timer_flush failed: %s", exc)
         self._start_timer()
 
     # ── logging.Handler contract ──
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
+            self._emit_count += 1
             ts = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime(
                 "%H:%M:%S"
             )
@@ -207,6 +218,7 @@ class NtfyBatchHandler(logging.Handler):
         if not self._buffer:
             return
 
+        self._flush_count += 1
         items = list(self._buffer)
         self._buffer.clear()
 

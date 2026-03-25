@@ -1,9 +1,17 @@
 # run.py
 import asyncio
+import io
 import os
 import subprocess
 import sys
 import time
+
+# Prevent UnicodeEncodeError on Windows consoles using cp1252 / legacy codepages
+if sys.stdout and hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+if sys.stderr and hasattr(sys.stderr, "buffer"):
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
 from dotenv import load_dotenv
 
 load_dotenv()

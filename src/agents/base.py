@@ -513,6 +513,9 @@ class BaseAgent:
         """
         cleaned = content.strip()
 
+        # Strip <think>…</think> blocks (Qwen3/DeepSeek thinking models)
+        cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
+
         # Try 1 — direct parse (strips leading fences too)
         parsed = self._try_parse_json(cleaned)
         if parsed is not None:
@@ -1569,7 +1572,7 @@ class BaseAgent:
                     recovery_guidance = (
                         f"## Tool Result (`{tool_name}`):\n\n"
                         f"```\n{tool_output}\n```\n\n"
-                        f"Continue working. Iteration {iteration + 2}/{self.max_iterations}."
+                        f"{'LAST ITERATION — you MUST respond with final_answer now. Do NOT call any more tools.' if iteration + 2 >= self.max_iterations else 'Continue working.'} Iteration {iteration + 2}/{self.max_iterations}."
                     )
 
                 messages.append({"role": "assistant", "content": content})
@@ -1631,7 +1634,7 @@ class BaseAgent:
                     "role": "user",
                     "content": (
                         f"{tool_output}\n\n"
-                        f"Continue working. Iteration {iteration + 2}/{self.max_iterations}."
+                        f"{'LAST ITERATION — you MUST respond with final_answer now. Do NOT call any more tools.' if iteration + 2 >= self.max_iterations else 'Continue working.'} Iteration {iteration + 2}/{self.max_iterations}."
                     ),
                 })
                 await self._save_checkpoint(

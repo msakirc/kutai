@@ -85,16 +85,15 @@ async def _discover_perplexica_models(base_url: str) -> dict | None:
                 if em.get("key") and em.get("key") != "error" and not embedding_model:
                     embedding_model = {"providerId": pid, "key": em["key"]}
 
-        # Prefer local llama-server (supports response_format, no cloud cost).
-        # llama-server ignores the model name — serves whatever is loaded.
+        # Prefer local llama-server if it actually has models loaded.
         local_provider = next(
             (p for p in providers if "local" in p.get("id", "").lower()),
             None,
         )
-        if local_provider:
+        if local_provider and local_provider.get("chatModels"):
             chat_model = {
                 "providerId": local_provider["id"],
-                "key": "local-model",
+                "key": local_provider["chatModels"][0].get("key", "local-model"),
             }
         elif all_chat_models:
             chat_model = all_chat_models[0]
@@ -111,6 +110,7 @@ async def _discover_perplexica_models(base_url: str) -> dict | None:
             )
             return _perplexica_models
 
+        # Don't cache failures — allow retry on next call
         logger.warning(
             "perplexica: missing models",
             has_chat=chat_model is not None,
@@ -184,7 +184,7 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
             async with session.post(
                 f"{perplexica_url}/api/search",
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=90),
+                timeout=aiohttp.ClientTimeout(total=180),
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
@@ -228,7 +228,7 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
 
     except asyncio.TimeoutError:
         _perplexica_fail_count += 1
-        logger.warning("perplexica search timeout (90s)", query=query)
+        logger.warning("perplexica search timeout (180s)", query=query)
     except Exception as e:
         _perplexica_fail_count += 1
         logger.warning("perplexica search error", error=f"{type(e).__name__}: {e}", query=query)
@@ -262,6 +262,11 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web")
                     title = src.get("title", "Untitled")
                     url = src.get("url", "")
                     lines.append(f"{i}. [{title}]({url})")
+            lines.append(
+                "\n[AI-synthesized answer with sources. "
+                "You should respond with final_answer now unless "
+                "something specific is missing.]"
+            )
             return "\n".join(lines)
 
     # Method 1: duckduckgo-search package (ddgs 9.x)

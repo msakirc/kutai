@@ -23,8 +23,8 @@ NTFY_USER = os.getenv("NTFY_USER", "")
 NTFY_PASS = os.getenv("NTFY_PASS", "")
 
 # Two topics: errors get phone alerts, logs are browsable
-NTFY_TOPIC_ERRORS = "orchestrator-errors"   # ERROR/CRITICAL only, phone ON
-NTFY_TOPIC_LOGS   = "orchestrator-logs"     # INFO/WARNING/ERROR, phone OFF
+NTFY_TOPIC_ERRORS = "kutai-errors"   # ERROR/CRITICAL only, phone ON
+NTFY_TOPIC_LOGS   = "kutai-logs"     # INFO/WARNING/ERROR, phone OFF
 
 # ─── Core Settings ───────────────────────────────────────────────────────────
 

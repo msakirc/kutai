@@ -1928,6 +1928,9 @@ class Orchestrator:
                         batch = tasks
                         deferred = []
 
+                    # Helper: wait for futures but break out if shutdown requested
+                    shutdown_fut = asyncio.ensure_future(self.shutdown_event.wait())
+
                     if len(batch) == 1:
                         # Single task — run directly
                         t = batch[0]
@@ -1936,7 +1939,13 @@ class Orchestrator:
                                 self.process_task(t)
                             )
                             self._running_futures = [self._current_task_future]
-                            await self._current_task_future
+                            done, _ = await asyncio.wait(
+                                [self._current_task_future, shutdown_fut],
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            if self._current_task_future in done:
+                                # Propagate any exception
+                                self._current_task_future.result()
                             self._current_task_future = None
                             self._running_futures = []
                         except Exception as e:
@@ -1953,19 +1962,31 @@ class Orchestrator:
                             for t in batch
                         ]
                         self._running_futures = list(futures)
-                        results = await asyncio.gather(
-                            *futures, return_exceptions=True
+                        await asyncio.wait(
+                            futures + [shutdown_fut],
+                            return_when=asyncio.FIRST_COMPLETED,
                         )
-                        self._running_futures = []
-                        for t, res in zip(batch, results):
-                            if isinstance(res, Exception):
+                        # Collect results from completed futures
+                        for t_item, f in zip(batch, futures):
+                            if f.done() and f.exception():
                                 logger.error(
-                                    f"Task #{t['id']} error: {res}",
+                                    f"Task #{t_item['id']} error: {f.exception()}",
                                     exc_info=True,
                                 )
+                        self._running_futures = []
+
+                    # Cancel the shutdown waiter if it didn't fire
+                    if not shutdown_fut.done():
+                        shutdown_fut.cancel()
+
+                    # Break immediately if shutdown was requested
+                    if self.shutdown_event.is_set():
+                        break
 
                     # Run deferred local tasks sequentially
                     for t in deferred:
+                        if self.shutdown_event.is_set():
+                            break
                         try:
                             await self.process_task(t)
                         except Exception as e:
@@ -1978,7 +1999,14 @@ class Orchestrator:
                 else:
                     if self.cycle_count % 20 == 0:
                         logger.info(f"[Cycle {self.cycle_count}] Idle")
-                    await asyncio.sleep(3)
+                    # Use shutdown-aware sleep instead of plain asyncio.sleep
+                    try:
+                        await asyncio.wait_for(
+                            self.shutdown_event.wait(), timeout=3
+                        )
+                        break  # shutdown requested during idle
+                    except asyncio.TimeoutError:
+                        pass  # normal idle cycle
 
                 # Phase 14.1: Time-based morning briefing (default 9:00 local)
                 now = datetime.now()
@@ -2069,11 +2097,25 @@ class Orchestrator:
         async with self.telegram.app:
             await self.telegram.app.start()
             await self.telegram.app.updater.start_polling()
+            await self.telegram.set_bot_commands()
 
             logger.info(
                 "✅ System online — Telegram + Orchestrator + "
                 "GPU Scheduler + Backpressure Queue running"
             )
+
+            # Send persistent keyboard on startup so buttons are always visible
+            try:
+                from .config import TELEGRAM_ADMIN_CHAT_ID
+                from ..app.telegram_bot import REPLY_KEYBOARD
+                if TELEGRAM_ADMIN_CHAT_ID:
+                    await self.telegram.app.bot.send_message(
+                        chat_id=TELEGRAM_ADMIN_CHAT_ID,
+                        text="✅ KutAI online. Buttons ready.",
+                        reply_markup=REPLY_KEYBOARD,
+                    )
+            except Exception as e:
+                logger.debug(f"Startup keyboard send failed: {e}")
 
             try:
                 await self.run_loop()

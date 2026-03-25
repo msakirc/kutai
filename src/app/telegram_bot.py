@@ -6,7 +6,7 @@ from src.infra.logging_config import get_logger
 from .config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, TASK_PRIORITY
 
 logger = get_logger("app.telegram_bot")
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters, ContextTypes
@@ -139,6 +139,18 @@ def _build_category_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+# Persistent reply keyboard — always visible at the bottom of the chat
+REPLY_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("/status"), KeyboardButton("/missions"), KeyboardButton("/queue")],
+        [KeyboardButton("/todos"), KeyboardButton("/digest"), KeyboardButton("/start")],
+        [KeyboardButton("/stop"), KeyboardButton("/restart")],
+    ],
+    resize_keyboard=True,
+    is_persistent=True,
+)
+
+
 def _build_command_keyboard(cat_key: str) -> InlineKeyboardMarkup:
     """Build the command buttons for a specific category."""
     for _, key, commands in MENU_CATEGORIES:
@@ -196,6 +208,30 @@ class TelegramInterface:
         method_name = _CMD_METHOD_MAP.get(cmd, f"cmd_{cmd}")
         return getattr(self, method_name, None)
 
+    async def set_bot_commands(self):
+        """Register the / command list with Telegram so autocomplete is up to date."""
+        commands = [
+            BotCommand("start", "Show main menu"),
+            BotCommand("mission", "Create a new mission"),
+            BotCommand("missions", "List active missions"),
+            BotCommand("queue", "View task queue"),
+            BotCommand("status", "System status"),
+            BotCommand("cancel", "Cancel a task or mission"),
+            BotCommand("progress", "Mission progress"),
+            BotCommand("digest", "Daily digest"),
+            BotCommand("todo", "Add a personal todo"),
+            BotCommand("todos", "List your todos"),
+            BotCommand("remember", "Save something to memory"),
+            BotCommand("recall", "Search memory"),
+            BotCommand("stop", "Stop KutAI"),
+            BotCommand("restart", "Restart KutAI"),
+        ]
+        try:
+            await self.app.bot.set_my_commands(commands)
+            logger.info("Telegram command list updated")
+        except Exception as e:
+            logger.warning(f"Failed to set bot commands: {e}")
+
 
     def _setup_handlers(self):
         self.app.add_handler(CommandHandler("start", self.cmd_start))
@@ -237,6 +273,11 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("todo", self.cmd_todo))
         self.app.add_handler(CommandHandler("todos", self.cmd_todos))
         self.app.add_handler(CommandHandler("cleartodos", self.cmd_cleartodos))
+        # Wrapper control commands
+        self.app.add_handler(CommandHandler("kutai_restart", self.cmd_kutai_restart))
+        self.app.add_handler(CommandHandler("restart", self.cmd_kutai_restart))
+        self.app.add_handler(CommandHandler("kutai_stop", self.cmd_kutai_stop))
+        self.app.add_handler(CommandHandler("stop", self.cmd_kutai_stop))
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.REPLY,
@@ -248,13 +289,17 @@ class TelegramInterface:
         ))
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Send persistent reply keyboard (always visible at bottom)
         await update.message.reply_text(
-            "🤖 *Autonomous AI Orchestrator*\n\n"
-            "I work 24/7 and only bug you when needed.\n\n"
-            "Tap a category below, or just send a message — "
-            "I understand missions, tasks, bug reports, feature requests, "
-            "status questions, feedback, and more.",
+            "🤖 *KutAI Online*\n\n"
+            "Send a message or use the buttons below.\n"
+            "Tap here for more options:",
             parse_mode="Markdown",
+            reply_markup=REPLY_KEYBOARD,
+        )
+        # Also send inline menu for advanced commands
+        await update.message.reply_text(
+            "Advanced commands:",
             reply_markup=_build_category_keyboard()
         )
 
@@ -1510,7 +1555,6 @@ class TelegramInterface:
             return
 
         if msg_type == "question":
-            await update.message.reply_text("❓ Got your question — looking into it...")
             task_id = await add_task(
                 title=f"Q: {text[:50]}",
                 description=text,
@@ -1519,6 +1563,7 @@ class TelegramInterface:
                 agent_type="assistant",
             )
             self.user_last_task_id[chat_id] = task_id
+            await update.message.reply_text(f"❓ Task #{task_id} queued.")
             return
 
         if msg_type == "casual":
@@ -2104,6 +2149,14 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     await msg.reply_text(f"❌ {_friendly_error(str(e))}")
             else:
                 await query.message.reply_text(f"Unknown command: /{cmd}")
+            # Restore the original menu message to top-level categories
+            try:
+                await query.message.edit_text(
+                    "Tap a category or send a message:",
+                    reply_markup=_build_category_keyboard()
+                )
+            except Exception:
+                pass  # message may have been deleted or is unchanged
             return
 
         if data.startswith("menu_ask:"):

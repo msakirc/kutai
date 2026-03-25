@@ -794,24 +794,25 @@ async def call_model(
     for scored in candidates[:5]:
         model = scored.model
 
-        # ── Local model: ensure loaded ──
-        if model.is_local and model.location != "ollama":
-            from ..models.local_model_manager import get_local_manager
-            manager = get_local_manager()
-            if not model.is_loaded:
-                success = await manager.ensure_model(
-                    model.name,
-                    reason=f"{reqs.agent_type}:{reqs.effective_task or reqs.primary_capability}",
-                )
-                if not success:
-                    last_error = f"Failed to load local model {model.name}"
-                    continue
-
         # ── Build completion kwargs ──
         # Only enable thinking when the task EXPLICITLY needs it.
         # Without this, thinking models waste 95% of tokens on <think>
         # tags, turning 70 tok/s into 1.4 tok/s effective speed.
         is_thinking = model.thinking_model and reqs.needs_thinking
+
+        # ── Local model: ensure loaded with correct thinking state ──
+        if model.is_local and model.location != "ollama":
+            from ..models.local_model_manager import get_local_manager
+            manager = get_local_manager()
+            if not model.is_loaded or (model.thinking_model and manager._thinking_enabled != is_thinking):
+                success = await manager.ensure_model(
+                    model.name,
+                    reason=f"{reqs.agent_type}:{reqs.effective_task or reqs.primary_capability}",
+                    enable_thinking=is_thinking,
+                )
+                if not success:
+                    last_error = f"Failed to load local model {model.name}"
+                    continue
         if is_thinking:
             temperature = None   # thinking models control sampling internally
         else:
@@ -847,9 +848,9 @@ async def call_model(
             except Exception:
                 _messages = messages
 
-        # For non-thinking tasks on thinking models, disable thinking via
-        # chat_template_kwargs so the model outputs content directly.
-        _disable_thinking = model.thinking_model and not is_thinking
+        # Thinking is now controlled at llama-server startup via
+        # --chat-template-kwargs (see local_model_manager._start_server).
+        # No per-request override needed.
 
         _max_tokens = min(reqs.estimated_output_tokens * 2, model.max_tokens)
 
@@ -860,19 +861,9 @@ async def call_model(
             timeout=float(timeout_val),
         )
 
-        if _disable_thinking and model.is_local:
-            # extra_body is picked up by litellm's add_provider_specific_params
-            # and forwarded to the OpenAI client's create() method, which merges
-            # the contents into the root of the JSON body sent to llama-server.
-            # (Logs may show it as 'extra_json' — that's the OpenAI client's
-            # internal name before the merge, not a separate field.)
-            completion_kwargs["extra_body"] = {
-                "chat_template_kwargs": {"enable_thinking": False},
-            }
-
         if temperature is not None:
             completion_kwargs["temperature"] = temperature
-        elif _disable_thinking:
+        elif model.thinking_model and not is_thinking:
             # Thinking models skip temperature when thinking — but when
             # thinking is disabled we need to set it explicitly.
             completion_kwargs["temperature"] = 0.3
@@ -1021,6 +1012,15 @@ async def call_model(
                             })
 
                     thinking_content = _extract_thinking(msg) if is_thinking else None
+
+                    # llama-server ignores per-request chat_template_kwargs,
+                    # so thinking models may still emit <think> blocks even
+                    # when thinking wasn't requested.  Strip them from the
+                    # content so downstream parsers see clean output.
+                    if not is_thinking and model.thinking_model and msg.content:
+                        msg.content = re.sub(
+                            r"<think>.*?</think>", "", msg.content, flags=re.DOTALL
+                        ).strip()
 
                     if not model.is_local:
                         _get_circuit_breaker(model.provider).record_success()

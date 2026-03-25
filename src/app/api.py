@@ -35,9 +35,13 @@ except ImportError:
 _API_KEY = os.getenv("API_KEY", "")
 
 
-def _check_api_key(x_api_key: str = Header(default="")) -> None:
-    if _API_KEY and x_api_key != _API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+if _FASTAPI_AVAILABLE:
+    def _check_api_key(x_api_key: str = Header(default="")) -> None:
+        if _API_KEY and x_api_key != _API_KEY:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+else:
+    def _check_api_key(*args, **kwargs) -> None:
+        pass
 
 
 # ── WebSocket connection manager ─────────────────────────────────────────────

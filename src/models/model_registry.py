@@ -454,7 +454,7 @@ def calculate_gpu_layers(
     if n_layers <= 0 or file_size_mb <= 0 or available_vram_mb <= 0:
         return 0
 
-    cuda_overhead_mb = 500
+    cuda_overhead_mb = 300
     kv_per_layer_mb = (context_length / 1024) * 0.5
 
     usable_vram = (available_vram_mb - cuda_overhead_mb) * 0.90
@@ -1586,7 +1586,7 @@ class ModelRegistry:
     def print_summary(self) -> None:
         """Print a formatted summary of all registered models."""
         print("=" * 80)
-        print(f"  📦 Model Registry — {len(self.models)} models")
+        print(f"  [*] Model Registry -- {len(self.models)} models")
         print("=" * 80)
 
         for location in ["local", "ollama", "cloud"]:
@@ -1594,9 +1594,9 @@ class ModelRegistry:
             if not models:
                 continue
 
-            icon = {"local": "💻", "ollama": "🦙", "cloud": "☁️"}[location]
+            icon = {"local": "[PC]", "ollama": "[OL]", "cloud": "[CL]"}[location]
             print(f"\n  {icon} {location.upper()} ({len(models)} models)")
-            print(f"  {'─' * 76}")
+            print(f"  {'-' * 76}")
 
             for m in sorted(models, key=lambda x: x.best_score(), reverse=True):
                 # Top 3 capabilities
@@ -1609,11 +1609,11 @@ class ModelRegistry:
 
                 flags = ""
                 if m.has_vision:
-                    flags += "👁️"
+                    flags += "[V]"
                 if m.thinking_model:
-                    flags += "🧠"
+                    flags += "[T]"
                 if m.supports_function_calling:
-                    flags += "🔧"
+                    flags += "[F]"
 
                 print(
                     f"  {m.name:40s} "
@@ -1623,8 +1623,8 @@ class ModelRegistry:
                 )
 
         # Show task routing preview
-        print(f"\n  🎯 Task Routing Preview")
-        print(f"  {'─' * 76}")
+        print(f"\n  [>] Task Routing Preview")
+        print(f"  {'-' * 76}")
         for task in [
             "planner",
             "architect",
@@ -1646,7 +1646,7 @@ class ModelRegistry:
         ]:
             ranked = self.best_for_task(task, top_k=3)
             if ranked:
-                models_str = " → ".join(f"{n}({s:.1f})" for n, s in ranked)
+                models_str = " -> ".join(f"{n}({s:.1f})" for n, s in ranked)
                 print(f"  {task:20s}: {models_str}")
 
         print("=" * 80)

@@ -850,7 +850,7 @@ class Orchestrator:
 
         # Check if all are terminal (completed or failed)
         terminal = [r for r in rows if r["status"] in ("completed", "failed")]
-        if len(terminal) < todo_count and len(terminal) < len(rows):
+        if len(terminal) < len(rows):
             return  # Still waiting
 
         # Collect suggestions

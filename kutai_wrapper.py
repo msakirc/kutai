@@ -26,6 +26,55 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ─── Single-instance guard ────────────────────────────────────────────────
+# Prevent duplicate wrappers from running simultaneously.
+_LOCK_FILE = Path("logs/wrapper.lock")
+
+
+def _check_single_instance():
+    """Exit if another wrapper is already running."""
+    _LOCK_FILE.parent.mkdir(exist_ok=True)
+    if _LOCK_FILE.exists():
+        try:
+            old_pid = int(_LOCK_FILE.read_text().strip())
+            # Check if process is alive (Windows)
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(0x1000, False, old_pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if handle:
+                kernel32.CloseHandle(handle)
+                print(f"ERROR: Another wrapper is already running (PID {old_pid}).")
+                print("Kill it first or delete logs/wrapper.lock")
+                sys.exit(1)
+        except (ValueError, OSError, AttributeError):
+            pass  # stale lock or non-Windows, proceed
+    _LOCK_FILE.write_text(str(os.getpid()))
+
+
+def _cleanup_lock():
+    """Remove lock file on exit."""
+    try:
+        _LOCK_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+import atexit
+
+_check_single_instance()
+atexit.register(_cleanup_lock)
+
+# ─── Venv guard ───────────────────────────────────────────────────────────
+_EXPECTED_VENV = Path(__file__).parent / ".venv"
+if hasattr(sys, "real_prefix") or (
+    hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix
+):
+    pass  # running in a venv, good
+elif _EXPECTED_VENV.exists():
+    print(f"WARNING: Running with system Python ({sys.executable})")
+    print(f"Recommended: .venv\\Scripts\\python.exe kutai_wrapper.py")
+
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_ADMIN_CHAT_ID = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "")
 RESTART_EXIT_CODE = 42

@@ -319,10 +319,15 @@ async def init_db():
 
     await db.commit()
 
-    # Seed todo reminder (every 2h during Turkey daytime: 9,11,13,15,17,19,21)
+    # Seed todo reminder (every 2h during Turkey daytime: 9,11,13,15,17,19,21 TR = 6,8,10,12,14,16,18 UTC)
     await db.execute("""
         INSERT OR IGNORE INTO scheduled_tasks (id, title, description, cron_expression, agent_type, enabled, context)
-        VALUES (9999, 'Todo Reminder', 'Send pending todo items to user', '0 9,11,13,15,17,19,21 * * *', 'system', 1, '{"type": "todo_reminder"}')
+        VALUES (9999, 'Todo Reminder', 'Send pending todo items to user', '0 6,8,10,12,14,16,18 * * *', 'system', 1, '{"type": "todo_reminder"}')
+    """)
+    # Migrate existing row from Turkey-time cron to UTC cron
+    await db.execute("""
+        UPDATE scheduled_tasks SET cron_expression = '0 6,8,10,12,14,16,18 * * *'
+        WHERE id = 9999 AND cron_expression = '0 9,11,13,15,17,19,21 * * *'
     """)
     await db.commit()
 

@@ -5,7 +5,7 @@ import json
 import os
 import signal
 from ..app.config import DB_PATH, MAX_CONTEXT_CHAIN_LENGTH, TASK_PRIORITY
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from ..infra.db import (
     init_db, get_db, close_db, get_ready_tasks, update_task, add_task,
     claim_task, add_subtasks_atomically, log_conversation,
@@ -752,7 +752,7 @@ class Orchestrator:
                         except Exception:
                             pass
                     # Update last_run / next_run and skip task creation
-                    now = datetime.now()
+                    now = datetime.now(timezone.utc)
                     next_run = self._compute_next_run(
                         sched.get("cron_expression", "0 * * * *"), now
                     )
@@ -778,7 +778,7 @@ class Orchestrator:
                     )
 
                 # Update last_run and compute next_run
-                now = datetime.now()
+                now = datetime.now(timezone.utc)
                 next_run = self._compute_next_run(
                     sched.get("cron_expression", "0 * * * *"), now
                 )
@@ -798,7 +798,7 @@ class Orchestrator:
         if not todos:
             return
 
-        batch_id = f"todo_suggest_{int(datetime.now().timestamp())}"
+        batch_id = f"todo_suggest_{int(datetime.now(timezone.utc).timestamp())}"
         task_ids = []
 
         for todo in todos:
@@ -880,6 +880,52 @@ class Orchestrator:
             f"[Todo] Reminder sent with {len(suggestions)}/{len(rows)} suggestions, "
             f"batch={batch_id}"
         )
+
+    async def _check_stale_todo_batches(self):
+        """Watchdog: if a suggestion batch has been pending > 5 min, send reminder without it."""
+        try:
+            db = await get_db()
+            cursor = await db.execute(
+                """SELECT id, context FROM tasks
+                   WHERE status NOT IN ('completed', 'failed', 'cancelled')
+                     AND context LIKE '%todo_suggest_batch%'"""
+            )
+            rows = [dict(r) for r in await cursor.fetchall()]
+            if not rows:
+                return
+
+            # Group by batch_id and check staleness
+            batches: dict[str, list[dict]] = {}
+            for row in rows:
+                ctx = row.get("context", "{}")
+                if isinstance(ctx, str):
+                    ctx = json.loads(ctx)
+                bid = ctx.get("todo_suggest_batch", "")
+                if bid:
+                    batches.setdefault(bid, []).append(row)
+
+            now_ts = datetime.now(timezone.utc).timestamp()
+            for bid, tasks in batches.items():
+                # Extract timestamp from batch_id: "todo_suggest_<unix_ts>"
+                try:
+                    batch_ts = int(bid.split("_")[-1])
+                except (ValueError, IndexError):
+                    continue
+                age_seconds = now_ts - batch_ts
+                if age_seconds > 300:  # 5 minutes
+                    logger.warning(
+                        f"[Todo] Stale suggestion batch {bid} ({age_seconds:.0f}s old), "
+                        f"cancelling {len(tasks)} stuck tasks and sending reminder"
+                    )
+                    # Cancel stuck tasks
+                    for t in tasks:
+                        await cancel_task(t["id"])
+                    # Send reminder without suggestions
+                    from src.app.reminders import send_todo_reminder
+                    if self.telegram:
+                        await send_todo_reminder(self.telegram)
+        except Exception as e:
+            logger.error(f"[Todo] Stale batch check failed: {e}")
 
     @staticmethod
     def _compute_next_run(
@@ -2030,6 +2076,7 @@ class Orchestrator:
                 ).total_seconds()
                 if sched_elapsed >= 60:
                     await self.check_scheduled_tasks()
+                    await self._check_stale_todo_batches()
                     self.last_scheduler_check = datetime.now()
 
                 # Get a generous batch, then compute how many to actually run
@@ -2243,6 +2290,18 @@ class Orchestrator:
                 logger.info(f"Seeded {seeded} prompt versions from hardcoded agents")
         except Exception as e:
             logger.debug(f"Prompt seeding skipped: {e}")
+
+        # Initialise shopping DB schemas (cache, request_tracker, memory)
+        try:
+            from ..shopping.cache import init_cache_db
+            from ..shopping.request_tracker import init_request_db
+            from ..shopping.memory import init_memory_db
+            await init_cache_db()
+            await init_request_db()
+            await init_memory_db()
+            logger.info("Shopping DB schemas initialised")
+        except Exception as e:
+            logger.warning(f"Shopping DB init failed (non-fatal): {e}")
 
         async with self.telegram.app:
             await self.telegram.app.start()

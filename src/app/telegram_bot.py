@@ -88,6 +88,7 @@ MENU_CATEGORIES = [
         ("▶️ Resume", "resume", True, "Which mission ID to resume?"),
         ("🌳 Graph", "graph", True, "Which mission ID to graph?"),
         ("📋 WF Status", "wfstatus", True, "Which mission ID for workflow status?"),
+        ("📄 Result", "result", True, "Which task ID to view result for? (empty for recent)"),
     ]),
     ("📊 Status & Costs", "monitoring", [
         ("📊 Status", "status", False, None),
@@ -152,7 +153,8 @@ def _build_category_keyboard() -> InlineKeyboardMarkup:
 REPLY_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("/status"), KeyboardButton("/missions"), KeyboardButton("/queue")],
-        [KeyboardButton("/todos"), KeyboardButton("/shop"), KeyboardButton("/digest")],
+        [KeyboardButton("/todos"), KeyboardButton("/shop"), KeyboardButton("/deals")],
+        [KeyboardButton("/help")],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -220,6 +222,7 @@ class TelegramInterface:
         """Register the / command list with Telegram so autocomplete is up to date."""
         commands = [
             BotCommand("start", "Show main menu"),
+            BotCommand("help", "Command reference"),
             BotCommand("mission", "Create a new mission"),
             BotCommand("task", "Add a quick task"),
             BotCommand("missions", "List active missions"),
@@ -256,6 +259,7 @@ class TelegramInterface:
 
     def _setup_handlers(self):
         self.app.add_handler(CommandHandler("start", self.cmd_start))
+        self.app.add_handler(CommandHandler("help", self.cmd_help))
         # Mission commands (new unified interface)
         self.app.add_handler(CommandHandler("mission", self.cmd_mission))
         self.app.add_handler(CommandHandler("mish", self.cmd_mission))      # abbreviation
@@ -319,19 +323,61 @@ class TelegramInterface:
         ))
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # Send persistent reply keyboard (always visible at bottom)
+        # Send persistent reply keyboard first (sets the bottom keyboard)
         await update.message.reply_text(
             "🤖 *KutAI Online*\n\n"
             "Send a message or use the buttons below.\n"
-            "Tap here for more options:",
+            "Tap a category for more commands:",
             parse_mode="Markdown",
             reply_markup=REPLY_KEYBOARD,
         )
-        # Also send inline menu for advanced commands
+        # Send inline category menu
         await update.message.reply_text(
-            "Advanced commands:",
+            "📂 *Command Categories*",
+            parse_mode="Markdown",
             reply_markup=_build_category_keyboard()
         )
+
+    async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show categorized command reference."""
+        help_text = (
+            "📖 *KutAI Command Reference*\n\n"
+            "*Missions & Tasks*\n"
+            "/mission — Create a mission\n"
+            "/task — Quick task\n"
+            "/missions — List missions\n"
+            "/queue — Task queue\n"
+            "/cancel — Cancel task or mission\n"
+            "/pause, /resume — Pause/resume\n"
+            "/wfstatus — Workflow status\n"
+            "/result — View task result\n\n"
+            "*Status & Costs*\n"
+            "/status — System overview\n"
+            "/digest — Daily digest\n"
+            "/progress — Timeline\n"
+            "/cost — Mission costs\n"
+            "/budget — Cost budget\n\n"
+            "*Shopping*\n"
+            "/shop — Find products\n"
+            "/price — Price check\n"
+            "/compare — X vs Y\n"
+            "/watch — Price alerts\n"
+            "/deals — Active watches & deals\n"
+            "/mystuff — Your owned items\n\n"
+            "*Personal*\n"
+            "/todo — Add reminder\n"
+            "/todos — My list\n"
+            "/remember — Save fact\n"
+            "/recall — Search facts\n\n"
+            "*System*\n"
+            "/load — GPU control\n"
+            "/autonomy — Risk level\n"
+            "/debug — Full dump\n"
+            "/stop — Stop KutAI (with confirmation)\n"
+            "/restart — Restart KutAI\n\n"
+            "_Tap /start for the button menu._"
+        )
+        await update.message.reply_text(help_text, parse_mode="Markdown")
 
     # ─── Mission Commands ──────────────────────────────────────────────────────
 
@@ -719,24 +765,44 @@ class TelegramInterface:
     # ─── Phase 3 Commands ──────────────────────────────────────────────
 
     async def cmd_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Cancel a task and its children."""
+        """Cancel a task or mission and its children."""
         if not context.args:
-            await update.message.reply_text("Usage: /cancel <task_id>")
+            await update.message.reply_text(
+                "Usage: /cancel <task_id or mission_id>\n"
+                "Cancels a task (and children) or an entire mission."
+            )
             return
         try:
-            task_id = int(context.args[0])
+            item_id = int(context.args[0])
         except ValueError:
-            await update.message.reply_text("Task ID must be a number.")
+            await update.message.reply_text("ID must be a number.")
             return
 
-        success = await cancel_task(task_id)
+        # Try cancelling as a task first
+        success = await cancel_task(item_id)
         if success:
             await update.message.reply_text(
-                f"🚫 Task #{task_id} and its children cancelled."
+                f"🚫 Task #{item_id} and its children cancelled."
+            )
+            return
+
+        # Not a task — try as a mission
+        mission = await get_mission(item_id)
+        if mission and mission.get("status") not in ("completed", "cancelled"):
+            await update_mission(item_id, status="cancelled")
+            # Also cancel all pending tasks for this mission
+            tasks = await get_tasks_for_mission(item_id)
+            cancelled_count = 0
+            for t in tasks:
+                if t.get("status") in ("pending", "processing", "blocked"):
+                    await cancel_task(t["id"])
+                    cancelled_count += 1
+            await update.message.reply_text(
+                f"🚫 Mission #{item_id} cancelled ({cancelled_count} tasks also cancelled)."
             )
         else:
             await update.message.reply_text(
-                f"Task #{task_id} not found or already finished."
+                f"#{item_id} not found or already finished."
             )
 
     async def cmd_priority(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

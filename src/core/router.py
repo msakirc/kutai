@@ -48,6 +48,7 @@ CAPABILITY_TO_TASK: dict[str, str] = {
     "vision":                "visual_reviewer",
     "conversation":          "assistant",
     "general":               "assistant",
+    "shopping":              "shopping_advisor",
 }
 
 

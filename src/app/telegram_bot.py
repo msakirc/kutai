@@ -273,6 +273,12 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("todo", self.cmd_todo))
         self.app.add_handler(CommandHandler("todos", self.cmd_todos))
         self.app.add_handler(CommandHandler("cleartodos", self.cmd_cleartodos))
+        # Shopping commands
+        self.app.add_handler(CommandHandler("price", self.cmd_price))
+        self.app.add_handler(CommandHandler("watch", self.cmd_watch))
+        self.app.add_handler(CommandHandler("deals", self.cmd_deals))
+        self.app.add_handler(CommandHandler("mystuff", self.cmd_mystuff))
+        self.app.add_handler(CommandHandler("compare", self.cmd_compare))
         # Wrapper control commands
         self.app.add_handler(CommandHandler("kutai_restart", self.cmd_kutai_restart))
         self.app.add_handler(CommandHandler("restart", self.cmd_kutai_restart))
@@ -2030,6 +2036,144 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
         await update.message.reply_text(
             f"🗑️ Cleared {len(done_todos)} completed todo(s)."
+        )
+
+    # ─── Shopping Commands ──────────────────────────────────────────────────
+
+    async def cmd_price(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Quick price check. /price <product>"""
+        if not context.args:
+            await update.message.reply_text("Usage: /price <product name>")
+            return
+        product = " ".join(context.args)
+        chat_id = update.effective_chat.id
+        task_id = await add_task(
+            title=f"Price check: {product[:40]}",
+            description=f"Quick price check for: {product}. "
+                        f"Find current prices in Turkey, report top 3 options with prices and links.",
+            tier="auto",
+            priority=TASK_PRIORITY.get("high", 8),
+            metadata={"agent_type": "shopping_advisor", "shopping_sub_intent": "price_check",
+                       "chat_id": chat_id},
+        )
+        await update.message.reply_text(
+            f"🔍 Price check queued for *{product}* (task #{task_id})",
+            parse_mode="Markdown",
+        )
+
+    async def cmd_watch(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Set up price watch. /watch <product> [target_price]"""
+        if not context.args:
+            await update.message.reply_text("Usage: /watch <product> [target\\_price]")
+            return
+        args = list(context.args)
+        target_price = None
+        # Check if last arg is a number (target price)
+        try:
+            target_price = float(args[-1].replace(",", "."))
+            args = args[:-1]
+        except (ValueError, IndexError):
+            pass
+        product = " ".join(args)
+        if not product:
+            await update.message.reply_text("Usage: /watch <product> [target\\_price]")
+            return
+        chat_id = update.effective_chat.id
+        price_info = f" Target: {target_price} TL." if target_price else ""
+        task_id = await add_task(
+            title=f"Price watch: {product[:40]}",
+            description=f"Set up price watch for: {product}.{price_info} "
+                        f"Monitor prices and alert when a good deal appears.",
+            tier="auto",
+            priority=TASK_PRIORITY.get("normal", 5),
+            metadata={"agent_type": "shopping_advisor", "shopping_sub_intent": "deal_hunt",
+                       "chat_id": chat_id, "target_price": target_price},
+        )
+        msg = f"👁️ Price watch set for *{product}*"
+        if target_price:
+            msg += f" (target: {target_price} TL)"
+        msg += f" — task #{task_id}"
+        await update.message.reply_text(msg, parse_mode="Markdown")
+
+    async def cmd_deals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show currently tracked deals. /deals"""
+        try:
+            from src.shopping.memory import get_active_watches, get_recent_deals
+            watches = await get_active_watches()
+            deals = await get_recent_deals(limit=5)
+            lines = ["🏷️ *Active Deals & Watches*\n"]
+            if watches:
+                lines.append("*Watching:*")
+                for w in watches[:10]:
+                    target = f" (target: {w.get('target_price')} TL)" if w.get("target_price") else ""
+                    lines.append(f"  • {w.get('product', '?')}{target}")
+            else:
+                lines.append("No active price watches.")
+            if deals:
+                lines.append("\n*Recent deals:*")
+                for d in deals:
+                    lines.append(f"  🔥 {d.get('product', '?')} — {d.get('price', '?')} TL")
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        except ImportError:
+            await update.message.reply_text("Shopping module not yet available.")
+        except Exception as e:
+            logger.warning("deals command failed", error=str(e))
+            await update.message.reply_text("Could not fetch deals right now.")
+
+    async def cmd_mystuff(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show user profile — owned items, preferences. /mystuff"""
+        try:
+            from src.shopping.memory import get_user_profile
+            chat_id = update.effective_chat.id
+            profile = await get_user_profile(chat_id)
+            lines = ["📦 *My Stuff*\n"]
+            owned = profile.get("owned_items", [])
+            if owned:
+                lines.append("*Owned items:*")
+                for item in owned[:15]:
+                    lines.append(f"  • {item.get('name', '?')}")
+            prefs = profile.get("preferences", {})
+            if prefs:
+                lines.append("\n*Preferences:*")
+                for k, v in list(prefs.items())[:10]:
+                    lines.append(f"  • {k}: {v}")
+            if len(lines) == 1:
+                lines.append("No items or preferences recorded yet.")
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        except ImportError:
+            await update.message.reply_text("Shopping module not yet available.")
+        except Exception as e:
+            logger.warning("mystuff command failed", error=str(e))
+            await update.message.reply_text("Could not fetch your profile right now.")
+
+    async def cmd_compare(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Direct comparison. /compare <product1> vs <product2>"""
+        if not context.args:
+            await update.message.reply_text("Usage: /compare <product1> vs <product2>")
+            return
+        text = " ".join(context.args)
+        # Split on " vs " (case-insensitive)
+        import re
+        parts = re.split(r"\s+vs\.?\s+", text, flags=re.IGNORECASE)
+        if len(parts) < 2:
+            await update.message.reply_text(
+                "Please use 'vs' to separate products.\nExample: /compare iPhone 15 vs Samsung S24"
+            )
+            return
+        product1, product2 = parts[0].strip(), parts[1].strip()
+        chat_id = update.effective_chat.id
+        task_id = await add_task(
+            title=f"Compare: {product1[:20]} vs {product2[:20]}",
+            description=f"Compare these products: {product1} vs {product2}. "
+                        f"Cover price, specs, pros/cons, and recommendation for Turkey market.",
+            tier="auto",
+            priority=TASK_PRIORITY.get("high", 8),
+            metadata={"agent_type": "shopping_advisor", "shopping_sub_intent": "compare",
+                       "chat_id": chat_id},
+        )
+        await update.message.reply_text(
+            f"⚖️ Comparison queued: *{product1}* vs *{product2}* (task #{task_id})",
+            parse_mode="Markdown",
         )
 
     async def _handle_todo_from_message(self, text: str, chat_id: int, update):

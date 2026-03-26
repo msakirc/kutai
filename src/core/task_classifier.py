@@ -44,6 +44,7 @@ class TaskClassification:
     priority: int = 5
     confidence: float = 0.5
     method: str = "keyword"
+    shopping_sub_intent: str | None = None
 
 
 # ─── LLM Classification Prompt ────────────────────────────────────────────
@@ -67,6 +68,7 @@ Available agent types:
 - "summarizer": condensing long content, extracting key points
 - "analyst": data analysis, feasibility studies, structured evaluation, risk assessment
 - "error_recovery": recovering from failures, retrying operations, fallback strategies
+- "shopping_advisor": product research, price checks, deal finding, purchase advice, comparisons
 
 Determine:
 - agent_type: best matching type from above
@@ -95,6 +97,30 @@ PRIORITY_MAP = {
 }
 
 
+# ─── Shopping Sub-Intent Detection ────────────────────────────────────────
+
+_SHOPPING_SUB_INTENT_RULES: list[tuple[str, list[str]]] = [
+    ("price_check",           ["fiyat", "fiyatı", "price", "how much", "ne kadar"]),
+    ("compare",               ["karşılaştır", "compare", "vs ", " vs ", "fark"]),
+    ("purchase_advice",       ["should i buy", "almalı mıyım", "tavsiye", "recommendation", "öneri"]),
+    ("deal_hunt",             ["en ucuz", "cheapest", "indirim", "kampanya", "deal", "discount"]),
+    ("research",              ["araştır", "research", "review", "inceleme"]),
+    ("upgrade",               ["upgrade", "yükseltme", "geçiş", "switch from"]),
+    ("gift",                  ["hediye", "gift", "gift idea", "hediye fikri"]),
+    ("exploration",           ["want to buy", "almak istiyorum", "bakıyorum", "looking for"]),
+    ("complaint_return_help", ["iade", "return", "şikayet", "complaint", "arıza", "defect"]),
+]
+
+
+def _classify_shopping_sub_intent(text: str) -> str | None:
+    """Determine shopping sub-intent from text. Returns None if not shopping."""
+    text_lower = text.lower()
+    for sub_intent, keywords in _SHOPPING_SUB_INTENT_RULES:
+        if any(kw in text_lower for kw in keywords):
+            return sub_intent
+    return "exploration"  # default sub-intent for shopping tasks
+
+
 # ─── Public API ────────────────────────────────────────────────────────────
 
 async def classify_task(title: str, description: str) -> TaskClassification:
@@ -102,10 +128,18 @@ async def classify_task(title: str, description: str) -> TaskClassification:
     Classify a task. Tries LLM first, falls back to keywords.
     """
     try:
-        return await _classify_with_llm(title, description)
+        cls = await _classify_with_llm(title, description)
     except Exception as e:
         logger.warning("llm classification failed fallback to keyword", error=str(e))
-        return _classify_by_keywords(title, description)
+        cls = _classify_by_keywords(title, description)
+
+    # Attach shopping sub-intent if classified as shopping_advisor
+    if cls.agent_type == "shopping_advisor":
+        cls.shopping_sub_intent = _classify_shopping_sub_intent(
+            f"{title} {description}"
+        )
+
+    return cls
 
 
 # ─── LLM-Based Classification ─────────────────────────────────────────────
@@ -169,6 +203,13 @@ _KEYWORD_RULES: list[tuple[str, int, list[str]]] = [
     # (agent_type, difficulty, keywords)
     # Difficulty is a HINT for model quality — keep moderate (3-6) so
     # available models don't get filtered out. Only genuinely hard tasks get 7+.
+    ("shopping_advisor", 5, [
+        "fiyat", "fiyatı", "price", "how much", "ne kadar", "en ucuz",
+        "cheapest", "indirim", "kampanya", "deal", "discount",
+        "almak istiyorum", "want to buy", "should i buy", "almalı mıyım",
+        "karşılaştır", "compare", "vs ", " vs ", "upgrade", "yükseltme",
+        "hediye", "gift", "tavsiye", "recommendation", "öneri",
+    ]),
     ("fixer",          5, ["fix", "bug", "error", "debug", "traceback", "crash"]),
     ("error_recovery", 5, ["recover", "retry", "fallback", "roll back", "revert failure"]),
     ("architect",      6, ["architect", "system design", "api design", "scalability"]),

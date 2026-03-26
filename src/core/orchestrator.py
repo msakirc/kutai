@@ -54,6 +54,10 @@ AGENT_TIMEOUTS: dict[str, int] = {
     "error_recovery": 240,
     "pipeline":       600,
     "workflow":       900,  # 15 min — workflow steps can be lengthy
+    "shopping_advisor":    600,
+    "product_researcher":  300,
+    "deal_analyst":        240,
+    "shopping_clarifier":  120,
 }
 
 # Maximum number of independent tasks to run concurrently.

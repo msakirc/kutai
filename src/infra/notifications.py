@@ -266,3 +266,89 @@ class NtfyBatchHandler(logging.Handler):
                 # Restore buffer so we don't lose messages
                 with self._lock:
                     self._buffer = [(lvl, l) for lvl, l in items] + self._buffer
+
+
+# ─── Shopping Notification Helpers ────────────────────────────────────────────
+
+async def send_price_drop_alert(
+    user_id: int,
+    product: str,
+    old_price: float,
+    new_price: float,
+    url: str | None = None,
+) -> None:
+    """Send a price drop notification via ntfy and/or Telegram."""
+    pct = round((1 - new_price / old_price) * 100) if old_price > 0 else 0
+    title = f"Price Drop: {product}"
+    body = f"{product}: {old_price:.2f} TL -> {new_price:.2f} TL ({pct}% off)"
+    if url:
+        body += f"\n{url}"
+
+    send_ntfy(
+        topic=_cfg().NTFY_TOPIC_ERRORS,  # reuse high-priority topic for alerts
+        title=title,
+        message=body,
+        priority=4,
+        tags=["shopping", "price_drop"],
+    )
+
+    # Also try Telegram direct message
+    try:
+        from src.app.telegram_bot import _send_telegram_message
+        await _send_telegram_message(user_id, f"📉 *{title}*\n{body}")
+    except Exception:
+        pass  # Telegram send is best-effort
+
+
+async def send_deal_alert(
+    user_id: int,
+    product: str,
+    discount_pct: float,
+    url: str | None = None,
+) -> None:
+    """Send a deal/discount notification."""
+    title = f"Deal Alert: {product}"
+    body = f"{product}: {discount_pct:.0f}% discount found!"
+    if url:
+        body += f"\n{url}"
+
+    send_ntfy(
+        topic=_cfg().NTFY_TOPIC_ERRORS,
+        title=title,
+        message=body,
+        priority=3,
+        tags=["shopping", "deal"],
+    )
+
+    try:
+        from src.app.telegram_bot import _send_telegram_message
+        await _send_telegram_message(user_id, f"🏷️ *{title}*\n{body}")
+    except Exception:
+        pass
+
+
+async def send_back_in_stock_alert(
+    user_id: int,
+    product: str,
+    price: float,
+    url: str | None = None,
+) -> None:
+    """Send a back-in-stock notification."""
+    title = f"Back in Stock: {product}"
+    body = f"{product} is back in stock at {price:.2f} TL"
+    if url:
+        body += f"\n{url}"
+
+    send_ntfy(
+        topic=_cfg().NTFY_TOPIC_ERRORS,
+        title=title,
+        message=body,
+        priority=4,
+        tags=["shopping", "restock"],
+    )
+
+    try:
+        from src.app.telegram_bot import _send_telegram_message
+        await _send_telegram_message(user_id, f"📦 *{title}*\n{body}")
+    except Exception:
+        pass

@@ -99,6 +99,12 @@ MENU_CATEGORIES = [
         ("🗂️ Workspaces", "workspace", False, None),
         ("📋 WF Status", "wfstatus", True, "Which mission ID for workflow status?"),
     ]),
+    ("🛒 Shopping", "shopping", [
+        ("🛒 Find Product", "shop", True, "What are you looking for? (e.g. 'motherboard under 10k TL')"),
+        ("💰 Compare Prices", "price", True, "Which product to check prices for?"),
+        ("⏰ Price Watch", "watch", True, "Which product to watch? (e.g. 'RTX 4070 under 25k')"),
+        ("🔍 Product Research", "research_product", True, "Which product to research in depth?"),
+    ]),
     ("📝 Personal", "personal", [
         ("📝 Add Todo", "todo", True, "What do you need to remember?"),
         ("📋 My Todos", "todos", False, None),
@@ -219,6 +225,9 @@ class TelegramInterface:
             BotCommand("cancel", "Cancel a task or mission"),
             BotCommand("progress", "Mission progress"),
             BotCommand("digest", "Daily digest"),
+            BotCommand("shop", "Shopping assistant"),
+            BotCommand("price", "Quick price check"),
+            BotCommand("watch", "Set up price watch"),
             BotCommand("todo", "Add a personal todo"),
             BotCommand("todos", "List your todos"),
             BotCommand("remember", "Save something to memory"),
@@ -274,6 +283,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("todos", self.cmd_todos))
         self.app.add_handler(CommandHandler("cleartodos", self.cmd_cleartodos))
         # Shopping commands
+        self.app.add_handler(CommandHandler("shop", self.cmd_shop))
+        self.app.add_handler(CommandHandler("research_product", self.cmd_research_product))
         self.app.add_handler(CommandHandler("price", self.cmd_price))
         self.app.add_handler(CommandHandler("watch", self.cmd_watch))
         self.app.add_handler(CommandHandler("deals", self.cmd_deals))
@@ -1130,10 +1141,28 @@ class TelegramInterface:
     # ─── Workflow Commands ──────────────────────────────────────────────
 
     async def cmd_wfstatus(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show workflow progress for a mission."""
+        """Show workflow progress for a mission. Without args, lists active workflow missions."""
         if not context.args:
-            await update.message.reply_text("Usage: /wfstatus <mission\\_id>",
-                                            parse_mode="Markdown")
+            # List all active workflow missions
+            try:
+                db = await get_db()
+                cursor = await db.execute(
+                    """SELECT id, title, status FROM missions
+                       WHERE status NOT IN ('completed', 'cancelled', 'failed')
+                       ORDER BY id DESC LIMIT 10"""
+                )
+                rows = await cursor.fetchall()
+                if not rows:
+                    await update.message.reply_text("No active missions.")
+                    return
+                lines = ["*Active Missions:*\n"]
+                for r in rows:
+                    lines.append(f"  #{r['id']} — {r['title'][:50]} ({r['status']})")
+                lines.append("\nUse /wfstatus <id> for details.")
+                await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            except Exception as e:
+                await update.message.reply_text(f"Usage: /wfstatus <mission\\_id>",
+                                                parse_mode="Markdown")
             return
 
         try:
@@ -2105,6 +2134,48 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         )
 
     # ─── Shopping Commands ──────────────────────────────────────────────────
+
+    async def cmd_shop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """General shopping assistant. /shop <query>"""
+        if not context.args:
+            await update.message.reply_text("Usage: /shop <what you're looking for>")
+            return
+        query = " ".join(context.args)
+        chat_id = update.effective_chat.id
+        task_id = await add_task(
+            title=query[:80],
+            description=query,
+            tier="auto",
+            priority=TASK_PRIORITY.get("high", 8),
+            agent_type="shopping_advisor",
+        )
+        self.user_last_task_id[chat_id] = task_id
+        await update.message.reply_text(
+            f"🛒 Shopping task #{task_id} queued.\n"
+            f"I'll search prices and compare options for you.",
+        )
+
+    async def cmd_research_product(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Deep product research. /research_product <product>"""
+        if not context.args:
+            await update.message.reply_text("Usage: /research\\_product <product name>")
+            return
+        product = " ".join(context.args)
+        chat_id = update.effective_chat.id
+        task_id = await add_task(
+            title=f"Research: {product[:60]}",
+            description=f"Deep research on: {product}. "
+                        f"Compare options, check reviews, analyze value, "
+                        f"check for fakes/grey market, suggest alternatives.",
+            tier="auto",
+            priority=TASK_PRIORITY.get("high", 8),
+            agent_type="product_researcher",
+            context={"shopping_sub_intent": "deep_research", "chat_id": chat_id},
+        )
+        await update.message.reply_text(
+            f"🔬 Deep research queued for *{product}* (task #{task_id})",
+            parse_mode="Markdown",
+        )
 
     async def cmd_price(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Quick price check. /price <product>"""

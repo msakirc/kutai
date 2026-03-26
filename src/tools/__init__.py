@@ -332,11 +332,32 @@ try:
     from ..shopping.memory.price_watch import add_price_watch as _add_price_watch, get_active_watches as _get_active_watches, remove_watch as _remove_watch
 
     async def _tool_shopping_search(query: str) -> str:
-        """Analyze a shopping query and generate a search plan with product matching."""
+        """Analyze a shopping query, then execute searches via scrapers and return actual product results."""
         try:
+            from ..shopping.resilience.fallback_chain import get_product_with_fallback
+
             analyzed = await _analyze_query(query)
             plan = await _generate_search_plan(analyzed)
-            return _json_shopping.dumps({"analysis": analyzed, "search_plan": plan}, indent=2, default=str)
+
+            # Extract sources from the plan (phase-1 search tasks)
+            sources: list[str] = []
+            for task in plan.get("phase_1", plan.get("tasks", [])):
+                src = task.get("source", "")
+                if src and src not in sources:
+                    sources.append(src)
+
+            # Execute actual product search via fallback chain
+            products = await get_product_with_fallback(
+                query,
+                sources=sources if sources else None,
+            )
+
+            return _json_shopping.dumps({
+                "analysis": analyzed,
+                "search_plan": plan,
+                "products": products,
+                "product_count": len(products),
+            }, indent=2, default=str)
         except Exception as exc:
             return _json_shopping.dumps({"error": f"{type(exc).__name__}: {exc}"})
 

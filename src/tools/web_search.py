@@ -184,7 +184,7 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
             async with session.post(
                 f"{perplexica_url}/api/search",
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=180),
+                timeout=aiohttp.ClientTimeout(total=45),
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()

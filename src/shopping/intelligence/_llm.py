@@ -9,6 +9,10 @@ litellm and the full router stack are not installed.
 
 from __future__ import annotations
 
+from src.infra.logging_config import get_logger
+
+logger = get_logger("shopping.intelligence._llm")
+
 
 async def _llm_call(
     prompt: str,
@@ -50,5 +54,6 @@ async def _llm_call(
         messages.append({"role": "user", "content": prompt})
         response = await call_model(reqs, messages)
         return response.get("content", "")
-    except Exception:
+    except Exception as e:
+        logger.warning("_llm_call failed", error=str(e), prompt_len=len(prompt))
         return ""

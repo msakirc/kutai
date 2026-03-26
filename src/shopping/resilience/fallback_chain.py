@@ -126,7 +126,10 @@ def build_fallback_chain(source: str) -> list[Callable]:
         """Try the dedicated scraper for the given source."""
         try:
             from src.shopping.scrapers import get_scraper
-            scraper = get_scraper(source)
+            scraper_cls = get_scraper(source)
+            if scraper_cls is None:
+                return []
+            scraper = scraper_cls()
             return await scraper.search(query)
         except Exception:
             return []
@@ -134,8 +137,8 @@ def build_fallback_chain(source: str) -> list[Callable]:
     async def _perplexica_search(query: str) -> list[dict]:
         """Fallback to Perplexica shopping search."""
         try:
-            from src.shopping.integrations import perplexica_search
-            return await perplexica_search(query)
+            from src.shopping.integrations import search_perplexica
+            return await search_perplexica(query)
         except Exception:
             return []
 

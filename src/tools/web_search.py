@@ -235,13 +235,77 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
         return None
 
 
+async def _embed_web_results(query: str, results_text: str) -> None:
+    """Phase D: Embed web search results into web_knowledge collection."""
+    try:
+        from src.memory.vector_store import embed_and_store, is_ready
+        if not is_ready():
+            return
+
+        import hashlib
+        import time as _t
+
+        # Truncate to reasonable size for embedding
+        text = f"Web search: {query}\n{results_text[:1500]}"
+        doc_id = f"web-{hashlib.sha256(f'{query}:{_t.time()}'.encode()).hexdigest()[:16]}"
+
+        await embed_and_store(
+            text=text,
+            metadata={
+                "data_type": "web_result",
+                "query": query[:200],
+                "source_url": "",
+                "timestamp": _t.time(),
+                "ttl_days": 7,
+            },
+            collection="web_knowledge",
+            doc_id=doc_id,
+        )
+        logger.debug("Embedded web search results for: %s", query[:60])
+    except Exception as e:
+        logger.debug("Web result embedding skipped: %s", e)
+
+
 async def web_search(query: str, max_results: int = 5, search_type: str = "web") -> str:
     """
     Search the web using Perplexica/Vane (primary), with DuckDuckGo fallback.
 
+    Before issuing a live search, checks the web_knowledge vector store
+    for recent relevant cached results (Phase D knowledge accumulation).
+
     search_type: "web", "academic", or "code"
     """
     logger.info("web search query", query=query, max_results=max_results, search_type=search_type)
+
+    # Phase D: Check existing web knowledge before live search
+    try:
+        from src.memory.vector_store import query as vquery, is_ready as vs_ready
+        import time as _t
+        if vs_ready():
+            cached = await vquery(
+                text=query,
+                collection="web_knowledge",
+                top_k=3,
+            )
+            # Use cached results if they are recent (< 12 hours) and relevant
+            fresh_results = [
+                r for r in cached
+                if r.get("distance", 1.0) < 0.5
+                and (_t.time() - r.get("metadata", {}).get("timestamp", 0)) < 43200
+            ]
+            if fresh_results:
+                lines = [f"**Cached web knowledge for '{query}':**\n"]
+                for r in fresh_results:
+                    text = r.get("text", "")[:500]
+                    lines.append(f"- {text}")
+                lines.append(
+                    "\n[Retrieved from cached web knowledge. "
+                    "The information may be up to 12 hours old.]"
+                )
+                logger.debug("Returning cached web knowledge for: %s", query[:60])
+                return "\n".join(lines)
+    except Exception:
+        pass  # Fall through to live search
 
     # Check for degraded capability
     try:
@@ -267,7 +331,12 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web")
                 "You should respond with final_answer now unless "
                 "something specific is missing.]"
             )
-            return "\n".join(lines)
+            result_text = "\n".join(lines)
+
+            # Phase D: Embed Perplexica results (comprehensive, higher value)
+            await _embed_web_results(query, result_text)
+
+            return result_text
 
     # Method 1: duckduckgo-search package (ddgs 9.x)
     if _DDGS is not None:
@@ -282,7 +351,12 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web")
                     body = r.get("body", "")[:200]
                     href = r.get("href", "")
                     lines.append(f"{i}. **{title}**\n   {body}\n   {href}")
-                return f"Search results for '{query}':\n\n" + "\n\n".join(lines)
+                result_text = f"Search results for '{query}':\n\n" + "\n\n".join(lines)
+
+                # Phase D: Embed DDG results
+                await _embed_web_results(query, result_text)
+
+                return result_text
             else:
                 return f"No results found for '{query}'"
         except Exception as e:

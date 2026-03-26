@@ -6,10 +6,13 @@ Embeds user messages and AI responses into the conversations
 collection.  Provides follow-up detection via embedding similarity
 (replacing the simple user_last_task_id hack).
 
+Phase D addition: Conversation summarization every N exchanges.
+
 Public API:
     await store_exchange(chat_id, user_msg, ai_response, task_id)
     await find_followup_context(chat_id, new_message, top_k=3)
     await get_recent_exchanges(chat_id, limit=5)
+    await maybe_summarize(chat_id)
 """
 import time
 from typing import Optional
@@ -18,6 +21,11 @@ from src.infra.logging_config import get_logger
 from .vector_store import embed_and_store, query, is_ready
 
 logger = get_logger("memory.conversations")
+
+# ─── Summarization Config ───────────────────────────────────────────────────
+
+SUMMARIZE_EVERY_N = 10  # Summarize every N exchanges per chat
+_exchange_counters: dict[str, int] = {}  # chat_id -> count since last summary
 
 
 async def store_exchange(
@@ -64,12 +72,21 @@ async def store_exchange(
 
     doc_id = f"conv-{chat_id}-{int(time.time() * 1000)}"
 
-    return await embed_and_store(
+    result = await embed_and_store(
         text=text,
         metadata=metadata,
         collection="conversations",
         doc_id=doc_id,
     )
+
+    # Phase D: Periodic conversation summarization
+    if result:
+        try:
+            await maybe_summarize(chat_id)
+        except Exception as e:
+            logger.debug("Conversation summarization skipped: %s", e)
+
+    return result
 
 
 async def get_recent_exchanges(
@@ -200,3 +217,78 @@ def format_recent_context(exchanges: list[dict], limit: int = 3) -> list[dict]:
             "result": ex.get("response_preview", ""),
         })
     return formatted
+
+
+# ─── Conversation Summarization (Phase D) ───────────────────────────────────
+
+async def maybe_summarize(chat_id: int | str) -> Optional[str]:
+    """
+    Check if enough exchanges have accumulated and generate a summary.
+
+    Called after each store_exchange. Every SUMMARIZE_EVERY_N exchanges,
+    retrieves the recent exchanges and stores a summary embedding in
+    the semantic collection for cross-task knowledge reuse.
+
+    Returns:
+        Document ID of the summary if one was created, None otherwise.
+    """
+    key = str(chat_id)
+    _exchange_counters[key] = _exchange_counters.get(key, 0) + 1
+
+    if _exchange_counters[key] < SUMMARIZE_EVERY_N:
+        return None
+
+    # Reset counter
+    _exchange_counters[key] = 0
+
+    if not is_ready():
+        return None
+
+    # Fetch the last N exchanges
+    recent = await get_recent_exchanges(chat_id, limit=SUMMARIZE_EVERY_N)
+    if len(recent) < 3:
+        return None
+
+    # Build a condensed summary text from the exchanges
+    lines = []
+    topics = set()
+    for ex in recent:
+        user_msg = ex.get("user_message", "")
+        response = ex.get("response_preview", "")
+        task = ex.get("task_title", "")
+
+        if task:
+            topics.add(task)
+        if user_msg:
+            lines.append(f"- User asked: {user_msg[:100]}")
+        if response:
+            lines.append(f"  Response: {response[:100]}")
+
+    # Create a compact summary
+    topic_str = ", ".join(list(topics)[:5]) if topics else "various topics"
+    summary_text = (
+        f"Conversation summary ({len(recent)} exchanges) — Topics: {topic_str}\n"
+        + "\n".join(lines[:20])
+    )
+
+    doc_id = f"conv-summary-{chat_id}-{int(time.time())}"
+
+    result = await embed_and_store(
+        text=summary_text,
+        metadata={
+            "type": "conversation_summary",
+            "chat_id": str(chat_id),
+            "exchange_count": len(recent),
+            "topics": topic_str[:200],
+            "timestamp": time.time(),
+        },
+        collection="semantic",
+        doc_id=doc_id,
+    )
+
+    if result:
+        logger.info(
+            "Stored conversation summary for chat %s (%d exchanges)",
+            chat_id, len(recent),
+        )
+    return result

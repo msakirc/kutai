@@ -71,6 +71,8 @@ class KutAIWrapper:
         if self.process and self.process.returncode is None:
             return
 
+        # Clear stale process reference so wait_for_exit won't spin
+        self.process = None
         self.stderr_tail.clear()
         self._stop_requested = False
 
@@ -90,6 +92,7 @@ class KutAIWrapper:
             )
         except Exception as e:
             _wlog(f"ERROR: Failed to spawn subprocess: {e}")
+            self.process = None
             self.running = False
             return
 
@@ -116,10 +119,24 @@ class KutAIWrapper:
         self.running = False
 
     async def wait_for_exit(self) -> int:
-        """Wait for the subprocess to exit and return the exit code."""
+        """Wait for the subprocess to exit and return the exit code.
+
+        Returns -1 if no process is running. When the process reference is
+        stale (already exited), clears it to prevent spin-loops.
+        """
         if not self.process:
+            # No subprocess — caller should enter poll mode, not spin
+            self.running = False
             return -1
+        if self.process.returncode is not None:
+            # Already exited (stale reference) — clear and return
+            code = self.process.returncode
+            self.process = None
+            self.running = False
+            self.last_exit_code = code
+            return code
         code = await self.process.wait()
+        self.process = None
         self.running = False
         self.last_exit_code = code
         return code
@@ -315,6 +332,17 @@ class KutAIWrapper:
             try:
                 exit_code = await self.wait_for_exit()
                 self._maybe_reset_backoff()
+
+                if exit_code == -1:
+                    # No process was running (spawn failed) — wait for user
+                    _wlog("No process to wait on — entering Telegram poll mode")
+                    await self._start_telegram_poller()
+                    while not self._shutdown and not self.running:
+                        await asyncio.sleep(1)
+                    if self.running:
+                        await self._notify_started()
+                    continue
+
                 _wlog(f"KutAI exited with code {exit_code}")
 
                 if exit_code == RESTART_EXIT_CODE:

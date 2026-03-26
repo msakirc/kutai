@@ -29,8 +29,10 @@ from src.shopping.text_utils import (
     extract_material,
     extract_volume_weight_for_grocery,
     extract_weight,
+    fix_turkish_encoding,
     generate_search_variants,
     normalize_product_name,
+    normalize_spec_value,
     normalize_turkish,
     parse_turkish_price,
 )
@@ -469,6 +471,130 @@ class TestTurkishTextUtils(unittest.TestCase):
 
     def test_normalize_product_name_empty(self):
         self.assertEqual(normalize_product_name(""), "")
+
+    # -- fix_turkish_encoding (Phase 10.4) — realistic scraped content -----
+
+    @staticmethod
+    def _make_mojibake(text: str) -> str:
+        """Produce Windows-1252 mojibake: encode UTF-8, decode as cp1252."""
+        return text.encode("utf-8").decode("windows-1252")
+
+    def test_encoding_mojibake_utf8_as_cp1252(self):
+        """Simulates UTF-8 Turkish text misread as Windows-1252 (common on Trendyol)."""
+        raw = self._make_mojibake("Arçelik 9 kg Çamaşır Makinesi")
+        result = fix_turkish_encoding(raw)
+        self.assertIn("ç", result)
+        self.assertIn("Ç", result)
+        self.assertIn("ş", result)
+        self.assertIn("ı", result)
+        self.assertNotIn("\u00c3", result)  # no leftover Ã
+
+    def test_encoding_html_entities_named(self):
+        """HTML entities in product names (common in n11/Hepsiburada feeds)."""
+        raw = "Beko Bula&ccedil;k Makinesi &uuml;cretsiz kargo"
+        result = fix_turkish_encoding(raw)
+        self.assertIn("ç", result)
+        self.assertIn("ü", result)
+        self.assertNotIn("&ccedil;", result)
+        self.assertNotIn("&uuml;", result)
+
+    def test_encoding_html_entities_numeric(self):
+        """Numeric HTML entities for Turkish chars."""
+        raw = "&#304;stanbul &#350;ehir &#214;zel &#220;r&#252;n"
+        result = fix_turkish_encoding(raw)
+        self.assertIn("İ", result)
+        self.assertIn("Ş", result)
+        self.assertIn("Ö", result)
+        self.assertIn("Ü", result)
+        self.assertIn("ü", result)
+
+    def test_encoding_mixed_mojibake_and_entities(self):
+        """Mixed encoding problems in a single product name."""
+        mojibake_part = self._make_mojibake("Bulaşık")
+        raw = f"Vestel {mojibake_part} Makinesi &ccedil;elik g&ouml;vde"
+        result = fix_turkish_encoding(raw)
+        self.assertNotIn("\u00c5", result)  # no leftover Å
+        self.assertNotIn("&ccedil;", result)
+        self.assertNotIn("&ouml;", result)
+        self.assertIn("ş", result)
+        self.assertIn("ç", result)
+        self.assertIn("ö", result)
+
+    def test_encoding_zero_width_chars_stripped(self):
+        """Zero-width characters injected by some scrapers."""
+        raw = "Samsung\u200b \u200cGalaxy\u200d S24\ufeff Ultra"
+        result = normalize_product_name(raw)
+        self.assertNotIn("\u200b", result)
+        self.assertNotIn("\u200c", result)
+        self.assertNotIn("\u200d", result)
+        self.assertNotIn("\ufeff", result)
+        self.assertIn("Samsung", result)
+        self.assertIn("Galaxy", result)
+
+    def test_encoding_real_trendyol_style_name(self):
+        """Realistic Trendyol-style product with encoding + filler."""
+        mojibake = self._make_mojibake("Arçelik 8143 CMK Çamaşır Makinesi")
+        raw = f"{mojibake} süper fırsat ücretsiz kargo"
+        result = normalize_product_name(raw)
+        # Encoding fixed, filler stripped
+        self.assertNotIn("\u00c3", result)  # no leftover Ã
+        self.assertNotIn("süper fırsat", result)
+        self.assertNotIn("ücretsiz kargo", result)
+        self.assertIn("8143", result)
+
+    def test_encoding_hex_entities(self):
+        """Hex HTML entities (&#xNN;)."""
+        raw = "&#xFC;r&#xFC;n &#xE7;e&#x15F;it"  # ürün çeşit
+        result = fix_turkish_encoding(raw)
+        self.assertIn("ü", result)
+        self.assertIn("ç", result)
+
+    def test_encoding_double_encoded_utf8(self):
+        """Double-encoded UTF-8 (encode UTF-8, treat as Latin-1, encode again).
+
+        Only works for chars whose UTF-8 bytes are all <= 0xFF (ö, ü, ç).
+        Multi-byte chars with bytes outside Latin-1 (ş, ğ) can't round-trip.
+        """
+        original = "özel ürün çeşidi"
+        # özel -> all chars have 2-byte UTF-8 within Latin-1 range
+        double = original.encode("utf-8").decode("latin-1")
+        self.assertNotEqual(double, original)
+        result = fix_turkish_encoding(double)
+        self.assertIn("ö", result)
+        self.assertIn("ü", result)
+        self.assertIn("ç", result)
+
+    # -- normalize_spec_value (Phase 10.4) — spec consistency ---------------
+
+    def test_spec_value_encoding_fix(self):
+        result = normalize_spec_value("memory", "16 gb DDR5")
+        self.assertIn("GB", result)
+
+    def test_spec_value_turkish_boolean_var(self):
+        self.assertEqual(normalize_spec_value("wifi", "var"), "Var")
+        self.assertEqual(normalize_spec_value("wifi", "VAR"), "Var")
+
+    def test_spec_value_turkish_boolean_yok(self):
+        self.assertEqual(normalize_spec_value("bluetooth", "yok"), "Yok")
+
+    def test_spec_value_turkish_boolean_evet_hayir(self):
+        self.assertEqual(normalize_spec_value("garanti", "evet"), "Evet")
+        self.assertEqual(normalize_spec_value("garanti", "hayır"), "Hayır")
+
+    def test_spec_value_strips_trailing_punctuation(self):
+        result = normalize_spec_value("brand", "Samsung.")
+        self.assertEqual(result, "Samsung")
+
+    def test_spec_value_unit_normalization(self):
+        self.assertIn("GB", normalize_spec_value("storage", "256 Gb"))
+        self.assertIn("kg", normalize_spec_value("weight", "5 KG"))
+        self.assertIn("MHz", normalize_spec_value("freq", "2400 mhz"))
+
+    def test_spec_value_with_mojibake(self):
+        """Spec value containing mojibake Turkish characters."""
+        raw = "Paslanmaz \u00c3\u0087elik"
+        result = normalize_spec_value("material", raw)
+        self.assertNotIn("Ã", result)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

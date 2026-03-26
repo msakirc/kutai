@@ -1165,14 +1165,63 @@ async def add_scheduled_task(
     tier: str = "cheap",
     context: dict | None = None,
 ) -> int:
-    """Create a new scheduled task."""
+    """Create a new scheduled task.
+
+    Deduplicates by title — if a task with the same title already exists,
+    returns its ID without inserting a duplicate.  New tasks get ``next_run``
+    computed from the cron expression so they don't fire immediately on the
+    first scheduler check.
+    """
     db = await get_db()
+
+    # Deduplicate: skip if a task with this title already exists
+    cursor = await db.execute(
+        "SELECT id FROM scheduled_tasks WHERE title = ?", (title,)
+    )
+    existing = await cursor.fetchone()
+    if existing:
+        return existing[0]
+
+    # Compute next_run so the task doesn't fire immediately (next_run=NULL bug).
+    # Inline minimal cron parse to avoid circular import with orchestrator.
+    next_run_str: str | None = None
+    try:
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        parts = cron_expression.strip().split()
+        if len(parts) == 5:
+            minute, hour = parts[0], parts[1]
+            m = int(minute) if minute != "*" else 0
+            if minute != "*" and hour != "*" and "," not in hour and "/" not in hour:
+                # Daily at H:M — covers most recurring tasks
+                candidate = now.replace(
+                    hour=int(hour), minute=m, second=0, microsecond=0
+                )
+                if candidate <= now:
+                    candidate += timedelta(days=1)
+                next_run_str = candidate.strftime("%Y-%m-%d %H:%M:%S")
+            elif minute != "*" and "/" in hour:
+                # e.g. */4 — every N hours at minute M
+                interval = int(hour.split("/")[1])
+                candidate = now.replace(minute=m, second=0, microsecond=0)
+                if candidate <= now:
+                    candidate += timedelta(hours=interval)
+                next_run_str = candidate.strftime("%Y-%m-%d %H:%M:%S")
+            elif minute != "*" and hour == "*":
+                # Every hour at minute M
+                candidate = now.replace(minute=m, second=0, microsecond=0)
+                if candidate <= now:
+                    candidate += timedelta(hours=1)
+                next_run_str = candidate.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        pass  # Fall back to NULL — scheduler will compute on first fire
+
     cursor = await db.execute(
         """INSERT INTO scheduled_tasks
-           (title, description, cron_expression, agent_type, tier, context)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+           (title, description, cron_expression, agent_type, tier, context, next_run)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (title, description, cron_expression, agent_type, tier,
-         json.dumps(context or {}))
+         json.dumps(context or {}), next_run_str)
     )
     await db.commit()
     return cursor.lastrowid

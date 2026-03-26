@@ -75,6 +75,29 @@ def record_queue_depth(depth: int) -> None:
     _counters["queue_depth"] = float(depth)  # not cumulative
 
 
+# ── Detection / scraper metrics (Phase 10.2) ────────────────────────────────
+
+async def sync_detection_metrics() -> None:
+    """Pull per-domain detection metrics into the central counters.
+
+    Call this before ``persist_metrics()`` or ``format_metrics_summary()``
+    to ensure the snapshot includes up-to-date scraper health data.
+    """
+    try:
+        from src.shopping.resilience.detection_monitor import get_detection_metrics
+        detection = await get_detection_metrics()
+        for domain, stats in detection.items():
+            _counters[f"scraper_requests:{domain}"] = float(stats["total_requests"])
+            _counters[f"scraper_success:{domain}"] = float(stats["successful_requests"])
+            _counters[f"scraper_success_rate:{domain}"] = stats["rolling_success_rate"]
+            if stats["in_cooldown"]:
+                _counters[f"scraper_cooldown:{domain}"] = stats["seconds_remaining"]
+            else:
+                _counters.pop(f"scraper_cooldown:{domain}", None)
+    except Exception as exc:
+        logger.debug("Failed to sync detection metrics: %s", exc)
+
+
 async def _ensure_table(db) -> None:
     await db.execute("""
         CREATE TABLE IF NOT EXISTS metrics_snapshots (
@@ -89,6 +112,10 @@ async def _ensure_table(db) -> None:
 async def persist_metrics() -> None:
     """Persist current counters to DB as a snapshot."""
     global _last_persisted
+    try:
+        await sync_detection_metrics()
+    except Exception:
+        pass  # best-effort; don't block persistence
     try:
         import json
         db = await get_db()
@@ -136,5 +163,18 @@ def format_metrics_summary() -> str:
         lines.append("\n*Top tools:*")
         for tool, count in sorted(tool_calls.items(), key=lambda x: -x[1])[:5]:
             lines.append(f"  • {tool}: {int(count)}")
+
+    # Scraper / detection health (Phase 10.2)
+    scraper_domains = {
+        k.split(":", 1)[1] for k in c if k.startswith("scraper_requests:")
+    }
+    if scraper_domains:
+        lines.append("\n*Scraper health:*")
+        for domain in sorted(scraper_domains):
+            reqs = int(c.get(f"scraper_requests:{domain}", 0))
+            rate = c.get(f"scraper_success_rate:{domain}", 1.0)
+            cooldown_key = f"scraper_cooldown:{domain}"
+            status = f"⏸ cooldown {int(c[cooldown_key])}s" if cooldown_key in c else "✓"
+            lines.append(f"  • {domain}: {reqs} reqs, {rate:.0%} success {status}")
 
     return "\n".join(lines)

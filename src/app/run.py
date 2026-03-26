@@ -251,7 +251,22 @@ async def main():
 
     check_env()
     print_config()
-    start_docker_services()
+    docker_ok = start_docker_services()
+    if not docker_ok:
+        _log.warning("Docker services unavailable — ntfy, sandbox, monitoring will not work")
+        try:
+            from src.infra.notifications import send_ntfy
+            from src.app import config as cfg
+            send_ntfy(
+                cfg.NTFY_TOPIC_ERRORS,
+                "Docker services unavailable",
+                "Could not connect to Docker. ntfy, sandbox, frontail, "
+                "prometheus, and grafana will not work until Docker Desktop "
+                "is started and KutAI is restarted.",
+                priority=3, tags=["warning"],
+            )
+        except Exception:
+            pass  # ntfy itself is down, so this will fail too
 
     critical_ok = await startup_health_check()
     if not critical_ok:

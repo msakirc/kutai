@@ -16,7 +16,7 @@ from ..infra.db import (add_task, add_mission, get_active_missions,
                 get_ready_tasks, get_daily_stats, update_task, get_recent_completed_tasks,
                 get_db, cancel_task, reprioritize_task, get_task_tree,
                 get_task, get_mission, get_budget, set_budget, get_model_stats,
-                get_mission_locks, get_tasks_for_mission,
+                get_mission_locks, get_tasks_for_mission, update_mission,
                 insert_approval_request, update_approval_status,
                 add_todo, get_todos, get_todo, toggle_todo, delete_todo)
 from ..memory.conversations import format_recent_context, find_followup_context, \
@@ -1143,7 +1143,7 @@ class TelegramInterface:
     async def cmd_wfstatus(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show workflow progress for a mission. Without args, lists active workflow missions."""
         if not context.args:
-            # List all active workflow missions
+            # List all active workflow missions with inline buttons
             try:
                 db = await get_db()
                 cursor = await db.execute(
@@ -1155,11 +1155,16 @@ class TelegramInterface:
                 if not rows:
                     await update.message.reply_text("No active missions.")
                     return
-                lines = ["*Active Missions:*\n"]
+                buttons = []
                 for r in rows:
-                    lines.append(f"  #{r['id']} — {r['title'][:50]} ({r['status']})")
-                lines.append("\nUse /wfstatus <id> for details.")
-                await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+                    label = f"#{r['id']} — {r['title'][:40]} ({r['status']})"
+                    buttons.append([InlineKeyboardButton(label, callback_data=f"wfstatus:{r['id']}")])
+                buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="wfstatus_dismiss")])
+                await update.message.reply_text(
+                    "*Active Missions* — tap to view details:",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                )
             except Exception as e:
                 await update.message.reply_text(f"Usage: /wfstatus <mission\\_id>",
                                                 parse_mode="Markdown")
@@ -1200,7 +1205,10 @@ class TelegramInterface:
 
             progress = compute_phase_progress(tasks)
             msg = format_status_message(workflow_name, mission_id, progress)
-            await update.message.reply_text(msg)
+            cancel_button = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑 Cancel Mission", callback_data=f"wfcancel:{mission_id}")
+            ]])
+            await update.message.reply_text(msg, reply_markup=cancel_button)
         except Exception as e:
             await update.message.reply_text(
                 f"❌ {_friendly_error(str(e))}"
@@ -1609,9 +1617,8 @@ class TelegramInterface:
             await self._handle_user_input(msg_type, text, chat_id, update)
             return
 
-        if msg_type == "progress_inquiry":
-            await update.message.reply_text("📊 Understood as a status question.")
-            await self.cmd_progress(update, context)
+        if msg_type in ("progress_inquiry", "status_query"):
+            await self._handle_status_query(text, chat_id, update, context)
             return
 
         if msg_type == "question":
@@ -1739,6 +1746,7 @@ class TelegramInterface:
     MESSAGE_CLASSIFIER_PROMPT = """Classify this user message to an AI orchestrator. Respond with ONLY valid JSON.
 
 Categories:
+- "status_query": asking about the status/progress of an EXISTING task, mission, or search. Examples: "how is the coffee machine search going", "any update on the motherboard", "did you find anything for X", "what's the status of mission 5", "how far along is the CPU task". The user is NOT requesting something new — they want to know about something already in progress.
 - "shopping": buying, comparing prices, finding deals, product recommendations, "I want to buy X", "how much is X", budget shopping, upgrading hardware/equipment — anything about purchasing products or services
 - "mission": complex multi-step project request (building something, research project, etc.)
 - "task": specific actionable request
@@ -1747,7 +1755,7 @@ Categories:
 - "feature_request": suggesting a new feature
 - "ui_note": UI/UX feedback
 - "feedback": general feedback on system behavior
-- "progress_inquiry": asking about status of work
+- "progress_inquiry": asking about GENERAL system status (no specific task/mission mentioned)
 - "followup": continuing a previous conversation or task
 - "clarification_response": answering a question the system asked
 - "load_control": wanting to control GPU/resources (e.g. "I'm going to game", "free up GPU")
@@ -1758,6 +1766,7 @@ If type is "mission", also decide if this needs a full product workflow:
 - "workflow": "idea_to_product" ONLY if the user explicitly wants to BUILD/CREATE/DEVELOP a new product from scratch
 - "workflow": null if it's a simpler mission (research, analysis, fix something, write a report)
 
+IMPORTANT: If the user asks about progress/status/updates on a SPECIFIC existing task or search, classify as "status_query", NOT "shopping" or "mission".
 IMPORTANT: Shopping/buying/comparing products is ALWAYS "shopping", never "mission". "Mission" is only for building/creating new projects from scratch.
 IMPORTANT: Asking about existing apps/tools is a research TASK or QUESTION, NOT a mission.
 
@@ -1830,6 +1839,23 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             "remember to", "note to self", "hatirla", "unutma", "listeye ekle",
         ]):
             return {"type": "todo"}
+        # Status queries about existing tasks — MUST be checked BEFORE shopping
+        _status_phrases = [
+            "how is the", "how's the", "how is my", "how's my",
+            "status of", "update on", "any update", "any progress",
+            "how far along", "how far is", "did you find",
+            "have you found", "is it done", "still running",
+            "what's the status", "whats the status",
+            "where are we on", "where are we with",
+            "search going", "task going", "mission going",
+            "nasıl gidiyor", "durum ne", "ne durumda",
+        ]
+        import re
+        _mission_id_pattern = re.compile(
+            r"(?:mission|task|görev)\s*#?\d+", re.IGNORECASE
+        )
+        if any(p in lower for p in _status_phrases) or _mission_id_pattern.search(lower):
+            return {"type": "status_query"}
         # Shopping
         if any(w in lower for w in [
             "shopping", "buy", "purchase", "fiyat", "price", "compare price",
@@ -1858,12 +1884,12 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             "i think", "in my opinion", "the output was",
         ]):
             return {"type": "feedback"}
-        # Status / progress questions
+        # General status / progress questions (no specific task detected above)
         if any(w in lower for w in [
-            "how's", "status", "progress", "how far", "eta", "update on",
-            "what's happening", "is it done", "still running", "where are we",
+            "how's", "status", "progress", "how far", "eta",
+            "what's happening", "still running", "where are we",
         ]):
-            return {"type": "progress_inquiry"}
+            return {"type": "status_query"}
         # Questions
         if any(w in lower for w in [
             "what is", "how do", "why does", "can you explain", "what does",
@@ -2026,6 +2052,118 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         except Exception as e:
             logger.error("failed to log user input", error=str(e))
             await update.message.reply_text(f"Logged your {input_type}. (Note: save had an issue, check logs)")
+
+    async def _handle_status_query(self, text: str, chat_id: int, update: Update, context):
+        """Look up existing tasks/missions matching the user's status question."""
+        import re
+
+        lower = text.lower()
+
+        # 1) Check for explicit mission/task ID reference
+        id_match = re.search(r"(?:mission|task|görev)\s*#?(\d+)", lower)
+        if id_match:
+            ref_id = int(id_match.group(1))
+            # Try as mission first, then task
+            mission = await get_mission(ref_id)
+            if mission:
+                tasks = await get_tasks_for_mission(ref_id)
+                total = len(tasks)
+                done = sum(1 for t in tasks if t["status"] == "completed")
+                failed = sum(1 for t in tasks if t["status"] == "failed")
+                running = sum(1 for t in tasks if t["status"] in ("processing", "running"))
+                pending = total - done - failed - running
+                msg = (
+                    f"📊 *Mission #{ref_id}*: {mission['title']}\n"
+                    f"Status: *{mission['status']}*\n"
+                    f"Tasks: {done}✅ {running}🔄 {pending}⏳ {failed}❌ / {total} total"
+                )
+                # Show latest completed task result preview
+                completed = [t for t in tasks if t["status"] == "completed" and t.get("result")]
+                if completed:
+                    latest = completed[-1]
+                    preview = (latest["result"] or "")[:200]
+                    msg += f"\n\nLatest result from _{latest['title']}_:\n{preview}"
+                await update.message.reply_text(msg, parse_mode="Markdown")
+                return
+
+            task = await get_task(ref_id)
+            if task:
+                msg = f"📊 *Task #{ref_id}*: {task['title']}\nStatus: *{task['status']}*"
+                if task["status"] == "completed" and task.get("result"):
+                    preview = (task["result"] or "")[:300]
+                    msg += f"\n\nResult:\n{preview}"
+                elif task["status"] == "failed" and task.get("error"):
+                    msg += f"\n\nError: {task['error'][:200]}"
+                await update.message.reply_text(msg, parse_mode="Markdown")
+                return
+
+            await update.message.reply_text(f"Could not find mission or task #{ref_id}.")
+            return
+
+        # 2) Search recent tasks/missions by keyword matching
+        # Extract likely subject from the status question
+        subject = lower
+        for strip in [
+            "how is the", "how's the", "how is my", "how's my",
+            "what's the status of", "whats the status of",
+            "status of", "any update on", "any progress on",
+            "did you find anything for", "did you find",
+            "have you found anything for", "have you found",
+            "how far along is", "how far is",
+            "where are we on", "where are we with",
+            "the", "my", "search", "task", "going", "?",
+            "nasıl gidiyor", "durum ne", "ne durumda",
+        ]:
+            subject = subject.replace(strip, "")
+        subject = subject.strip(" ?.,!")
+
+        matches = []
+        if subject:
+            # Search active missions
+            missions = await get_active_missions()
+            for m in missions:
+                title_lower = (m.get("title") or "").lower()
+                desc_lower = (m.get("description") or "").lower()
+                if subject in title_lower or subject in desc_lower:
+                    tasks = await get_tasks_for_mission(m["id"])
+                    total = len(tasks)
+                    done = sum(1 for t in tasks if t["status"] == "completed")
+                    running = sum(1 for t in tasks if t["status"] in ("processing", "running"))
+                    matches.append(
+                        f"• *Mission #{m['id']}*: {m['title']} "
+                        f"— {m['status']} ({done}/{total} done, {running} running)"
+                    )
+
+            # Search recent tasks (last 20)
+            db = await get_db()
+            cursor = await db.execute(
+                """SELECT id, title, status, result, error, agent_type
+                   FROM tasks
+                   WHERE parent_task_id IS NULL
+                   ORDER BY created_at DESC LIMIT 20"""
+            )
+            recent_tasks = [dict(r) for r in await cursor.fetchall()]
+            for t in recent_tasks:
+                title_lower = (t.get("title") or "").lower()
+                if subject in title_lower:
+                    line = f"• *Task #{t['id']}*: {t['title']} — {t['status']}"
+                    if t["status"] == "completed" and t.get("result"):
+                        preview = (t["result"] or "")[:150]
+                        line += f"\n  _{preview}_"
+                    elif t["status"] == "failed" and t.get("error"):
+                        line += f"\n  Error: {t['error'][:100]}"
+                    matches.append(line)
+
+        if matches:
+            header = f"📊 Found {len(matches)} matching item(s):\n\n"
+            msg = header + "\n\n".join(matches[:5])
+            if len(msg) > 4000:
+                msg = msg[:4000] + "\n... (truncated)"
+            await update.message.reply_text(msg, parse_mode="Markdown")
+        else:
+            # Fallback: show general progress
+            await update.message.reply_text("📊 No matching tasks found. Showing general progress:")
+            await self.cmd_progress(update, context)
 
     async def _handle_casual(self, text: str, update: Update):
         """Handle casual messages with a quick LLM response (no task creation)."""
@@ -2562,6 +2700,55 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 await query.delete_message()
             except Exception:
                 await query.edit_message_text("(cancelled)")
+            return
+
+        # ── Workflow Status Callbacks ────────────────────────────
+        if data == "wfstatus_dismiss":
+            try:
+                await query.delete_message()
+            except Exception:
+                await query.edit_message_text("(dismissed)")
+            return
+
+        if data.startswith("wfstatus:"):
+            mission_id = int(data.split(":", 1)[1])
+            try:
+                from ..workflows.engine.status import (
+                    compute_phase_progress, format_status_message,
+                )
+                mission = await get_mission(mission_id)
+                if not mission:
+                    await query.edit_message_text(f"Mission #{mission_id} not found.")
+                    return
+                tasks = await get_tasks_for_mission(mission_id)
+                if not tasks:
+                    await query.edit_message_text(f"No tasks found for mission #{mission_id}.")
+                    return
+                mission_ctx = mission.get("context", "{}")
+                if isinstance(mission_ctx, str):
+                    import json as _json
+                    try:
+                        mission_ctx = _json.loads(mission_ctx)
+                    except (ValueError, TypeError):
+                        mission_ctx = {}
+                workflow_name = mission_ctx.get("workflow_name", "idea_to_product_v2")
+                progress = compute_phase_progress(tasks)
+                msg = format_status_message(workflow_name, mission_id, progress)
+                cancel_button = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🗑 Cancel Mission", callback_data=f"wfcancel:{mission_id}")
+                ]])
+                await query.edit_message_text(msg, reply_markup=cancel_button)
+            except Exception as e:
+                await query.edit_message_text(f"❌ {_friendly_error(str(e))}")
+            return
+
+        if data.startswith("wfcancel:"):
+            mission_id = int(data.split(":", 1)[1])
+            try:
+                await update_mission(mission_id, status="cancelled")
+                await query.edit_message_text(f"🗑 Mission #{mission_id} has been cancelled.")
+            except Exception as e:
+                await query.edit_message_text(f"❌ {_friendly_error(str(e))}")
             return
 
         # ── Legacy Callbacks (approval, resetall confirm) ──────

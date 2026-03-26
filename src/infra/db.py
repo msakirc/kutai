@@ -2,7 +2,7 @@
 import aiosqlite
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.app.config import DB_PATH
 from src.infra.logging_config import get_logger
@@ -736,7 +736,7 @@ async def claim_task(task_id: int) -> bool:
     cursor = await db.execute(
         "UPDATE tasks SET status = 'processing', started_at = ? "
         "WHERE id = ? AND status = 'pending'",
-        (datetime.now().isoformat(), task_id)
+        (datetime.now(timezone.utc).isoformat(), task_id)
     )
     await db.commit()
     return cursor.rowcount > 0
@@ -1087,7 +1087,7 @@ async def store_memory(key, value, category="general", mission_id=None):
     if row:
         await db.execute(
             "UPDATE memory SET value = ?, updated_at = ? WHERE id = ?",
-            (value, datetime.now().isoformat(), row[0])
+            (value, datetime.now(timezone.utc).isoformat(), row[0])
         )
     else:
         await db.execute(
@@ -1186,8 +1186,8 @@ async def add_scheduled_task(
     # Inline minimal cron parse to avoid circular import with orchestrator.
     next_run_str: str | None = None
     try:
-        from datetime import datetime, timedelta
-        now = datetime.now()
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
         parts = cron_expression.strip().split()
         if len(parts) == 5:
             minute, hour = parts[0], parts[1]
@@ -1316,7 +1316,7 @@ async def toggle_todo(todo_id: int) -> str:
         new_status = "done"
         await db.execute(
             "UPDATE todo_items SET status = 'done', completed_at = ? WHERE id = ?",
-            (datetime.now().isoformat(), todo_id),
+            (datetime.now(timezone.utc).isoformat(), todo_id),
         )
     await db.commit()
     return new_status
@@ -1837,7 +1837,7 @@ async def insert_approval_request(task_id: int, mission_id: int | None,
         """INSERT OR REPLACE INTO approval_requests
            (task_id, mission_id, title, details, status, created_at)
            VALUES (?, ?, ?, ?, 'pending', ?)""",
-        (task_id, mission_id, title, details, datetime.now().isoformat()),
+        (task_id, mission_id, title, details, datetime.now(timezone.utc).isoformat()),
     )
     await db.commit()
 
@@ -1849,7 +1849,7 @@ async def update_approval_status(task_id: int, status: str):
         """UPDATE approval_requests
            SET status = ?, resolved_at = ?
            WHERE task_id = ?""",
-        (status, datetime.now().isoformat(), task_id),
+        (status, datetime.now(timezone.utc).isoformat(), task_id),
     )
     await db.commit()
 
@@ -1876,7 +1876,7 @@ async def upsert_workflow_checkpoint(
     metadata: dict = None,
 ) -> None:
     """Create or update a workflow checkpoint for the given mission."""
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     db = await get_db()
     await db.execute(
@@ -1890,7 +1890,7 @@ async def upsert_workflow_checkpoint(
             current_phase,
             json.dumps(completed_phases or []),
             failed_step_id,
-            datetime.now().isoformat(),
+            datetime.now(timezone.utc).isoformat(),
             json.dumps(metadata or {}),
         ),
     )

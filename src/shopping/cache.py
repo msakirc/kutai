@@ -124,7 +124,10 @@ async def cache_product(
     source: str,
     ttl_category: str = "specs",
 ) -> None:
-    """Insert or replace a cached product entry."""
+    """Insert or replace a cached product entry.
+
+    Also embeds the product into the shopping vector collection for RAG.
+    """
     db = await get_cache_db()
     await db.execute(
         """
@@ -135,6 +138,14 @@ async def cache_product(
         (_hash(url), json.dumps(product_dict, ensure_ascii=False), source, time.time(), ttl_category),
     )
     await db.commit()
+
+    # Phase C: Embed product into vector store for shopping RAG
+    try:
+        from src.shopping.intelligence.vector_bridge import embed_product
+        product_with_url = {**product_dict, "url": url}
+        await embed_product(product_with_url, source=source)
+    except Exception as e:
+        logger.debug("Product embedding skipped: %s", e)
 
 
 async def get_cached_product(url: str) -> dict | None:

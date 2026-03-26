@@ -275,4 +275,12 @@ async def synthesize_reviews(reviews: list[dict], product_name: str) -> dict:
         sentiment=overall_sentiment,
         adjusted_rating=result["confidence_adjusted_rating"],
     )
+
+    # Phase C: Embed the synthesized review into vector store for shopping RAG
+    try:
+        from src.shopping.intelligence.vector_bridge import embed_review_synthesis
+        await embed_review_synthesis(result, product_name)
+    except Exception as e:
+        logger.debug("Review synthesis embedding skipped: %s", e)
+
     return result

@@ -184,6 +184,13 @@ async def update_user_profile(user_id: int, **fields) -> None:
     )
     await db.commit()
 
+    # Phase C: Re-embed user profile into vector store
+    try:
+        from src.shopping.intelligence.vector_bridge import embed_user_shopping_profile
+        await embed_user_shopping_profile(user_id)
+    except Exception as e:
+        logger.debug("Profile embedding skipped: %s", e)
+
 
 async def add_owned_item(user_id: int, item: dict) -> None:
     """Add an owned item (PC specs, appliance, etc.) to the user's list."""
@@ -194,6 +201,13 @@ async def add_owned_item(user_id: int, item: dict) -> None:
         (user_id, json.dumps(item, ensure_ascii=False), time.time()),
     )
     await db.commit()
+
+    # Phase C: Re-embed profile to include new owned item
+    try:
+        from src.shopping.intelligence.vector_bridge import embed_user_shopping_profile
+        await embed_user_shopping_profile(user_id)
+    except Exception as e:
+        logger.debug("Owned item embedding skipped: %s", e)
 
 
 async def remove_owned_item(user_id: int, item_name: str) -> None:
@@ -226,6 +240,13 @@ async def set_preference(user_id: int, key: str, value: str, inferred: bool = Fa
         (user_id, key, value, int(inferred), time.time()),
     )
     await db.commit()
+
+    # Phase C: Re-embed profile preferences into vector store
+    try:
+        from src.shopping.intelligence.vector_bridge import embed_user_shopping_profile
+        await embed_user_shopping_profile(user_id)
+    except Exception as e:
+        logger.debug("Preference embedding skipped: %s", e)
 
 
 async def record_behavior(user_id: int, behavior: str) -> None:

@@ -125,6 +125,9 @@ async def update_session(session_id: str, **fields) -> None:
     """Update session fields.
 
     Supported fields: topic (str), status (str), summary (str).
+
+    When status is set to 'completed', the session is automatically
+    embedded into the shopping vector collection for RAG.
     """
     db = await get_memory_db()
 
@@ -148,6 +151,16 @@ async def update_session(session_id: str, **fields) -> None:
         params,
     )
     await db.commit()
+
+    # Phase C: Embed session into vector store when completed
+    if fields.get("status") == "completed":
+        try:
+            from src.shopping.intelligence.vector_bridge import embed_shopping_session
+            session = await get_session(session_id)
+            if session:
+                await embed_shopping_session(session)
+        except Exception as e:
+            logger.debug("Session embedding skipped: %s", e)
 
 
 async def add_session_product(session_id: str, product: dict) -> None:

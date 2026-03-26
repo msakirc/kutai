@@ -78,6 +78,20 @@ async def log_purchase(
     purchase_id = cur.lastrowid
     await db.commit()
     logger.info("Logged purchase #%d for user %s: %s", purchase_id, user_id, product_name)
+
+    # Phase C: Embed purchase into vector store for shopping RAG
+    try:
+        from src.shopping.intelligence.vector_bridge import embed_purchase
+        await embed_purchase(
+            user_id=user_id,
+            product_name=product_name,
+            price=price,
+            category=category or "",
+            store=store or "",
+        )
+    except Exception as e:
+        logger.debug("Purchase embedding skipped: %s", e)
+
     return purchase_id
 
 

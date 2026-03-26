@@ -68,10 +68,27 @@ class WorkflowDefinition:
 def _resolve_workflow_path(workflow_name: str) -> Path:
     """Resolve *workflow_name* to a JSON file path.
 
-    Name normalization: strip ``_v1`` / ``_v2`` suffixes for the directory
-    lookup but use the exact name for the file match.
+    Supports two calling conventions:
+
+    1. Slash-separated: ``"shopping/quick_search"`` →
+       ``WORKFLOW_DIR/shopping/quick_search.json``
+    2. Plain name: ``"idea_to_product_v2"`` → strips version suffix, looks for
+       ``WORKFLOW_DIR/<dir_name>/<workflow_name>.json`` (original behaviour).
+       If that directory does not exist the loader scans every immediate
+       sub-directory of WORKFLOW_DIR for ``<workflow_name>.json`` so that
+       sub-workflows stored under a parent directory (e.g.
+       ``shopping/quick_search.json``) are found automatically.
     """
-    # Directory name strips version suffixes
+    # ── 1. Explicit slash-separated path ────────────────────────────────
+    if "/" in workflow_name:
+        json_file = WORKFLOW_DIR / f"{workflow_name}.json"
+        if not json_file.is_file():
+            raise FileNotFoundError(
+                f"Workflow definition file not found: {json_file}"
+            )
+        return json_file
+
+    # ── 2. Plain name — strip version suffix for the directory lookup ───
     dir_name = workflow_name
     for suffix in ("_v1", "_v2", "_v3"):
         if dir_name.endswith(suffix):
@@ -79,18 +96,30 @@ def _resolve_workflow_path(workflow_name: str) -> Path:
             break
 
     workflow_dir = WORKFLOW_DIR / dir_name
-    if not workflow_dir.is_dir():
-        raise FileNotFoundError(
-            f"Workflow directory not found: {workflow_dir}"
-        )
+    if workflow_dir.is_dir():
+        json_file = workflow_dir / f"{workflow_name}.json"
+        if not json_file.is_file():
+            raise FileNotFoundError(
+                f"Workflow definition file not found: {json_file}"
+            )
+        return json_file
 
-    json_file = workflow_dir / f"{workflow_name}.json"
-    if not json_file.is_file():
-        raise FileNotFoundError(
-            f"Workflow definition file not found: {json_file}"
-        )
+    # ── 3. Fallback: scan sub-directories for the file ──────────────────
+    for candidate in WORKFLOW_DIR.iterdir():
+        if candidate.is_dir():
+            json_file = candidate / f"{workflow_name}.json"
+            if json_file.is_file():
+                logger.debug(
+                    "Resolved '%s' via fallback scan in '%s'",
+                    workflow_name,
+                    candidate.name,
+                )
+                return json_file
 
-    return json_file
+    raise FileNotFoundError(
+        f"Workflow directory not found: {workflow_dir} "
+        f"(also scanned all sub-directories of {WORKFLOW_DIR})"
+    )
 
 
 def load_workflow(workflow_name: str) -> WorkflowDefinition:

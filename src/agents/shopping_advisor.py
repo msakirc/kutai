@@ -26,6 +26,8 @@ class ShoppingAdvisorAgent(BaseAgent):
         "read_file",
         "write_file",
         "file_tree",
+        "read_blackboard",
+        "write_blackboard",
         "shopping_search",
         "shopping_compare",
         "shopping_reviews",
@@ -53,6 +55,17 @@ class ShoppingAdvisorAgent(BaseAgent):
             "- `shopping_user_profile` — Get/update user preferences and history\n"
             "- `shopping_price_watch` — Add/list/remove price watches\n"
             "Use these tools to provide data-driven recommendations.\n"
+            "- `read_blackboard` — Read shared state written by other agents\n"
+            "- `write_blackboard` — Write key findings for other agents to use\n"
+            "\n"
+            "## Blackboard Usage\n"
+            "After analyzing a query, write these findings to the blackboard so "
+            "sub-agents (product_researcher, deal_analyst) can share context:\n"
+            "- `shopping_intent` — Parsed user intent: product type, use-case, urgency\n"
+            "- `shopping_constraints` — Budget, dimensions, brand preferences, dealbreakers\n"
+            "- `shopping_top_products` — Names of top candidate products found\n"
+            "- `shopping_price_comparisons` — Price range per product across retailers\n"
+            "Read the blackboard at the start of each session for any prior findings.\n"
             "\n"
             "## Shopping Reasoning Framework\n"
             "Follow this pipeline for every shopping query:\n"

@@ -4,6 +4,19 @@ Perplexica integration for broad shopping web research.
 
 Interfaces with a local Perplexica instance to perform shopping-focused
 web searches, query optimization, and result quality assessment.
+
+NOTE — PARTIAL DEPRECATION (plan item #70):
+  `search_perplexica` in this module is a duplicate of the Perplexica
+  support already in `src/tools/web_search.py`.  New code should call
+  `src.tools.web_search.web_search` instead, which handles model
+  discovery, circuit-breaking, and DuckDuckGo fallback automatically.
+
+  The shopping agents already have `web_search` listed in their
+  `allowed_tools`, so no wiring change is needed to start using it.
+
+  `format_shopping_query` and `assess_result_quality` below are
+  shopping-specific and have no equivalent in web_search.py; they
+  remain canonical here.
 """
 from __future__ import annotations
 
@@ -19,6 +32,10 @@ logger = get_logger("shopping.integrations.perplexica")
 _PERPLEXICA_URL = os.getenv("PERPLEXICA_URL", "http://localhost:3001")
 
 
+# DEPRECATED: use `src.tools.web_search.web_search` instead.
+# This function bypasses the circuit-breaker, model-discovery, and
+# DuckDuckGo fallback logic that live in web_search.py.  It is kept
+# here only to avoid breaking existing imports; do not add new callers.
 async def search_perplexica(query: str, focus: str = "shopping") -> dict:
     """
     Call the Perplexica API for broad web research.

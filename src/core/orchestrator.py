@@ -988,7 +988,29 @@ class Orchestrator:
                 if classification.confidence >= 0.7:
                     task["agent_type"] = classification.agent_type
                     agent_type = classification.agent_type
+                if classification.agent_type == "shopping_advisor" and classification.shopping_sub_intent:
+                    task_ctx["shopping_workflow"] = classification.shopping_sub_intent
                 task["context"] = json.dumps(task_ctx)
+
+            # ── Shopping intent detection fallback ──
+            # If the LLM classifier didn't confidently pick shopping_advisor,
+            # use regex-based detection from dispatch as a fallback.
+            if agent_type not in ("shopping_advisor", "product_researcher",
+                                  "deal_analyst", "shopping_clarifier"):
+                from ..workflows.engine.dispatch import (
+                    should_start_shopping_workflow,
+                )
+                shopping_wf = should_start_shopping_workflow(title)
+                if shopping_wf:
+                    agent_type = "shopping_advisor"
+                    task["agent_type"] = "shopping_advisor"
+                    task_ctx["shopping_workflow"] = shopping_wf
+                    task["context"] = json.dumps(task_ctx)
+                    logger.info(
+                        "shopping intent detected via dispatch fallback",
+                        task_id=task_id,
+                        shopping_workflow=shopping_wf,
+                    )
 
             # ── Workflow step pre-hook: inject artifact context ──
             from ..workflows.engine.hooks import (

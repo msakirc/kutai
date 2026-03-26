@@ -23,6 +23,8 @@ class DealAnalystAgent(BaseAgent):
         "web_search",
         "read_file",
         "file_tree",
+        "read_blackboard",
+        "write_blackboard",
         "shopping_compare",
         "shopping_timing",
         "shopping_alternatives",
@@ -41,6 +43,14 @@ class DealAnalystAgent(BaseAgent):
             "- `shopping_alternatives` — Find alternative/substitute products\n"
             "- `shopping_reviews` — Synthesize reviews for trust analysis\n"
             "Use these tools for data-driven deal evaluation.\n"
+            "- `read_blackboard` — Read product candidates and price data from product_researcher\n"
+            "- `write_blackboard` — Write deal verdicts (best value, red flags) for shopping_advisor\n"
+            "\n"
+            "## Blackboard Usage\n"
+            "Read `shopping_top_products` and `shopping_price_comparisons` from the blackboard "
+            "to get the product list and price data already collected by product_researcher. "
+            "After analysis, write `shopping_deal_verdicts` with your value scores and red "
+            "flag findings so shopping_advisor can incorporate them into the final recommendation.\n"
             "\n"
             "## Analysis Dimensions\n"
             "For each product, evaluate:\n"

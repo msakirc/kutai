@@ -23,6 +23,8 @@ class ProductResearcherAgent(BaseAgent):
         "web_search",
         "read_file",
         "file_tree",
+        "read_blackboard",
+        "write_blackboard",
         "shopping_search",
         "shopping_compare",
         "shopping_reviews",
@@ -41,6 +43,14 @@ class ProductResearcherAgent(BaseAgent):
             "- `shopping_reviews` — Synthesize reviews from multiple sources\n"
             "- `shopping_constraints` — Filter products against user constraints\n"
             "Use these before or alongside web_search for structured data.\n"
+            "- `read_blackboard` — Read shared state (intent, constraints) set by shopping_advisor\n"
+            "- `write_blackboard` — Write collected product data for deal_analyst to consume\n"
+            "\n"
+            "## Blackboard Usage\n"
+            "At the start of a task, read `shopping_intent` and `shopping_constraints` from "
+            "the blackboard to align your searches with the advisor's parsed query. After "
+            "collecting data, write `shopping_top_products` and `shopping_price_comparisons` "
+            "so the deal analyst can evaluate them without re-fetching.\n"
             "\n"
             "## Your Workflow\n"
             "1. **Parse plan** — Extract product queries, target sources, and "

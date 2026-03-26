@@ -34,28 +34,52 @@ _lock_handle = None
 
 
 def _check_single_instance():
-    """Exit if another wrapper is already running. Uses OS-level file lock."""
+    """Exit if another wrapper is already running. Uses OS-level file lock.
+
+    On Windows, uses msvcrt.locking for a byte-range lock on the lock file.
+    The file is opened in 'r+' or 'w' mode (creating if needed), then a
+    non-blocking exclusive lock is attempted on the first 10 bytes.
+    The lock is held for the lifetime of the process (file handle kept open).
+    """
     global _lock_handle
     _LOCK_FILE.parent.mkdir(exist_ok=True)
 
     try:
         import msvcrt
-        # Open file for writing — this itself doesn't block
-        _lock_handle = open(_LOCK_FILE, "w")
-        # Try exclusive lock (non-blocking) — fails if another process holds it
-        msvcrt.locking(_lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
-        # Write our PID for informational purposes
+
+        # Open or create the lock file. Use 'a' to avoid truncating
+        # (which could interfere with reading the existing PID for errors).
+        # Then seek to 0 so the lock is at the start of the file.
+        if _LOCK_FILE.exists():
+            _lock_handle = open(_LOCK_FILE, "r+")
+        else:
+            _lock_handle = open(_LOCK_FILE, "w")
+        _lock_handle.seek(0)
+
+        # Try exclusive lock (non-blocking) on first 10 bytes.
+        # Using 10 bytes instead of 1 to be safe across Windows versions.
+        # Fails immediately if another process holds this lock.
+        try:
+            msvcrt.locking(_lock_handle.fileno(), msvcrt.LK_NBLCK, 10)
+        except (OSError, IOError):
+            # Another wrapper holds the lock — read its PID
+            try:
+                _lock_handle.seek(0)
+                existing_pid = _lock_handle.read().strip()
+            except Exception:
+                existing_pid = "unknown"
+            _lock_handle.close()
+            _lock_handle = None
+            print(f"ERROR: Another wrapper is already running (PID {existing_pid}).")
+            print("Kill it first or delete logs/wrapper.lock")
+            sys.exit(1)
+
+        # Lock acquired — write our PID
+        _lock_handle.seek(0)
+        _lock_handle.truncate()
         _lock_handle.write(str(os.getpid()))
         _lock_handle.flush()
-    except (OSError, IOError):
-        # Another wrapper holds the lock
-        try:
-            existing_pid = _LOCK_FILE.read_text().strip()
-        except Exception:
-            existing_pid = "unknown"
-        print(f"ERROR: Another wrapper is already running (PID {existing_pid}).")
-        print("Kill it first or delete logs/wrapper.lock")
-        sys.exit(1)
+
     except ImportError:
         # Non-Windows fallback: try fcntl
         try:
@@ -89,9 +113,16 @@ def _cleanup_lock():
     global _lock_handle
     if _lock_handle:
         try:
+            import msvcrt
+            _lock_handle.seek(0)
+            msvcrt.locking(_lock_handle.fileno(), msvcrt.LK_UNLOCK, 10)
+        except Exception:
+            pass
+        try:
             _lock_handle.close()
         except Exception:
             pass
+        _lock_handle = None
     try:
         _LOCK_FILE.unlink(missing_ok=True)
     except Exception:
@@ -155,7 +186,7 @@ class KutAIWrapper:
 
     # ── Subprocess Management ─────────────────────────────────────────────
 
-    async def start_kutai(self):
+    async def start_kutai(self, _from_poller: bool = False):
         """Launch the KutAI orchestrator as a subprocess."""
         if self.process and self.process.returncode is None:
             return
@@ -165,8 +196,18 @@ class KutAIWrapper:
         self.stderr_tail.clear()
         self._stop_requested = False
 
-        # Stop wrapper's Telegram poller before starting KutAI
-        await self._stop_telegram_poller()
+        # Stop wrapper's Telegram poller before starting KutAI.
+        # Skip if called from within the poller itself (it will exit after return).
+        if not _from_poller:
+            await self._stop_telegram_poller()
+        else:
+            # Clear the poller reference — the poller task is about to return
+            self._telegram_poller = None
+
+        # Brief pause to ensure any in-flight getUpdates long-poll request
+        # from the wrapper has fully completed before the orchestrator starts
+        # its own polling.  Without this, both pollers can race.
+        await asyncio.sleep(1)
 
         venv_python = self._find_python()
         _wlog(f"Starting orchestrator (python={venv_python})")
@@ -321,27 +362,23 @@ class KutAIWrapper:
             self._telegram_poller = None
 
     async def _telegram_poll_loop(self):
-        """Poll Telegram for commands while KutAI is down."""
+        """Poll Telegram for commands while KutAI is down.
+
+        CRITICAL: getUpdates(offset=N) is destructive — it confirms (deletes)
+        all updates with id < N on Telegram's server. To avoid stealing updates
+        meant for the orchestrator, we NEVER advance offset past non-wrapper
+        updates. We track processed wrapper command ids locally to skip
+        re-processing them on subsequent polls.
+        """
         import aiohttp
         base_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-        offset = 0
 
-        # Get current offset without flushing — don't consume pending updates
-        # that might be meant for the orchestrator
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{base_url}/getUpdates",
-                    params={"offset": 0, "limit": 1, "timeout": 0},
-                    timeout=aiohttp.ClientTimeout(total=5),
-                ) as resp:
-                    data = await resp.json()
-                    updates = data.get("result", [])
-                    if updates:
-                        # Start from the oldest pending update
-                        offset = updates[0]["update_id"]
-        except Exception:
-            pass
+        # Start with offset 0 — fetch whatever is pending.
+        # We will only advance offset to (wrapper_cmd_id + 1) when there are
+        # no non-wrapper updates with a LOWER id still pending.
+        offset = 0
+        handled_wrapper_ids: set[int] = set()  # wrapper cmds we already acted on
+        _wlog("Telegram poller started (non-destructive mode)")
 
         while True:
             try:
@@ -353,33 +390,56 @@ class KutAIWrapper:
                     ) as resp:
                         data = await resp.json()
 
-                for update in data.get("result", []):
+                updates = data.get("result", [])
+                if not updates:
+                    continue
+
+                # Classify each update
+                min_non_wrapper_id: int | None = None
+                max_wrapper_id: int | None = None
+
+                for update in updates:
+                    uid = update["update_id"]
                     msg = update.get("message", {})
                     text = msg.get("text", "")
                     chat_id = str(msg.get("chat", {}).get("id", ""))
 
-                    # Only consume updates that are wrapper commands
-                    # Leave everything else for the orchestrator to pick up
                     is_wrapper_cmd = (
                         chat_id == str(TELEGRAM_ADMIN_CHAT_ID)
                         and text.startswith(("/kutai_start", "/kutai_status"))
                     )
 
                     if is_wrapper_cmd:
-                        offset = update["update_id"] + 1
+                        if uid not in handled_wrapper_ids:
+                            handled_wrapper_ids.add(uid)
 
-                        if text.startswith("/kutai_start"):
-                            await self._send_telegram("🚀 Starting KutAI...")
-                            await self.start_kutai()
-                            return  # Exit poll loop — KutAI takes over
+                            if text.startswith("/kutai_start"):
+                                await self._send_telegram("🚀 Starting KutAI...")
+                                await self.start_kutai(_from_poller=True)
+                                return  # Exit poll loop — KutAI takes over
 
-                        elif text.startswith("/kutai_status"):
-                            await self._send_status()
+                            elif text.startswith("/kutai_status"):
+                                await self._send_status()
+
+                        if max_wrapper_id is None or uid > max_wrapper_id:
+                            max_wrapper_id = uid
                     else:
-                        # Skip non-wrapper updates — don't increment offset
-                        # so the orchestrator can process them
-                        offset = update["update_id"] + 1  # must advance to avoid infinite loop
-                        # but we don't act on them
+                        if min_non_wrapper_id is None or uid < min_non_wrapper_id:
+                            min_non_wrapper_id = uid
+
+                # Advance offset safely: only past updates that are ALL wrapper
+                # commands. If there are non-wrapper updates with lower ids,
+                # we cannot advance past them (would consume them).
+                if min_non_wrapper_id is not None:
+                    # There are non-wrapper updates — don't advance past them.
+                    # We can advance up to (but not past) the first non-wrapper update.
+                    offset = min_non_wrapper_id
+                    # Sleep to avoid busy-looping: when non-wrapper updates are
+                    # stuck in the queue, getUpdates returns immediately (no long-poll).
+                    await asyncio.sleep(5)
+                elif max_wrapper_id is not None:
+                    # All pending updates are wrapper commands — safe to consume
+                    offset = max_wrapper_id + 1
 
             except asyncio.CancelledError:
                 return

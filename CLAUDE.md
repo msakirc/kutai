@@ -41,7 +41,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 - `python-telegram-bot` library (v20+, async)
 - Command handlers registered in `_setup_handlers()`
 - Inline menus use callback queries handled in `handle_callback()`
-- **The wrapper also polls Telegram when KutAI is down** — be careful about update consumption conflicts
+- **The wrapper polls Telegram when KutAI is down** using non-destructive mode (never advances offset past non-wrapper updates, preserving them for the orchestrator)
 
 ### Common Pitfalls
 - Missing `import asyncio` in `base.py` — agents use asyncio.wait_for extensively

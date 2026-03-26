@@ -87,7 +87,7 @@ def send_ntfy(
             data=message.encode("utf-8"),
             headers=headers,
             auth=auth,
-            timeout=10,
+            timeout=3,
         )
         if resp.status_code == 401:
             _handler_error_logger.error(
@@ -154,7 +154,7 @@ class NtfyBatchHandler(logging.Handler):
 
     FLUSH_INTERVAL = 30       # seconds between automatic flushes
     MAX_BUFFER     = 20       # flush early if buffer hits this
-    RETRY_DELAY    = 5        # seconds before one retry on flush failure
+    RETRY_DELAY    = 2        # seconds before one retry on flush failure
 
     PRIORITY_FOR = {
         "error":   3,
@@ -210,19 +210,29 @@ class NtfyBatchHandler(logging.Handler):
     # ── flush logic ──
 
     def _flush(self):
+        # Drain buffer under lock (fast), then send outside lock so
+        # emit() on the asyncio thread never blocks on HTTP.
         with self._lock:
-            self._flush_locked()
+            if not self._buffer:
+                return
+            self._flush_count += 1
+            items = list(self._buffer)
+            self._buffer.clear()
+
+        self._send_batch(items)
 
     def _flush_locked(self):
-        """Must be called with self._lock held."""
+        """Flush while lock is already held (called from emit overflow)."""
         if not self._buffer:
             return
-
         self._flush_count += 1
         items = list(self._buffer)
         self._buffer.clear()
+        # Send on a background thread to avoid blocking the caller
+        threading.Thread(target=self._send_batch, args=(items,), daemon=True).start()
 
-        # Determine priority from highest severity
+    def _send_batch(self, items: list[tuple[int, str]]) -> None:
+        """Send a batch of log lines to ntfy. Safe to call without lock."""
         max_level = max(lvl for lvl, _ in items)
         if max_level >= logging.ERROR:
             priority = self.PRIORITY_FOR["error"]
@@ -248,7 +258,6 @@ class NtfyBatchHandler(logging.Handler):
                 "NtfyBatchHandler: flush failed (%s), retrying in %ds",
                 exc, self.RETRY_DELAY,
             )
-            # Retry once, then keep buffer for next cycle
             time.sleep(self.RETRY_DELAY)
             try:
                 cfg = _cfg()
@@ -260,12 +269,9 @@ class NtfyBatchHandler(logging.Handler):
                 )
             except Exception as exc2:
                 _handler_error_logger.warning(
-                    "NtfyBatchHandler: retry also failed (%s), keeping buffer",
-                    exc2,
+                    "NtfyBatchHandler: retry also failed (%s), dropping %d lines",
+                    exc2, len(items),
                 )
-                # Restore buffer so we don't lose messages
-                with self._lock:
-                    self._buffer = [(lvl, l) for lvl, l in items] + self._buffer
 
 
 # ─── Shopping Notification Helpers ────────────────────────────────────────────

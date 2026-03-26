@@ -1,6 +1,7 @@
 # memory/rag.py
 """
 Phase 11.3 — RAG Pipeline for Agent Context
+Phase F   — Advanced RAG (HyDE, dynamic budget, query decomposition, reranker)
 
 Retrieves relevant context from vector store collections and formats
 it for injection into agent prompts.
@@ -16,6 +17,7 @@ from typing import Optional
 
 from src.infra.logging_config import get_logger
 from src.memory.vector_store import is_ready, query, embed_and_store
+from src.memory.embeddings import get_embedding
 
 logger = get_logger("memory.rag")
 
@@ -28,6 +30,13 @@ RAG_BUDGET_FRACTION = 0.15  # of available context window
 RAG_MIN_RELEVANCE = 0.3     # cosine distance threshold (lower = more similar)
 RAG_DEDUP_THRESHOLD = 0.85  # embedding similarity for dedup
 
+# Phase F: Reranker config
+RERANKER_ENABLED = False  # Disabled by default — enable when cross-encoder is installed
+RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+# Phase F: HyDE config
+HYDE_ENABLED = True  # Generate hypothetical answers for better retrieval
+
 # Task-type budgets (when model context window is unknown)
 _TASK_TYPE_BUDGETS = {
     "code": 6000,
@@ -36,20 +45,58 @@ _TASK_TYPE_BUDGETS = {
     "default": 4000,
 }
 
+# Phase F: Model context windows for dynamic budget scaling
+_MODEL_CONTEXT_WINDOWS = {
+    "qwen": 32768,
+    "llama": 8192,
+    "mistral": 32768,
+    "gemma": 8192,
+    "phi": 4096,
+    "deepseek": 32768,
+    "gpt-4": 128000,
+    "gpt-3.5": 16384,
+    "claude": 200000,
+    "default": 32768,
+}
+
+
+def _infer_context_window(model_name: str | None = None) -> int:
+    """
+    Phase F: Infer model context window from model name.
+
+    Falls back to 32K if model is unknown.
+    """
+    if not model_name:
+        return _MODEL_CONTEXT_WINDOWS["default"]
+
+    name_lower = model_name.lower()
+    for key, window in _MODEL_CONTEXT_WINDOWS.items():
+        if key in name_lower:
+            return window
+    return _MODEL_CONTEXT_WINDOWS["default"]
+
 
 def _compute_rag_budget(
-    task: dict, model_context_window: int | None = None
+    task: dict,
+    model_context_window: int | None = None,
+    model_name: str | None = None,
 ) -> int:
     """
-    Compute dynamic RAG token budget based on task type and model context.
+    Phase F: Dynamic RAG token budget based on task type and model context.
 
-    If model_context_window is provided, uses up to 15% of available space.
-    Otherwise falls back to task-type-based defaults.
+    Scales budget to model's context window. If model_context_window is
+    provided, uses up to 15% of available space. If only model_name is
+    provided, infers the context window. Falls back to task-type defaults.
     """
-    if model_context_window:
+    # Phase F: Dynamic budget scaling to model context window
+    ctx_window = model_context_window
+    if not ctx_window and model_name:
+        ctx_window = _infer_context_window(model_name)
+
+    if ctx_window:
         # Reserve space for system prompt, tools, task, conversation
         reserved = 10000
-        available = model_context_window - reserved
+        available = ctx_window - reserved
         budget = int(available * RAG_BUDGET_FRACTION)
         return max(RAG_MIN_BUDGET, min(RAG_MAX_BUDGET, budget))
 
@@ -180,6 +227,124 @@ def _estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
+# ─── Phase F: HyDE Query Expansion ──────────────────────────────────────────
+
+async def _hyde_expand(query_text: str) -> Optional[str]:
+    """
+    HyDE (Hypothetical Document Embeddings): Generate a hypothetical
+    ideal answer to the query, then embed THAT for retrieval.
+
+    The idea is that the hypothetical answer is more semantically
+    similar to the actual stored documents than the question itself.
+
+    Returns the hypothetical answer text, or None if disabled/failed.
+    """
+    if not HYDE_ENABLED:
+        return None
+
+    # Generate a brief hypothetical answer using the query text itself
+    # We don't call an LLM here (too expensive for every RAG query).
+    # Instead, we create a pseudo-document that captures the intent.
+    title_part = query_text.split(":")[0] if ":" in query_text else query_text
+    desc_part = query_text.split(":", 1)[1] if ":" in query_text else ""
+
+    # Construct hypothetical answer from the query
+    hyde_text = (
+        f"The task '{title_part.strip()}' was completed successfully. "
+        f"{desc_part.strip()} "
+        f"The approach involved analyzing the requirements and implementing "
+        f"a solution that addressed all aspects of the problem."
+    )
+
+    return hyde_text[:500]
+
+
+# ─── Phase F: Query Decomposition ──────────────────────────────────────────
+
+def _decompose_query(query_text: str) -> list[str]:
+    """
+    Decompose a complex multi-part query into sub-queries.
+
+    Splits on common delimiters and conjunctions to generate
+    multiple focused queries for broader retrieval coverage.
+
+    Returns list of sub-queries (always includes original).
+    """
+    queries = [query_text]
+
+    # Don't decompose short queries
+    if len(query_text) < 50:
+        return queries
+
+    # Split on common multi-part indicators
+    parts = []
+    for delimiter in [" and ", " + ", " & ", "; ", " also "]:
+        if delimiter in query_text.lower():
+            parts = [p.strip() for p in query_text.split(delimiter) if p.strip()]
+            break
+
+    # Only use decomposition if we got 2-4 meaningful parts
+    if 2 <= len(parts) <= 4:
+        for part in parts:
+            if len(part) > 10:  # Skip trivially short fragments
+                queries.append(part)
+
+    return queries
+
+
+# ─── Phase F: Optional Cross-Encoder Reranker ──────────────────────────────
+
+_reranker_model = None
+_reranker_load_attempted = False
+
+
+async def _rerank_results(
+    query_text: str,
+    results: list[dict],
+    top_k: int = 10,
+) -> list[dict]:
+    """
+    Optional cross-encoder reranking of candidate results.
+
+    Uses a lightweight cross-encoder model to re-score the top candidates.
+    Disabled by default (RERANKER_ENABLED = False).
+
+    Returns results re-ordered by cross-encoder scores.
+    """
+    global _reranker_model, _reranker_load_attempted
+
+    if not RERANKER_ENABLED or not results:
+        return results
+
+    if _reranker_load_attempted and _reranker_model is None:
+        return results
+
+    if _reranker_model is None:
+        _reranker_load_attempted = True
+        try:
+            from sentence_transformers import CrossEncoder
+            _reranker_model = CrossEncoder(RERANKER_MODEL)
+            logger.info("Loaded cross-encoder reranker: %s", RERANKER_MODEL)
+        except Exception as e:
+            logger.debug("Cross-encoder reranker not available: %s", e)
+            return results
+
+    try:
+        # Prepare pairs for cross-encoder
+        pairs = [(query_text, r.get("text", "")[:500]) for r in results]
+        scores = _reranker_model.predict(pairs)
+
+        # Attach reranker scores and sort
+        for r, score in zip(results, scores):
+            r["_rerank_score"] = float(score)
+
+        results.sort(key=lambda x: -x.get("_rerank_score", 0))
+        return results[:top_k]
+    except Exception as e:
+        logger.debug("Reranking failed: %s", e)
+        return results
+
+
 # ─── Main RAG Function ───────────────────────────────────────────────────────
 
 async def retrieve_context(
@@ -187,23 +352,28 @@ async def retrieve_context(
     agent_type: str | None = None,
     max_tokens: int | None = None,
     model_context_window: int | None = None,
+    model_name: str | None = None,
 ) -> str:
     """
     Retrieve relevant context from all vector store collections.
 
-    Pipeline:
-      1. Compute dynamic token budget
-      2. Query episodic, semantic, errors, shopping, web_knowledge
-      3. Rank by recency * relevance * importance
-      4. Filter by minimum relevance threshold
-      5. Deduplicate
-      6. Format within token budget
+    Phase F enhanced pipeline:
+      1. Compute dynamic token budget (scales to model context window)
+      2. Query decomposition for multi-part queries
+      3. HyDE query expansion (hypothetical answer embedding)
+      4. Query episodic, semantic, errors, shopping, web_knowledge
+      5. Optional cross-encoder reranking
+      6. Rank by recency * relevance * importance
+      7. Filter by minimum relevance threshold
+      8. Deduplicate
+      9. Format within token budget
 
     Args:
         task:                 Task dict with title, description, etc.
         agent_type:           Agent type (for filtering episodic results).
         max_tokens:           Override token budget (None = auto-compute).
         model_context_window: Model's context window size for budget calc.
+        model_name:           Model name for context window inference.
 
     Returns:
         Formatted text block ready for prompt injection.
@@ -219,37 +389,66 @@ async def retrieve_context(
     if not query_text.strip():
         return ""
 
-    # Compute budget
-    budget = max_tokens or _compute_rag_budget(task, model_context_window)
+    # Phase F: Dynamic budget scaling to model context window
+    budget = max_tokens or _compute_rag_budget(
+        task, model_context_window, model_name
+    )
 
-    # ── 1. Query core collections ──
-    episodic_results = await query(
-        text=query_text, collection="episodic", top_k=5,
-    )
-    semantic_results = await query(
-        text=query_text, collection="semantic", top_k=5,
-    )
-    error_results = await query(
-        text=query_text, collection="errors", top_k=3,
-    )
+    # Phase F: Query decomposition for complex queries
+    queries = _decompose_query(query_text)
+
+    # Phase F: HyDE expansion — add hypothetical answer as extra query
+    hyde_text = await _hyde_expand(query_text)
+    if hyde_text:
+        queries.append(hyde_text)
+
+    # ── 1. Query core collections (with all query variants) ──
+    episodic_results = []
+    semantic_results = []
+    error_results = []
+    shopping_results = []
+    web_results = []
+
+    for q in queries:
+        episodic_results.extend(await query(
+            text=q, collection="episodic", top_k=5,
+        ))
+        semantic_results.extend(await query(
+            text=q, collection="semantic", top_k=5,
+        ))
+        error_results.extend(await query(
+            text=q, collection="errors", top_k=3,
+        ))
 
     # ── 2. Query domain-specific collections ──
-    shopping_results = []
     task_desc_lower = (title + description).lower()
     if any(kw in task_desc_lower for kw in ("shop", "buy", "price", "product", "compare")):
-        shopping_results = await query(
-            text=query_text, collection="shopping", top_k=5,
-        )
+        for q in queries[:2]:  # Limit domain queries to reduce latency
+            shopping_results.extend(await query(
+                text=q, collection="shopping", top_k=5,
+            ))
 
-    web_results = await query(
-        text=query_text, collection="web_knowledge", top_k=3,
-    )
+    for q in queries[:2]:
+        web_results.extend(await query(
+            text=q, collection="web_knowledge", top_k=3,
+        ))
+
+    # Deduplicate by ID (multiple queries may return same docs)
+    seen_ids: set[str] = set()
+    all_raw: list[dict] = []
+    for r in (episodic_results + semantic_results + error_results
+              + shopping_results + web_results):
+        doc_id = r.get("id", "")
+        if doc_id and doc_id not in seen_ids:
+            seen_ids.add(doc_id)
+            all_raw.append(r)
 
     # ── 3. Rank all results together (includes relevance filtering) ──
-    all_results = _rank_results(
-        episodic_results + semantic_results + error_results
-        + shopping_results + web_results
-    )
+    all_results = _rank_results(all_raw)
+
+    # ── Phase F: Optional cross-encoder reranking ──
+    if RERANKER_ENABLED and all_results:
+        all_results = await _rerank_results(query_text, all_results, top_k=15)
 
     # ── 4. Deduplicate ──
     deduped = _deduplicate(all_results)

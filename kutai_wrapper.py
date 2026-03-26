@@ -326,18 +326,20 @@ class KutAIWrapper:
         base_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
         offset = 0
 
-        # Flush pending updates first
+        # Get current offset without flushing — don't consume pending updates
+        # that might be meant for the orchestrator
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"{base_url}/getUpdates",
-                    params={"offset": -1, "timeout": 0},
+                    params={"offset": 0, "limit": 1, "timeout": 0},
                     timeout=aiohttp.ClientTimeout(total=5),
                 ) as resp:
                     data = await resp.json()
                     updates = data.get("result", [])
                     if updates:
-                        offset = updates[-1]["update_id"] + 1
+                        # Start from the oldest pending update
+                        offset = updates[0]["update_id"]
         except Exception:
             pass
 
@@ -352,21 +354,32 @@ class KutAIWrapper:
                         data = await resp.json()
 
                 for update in data.get("result", []):
-                    offset = update["update_id"] + 1
                     msg = update.get("message", {})
                     text = msg.get("text", "")
                     chat_id = str(msg.get("chat", {}).get("id", ""))
 
-                    if chat_id != str(TELEGRAM_ADMIN_CHAT_ID):
-                        continue
+                    # Only consume updates that are wrapper commands
+                    # Leave everything else for the orchestrator to pick up
+                    is_wrapper_cmd = (
+                        chat_id == str(TELEGRAM_ADMIN_CHAT_ID)
+                        and text.startswith(("/kutai_start", "/kutai_status"))
+                    )
 
-                    if text.startswith("/kutai_start") or text.startswith("/start"):
-                        await self._send_telegram("🚀 Starting KutAI...")
-                        await self.start_kutai()
-                        return  # Exit poll loop — KutAI takes over
+                    if is_wrapper_cmd:
+                        offset = update["update_id"] + 1
 
-                    elif text.startswith("/kutai_status") or text.startswith("/status"):
-                        await self._send_status()
+                        if text.startswith("/kutai_start"):
+                            await self._send_telegram("🚀 Starting KutAI...")
+                            await self.start_kutai()
+                            return  # Exit poll loop — KutAI takes over
+
+                        elif text.startswith("/kutai_status"):
+                            await self._send_status()
+                    else:
+                        # Skip non-wrapper updates — don't increment offset
+                        # so the orchestrator can process them
+                        offset = update["update_id"] + 1  # must advance to avoid infinite loop
+                        # but we don't act on them
 
             except asyncio.CancelledError:
                 return
@@ -436,8 +449,9 @@ class KutAIWrapper:
 
                 if exit_code == RESTART_EXIT_CODE:
                     # Restart requested via /kutai_restart
+                    # Do NOT start Telegram poller during restart — it steals updates
                     await self._send_telegram("♻️ *KutAI Restarting...*")
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)
                     await self.start_kutai()
                     if self.running:
                         await self._notify_started()

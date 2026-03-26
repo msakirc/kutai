@@ -1532,6 +1532,17 @@ class BaseAgent:
                             _to_remove = [k for k in completed_tool_ops if k.startswith("rc:")]
                             for k in _to_remove:
                                 del completed_tool_ops[k]
+
+                            # Phase E: Post-tool reindexing for file-modifying tools
+                            if tool_name in ("write_file", "edit_file", "patch_file", "apply_diff"):
+                                _target_file = tool_args.get("filepath", tool_args.get("path", ""))
+                                if _target_file:
+                                    try:
+                                        from ..parsing.code_embeddings import post_tool_reindex
+                                        _repo = context.get("repo_path", "") if isinstance(context, dict) else ""
+                                        await post_tool_reindex(_target_file, root_path=_repo)
+                                    except Exception:
+                                        pass
                         elif tool_name in CACHEABLE_READ_TOOLS:
                             completed_tool_ops[f"rc:{idem_key}"] = tool_output
 

@@ -1,0 +1,67 @@
+{
+  "plan_id": "quick_search",
+  "version": "1.0",
+  "metadata": {
+    "description": "Lightweight quick shopping search pipeline. Designed for fast product lookups that can be answered in under 30 seconds. Runs a single web search via Perplexica, summarizes results with prices using an LLM, and returns immediately. If the results are insufficient or the query is complex, escalates to the full shopping workflow.",
+    "agents_required": [
+      "researcher"
+    ],
+    "performance_target": {
+      "max_duration_seconds": 30,
+      "escalation_trigger": "insufficient_results or complex_query_detected"
+    },
+    "escalation_target": "shopping"
+  },
+  "phases": [
+    {
+      "phase_id": "phase_0",
+      "title": "Parse Query",
+      "steps": [
+        {
+          "step_id": "0.1",
+          "title": "Quick Intent Classification",
+          "agent": "researcher",
+          "input_artifacts": ["user_query"],
+          "output_artifacts": ["quick_intent"],
+          "instructions": "Rapidly classify the user query. Determine if this is a simple lookup (specific product price check, basic product info) that can be handled by quick_search, or a complex request (comparison, multi-product, vague need) that should escalate to the full shopping workflow. Extract the core search terms. If the query involves multiple products, budget optimization, or subjective criteria like 'best', flag for potential escalation after search."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_1",
+      "title": "Web Search",
+      "steps": [
+        {
+          "step_id": "1.1",
+          "title": "Execute Perplexica Search",
+          "agent": "researcher",
+          "input_artifacts": ["quick_intent"],
+          "output_artifacts": ["search_results"],
+          "instructions": "Execute a single focused web search via Perplexica using the extracted search terms. Use the 'shopping' or 'product' focus mode if available. Capture the top 5-10 results with titles, URLs, snippets, and any structured price data. Time-box this step to 10 seconds maximum."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_2",
+      "title": "Summarize with Prices",
+      "steps": [
+        {
+          "step_id": "2.1",
+          "title": "LLM Summarize Results",
+          "agent": "researcher",
+          "input_artifacts": ["search_results", "quick_intent"],
+          "output_artifacts": ["quick_summary"],
+          "instructions": "Summarize the search results into a concise shopping response. Extract and highlight: product names, prices (with currency), retailer names, availability status, and any notable deals. Format as a brief, scannable answer. If price data is found from at least one source, include it. If the results are too thin (no prices found, irrelevant results, or ambiguous products), set escalation_needed=true with a reason."
+        },
+        {
+          "step_id": "2.2",
+          "title": "Evaluate Sufficiency",
+          "agent": "researcher",
+          "input_artifacts": ["quick_summary", "quick_intent"],
+          "output_artifacts": ["final_response"],
+          "instructions": "Check if the quick_summary adequately answers the user's query. Criteria: at least 1 product with a price, relevance to the query, and no major ambiguity. If sufficient, deliver the quick_summary as the final_response. If insufficient (escalation_needed=true), return a brief interim message to the user ('Let me do a deeper search...') and trigger escalation to the full shopping workflow, passing along the quick_intent and any partial results as context."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,139 @@
+{
+  "plan_id": "combo_research",
+  "version": "1.0",
+  "metadata": {
+    "description": "Multi-component shopping research workflow for queries that involve assembling a set of products together (e.g., 'build me a gaming PC under $1500', 'outfit a home office', 'camping gear for a family of 4'). Decomposes the need into components, searches each independently, then builds and evaluates combinations with total-cost awareness and cross-component compatibility checking.",
+    "agents_required": [
+      "shopping_advisor",
+      "product_researcher",
+      "deal_analyst"
+    ],
+    "quality_gates": {
+      "min_combos_to_evaluate": 3,
+      "require_total_price": true,
+      "compatibility_check_required": true
+    }
+  },
+  "phases": [
+    {
+      "phase_id": "phase_0",
+      "title": "Analyze Need",
+      "steps": [
+        {
+          "step_id": "0.1",
+          "title": "Understand Composite Requirement",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["user_query"],
+          "output_artifacts": ["composite_intent"],
+          "instructions": "Analyze the user's query to understand the overall goal that requires multiple products. Identify: the overarching objective (e.g., 'set up a home studio'), any total budget constraint, priority ordering of components (must-have vs. nice-to-have), and any cross-component requirements (e.g., 'all products should be from the same brand' or 'components must be compatible'). Determine the component categories needed."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_1",
+      "title": "Decompose Components",
+      "steps": [
+        {
+          "step_id": "1.1",
+          "title": "Break Down into Component List",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["composite_intent"],
+          "output_artifacts": ["component_list"],
+          "instructions": "Decompose the composite need into a list of individual product components. For each component, specify: component_id, category name, required specifications, optional specifications, estimated budget allocation (percentage of total budget), priority level (critical/important/optional), and any compatibility constraints with other components. Sort by priority so critical components are researched first."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_2",
+      "title": "Load Constraints",
+      "steps": [
+        {
+          "step_id": "2.1",
+          "title": "Build Constraint Matrix",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["composite_intent", "component_list"],
+          "output_artifacts": ["constraint_matrix"],
+          "instructions": "Build a constraint matrix that captures: total budget ceiling, per-component budget bounds (min/max), inter-component compatibility rules (e.g., CPU socket must match motherboard), brand consistency preferences, and any temporal constraints (e.g., all items must be available within the same timeframe). This matrix will be used to validate combinations later."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_3",
+      "title": "Search Per Component",
+      "steps": [
+        {
+          "step_id": "3.1",
+          "title": "Research Individual Components",
+          "agent": "product_researcher",
+          "input_artifacts": ["component_list", "constraint_matrix"],
+          "output_artifacts": ["component_search_results"],
+          "instructions": "For each component in the component_list, run targeted product searches. Use component-specific queries that include required specifications and budget range. For each component, gather 3-5 product options with prices, ratings, and key specs. Tag each result with its component_id. Prioritize components by their priority level: research critical components first and in more depth. Run searches in parallel across components where possible."
+        },
+        {
+          "step_id": "3.2",
+          "title": "Validate Component Results",
+          "agent": "product_researcher",
+          "input_artifacts": ["component_search_results", "component_list"],
+          "output_artifacts": ["validated_components"],
+          "instructions": "For each component, verify that at least 2 viable product options were found within budget. If any critical component has zero viable options, flag it and suggest constraint adjustments (higher budget allocation, alternative spec requirements). Produce a validated_components artifact with the vetted options per component."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_4",
+      "title": "Build Combinations",
+      "steps": [
+        {
+          "step_id": "4.1",
+          "title": "Generate Product Combinations",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["validated_components", "constraint_matrix"],
+          "output_artifacts": ["combo_candidates"],
+          "instructions": "Generate viable product combinations by selecting one product per component. Use a smart combinatorial approach (not brute force): start with the highest-rated option per component, then create budget-optimized and value-optimized variants. Apply the constraint_matrix to prune invalid combinations (incompatible components, over-budget totals). Aim for 5-10 candidate combos. Each combo must include a total price."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_5",
+      "title": "Price Combinations",
+      "steps": [
+        {
+          "step_id": "5.1",
+          "title": "Calculate Total Costs",
+          "agent": "deal_analyst",
+          "input_artifacts": ["combo_candidates"],
+          "output_artifacts": ["priced_combos"],
+          "instructions": "For each combination, calculate the precise total cost including: per-item prices from the best available retailer, estimated shipping per item, any bundle discounts or multi-item deals available, and estimated tax. Check if buying multiple items from the same retailer yields free shipping thresholds or additional discounts. Rank combos by total cost and by value-per-dollar."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_6",
+      "title": "Evaluate Combinations",
+      "steps": [
+        {
+          "step_id": "6.1",
+          "title": "Score and Rank Combos",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["priced_combos", "composite_intent", "constraint_matrix"],
+          "output_artifacts": ["evaluated_combos"],
+          "instructions": "Score each combination on multiple dimensions: total cost vs. budget (0-10), overall quality (average review scores, 0-10), compatibility confidence (0-10), brand coherence (0-5), and delivery convenience (0-5). Compute a weighted overall score. Quality gate: at least 3 combos must be evaluable. Rank by overall score and identify the standout combos in each dimension (cheapest, highest quality, best balance)."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_7",
+      "title": "Present Tiered Results",
+      "steps": [
+        {
+          "step_id": "7.1",
+          "title": "Build Tiered Presentation",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["evaluated_combos", "composite_intent"],
+          "output_artifacts": ["combo_response"],
+          "instructions": "Present the results in three tiers: Budget Build (lowest total cost meeting all critical requirements), Recommended Build (best overall score), and Premium Build (highest quality components). For each tier, show: a summary row with total price, a per-component breakdown table (product name, price, key spec, rating), compatibility notes, and where to buy. Highlight any components that differ between tiers and explain the trade-offs. Include a 'swap suggestions' section showing individual component upgrades/downgrades the user could make to customize any tier."
+        }
+      ]
+    }
+  ]
+}

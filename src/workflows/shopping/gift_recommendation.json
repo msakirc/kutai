@@ -1,0 +1,117 @@
+{
+  "plan_id": "gift_recommendation",
+  "version": "1.0",
+  "metadata": {
+    "description": "Gift recommendation workflow that guides the user through finding an appropriate gift. Starts with understanding the recipient and budget, generates relevant gift categories, searches for specific products, applies gift-specific criteria (uniqueness, wow factor, personalization potential), and presents curated options.",
+    "agents_required": [
+      "shopping_clarifier",
+      "shopping_advisor",
+      "product_researcher"
+    ],
+    "gift_criteria": {
+      "scoring_dimensions": [
+        "relevance_to_recipient",
+        "uniqueness",
+        "wow_factor",
+        "practicality",
+        "personalization_potential",
+        "presentation_quality"
+      ],
+      "safety_checks": ["age_appropriate", "allergen_free", "culturally_sensitive"]
+    }
+  },
+  "phases": [
+    {
+      "phase_id": "phase_0",
+      "title": "Clarify Recipient",
+      "steps": [
+        {
+          "step_id": "0.1",
+          "title": "Gather Recipient Profile",
+          "agent": "shopping_clarifier",
+          "input_artifacts": ["user_query"],
+          "output_artifacts": ["recipient_profile"],
+          "instructions": "Extract or ask for key information about the gift recipient: relationship to the user, age or age range, gender (if relevant to gift selection), known interests and hobbies, any items they've mentioned wanting, lifestyle context (e.g., student, new parent, remote worker), and the occasion (birthday, holiday, thank you, etc.). Ask conversationally and don't overwhelm with questions. If the user provides 'gift for my dad who likes fishing', extract what you can and ask only essential follow-ups like age range and occasion."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_1",
+      "title": "Clarify Budget",
+      "steps": [
+        {
+          "step_id": "1.1",
+          "title": "Establish Budget and Constraints",
+          "agent": "shopping_clarifier",
+          "input_artifacts": ["recipient_profile", "user_query"],
+          "output_artifacts": ["gift_constraints"],
+          "instructions": "Determine the budget range for the gift. If not explicitly stated, ask directly but also offer common ranges to make it easy (e.g., 'Are you thinking under $25, $25-50, $50-100, or $100+?'). Also capture: shipping deadline (when does the gift need to arrive?), format preference (physical item, experience, subscription, digital), whether wrapping/presentation matters, and any items to explicitly avoid (e.g., 'he already has enough ties'). Combine with recipient_profile into a unified gift_constraints artifact."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_2",
+      "title": "Generate Gift Categories",
+      "steps": [
+        {
+          "step_id": "2.1",
+          "title": "Brainstorm Category Ideas",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["recipient_profile", "gift_constraints"],
+          "output_artifacts": ["gift_categories"],
+          "instructions": "Generate 5-8 diverse gift category ideas tailored to the recipient profile and constraints. Go beyond the obvious: if the recipient likes cooking, don't just suggest 'kitchen gadget' -- also consider 'cooking class experience', 'artisan ingredient subscription', 'cookbook by a chef they follow'. For each category, provide: category name, why it fits this recipient, estimated price range within the category, and a novelty score (how likely the recipient already owns something similar). Rank by a combination of relevance and novelty."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_3",
+      "title": "Search Products",
+      "steps": [
+        {
+          "step_id": "3.1",
+          "title": "Find Products per Category",
+          "agent": "product_researcher",
+          "input_artifacts": ["gift_categories", "gift_constraints"],
+          "output_artifacts": ["gift_product_results"],
+          "instructions": "For each of the top 5 gift categories, search for 2-4 specific product options within the budget range. Prioritize products that: are well-reviewed (4+ stars), are available for delivery within the shipping deadline, have good gift presentation (nice packaging, gift wrapping available), and are from reputable sellers. For experience-based gifts, search for voucher or booking options. Capture: product name, price, rating, image URL, buy link, delivery estimate, and whether gift wrapping is available."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_4",
+      "title": "Apply Gift Criteria",
+      "steps": [
+        {
+          "step_id": "4.1",
+          "title": "Score on Gift Dimensions",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["gift_product_results", "recipient_profile", "gift_constraints"],
+          "output_artifacts": ["scored_gifts"],
+          "instructions": "Score each product on the gift-specific dimensions: relevance_to_recipient (how well it matches their interests, 0-10), uniqueness (how unlikely they already own it, 0-10), wow_factor (will it generate excitement when opened, 0-10), practicality (will they actually use it, 0-10), personalization_potential (can it be engraved, monogrammed, or customized, 0-5), and presentation_quality (does it look like a great gift, 0-5). Also run safety checks: age-appropriateness, allergen-free if applicable, and cultural sensitivity. Eliminate any product that fails a safety check."
+        },
+        {
+          "step_id": "4.2",
+          "title": "Rank and Filter Top Picks",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["scored_gifts"],
+          "output_artifacts": ["top_gift_picks"],
+          "instructions": "Rank scored gifts by overall weighted score. Select the top 5-8 gifts ensuring diversity across categories (don't present 5 items from the same category). If any category produced no viable gifts, drop it. If a highly-scored gift is close to the budget limit, include a note about it. Ensure the final selection includes at least one 'safe' option (practical, high relevance) and at least one 'surprise' option (high wow factor, high uniqueness)."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_5",
+      "title": "Present Recommendations",
+      "steps": [
+        {
+          "step_id": "5.1",
+          "title": "Deliver Gift Suggestions",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["top_gift_picks", "recipient_profile", "gift_constraints"],
+          "output_artifacts": ["gift_response"],
+          "instructions": "Present the gift recommendations in a warm, helpful tone appropriate for gift-giving context. Lead with the top recommendation and a brief reason why it's perfect for the recipient. Then list the remaining picks organized by vibe: 'Thoughtful & Personal', 'Fun & Surprising', 'Practical & Useful'. For each gift show: name, price, one-line reason it works, where to buy, and delivery estimate. Close with: a personalization tip (e.g., 'You could pair this with a handwritten note about...'), an offer to explore any category deeper, and a reminder of the shipping deadline if relevant."
+        }
+      ]
+    }
+  ]
+}

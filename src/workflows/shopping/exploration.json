@@ -1,0 +1,121 @@
+{
+  "plan_id": "exploration",
+  "version": "1.0",
+  "metadata": {
+    "description": "Exploration workflow for users who don't know what they need. Helps the user articulate their goal, maps out the product landscape relevant to that goal, prioritizes areas to explore, searches the highest-priority areas, and presents a phased shopping plan the user can act on incrementally.",
+    "agents_required": [
+      "shopping_clarifier",
+      "shopping_advisor",
+      "product_researcher"
+    ],
+    "design_principles": {
+      "no_overwhelm": "Never present more than 5 options at a time",
+      "progressive_disclosure": "Start broad, narrow based on user interest signals",
+      "decision_fatigue_aware": "Provide clear recommendations, not just lists"
+    }
+  },
+  "phases": [
+    {
+      "phase_id": "phase_0",
+      "title": "Understand Goal",
+      "steps": [
+        {
+          "step_id": "0.1",
+          "title": "Discover Underlying Need",
+          "agent": "shopping_clarifier",
+          "input_artifacts": ["user_query"],
+          "output_artifacts": ["goal_understanding"],
+          "instructions": "The user has expressed a vague or broad shopping need (e.g., 'I want to get into photography', 'I need to set up a home office', 'I want to eat healthier'). Through conversational exploration, uncover: the underlying goal or problem they're trying to solve, their current situation (what they have now, what's not working), their experience level with this domain (beginner/intermediate/expert), time horizon (need it now vs. planning ahead), and any hard constraints (budget ceiling, space limitations, physical requirements). Use open-ended questions and reflect back understanding to confirm. Don't ask more than 2-3 questions per turn."
+        },
+        {
+          "step_id": "0.2",
+          "title": "Assess Domain Knowledge",
+          "agent": "shopping_clarifier",
+          "input_artifacts": ["goal_understanding"],
+          "output_artifacts": ["knowledge_assessment"],
+          "instructions": "Based on the conversation so far, assess the user's familiarity with the product domain. Determine: are they a complete beginner who needs education alongside recommendations? Do they have some knowledge but need help navigating options? Are they experienced but overwhelmed by choices? This assessment will calibrate the level of explanation in later phases. Also identify any misconceptions the user may have about the domain that should be gently corrected."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_1",
+      "title": "Generate Shopping Map",
+      "steps": [
+        {
+          "step_id": "1.1",
+          "title": "Research the Product Landscape",
+          "agent": "product_researcher",
+          "input_artifacts": ["goal_understanding", "knowledge_assessment"],
+          "output_artifacts": ["landscape_research"],
+          "instructions": "Research the product landscape for the user's goal area. Identify: the main product categories involved, how they relate to each other, which are essential vs. optional, typical budget ranges per category, and common beginner mistakes or unnecessary purchases. For example, if the goal is 'get into photography', map out: camera body, lenses, memory cards, editing software, tripod, bag, lighting, etc. Search for 'beginner guide to X' and 'essential X gear' content to inform the map."
+        },
+        {
+          "step_id": "1.2",
+          "title": "Build the Shopping Map",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["landscape_research", "goal_understanding"],
+          "output_artifacts": ["shopping_map"],
+          "instructions": "Organize the landscape research into a structured shopping map. The map should contain: a list of product categories organized into tiers (Essential / Important / Nice-to-Have), dependency relationships between categories (e.g., 'you need a camera body before lenses make sense'), estimated budget per category, a recommended acquisition order, and common bundles or starter kits that combine essentials. The map should feel like a knowledgeable friend's guide, not a store catalog."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_2",
+      "title": "Prioritize Exploration",
+      "steps": [
+        {
+          "step_id": "2.1",
+          "title": "Identify Starting Point",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["shopping_map", "goal_understanding", "knowledge_assessment"],
+          "output_artifacts": ["exploration_priority"],
+          "instructions": "Determine where the user should start their shopping journey. Consider: which essential items they already own (from goal_understanding), which purchase has the highest impact on achieving their goal, dependency ordering (buy the foundation first), and budget allocation (don't blow the entire budget on item #1). Produce an ordered exploration priority list with the top 3 categories to explore first, along with a brief rationale for each. Present this to the user and let them confirm or adjust the priority order."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_3",
+      "title": "Search Priority Items",
+      "steps": [
+        {
+          "step_id": "3.1",
+          "title": "Research Top Priority Category",
+          "agent": "product_researcher",
+          "input_artifacts": ["exploration_priority", "goal_understanding"],
+          "output_artifacts": ["priority_search_results"],
+          "instructions": "Research the #1 priority category in depth. Search for: best products for beginners in this category (if user is a beginner), products within the allocated budget range, recent reviews and buying guides, and any current deals. Calibrate the search to the user's experience level (don't show pro-level gear to a beginner). Gather 5-8 product options spanning the budget range."
+        },
+        {
+          "step_id": "3.2",
+          "title": "Curate Recommendations",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["priority_search_results", "knowledge_assessment", "goal_understanding"],
+          "output_artifacts": ["curated_recommendations"],
+          "instructions": "From the search results, curate 3-5 recommendations calibrated to the user's level. For beginners, emphasize ease of use and value; for intermediate users, emphasize upgrade potential and features. For each recommendation, include: product name, price, why it's good for their level, one key advantage, one trade-off, and a buy link. Also include a brief educational note relevant to the category (e.g., 'When choosing a camera, sensor size matters more than megapixels because...'). Do not exceed 5 options to avoid decision fatigue."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_4",
+      "title": "Present Phased Plan",
+      "steps": [
+        {
+          "step_id": "4.1",
+          "title": "Deliver Phased Shopping Plan",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["shopping_map", "curated_recommendations", "exploration_priority", "goal_understanding"],
+          "output_artifacts": ["exploration_response"],
+          "instructions": "Present the user with a complete but non-overwhelming phased shopping plan. Structure as: Phase 1 (Now) -- the curated recommendations for the top priority category with a clear 'If I had to pick one' recommendation. Phase 2 (Next) -- brief preview of the next 2 priority categories with approximate budget needed, to be explored once Phase 1 is decided. Phase 3 (Later) -- summary of remaining nice-to-have categories they can explore down the road. Include a total estimated budget across all phases. Close with an invitation to dive deeper into any phase or category, and reassurance that they don't need to buy everything at once."
+        },
+        {
+          "step_id": "4.2",
+          "title": "Handle Navigation",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["exploration_response", "shopping_map"],
+          "output_artifacts": ["navigation_response"],
+          "instructions": "If the user wants to explore a different category, adjust the exploration order and loop back to phase_3 with the new priority. If the user wants to go deeper on a specific product, escalate that product to the full shopping workflow for detailed research. If the user wants to see the full map, present the shopping_map in a readable format. Track which categories have been explored and which remain, updating the phased plan as the user makes decisions."
+        }
+      ]
+    }
+  ]
+}

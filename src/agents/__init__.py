@@ -15,6 +15,10 @@ from .summarizer import SummarizerAgent
 from .assistant import AssistantAgent
 from .executor import ExecutorAgent
 from .error_recovery import ErrorRecoveryAgent
+from .shopping_advisor import ShoppingAdvisorAgent
+from .product_researcher import ProductResearcherAgent
+from .deal_analyst import DealAnalystAgent
+from .shopping_clarifier import ShoppingClarifierAgent
 
 AGENT_REGISTRY = {
     "planner": PlannerAgent(),
@@ -32,6 +36,10 @@ AGENT_REGISTRY = {
     "assistant": AssistantAgent(),
     "executor": ExecutorAgent(),
     "error_recovery": ErrorRecoveryAgent(),
+    "shopping_advisor": ShoppingAdvisorAgent(),
+    "product_researcher": ProductResearcherAgent(),
+    "deal_analyst": DealAnalystAgent(),
+    "shopping_clarifier": ShoppingClarifierAgent(),
 }
 
 

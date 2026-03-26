@@ -1,0 +1,113 @@
+{
+  "plan_id": "price_watch",
+  "version": "1.0",
+  "metadata": {
+    "description": "Price monitoring workflow for tracking a specific product's price over time and notifying the user when a target price is reached or a significant drop occurs. Validates the product identity, stores watch parameters, schedules periodic checks, compares against thresholds, and sends notifications.",
+    "agents_required": [
+      "product_researcher",
+      "shopping_advisor"
+    ],
+    "scheduling": {
+      "default_check_interval_hours": 12,
+      "min_check_interval_hours": 6,
+      "max_watch_duration_days": 90,
+      "notification_cooldown_hours": 24
+    }
+  },
+  "phases": [
+    {
+      "phase_id": "phase_0",
+      "title": "Validate Product",
+      "steps": [
+        {
+          "step_id": "0.1",
+          "title": "Identify and Confirm Product",
+          "agent": "product_researcher",
+          "input_artifacts": ["user_query"],
+          "output_artifacts": ["product_identity"],
+          "instructions": "Resolve the user's query to a specific, unambiguous product. Search for the product to confirm: exact product name, brand, model number or SKU, current price(s), product URL(s) at major retailers. If the query is ambiguous (e.g., 'AirPods' could mean several models), present the options to the user and ask them to confirm which specific product to watch. The product_identity must include at least one trackable URL or a unique identifier that enables future price lookups."
+        },
+        {
+          "step_id": "0.2",
+          "title": "Establish Price Baseline",
+          "agent": "product_researcher",
+          "input_artifacts": ["product_identity"],
+          "output_artifacts": ["price_baseline"],
+          "instructions": "Record the current price at all found retailers as the baseline. If historical price data is available (e.g., from price tracking sites), include: all-time low, average price over the last 90 days, and current price relative to the average. Use this to help the user set a realistic target price. If the product is currently at or near its all-time low, inform the user."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_1",
+      "title": "Store Watch Configuration",
+      "steps": [
+        {
+          "step_id": "1.1",
+          "title": "Configure Watch Parameters",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["product_identity", "price_baseline", "user_query"],
+          "output_artifacts": ["watch_config"],
+          "instructions": "Establish the watch configuration based on user input and price baseline. Determine: target price (user-specified or suggested based on historical data), notification triggers (target reached, any drop > X%, back in stock), preferred notification channel, watch duration (default 90 days), and check frequency (default every 12 hours). If the user has not specified a target price, suggest one based on the price_baseline historical data (e.g., 'The all-time low was $X, would you like to target that?'). Confirm the configuration with the user."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_2",
+      "title": "Schedule Checks",
+      "steps": [
+        {
+          "step_id": "2.1",
+          "title": "Register Scheduled Price Check",
+          "agent": "product_researcher",
+          "input_artifacts": ["watch_config", "product_identity"],
+          "output_artifacts": ["watch_schedule"],
+          "instructions": "Register the price watch in the system's scheduled task store. Create a recurring check at the configured interval. The scheduled task should: look up the product's current price at all tracked retailer URLs, compare against the target and trigger thresholds, and invoke the compare phase if the check finds actionable data. Record the watch_id, next_check_time, and expiration_date. Confirm to the user that the watch is active."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_3",
+      "title": "Compare Prices",
+      "steps": [
+        {
+          "step_id": "3.1",
+          "title": "Fetch Current Price",
+          "agent": "product_researcher",
+          "input_artifacts": ["watch_config", "product_identity"],
+          "output_artifacts": ["current_price_data"],
+          "instructions": "Fetch the current price for the watched product from all tracked retailer URLs. Record: price, availability status, any active coupon codes or promotions, and timestamp. Handle failures gracefully: if a retailer URL is unreachable, retry once, then skip and note the failure. If the product page has changed (product discontinued, URL redirects), flag for user notification."
+        },
+        {
+          "step_id": "3.2",
+          "title": "Evaluate Against Thresholds",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["current_price_data", "watch_config", "price_baseline"],
+          "output_artifacts": ["price_comparison"],
+          "instructions": "Compare the current price against the watch configuration thresholds. Evaluate: has the target price been reached or beaten? Has there been a significant drop (> configured percentage) since the last check? Has the product gone out of stock or come back in stock? Has the price increased significantly (potential urgency signal)? Produce a price_comparison with trigger_status (triggered/no_change/price_increased) and the specific trigger reason if applicable."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_4",
+      "title": "Notify User",
+      "steps": [
+        {
+          "step_id": "4.1",
+          "title": "Send Price Alert",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["price_comparison", "watch_config", "product_identity", "price_baseline"],
+          "output_artifacts": ["notification_record"],
+          "instructions": "If the price_comparison has trigger_status='triggered', send a notification to the user via the configured channel. The notification should include: product name, current price vs. target price, retailer with the best price, a direct buy link, how much they save vs. the baseline price, and a recommendation (buy now / wait for further drops). Respect the notification_cooldown to avoid spam. If trigger_status='no_change', log the check silently. If the watch has expired (exceeded max duration), notify the user that the watch has ended and offer to renew."
+        },
+        {
+          "step_id": "4.2",
+          "title": "Update Watch State",
+          "agent": "product_researcher",
+          "input_artifacts": ["notification_record", "current_price_data", "watch_config"],
+          "output_artifacts": ["updated_watch"],
+          "instructions": "Update the watch state with the latest price data point. If a notification was sent and the target was reached, ask the user whether to: (a) end the watch, (b) set a new lower target, or (c) continue watching. Update the price history for trend tracking. If the watch is still active, schedule the next check. If the product URL has changed or the product is discontinued, pause the watch and notify the user."
+        }
+      ]
+    }
+  ]
+}

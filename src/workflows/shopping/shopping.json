@@ -1,0 +1,237 @@
+{
+  "plan_id": "shopping",
+  "version": "1.0",
+  "metadata": {
+    "description": "Main shopping research workflow. Takes a user shopping query through analysis, clarification, multi-source search, product matching, constraint checking, review analysis, value scoring, alternative generation, and final synthesis. Supports re-entry at any phase and iterative refinement with max 3 loops. Quality gates enforce minimum 2 sources for price comparison.",
+    "agents_required": [
+      "shopping_advisor",
+      "product_researcher",
+      "deal_analyst",
+      "shopping_clarifier"
+    ],
+    "iterative_refinement": {
+      "max_loops": 3,
+      "re_entry_phases": ["check_clarification", "execute_searches", "check_constraints"],
+      "loop_trigger": "insufficient_results or user_feedback",
+      "exit_condition": "quality_gates_passed and user_satisfied"
+    },
+    "quality_gates": {
+      "min_sources_for_price": 2,
+      "min_products_for_comparison": 3,
+      "require_review_data": true,
+      "max_price_staleness_hours": 72
+    }
+  },
+  "phases": [
+    {
+      "phase_id": "phase_0",
+      "title": "Analyze Query",
+      "steps": [
+        {
+          "step_id": "0.1",
+          "title": "Parse Shopping Intent",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["user_query"],
+          "output_artifacts": ["parsed_intent"],
+          "instructions": "Parse the user's shopping query into structured intent. Extract: product category, specific product name (if any), desired features, budget range, urgency, use-case context, and any brand preferences. Identify whether this is a specific product lookup, a category exploration, a comparison request, or a deal-finding mission. Output a structured intent object."
+        },
+        {
+          "step_id": "0.2",
+          "title": "Detect Implicit Constraints",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["parsed_intent", "user_profile"],
+          "output_artifacts": ["constraint_set"],
+          "instructions": "From the parsed intent and any known user profile data, infer implicit constraints: geographic availability, shipping requirements, return policy preferences, warranty expectations, compatibility needs (e.g., existing ecosystem). Merge explicit and implicit constraints into a unified constraint_set."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_1",
+      "title": "Check Clarification",
+      "steps": [
+        {
+          "step_id": "1.1",
+          "title": "Evaluate Information Completeness",
+          "agent": "shopping_clarifier",
+          "input_artifacts": ["parsed_intent", "constraint_set"],
+          "output_artifacts": ["clarification_decision"],
+          "instructions": "Assess whether the parsed intent and constraints are sufficient to proceed with a meaningful search. Check for: ambiguous product references, missing budget range, unclear use-case, conflicting constraints. If clarification is needed, produce a clarification_decision with status='needs_clarification' and a list of specific questions ranked by importance. If sufficient, set status='proceed'."
+        },
+        {
+          "step_id": "1.2",
+          "title": "Ask Clarifying Questions",
+          "agent": "shopping_clarifier",
+          "input_artifacts": ["clarification_decision"],
+          "output_artifacts": ["clarification_response"],
+          "instructions": "If clarification_decision.status is 'needs_clarification', present the questions to the user in a conversational, non-overwhelming format (max 3 questions at a time). Wait for user response. Merge the clarification into the existing intent and constraints. If status is 'proceed', pass through with no user interaction. This step supports re-entry: if later phases find gaps, they can loop back here."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_2",
+      "title": "Generate Search Plan",
+      "steps": [
+        {
+          "step_id": "2.1",
+          "title": "Build Search Strategy",
+          "agent": "product_researcher",
+          "input_artifacts": ["parsed_intent", "constraint_set", "clarification_response"],
+          "output_artifacts": ["search_plan"],
+          "instructions": "Generate a search plan with multiple query variations targeting different aspects of the product need. Include: primary product search queries, alternative/synonym queries, review-focused queries, deal/coupon queries, and comparison queries. For each query, specify the target source type (general web, shopping aggregator, review site, forum). Prioritize queries by expected information yield."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_3",
+      "title": "Execute Searches",
+      "steps": [
+        {
+          "step_id": "3.1",
+          "title": "Run Search Queries",
+          "agent": "product_researcher",
+          "input_artifacts": ["search_plan"],
+          "output_artifacts": ["raw_search_results"],
+          "instructions": "Execute the search plan queries via Perplexica or configured search backends. Run queries in parallel where possible. For each result, capture: title, URL, snippet, source type, and timestamp. Deduplicate results by URL. Tag each result with the query that produced it. If any query returns zero results, note it for potential query refinement in the next iteration."
+        },
+        {
+          "step_id": "3.2",
+          "title": "Assess Search Coverage",
+          "agent": "product_researcher",
+          "input_artifacts": ["raw_search_results", "search_plan"],
+          "output_artifacts": ["coverage_report"],
+          "instructions": "Evaluate whether the search results provide sufficient coverage: Do we have product listings with prices from at least 2 sources (quality gate)? Do we have review data? Do we have availability info? If coverage is insufficient and iteration count < 3, generate refined queries and loop back to step 3.1. Otherwise, proceed with available data and note coverage gaps."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_4",
+      "title": "Match Products",
+      "steps": [
+        {
+          "step_id": "4.1",
+          "title": "Extract Product Candidates",
+          "agent": "product_researcher",
+          "input_artifacts": ["raw_search_results", "parsed_intent"],
+          "output_artifacts": ["product_candidates"],
+          "instructions": "From the raw search results, extract distinct product candidates. For each candidate, compile: product name, brand, model number, key specifications, price(s) with source attribution, availability status, and image URL if present. Normalize product names to group variants of the same product. Aim for 5-15 candidates before filtering."
+        },
+        {
+          "step_id": "4.2",
+          "title": "Rank by Intent Relevance",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["product_candidates", "parsed_intent"],
+          "output_artifacts": ["ranked_products"],
+          "instructions": "Score each product candidate on relevance to the user's intent: feature match (0-10), category fit (0-10), brand alignment (0-5), and price range fit (0-10). Produce a ranked list. Keep the top 8 candidates for deeper analysis. Discard clearly irrelevant results but log them in case the user asks 'what else did you find?'"
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_5",
+      "title": "Check Constraints",
+      "steps": [
+        {
+          "step_id": "5.1",
+          "title": "Apply Hard Constraints",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["ranked_products", "constraint_set"],
+          "output_artifacts": ["filtered_products"],
+          "instructions": "Apply the constraint_set as hard filters against the ranked products. Remove products that violate hard constraints (e.g., over budget, unavailable in region, incompatible). For each eliminated product, record the reason. If fewer than 3 products remain after filtering, flag for potential constraint relaxation and loop back to phase_1 for user input on which constraints to relax. Quality gate: at least 3 products must survive for meaningful comparison."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_6",
+      "title": "Deep Dive Reviews",
+      "steps": [
+        {
+          "step_id": "6.1",
+          "title": "Gather Review Data",
+          "agent": "product_researcher",
+          "input_artifacts": ["filtered_products"],
+          "output_artifacts": ["review_data"],
+          "instructions": "For each filtered product, search for and extract review data: aggregate ratings, number of reviews, common praise themes, common complaint themes, notable expert reviews, and any red flags (reliability issues, bait-and-switch reports). Target at least 2 review sources per product. Summarize sentiment as positive/mixed/negative with confidence level."
+        },
+        {
+          "step_id": "6.2",
+          "title": "Identify Review Red Flags",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["review_data"],
+          "output_artifacts": ["review_analysis"],
+          "instructions": "Analyze review data for patterns: fake review indicators (clustered dates, generic language), recurring defect reports, customer service complaints, and discrepancies between expert and user reviews. Flag any product with significant red flags. Produce a review_analysis with a trust_score (0-10) per product."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_7",
+      "title": "Analyze Value",
+      "steps": [
+        {
+          "step_id": "7.1",
+          "title": "Compute Value Scores",
+          "agent": "deal_analyst",
+          "input_artifacts": ["filtered_products", "review_analysis"],
+          "output_artifacts": ["value_analysis"],
+          "instructions": "For each product, compute a value score combining: price relative to category average, feature-to-price ratio, review trust score, warranty/return policy quality, and historical price trend (if available). Identify which products are overpriced, fairly priced, or a good deal. Flag any active deals, coupons, or upcoming sales events."
+        },
+        {
+          "step_id": "7.2",
+          "title": "Compare Across Retailers",
+          "agent": "deal_analyst",
+          "input_artifacts": ["filtered_products", "value_analysis"],
+          "output_artifacts": ["retailer_comparison"],
+          "instructions": "For each product, compare prices across available retailers. Include: base price, shipping cost, estimated tax, return policy, estimated delivery time, and any retailer-specific bonuses (e.g., extended warranty, cashback). Highlight the best overall deal per product considering total cost of ownership."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_8",
+      "title": "Generate Alternatives",
+      "steps": [
+        {
+          "step_id": "8.1",
+          "title": "Suggest Alternative Approaches",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["filtered_products", "value_analysis", "parsed_intent"],
+          "output_artifacts": ["alternatives"],
+          "instructions": "Based on the analysis so far, generate alternative suggestions the user may not have considered: refurbished options, previous-generation models at a discount, different product categories that solve the same problem, bundle deals, or waiting strategies if a new model is imminent. Each alternative should include a brief rationale and estimated savings or trade-offs."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_9",
+      "title": "Synthesize Results",
+      "steps": [
+        {
+          "step_id": "9.1",
+          "title": "Build Recommendation Tiers",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["filtered_products", "review_analysis", "value_analysis", "retailer_comparison", "alternatives"],
+          "output_artifacts": ["recommendation_tiers"],
+          "instructions": "Synthesize all analysis into tiered recommendations: Best Overall (best balance of quality, price, and reviews), Best Value (strongest price-to-quality ratio), Premium Pick (highest quality regardless of price), and Budget Pick (lowest price meeting minimum requirements). For each tier, provide a 2-3 sentence justification. Include the alternatives as a separate 'Also Consider' section."
+        }
+      ]
+    },
+    {
+      "phase_id": "phase_10",
+      "title": "Present to User",
+      "steps": [
+        {
+          "step_id": "10.1",
+          "title": "Format and Deliver Results",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["recommendation_tiers", "parsed_intent"],
+          "output_artifacts": ["shopping_response"],
+          "instructions": "Format the recommendation tiers into a clear, user-friendly response. Lead with a brief summary answering the user's original query. Present each tier with: product name, price range, top pros/cons (max 3 each), where to buy, and confidence level. End with the 'Also Consider' alternatives and an offer to dive deeper into any specific product. Adapt tone and detail level to the user's apparent expertise (inferred from query complexity)."
+        },
+        {
+          "step_id": "10.2",
+          "title": "Handle Follow-up",
+          "agent": "shopping_advisor",
+          "input_artifacts": ["shopping_response", "recommendation_tiers"],
+          "output_artifacts": ["follow_up_response"],
+          "instructions": "If the user responds with follow-up questions or requests refinement, determine whether to: (a) answer from existing data, (b) loop back to a specific phase for additional research (re-entry), or (c) escalate to a different workflow (e.g., combo_research for multi-item queries). Track iteration count and enforce the max 3 loops policy."
+        }
+      ]
+    }
+  ]
+}

@@ -1507,19 +1507,40 @@ class TelegramInterface:
         # ═══════════════════════════════════════════════════════
         pending_task_id = self._pending_clarifications.get(chat_id)
         if pending_task_id:
-            # Also check DB to confirm task is still in needs_clarification
-            try:
-                task_info = await get_task(pending_task_id)
-                if task_info and task_info.get("status") == "needs_clarification":
-                    await self._resume_with_clarification(
-                        chat_id, pending_task_id, text, task_info, update
+            lower = text.lower().strip()
+            # Allow user to escape the clarification loop
+            escape_phrases = [
+                "skip", "cancel", "dismiss", "ignore", "forget it",
+                "never mind", "nevermind", "no this is", "new task",
+                "stop", "different",
+            ]
+            if lower.startswith("/") or any(p in lower for p in escape_phrases):
+                # User wants out — cancel the clarification task
+                old_id = self._pending_clarifications.pop(chat_id, None)
+                if old_id:
+                    try:
+                        await update_task(old_id, status="failed",
+                                          error="Clarification dismissed by user")
+                    except Exception:
+                        pass
+                    await update.message.reply_text(
+                        f"🗑 Dismissed clarification for task #{old_id}."
                     )
-                    return
-                else:
-                    # Task no longer waiting — stale entry
+                # Fall through to normal routing (don't return)
+            else:
+                # Also check DB to confirm task is still in needs_clarification
+                try:
+                    task_info = await get_task(pending_task_id)
+                    if task_info and task_info.get("status") == "needs_clarification":
+                        await self._resume_with_clarification(
+                            chat_id, pending_task_id, text, task_info, update
+                        )
+                        return
+                    else:
+                        # Task no longer waiting — stale entry
+                        self._pending_clarifications.pop(chat_id, None)
+                except Exception:
                     self._pending_clarifications.pop(chat_id, None)
-            except Exception:
-                self._pending_clarifications.pop(chat_id, None)
 
         # Also check DB for ANY task in needs_clarification (handles bot restart)
         try:
@@ -1574,6 +1595,21 @@ class TelegramInterface:
             )
             self.user_last_task_id[chat_id] = task_id
             await update.message.reply_text(f"❓ Task #{task_id} queued.")
+            return
+
+        if msg_type == "shopping":
+            task_id = await add_task(
+                title=text[:80],
+                description=text,
+                tier="auto",
+                priority=TASK_PRIORITY.get("high", 8),
+                agent_type="shopping_advisor",
+            )
+            self.user_last_task_id[chat_id] = task_id
+            await update.message.reply_text(
+                f"🛒 Shopping task #{task_id} queued.\n"
+                f"I'll search prices and compare options for you.",
+            )
             return
 
         if msg_type == "casual":
@@ -1674,6 +1710,7 @@ class TelegramInterface:
     MESSAGE_CLASSIFIER_PROMPT = """Classify this user message to an AI orchestrator. Respond with ONLY valid JSON.
 
 Categories:
+- "shopping": buying, comparing prices, finding deals, product recommendations, "I want to buy X", "how much is X", budget shopping, upgrading hardware/equipment — anything about purchasing products or services
 - "mission": complex multi-step project request (building something, research project, etc.)
 - "task": specific actionable request
 - "question": asking for information
@@ -1692,7 +1729,8 @@ If type is "mission", also decide if this needs a full product workflow:
 - "workflow": "idea_to_product" ONLY if the user explicitly wants to BUILD/CREATE/DEVELOP a new product from scratch
 - "workflow": null if it's a simpler mission (research, analysis, fix something, write a report)
 
-IMPORTANT: Asking about existing apps/tools ("are there any good apps for X", "what's the best tool for X", "recommend an app") is a research TASK or QUESTION, NOT a mission. Only use "mission" when the user wants something BUILT.
+IMPORTANT: Shopping/buying/comparing products is ALWAYS "shopping", never "mission". "Mission" is only for building/creating new projects from scratch.
+IMPORTANT: Asking about existing apps/tools is a research TASK or QUESTION, NOT a mission.
 
 Context: {context}
 
@@ -1763,6 +1801,16 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             "remember to", "note to self", "hatirla", "unutma", "listeye ekle",
         ]):
             return {"type": "todo"}
+        # Shopping
+        if any(w in lower for w in [
+            "shopping", "buy", "purchase", "fiyat", "price", "compare price",
+            "en ucuz", "cheapest", "deal", "indirim", "kampanya",
+            "almak istiyorum", "want to buy", "should i buy", "almalı",
+            "karşılaştır", "hediye", "gift", "tavsiye", "öneri",
+            "upgrade", "yükseltme", "how much", "ne kadar",
+            "motherboard", "cpu", "gpu", "laptop", "phone", "telefon",
+        ]):
+            return {"type": "shopping"}
         # Bug reports
         if any(w in lower for w in [
             "bug", "error", "broken", "crash", "doesn't work", "not working",
@@ -1820,18 +1868,36 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         self, text: str, waiting_task: dict
     ) -> bool:
         """Check if message is likely a response to a pending clarification.
-        Uses heuristics first (fast), then LLM if uncertain."""
-        # Heuristic: short responses are very likely clarification answers
-        if len(text) < 100:
-            return True
-        # Heuristic: if it looks like a command or new task, probably not
-        lower = text.lower()
-        if any(kw in lower for kw in [
-            "research", "create a", "build", "new mission"
-        ]):
+
+        Conservative: only return True when the message clearly answers
+        the pending question. New tasks / commands must not be swallowed.
+        """
+        lower = text.lower().strip()
+
+        # Clearly NOT a clarification response
+        not_response_phrases = [
+            "new task", "new mission", "let's", "lets ", "i want to",
+            "can you", "please ", "do some", "shopping", "research",
+            "create", "build", "help me with", "start a", "no this is",
+            "forget it", "skip", "cancel", "never mind", "nevermind",
+            "ignore", "dismiss", "stop", "different",
+        ]
+        if any(phrase in lower for phrase in not_response_phrases):
             return False
-        # Default: if there's a pending clarification, assume it's an answer
-        return True
+
+        # Starts with a slash → command, not a clarification answer
+        if lower.startswith("/"):
+            return False
+
+        # Very short single-word/phrase answers that directly address
+        # the question are likely responses (e.g. "air purifier", "yes", "the blue one")
+        task_title = (waiting_task.get("title") or "").lower()
+        if len(text) < 60 and not any(c in lower for c in [".", "!", "?"]):
+            # Short, declarative — likely an answer
+            return True
+
+        # Default: treat as a new message, not a clarification response
+        return False
 
     async def _resume_with_clarification(
         self, chat_id: int, task_id: int, answer: str,

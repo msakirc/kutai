@@ -33,6 +33,19 @@ BACKOFF_STEPS = [5, 15, 60, 300]  # seconds
 BACKOFF_RESET_AFTER = 600  # reset backoff after 10 min stable
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
+WRAPPER_LOG = LOG_DIR / "wrapper_meta.log"
+
+
+def _wlog(msg: str):
+    """Append a timestamped line to the wrapper's own meta-log (not piped output)."""
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] {msg}"
+    print(line)
+    try:
+        with open(WRAPPER_LOG, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 
 class KutAIWrapper:
@@ -65,19 +78,21 @@ class KutAIWrapper:
         await self._stop_telegram_poller()
 
         venv_python = self._find_python()
-        print(f"\n{'='*60}")
-        print(f"  KutAI Wrapper: Starting orchestrator...")
-        print(f"  Python: {venv_python}")
-        print(f"  Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"{'='*60}\n")
+        _wlog(f"Starting orchestrator (python={venv_python})")
 
         run_script = str(Path(__file__).parent / "src" / "app" / "run.py")
-        self.process = await asyncio.create_subprocess_exec(
-            venv_python, run_script,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(Path(__file__).parent),
-        )
+        try:
+            self.process = await asyncio.create_subprocess_exec(
+                venv_python, run_script,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(Path(__file__).parent),
+            )
+        except Exception as e:
+            _wlog(f"ERROR: Failed to spawn subprocess: {e}")
+            self.running = False
+            return
+
         self.running = True
         self.start_time = time.time()
 
@@ -286,89 +301,118 @@ class KutAIWrapper:
 
     async def run(self):
         """Main wrapper loop."""
-        print(f"[Wrapper] KutAI Wrapper started at {time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"[Wrapper] Auto-restart: {self.auto_restart}")
+        _wlog(f"KutAI Wrapper started (auto_restart={self.auto_restart})")
 
         # Start KutAI immediately
         await self.start_kutai()
-        await self._notify_started()
+        if self.running:
+            await self._notify_started()
+        else:
+            _wlog("Initial start failed — entering Telegram poll mode")
+            await self._start_telegram_poller()
 
         while not self._shutdown:
-            exit_code = await self.wait_for_exit()
-            self._maybe_reset_backoff()
+            try:
+                exit_code = await self.wait_for_exit()
+                self._maybe_reset_backoff()
+                _wlog(f"KutAI exited with code {exit_code}")
 
-            if exit_code == RESTART_EXIT_CODE:
-                # Restart requested via /kutai_restart
-                print("[Wrapper] Restart requested (exit 42). Restarting...")
-                await self._send_telegram("♻️ *KutAI Restarting...*")
-                await asyncio.sleep(2)
-                await self.start_kutai()
-                await self._notify_started()
-                continue
+                if exit_code == RESTART_EXIT_CODE:
+                    # Restart requested via /kutai_restart
+                    await self._send_telegram("♻️ *KutAI Restarting...*")
+                    await asyncio.sleep(2)
+                    await self.start_kutai()
+                    if self.running:
+                        await self._notify_started()
+                    continue
 
-            elif exit_code == 0:
-                # Clean stop via /kutai_stop or Ctrl+C
-                print("[Wrapper] KutAI stopped cleanly (exit 0).")
-                await self._notify_stopped()
-                # Wait for /kutai_start via Telegram
-                await self._start_telegram_poller()
-                while not self._shutdown and not self.running:
-                    await asyncio.sleep(1)
-                if self.running:
-                    await self._notify_started()
-                continue
-
-            else:
-                # Crash (any non-zero, non-42 exit code)
-                self.crash_count += 1
-                self.total_crashes += 1
-                self.last_crash_time = time.time()
-                backoff = self._get_backoff()
-                print(f"[Wrapper] KutAI crashed (exit {exit_code}). "
-                      f"Crash #{self.total_crashes}. Restarting in {backoff}s...")
-                await self._notify_crash(exit_code)
-
-                if not self.auto_restart:
+                elif exit_code == 0:
+                    # Clean stop via /kutai_stop or Ctrl+C
+                    _wlog("KutAI stopped cleanly (exit 0)")
+                    await self._notify_stopped()
+                    # Wait for /kutai_start via Telegram
                     await self._start_telegram_poller()
                     while not self._shutdown and not self.running:
                         await asyncio.sleep(1)
+                    if self.running:
+                        await self._notify_started()
                     continue
 
-                # Start Telegram poller during backoff (user can /kutai_start immediately)
-                await self._start_telegram_poller()
-                for i in range(backoff):
-                    if self._shutdown or self.running:
-                        break
-                    await asyncio.sleep(1)
+                else:
+                    # Crash (any non-zero, non-42 exit code)
+                    self.crash_count += 1
+                    self.total_crashes += 1
+                    self.last_crash_time = time.time()
+                    backoff = self._get_backoff()
+                    _wlog(f"KutAI crashed (exit {exit_code}), "
+                          f"crash #{self.total_crashes}, backoff {backoff}s")
+                    await self._notify_crash(exit_code)
 
-                if not self.running and not self._shutdown:
-                    await self.start_kutai()
-                    await self._notify_started()
+                    if not self.auto_restart:
+                        await self._start_telegram_poller()
+                        while not self._shutdown and not self.running:
+                            await asyncio.sleep(1)
+                        continue
+
+                    # Start Telegram poller during backoff (user can /kutai_start immediately)
+                    await self._start_telegram_poller()
+                    for i in range(backoff):
+                        if self._shutdown or self.running:
+                            break
+                        await asyncio.sleep(1)
+
+                    if not self.running and not self._shutdown:
+                        await self.start_kutai()
+                        if self.running:
+                            await self._notify_started()
+
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                _wlog(f"UNHANDLED ERROR in main loop: {exc!r}")
+                # Always fall back to Telegram poller so we stay reachable
+                try:
+                    await self._send_telegram(
+                        f"⚠️ *Wrapper Error*\n`{exc!r}`\n\n"
+                        "Wrapper is still alive. Send /start to retry."
+                    )
+                except Exception:
+                    pass
+                await self._start_telegram_poller()
+                while not self._shutdown and not self.running:
+                    await asyncio.sleep(5)
 
         # Shutdown
         if self.running:
             await self.stop_kutai()
         await self._stop_telegram_poller()
-        print("[Wrapper] Wrapper exiting.")
+        _wlog("Wrapper exiting.")
 
 
 async def async_main():
     auto_restart = "--no-auto-restart" not in sys.argv
     wrapper = KutAIWrapper(auto_restart=auto_restart)
 
-    loop = asyncio.get_event_loop()
-    shutdown = asyncio.Event()
-
     def _sig(sig, frame):
-        print(f"\n[Wrapper] Signal {sig} received, shutting down...")
+        _wlog(f"Signal {sig} received, shutting down...")
         wrapper._shutdown = True
-        shutdown.set()
 
     signal.signal(signal.SIGINT, _sig)
-    signal.signal(signal.SIGTERM, _sig)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _sig)
 
-    await wrapper.run()
+    try:
+        await wrapper.run()
+    except Exception as exc:
+        _wlog(f"FATAL: async_main crashed: {exc!r}")
+        raise
 
 
 if __name__ == "__main__":
-    asyncio.run(async_main())
+    try:
+        asyncio.run(async_main())
+    except KeyboardInterrupt:
+        _wlog("KeyboardInterrupt — exiting")
+    except Exception as exc:
+        _wlog(f"FATAL top-level: {exc!r}")
+        raise

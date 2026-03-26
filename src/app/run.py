@@ -111,11 +111,15 @@ async def startup_health_check() -> bool:
         critical_ok = False
 
     # 3. DB writable
-    def _db_writable():
-        _db.init_db()
+    async def _db_writable():
+        await _db.init_db()
         return True, "DB accessible"
 
-    if not _check("db_writable", _db_writable, critical=True):
+    try:
+        ok, detail = await _db_writable()
+        _log.info("Health check passed", check="db_writable", detail=detail)
+    except Exception as exc:
+        _log.critical("Health check raised (critical)", check="db_writable", error=str(exc))
         critical_ok = False
 
     # ── Non-critical checks: run concurrently (saves ~20s vs sequential) ──

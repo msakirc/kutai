@@ -1162,7 +1162,20 @@ class Orchestrator:
             elif status == "needs_subtasks":
                 await self._handle_subtasks(task, result)
             elif status == "needs_clarification":
-                await self._handle_clarification(task, result)
+                # Silent/background tasks must not ask the user for clarification
+                task_ctx = task.get("context") or {}
+                if isinstance(task_ctx, str):
+                    import json as _json
+                    try:
+                        task_ctx = _json.loads(task_ctx)
+                    except (ValueError, TypeError):
+                        task_ctx = {}
+                if task_ctx.get("silent"):
+                    logger.info(f"[Task #{task_id}] Suppressed clarification (silent task)")
+                    await update_task(task_id, status="failed",
+                                      error="Insufficient info (silent task, no clarification)")
+                else:
+                    await self._handle_clarification(task, result)
             elif status == "needs_review":
                 await self._handle_review(task, result)
             elif status == "failed":

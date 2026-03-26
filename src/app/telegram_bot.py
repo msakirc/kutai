@@ -2098,21 +2098,43 @@ Or: {{"type": "task", "confidence": 0.8}}"""
     async def cmd_deals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show currently tracked deals. /deals"""
         try:
-            from src.shopping.memory import get_active_watches, get_recent_deals
-            watches = await get_active_watches()
-            deals = await get_recent_deals(limit=5)
+            from src.shopping.memory.price_watch import get_all_active_watches
+            watches = await get_all_active_watches()
             lines = ["🏷️ *Active Deals & Watches*\n"]
             if watches:
-                lines.append("*Watching:*")
-                for w in watches[:10]:
-                    target = f" (target: {w.get('target_price')} TL)" if w.get("target_price") else ""
-                    lines.append(f"  • {w.get('product', '?')}{target}")
+                # Separate watches with price drops (deals) from regular watches
+                deals = []
+                watching = []
+                for w in watches:
+                    if (
+                        w.get("historical_low") is not None
+                        and w.get("current_price") is not None
+                        and w["current_price"] < w.get("historical_low", float("inf"))
+                    ):
+                        deals.append(w)
+                    else:
+                        watching.append(w)
+
+                if watching:
+                    lines.append("*Watching:*")
+                    for w in watching[:10]:
+                        name = w.get("product_name", "?")
+                        price_str = f" — {w['current_price']:.0f} TL" if w.get("current_price") else ""
+                        target = f" (target: {w['target_price']:.0f} TL)" if w.get("target_price") else ""
+                        lines.append(f"  • {name}{price_str}{target}")
+
+                if deals:
+                    lines.append("\n*Recent deals:*")
+                    for d in deals[:5]:
+                        name = d.get("product_name", "?")
+                        current = d.get("current_price", 0)
+                        historical = d.get("historical_low", current)
+                        lines.append(f"  🔥 {name} — {current:.0f} TL (was {historical:.0f} TL)")
+
+                if not watching and not deals:
+                    lines.append("No active price watches.")
             else:
                 lines.append("No active price watches.")
-            if deals:
-                lines.append("\n*Recent deals:*")
-                for d in deals:
-                    lines.append(f"  🔥 {d.get('product', '?')} — {d.get('price', '?')} TL")
             await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
         except ImportError:
             await update.message.reply_text("Shopping module not yet available.")

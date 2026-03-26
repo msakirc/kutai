@@ -1,0 +1,68 @@
+{
+  "result": {
+    "products": [
+      {
+        "id": 100001,
+        "name": "Kablosuz Bluetooth Kulaklık",
+        "brandName": "JBL",
+        "url": "/jbl-kablosuz-bluetooth-kulaklik-p-100001",
+        "price": {
+          "originalPrice": 1299.99,
+          "sellingPrice": 999.99,
+          "discountedPrice": 899.99,
+          "discountRatio": 30.8
+        },
+        "ratingScore": {
+          "averageRating": 4.5,
+          "totalRatingCount": 1250
+        },
+        "images": ["ty100/product1.jpg"],
+        "merchantName": "JBL Resmi Mağaza",
+        "promotions": [
+          {"text": "Süper Fırsat"},
+          {"name": "Kargo Bedava"}
+        ],
+        "freeCargo": true,
+        "rushDeliveryDuration": "2 saat",
+        "categoryId": 2001,
+        "categoryName": "Kulaklik"
+      },
+      {
+        "id": 100002,
+        "name": "Spor Ayakkabı",
+        "brandName": "Nike",
+        "url": "/nike-spor-ayakkabi-p-100002",
+        "price": {
+          "originalPrice": 3499.00,
+          "sellingPrice": 2799.00
+        },
+        "ratingScore": {
+          "averageRating": 4.2,
+          "totalRatingCount": 340
+        },
+        "images": ["https://cdn.dsmcdn.com/ty200/product2.jpg"],
+        "merchantName": "Nike Store",
+        "promotions": [],
+        "freeCargo": false,
+        "categoryId": 3001,
+        "categoryName": "Ayakkabi"
+      },
+      {
+        "id": 100003,
+        "name": "Akıllı Saat",
+        "brandName": "Samsung",
+        "url": "https://www.trendyol.com/samsung-akilli-saat-p-100003",
+        "price": 5999.00,
+        "ratingScore": {
+          "averageRating": 4.8,
+          "totalRatingCount": 890
+        },
+        "images": [],
+        "merchant": {"name": "Samsung Türkiye"},
+        "freeCargo": true,
+        "categoryId": 4001,
+        "categoryName": "Akilli Saat"
+      }
+    ]
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "data": {
+    "storeProductInfos": [
+      {
+        "name": "Pınar Süt 1 Lt",
+        "productName": "Pınar Süt 1 Lt",
+        "prettyName": "pinar-sut-1-lt-p-12345",
+        "shownPrice": 42.90,
+        "regularPrice": 49.90,
+        "strikeThroughPrice": 49.90,
+        "price": 42.90,
+        "inStock": true,
+        "imageUrl": "https://cdn.migros.com.tr/pinar-sut.jpg",
+        "unitPrice": "42,90 TL/lt",
+        "badges": [
+          {"name": "Money Kart İndirimi"}
+        ]
+      },
+      {
+        "name": "Sek Tereyağ 500 g",
+        "prettyName": "sek-tereyag-500g-p-12346",
+        "shownPrice": 124.90,
+        "price": 124.90,
+        "inStock": true,
+        "imageUrl": "https://cdn.migros.com.tr/sek-tereyag.jpg",
+        "unitPrice": "249,80 TL/kg",
+        "badges": []
+      },
+      {
+        "name": "Ülker Çikolata 80 gr",
+        "prettyName": "ulker-cikolata-80gr-p-12347",
+        "shownPrice": 29.90,
+        "regularPrice": 34.90,
+        "price": 29.90,
+        "inStock": false,
+        "imageUrl": "https://cdn.migros.com.tr/ulker-cikolata.jpg",
+        "badges": [
+          {"name": "2 Al 1 Öde"}
+        ]
+      }
+    ]
+  }
+}

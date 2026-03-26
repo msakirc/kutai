@@ -184,3 +184,134 @@ Context: After completing plan_v4 Phases 2-11 implementation pass.
 
 38. **External webhook triggers**: Start goals/tasks from GitHub webhooks (new issue →
     auto-investigate), CI failures (auto-create bugfix task), or cron schedules.
+
+---
+
+## D. Deferred Shopping Plan Items
+
+Items from `plans/plans_shopping.md` that were not implemented in the initial pass.
+
+### Phase 2: Remote Execution via GitHub Actions (Deferred Entirely)
+
+39. **2.1 — GitHub Actions Scraper Workflow**: A GitHub Actions workflow that accepts
+    scraper name + parameters, runs the scraper in a clean environment, and returns
+    results. Avoids IP bans on the user's home IP. Trigger via workflow_dispatch.
+
+40. **2.2 — Result Transfer**: Mechanism to get scraper results from GitHub Actions back
+    to the local system. Options: artifact download, repository dispatch event with
+    payload, or a shared cloud storage bucket.
+
+41. **2.3 — Local/Remote Decision Logic**: In the search executor, decide per-request
+    whether to run locally or remotely. Factors: domain risk level (Hepsiburada high →
+    remote, Akakçe low → local), daily request count, time since last request, whether
+    the user's IP was recently blocked.
+
+42. **2.4 — GitHub Actions Rate Budget**: Track GitHub Actions minutes consumed. Free tier
+    is 2,000 min/month. Each scraper run ~1-2 min. Budget accordingly.
+
+### Phase 10: Missing Resilience Modules
+
+43. **10.2 — Anti-Detection Monitoring** (`src/shopping/resilience/detection_monitor.py`):
+    Per-domain success rate tracking, automatic cooldown when degraded, gradual resume
+    after cooldown. Expose metrics via `src/infra/metrics.py`.
+
+44. **10.3 — Response Validation / Cross-Source Price Verification**: When same product
+    found on multiple sources, flag prices deviating >40% from median. Don't silently
+    drop — mark as suspicious.
+
+45. **10.4 — Turkish Encoding Edge Cases**: Handle mixed ISO-8859-9/UTF-8, HTML entities
+    in product names, inconsistent Turkish character usage in specs. Test scrapers
+    against real pages with Turkish characters.
+
+46. **10.6 — Stale Data Detection** (`src/shopping/resilience/staleness.py`): Beyond TTL —
+    monitor price volatility and reduce cache TTL for volatile products, detect flash
+    sale indicators, warn user before purchase decisions based on old data.
+
+### Phase 11: Missing Special Intelligence Modules
+
+47. **11.2 — Cross-Category Bundle Detector** (`src/shopping/intelligence/bundle_detector.py`):
+    Detect "al X öde Y", "set fiyatı", "çeyiz paketi", store cart discounts. Suggest
+    combining items to cross free shipping thresholds.
+
+48. **11.3 — Used Market Awareness** (`src/shopping/intelligence/used_market.py`): Check
+    sahibinden, dolap.com for used alternatives. Safety rules per category (never suggest
+    used baby/medical/safety products). Refurbished awareness.
+
+49. **11.6 — Bulk / Wholesale Detection** (`src/shopping/intelligence/bulk_detector.py`):
+    Compare unit prices at different quantities, detect fake bulk deals where per-unit
+    price is higher, factor in shelf life and storage.
+
+50. **11.8 — Import vs Domestic Advisor** (`src/shopping/intelligence/import_domestic.py`):
+    Brand origin mapping (domestic vs imported), grey market / parallel import detection
+    ("ithalatçı garantili"), BTK registration warnings for phones.
+
+51. **11.9 — Counterfeit / Fraud Detection** (`src/shopping/intelligence/fraud_detector.py`):
+    Red flags for fake goods (cosmetics, memory cards, chargers), safety warnings for
+    counterfeit chargers/power banks, "A kalite" / "muadil" keyword detection.
+
+52. **11.10 — Campaign Pattern Learner** (`src/shopping/intelligence/campaign_patterns.py`):
+    Learn per-category discount patterns from observed price history. Predict savings
+    for upcoming events. Initially empty, grows over time.
+
+53. **11.11 — Complementary Product Suggester** (`src/shopping/intelligence/complementary.py`):
+    LLM-generated complement suggestions (phone → case, printer → cartridges). Economic
+    intelligence for consumable-heavy products.
+
+54. **11.12 — Environmental / Efficiency Advisor** (`src/shopping/intelligence/environmental.py`):
+    Energy efficiency, water efficiency, repairability scores, expected lifespan. Frame
+    as cost savings, not abstract environmental benefits.
+
+### Phase 12: Missing Test Coverage
+
+55. **12.3 — End-to-End Scenario Tests** (`tests/shopping/test_scenarios.py`): 15+
+    realistic scenarios with expected behavior (DDR5 RAM search, oven cupboard with
+    dimensions, çeyiz hazırlığı, bayram hediyesi, etc.). Run against mocked scrapers.
+
+56. **12.4 — Output Quality Evaluation** (`tests/shopping/test_output_quality.py`):
+    LLM-as-judge evaluation of recommendation quality. Score on relevance, completeness,
+    accuracy, helpfulness, Turkish market awareness.
+
+57. **12.5 — Performance Benchmarks** (`tests/shopping/test_performance.py`): Measure
+    end-to-end latency for quick search (<30s target), full workflow (<5min target),
+    cache hit rates, LLM inference bottlenecks.
+
+### Phase 13: Maintenance & Evolution (Not Started)
+
+58. **13.1 — Scraper Health Dashboard**: Grafana panels for per-domain success rate,
+    cache efficiency, shopping session metrics, knowledge freshness.
+
+59. **13.2 — Knowledge Base Refresh Workflow**: Semi-automated monthly refresh via
+    Perplexica, category-specific triggers, knowledge_gaps.log.
+
+60. **13.3 — Prompt Optimization Pipeline**: Track prompt quality per intelligence module,
+    A/B test prompt variants, category-specific prompt tuning.
+
+61. **13.4 — Self-Improving Substitution Map**: Learn from accepted/rejected
+    substitutions, grow the map over time.
+
+62. **13.5 — Scraper Auto-Repair**: LLM-assisted selector repair when sites change
+    structure. Present for human review, don't auto-deploy.
+
+63. **13.6 — System Self-Assessment**: Weekly automated benchmark against predefined
+    queries. Week-over-week quality tracking.
+
+64. **13.7 — Feature Usage Analytics**: Track which intelligence features get used,
+    prioritize maintenance accordingly.
+
+### Known Inconsistencies / Tech Debt from Shopping Implementation
+
+65. **Test isolation**: Shopping test files share DB singleton state. Running the full
+    `tests/shopping/` suite together causes 7 flaky failures in test_phase0 due to
+    rate_budget DB leaking into request_tracker tests. Each file passes individually.
+    Fix: use unique temp DB paths per test class, or add proper cleanup of module-level
+    singletons between test files.
+
+66. **Separate shopping memory DB**: Shopping memory uses `data/shopping_memory.db`
+    while the rest of the app uses the main `data/kutay.db`. This was intentional for
+    isolation but means no transactional consistency between user profile data and
+    main app data. Consider merging into main DB long-term.
+
+67. **Scraper fixture coverage**: Only 5 of 15 scrapers have fixture-based tests
+    (Akakçe, Trendyol, Hepsiburada, Migros, Technopat). Remaining 10 need fixtures:
+    Amazon TR, Ekşi Sözlük, Şikayetvar, Getir, Aktüel Katalog, Sahibinden, Koçtaş,
+    IKEA, Donanım Haber, Google CSE.

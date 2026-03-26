@@ -13,20 +13,7 @@ from src.infra.logging_config import get_logger
 logger = get_logger("shopping.intelligence.review_synthesizer")
 
 
-# ─── LLM helper ─────────────────────────────────────────────────────────────
-
-async def _llm_call(prompt: str, system: str = "", temperature: float = 0.3) -> str:
-    try:
-        import litellm
-        response = await litellm.acompletion(
-            model="openai/local",
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-            temperature=temperature, max_tokens=2048,
-        )
-        return response.choices[0].message.content
-    except Exception:
-        return ""
-
+from ._llm import _llm_call
 
 # ─── Temporal weighting ─────────────────────────────────────────────────────
 

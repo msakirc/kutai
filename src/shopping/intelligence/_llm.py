@@ -1,0 +1,37 @@
+"""Shared LLM helper for shopping intelligence modules.
+
+Routes all LLM calls through the centralized model router, which handles
+model selection, rate limiting, GPU scheduling, and cost tracking.
+
+Uses lazy imports so the module can be loaded in test environments where
+litellm and the full router stack are not installed.
+"""
+
+from __future__ import annotations
+
+
+async def _llm_call(prompt: str, system: str = "", temperature: float = 0.3) -> str:
+    """Call LLM via the centralized router. Falls back gracefully.
+
+    The router handles model selection (local llama.cpp, cloud, etc.),
+    rate limiting, GPU scheduling, and cost tracking.
+    """
+    try:
+        from src.core.router import ModelRequirements, call_model
+
+        reqs = ModelRequirements(
+            task="shopping",
+            agent_type="shopping_advisor",
+            difficulty=3,
+            prefer_speed=True,
+            estimated_input_tokens=len(prompt) // 4,
+            estimated_output_tokens=2048,
+        )
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        response = await call_model(reqs, messages)
+        return response.get("content", "")
+    except Exception:
+        return ""

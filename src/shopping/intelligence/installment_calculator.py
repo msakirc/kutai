@@ -12,20 +12,7 @@ logger = get_logger("shopping.intelligence.installment_calculator")
 
 _KNOWLEDGE_DIR = Path(__file__).resolve().parent.parent / "knowledge"
 
-# ─── LLM helper ─────────────────────────────────────────────────────────────
-
-async def _llm_call(prompt: str, system: str = "", temperature: float = 0.3) -> str:
-    try:
-        import litellm
-        response = await litellm.acompletion(
-            model="openai/local",
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-            temperature=temperature, max_tokens=2048,
-        )
-        return response.choices[0].message.content
-    except Exception:
-        return ""
-
+from ._llm import _llm_call
 
 # ─── Knowledge loader ───────────────────────────────────────────────────────
 

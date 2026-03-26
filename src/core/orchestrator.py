@@ -2337,6 +2337,14 @@ class Orchestrator:
                         logger.warning(f"Error stopping llama-server: {e}")
 
                     logger.info("Graceful shutdown complete")
+                else:
+                    # Non-graceful exit (crash, code 42 restart, etc.)
+                    # Still need to stop llama-server to prevent orphans
+                    try:
+                        await manager._stop_server()
+                        logger.info("llama-server stopped (non-graceful exit)")
+                    except Exception as e:
+                        logger.warning(f"Error stopping llama-server: {e}")
 
                 await close_db()
                 await self.telegram.app.updater.stop()

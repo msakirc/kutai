@@ -72,6 +72,132 @@ class LocalModelManager:
         self._thinking_enabled: bool = False  # tracks server-side thinking state
 
         self._scheduler = get_gpu_scheduler()
+        self._job_object = self._create_job_object()
+
+        # Kill any orphaned llama-server processes from prior runs
+        self._kill_orphaned_servers()
+
+    @staticmethod
+    def _create_job_object():
+        """Create a Windows Job Object with KILL_ON_JOB_CLOSE.
+
+        When the parent process dies (even ungracefully), Windows closes
+        all handles — including this job — which auto-kills every process
+        assigned to it.  Returns None on non-Windows or on failure.
+        """
+        import platform
+        if platform.system() != "Windows":
+            return None
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.windll.kernel32
+
+            # CreateJobObjectW(lpJobAttributes, lpName)
+            handle = kernel32.CreateJobObjectW(None, None)
+            if not handle:
+                logger.debug("Failed to create Job Object")
+                return None
+
+            # JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+            class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+                _fields_ = [
+                    ("PerProcessUserTimeLimit", ctypes.c_int64),
+                    ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.POINTER(ctypes.c_ulong)),
+                    ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD),
+                ]
+
+            class IO_COUNTERS(ctypes.Structure):
+                _fields_ = [
+                    ("ReadOperationCount", ctypes.c_uint64),
+                    ("WriteOperationCount", ctypes.c_uint64),
+                    ("OtherOperationCount", ctypes.c_uint64),
+                    ("ReadTransferCount", ctypes.c_uint64),
+                    ("WriteTransferCount", ctypes.c_uint64),
+                    ("OtherTransferCount", ctypes.c_uint64),
+                ]
+
+            class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+                _fields_ = [
+                    ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                    ("IoInfo", IO_COUNTERS),
+                    ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t),
+                ]
+
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+            JobObjectExtendedLimitInformation = 9
+
+            info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+
+            ok = kernel32.SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+            )
+            if not ok:
+                logger.debug("Failed to set KILL_ON_JOB_CLOSE on Job Object")
+                kernel32.CloseHandle(handle)
+                return None
+
+            logger.info("Windows Job Object created (KILL_ON_JOB_CLOSE)")
+            return handle
+        except Exception as e:
+            logger.debug(f"Job Object setup failed: {e}")
+            return None
+
+    def _assign_to_job(self, process: subprocess.Popen) -> None:
+        """Assign a child process to the Job Object so it dies with us."""
+        if self._job_object is None:
+            return
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            h_process = kernel32.OpenProcess(0x1F0FFF, False, process.pid)  # PROCESS_ALL_ACCESS
+            if h_process:
+                ok = kernel32.AssignProcessToJobObject(self._job_object, h_process)
+                kernel32.CloseHandle(h_process)
+                if ok:
+                    logger.info(f"llama-server (PID {process.pid}) assigned to Job Object")
+                else:
+                    logger.warning(f"Failed to assign PID {process.pid} to Job Object")
+        except Exception as e:
+            logger.debug(f"Job assignment failed: {e}")
+
+    def _kill_orphaned_servers(self) -> None:
+        """Kill leftover llama-server processes that survived a prior crash/restart."""
+        import platform
+        try:
+            if platform.system() == "Windows":
+                result = subprocess.run(
+                    ["taskkill", "/F", "/IM", "llama-server.exe"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if result.returncode == 0:
+                    logger.warning(
+                        f"Killed orphaned llama-server(s): "
+                        f"{result.stdout.strip()}"
+                    )
+            else:
+                result = subprocess.run(
+                    ["pkill", "-f", "llama-server"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if result.returncode == 0:
+                    logger.warning("Killed orphaned llama-server process(es)")
+        except Exception as e:
+            logger.debug(f"Orphan cleanup skipped: {e}")
 
     # ── Public API ──────────────────────────────────────────────
 
@@ -340,6 +466,7 @@ class LocalModelManager:
                 stderr=subprocess.PIPE,
                 creationflags=creation_flags,
             )
+            self._assign_to_job(self.process)
         except FileNotFoundError:
             logger.error(
                 f"llama-server not found at '{LLAMA_SERVER_PATH}'. "

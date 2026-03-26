@@ -28,6 +28,20 @@ MAX_OUTPUT_CHARS: int = int(os.environ.get("SANDBOX_MAX_OUTPUT", "8000"))
 CONTAINER_WORKROOT: str = "/app/workspace"
 
 # ---------------------------------------------------------------------------
+# Host-local fallback (when Docker is unavailable)
+# Set SANDBOX_MODE=local to always use host subprocess,
+# or leave as "docker" to auto-fallback when container is unreachable.
+# ---------------------------------------------------------------------------
+SANDBOX_MODE: str = os.environ.get("SANDBOX_MODE", "docker")  # docker | local | none
+LOCAL_SHELL_TIMEOUT: int = int(os.environ.get("LOCAL_SHELL_TIMEOUT", "60"))
+# Commands additionally blocked in local (host) mode for safety
+LOCAL_BLOCKED_PATTERNS: set[str] = BLOCKED_PATTERNS | {
+    "sudo ", "su -", "systemctl", "service ",
+    "docker ", "chown ", "mount ", "umount ",
+    "useradd", "userdel", "passwd",
+}
+
+# ---------------------------------------------------------------------------
 # Safety
 # ---------------------------------------------------------------------------
 BLOCKED_PATTERNS: set[str] = {
@@ -201,6 +215,108 @@ def _format_output(
 
 
 # ---------------------------------------------------------------------------
+# Host-local fallback execution
+# ---------------------------------------------------------------------------
+def _is_command_blocked_local(command: str) -> bool:
+    """Stricter blocklist for host-local execution."""
+    lower = command.lower().strip()
+    return any(pattern in lower for pattern in LOCAL_BLOCKED_PATTERNS)
+
+
+async def _run_local_shell(
+    command: str,
+    timeout: int = 60,
+    workdir: Optional[str] = None,
+) -> str:
+    """
+    Execute a shell command directly on the host as a subprocess.
+
+    Used as fallback when Docker is unavailable. Applies stricter
+    safety checks since we are running on the host machine.
+    """
+    if _is_command_blocked_local(command):
+        return "🚫 BLOCKED: This command is not allowed in host-local mode."
+
+    # Resolve working directory to workspace
+    cwd = WORKSPACE_DIR
+    if workdir:
+        if os.path.isabs(workdir):
+            # Only allow paths under workspace
+            if not os.path.normpath(workdir).startswith(os.path.normpath(WORKSPACE_DIR)):
+                cwd = WORKSPACE_DIR
+            else:
+                cwd = workdir
+        else:
+            cwd = os.path.join(WORKSPACE_DIR, workdir)
+
+    logger.debug("executing local shell command", command=command[:120], cwd=cwd)
+
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return f"⏱️ TIMEOUT: Command exceeded {timeout}s limit.\nCommand: {command[:120]}"
+
+        exit_code = proc.returncode or 0
+        logger.info("local shell command completed", exit_code=exit_code)
+        return _format_output(stdout, stderr, exit_code)
+
+    except Exception as exc:
+        logger.exception("local shell error", error=str(exc))
+        return f"❌ Local shell execution error: {type(exc).__name__}: {exc}"
+
+
+async def _run_local_shell_with_stdin(
+    command: str,
+    stdin_data: str,
+    timeout: int = 60,
+    workdir: Optional[str] = None,
+) -> str:
+    """Host-local shell execution with stdin piping."""
+    if _is_command_blocked_local(command):
+        return "🚫 BLOCKED: This command is not allowed in host-local mode."
+
+    cwd = WORKSPACE_DIR
+    if workdir:
+        candidate = os.path.join(WORKSPACE_DIR, workdir) if not os.path.isabs(workdir) else workdir
+        if os.path.normpath(candidate).startswith(os.path.normpath(WORKSPACE_DIR)):
+            cwd = candidate
+
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(input=stdin_data.encode()), timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return f"⏱️ TIMEOUT after {timeout}s"
+
+        return _format_output(stdout, stderr, proc.returncode or 0)
+
+    except Exception as exc:
+        logger.exception("local shell with stdin error", error=str(exc))
+        return f"❌ Local shell execution error: {type(exc).__name__}: {exc}"
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 async def run_shell(
@@ -224,14 +340,16 @@ async def run_shell(
     if _is_command_blocked(command):
         return "🚫 BLOCKED: This command matched a safety filter and was not executed."
 
-    if not await ensure_container_running():
-        return (
-            "❌ Docker sandbox is not available.\n"
-            f"Run:\n  docker build -t {SANDBOX_IMAGE} .\n"
-            f"  docker run -d --name {CONTAINER_NAME} "
-            f"-v {WORKSPACE_DIR}:{CONTAINER_WORKROOT} "
-            f"{SANDBOX_IMAGE} sleep infinity"
-        )
+    use_local = SANDBOX_MODE == "local"
+    if not use_local and not await ensure_container_running():
+        if SANDBOX_MODE == "none":
+            return "⚠️ Shell execution skipped (SANDBOX_MODE=none)."
+        # Auto-fallback to local execution
+        logger.warning("Docker unavailable — falling back to host-local shell")
+        use_local = True
+
+    if use_local:
+        return await _run_local_shell(command, timeout=timeout, workdir=workdir)
 
     resolved_wd = _resolve_workdir(workdir)
     logger.debug("executing shell command", command=command[:120], workdir=resolved_wd)
@@ -283,8 +401,15 @@ async def run_shell_with_stdin(
     if _is_command_blocked(command):
         return "🚫 BLOCKED: This command matched a safety filter."
 
-    if not await ensure_container_running():
-        return "❌ Docker sandbox is not available."
+    use_local = SANDBOX_MODE == "local"
+    if not use_local and not await ensure_container_running():
+        if SANDBOX_MODE == "none":
+            return "⚠️ Shell execution skipped (SANDBOX_MODE=none)."
+        logger.warning("Docker unavailable — falling back to host-local shell (stdin)")
+        use_local = True
+
+    if use_local:
+        return await _run_local_shell_with_stdin(command, stdin_data, timeout, workdir)
 
     resolved_wd = _resolve_workdir(workdir)
 

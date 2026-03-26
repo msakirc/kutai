@@ -25,6 +25,9 @@ class ReviewerAgent(BaseAgent):
         "project_info",
         "shell",
         "git_diff",
+        "lint",
+        "run_code",
+        "query_codebase",
     ]
 
     def get_system_prompt(self, task: dict) -> str:

@@ -321,7 +321,7 @@ class CodingPipeline:
                 ]
                 proj_lang = detect_language(impl_exts) or "python"
                 cov_report = await get_coverage_summary(
-                    project_root=pipe_ctx.workspace or ".",
+                    project_path=getattr(pipe_ctx, "workspace", None) or ".",
                     language=proj_lang,
                 )
                 if cov_report:

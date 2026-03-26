@@ -77,7 +77,7 @@ class ArchitectAgent(BaseAgent):
             "Your job is ONLY to design the plan.\n"
             "- Keep files focused — one responsibility per file.\n"
             "- Ensure the implementation order respects dependencies (e.g., utils before main).\n"
-            "- YouMUST run `write_file` to save `ARCHITECTURE.md` before finishing.\n"
+            "- You MUST run `write_file` to save `ARCHITECTURE.md` before finishing.\n"
             "\n"
             "## final_answer format\n"
             "When `ARCHITECTURE.md` is saved, respond with:\n"

@@ -24,6 +24,11 @@ class ImplementerAgent(BaseAgent):
         "read_file",
         "write_file",
         "edit_file",
+        "patch_file",
+        "apply_diff",
+        "get_function",
+        "query_codebase",
+        "project_info",
         "shell",
         "lint",
     ]
@@ -60,7 +65,10 @@ class ImplementerAgent(BaseAgent):
             "\n"
             "## File Editing\n"
             "- For net-new files or massive changes, use `write_file`.\n"
-            "- For small changes to existing files, use `edit_file`.\n"
+            "- For small changes to existing files, prefer `patch_file` or `edit_file`.\n"
+            "- Use `apply_diff` for multi-location edits in the same file.\n"
+            "- Use `get_function` to read exact function source before editing.\n"
+            "- Use `query_codebase` to find related code you need to match.\n"
             "\n"
             "## final_answer format\n"
             "When the file is implemented, linted, and syntax-checked:\n"

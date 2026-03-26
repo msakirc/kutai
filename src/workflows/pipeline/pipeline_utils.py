@@ -81,7 +81,7 @@ def _load_progress(mission_id: Optional[int]) -> dict:
     if not mission_id:
         return {}
     try:
-        import tools.workspace as _ws
+        import src.tools.workspace as _ws
         progress_file = os.path.join(
             _ws.WORKSPACE_DIR, f".pipeline_progress_{mission_id}.json"
         )
@@ -98,7 +98,7 @@ def _save_progress(mission_id: Optional[int], progress: dict) -> None:
     if not mission_id:
         return
     try:
-        import tools.workspace as _ws
+        import src.tools.workspace as _ws
         progress_file = os.path.join(
             _ws.WORKSPACE_DIR, f".pipeline_progress_{mission_id}.json"
         )
@@ -113,7 +113,7 @@ def _cleanup_progress(mission_id: Optional[int]) -> None:
     if not mission_id:
         return
     try:
-        import tools.workspace as _ws
+        import src.tools.workspace as _ws
         progress_file = os.path.join(
             _ws.WORKSPACE_DIR, f".pipeline_progress_{mission_id}.json"
         )

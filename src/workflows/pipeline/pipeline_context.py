@@ -38,6 +38,7 @@ class PipelineContext:
     mission_description: str = ""
     mission_id: int | None = None
     complexity: str = "feature"
+    workspace: str = ""
 
     architecture_plan: str = ""
     stages: list[StageResult] = field(default_factory=list)

@@ -203,35 +203,39 @@ async def startup_health_check() -> bool:
     return critical_ok
 
 
-# ─── Sandbox Build ────────────────────────────────────────────────────────────
+# ─── Docker Services ─────────────────────────────────────────────────────────
 
-def build_sandbox_if_needed():
-    _log.info("Checking Docker sandbox image")
+def start_docker_services():
+    """Bring up all services defined in docker-compose.yml."""
+    compose_file = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "../../docker-compose.yml")
+    )
+    if not os.path.exists(compose_file):
+        _log.warning("docker-compose.yml not found", path=compose_file)
+        return False
+
+    _log.info("Starting Docker Compose services")
     try:
         result = subprocess.run(
-            ["docker", "images", "-q", "orchestrator-sandbox"],
-            capture_output=True, text=True, timeout=10
+            ["docker", "compose", "-f", compose_file, "up", "-d"],
+            capture_output=True, text=True, timeout=120,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        _log.warning("Docker check failed — shell tool will be unavailable", error=str(e))
-        return False
-    if not result.stdout.strip():
-        _log.info("Building sandbox image")
-        sandbox_dir = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "../../sandbox")
-        )
-        try:
-            build = subprocess.run(
-                ["docker", "build", "-t", "orchestrator-sandbox", sandbox_dir],
-                capture_output=False, timeout=120
+        if result.returncode == 0:
+            _log.info("Docker Compose services started")
+            return True
+        else:
+            _log.warning(
+                "Docker Compose up failed",
+                exit_code=result.returncode,
+                stderr=result.stderr.strip()[:200],
             )
-            if build.returncode != 0:
-                _log.warning("Docker build failed — shell tool will be unavailable")
-                return False
-        except subprocess.TimeoutExpired:
-            _log.warning("Docker build timed out — shell tool will be unavailable")
             return False
-    return True
+    except FileNotFoundError:
+        _log.warning("Docker not found — services will be unavailable")
+        return False
+    except subprocess.TimeoutExpired:
+        _log.warning("Docker Compose up timed out (120s)")
+        return False
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -247,7 +251,7 @@ async def main():
 
     check_env()
     print_config()
-    build_sandbox_if_needed()
+    start_docker_services()
 
     critical_ok = await startup_health_check()
     if not critical_ok:

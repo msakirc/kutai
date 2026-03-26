@@ -459,7 +459,7 @@ class BaseAgent:
         # ── Phase 11.3: RAG context injection ──
         try:
             rag_block = await retrieve_context(
-                task=task, agent_type=self.name, max_tokens=2000,
+                task=task, agent_type=self.name,
             )
             if rag_block:
                 parts.append(rag_block)

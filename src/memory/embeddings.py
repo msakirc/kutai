@@ -3,12 +3,17 @@
 Phase 11 — Shared Embedding Utility
 
 Provides get_embedding() for use by vector_store, RAG pipeline, and
-task classifier.  Tries Ollama first, then sentence-transformers as
-a fallback.
+task classifier.
+
+Priority order:
+  1. In-memory LRU cache
+  2. sentence-transformers on CPU (multilingual-e5-small, always available)
+  3. Ollama embedding on GPU (when llama-server is idle)
 
 Also exposes a batch helper: get_embeddings(texts).
 """
 import hashlib
+from collections import OrderedDict
 from typing import Optional
 
 from src.infra.logging_config import get_logger
@@ -16,10 +21,48 @@ from src.infra.logging_config import get_logger
 logger = get_logger("memory.embeddings")
 
 
-# ─── In-Memory Cache ──────────────────────────────────────────────────────────
+# ─── Configuration ───────────────────────────────────────────────────────────
 
-_embedding_cache: dict[str, list[float]] = {}
+EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
+EMBEDDING_DIMENSION = 384
+EMBEDDING_MAX_TOKENS = 512  # model token limit
+EMBEDDING_BATCH_SIZE = 32
+
+
+# ─── In-Memory LRU Cache ────────────────────────────────────────────────────
+
 _CACHE_MAX_SIZE = 5000
+
+
+class _LRUCache:
+    """Proper LRU cache using OrderedDict."""
+
+    def __init__(self, max_size: int = _CACHE_MAX_SIZE):
+        self._cache: OrderedDict[str, list[float]] = OrderedDict()
+        self._max_size = max_size
+
+    def get(self, key: str) -> Optional[list[float]]:
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            return self._cache[key]
+        return None
+
+    def put(self, key: str, value: list[float]) -> None:
+        if key in self._cache:
+            self._cache.move_to_end(key)
+        else:
+            if len(self._cache) >= self._max_size:
+                self._cache.popitem(last=False)  # evict oldest
+        self._cache[key] = value
+
+    def clear(self) -> None:
+        self._cache.clear()
+
+    def __len__(self) -> int:
+        return len(self._cache)
+
+
+_embedding_cache = _LRUCache()
 
 
 def _cache_key(text: str) -> str:
@@ -32,7 +75,82 @@ def clear_cache() -> None:
     _embedding_cache.clear()
 
 
-# ─── Ollama Embedding ─────────────────────────────────────────────────────────
+# ─── sentence-transformers (CPU, primary) ────────────────────────────────────
+
+_st_model = None
+_st_load_attempted = False
+_st_model_name: str | None = None
+
+
+def _preprocess_e5(text: str, is_query: bool = True) -> str:
+    """Add e5 prefix. E5 models need 'query: ' or 'passage: ' prefix."""
+    prefix = "query: " if is_query else "passage: "
+    return prefix + text
+
+
+def _get_st_embedding(
+    text: str, is_query: bool = True
+) -> Optional[list[float]]:
+    """Get embedding from sentence-transformers (CPU, synchronous)."""
+    global _st_model, _st_load_attempted, _st_model_name
+    if _st_load_attempted and _st_model is None:
+        return None
+
+    if _st_model is None:
+        _st_load_attempted = True
+        try:
+            from sentence_transformers import SentenceTransformer
+
+            _st_model = SentenceTransformer(EMBEDDING_MODEL)
+            _st_model_name = EMBEDDING_MODEL
+            logger.info(f"Loaded sentence-transformers {EMBEDDING_MODEL}")
+        except Exception as e:
+            logger.debug(f"sentence-transformers not available: {e}")
+            return None
+
+    try:
+        processed = _preprocess_e5(text, is_query=is_query)
+        vec = _st_model.encode(processed, show_progress_bar=False)
+        return vec.tolist()
+    except Exception as e:
+        logger.debug(f"sentence-transformers encode failed: {e}")
+        return None
+
+
+def _get_st_embeddings_batch(
+    texts: list[str], is_query: bool = True
+) -> list[Optional[list[float]]]:
+    """Batch embedding via sentence-transformers."""
+    global _st_model, _st_load_attempted, _st_model_name
+    if _st_load_attempted and _st_model is None:
+        return [None] * len(texts)
+
+    if _st_model is None:
+        _st_load_attempted = True
+        try:
+            from sentence_transformers import SentenceTransformer
+
+            _st_model = SentenceTransformer(EMBEDDING_MODEL)
+            _st_model_name = EMBEDDING_MODEL
+            logger.info(f"Loaded sentence-transformers {EMBEDDING_MODEL}")
+        except Exception as e:
+            logger.debug(f"sentence-transformers not available: {e}")
+            return [None] * len(texts)
+
+    try:
+        processed = [_preprocess_e5(t, is_query=is_query) for t in texts]
+        vecs = _st_model.encode(
+            processed,
+            show_progress_bar=False,
+            batch_size=EMBEDDING_BATCH_SIZE,
+        )
+        return [v.tolist() for v in vecs]
+    except Exception as e:
+        logger.debug(f"sentence-transformers batch encode failed: {e}")
+        return [None] * len(texts)
+
+
+# ─── Ollama Embedding (GPU, secondary) ──────────────────────────────────────
 
 _OLLAMA_MODELS = ["nomic-embed-text", "all-minilm", "mxbai-embed-large"]
 _ollama_working_model: str | None = None
@@ -75,47 +193,55 @@ async def _get_ollama_embedding(text: str) -> Optional[list[float]]:
     return None
 
 
-# ─── sentence-transformers Fallback ───────────────────────────────────────────
+# ─── Dimension Validation ────────────────────────────────────────────────────
 
-_st_model = None
-_st_load_attempted = False
-
-
-def _get_st_embedding(text: str) -> Optional[list[float]]:
-    """Get embedding from sentence-transformers (CPU, synchronous)."""
-    global _st_model, _st_load_attempted
-    if _st_load_attempted and _st_model is None:
-        return None
-
-    if _st_model is None:
-        _st_load_attempted = True
-        try:
-            import SentenceTransformer
-            _st_model = SentenceTransformer("all-MiniLM-L6-v2")
-            logger.info("Loaded sentence-transformers all-MiniLM-L6-v2")
-        except Exception as e:
-            logger.debug(f"sentence-transformers not available: {e}")
-            return None
-
-    try:
-        vec = _st_model.encode(text, show_progress_bar=False)
-        return vec.tolist()
-    except Exception as e:
-        logger.debug(f"sentence-transformers encode failed: {e}")
-        return None
+_expected_dimension: int | None = None
 
 
-# ─── Public API ───────────────────────────────────────────────────────────────
+def set_expected_dimension(dim: int) -> None:
+    """Lock expected embedding dimension. Mismatches will be rejected."""
+    global _expected_dimension
+    _expected_dimension = dim
 
-async def get_embedding(text: str) -> Optional[list[float]]:
+
+def get_expected_dimension() -> int:
+    """Return the expected embedding dimension."""
+    return _expected_dimension or EMBEDDING_DIMENSION
+
+
+def _validate_dimension(embedding: list[float]) -> bool:
+    """Check embedding dimension matches expected. Log warning on mismatch."""
+    global _expected_dimension
+    dim = len(embedding)
+    if _expected_dimension is None:
+        _expected_dimension = dim
+        return True
+    if dim != _expected_dimension:
+        logger.warning(
+            f"Embedding dimension mismatch: got {dim}, expected "
+            f"{_expected_dimension}. Rejecting to prevent corruption."
+        )
+        return False
+    return True
+
+
+# ─── Public API ──────────────────────────────────────────────────────────────
+
+async def get_embedding(
+    text: str, is_query: bool = True
+) -> Optional[list[float]]:
     """
     Get embedding vector for text.
 
     Tries in order:
-      1. In-memory cache
-      2. Ollama embedding models
-      3. sentence-transformers (local CPU)
+      1. In-memory LRU cache
+      2. sentence-transformers on CPU (multilingual-e5-small)
+      3. Ollama embedding models (GPU)
       4. Returns None if nothing available
+
+    Args:
+        text:     Text to embed.
+        is_query: True for queries, False for documents/passages.
 
     Returns:
         List of floats (embedding vector), or None.
@@ -123,41 +249,90 @@ async def get_embedding(text: str) -> Optional[list[float]]:
     if not text or not text.strip():
         return None
 
-    # Truncate very long texts
-    text = text[:2000]
+    # Truncate to model limit (~2048 chars ≈ 512 tokens)
+    text = text[:2048]
 
     ck = _cache_key(text)
-    if ck in _embedding_cache:
-        return _embedding_cache[ck]
+    cached = _embedding_cache.get(ck)
+    if cached is not None:
+        return cached
 
-    # Try Ollama
-    emb = await _get_ollama_embedding(text)
+    # Try sentence-transformers first (CPU, always available, multilingual)
+    emb = _get_st_embedding(text, is_query=is_query)
 
-    # Fallback: sentence-transformers
+    # Fallback: Ollama (GPU)
     if emb is None:
-        emb = _get_st_embedding(text)
+        emb = await _get_ollama_embedding(text)
 
     if emb is not None:
-        # Evict oldest entries if cache is full
-        if len(_embedding_cache) >= _CACHE_MAX_SIZE:
-            # Remove ~10% of entries
-            keys_to_remove = list(_embedding_cache.keys())[
-                : _CACHE_MAX_SIZE // 10
-            ]
-            for k in keys_to_remove:
-                del _embedding_cache[k]
-        _embedding_cache[ck] = emb
+        if not _validate_dimension(emb):
+            return None
+        _embedding_cache.put(ck, emb)
 
     return emb
 
 
-async def get_embeddings(texts: list[str]) -> list[Optional[list[float]]]:
-    """Batch version of get_embedding — returns parallel list of embeddings."""
-    return [await get_embedding(t) for t in texts]
+async def get_embeddings(
+    texts: list[str], is_query: bool = True
+) -> list[Optional[list[float]]]:
+    """
+    Batch version of get_embedding.
+
+    Uses sentence-transformers batch encoding for uncached texts,
+    falls back to serial Ollama for any remaining.
+    """
+    if not texts:
+        return []
+
+    results: list[Optional[list[float]]] = [None] * len(texts)
+    uncached_indices: list[int] = []
+    uncached_texts: list[str] = []
+
+    # Check cache first
+    for i, text in enumerate(texts):
+        if not text or not text.strip():
+            continue
+        text = text[:2048]
+        ck = _cache_key(text)
+        cached = _embedding_cache.get(ck)
+        if cached is not None:
+            results[i] = cached
+        else:
+            uncached_indices.append(i)
+            uncached_texts.append(text)
+
+    if not uncached_texts:
+        return results
+
+    # Try batch sentence-transformers
+    batch_results = _get_st_embeddings_batch(uncached_texts, is_query=is_query)
+
+    for idx, emb in zip(uncached_indices, batch_results):
+        if emb is not None and _validate_dimension(emb):
+            text = uncached_texts[uncached_indices.index(idx)]
+            _embedding_cache.put(_cache_key(text), emb)
+            results[idx] = emb
+
+    # Fallback: Ollama for any still-missing
+    for i, idx in enumerate(uncached_indices):
+        if results[idx] is None:
+            emb = await _get_ollama_embedding(uncached_texts[i])
+            if emb is not None and _validate_dimension(emb):
+                _embedding_cache.put(_cache_key(uncached_texts[i]), emb)
+                results[idx] = emb
+
+    return results
 
 
 def embedding_available() -> bool:
     """Quick check: is any embedding backend likely available?"""
+    # Check sentence-transformers first (preferred)
+    try:
+        import sentence_transformers  # noqa: F401
+        return True
+    except ImportError:
+        pass
+
     # Check Ollama
     try:
         import httpx
@@ -165,13 +340,6 @@ def embedding_available() -> bool:
         if r.status_code == 200:
             return True
     except Exception:
-        pass
-
-    # Check sentence-transformers
-    try:
-        import sentence_transformers  # noqa: F401
-        return True
-    except ImportError:
         pass
 
     return False

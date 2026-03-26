@@ -6,7 +6,7 @@ Retrieves relevant context from vector store collections and formats
 it for injection into agent prompts.
 
 Main function:
-    context_block = await retrieve_context(task, agent_type, max_tokens=2000)
+    context_block = await retrieve_context(task, agent_type)
 
 The returned text block is injected into BaseAgent._build_context()
 between the task description and tool descriptions.
@@ -18,6 +18,53 @@ from src.infra.logging_config import get_logger
 from src.memory.vector_store import is_ready, query, embed_and_store
 
 logger = get_logger("memory.rag")
+
+
+# ─── Configuration ──────────────────────────────────────────────────────────
+
+RAG_MIN_BUDGET = 2000
+RAG_MAX_BUDGET = 12000
+RAG_BUDGET_FRACTION = 0.15  # of available context window
+RAG_MIN_RELEVANCE = 0.3     # cosine distance threshold (lower = more similar)
+RAG_DEDUP_THRESHOLD = 0.85  # embedding similarity for dedup
+
+# Task-type budgets (when model context window is unknown)
+_TASK_TYPE_BUDGETS = {
+    "code": 6000,
+    "research": 4000,
+    "shopping": 4000,
+    "default": 4000,
+}
+
+
+def _compute_rag_budget(
+    task: dict, model_context_window: int | None = None
+) -> int:
+    """
+    Compute dynamic RAG token budget based on task type and model context.
+
+    If model_context_window is provided, uses up to 15% of available space.
+    Otherwise falls back to task-type-based defaults.
+    """
+    if model_context_window:
+        # Reserve space for system prompt, tools, task, conversation
+        reserved = 10000
+        available = model_context_window - reserved
+        budget = int(available * RAG_BUDGET_FRACTION)
+        return max(RAG_MIN_BUDGET, min(RAG_MAX_BUDGET, budget))
+
+    # Infer from task type
+    task_type = task.get("type", "default")
+    description = (task.get("description", "") + task.get("title", "")).lower()
+
+    if any(kw in description for kw in ("code", "implement", "fix", "debug", "refactor")):
+        task_type = "code"
+    elif any(kw in description for kw in ("research", "search", "find", "analyze")):
+        task_type = "research"
+    elif any(kw in description for kw in ("shop", "buy", "price", "product", "compare")):
+        task_type = "shopping"
+
+    return _TASK_TYPE_BUDGETS.get(task_type, _TASK_TYPE_BUDGETS["default"])
 
 
 # ─── Scoring Helpers ──────────────────────────────────────────────────────────
@@ -66,14 +113,16 @@ def _rank_results(results: list[dict]) -> list[dict]:
     """
     Rank query results by: relevance * recency * importance.
 
-    Relevance comes from ChromaDB distance (lower = more relevant).
-    Recency comes from timestamp.
-    Importance comes from metadata.
+    Filters out results below minimum relevance threshold.
     """
     scored = []
     for r in results:
         meta = r.get("metadata", {})
         distance = r.get("distance", 1.0)
+
+        # Filter by relevance threshold (cosine distance)
+        if distance > (1.0 - RAG_MIN_RELEVANCE):
+            continue
 
         # Convert distance to relevance (cosine distance: 0 = identical)
         relevance = max(0.0, 1.0 - distance)
@@ -81,8 +130,13 @@ def _rank_results(results: list[dict]) -> list[dict]:
         recency = _recency_weight(meta.get("timestamp", 0))
         importance = _importance_weight(meta)
 
-        # Composite score
-        score = relevance * 0.5 + recency * 0.3 + importance * 0.2
+        # Composite score (rebalanced weights)
+        score = (
+            relevance * 0.4
+            + recency * 0.25
+            + importance * 0.2
+            + meta.get("access_count", 0) * 0.001 * 0.15  # access frequency
+        )
 
         scored.append({**r, "_score": score})
 
@@ -131,23 +185,25 @@ def _estimate_tokens(text: str) -> int:
 async def retrieve_context(
     task: dict,
     agent_type: str | None = None,
-    max_tokens: int = 2000,
+    max_tokens: int | None = None,
+    model_context_window: int | None = None,
 ) -> str:
     """
     Retrieve relevant context from all vector store collections.
 
     Pipeline:
-      1. Query episodic memory for similar past tasks
-      2. Query semantic memory for relevant facts
-      3. Query error patterns for matching warnings
-      4. Rank by recency * relevance * importance
+      1. Compute dynamic token budget
+      2. Query episodic, semantic, errors, shopping, web_knowledge
+      3. Rank by recency * relevance * importance
+      4. Filter by minimum relevance threshold
       5. Deduplicate
       6. Format within token budget
 
     Args:
-        task:       Task dict with title, description, etc.
-        agent_type: Agent type (for filtering episodic results).
-        max_tokens: Maximum token budget for returned context.
+        task:                 Task dict with title, description, etc.
+        agent_type:           Agent type (for filtering episodic results).
+        max_tokens:           Override token budget (None = auto-compute).
+        model_context_window: Model's context window size for budget calc.
 
     Returns:
         Formatted text block ready for prompt injection.
@@ -163,39 +219,45 @@ async def retrieve_context(
     if not query_text.strip():
         return ""
 
-    # ── 1. Query episodic memory ──
+    # Compute budget
+    budget = max_tokens or _compute_rag_budget(task, model_context_window)
+
+    # ── 1. Query core collections ──
     episodic_results = await query(
-        text=query_text,
-        collection="episodic",
-        top_k=5,
+        text=query_text, collection="episodic", top_k=5,
     )
-
-    # ── 2. Query semantic memory ──
     semantic_results = await query(
-        text=query_text,
-        collection="semantic",
-        top_k=5,
+        text=query_text, collection="semantic", top_k=5,
     )
-
-    # ── 3. Query error patterns ──
     error_results = await query(
-        text=query_text,
-        collection="errors",
-        top_k=3,
+        text=query_text, collection="errors", top_k=3,
     )
 
-    # ── 4. Rank all results together ──
+    # ── 2. Query domain-specific collections ──
+    shopping_results = []
+    task_desc_lower = (title + description).lower()
+    if any(kw in task_desc_lower for kw in ("shop", "buy", "price", "product", "compare")):
+        shopping_results = await query(
+            text=query_text, collection="shopping", top_k=5,
+        )
+
+    web_results = await query(
+        text=query_text, collection="web_knowledge", top_k=3,
+    )
+
+    # ── 3. Rank all results together (includes relevance filtering) ──
     all_results = _rank_results(
         episodic_results + semantic_results + error_results
+        + shopping_results + web_results
     )
 
-    # ── 5. Deduplicate ──
+    # ── 4. Deduplicate ──
     deduped = _deduplicate(all_results)
 
     if not deduped:
         return ""
 
-    # ── 6. Format within token budget ──
+    # ── 5. Format within token budget ──
     sections: list[str] = []
     total_tokens = 0
 
@@ -203,37 +265,27 @@ async def retrieve_context(
     episodic_items: list[dict] = []
     semantic_items: list[dict] = []
     error_items: list[dict] = []
+    shopping_items: list[dict] = []
+    web_items: list[dict] = []
 
     for r in deduped:
         meta = r.get("metadata", {})
         doc_type = meta.get("type", "")
+        data_type = meta.get("data_type", "")
+
         if doc_type == "task_result":
             episodic_items.append(r)
         elif doc_type == "error_recovery":
             error_items.append(r)
+        elif data_type in ("product", "review", "shopping_session"):
+            shopping_items.append(r)
+        elif meta.get("source_url") or data_type == "web_result":
+            web_items.append(r)
         else:
             semantic_items.append(r)
 
-    # Format episodic memories
-    if episodic_items:
-        lines = ["### Past Experience"]
-        for item in episodic_items[:3]:
-            meta = item.get("metadata", {})
-            status = "succeeded" if meta.get("success") else "FAILED"
-            line = f"- \"{meta.get('title', '?')}\" {status}"
-            if meta.get("model_used") and meta["model_used"] != "?":
-                line += f" (model: {meta['model_used']})"
-            if not meta.get("success") and meta.get("error_preview"):
-                line += f"\n  Warning: {meta['error_preview'][:100]}"
-            lines.append(line)
-
-        block = "\n".join(lines)
-        block_tokens = _estimate_tokens(block)
-        if total_tokens + block_tokens <= max_tokens:
-            sections.append(block)
-            total_tokens += block_tokens
-
-    # Format error warnings
+    # Priority order: errors > episodic > code > semantic > shopping > web
+    # Format error warnings first (highest priority)
     if error_items:
         lines = ["### Known Issues"]
         for item in error_items[:3]:
@@ -246,24 +298,77 @@ async def retrieve_context(
 
         block = "\n".join(lines)
         block_tokens = _estimate_tokens(block)
-        if total_tokens + block_tokens <= max_tokens:
+        if total_tokens + block_tokens <= budget:
+            sections.append(block)
+            total_tokens += block_tokens
+
+    # Format episodic memories
+    if episodic_items:
+        lines = ["### Past Experience"]
+        for item in episodic_items[:4]:
+            meta = item.get("metadata", {})
+            status = "succeeded" if meta.get("success") else "FAILED"
+            line = f"- \"{meta.get('title', '?')}\" {status}"
+            if meta.get("model_used") and meta["model_used"] != "?":
+                line += f" (model: {meta['model_used']})"
+            if not meta.get("success") and meta.get("error_preview"):
+                line += f"\n  Warning: {meta['error_preview'][:100]}"
+            lines.append(line)
+
+        block = "\n".join(lines)
+        block_tokens = _estimate_tokens(block)
+        if total_tokens + block_tokens <= budget:
             sections.append(block)
             total_tokens += block_tokens
 
     # Format semantic knowledge
     if semantic_items:
         lines = ["### Relevant Knowledge"]
-        for item in semantic_items[:3]:
+        for item in semantic_items[:5]:
             text = item.get("text", "")
-            # Truncate to fit budget
-            remaining = max_tokens - total_tokens
-            max_chars = remaining * 4  # rough token-to-char
+            remaining = budget - total_tokens
+            max_chars = remaining * 4
             if max_chars < 50:
                 break
             if len(text) > max_chars:
                 text = text[:max_chars] + "..."
-            lines.append(f"- {text[:300]}")
-            total_tokens += _estimate_tokens(text[:300])
+            lines.append(f"- {text[:500]}")
+            total_tokens += _estimate_tokens(text[:500])
+
+        if len(lines) > 1:
+            sections.append("\n".join(lines))
+
+    # Format shopping knowledge
+    if shopping_items:
+        lines = ["### Shopping Knowledge"]
+        for item in shopping_items[:3]:
+            text = item.get("text", "")
+            remaining = budget - total_tokens
+            max_chars = remaining * 4
+            if max_chars < 50:
+                break
+            lines.append(f"- {text[:400]}")
+            total_tokens += _estimate_tokens(text[:400])
+
+        if len(lines) > 1:
+            sections.append("\n".join(lines))
+
+    # Format web knowledge
+    if web_items:
+        lines = ["### Web Knowledge"]
+        for item in web_items[:3]:
+            text = item.get("text", "")
+            meta = item.get("metadata", {})
+            remaining = budget - total_tokens
+            max_chars = remaining * 4
+            if max_chars < 50:
+                break
+            source = meta.get("source_url", "")
+            entry = f"- {text[:300]}"
+            if source:
+                entry += f" [source: {source[:80]}]"
+            lines.append(entry)
+            total_tokens += _estimate_tokens(entry)
 
         if len(lines) > 1:
             sections.append("\n".join(lines))

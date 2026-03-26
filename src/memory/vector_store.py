@@ -11,6 +11,8 @@ Collections:
   - codebase:       Code chunks and symbols
   - errors:         Failure patterns and recovery strategies
   - conversations:  User interaction history
+  - shopping:       Products, reviews, shopping sessions
+  - web_knowledge:  Cached web search results and extracted facts
 
 Public API:
     await init_store()
@@ -24,7 +26,7 @@ import time
 from typing import Optional
 
 from src.infra.logging_config import get_logger
-from src.memory.embeddings import get_embedding
+from src.memory.embeddings import get_embedding, get_expected_dimension
 
 logger = get_logger("memory.vector_store")
 
@@ -37,6 +39,8 @@ COLLECTIONS = [
     "codebase",
     "errors",
     "conversations",
+    "shopping",
+    "web_knowledge",
 ]
 
 _DB_DIR = os.path.join(
@@ -56,7 +60,8 @@ async def init_store(persist_dir: str | None = None) -> bool:
     """
     Initialize the ChromaDB client and create collections.
 
-    Returns True if ChromaDB is available, False otherwise.
+    ChromaDB is a required dependency. Raises ImportError if not installed.
+    Returns True on success, False on other errors.
     """
     global _client, _collections, _initialized
 
@@ -65,12 +70,12 @@ async def init_store(persist_dir: str | None = None) -> bool:
 
     db_dir = persist_dir or _DB_DIR
 
+    import chromadb
+    from chromadb.config import Settings
+
+    os.makedirs(db_dir, exist_ok=True)
+
     try:
-        import chromadb
-        from chromadb.config import Settings
-
-        os.makedirs(db_dir, exist_ok=True)
-
         _client = chromadb.PersistentClient(
             path=db_dir,
             settings=Settings(
@@ -79,12 +84,30 @@ async def init_store(persist_dir: str | None = None) -> bool:
             ),
         )
 
-        # Create or get collections
+        expected_dim = get_expected_dimension()
+
+        # Create or get collections with dimension tracking
         for name in COLLECTIONS:
-            _collections[name] = _client.get_or_create_collection(
+            col = _client.get_or_create_collection(
                 name=name,
-                metadata={"hnsw:space": "cosine"},
+                metadata={
+                    "hnsw:space": "cosine",
+                    "embedding_model": "intfloat/multilingual-e5-small",
+                    "embedding_dimension": expected_dim,
+                },
             )
+
+            # Verify dimension consistency
+            col_meta = col.metadata or {}
+            stored_dim = col_meta.get("embedding_dimension")
+            if stored_dim and stored_dim != expected_dim:
+                logger.warning(
+                    f"Collection '{name}' has dimension {stored_dim} but "
+                    f"current model expects {expected_dim}. "
+                    f"Consider re-embedding this collection."
+                )
+
+            _collections[name] = col
 
         _initialized = True
         total = sum(c.count() for c in _collections.values())
@@ -94,12 +117,6 @@ async def init_store(persist_dir: str | None = None) -> bool:
         )
         return True
 
-    except ImportError:
-        logger.warning(
-            "chromadb not installed — vector store unavailable. "
-            "Install with: pip install chromadb"
-        )
-        return False
     except Exception as e:
         logger.error(f"Vector store init failed: {e}")
         return False
@@ -141,8 +158,8 @@ async def embed_and_store(
     if not text or not text.strip():
         return None
 
-    # Get embedding
-    embedding = await get_embedding(text)
+    # Get embedding (as passage, not query)
+    embedding = await get_embedding(text, is_query=False)
 
     # Clean metadata — ChromaDB only allows str/int/float/bool values
     clean_meta = {}
@@ -226,8 +243,8 @@ async def query(
     if col.count() == 0:
         return []
 
-    # Get embedding for query
-    embedding = await get_embedding(text)
+    # Get embedding for query (as query, not passage)
+    embedding = await get_embedding(text, is_query=True)
 
     try:
         query_kwargs = {

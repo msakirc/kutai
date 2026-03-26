@@ -60,7 +60,7 @@ def extract_feature_context(step_context: dict) -> tuple[str, str]:
     Returns:
         A ``(feature_id, feature_name)`` tuple.
     """
-    step_id: str = step_context["step_id"]
+    step_id: str = step_context.get("workflow_step_id") or step_context.get("step_id", "")
     match = _STEP_ID_PATTERN.match(step_id)
     feature_id = match.group(1) if match else step_id
 

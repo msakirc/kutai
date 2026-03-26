@@ -25,7 +25,7 @@ async def extract_pipeline_artifacts(
     """
     artifacts = {}
     task_ctx = _parse_context(task)
-    step_id = task_ctx.get("step_id", task_ctx.get("workflow_step_id", "unknown"))
+    step_id = task_ctx.get("workflow_step_id") or task_ctx.get("step_id", "unknown")
 
     # 1. Files changed summary
     files_changed = await _extract_files_changed(result, workspace_path)

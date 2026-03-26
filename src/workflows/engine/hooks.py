@@ -109,7 +109,7 @@ async def pre_execute_workflow_step(task: dict) -> dict:
     if not is_workflow_step(ctx):
         return task
 
-    mission_id = ctx.get("mission_id")
+    mission_id = ctx.get("mission_id") or task.get("mission_id")
     input_artifact_names: list[str] = ctx.get("input_artifacts", [])
 
     # Fetch artifacts from store
@@ -162,9 +162,9 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
     if not is_workflow_step(ctx):
         return
 
-    mission_id = ctx.get("mission_id")
+    mission_id = ctx.get("mission_id") or task.get("mission_id")
     output_names = extract_output_artifact_names(ctx)
-    step_id = ctx.get("step_id", "")
+    step_id = ctx.get("workflow_step_id", "")
 
     if not mission_id or not output_names:
         return
@@ -396,7 +396,7 @@ async def _check_conditional_triggers(
                 for step in excluded:
                     await update_task_by_context_field(
                         mission_id=mission_id,
-                        field="step_id",
+                        field="workflow_step_id",
                         value=step,
                         status="skipped",
                     )

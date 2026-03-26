@@ -315,6 +315,211 @@ except Exception as e:
     mcp_client = None  # type: ignore[assignment]
     logger.debug(f"MCP client not available — {type(e).__name__}: {e}")
 
+# Shopping intelligence tools
+try:
+    import json as _json_shopping
+
+    from ..shopping.intelligence.query_analyzer import analyze_query as _analyze_query
+    from ..shopping.intelligence.search_planner import generate_search_plan as _generate_search_plan
+    from ..shopping.intelligence.product_matcher import match_products as _match_products
+    from ..shopping.intelligence.value_scorer import score_products as _score_products
+    from ..shopping.intelligence.delivery_compare import compare_delivery as _compare_delivery
+    from ..shopping.intelligence.review_synthesizer import synthesize_reviews as _synthesize_reviews
+    from ..shopping.intelligence.constraints import check_constraints as _check_constraints
+    from ..shopping.intelligence.timing import advise_timing as _advise_timing
+    from ..shopping.intelligence.alternatives import generate_alternatives as _generate_alternatives
+    from ..shopping.memory.user_profile import get_user_profile as _get_user_profile, update_user_profile as _update_user_profile
+    from ..shopping.memory.price_watch import add_price_watch as _add_price_watch, get_active_watches as _get_active_watches, remove_watch as _remove_watch
+
+    async def _tool_shopping_search(query: str) -> str:
+        """Analyze a shopping query and generate a search plan with product matching."""
+        try:
+            analyzed = await _analyze_query(query)
+            plan = await _generate_search_plan(analyzed)
+            return _json_shopping.dumps({"analysis": analyzed, "search_plan": plan}, indent=2, default=str)
+        except Exception as exc:
+            return _json_shopping.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+    async def _tool_shopping_compare(products: str) -> str:
+        """Compare products with value scoring and delivery comparison."""
+        try:
+            product_list = _json_shopping.loads(products)
+            scores = await _score_products(product_list)
+            delivery = await _compare_delivery(product_list)
+            return _json_shopping.dumps({"scores": scores, "delivery": delivery}, indent=2, default=str)
+        except Exception as exc:
+            return _json_shopping.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+    async def _tool_shopping_reviews(product_name: str, reviews: str) -> str:
+        """Synthesize product reviews into a summary."""
+        try:
+            review_list = _json_shopping.loads(reviews)
+            result = await _synthesize_reviews(review_list, product_name)
+            return _json_shopping.dumps(result, indent=2, default=str)
+        except Exception as exc:
+            return _json_shopping.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+    async def _tool_shopping_constraints(products: str, constraints: str) -> str:
+        """Filter products against user constraints."""
+        try:
+            product_list = _json_shopping.loads(products)
+            constraint_list = _json_shopping.loads(constraints)
+            result = await _check_constraints(product_list, constraint_list)
+            return _json_shopping.dumps(result, indent=2, default=str)
+        except Exception as exc:
+            return _json_shopping.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+    async def _tool_shopping_timing(category: str) -> str:
+        """Get market timing advice for a product category."""
+        try:
+            result = await _advise_timing(category)
+            return _json_shopping.dumps(result, indent=2, default=str)
+        except Exception as exc:
+            return _json_shopping.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+    async def _tool_shopping_alternatives(query: str, category: str = "") -> str:
+        """Generate alternative product suggestions."""
+        try:
+            result = await _generate_alternatives(query, category)
+            return _json_shopping.dumps(result, indent=2, default=str)
+        except Exception as exc:
+            return _json_shopping.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+    async def _tool_shopping_user_profile(user_id: str, action: str, data: str = "{}") -> str:
+        """Get or update user shopping profile."""
+        try:
+            uid = int(user_id)
+            if action == "get":
+                result = await _get_user_profile(uid)
+                return _json_shopping.dumps(result, indent=2, default=str)
+            elif action == "update":
+                fields = _json_shopping.loads(data)
+                await _update_user_profile(uid, **fields)
+                return _json_shopping.dumps({"status": "updated"})
+            else:
+                return _json_shopping.dumps({"error": f"Unknown action: {action}. Use 'get' or 'update'."})
+        except Exception as exc:
+            return _json_shopping.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+    async def _tool_shopping_price_watch(user_id: str, action: str, product_name: str = "", target_price: str = "") -> str:
+        """Manage price watches for a user."""
+        try:
+            uid = int(user_id)
+            if action == "add":
+                tp = float(target_price) if target_price else None
+                watch_id = await _add_price_watch(uid, product_name, current_price=0.0, target_price=tp)
+                return _json_shopping.dumps({"status": "added", "watch_id": watch_id})
+            elif action == "list":
+                watches = await _get_active_watches(uid)
+                return _json_shopping.dumps(watches, indent=2, default=str)
+            elif action == "remove":
+                # Find watch by product name
+                watches = await _get_active_watches(uid)
+                removed = False
+                for w in watches:
+                    if product_name.lower() in w.get("product_name", "").lower():
+                        await _remove_watch(w["id"])
+                        removed = True
+                        break
+                return _json_shopping.dumps({"status": "removed" if removed else "not_found"})
+            else:
+                return _json_shopping.dumps({"error": f"Unknown action: {action}. Use 'add', 'list', or 'remove'."})
+        except Exception as exc:
+            return _json_shopping.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+    _optional_tools["shopping_search"] = {
+        "function": _tool_shopping_search,
+        "description": (
+            "Analyze a shopping query and generate a search plan. "
+            "Args: query (str: the user's shopping query)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "shopping_search", '
+            '"args": {"query": "best wireless headphones under 2000 TL"}}'
+        ),
+    }
+    _optional_tools["shopping_compare"] = {
+        "function": _tool_shopping_compare,
+        "description": (
+            "Compare products with value scoring and delivery comparison. "
+            "Args: products (str: JSON list of product dicts)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "shopping_compare", '
+            '"args": {"products": "[{\\"name\\": \\"Product A\\", \\"price\\": 1500}]"}}'
+        ),
+    }
+    _optional_tools["shopping_reviews"] = {
+        "function": _tool_shopping_reviews,
+        "description": (
+            "Synthesize product reviews into a structured summary. "
+            "Args: product_name (str), reviews (str: JSON list of review dicts)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "shopping_reviews", '
+            '"args": {"product_name": "Sony WH-1000XM5", "reviews": "[{\\"text\\": \\"Great sound\\", \\"rating\\": 5}]"}}'
+        ),
+    }
+    _optional_tools["shopping_constraints"] = {
+        "function": _tool_shopping_constraints,
+        "description": (
+            "Filter products against user constraints (budget, dimensions, compatibility). "
+            "Args: products (str: JSON list of product dicts), constraints (str: JSON list of constraint dicts)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "shopping_constraints", '
+            '"args": {"products": "[...]", "constraints": "[{\\"type\\": \\"budget\\", \\"value\\": 5000}]"}}'
+        ),
+    }
+    _optional_tools["shopping_timing"] = {
+        "function": _tool_shopping_timing,
+        "description": (
+            "Get market timing advice — buy now vs wait for sales. "
+            "Args: category (str: product category like 'electronics', 'appliances')"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "shopping_timing", '
+            '"args": {"category": "electronics"}}'
+        ),
+    }
+    _optional_tools["shopping_alternatives"] = {
+        "function": _tool_shopping_alternatives,
+        "description": (
+            "Generate alternative product suggestions for a query. "
+            "Args: query (str: product query), category (str, optional)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "shopping_alternatives", '
+            '"args": {"query": "macbook air", "category": "electronics"}}'
+        ),
+    }
+    _optional_tools["shopping_user_profile"] = {
+        "function": _tool_shopping_user_profile,
+        "description": (
+            "Get or update user shopping profile (preferences, owned items). "
+            "Args: user_id (str), action (str: 'get' or 'update'), "
+            "data (str: JSON dict of fields to update, optional)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "shopping_user_profile", '
+            '"args": {"user_id": "123", "action": "get"}}'
+        ),
+    }
+    _optional_tools["shopping_price_watch"] = {
+        "function": _tool_shopping_price_watch,
+        "description": (
+            "Manage price watches — add, list, or remove. "
+            "Args: user_id (str), action (str: 'add'|'list'|'remove'), "
+            "product_name (str, optional), target_price (str, optional)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "shopping_price_watch", '
+            '"args": {"user_id": "123", "action": "add", "product_name": "iPhone 15", "target_price": "40000"}}'
+        ),
+    }
+except Exception as e:
+    logger.debug(f"Shopping tools not available — {type(e).__name__}: {e}")
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------

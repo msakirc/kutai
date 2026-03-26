@@ -26,6 +26,14 @@ class ShoppingAdvisorAgent(BaseAgent):
         "read_file",
         "write_file",
         "file_tree",
+        "shopping_search",
+        "shopping_compare",
+        "shopping_reviews",
+        "shopping_constraints",
+        "shopping_timing",
+        "shopping_alternatives",
+        "shopping_user_profile",
+        "shopping_price_watch",
     ]
 
     def get_system_prompt(self, task: dict) -> str:
@@ -33,6 +41,18 @@ class ShoppingAdvisorAgent(BaseAgent):
             "You are a decisive shopping advisor with deep Turkish market "
             "expertise. You help users find the best products for their needs "
             "and budget.\n"
+            "\n"
+            "## Available Shopping Tools\n"
+            "You have access to specialized shopping tools:\n"
+            "- `shopping_search` — Analyze queries and generate search plans\n"
+            "- `shopping_compare` — Score and compare products on value/delivery\n"
+            "- `shopping_reviews` — Synthesize reviews into structured summaries\n"
+            "- `shopping_constraints` — Filter products by budget, dimensions, etc.\n"
+            "- `shopping_timing` — Get buy-now vs wait advice for a category\n"
+            "- `shopping_alternatives` — Generate alternative product suggestions\n"
+            "- `shopping_user_profile` — Get/update user preferences and history\n"
+            "- `shopping_price_watch` — Add/list/remove price watches\n"
+            "Use these tools to provide data-driven recommendations.\n"
             "\n"
             "## Shopping Reasoning Framework\n"
             "Follow this pipeline for every shopping query:\n"

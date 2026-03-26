@@ -315,3 +315,41 @@ Items from `plans/plans_shopping.md` that were not implemented in the initial pa
     (Akakçe, Trendyol, Hepsiburada, Migros, Technopat). Remaining 10 need fixtures:
     Amazon TR, Ekşi Sözlük, Şikayetvar, Getir, Aktüel Katalog, Sahibinden, Koçtaş,
     IKEA, Donanım Haber, Google CSE.
+
+68. **Shopping blackboard usage**: Shopping workflow steps don't use the blackboard
+    system for inter-agent state sharing. Main workflows use read_blackboard/write_blackboard
+    tools for sharing architecture decisions, file lists, etc. Shopping workflows should
+    use blackboard to share: analyzed intent, search results, product matches, user
+    constraints between steps. Currently each step is independent.
+
+69. **Cost tracking for shopping LLM calls**: The centralized `_llm.py` routes through
+    `call_model()` but doesn't pass mission_id context. Shopping LLM costs aren't
+    attributed to the correct mission/task. Fix: thread task_id through _llm_call so
+    the router can associate costs.
+
+70. **Duplicate Perplexica integration**: `src/shopping/integrations/perplexica.py` is a
+    separate Perplexica client duplicating `src/tools/web_search.py` which already has
+    Perplexica support. The shopping agents already have `web_search` in allowed_tools.
+    Consider removing the standalone perplexica.py and using web_search exclusively, or
+    merge the shopping-specific query formatting into the main web_search tool.
+
+71. **Orchestrator shopping workflow hook**: The orchestrator (`src/core/orchestrator.py`)
+    doesn't call `detect_shopping_intent()` or `should_start_shopping_workflow()` from
+    the dispatch module. While shopping tasks created via /price /watch /compare work
+    (they set agent_type directly), natural language shopping queries via normal chat
+    still need the orchestrator to detect shopping intent and route to the right
+    workflow. Wire `dispatch.detect_shopping_intent()` into the orchestrator's task
+    classification → workflow routing path.
+
+72. **Shopping workflow loader path**: The workflow loader resolves paths as
+    `WORKFLOW_DIR / dir_name / workflow_name.json`. For shopping this means it looks for
+    `src/workflows/shopping/shopping.json` when given workflow_name="shopping". This
+    works for the main "shopping" workflow, but "quick_search" would look for
+    `src/workflows/quick_search/quick_search.json` instead of
+    `src/workflows/shopping/quick_search.json`. The sub-workflows need to be loadable
+    either by adjusting the loader or by using the full path "shopping/quick_search".
+
+73. **Import style inconsistency**: Shopping modules use absolute imports
+    (`from src.shopping.xxx import`) while the rest of the codebase (agents, core) uses
+    relative imports (`from .xxx import`, `from ..xxx import`). Both work but the style
+    is inconsistent. Low priority — functional but not idiomatic.

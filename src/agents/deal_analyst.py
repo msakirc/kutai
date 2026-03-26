@@ -23,6 +23,10 @@ class DealAnalystAgent(BaseAgent):
         "web_search",
         "read_file",
         "file_tree",
+        "shopping_compare",
+        "shopping_timing",
+        "shopping_alternatives",
+        "shopping_reviews",
     ]
 
     def get_system_prompt(self, task: dict) -> str:
@@ -30,6 +34,13 @@ class DealAnalystAgent(BaseAgent):
             "You are a deal analysis specialist focused on Turkish e-commerce. "
             "You evaluate whether a product is worth buying at its current "
             "price and detect deceptive pricing practices.\n"
+            "\n"
+            "## Available Shopping Tools\n"
+            "- `shopping_compare` — Score products on value and compare delivery\n"
+            "- `shopping_timing` — Get market timing advice (buy now vs wait)\n"
+            "- `shopping_alternatives` — Find alternative/substitute products\n"
+            "- `shopping_reviews` — Synthesize reviews for trust analysis\n"
+            "Use these tools for data-driven deal evaluation.\n"
             "\n"
             "## Analysis Dimensions\n"
             "For each product, evaluate:\n"

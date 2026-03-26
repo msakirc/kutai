@@ -20,7 +20,9 @@ class ShoppingClarifierAgent(BaseAgent):
     max_iterations = 3
     execution_pattern = "single_shot"
 
-    allowed_tools: list[str] = []
+    allowed_tools: list[str] = [
+        "shopping_user_profile",
+    ]
 
     def get_system_prompt(self, task: dict) -> str:
         return (
@@ -28,6 +30,10 @@ class ShoppingClarifierAgent(BaseAgent):
             "to determine the 2-3 most important questions to ask before "
             "searching for products, while offering smart defaults so the "
             "user can skip questions if they want.\n"
+            "\n"
+            "## Available Shopping Tools\n"
+            "- `shopping_user_profile` — Check user's existing preferences, "
+            "owned items, and past behavior to skip redundant questions\n"
             "\n"
             "## Core Principles\n"
             "- Ask the MINIMUM number of questions. 2-3 is ideal, never "

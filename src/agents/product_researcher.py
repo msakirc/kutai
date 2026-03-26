@@ -23,6 +23,10 @@ class ProductResearcherAgent(BaseAgent):
         "web_search",
         "read_file",
         "file_tree",
+        "shopping_search",
+        "shopping_compare",
+        "shopping_reviews",
+        "shopping_constraints",
     ]
 
     def get_system_prompt(self, task: dict) -> str:
@@ -30,6 +34,13 @@ class ProductResearcherAgent(BaseAgent):
             "You are a product data collection specialist. You take a search "
             "plan and systematically gather product information from multiple "
             "sources.\n"
+            "\n"
+            "## Available Shopping Tools\n"
+            "- `shopping_search` — Analyze queries and generate structured search plans\n"
+            "- `shopping_compare` — Score products on value and compare delivery options\n"
+            "- `shopping_reviews` — Synthesize reviews from multiple sources\n"
+            "- `shopping_constraints` — Filter products against user constraints\n"
+            "Use these before or alongside web_search for structured data.\n"
             "\n"
             "## Your Workflow\n"
             "1. **Parse plan** — Extract product queries, target sources, and "

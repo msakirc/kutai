@@ -2053,8 +2053,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                         f"Find current prices in Turkey, report top 3 options with prices and links.",
             tier="auto",
             priority=TASK_PRIORITY.get("high", 8),
-            metadata={"agent_type": "shopping_advisor", "shopping_sub_intent": "price_check",
-                       "chat_id": chat_id},
+            agent_type="shopping_advisor",
+            context={"shopping_sub_intent": "price_check", "chat_id": chat_id},
         )
         await update.message.reply_text(
             f"🔍 Price check queued for *{product}* (task #{task_id})",
@@ -2086,8 +2086,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                         f"Monitor prices and alert when a good deal appears.",
             tier="auto",
             priority=TASK_PRIORITY.get("normal", 5),
-            metadata={"agent_type": "shopping_advisor", "shopping_sub_intent": "deal_hunt",
-                       "chat_id": chat_id, "target_price": target_price},
+            agent_type="shopping_advisor",
+            context={"shopping_sub_intent": "deal_hunt", "chat_id": chat_id,
+                     "target_price": target_price},
         )
         msg = f"👁️ Price watch set for *{product}*"
         if target_price:
@@ -2190,8 +2191,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                         f"Cover price, specs, pros/cons, and recommendation for Turkey market.",
             tier="auto",
             priority=TASK_PRIORITY.get("high", 8),
-            metadata={"agent_type": "shopping_advisor", "shopping_sub_intent": "compare",
-                       "chat_id": chat_id},
+            agent_type="shopping_advisor",
+            context={"shopping_sub_intent": "compare", "chat_id": chat_id},
         )
         await update.message.reply_text(
             f"⚖️ Comparison queued: *{product1}* vs *{product2}* (task #{task_id})",

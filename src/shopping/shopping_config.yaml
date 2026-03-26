@@ -1,0 +1,19 @@
+# Shopping configuration overrides
+# ================================
+# Any values set here will override the defaults in config.py.
+# Structure mirrors the _DEFAULTS dict — only include keys you want to change.
+#
+# Example:
+#
+# rate_limits:
+#   akakce:
+#     delay_seconds: 15
+#     daily_budget: 100
+#
+# execution:
+#   prefer_remote: true
+#
+# user_defaults:
+#   preferred_stores:
+#     - trendyol
+#     - hepsiburada

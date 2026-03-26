@@ -1083,7 +1083,7 @@ async def get_recent_completed_tasks(limit=5):
 
 async def store_memory(key, value, category="general", mission_id=None):
     db = await get_db()
-    # Upsert
+    # Upsert in SQL
     existing = await db.execute(
         "SELECT id FROM memory WHERE key = ? AND mission_id IS ?",
         (key, mission_id)
@@ -1101,6 +1101,25 @@ async def store_memory(key, value, category="general", mission_id=None):
         )
     await db.commit()
 
+    # Also embed into vector store for semantic recall
+    try:
+        from src.memory.vector_store import embed_and_store
+        await embed_and_store(
+            text=f"{key}: {value}",
+            metadata={
+                "source": "memory_table",
+                "key": key,
+                "category": category,
+                "mission_id": mission_id or "",
+                "type": "memory",
+            },
+            collection="semantic",
+            doc_id=f"mem:{hashlib.md5(f'{key}:{mission_id}'.encode()).hexdigest()[:16]}",
+        )
+    except Exception as exc:
+        logger.debug(f"Vector embedding of memory failed (non-critical): {exc}")
+
+
 async def recall_memory(category=None, mission_id=None, limit=20):
     db = await get_db()
     query = "SELECT * FROM memory WHERE 1=1"
@@ -1115,6 +1134,41 @@ async def recall_memory(category=None, mission_id=None, limit=20):
     params.append(limit)
     cursor = await db.execute(query, params)
     return [dict(row) for row in await cursor.fetchall()]
+
+
+async def semantic_recall(query_text, category=None, mission_id=None, top_k=5):
+    """Semantic search over stored memories using vector similarity."""
+    try:
+        from src.memory.vector_store import query as vquery
+
+        where_filter = {"source": "memory_table"}
+        if category:
+            where_filter["category"] = category
+        if mission_id:
+            where_filter["mission_id"] = mission_id
+
+        results = await vquery(
+            text=query_text,
+            collection="semantic",
+            top_k=top_k,
+            where=where_filter,
+        )
+
+        # Convert to memory-table-like dicts
+        memories = []
+        for r in results:
+            meta = r.get("metadata", {})
+            memories.append({
+                "key": meta.get("key", ""),
+                "value": r.get("text", ""),
+                "category": meta.get("category", ""),
+                "mission_id": meta.get("mission_id", ""),
+                "distance": r.get("distance", 1.0),
+            })
+        return memories
+    except Exception as exc:
+        logger.debug(f"semantic_recall failed: {exc}")
+        return []
 
 async def get_daily_stats():
     db = await get_db()

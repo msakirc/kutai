@@ -5,6 +5,8 @@ Phase 13.2 — Skill Library
 DB table of reusable task approaches. On successful novel tasks, extract
 the approach and store it. Inject relevant skills as context on similar
 future tasks.
+
+Matching uses both regex trigger_pattern AND vector similarity search.
 """
 from __future__ import annotations
 import re
@@ -41,7 +43,7 @@ async def add_skill(
     tool_sequence: str = "",
     examples: str = "",
 ) -> int:
-    """Add or update a skill. Returns the skill ID."""
+    """Add or update a skill. Returns the skill ID. Also embeds for vector search."""
     db = await get_db()
     await _ensure_table(db)
     cursor = await db.execute(
@@ -56,15 +58,43 @@ async def add_skill(
         (name, description, trigger_pattern, tool_sequence, examples),
     )
     await db.commit()
+    skill_id = cursor.lastrowid or 0
     logger.info(f"Skill saved: {name}")
-    return cursor.lastrowid or 0
+
+    # Embed skill description for vector search
+    try:
+        from src.memory.vector_store import embed_and_store
+        embed_text = f"{name}: {description}"
+        if tool_sequence:
+            embed_text += f" Approach: {tool_sequence}"
+        await embed_and_store(
+            text=embed_text,
+            metadata={
+                "type": "skill",
+                "skill_name": name,
+                "skill_id": skill_id,
+            },
+            collection="semantic",
+            doc_id=f"skill:{name}",
+        )
+    except Exception as exc:
+        logger.debug(f"Skill embedding failed (non-critical): {exc}")
+
+    return skill_id
 
 
 async def find_relevant_skills(task_text: str, limit: int = 3) -> list[dict]:
-    """Find skills whose trigger_pattern matches the task text."""
+    """
+    Find skills matching the task text.
+
+    Uses both regex trigger_pattern matching AND vector similarity search,
+    then merges and deduplicates results.
+    """
     try:
         db = await get_db()
         await _ensure_table(db)
+
+        # 1. Regex-based matching (original approach)
         cursor = await db.execute(
             "SELECT * FROM skills WHERE success_count > 0 ORDER BY success_count DESC"
         )
@@ -73,16 +103,45 @@ async def find_relevant_skills(task_text: str, limit: int = 3) -> list[dict]:
         all_skills = [dict(zip(cols, row)) for row in rows]
 
         task_lower = task_text.lower()
-        matches = []
+        regex_matches = []
         for skill in all_skills:
             pattern = skill.get("trigger_pattern", "")
             if not pattern:
                 continue
             if re.search(pattern, task_lower, re.IGNORECASE):
-                matches.append(skill)
-            if len(matches) >= limit:
-                break
-        return matches
+                regex_matches.append(skill)
+
+        # 2. Vector-based matching
+        vector_matches = []
+        try:
+            from src.memory.vector_store import query as vquery
+            results = await vquery(
+                text=task_text,
+                collection="semantic",
+                top_k=limit * 2,
+                where={"type": "skill"},
+            )
+            # Look up full skill data from DB for vector matches
+            for r in results:
+                meta = r.get("metadata", {})
+                skill_name = meta.get("skill_name", "")
+                if not skill_name:
+                    continue
+                # Skip if already in regex matches
+                if any(s.get("name") == skill_name for s in regex_matches):
+                    continue
+                # Find full skill record
+                for skill in all_skills:
+                    if skill.get("name") == skill_name:
+                        vector_matches.append(skill)
+                        break
+        except Exception as exc:
+            logger.debug(f"Vector skill search failed (falling back to regex): {exc}")
+
+        # Merge: regex matches first (stronger signal), then vector matches
+        merged = regex_matches + vector_matches
+        return merged[:limit]
+
     except Exception as exc:
         logger.debug(f"find_relevant_skills failed: {exc}")
         return []

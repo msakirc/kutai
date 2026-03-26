@@ -42,6 +42,21 @@ from src.shopping.intelligence.special.exchange_rate import (
     get_rate_trend,
     assess_import_price_impact,
 )
+from src.shopping.intelligence.special.bundle_detector import (
+    detect_bundle_deals,
+    suggest_shipping_combos,
+    detect_set_pricing,
+)
+from src.shopping.intelligence.special.complementary import (
+    suggest_complements,
+    assess_consumable_cost,
+    get_complement_map,
+)
+from src.shopping.intelligence.special.fraud_detector import (
+    assess_counterfeit_risk,
+    detect_counterfeit_keywords,
+    get_safety_warnings,
+)
 
 __all__ = [
     "analyze_warranty",
@@ -66,4 +81,13 @@ __all__ = [
     "get_usd_try_rate",
     "get_rate_trend",
     "assess_import_price_impact",
+    "detect_bundle_deals",
+    "suggest_shipping_combos",
+    "detect_set_pricing",
+    "suggest_complements",
+    "assess_consumable_cost",
+    "get_complement_map",
+    "assess_counterfeit_risk",
+    "detect_counterfeit_keywords",
+    "get_safety_warnings",
 ]

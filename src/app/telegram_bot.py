@@ -76,9 +76,10 @@ def _looks_like_product_idea(description: str) -> bool:
 # ─── Interactive Menu Definitions ─────────────────────────────────────────
 # Each category: (emoji_label, key, [(button_label, command, needs_arg, arg_prompt)])
 MENU_CATEGORIES = [
-    ("🎯 Missions", "missions", [
+    ("🎯 Missions & Tasks", "missions", [
         ("🎯 New Mission", "mission", True, "Describe your mission:"),
         ("🔄 Workflow Mission", "mission_wf", True, "Describe the product/workflow idea:"),
+        ("📋 Add Task", "task", True, "Describe the task:"),
         ("📋 List Missions", "missions", False, None),
         ("📬 Queue", "queue", False, None),
         ("🚫 Cancel", "cancel", True, "Which mission or task ID to cancel?"),
@@ -86,47 +87,46 @@ MENU_CATEGORIES = [
         ("⏸️ Pause", "pause", True, "Which mission ID to pause?"),
         ("▶️ Resume", "resume", True, "Which mission ID to resume?"),
         ("🌳 Graph", "graph", True, "Which mission ID to graph?"),
+        ("📋 WF Status", "wfstatus", True, "Which mission ID for workflow status?"),
     ]),
-    ("📊 Monitoring", "monitoring", [
+    ("📊 Status & Costs", "monitoring", [
         ("📊 Status", "status", False, None),
         ("📰 Digest", "digest", False, None),
         ("📈 Progress", "progress", True, "Which mission ID? (empty for all)"),
-        ("📉 Metrics", "metrics", False, None),
-        ("🔍 Audit", "audit", True, "Which task ID to audit?"),
-        ("🔁 Replay", "replay", True, "Which task ID to replay?"),
         ("💰 Cost", "cost", True, "Which mission ID for cost breakdown?"),
-        ("🤖 Model Stats", "modelstats", False, None),
         ("💵 Budget", "budget", True, "Enter daily budget limit (empty to view):"),
-        ("🗂️ Workspaces", "workspace", False, None),
-        ("📋 WF Status", "wfstatus", True, "Which mission ID for workflow status?"),
+        ("🤖 Model Stats", "modelstats", False, None),
     ]),
     ("🛒 Shopping", "shopping", [
         ("🛒 Find Product", "shop", True, "What are you looking for? (e.g. 'motherboard under 10k TL')"),
         ("💰 Compare Prices", "price", True, "Which product to check prices for?"),
+        ("⚖️ Compare", "compare", True, "Compare what? (e.g. 'iPhone 15 vs Samsung S24')"),
         ("⏰ Price Watch", "watch", True, "Which product to watch? (e.g. 'RTX 4070 under 25k')"),
         ("🔍 Product Research", "research_product", True, "Which product to research in depth?"),
+        ("🏷️ My Deals", "deals", False, None),
+        ("📦 My Stuff", "mystuff", False, None),
     ]),
     ("📝 Personal", "personal", [
         ("📝 Add Todo", "todo", True, "What do you need to remember?"),
         ("📋 My Todos", "todos", False, None),
         ("🗑️ Clear Done", "cleartodos", False, None),
-    ]),
-    ("🧠 Knowledge", "knowledge", [
         ("💾 Remember", "remember", True, "What should I remember?"),
         ("🔎 Recall", "recall", True, "What do you want to recall?"),
         ("📥 Ingest", "ingest", True, "Send a URL or file path to ingest:"),
         ("⭐ Feedback", "feedback", True, "Enter: <task_id> <good|bad|partial> [reason]"),
     ]),
-    ("⚙️ System", "system", [
+    ("⚙️ System & Admin", "system", [
         ("🎚️ Autonomy", "autonomy", True, "Set level: low, medium, high, or paranoid"),
-        ("🔑 Credential", "credential", True, "Credential key=value (or key to view):"),
-        ("🎛️ Tune", "tune", True, "What setting to tune?"),
         ("🖥️ Load", "load", True, "Set load mode (minimal/normal/auto):"),
-        ("🧪 Improve", "improve", False, None),
-        ("📭 DLQ", "dlq", False, None),
-    ]),
-    ("🔴 Danger Zone", "danger", [
         ("🐛 Debug", "debug", False, None),
+        ("📉 Metrics", "metrics", False, None),
+        ("🔍 Audit", "audit", True, "Which task ID to audit?"),
+        ("🔁 Replay", "replay", True, "Which task ID to replay?"),
+        ("🗂️ Workspaces", "workspace", False, None),
+        ("🧪 Improve", "improve", False, None),
+        ("🎛️ Tune", "tune", True, "What setting to tune?"),
+        ("🔑 Credential", "credential", True, "Credential key=value (or key to view):"),
+        ("📭 DLQ", "dlq", False, None),
         ("♻️ Reset", "reset", True, "Reset what? (task ID, 'failed', 'stuck', 'blocked')"),
         ("☢️ Reset All", "resetall", False, None),
         ("🔄 Restart", "kutai_restart", False, None),
@@ -147,11 +147,12 @@ def _build_category_keyboard() -> InlineKeyboardMarkup:
 
 
 # Persistent reply keyboard — always visible at the bottom of the chat
+# Note: /stop and /restart deliberately excluded — too dangerous for accidental taps.
+# Use the inline menu (System & Admin category) for those.
 REPLY_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("/status"), KeyboardButton("/missions"), KeyboardButton("/queue")],
-        [KeyboardButton("/todos"), KeyboardButton("/digest"), KeyboardButton("/start")],
-        [KeyboardButton("/stop"), KeyboardButton("/restart")],
+        [KeyboardButton("/todos"), KeyboardButton("/shop"), KeyboardButton("/digest")],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -220,19 +221,29 @@ class TelegramInterface:
         commands = [
             BotCommand("start", "Show main menu"),
             BotCommand("mission", "Create a new mission"),
+            BotCommand("task", "Add a quick task"),
             BotCommand("missions", "List active missions"),
             BotCommand("queue", "View task queue"),
             BotCommand("status", "System status"),
             BotCommand("cancel", "Cancel a task or mission"),
+            BotCommand("pause", "Pause a mission"),
+            BotCommand("resume", "Resume a mission"),
             BotCommand("progress", "Mission progress"),
+            BotCommand("wfstatus", "Workflow status"),
             BotCommand("digest", "Daily digest"),
+            BotCommand("result", "View completed task result"),
             BotCommand("shop", "Shopping assistant"),
             BotCommand("price", "Quick price check"),
             BotCommand("watch", "Set up price watch"),
+            BotCommand("deals", "Active deals & watches"),
+            BotCommand("compare", "Compare products"),
             BotCommand("todo", "Add a personal todo"),
             BotCommand("todos", "List your todos"),
             BotCommand("remember", "Save something to memory"),
             BotCommand("recall", "Search memory"),
+            BotCommand("budget", "View/set cost budget"),
+            BotCommand("load", "GPU load control"),
+            BotCommand("debug", "Full system debug"),
             BotCommand("stop", "Stop KutAI"),
             BotCommand("restart", "Restart KutAI"),
         ]
@@ -291,6 +302,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("deals", self.cmd_deals))
         self.app.add_handler(CommandHandler("mystuff", self.cmd_mystuff))
         self.app.add_handler(CommandHandler("compare", self.cmd_compare))
+        self.app.add_handler(CommandHandler("result", self.cmd_result))
         # Wrapper control commands
         self.app.add_handler(CommandHandler("kutai_restart", self.cmd_kutai_restart))
         self.app.add_handler(CommandHandler("restart", self.cmd_kutai_restart))
@@ -645,13 +657,64 @@ class TelegramInterface:
         threading.Timer(5.0, lambda: os._exit(42)).start()
 
     async def cmd_kutai_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Stop KutAI via the wrapper (exit code 0)."""
-        await update.message.reply_text("⏹ Stopping KutAI...")
+        """Stop KutAI via the wrapper (exit code 0). Requires confirmation."""
+        keyboard = [[
+            InlineKeyboardButton("⏹ Yes, stop KutAI", callback_data="stop_confirm"),
+            InlineKeyboardButton("Cancel", callback_data="stop_cancel"),
+        ]]
+        await update.message.reply_text(
+            "⚠️ *Stop KutAI?*\nYou will need to manually restart the process.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    async def _do_kutai_stop(self):
+        """Actually perform the KutAI stop after confirmation."""
         if self.orchestrator:
             self.orchestrator.requested_exit_code = 0
             self.orchestrator.shutdown_event.set()
         import threading
         threading.Timer(5.0, lambda: os._exit(0)).start()
+
+    # ─── Result Command ─────────────────────────────────────────────────
+
+    async def cmd_result(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """View the result of a completed task. /result <task_id>"""
+        if not context.args:
+            recent = await get_recent_completed_tasks(limit=5)
+            if not recent:
+                await update.message.reply_text("No completed tasks found.")
+                return
+            lines = ["📄 *Recent completed tasks:*\n"]
+            for t in recent:
+                tid = t["id"]
+                title = t.get("title", "untitled")[:60]
+                lines.append(f"• #{tid} — {title}")
+            lines.append("\nUse /result <id> to view full result.")
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            return
+        try:
+            task_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("Task ID must be a number.")
+            return
+        task = await get_task(task_id)
+        if not task:
+            await update.message.reply_text(f"Task #{task_id} not found.")
+            return
+        result = task.get("result", "")
+        status = task.get("status", "unknown")
+        title = task.get("title", "untitled")
+        if not result:
+            await update.message.reply_text(
+                f"Task #{task_id} ({status}): no result yet."
+            )
+            return
+        header = f"📄 *Result — Task #{task_id}*\n_{title}_\n\n"
+        text = header + str(result)
+        if len(text) > 4000:
+            text = text[:3950] + "\n\n_(truncated — result too long)_"
+        await update.message.reply_text(text, parse_mode="Markdown")
 
     # ─── Phase 3 Commands ──────────────────────────────────────────────
 
@@ -1614,9 +1677,22 @@ class TelegramInterface:
             logger.debug("clarification DB check failed", error=str(e))
 
         # ═══════════════════════════════════════════════════════
-        # PRIORITY 2: LLM-based message classification
+        # PRIORITY 2: Keyword pre-check then LLM classification
         # ═══════════════════════════════════════════════════════
-        classification = await self._classify_user_message(text)
+        # Run keyword classifier first — high-confidence pattern types
+        # (status_query, todo, etc.) skip the LLM entirely. This prevents
+        # small LLMs from misclassifying "how is the coffee machine search
+        # going" as shopping just because it contains a product noun.
+        keyword_result = self._classify_message_by_keywords(text)
+        _KEYWORD_AUTHORITATIVE_TYPES = {
+            "status_query", "todo", "load_control", "bug_report",
+            "feature_request", "casual",
+        }
+        if keyword_result["type"] in _KEYWORD_AUTHORITATIVE_TYPES:
+            classification = keyword_result
+        else:
+            classification = await self._classify_user_message(text)
+
         msg_type = classification["type"]
         msg_workflow = classification.get("workflow")
         logger.info("message classified", msg_type=msg_type,
@@ -1651,6 +1727,7 @@ class TelegramInterface:
                 tier="auto",
                 priority=TASK_PRIORITY.get("high", 8),
                 agent_type="shopping_advisor",
+                context={"chat_id": chat_id},
             )
             self.user_last_task_id[chat_id] = task_id
             await update.message.reply_text(
@@ -1829,7 +1906,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             logger.debug("llm message classification",
                          type=msg_type, confidence=confidence, workflow=workflow)
             if confidence < 0.4:
-                return {"type": "task"}
+                return self._classify_message_by_keywords(text)
             classification = {"type": msg_type}
             if workflow:
                 classification["workflow"] = workflow
@@ -1874,7 +1951,6 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             "almak istiyorum", "want to buy", "should i buy", "almalı",
             "karşılaştır", "hediye", "gift", "tavsiye", "öneri",
             "upgrade", "yükseltme", "how much", "ne kadar",
-            "motherboard", "cpu", "gpu", "laptop", "phone", "telefon",
         ]):
             return {"type": "shopping"}
         # Bug reports
@@ -2297,6 +2373,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             tier="auto",
             priority=TASK_PRIORITY.get("high", 8),
             agent_type="shopping_advisor",
+            context={"chat_id": chat_id},
         )
         self.user_last_task_id[chat_id] = task_id
         await update.message.reply_text(
@@ -2632,14 +2709,18 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             new_status = await toggle_todo(todo_id)
             icon = "✅" if new_status == "done" else "⬜"
             await query.answer(f"{icon} {'Done!' if new_status == 'done' else 'Reopened'}")
-            # Refresh the message text to reflect the change
+            # Rebuild the full todo list so all buttons remain accessible
             try:
-                todo = await get_todo(todo_id)
-                if todo:
-                    status_icon = "✅" if new_status == "done" else "📝"
+                from src.app.reminders import build_todo_list_message
+                text, markup = await build_todo_list_message()
+                if text:
                     await query.edit_message_text(
-                        f"{status_icon} *#{todo_id}* — {todo['title']}\nStatus: {new_status}",
-                        parse_mode="Markdown",
+                        text, parse_mode="Markdown", reply_markup=markup,
+                    )
+                else:
+                    # All todos done — replace with success message
+                    await query.edit_message_text(
+                        "🎉 All todos done!", parse_mode="Markdown",
                     )
             except Exception:
                 pass
@@ -2774,6 +2855,14 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             return
         elif data == "resetall_cancel":
             await query.edit_message_text("Cancelled.")
+            return
+
+        if data == "stop_confirm":
+            await query.edit_message_text("⏹ Stopping KutAI...")
+            await self._do_kutai_stop()
+            return
+        elif data == "stop_cancel":
+            await query.edit_message_text("Cancelled. KutAI continues running.")
             return
 
         # Approval/rejection buttons (approve_<id>, reject_<id>)

@@ -27,32 +27,71 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ─── Single-instance guard ────────────────────────────────────────────────
-# Prevent duplicate wrappers from running simultaneously.
+# Prevent duplicate wrappers using an OS-level exclusive file lock.
+# PID-based checks have a race condition at boot when both start simultaneously.
 _LOCK_FILE = Path("logs/wrapper.lock")
+_lock_handle = None
 
 
 def _check_single_instance():
-    """Exit if another wrapper is already running."""
+    """Exit if another wrapper is already running. Uses OS-level file lock."""
+    global _lock_handle
     _LOCK_FILE.parent.mkdir(exist_ok=True)
-    if _LOCK_FILE.exists():
+
+    try:
+        import msvcrt
+        # Open file for writing — this itself doesn't block
+        _lock_handle = open(_LOCK_FILE, "w")
+        # Try exclusive lock (non-blocking) — fails if another process holds it
+        msvcrt.locking(_lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
+        # Write our PID for informational purposes
+        _lock_handle.write(str(os.getpid()))
+        _lock_handle.flush()
+    except (OSError, IOError):
+        # Another wrapper holds the lock
         try:
-            old_pid = int(_LOCK_FILE.read_text().strip())
-            # Check if process is alive (Windows)
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(0x1000, False, old_pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-            if handle:
-                kernel32.CloseHandle(handle)
-                print(f"ERROR: Another wrapper is already running (PID {old_pid}).")
-                print("Kill it first or delete logs/wrapper.lock")
-                sys.exit(1)
-        except (ValueError, OSError, AttributeError):
-            pass  # stale lock or non-Windows, proceed
-    _LOCK_FILE.write_text(str(os.getpid()))
+            existing_pid = _LOCK_FILE.read_text().strip()
+        except Exception:
+            existing_pid = "unknown"
+        print(f"ERROR: Another wrapper is already running (PID {existing_pid}).")
+        print("Kill it first or delete logs/wrapper.lock")
+        sys.exit(1)
+    except ImportError:
+        # Non-Windows fallback: try fcntl
+        try:
+            import fcntl
+            _lock_handle = open(_LOCK_FILE, "w")
+            fcntl.flock(_lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _lock_handle.write(str(os.getpid()))
+            _lock_handle.flush()
+        except (OSError, IOError):
+            print("ERROR: Another wrapper is already running.")
+            sys.exit(1)
+        except ImportError:
+            # No locking available, fall back to PID check
+            if _LOCK_FILE.exists():
+                try:
+                    old_pid = int(_LOCK_FILE.read_text().strip())
+                    import ctypes
+                    kernel32 = ctypes.windll.kernel32
+                    handle = kernel32.OpenProcess(0x1000, False, old_pid)
+                    if handle:
+                        kernel32.CloseHandle(handle)
+                        print(f"ERROR: Another wrapper is already running (PID {old_pid}).")
+                        sys.exit(1)
+                except Exception:
+                    pass
+            _LOCK_FILE.write_text(str(os.getpid()))
 
 
 def _cleanup_lock():
-    """Remove lock file on exit."""
+    """Release lock and remove lock file on exit."""
+    global _lock_handle
+    if _lock_handle:
+        try:
+            _lock_handle.close()
+        except Exception:
+            pass
     try:
         _LOCK_FILE.unlink(missing_ok=True)
     except Exception:
@@ -65,14 +104,15 @@ _check_single_instance()
 atexit.register(_cleanup_lock)
 
 # ─── Venv guard ───────────────────────────────────────────────────────────
+# Hard stop if running with system Python when venv exists
 _EXPECTED_VENV = Path(__file__).parent / ".venv"
-if hasattr(sys, "real_prefix") or (
+_in_venv = hasattr(sys, "real_prefix") or (
     hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix
-):
-    pass  # running in a venv, good
-elif _EXPECTED_VENV.exists():
-    print(f"WARNING: Running with system Python ({sys.executable})")
-    print(f"Recommended: .venv\\Scripts\\python.exe kutai_wrapper.py")
+)
+if not _in_venv and _EXPECTED_VENV.exists():
+    print(f"ERROR: Running with system Python ({sys.executable})")
+    print(f"Use: .venv\\Scripts\\python.exe kutai_wrapper.py")
+    sys.exit(1)
 
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")

@@ -1,5 +1,6 @@
 # telegram_bot.py
 import asyncio
+import os
 from datetime import datetime
 from pathlib import Path
 from src.infra.logging_config import get_logger
@@ -629,11 +630,19 @@ class TelegramInterface:
     # ─── Wrapper Control Commands ─────────────────────────────────────
 
     async def cmd_kutai_restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Restart KutAI via the wrapper (exit code 42)."""
+        """Restart KutAI via the wrapper (exit code 42).
+
+        Uses a hard exit after a short delay as a fallback in case the
+        graceful shutdown path is blocked (e.g. stuck LLM call).
+        """
         await update.message.reply_text("🔄 Restarting KutAI...")
         if self.orchestrator:
             self.orchestrator.requested_exit_code = 42
             self.orchestrator.shutdown_event.set()
+        # Hard exit fallback on a real thread — if graceful shutdown is
+        # blocked (stuck LLM call, deadlocked event loop), this fires anyway.
+        import threading
+        threading.Timer(5.0, lambda: os._exit(42)).start()
 
     async def cmd_kutai_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Stop KutAI via the wrapper (exit code 0)."""
@@ -641,6 +650,8 @@ class TelegramInterface:
         if self.orchestrator:
             self.orchestrator.requested_exit_code = 0
             self.orchestrator.shutdown_event.set()
+        import threading
+        threading.Timer(5.0, lambda: os._exit(0)).start()
 
     # ─── Phase 3 Commands ──────────────────────────────────────────────
 

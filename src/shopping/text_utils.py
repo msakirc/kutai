@@ -571,3 +571,244 @@ def normalize_product_name(text: str) -> str:
     result = re.sub(r"\s{2,}", " ", result).strip()
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# 12. fix_turkish_encoding  (plan item #45)
+# ---------------------------------------------------------------------------
+
+# Mojibake map: UTF-8 bytes of Turkish characters misread as Latin-1/ISO-8859-9
+_MOJIBAKE_MAP: list[tuple[str, str]] = [
+    ("Ã¼", "ü"),
+    ("Ã§", "ç"),
+    ("Ã¶", "ö"),
+    ("ÅŸ", "ş"),
+    ("Ä±", "ı"),
+    ("Ä°", "İ"),
+    ("Ã–", "Ö"),
+    ("Ãœ", "Ü"),
+    ("Ã‡", "Ç"),
+    ("Åž", "Ş"),
+    ("ÄŸ", "ğ"),
+    ("Äž", "Ğ"),
+    ("Ã¢", "â"),
+    ("Ã®", "î"),
+    ("Ã»", "û"),
+]
+
+# Common HTML entity -> Turkish character
+_HTML_ENTITY_MAP: list[tuple[str, str]] = [
+    ("&uuml;",  "ü"),
+    ("&Uuml;",  "Ü"),
+    ("&ccedil;", "ç"),
+    ("&Ccedil;", "Ç"),
+    ("&ouml;",  "ö"),
+    ("&Ouml;",  "Ö"),
+    ("&szlig;", "ß"),   # not Turkish but appears in mixed content
+    ("&#252;",  "ü"),
+    ("&#220;",  "Ü"),
+    ("&#231;",  "ç"),
+    ("&#199;",  "Ç"),
+    ("&#246;",  "ö"),
+    ("&#214;",  "Ö"),
+    ("&#351;",  "ş"),
+    ("&#350;",  "Ş"),
+    ("&#305;",  "ı"),
+    ("&#304;",  "İ"),
+    ("&#287;",  "ğ"),
+    ("&#286;",  "Ğ"),
+    ("&amp;",   "&"),
+    ("&lt;",    "<"),
+    ("&gt;",    ">"),
+    ("&nbsp;",  " "),
+]
+
+# Zero-width and BOM characters to strip
+_ZERO_WIDTH_CHARS = "\u200b\u200c\u200d\u200e\u200f\ufeff\u00ad"
+
+
+def fix_turkish_encoding(text: str) -> str:
+    """Fix common Turkish encoding issues in *text*.
+
+    Handles three classes of problems:
+    1. Mojibake — UTF-8 bytes of Turkish characters misread as Latin-1 or
+       ISO-8859-9 (e.g. ``Ã¼`` -> ``ü``).
+    2. HTML entities — both named (``&uuml;``) and numeric (``&#252;``).
+    3. Double-encoded UTF-8 — bytes encoded as UTF-8, then those bytes
+       re-encoded as UTF-8 (detected by round-trip encode/decode attempt).
+    """
+    if not text or not isinstance(text, str):
+        return text
+
+    result = text
+
+    # Pass 1 — replace known mojibake sequences (longest first to avoid
+    # partial replacements when one sequence is a prefix of another).
+    for bad, good in sorted(_MOJIBAKE_MAP, key=lambda t: len(t[0]), reverse=True):
+        if bad in result:
+            result = result.replace(bad, good)
+
+    # Pass 2 — replace HTML entities (case-sensitive as defined in the map,
+    # but also handle hex numeric entities generically).
+    for entity, char in _HTML_ENTITY_MAP:
+        if entity in result:
+            result = result.replace(entity, char)
+
+    # Generic hex numeric entities: &#xHH; or &#xHHHH;
+    result = re.sub(
+        r"&#[xX]([0-9A-Fa-f]+);",
+        lambda m: chr(int(m.group(1), 16)),
+        result,
+    )
+
+    # Remaining decimal numeric entities not covered by the map
+    result = re.sub(
+        r"&#(\d+);",
+        lambda m: chr(int(m.group(1))) if int(m.group(1)) < 0x110000 else m.group(0),
+        result,
+    )
+
+    # Pass 3 — attempt to fix double-encoded UTF-8.
+    # Strategy: encode back to latin-1 (which is lossless for code points
+    # 0x00-0xFF) and decode as UTF-8.  Only apply if the result is different
+    # *and* contains Turkish characters (to avoid false positives).
+    try:
+        recovered = result.encode("latin-1").decode("utf-8")
+        if recovered != result and any(ch in recovered for ch in "şçğıöüİŞÇĞÖÜ"):
+            result = recovered
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass  # Not double-encoded; keep current result
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 13. normalize_product_name  (plan item #45 — encoding-aware override)
+#
+# This definition replaces the one above (section 11) at runtime.  The
+# previous version handles filler-word removal; this version adds encoding
+# repair, zero-width character stripping, and Turkish-correct I/İ lowering
+# before delegating to the filler-word logic.
+# ---------------------------------------------------------------------------
+
+def normalize_product_name(name: str) -> str:  # type: ignore[no-redef]
+    """Clean up a raw product name scraped from a Turkish e-commerce site.
+
+    Steps applied in order:
+    1. Fix encoding issues (mojibake, HTML entities, double-encoded UTF-8).
+    2. Strip zero-width / BOM characters.
+    3. Collapse multiple spaces and strip leading/trailing whitespace.
+    4. Remove marketing filler phrases (via the original section-11 logic).
+    5. Normalize Turkish dotted/dotless I: ``İ`` -> ``i``, ``I`` -> ``ı``
+       when the surrounding context is Turkish.
+
+    The original ``normalize_product_name`` (section 11) is superseded by
+    this definition; Python always uses the last binding in a module.
+    """
+    if not name or not isinstance(name, str):
+        return name
+
+    # Step 1: fix encoding
+    result = fix_turkish_encoding(name)
+
+    # Step 2: strip zero-width characters and BOM
+    for zw in _ZERO_WIDTH_CHARS:
+        result = result.replace(zw, "")
+
+    # Step 3: collapse spaces early so filler patterns match reliably
+    result = re.sub(r"\s{2,}", " ", result).strip()
+
+    # Step 4: remove filler phrases (reuse the data from section 11)
+    for phrase in _FILLER_PHRASES:
+        pattern = re.compile(
+            r"(?<!\w)" + re.escape(phrase) + r"(?!\w)",
+            re.IGNORECASE,
+        )
+        result = pattern.sub("", result)
+
+    # Strip surrounding punctuation remnants (dashes, pipes, slashes)
+    result = re.sub(r"[|\-/\\]+\s*$", "", result)
+    result = re.sub(r"^\s*[|\-/\\]+", "", result)
+
+    # Step 5: collapse spaces again after removals and strip
+    result = re.sub(r"\s{2,}", " ", result).strip()
+
+    # Step 6: normalize Turkish I/İ in Turkish-context text
+    # İ (dotted capital) -> i  |  I (dotless capital) -> ı
+    if detect_language(result) == "tr" or any(ch in result for ch in "şçğöüŞÇĞÖÜ"):
+        result = result.replace("İ", "i").replace("I", "ı")
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 14. normalize_spec_value  (plan item #45)
+# ---------------------------------------------------------------------------
+
+# Unit normalization table: (pattern, canonical)
+_UNIT_NORM: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bGB\b",  re.IGNORECASE), "GB"),
+    (re.compile(r"\bGb\b"),                 "GB"),
+    (re.compile(r"\bgb\b"),                 "GB"),
+    (re.compile(r"\bMB\b",  re.IGNORECASE), "MB"),
+    (re.compile(r"\bTB\b",  re.IGNORECASE), "TB"),
+    (re.compile(r"\bKg\b"),                 "kg"),
+    (re.compile(r"\bKG\b"),                 "kg"),
+    (re.compile(r"\bMHz\b", re.IGNORECASE), "MHz"),
+    (re.compile(r"\bGHz\b", re.IGNORECASE), "GHz"),
+    (re.compile(r"\bW\b",   re.IGNORECASE), "W"),
+]
+
+# Turkish boolean normalization: canonical form is title-case
+_TR_YES_VARIANTS = re.compile(r"^(var|VAR|Var)$")
+_TR_NO_VARIANTS  = re.compile(r"^(yok|YOK|Yok)$")
+_TR_YES_NO_FULL  = re.compile(r"^(evet|EVET|Evet)$")
+_TR_NO_FULL      = re.compile(r"^(hayır|HAYIR|Hayır|hayir|HAYIR)$", re.IGNORECASE)
+
+
+def normalize_spec_value(key: str, value: str) -> str:
+    """Normalize a product specification value for consistent storage.
+
+    Operations performed:
+    1. Fix encoding (mojibake, HTML entities).
+    2. Normalize storage/memory units: ``GB`` / ``Gb`` / ``gb`` -> ``GB``;
+       ``Kg`` / ``KG`` -> ``kg``; etc.
+    3. Normalize Turkish boolean strings:
+       ``Var`` / ``var`` / ``VAR`` -> ``"Var"``
+       ``Yok`` / ``yok`` / ``YOK`` -> ``"Yok"``
+       ``Evet`` / ``evet``         -> ``"Evet"``
+       ``Hayır`` / ``hayır``       -> ``"Hayır"``
+    4. Strip trailing dots and commas.
+    5. Strip surrounding whitespace.
+
+    *key* is accepted for future key-dependent logic (e.g. numeric fields)
+    but is not used in the current implementation.
+    """
+    if not value or not isinstance(value, str):
+        return value
+
+    result = fix_turkish_encoding(value)
+    result = result.strip()
+
+    # Normalize units
+    for pattern, canonical in _UNIT_NORM:
+        result = pattern.sub(canonical, result)
+
+    # Normalize Turkish Yes/No/Evet/Hayır
+    stripped = result.strip()
+    if _TR_YES_VARIANTS.match(stripped):
+        return "Var"
+    if _TR_NO_VARIANTS.match(stripped):
+        return "Yok"
+    if _TR_YES_NO_FULL.match(stripped):
+        return "Evet"
+    if _TR_NO_FULL.match(stripped):
+        return "Hayır"
+
+    # Strip trailing dots and commas
+    result = result.rstrip(".,")
+
+    # Final whitespace strip
+    result = result.strip()
+
+    return result

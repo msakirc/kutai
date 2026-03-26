@@ -1,7 +1,8 @@
 """Shopping resilience modules.
 
 Provides graceful degradation, rate budgeting, circuit breaking,
-error recovery, and cache fallback for the shopping system.
+error recovery, cache fallback, and anti-detection monitoring for
+the shopping system.
 """
 
 from src.shopping.resilience.fallback_chain import (
@@ -33,6 +34,22 @@ from src.shopping.resilience.cache_fallback import (
     get_stale_price,
     warmup_cache,
 )
+from src.shopping.resilience.detection_monitor import (
+    DetectionMonitor,
+    record_request,
+    is_domain_cooled_down,
+    get_success_rate,
+    get_detection_metrics,
+)
+from src.shopping.resilience.price_verification import (
+    verify_prices,
+    flag_outliers,
+)
+from src.shopping.resilience.staleness import (
+    assess_staleness,
+    detect_flash_sale,
+    get_recommended_ttl,
+)
 
 __all__ = [
     "execute_with_fallback",
@@ -54,4 +71,14 @@ __all__ = [
     "get_stale_product",
     "get_stale_price",
     "warmup_cache",
+    "DetectionMonitor",
+    "record_request",
+    "is_domain_cooled_down",
+    "get_success_rate",
+    "get_detection_metrics",
+    "verify_prices",
+    "flag_outliers",
+    "assess_staleness",
+    "detect_flash_sale",
+    "get_recommended_ttl",
 ]

@@ -34,13 +34,6 @@ CONTAINER_WORKROOT: str = "/app/workspace"
 # ---------------------------------------------------------------------------
 SANDBOX_MODE: str = os.environ.get("SANDBOX_MODE", "docker")  # docker | local | none
 LOCAL_SHELL_TIMEOUT: int = int(os.environ.get("LOCAL_SHELL_TIMEOUT", "60"))
-# Commands additionally blocked in local (host) mode for safety
-LOCAL_BLOCKED_PATTERNS: set[str] = BLOCKED_PATTERNS | {
-    "sudo ", "su -", "systemctl", "service ",
-    "docker ", "chown ", "mount ", "umount ",
-    "useradd", "userdel", "passwd",
-}
-
 # ---------------------------------------------------------------------------
 # Safety
 # ---------------------------------------------------------------------------
@@ -58,6 +51,13 @@ BLOCKED_PATTERNS: set[str] = {
     "wget | sh",
     "wget | bash",
 }
+# Commands additionally blocked in local (host) mode for safety
+LOCAL_BLOCKED_PATTERNS: set[str] = BLOCKED_PATTERNS | {
+    "sudo ", "su -", "systemctl", "service ",
+    "docker ", "chown ", "mount ", "umount ",
+    "useradd", "userdel", "passwd",
+}
+
 
 
 # Phase 8.2: Per-agent-type command allowlists (first token of command)

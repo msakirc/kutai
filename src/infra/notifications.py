@@ -137,7 +137,14 @@ class NtfyAlertHandler(logging.Handler):
 
             body = "\n".join(lines)[:4000]  # ntfy message size limit
 
-            send_ntfy(topic, title, body, priority=priority, tags=tags)
+            # Fire-and-forget on a daemon thread so the synchronous HTTP
+            # call in send_ntfy() never blocks the asyncio event loop.
+            threading.Thread(
+                target=send_ntfy,
+                args=(topic, title, body),
+                kwargs={"priority": priority, "tags": tags},
+                daemon=True,
+            ).start()
         except Exception as exc:
             _handler_error_logger.error(
                 "NtfyAlertHandler.emit failed: %s", exc

@@ -1470,8 +1470,21 @@ class BaseAgent:
                             f"{', '.join(f'{k}={repr(v)[:50]}' for k, v in tool_args.items())})"
                         )
                         try:
-                            tool_output = await execute_tool(
-                                tool_name, agent_type=self.name, **tool_args
+                            # Per-tool timeout: 120s for shell tools, 60s for others.
+                            # Prevents a single hung tool from blocking the agent loop.
+                            _tool_timeout = 120 if tool_name in (
+                                "shell", "shell_stdin", "shell_sequential",
+                            ) else 60
+                            tool_output = await asyncio.wait_for(
+                                execute_tool(
+                                    tool_name, agent_type=self.name, **tool_args
+                                ),
+                                timeout=_tool_timeout,
+                            )
+                        except asyncio.TimeoutError:
+                            tool_output = (
+                                f"\u274c Tool '{tool_name}' timed out after "
+                                f"{_tool_timeout}s — try a simpler approach."
                             )
                         except Exception as exc:
                             tool_output = f"\u274c Tool execution error: {exc}"

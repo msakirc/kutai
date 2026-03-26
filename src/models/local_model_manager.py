@@ -492,25 +492,34 @@ class LocalModelManager:
         return True
 
     async def _stop_server(self) -> None:
-        """Gracefully stop the llama-server process."""
+        """Gracefully stop the llama-server process (fully async — never blocks the event loop)."""
         if self.process is None:
             return
 
         old_model = self.current_model
         logger.info(f"Stopping llama-server (model: {old_model})...")
 
+        loop = asyncio.get_running_loop()
+
         try:
             self.process.terminate()
-            # Wait up to 10s for graceful shutdown
+            # Wait up to 10s for graceful shutdown (poll is non-blocking)
             for _ in range(20):
                 if self.process.poll() is not None:
                     break
                 await asyncio.sleep(0.5)
             else:
-                # Force kill if still running
+                # Force kill if still running — use run_in_executor so
+                # the synchronous process.wait() never blocks the event loop.
                 logger.warning("llama-server didn't stop gracefully, killing...")
                 self.process.kill()
-                self.process.wait(timeout=5)
+                try:
+                    await asyncio.wait_for(
+                        loop.run_in_executor(None, self.process.wait),
+                        timeout=5,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("llama-server did not exit within 5s after kill")
         except Exception as e:
             logger.warning(f"Error stopping llama-server: {e}")
             try:
@@ -688,15 +697,26 @@ class LocalModelManager:
 
     async def run_health_watchdog(self, check_interval: float = 30) -> None:
         """
-        Background task: detect crashed server and restart.
+        Background task: detect crashed *or hung* server and restart.
+
+        Detects two failure modes:
+          1. Process exit (crash) — via process.poll()
+          2. Process alive but unresponsive (hang) — via /health HTTP check.
+             Three consecutive /health failures trigger a restart.
+
         Run as: asyncio.create_task(manager.run_health_watchdog())
         """
+        consecutive_health_failures = 0
+        HEALTH_FAIL_THRESHOLD = 3  # restart after this many consecutive failures
+
         while True:
             await asyncio.sleep(check_interval)
 
             if not self.current_model:
+                consecutive_health_failures = 0
                 continue
 
+            # ── Crash detection (process exited) ──
             if self.process and self.process.poll() is not None:
                 logger.error(
                     f"llama-server crashed! Restarting {self.current_model}..."
@@ -715,7 +735,31 @@ class LocalModelManager:
                     pass
                 self.process = None
                 self.current_model = None
+                consecutive_health_failures = 0
                 await self._swap_model(model_name, reason="crash recovery")
+                continue
+
+            # ── Hang detection (process alive but /health unresponsive) ──
+            if self.process and self.process.poll() is None:
+                healthy = await self._health_check()
+                if healthy:
+                    consecutive_health_failures = 0
+                else:
+                    consecutive_health_failures += 1
+                    logger.warning(
+                        f"llama-server /health failed "
+                        f"({consecutive_health_failures}/{HEALTH_FAIL_THRESHOLD})"
+                    )
+                    if consecutive_health_failures >= HEALTH_FAIL_THRESHOLD:
+                        logger.error(
+                            f"llama-server hung ({HEALTH_FAIL_THRESHOLD} "
+                            f"consecutive /health failures). Restarting "
+                            f"{self.current_model}..."
+                        )
+                        model_name = self.current_model
+                        consecutive_health_failures = 0
+                        await self._stop_server()
+                        await self._swap_model(model_name, reason="hang recovery")
 
 
 # ─── Singleton ───────────────────────────────────────────────

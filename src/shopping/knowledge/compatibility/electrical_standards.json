@@ -1,0 +1,105 @@
+{
+  "_description": "Turkish electrical standards for appliance and electronics compatibility.",
+  "mains_power": {
+    "voltage": 220,
+    "voltage_range": "220-240V",
+    "frequency_hz": 50,
+    "plug_type": "Type F (Schuko / CEE 7/4)",
+    "plug_type_alt": "Type C (Europlug) also fits Type F outlets",
+    "notes": "Turkey uses European continental standard. US/Japan devices (110V) require step-down transformer."
+  },
+  "circuit_breakers": {
+    "residential_main": {
+      "typical_amperage": [25, 32, 40, 63],
+      "notes": "Main breaker (ana şalter) typically 32A or 40A for apartments. 63A for larger homes."
+    },
+    "branch_circuits": {
+      "lighting": {"amperage": 10, "wire_mm2": 1.5},
+      "general_outlets": {"amperage": 16, "wire_mm2": 2.5},
+      "kitchen_appliances": {"amperage": 16, "wire_mm2": 2.5},
+      "high_power_appliances": {"amperage": 20, "wire_mm2": 4.0},
+      "electric_oven": {"amperage": 25, "wire_mm2": 4.0},
+      "air_conditioner": {"amperage": 16, "wire_mm2": 2.5, "notes": "Dedicated circuit recommended. 9000-12000 BTU: 16A sufficient."},
+      "electric_water_heater": {"amperage": 16, "wire_mm2": 2.5, "notes": "Dedicated circuit required."}
+    },
+    "rcd_requirement": "30mA RCD (kaçak akım rölesi) required for wet areas (bathroom, kitchen). Mandatory in new construction since 2004."
+  },
+  "appliance_power_requirements": {
+    "washing_machine": {
+      "typical_watts": 2200,
+      "plug": "Schuko 16A",
+      "circuit": "Dedicated 16A recommended",
+      "notes": "Standard wall outlet sufficient."
+    },
+    "dishwasher": {
+      "typical_watts": 2400,
+      "plug": "Schuko 16A",
+      "circuit": "Dedicated 16A recommended"
+    },
+    "electric_oven": {
+      "typical_watts": {"min": 2500, "max": 3600},
+      "plug": "Schuko 16A for ≤3000W. Hardwired (kablo bağlantı) for >3000W.",
+      "circuit": "Dedicated 20-25A circuit with 4mm² wiring",
+      "notes": "Built-in ovens over 3kW often need hardwire installation by electrician."
+    },
+    "induction_cooktop": {
+      "typical_watts": {"min": 3500, "max": 7400},
+      "plug": "Hardwired connection required for most models",
+      "circuit": "Dedicated 32A circuit with 6mm² wiring",
+      "notes": "Highest power kitchen appliance. Verify existing wiring before purchase. Older apartments may need electrical upgrade."
+    },
+    "electric_water_heater": {
+      "typical_watts": {"min": 1500, "max": 2500},
+      "plug": "Schuko 16A",
+      "circuit": "Dedicated 16A with RCD",
+      "notes": "Must be on RCD-protected circuit. Termosifon very common in Turkish homes."
+    },
+    "air_conditioner_split": {
+      "typical_watts": {
+        "9000_btu": 900,
+        "12000_btu": 1200,
+        "18000_btu": 1800,
+        "24000_btu": 2500
+      },
+      "plug": "Schuko 16A for 9000-18000 BTU. Dedicated circuit for 24000+ BTU.",
+      "notes": "Inverter models draw less peak current. Installation includes electrical connection."
+    },
+    "electric_dryer": {
+      "typical_watts": {"heat_pump": 900, "condenser": 2500, "vented": 2500},
+      "plug": "Schuko 16A",
+      "notes": "Heat pump dryers draw significantly less power."
+    }
+  },
+  "import_compatibility": {
+    "us_devices_110v": {
+      "compatible": false,
+      "solution": "Step-down transformer (220V → 110V). Must be rated above device wattage.",
+      "common_issues": "US hair dryers, kitchen appliances, some electronics. Check label for '100-240V' -- those are universal."
+    },
+    "uk_devices_type_g": {
+      "compatible": "voltage_yes_plug_no",
+      "solution": "Simple plug adapter (Type G → Type F). No transformer needed (230V ≈ 220V).",
+      "notes": "UK devices work fine electrically. Only need adapter."
+    },
+    "universal_voltage_devices": {
+      "examples": ["Laptop chargers", "Phone chargers", "Most modern electronics"],
+      "how_to_check": "Look for '100-240V 50/60Hz' on device label or charger",
+      "solution": "Only need plug adapter if not Schuko/Europlug"
+    }
+  },
+  "energy_labels": {
+    "system": "EU Energy Label",
+    "scale": ["A", "B", "C", "D", "E", "F", "G"],
+    "old_scale": ["A+++", "A++", "A+", "A", "B", "C", "D"],
+    "rescaling_note": "New scale (A-G) rolled out 2021-2024. Old A+++ ≈ new C/D for many categories. Check label date.",
+    "mandatory": true,
+    "categories": [
+      "Buzdolabı (refrigerator)",
+      "Çamaşır makinesi (washing machine)",
+      "Bulaşık makinesi (dishwasher)",
+      "Kurutma makinesi (dryer)",
+      "Televizyon (TV)",
+      "Aydınlatma (lighting)"
+    ]
+  }
+}

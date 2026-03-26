@@ -1,0 +1,193 @@
+{
+  "_description": "Chipset to DDR generation and max speed mappings. Used for RAM compatibility checks.",
+  "chipsets": {
+    "AMD": {
+      "A320": {
+        "socket": "AM4",
+        "ddr_generation": "DDR4",
+        "max_speed_mhz": 2667,
+        "oc_support": false,
+        "max_slots": 4,
+        "max_capacity_gb": 64,
+        "ecc_support": true,
+        "notes": "Budget chipset. No XMP/DOCP support."
+      },
+      "B350": {
+        "socket": "AM4",
+        "ddr_generation": "DDR4",
+        "max_speed_mhz": 2933,
+        "oc_support": true,
+        "max_slots": 4,
+        "max_capacity_gb": 64,
+        "ecc_support": true,
+        "notes": "First gen mid-range. DOCP/XMP supported."
+      },
+      "B450": {
+        "socket": "AM4",
+        "ddr_generation": "DDR4",
+        "max_speed_mhz": 3200,
+        "oc_support": true,
+        "max_slots": 4,
+        "max_capacity_gb": 128,
+        "ecc_support": true,
+        "notes": "Popular mid-range. Sweet spot DDR4-3200 CL16."
+      },
+      "B550": {
+        "socket": "AM4",
+        "ddr_generation": "DDR4",
+        "max_speed_mhz": 3200,
+        "oc_support": true,
+        "max_slots": 4,
+        "max_capacity_gb": 128,
+        "ecc_support": true,
+        "notes": "Recommended for Ryzen 5000. PCIe 4.0 support. Sweet spot DDR4-3600 CL16."
+      },
+      "X570": {
+        "socket": "AM4",
+        "ddr_generation": "DDR4",
+        "max_speed_mhz": 3200,
+        "oc_support": true,
+        "max_slots": 4,
+        "max_capacity_gb": 128,
+        "ecc_support": true,
+        "notes": "Enthusiast AM4. Full PCIe 4.0. Often has chipset fan. DDR4-3600 CL16 ideal."
+      },
+      "A620": {
+        "socket": "AM5",
+        "ddr_generation": "DDR5",
+        "max_speed_mhz": 5200,
+        "oc_support": false,
+        "max_slots": 4,
+        "max_capacity_gb": 128,
+        "ecc_support": false,
+        "notes": "Budget AM5. No RAM OC. DDR5-5200 is effective max."
+      },
+      "B650": {
+        "socket": "AM5",
+        "ddr_generation": "DDR5",
+        "max_speed_mhz": 6000,
+        "oc_support": true,
+        "max_slots": 4,
+        "max_capacity_gb": 256,
+        "ecc_support": true,
+        "notes": "Sweet spot AM5. EXPO supported. DDR5-6000 CL30 is ideal for Zen 4/5."
+      },
+      "B650E": {
+        "socket": "AM5",
+        "ddr_generation": "DDR5",
+        "max_speed_mhz": 6400,
+        "oc_support": true,
+        "max_slots": 4,
+        "max_capacity_gb": 256,
+        "ecc_support": true,
+        "notes": "Extended B650 with PCIe 5.0 for GPU + SSD."
+      },
+      "X670E": {
+        "socket": "AM5",
+        "ddr_generation": "DDR5",
+        "max_speed_mhz": 6400,
+        "oc_support": true,
+        "max_slots": 4,
+        "max_capacity_gb": 256,
+        "ecc_support": true,
+        "notes": "Enthusiast AM5. Full PCIe 5.0."
+      },
+      "X870E": {
+        "socket": "AM5",
+        "ddr_generation": "DDR5",
+        "max_speed_mhz": 8000,
+        "oc_support": true,
+        "max_slots": 4,
+        "max_capacity_gb": 256,
+        "ecc_support": true,
+        "notes": "Latest AM5 enthusiast. USB4 native. Best for Zen 5."
+      }
+    },
+    "Intel": {
+      "H610": {
+        "socket": "LGA1700",
+        "ddr_generation": ["DDR4", "DDR5"],
+        "max_speed_mhz": {"DDR4": 3200, "DDR5": 4800},
+        "oc_support": false,
+        "max_slots": 2,
+        "max_capacity_gb": 64,
+        "ecc_support": false,
+        "notes": "Budget. Only 2 DIMM slots on most boards. Board-dependent DDR4 vs DDR5."
+      },
+      "B660": {
+        "socket": "LGA1700",
+        "ddr_generation": ["DDR4", "DDR5"],
+        "max_speed_mhz": {"DDR4": 3200, "DDR5": 4800},
+        "oc_support": false,
+        "max_slots": 4,
+        "max_capacity_gb": 128,
+        "ecc_support": false,
+        "notes": "Mid-range 12th gen. No memory OC but XMP profiles work."
+      },
+      "B760": {
+        "socket": "LGA1700",
+        "ddr_generation": ["DDR4", "DDR5"],
+        "max_speed_mhz": {"DDR4": 3200, "DDR5": 5600},
+        "oc_support": false,
+        "max_slots": 4,
+        "max_capacity_gb": 192,
+        "ecc_support": false,
+        "notes": "Best value 13th/14th gen. XMP supported. DDR5-5600 effective sweet spot."
+      },
+      "Z690": {
+        "socket": "LGA1700",
+        "ddr_generation": ["DDR4", "DDR5"],
+        "max_speed_mhz": {"DDR4": 5333, "DDR5": 6400},
+        "oc_support": true,
+        "max_slots": 4,
+        "max_capacity_gb": 128,
+        "ecc_support": false,
+        "notes": "Enthusiast 12th gen. Full OC support."
+      },
+      "Z790": {
+        "socket": "LGA1700",
+        "ddr_generation": ["DDR4", "DDR5"],
+        "max_speed_mhz": {"DDR4": 5333, "DDR5": 7200},
+        "oc_support": true,
+        "max_slots": 4,
+        "max_capacity_gb": 192,
+        "ecc_support": false,
+        "notes": "Enthusiast 13th/14th gen. Full OC. PCIe 5.0 for SSD."
+      },
+      "B860": {
+        "socket": "LGA1851",
+        "ddr_generation": "DDR5",
+        "max_speed_mhz": 6400,
+        "oc_support": false,
+        "max_slots": 4,
+        "max_capacity_gb": 256,
+        "ecc_support": false,
+        "notes": "Mid-range Arrow Lake. DDR5 only. CUDIMM supported on some boards."
+      },
+      "Z890": {
+        "socket": "LGA1851",
+        "ddr_generation": "DDR5",
+        "max_speed_mhz": 9066,
+        "oc_support": true,
+        "max_slots": 4,
+        "max_capacity_gb": 256,
+        "ecc_support": false,
+        "notes": "Enthusiast Arrow Lake. Full OC. CUDIMM for highest clocks."
+      }
+    }
+  },
+  "buying_guidance": {
+    "AM4_sweet_spot": "DDR4-3600 CL16 (2x8GB or 2x16GB)",
+    "AM5_sweet_spot": "DDR5-6000 CL30 (2x16GB)",
+    "LGA1700_DDR4_sweet_spot": "DDR4-3200 CL16 (2x16GB)",
+    "LGA1700_DDR5_sweet_spot": "DDR5-5600 CL36 (2x16GB)",
+    "LGA1851_sweet_spot": "DDR5-6000 CL30 (2x16GB)",
+    "general_rules": [
+      "Always install RAM in pairs for dual-channel (slots A2+B2 typically)",
+      "2 DIMMs faster than 4 DIMMs at same speed (less stress on memory controller)",
+      "AMD EXPO profiles = AMD's equivalent of Intel XMP",
+      "Check QVL (Qualified Vendor List) on motherboard product page for guaranteed compatibility",
+      "Mixing RAM kits not recommended -- buy matched kits"
+    ]
+  }
+}

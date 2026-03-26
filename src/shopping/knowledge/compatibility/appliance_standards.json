@@ -1,0 +1,176 @@
+{
+  "_description": "Turkish standard dimensions and fitment for household appliances. All measurements in centimeters unless noted.",
+  "kitchen": {
+    "countertop_height_cm": 85,
+    "countertop_depth_cm": 60,
+    "base_cabinet_width_cm": [30, 40, 45, 50, 60, 80, 90, 100, 120],
+    "wall_cabinet_height_cm": [30, 60, 72, 90],
+    "notes": "Turkish kitchens follow European standards. IKEA Metod system fits standard Turkish kitchen dimensions."
+  },
+  "dishwasher": {
+    "standard_60cm": {
+      "width_cm": 60,
+      "height_cm": 85,
+      "depth_cm": 60,
+      "typical_capacity_place_settings": [12, 13, 14],
+      "connection": "Cold water inlet, drain hose, 220V plug",
+      "notes": "Most common size. Fits under standard 85cm countertop with adjustable feet."
+    },
+    "narrow_45cm": {
+      "width_cm": 45,
+      "height_cm": 85,
+      "depth_cm": 60,
+      "typical_capacity_place_settings": [9, 10],
+      "connection": "Cold water inlet, drain hose, 220V plug",
+      "notes": "For smaller kitchens. Less common, fewer models available. Arçelik, Beko, Bosch offer 45cm options."
+    },
+    "built_in_60cm": {
+      "width_cm": 60,
+      "height_cm": {"min": 81, "max": 87},
+      "depth_cm": 55,
+      "notes": "Requires furniture panel. Niche depth must be at least 57cm. Check hinge type compatibility."
+    }
+  },
+  "washing_machine": {
+    "standard_front_load": {
+      "width_cm": 60,
+      "height_cm": 85,
+      "depth_cm": {"slim": 45, "standard": 55, "deep": 60},
+      "typical_capacity_kg": [7, 8, 9, 10],
+      "connection": "Cold water inlet, drain hose, 220V plug (some models 16A)",
+      "notes": "60cm width is universal in Turkey. Slim (45cm depth) popular for small bathrooms."
+    },
+    "washer_dryer_combo": {
+      "width_cm": 60,
+      "height_cm": 85,
+      "depth_cm": 60,
+      "typical_wash_capacity_kg": [8, 9, 10],
+      "typical_dry_capacity_kg": [5, 6],
+      "notes": "Drying capacity always less than wash capacity. Popular where separate dryer space unavailable."
+    },
+    "top_load": {
+      "width_cm": 40,
+      "height_cm": 90,
+      "depth_cm": 60,
+      "typical_capacity_kg": [5, 6, 7],
+      "notes": "Rare in Turkey. Mostly older models or budget segment."
+    }
+  },
+  "dryer": {
+    "standard": {
+      "width_cm": 60,
+      "height_cm": 85,
+      "depth_cm": 60,
+      "typical_capacity_kg": [7, 8, 9],
+      "types": ["heat_pump", "condenser", "vented"],
+      "notes": "Heat pump most efficient but expensive. Condenser needs no vent. Can stack on washing machine with stacking kit."
+    }
+  },
+  "refrigerator": {
+    "standard_60cm": {
+      "width_cm": 60,
+      "height_cm": {"short": 145, "medium": 170, "tall": 186, "extra_tall": 200},
+      "depth_cm": {"slim": 60, "standard": 65, "deep": 70},
+      "typical_capacity_liters": {"short": 250, "medium": 340, "tall": 400, "extra_tall": 450},
+      "notes": "Most common in Turkish homes. Fits standard 60cm niche."
+    },
+    "wide_70cm": {
+      "width_cm": 70,
+      "height_cm": {"medium": 170, "tall": 186},
+      "depth_cm": 72,
+      "typical_capacity_liters": {"medium": 450, "tall": 520},
+      "notes": "Popular for larger families. Verify kitchen niche width."
+    },
+    "side_by_side_90cm": {
+      "width_cm": {"min": 85, "max": 92},
+      "height_cm": 178,
+      "depth_cm": {"min": 72, "max": 77},
+      "typical_capacity_liters": 550,
+      "notes": "American style. Requires 90cm+ niche. Check door swing clearance. Popular in modern Turkish apartments."
+    },
+    "french_door": {
+      "width_cm": {"min": 83, "max": 92},
+      "height_cm": 178,
+      "depth_cm": 75,
+      "typical_capacity_liters": 530,
+      "notes": "Premium segment. Same width requirements as side-by-side."
+    },
+    "built_in": {
+      "width_cm": 56,
+      "height_cm": {"min": 122, "max": 178},
+      "depth_cm": 55,
+      "notes": "Fits inside 60cm cabinet column. Requires specific furniture panels. Measure niche precisely."
+    }
+  },
+  "oven": {
+    "built_in_standard": {
+      "niche_width_cm": 56,
+      "niche_height_cm": 60,
+      "niche_depth_cm": 55,
+      "oven_width_cm": 60,
+      "oven_height_cm": 60,
+      "capacity_liters": {"min": 60, "max": 77},
+      "notes": "Standard 60cm niche. Most common in Turkish kitchens. Fits IKEA Metod 60cm tall cabinet."
+    },
+    "built_in_compact": {
+      "niche_width_cm": 56,
+      "niche_height_cm": 45,
+      "niche_depth_cm": 55,
+      "oven_width_cm": 60,
+      "oven_height_cm": 45,
+      "capacity_liters": {"min": 40, "max": 50},
+      "notes": "Compact oven. Can be combined with compact microwave in same column."
+    },
+    "freestanding_with_cooktop": {
+      "width_cm": [50, 60],
+      "height_cm": 85,
+      "depth_cm": 60,
+      "notes": "Classic ocaklı fırın. 50cm for small kitchens, 60cm standard. Natural gas or LPG conversion kits available."
+    }
+  },
+  "cooktop": {
+    "standard_builtin": {
+      "cutout_width_cm": {"4_burner": 56, "5_burner": 68},
+      "cutout_depth_cm": {"4_burner": 48, "5_burner": 48},
+      "types": ["gas", "induction", "ceramic"],
+      "notes": "Gas most common in Turkey (doğalgaz). Induction growing. Check countertop cutout dimensions carefully."
+    },
+    "gas_notes": "Turkish gas connection: doğalgaz (natural gas) standard. LPG dönüşüm seti (conversion kit) included with most cooktops for rural areas."
+  },
+  "range_hood": {
+    "standard_widths_cm": [60, 90],
+    "types": ["wall_mounted", "built_in_telescopic", "island", "ceiling"],
+    "notes": "Width should match or exceed cooktop width. 60cm hood for 60cm cooktop minimum. Turkish kitchens often have external ventilation ducts -- check building regulations."
+  },
+  "air_conditioner": {
+    "split_system": {
+      "indoor_unit": {
+        "width_cm": {"min": 70, "max": 110},
+        "height_cm": {"min": 25, "max": 35},
+        "depth_cm": {"min": 18, "max": 25}
+      },
+      "outdoor_unit": {
+        "width_cm": {"min": 70, "max": 90},
+        "height_cm": {"min": 50, "max": 70},
+        "depth_cm": {"min": 25, "max": 35}
+      },
+      "btu_room_guide": {
+        "9000": "12-18 m²",
+        "12000": "18-25 m²",
+        "18000": "25-35 m²",
+        "24000": "35-50 m²"
+      },
+      "notes": "Inverter models strongly recommended. Outdoor unit placement may need apartment yönetim (building management) approval. Installation by authorized technician required for warranty."
+    }
+  },
+  "tv": {
+    "wall_mount": {
+      "vesa_patterns_mm": ["100x100", "200x200", "300x300", "400x400", "600x400"],
+      "notes": "Check VESA pattern before buying mount. Turkish apartments: concrete/brick walls need proper anchoring."
+    },
+    "size_guide": {
+      "viewing_distance_formula": "TV diagonal (cm) x 1.5 = minimum viewing distance for 4K",
+      "common_sizes_inch": [43, 50, 55, 65, 75, 85]
+    }
+  }
+}

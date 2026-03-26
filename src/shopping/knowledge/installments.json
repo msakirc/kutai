@@ -1,0 +1,122 @@
+{
+  "_description": "Store-bank installment (taksit) partnerships with typical tiers and interest-free (faizsiz) options. Updated periodically -- actual availability depends on active campaigns.",
+  "stores": {
+    "trendyol": {
+      "general_max_taksit": 12,
+      "bank_partnerships": {
+        "garanti_bbva": {"max_taksit": 12, "faizsiz_tiers": [3, 6], "notes": "Bonus kart ile ekstra faizsiz"},
+        "is_bankasi": {"max_taksit": 9, "faizsiz_tiers": [3, 6], "notes": "Maximum kart"},
+        "yapi_kredi": {"max_taksit": 12, "faizsiz_tiers": [3, 6], "notes": "World kart kampanyaları"},
+        "akbank": {"max_taksit": 9, "faizsiz_tiers": [3], "notes": "Axess kart"},
+        "denizbank": {"max_taksit": 9, "faizsiz_tiers": [3], "notes": ""},
+        "qnb_finansbank": {"max_taksit": 9, "faizsiz_tiers": [3, 6], "notes": "CardFinans"},
+        "ziraat_bankasi": {"max_taksit": 6, "faizsiz_tiers": [3], "notes": "Bankkart Combo"},
+        "halkbank": {"max_taksit": 6, "faizsiz_tiers": [3], "notes": "Paraf kart"},
+        "vakifbank": {"max_taksit": 6, "faizsiz_tiers": [3], "notes": "World kart"}
+      },
+      "notes": "Taksit seçenekleri ürüne ve satıcıya göre değişir. Marketplace satıcıları farklı taksit sunabilir."
+    },
+    "hepsiburada": {
+      "general_max_taksit": 12,
+      "bank_partnerships": {
+        "garanti_bbva": {"max_taksit": 12, "faizsiz_tiers": [3, 6, 9], "notes": "Premium üyelik ile ekstra taksit"},
+        "is_bankasi": {"max_taksit": 12, "faizsiz_tiers": [3, 6], "notes": ""},
+        "yapi_kredi": {"max_taksit": 12, "faizsiz_tiers": [3, 6, 9], "notes": ""},
+        "akbank": {"max_taksit": 12, "faizsiz_tiers": [3, 6], "notes": ""},
+        "denizbank": {"max_taksit": 9, "faizsiz_tiers": [3, 6], "notes": ""},
+        "qnb_finansbank": {"max_taksit": 12, "faizsiz_tiers": [3, 6], "notes": ""},
+        "ziraat_bankasi": {"max_taksit": 9, "faizsiz_tiers": [3], "notes": ""},
+        "halkbank": {"max_taksit": 9, "faizsiz_tiers": [3], "notes": ""},
+        "vakifbank": {"max_taksit": 9, "faizsiz_tiers": [3, 6], "notes": ""}
+      },
+      "notes": "Hepsiburada Premium üyeleri genelde +3 ay ekstra faizsiz alır."
+    },
+    "amazon_tr": {
+      "general_max_taksit": 9,
+      "bank_partnerships": {
+        "garanti_bbva": {"max_taksit": 9, "faizsiz_tiers": [3], "notes": "Sınırlı kategorilerde"},
+        "is_bankasi": {"max_taksit": 6, "faizsiz_tiers": [3], "notes": ""},
+        "yapi_kredi": {"max_taksit": 9, "faizsiz_tiers": [3], "notes": ""},
+        "akbank": {"max_taksit": 6, "faizsiz_tiers": [3], "notes": ""}
+      },
+      "notes": "Taksit seçenekleri diğer platformlara göre daha sınırlı. Prime kampanyalarında artırılabiliyor."
+    },
+    "n11": {
+      "general_max_taksit": 12,
+      "bank_partnerships": {
+        "garanti_bbva": {"max_taksit": 12, "faizsiz_tiers": [3, 6], "notes": ""},
+        "is_bankasi": {"max_taksit": 9, "faizsiz_tiers": [3], "notes": ""},
+        "yapi_kredi": {"max_taksit": 12, "faizsiz_tiers": [3, 6], "notes": ""},
+        "akbank": {"max_taksit": 9, "faizsiz_tiers": [3], "notes": ""},
+        "qnb_finansbank": {"max_taksit": 9, "faizsiz_tiers": [3], "notes": ""}
+      },
+      "notes": "Satıcıya bağlı olarak taksit seçenekleri değişir."
+    },
+    "mediamarkt": {
+      "general_max_taksit": 12,
+      "bank_partnerships": {
+        "garanti_bbva": {"max_taksit": 12, "faizsiz_tiers": [3, 6, 9, 12], "notes": "En güçlü ortaklık"},
+        "is_bankasi": {"max_taksit": 12, "faizsiz_tiers": [3, 6, 9], "notes": ""},
+        "yapi_kredi": {"max_taksit": 12, "faizsiz_tiers": [3, 6, 9, 12], "notes": "World Platinum ile 12 ay faizsiz"},
+        "akbank": {"max_taksit": 12, "faizsiz_tiers": [3, 6, 9], "notes": ""},
+        "denizbank": {"max_taksit": 12, "faizsiz_tiers": [3, 6], "notes": ""},
+        "qnb_finansbank": {"max_taksit": 12, "faizsiz_tiers": [3, 6, 9], "notes": ""},
+        "ziraat_bankasi": {"max_taksit": 9, "faizsiz_tiers": [3, 6], "notes": ""},
+        "halkbank": {"max_taksit": 9, "faizsiz_tiers": [3, 6], "notes": ""},
+        "vakifbank": {"max_taksit": 12, "faizsiz_tiers": [3, 6, 9], "notes": ""}
+      },
+      "notes": "En iyi taksit seçenekleri burada. Mağaza içi kampanyalar online'dan farklı olabilir. Ek garanti ile birlikte ekstra taksit sunulabiliyor."
+    },
+    "vatanbilgisayar": {
+      "general_max_taksit": 12,
+      "bank_partnerships": {
+        "garanti_bbva": {"max_taksit": 12, "faizsiz_tiers": [3, 6, 9], "notes": ""},
+        "is_bankasi": {"max_taksit": 12, "faizsiz_tiers": [3, 6], "notes": ""},
+        "yapi_kredi": {"max_taksit": 12, "faizsiz_tiers": [3, 6, 9], "notes": ""},
+        "akbank": {"max_taksit": 12, "faizsiz_tiers": [3, 6], "notes": ""},
+        "qnb_finansbank": {"max_taksit": 12, "faizsiz_tiers": [3, 6], "notes": ""}
+      },
+      "notes": "Bilgisayar ve bileşenler kategorisinde güçlü taksit seçenekleri."
+    },
+    "koctas": {
+      "general_max_taksit": 9,
+      "bank_partnerships": {
+        "garanti_bbva": {"max_taksit": 9, "faizsiz_tiers": [3, 6], "notes": ""},
+        "yapi_kredi": {"max_taksit": 9, "faizsiz_tiers": [3, 6], "notes": ""},
+        "akbank": {"max_taksit": 9, "faizsiz_tiers": [3], "notes": ""},
+        "is_bankasi": {"max_taksit": 6, "faizsiz_tiers": [3], "notes": ""}
+      },
+      "notes": "Ev tadilat ürünlerinde kampanya dönemlerinde taksit artırılıyor."
+    },
+    "ikea_tr": {
+      "general_max_taksit": 12,
+      "bank_partnerships": {
+        "garanti_bbva": {"max_taksit": 12, "faizsiz_tiers": [3, 6, 9], "notes": "IKEA FAMILY kart sahiplerine özel"},
+        "yapi_kredi": {"max_taksit": 12, "faizsiz_tiers": [3, 6], "notes": ""},
+        "is_bankasi": {"max_taksit": 9, "faizsiz_tiers": [3, 6], "notes": ""},
+        "akbank": {"max_taksit": 9, "faizsiz_tiers": [3, 6], "notes": ""}
+      },
+      "notes": "IKEA FAMILY kartı ile ekstra indirim ve taksit avantajı. Büyük mobilya alışverişlerinde 12 aya kadar faizsiz."
+    }
+  },
+  "bank_cards": {
+    "_description": "Major credit card brands and their typical taksit tiers",
+    "garanti_bbva": {"card_names": ["Bonus", "Miles & Smiles"], "general_strength": "En yaygın taksit ağı"},
+    "is_bankasi": {"card_names": ["Maximum", "Maximum İstanbul"], "general_strength": "Geniş kabul ağı"},
+    "yapi_kredi": {"card_names": ["World", "Playcard"], "general_strength": "World kart ile premium taksit"},
+    "akbank": {"card_names": ["Axess", "Wings"], "general_strength": "Axess ile puan + taksit"},
+    "qnb_finansbank": {"card_names": ["CardFinans"], "general_strength": "Online alışverişte güçlü"},
+    "denizbank": {"card_names": ["Bonus (DenizBonus)"], "general_strength": "Bonus altyapısı"},
+    "ziraat_bankasi": {"card_names": ["Bankkart Combo"], "general_strength": "Kamu çalışanlarında yaygın, taksit sınırlı"},
+    "halkbank": {"card_names": ["Paraf"], "general_strength": "Orta segment"},
+    "vakifbank": {"card_names": ["World (VakıfBank World)"], "general_strength": "World altyapısı"}
+  },
+  "tips": [
+    "Faizsiz taksit her zaman peşine tercih edilmeli -- paranın zaman değeri sizden yana",
+    "Taksitli alışverişte toplam tutar kontrol edilmeli -- faizli taksitte fark %5-20 olabilir",
+    "Bazı bankalar 'taksit erteleme' sunuyor -- ilk taksit 1-2 ay sonra başlıyor",
+    "Kampanya dönemlerinde (11.11, Efsane Cuma) faizsiz taksit seçenekleri genişliyor",
+    "Kredi kartı limiti toplam tutarı karşılamalı -- taksit limiti ayrı bir limit değil",
+    "Banka uygulamasından 'taksitlendirme' ile peşin alışveriş sonradan taksitlendirilebilir (faizli)"
+  ]
+}

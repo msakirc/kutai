@@ -1,0 +1,136 @@
+{
+  "_description": "Intent-based product substitution map. Defines what can substitute for what, what must never be substituted, and category boundaries.",
+  "substitution_groups": {
+    "protein_for_cooking": {
+      "intent": "Protein source for a meal",
+      "members": [
+        {"item": "tavuk göğsü", "tags": ["lean", "versatile", "budget"]},
+        {"item": "tavuk but", "tags": ["juicy", "budget"]},
+        {"item": "dana kıyma", "tags": ["red_meat", "versatile"]},
+        {"item": "dana kuşbaşı", "tags": ["red_meat", "stew"]},
+        {"item": "kuzu kuşbaşı", "tags": ["red_meat", "premium", "stew"]},
+        {"item": "hindi göğsü", "tags": ["lean", "mild"]},
+        {"item": "somon fileto", "tags": ["fish", "omega3", "premium"]},
+        {"item": "levrek fileto", "tags": ["fish", "mild"]},
+        {"item": "ton balığı konserve", "tags": ["fish", "pantry", "budget"]},
+        {"item": "mercimek", "tags": ["legume", "vegan", "budget"]},
+        {"item": "nohut", "tags": ["legume", "vegan", "budget"]},
+        {"item": "tofu", "tags": ["vegan", "mild"]},
+        {"item": "yumurta", "tags": ["versatile", "budget", "vegetarian"]}
+      ],
+      "substitution_logic": "Match by tags when possible. Suggest within same tag family (e.g., fish→fish, red_meat→red_meat) first, then broader.",
+      "anti_substitutions": [
+        "Never substitute red meat for someone who specified vegetarian/vegan",
+        "Never substitute fish for red meat without asking (allergy risk)",
+        "Never substitute tofu if user asked specifically for meat",
+        "Never substitute kuzu (lamb) for dana (beef) in recipes -- flavor profile is different"
+      ]
+    },
+    "cooking_fats": {
+      "intent": "Fat/oil for cooking",
+      "members": [
+        {"item": "zeytinyağı", "tags": ["healthy", "mediterranean", "salad", "low_heat"]},
+        {"item": "ayçiçek yağı", "tags": ["neutral", "high_heat", "budget"]},
+        {"item": "tereyağı", "tags": ["flavor", "baking", "medium_heat"]},
+        {"item": "mısırözü yağı", "tags": ["neutral", "high_heat"]},
+        {"item": "sızma zeytinyağı", "tags": ["premium", "salad", "finishing", "no_heat"]},
+        {"item": "riviera zeytinyağı", "tags": ["cooking", "medium_heat", "budget_olive"]},
+        {"item": "hindistan cevizi yağı", "tags": ["specialty", "high_heat"]},
+        {"item": "margarin", "tags": ["baking", "budget"]}
+      ],
+      "substitution_logic": "Match by cooking method tag. High heat→high heat, salad→salad.",
+      "anti_substitutions": [
+        "Never substitute margarin for tereyağı in baking without noting difference",
+        "Never substitute sızma zeytinyağı for frying (smoke point too low)",
+        "Never substitute any oil for tereyağı in Turkish breakfast context"
+      ]
+    },
+    "hot_beverages": {
+      "intent": "Hot drink for daily consumption",
+      "members": [
+        {"item": "Türk kahvesi", "tags": ["traditional", "strong", "ritual"]},
+        {"item": "filtre kahve", "tags": ["mild", "western", "volume"]},
+        {"item": "espresso", "tags": ["strong", "concentrated", "western"]},
+        {"item": "çay (siyah)", "tags": ["traditional", "daily", "social"]},
+        {"item": "bitki çayı", "tags": ["herbal", "caffeine_free"]},
+        {"item": "salep", "tags": ["winter", "traditional", "sweet"]},
+        {"item": "nescafe/hazır kahve", "tags": ["instant", "convenience", "budget"]}
+      ],
+      "anti_substitutions": [
+        "Never substitute Türk kahvesi with filtre kahve -- completely different preparation and culture",
+        "Never substitute çay with kahve without asking -- fundamentally different daily habits",
+        "Never suggest Nescafe as substitute for specialty coffee"
+      ]
+    },
+    "hot_beverage_machines": {
+      "intent": "Machine to prepare hot beverages",
+      "members": [
+        {"item": "çay makinesi", "tags": ["tea", "turkish", "daily"]},
+        {"item": "cezve (elektrikli)", "tags": ["turkish_coffee", "traditional"]},
+        {"item": "espresso makinesi", "tags": ["espresso", "premium"]},
+        {"item": "filtre kahve makinesi", "tags": ["filter_coffee", "volume"]},
+        {"item": "French press", "tags": ["manual", "filter_coffee", "budget"]},
+        {"item": "Nespresso/kapsül makinesi", "tags": ["capsule", "convenience"]},
+        {"item": "moka pot", "tags": ["stovetop", "espresso_like", "manual"]},
+        {"item": "kettle (su ısıtıcı)", "tags": ["water", "versatile", "basic"]}
+      ],
+      "substitution_logic": "Match by beverage type. Only suggest within same beverage family.",
+      "anti_substitutions": [
+        "Never substitute çay makinesi with kettle -- çay makinesi has double pot (çaydanlık) system",
+        "Never substitute espresso machine with filtre kahve makinesi",
+        "Never substitute elektrikli cezve with any other coffee machine -- unique brewing method"
+      ]
+    },
+    "seating": {
+      "intent": "Furniture to sit on",
+      "members": [
+        {"item": "ofis koltuğu", "tags": ["desk", "ergonomic", "work"]},
+        {"item": "gaming koltuğu", "tags": ["desk", "gaming", "long_session"]},
+        {"item": "yemek masası sandalyesi", "tags": ["dining", "upright"]},
+        {"item": "koltuk (tekli)", "tags": ["living_room", "comfort"]},
+        {"item": "kanepe (2li/3lü)", "tags": ["living_room", "multiple_person"]},
+        {"item": "köşe takımı", "tags": ["living_room", "large", "family"]},
+        {"item": "tabure", "tags": ["kitchen", "bar", "compact"]},
+        {"item": "bean bag / puf", "tags": ["casual", "floor", "kids"]}
+      ],
+      "substitution_logic": "Only substitute within same room/use context.",
+      "anti_substitutions": [
+        "Never substitute dining chair for office/desk use -- ergonomics differ significantly",
+        "Never substitute gaming chair when user needs ergonomic office chair for health reasons",
+        "Never substitute kanepe for tekli koltuk -- space requirements differ"
+      ]
+    },
+    "storage_furniture": {
+      "intent": "Furniture for storing items",
+      "members": [
+        {"item": "gardırop", "tags": ["bedroom", "clothing", "large"]},
+        {"item": "şifonyer", "tags": ["bedroom", "clothing", "drawers"]},
+        {"item": "kitaplık", "tags": ["living_room", "books", "display"]},
+        {"item": "tv ünitesi", "tags": ["living_room", "media", "display"]},
+        {"item": "ayakkabılık", "tags": ["entryway", "shoes"]},
+        {"item": "banyo dolabı", "tags": ["bathroom", "toiletries"]},
+        {"item": "mutfak dolabı", "tags": ["kitchen", "food", "cookware"]},
+        {"item": "çekmeceli kutu", "tags": ["organizer", "small", "versatile"]},
+        {"item": "vestiyer", "tags": ["entryway", "coats", "compact"]}
+      ],
+      "substitution_logic": "Match by room and stored item type.",
+      "anti_substitutions": [
+        "Never substitute bathroom storage for kitchen storage or vice versa",
+        "Never substitute gardırop with şifonyer -- different form factor and capacity",
+        "Never substitute purpose-specific storage across rooms"
+      ]
+    }
+  },
+  "substitution_boundaries": {
+    "_description": "Hard boundaries that should never be crossed regardless of context.",
+    "rules": [
+      "Food items never substitute for non-food items and vice versa",
+      "Electrical appliances never substitute for manual tools without explicit user consent",
+      "Adult products never substitute for children's products",
+      "Prescription/medical items never have substitutions suggested",
+      "Different voltage/plug standard items are not substitutes without adapter mention",
+      "Gas appliances and electric appliances are not substitutes without verifying infrastructure",
+      "Built-in appliances and freestanding appliances are not direct substitutes (installation differs)"
+    ]
+  }
+}

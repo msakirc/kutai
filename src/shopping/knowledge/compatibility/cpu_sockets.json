@@ -1,0 +1,98 @@
+{
+  "_description": "CPU socket to processor family mappings. Used for motherboard-CPU compatibility checks.",
+  "sockets": {
+    "AM4": {
+      "brand": "AMD",
+      "cpu_families": [
+        "Ryzen 1000 (Zen)",
+        "Ryzen 2000 (Zen+)",
+        "Ryzen 3000 (Zen 2)",
+        "Ryzen 4000G (Zen 2 APU)",
+        "Ryzen 5000 (Zen 3)",
+        "Ryzen 5000G (Zen 3 APU)"
+      ],
+      "chipsets": ["A320", "B350", "X370", "B450", "X470", "A520", "B550", "X570"],
+      "memory": "DDR4",
+      "status": "mature",
+      "notes": "Most popular AMD platform. B550/X570 recommended for Ryzen 5000. BIOS update may be needed for newer CPUs on older boards."
+    },
+    "AM5": {
+      "brand": "AMD",
+      "cpu_families": [
+        "Ryzen 7000 (Zen 4)",
+        "Ryzen 8000G (Zen 4 APU)",
+        "Ryzen 9000 (Zen 5)",
+        "Ryzen 9000X3D (Zen 5 3D V-Cache)"
+      ],
+      "chipsets": ["A620", "B650", "B650E", "X670", "X670E", "X870", "X870E"],
+      "memory": "DDR5",
+      "status": "current",
+      "notes": "DDR5 only. AM5 is long-term platform -- AMD committed to support through 2027+. B650 is sweet spot for most users."
+    },
+    "LGA1700": {
+      "brand": "Intel",
+      "cpu_families": [
+        "12th Gen Core (Alder Lake)",
+        "13th Gen Core (Raptor Lake)",
+        "14th Gen Core (Raptor Lake Refresh)"
+      ],
+      "chipsets": ["H610", "B660", "H670", "Z690", "B760", "H770", "Z790"],
+      "memory": "DDR4 or DDR5",
+      "status": "mature",
+      "notes": "DDR4 vs DDR5 depends on motherboard -- not interchangeable. Z690/Z790 for overclocking. B760 best value. 13th/14th Gen i9 had stability issues -- check microcode updates."
+    },
+    "LGA1851": {
+      "brand": "Intel",
+      "cpu_families": [
+        "Core Ultra 200S (Arrow Lake)"
+      ],
+      "chipsets": ["B860", "Z890"],
+      "memory": "DDR5",
+      "status": "current",
+      "notes": "DDR5 only. New architecture with efficiency cores. Platform still maturing. Z890 for overclocking."
+    },
+    "sTR5": {
+      "brand": "AMD",
+      "cpu_families": [
+        "Ryzen Threadripper 7000 (Zen 4)"
+      ],
+      "chipsets": ["TRX50", "WRX90"],
+      "memory": "DDR5",
+      "status": "current",
+      "notes": "HEDT/Workstation platform. WRX90 for Threadripper PRO. Very high cost."
+    },
+    "LGA4677": {
+      "brand": "Intel",
+      "cpu_families": [
+        "Xeon W-2400 (Sapphire Rapids)",
+        "Xeon W-3400 (Sapphire Rapids)"
+      ],
+      "chipsets": ["W790"],
+      "memory": "DDR5",
+      "status": "current",
+      "notes": "Workstation platform. ECC memory support."
+    }
+  },
+  "cooler_compatibility": {
+    "AM4": {
+      "mounting": "AM4",
+      "stock_cooler": "Wraith series (varies by SKU)",
+      "notes": "AM4 mount is widespread -- almost all coolers support it"
+    },
+    "AM5": {
+      "mounting": "AM5 (backwards compatible with AM4 mounting holes)",
+      "stock_cooler": "Included only with some SKUs",
+      "notes": "Most AM4 coolers work on AM5 with existing brackets or free adapter kits"
+    },
+    "LGA1700": {
+      "mounting": "LGA1700",
+      "stock_cooler": "Included with non-K SKUs (Laminar series)",
+      "notes": "Requires LGA1700 bracket -- older 115x/1200 coolers need adapter kit"
+    },
+    "LGA1851": {
+      "mounting": "LGA1851 (same hole spacing as LGA1700)",
+      "stock_cooler": "Included with non-K SKUs",
+      "notes": "LGA1700 coolers are compatible"
+    }
+  }
+}

@@ -1,0 +1,375 @@
+{
+  "_description": "Maps product concepts to Turkish search terms, variants, common misspellings, and brand name variants for marketplace search optimization.",
+  "products": {
+    "laptop": {
+      "primary_tr": "laptop",
+      "variants": ["dizüstü bilgisayar", "notebook", "taşınabilir bilgisayar"],
+      "misspellings": ["laptob", "labtop", "laptopp"],
+      "category_terms": ["bilgisayar"],
+      "brand_variants": {
+        "apple": ["macbook", "macbook air", "macbook pro"],
+        "lenovo": ["thinkpad", "ideapad", "legion"],
+        "hp": ["pavilion", "envy", "spectre", "victus", "omen"],
+        "asus": ["zenbook", "vivobook", "rog", "tuf"],
+        "dell": ["inspiron", "xps", "latitude", "alienware"],
+        "monster": ["abra", "tulpar", "semruk"]
+      }
+    },
+    "phone": {
+      "primary_tr": "cep telefonu",
+      "variants": ["telefon", "akıllı telefon", "smartphone"],
+      "misspellings": ["telefom", "telfon"],
+      "category_terms": ["elektronik"],
+      "brand_variants": {
+        "apple": ["iphone", "ayphone"],
+        "samsung": ["galaxy", "samsung galaxy"],
+        "xiaomi": ["redmi", "poco", "mi"],
+        "oppo": ["reno", "a serisi"],
+        "realme": ["realme"],
+        "google": ["pixel"],
+        "nothing": ["nothing phone"]
+      }
+    },
+    "tablet": {
+      "primary_tr": "tablet",
+      "variants": ["tablet bilgisayar", "tablet pc"],
+      "misspellings": ["tablit", "teblet"],
+      "brand_variants": {
+        "apple": ["ipad", "ipad air", "ipad pro", "ipad mini"],
+        "samsung": ["galaxy tab"],
+        "lenovo": ["tab"],
+        "xiaomi": ["pad", "redmi pad"]
+      }
+    },
+    "headphones": {
+      "primary_tr": "kulaklık",
+      "variants": ["kablosuz kulaklık", "bluetooth kulaklık", "kulak üstü kulaklık", "kulak içi kulaklık"],
+      "misspellings": ["kulaklıg", "kulaklik"],
+      "subcategories": {
+        "tws": ["tws kulaklık", "kablosuz kulak içi"],
+        "over_ear": ["kulak üstü kulaklık", "baş üstü kulaklık", "headphone"],
+        "gaming": ["gaming kulaklık", "oyuncu kulaklığı"],
+        "anc": ["gürültü önleyici kulaklık", "noise cancelling"]
+      },
+      "brand_variants": {
+        "apple": ["airpods", "airpods pro", "airpods max"],
+        "samsung": ["galaxy buds"],
+        "sony": ["wh-1000xm", "wf-1000xm"],
+        "jbl": ["tune", "live", "endurance"]
+      }
+    },
+    "tv": {
+      "primary_tr": "televizyon",
+      "variants": ["tv", "smart tv", "akıllı tv", "led tv", "oled tv"],
+      "misspellings": ["televizion", "telvizyon"],
+      "subcategories": {
+        "oled": ["oled tv", "oled televizyon"],
+        "qled": ["qled tv", "qled televizyon"],
+        "budget": ["led tv", "full hd tv"]
+      },
+      "brand_variants": {
+        "samsung": ["samsung tv", "crystal uhd", "neo qled"],
+        "lg": ["lg tv", "lg oled", "lg nanocell"],
+        "philips": ["philips tv", "ambilight"],
+        "vestel": ["vestel tv"],
+        "tcl": ["tcl tv"]
+      }
+    },
+    "washing_machine": {
+      "primary_tr": "çamaşır makinesi",
+      "variants": ["çamaşır makinası"],
+      "misspellings": ["camasir makinesi", "camaşır makinesi", "çamaşir makinesi"],
+      "subcategories": {
+        "washer_dryer": ["kurutmalı çamaşır makinesi", "kurutma özellikli"],
+        "slim": ["dar çamaşır makinesi", "slim çamaşır makinesi"]
+      },
+      "brand_variants": {
+        "arcelik": ["arçelik çamaşır", "arçelik"],
+        "beko": ["beko çamaşır"],
+        "bosch": ["bosch çamaşır"],
+        "samsung": ["samsung çamaşır", "samsung addwash"],
+        "vestel": ["vestel çamaşır"]
+      }
+    },
+    "dishwasher": {
+      "primary_tr": "bulaşık makinesi",
+      "variants": ["bulaşık makinası"],
+      "misspellings": ["bulasik makinesi", "bulaşik makinesi"],
+      "subcategories": {
+        "narrow": ["45cm bulaşık makinesi", "dar bulaşık makinesi"],
+        "built_in": ["ankastre bulaşık makinesi"]
+      }
+    },
+    "refrigerator": {
+      "primary_tr": "buzdolabı",
+      "variants": ["no frost buzdolabı"],
+      "misspellings": ["buzdobalı", "buzdolabi"],
+      "subcategories": {
+        "side_by_side": ["gardırop tipi buzdolabı", "side by side buzdolabı", "amerikan buzdolabı"],
+        "mini": ["mini buzdolabı", "ofis buzdolabı"],
+        "built_in": ["ankastre buzdolabı"]
+      }
+    },
+    "air_conditioner": {
+      "primary_tr": "klima",
+      "variants": ["split klima", "inverter klima"],
+      "misspellings": ["kilma", "clima"],
+      "subcategories": {
+        "portable": ["taşınabilir klima", "portatif klima", "mobil klima"],
+        "multi_split": ["multi split klima"]
+      },
+      "btu_terms": ["9000 btu klima", "12000 btu klima", "18000 btu klima", "24000 btu klima"]
+    },
+    "vacuum_cleaner": {
+      "primary_tr": "süpürge",
+      "variants": ["elektrik süpürgesi", "elektrikli süpürge"],
+      "misspellings": ["supurge", "süpürgi"],
+      "subcategories": {
+        "robot": ["robot süpürge", "akıllı süpürge"],
+        "cordless": ["kablosuz süpürge", "dikey süpürge", "şarjlı süpürge"],
+        "canister": ["torbalı süpürge", "torbasız süpürge"]
+      },
+      "brand_variants": {
+        "dyson": ["dyson v", "dyson süpürge"],
+        "roborock": ["roborock"],
+        "xiaomi": ["xiaomi robot", "mi robot"],
+        "arzum": ["arzum süpürge"]
+      }
+    },
+    "tea_maker": {
+      "primary_tr": "çay makinesi",
+      "variants": ["çay makinası", "otomatik çay makinesi"],
+      "misspellings": ["cay makinesi", "çay makınesi"],
+      "related": ["çaydanlık", "çaydanlık takımı", "demlik"],
+      "brand_variants": {
+        "arzum": ["arzum çaydanlık", "arzum çay makinesi"],
+        "korkmaz": ["korkmaz çaydanlık"],
+        "karaca": ["karaca çay makinesi", "karaca hatır"],
+        "beko": ["beko çay makinesi"]
+      }
+    },
+    "turkish_coffee_maker": {
+      "primary_tr": "türk kahve makinesi",
+      "variants": ["kahve makinesi", "otomatik türk kahvesi", "elektrikli cezve"],
+      "misspellings": ["kahve makinası"],
+      "related": ["cezve", "bakır cezve"],
+      "brand_variants": {
+        "arzum": ["arzum okka", "okka minio"],
+        "beko": ["beko türk kahve"],
+        "karaca": ["karaca hatır"]
+      }
+    },
+    "espresso_machine": {
+      "primary_tr": "espresso makinesi",
+      "variants": ["kahve makinesi", "barista makinesi"],
+      "subcategories": {
+        "capsule": ["kapsül kahve makinesi", "nespresso"],
+        "automatic": ["tam otomatik kahve makinesi"],
+        "manual": ["espresso makinesi", "portafilter"]
+      },
+      "brand_variants": {
+        "delonghi": ["delonghi kahve", "delonghi magnifica"],
+        "philips": ["philips kahve", "saeco"],
+        "nespresso": ["nespresso", "vertuo"],
+        "jura": ["jura"]
+      }
+    },
+    "monitor": {
+      "primary_tr": "monitör",
+      "variants": ["bilgisayar monitörü", "ekran"],
+      "misspellings": ["monitor", "mönitör"],
+      "subcategories": {
+        "gaming": ["gaming monitör", "oyuncu monitörü"],
+        "ultrawide": ["ultrawide monitör", "geniş ekran monitör"],
+        "4k": ["4k monitör", "uhd monitör"]
+      }
+    },
+    "keyboard": {
+      "primary_tr": "klavye",
+      "variants": ["bilgisayar klavyesi"],
+      "misspellings": ["klevye"],
+      "subcategories": {
+        "mechanical": ["mekanik klavye"],
+        "wireless": ["kablosuz klavye"],
+        "turkish_layout": ["türkçe q klavye", "türkçe f klavye"]
+      }
+    },
+    "mouse": {
+      "primary_tr": "mouse",
+      "variants": ["fare"],
+      "subcategories": {
+        "gaming": ["gaming mouse", "oyuncu faresi"],
+        "wireless": ["kablosuz mouse", "bluetooth fare"],
+        "ergonomic": ["dikey mouse", "ergonomik mouse"]
+      }
+    },
+    "office_chair": {
+      "primary_tr": "ofis koltuğu",
+      "variants": ["çalışma koltuğu", "ofis sandalyesi", "bilgisayar koltuğu"],
+      "misspellings": ["ofis koltugu"],
+      "subcategories": {
+        "ergonomic": ["ergonomik koltuk", "ergonomik ofis koltuğu"],
+        "gaming": ["gaming koltuğu", "oyuncu koltuğu"],
+        "executive": ["müdür koltuğu", "yönetici koltuğu"]
+      }
+    },
+    "desk": {
+      "primary_tr": "çalışma masası",
+      "variants": ["bilgisayar masası", "ofis masası", "yazı masası"],
+      "misspellings": ["calışma masası"],
+      "subcategories": {
+        "standing": ["yükseklik ayarlı masa", "sit-stand masa", "ayaklı masa"],
+        "gaming": ["gaming masası", "oyuncu masası"],
+        "corner": ["köşe masa", "l masa"]
+      }
+    },
+    "baby_stroller": {
+      "primary_tr": "bebek arabası",
+      "variants": ["puset", "baston puset", "travel sistem"],
+      "misspellings": ["bebek arabasi"],
+      "brand_variants": {
+        "chicco": ["chicco"],
+        "cybex": ["cybex"],
+        "bugaboo": ["bugaboo"],
+        "joie": ["joie"],
+        "elele": ["elele"]
+      }
+    },
+    "mattress": {
+      "primary_tr": "yatak",
+      "variants": ["baza yatak", "ortopedik yatak"],
+      "misspellings": [],
+      "subcategories": {
+        "spring": ["yaylı yatak"],
+        "foam": ["sünger yatak", "visco yatak", "memory foam yatak"],
+        "latex": ["lateks yatak"]
+      },
+      "sizes_tr": {
+        "single": ["tek kişilik yatak", "90x190", "90x200"],
+        "double": ["çift kişilik yatak", "150x200", "160x200"],
+        "queen": ["160x200"],
+        "king": ["180x200", "200x200"]
+      }
+    },
+    "sofa": {
+      "primary_tr": "koltuk takımı",
+      "variants": ["kanepe", "divan", "oturma grubu"],
+      "misspellings": ["koltug", "kanape"],
+      "subcategories": {
+        "corner": ["köşe takımı", "köşe koltuk", "l koltuk"],
+        "sofa_bed": ["yataklı kanepe", "açılır kanepe"],
+        "single": ["tekli koltuk", "berjer"]
+      }
+    },
+    "iron": {
+      "primary_tr": "ütü",
+      "variants": ["buharlı ütü"],
+      "misspellings": ["utu"],
+      "subcategories": {
+        "steam_station": ["buhar kazanlı ütü", "ütü istasyonu"],
+        "steam_iron": ["buharlı ütü"],
+        "garment_steamer": ["dikey buharlı ütü", "elbise ütüsü"]
+      }
+    },
+    "blender": {
+      "primary_tr": "blender",
+      "variants": ["smoothie blender"],
+      "subcategories": {
+        "hand": ["el blenderı", "dalma blender"],
+        "countertop": ["smoothie blender", "tezgah üstü blender"],
+        "food_processor": ["mutfak robotu", "doğrayıcı"]
+      }
+    },
+    "rice": {
+      "primary_tr": "pirinç",
+      "variants": ["baldo pirinç", "basmati pirinç", "osmancık pirinç"],
+      "misspellings": ["pirinc"],
+      "subcategories": {
+        "baldo": ["baldo pirinç", "baldo"],
+        "osmancik": ["osmancık pirinç", "osmancık"],
+        "basmati": ["basmati pirinç", "basmati"],
+        "jasmine": ["yasemin pirinç", "jasmine pirinç"]
+      }
+    },
+    "olive_oil": {
+      "primary_tr": "zeytinyağı",
+      "variants": ["sızma zeytinyağı", "natürel sızma zeytinyağı", "riviera zeytinyağı"],
+      "misspellings": ["zeytin yağı", "zeytinyagi"],
+      "subcategories": {
+        "extra_virgin": ["natürel sızma zeytinyağı", "soğuk sıkım zeytinyağı"],
+        "refined": ["riviera zeytinyağı"],
+        "early_harvest": ["erken hasat zeytinyağı"]
+      }
+    },
+    "diapers": {
+      "primary_tr": "bebek bezi",
+      "variants": ["çocuk bezi"],
+      "misspellings": ["bebek bezı"],
+      "brand_variants": {
+        "prima": ["prima", "prima premium care", "prima aktif bebek"],
+        "huggies": ["huggies", "huggies extra care"],
+        "molfix": ["molfix"],
+        "evy_baby": ["evy baby"],
+        "sleepy": ["sleepy"]
+      },
+      "size_terms": ["yenidoğan", "mini", "midi", "maxi", "junior", "extra large"]
+    },
+    "sneakers": {
+      "primary_tr": "spor ayakkabı",
+      "variants": ["sneaker", "koşu ayakkabısı", "günlük spor ayakkabı"],
+      "misspellings": ["spor ayakkabi"],
+      "brand_variants": {
+        "nike": ["nike", "air max", "air force"],
+        "adidas": ["adidas", "ultraboost", "superstar", "gazelle"],
+        "new_balance": ["new balance", "nb"],
+        "puma": ["puma"],
+        "skechers": ["skechers"]
+      }
+    },
+    "backpack": {
+      "primary_tr": "sırt çantası",
+      "variants": ["okul çantası", "laptop çantası"],
+      "misspellings": ["sırt cantası", "sirt çantası"],
+      "subcategories": {
+        "school": ["okul çantası", "ilkokul çantası", "ortaokul çantası"],
+        "laptop": ["laptop sırt çantası", "notebook çantası"],
+        "travel": ["seyahat çantası", "dağcı çantası"]
+      }
+    },
+    "power_bank": {
+      "primary_tr": "powerbank",
+      "variants": ["taşınabilir şarj cihazı", "taşınabilir batarya"],
+      "misspellings": ["power bank", "pawer bank"],
+      "brand_variants": {
+        "anker": ["anker"],
+        "baseus": ["baseus"],
+        "xiaomi": ["xiaomi powerbank", "mi powerbank"]
+      }
+    },
+    "ssd": {
+      "primary_tr": "ssd",
+      "variants": ["katı hal sürücü", "ssd disk"],
+      "subcategories": {
+        "nvme": ["nvme ssd", "m.2 ssd", "m2 ssd"],
+        "sata": ["sata ssd", "2.5 ssd"],
+        "external": ["taşınabilir ssd", "harici ssd"]
+      },
+      "brand_variants": {
+        "samsung": ["samsung ssd", "samsung 990", "samsung 980", "samsung 870"],
+        "kingston": ["kingston ssd"],
+        "wd": ["wd ssd", "western digital", "wd black"],
+        "crucial": ["crucial ssd"]
+      }
+    },
+    "gpu": {
+      "primary_tr": "ekran kartı",
+      "variants": ["grafik kartı", "gpu"],
+      "misspellings": ["ekran karti"],
+      "brand_variants": {
+        "nvidia": ["nvidia", "geforce", "rtx", "gtx"],
+        "amd": ["amd", "radeon", "rx"]
+      },
+      "model_terms": ["rtx 4060", "rtx 4070", "rtx 4080", "rtx 5070", "rtx 5080", "rx 7600", "rx 7800 xt", "rx 9070"]
+    }
+  }
+}

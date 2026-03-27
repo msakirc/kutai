@@ -164,7 +164,10 @@ async def _classify_with_llm(title: str, description: str) -> TaskClassification
         ),
     }]
 
-    response = await call_model(reqs, messages)
+    from src.core.llm_dispatcher import get_dispatcher, CallCategory
+    response = await get_dispatcher().request(
+        CallCategory.OVERHEAD, reqs, messages,
+    )
 
     raw = response.get("content", "").strip()
     result = _extract_json(raw)

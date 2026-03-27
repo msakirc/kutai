@@ -52,7 +52,10 @@ async def _llm_call(
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        response = await call_model(reqs, messages)
+        from src.core.llm_dispatcher import get_dispatcher, CallCategory
+        response = await get_dispatcher().request(
+            CallCategory.MAIN_WORK, reqs, messages,
+        )
         return response.get("content", "")
     except Exception as e:
         logger.warning("_llm_call failed", error=str(e), prompt_len=len(prompt))

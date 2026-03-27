@@ -440,6 +440,21 @@ class LocalModelManager:
                     f"✅ Model {model_name} loaded in {swap_duration:.1f}s "
                     f"(swap #{self._total_swaps})"
                 )
+                # Notify dispatcher for deferred grade draining & swap budget
+                try:
+                    from src.core.llm_dispatcher import get_dispatcher
+                    old_litellm = None
+                    new_litellm = None
+                    if old_model:
+                        old_info = registry.get(old_model)
+                        old_litellm = old_info.litellm_name if old_info else None
+                    new_info = registry.get(model_name)
+                    new_litellm = new_info.litellm_name if new_info else None
+                    asyncio.ensure_future(
+                        get_dispatcher().on_model_swap(old_litellm, new_litellm)
+                    )
+                except Exception as _e:
+                    logger.debug(f"Dispatcher swap notification failed: {_e}")
                 return True
             else:
                 self.current_model = None

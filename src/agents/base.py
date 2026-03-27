@@ -1089,7 +1089,9 @@ class BaseAgent:
 
             # ── Call LLM ──
             try:
-                response = await call_model(
+                from src.core.llm_dispatcher import get_dispatcher, CallCategory
+                response = await get_dispatcher().request(
+                    CallCategory.MAIN_WORK,
                     reqs,
                     messages,
                     tools=litellm_tools,
@@ -1368,17 +1370,34 @@ class BaseAgent:
                         "difficulty":  reqs.difficulty,
                     }
 
-                # Grading (skip trivial tasks)
+                # Grading (skip trivial tasks) — uses dispatcher for deferred grading
                 quality_score = None
                 if reqs.difficulty >= 4:
                     try:
-                        quality_score = await grade_response(
-                            task.get("title", ""),
-                            task.get("description", ""),
-                            result,
+                        from src.core.llm_dispatcher import get_dispatcher
+
+                        async def _apply_grade(score: float):
+                            """Callback to apply deferred grade."""
+                            if task_id != "?":
+                                await update_task(task_id, quality_score=score)
+                                await record_model_call(
+                                    model=used_model,
+                                    agent_type=self.name,
+                                    success=True,
+                                    grade=score,
+                                )
+
+                        quality_score = await get_dispatcher().request_grade(
+                            task_id=str(task_id),
+                            task_title=task.get("title", ""),
+                            task_description=task.get("description", ""),
+                            response_text=result,
                             generating_model=used_model,
                             task_name=reqs.task,
+                            priority=reqs.priority,
+                            on_graded=_apply_grade,
                         )
+                        # quality_score may be None if grading was deferred
                         if quality_score is not None and task_id != "?":
                             await update_task(task_id, quality_score=quality_score)
                             await record_model_call(
@@ -1861,7 +1880,10 @@ class BaseAgent:
         ]
 
         try:
-            response = await call_model(reqs, messages)
+            from src.core.llm_dispatcher import get_dispatcher, CallCategory
+            response = await get_dispatcher().request(
+                CallCategory.MAIN_WORK, reqs, messages,
+            )
         except Exception as exc:
             logger.error(f"[Task #{task_id}] Single-shot call failed: {exc}")
             return {
@@ -1939,7 +1961,10 @@ class BaseAgent:
                     f"Response to review:\n{result[:3000]}"
                 )},
             ]
-            response = await call_model(reflect_reqs, messages)
+            from src.core.llm_dispatcher import get_dispatcher, CallCategory
+            response = await get_dispatcher().request(
+                CallCategory.OVERHEAD, reflect_reqs, messages,
+            )
             raw = response.get("content", "").strip()
             parsed = self._try_parse_json(raw)
             if parsed and parsed.get("verdict") == "fix":

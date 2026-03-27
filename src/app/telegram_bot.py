@@ -147,19 +147,31 @@ def _build_category_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-# Persistent reply keyboard — always visible at the bottom of the chat
-# Note: /stop and /restart deliberately excluded — too dangerous for accidental taps.
-# Use the inline menu (System & Admin category) for those.
+# Persistent reply keyboard — always visible at the bottom of the chat.
+# Most-used actions on top row, one tap each. No /stop or /restart (dangerous).
 REPLY_KEYBOARD = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("/status"), KeyboardButton("/missions"), KeyboardButton("/queue")],
-        [KeyboardButton("/todos"), KeyboardButton("/shop"), KeyboardButton("/deals")],
-        [KeyboardButton("/help")],
+        [KeyboardButton("🛒 Shop"), KeyboardButton("📝 Todo"), KeyboardButton("🎯 Mission")],
+        [KeyboardButton("📋 Todos"), KeyboardButton("📊 Status"), KeyboardButton("🔍 Missions")],
+        [KeyboardButton("💰 Price"), KeyboardButton("⚖️ Compare"), KeyboardButton("📂 Menu")],
     ],
     resize_keyboard=True,
     one_time_keyboard=False,
     is_persistent=True,
 )
+
+# Map reply-keyboard button labels to commands (without slash)
+_REPLY_BUTTON_MAP = {
+    "🛒 Shop": "shop",
+    "📝 Todo": "todo",
+    "🎯 Mission": "mission",
+    "📋 Todos": "todos",
+    "📊 Status": "status",
+    "🔍 Missions": "missions",
+    "💰 Price": "price",
+    "⚖️ Compare": "compare",
+    "📂 Menu": "start",
+}
 
 
 def _build_command_keyboard(cat_key: str) -> InlineKeyboardMarkup:
@@ -341,21 +353,15 @@ class TelegramInterface:
         # Clear any stale pending action
         chat_id = update.effective_chat.id
         self._pending_action.pop(chat_id, None)
-        # Send inline category menu first
-        await self._reply(update,
-            "📂 *Command Categories*",
-            parse_mode="Markdown",
-            reply_markup=_build_category_keyboard()
-        )
-        # Send persistent reply keyboard LAST so it is the most recently
-        # established ReplyKeyboardMarkup — this ensures the bottom
-        # keyboard is visible even on clients that ignore is_persistent.
+        # Send inline category menu with full command access
         await self._reply(update,
             "🤖 *KutAI Online*\n\n"
-            "Send a message or use the buttons below.",
+            "Use the buttons below or just send a message.",
             parse_mode="Markdown",
-            reply_markup=REPLY_KEYBOARD,
+            reply_markup=_build_category_keyboard(),
         )
+        # Refresh the persistent reply keyboard (must be separate message)
+        await self._reply(update, "⌨️", reply_markup=REPLY_KEYBOARD)
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show categorized command reference."""
@@ -1672,6 +1678,19 @@ class TelegramInterface:
         text = update.message.text
         if not text:
             return
+
+        # ═══════════════════════════════════════════════════════
+        # PRIORITY -1: Reply-keyboard button taps → route to command
+        # ═══════════════════════════════════════════════════════
+        btn_cmd = _REPLY_BUTTON_MAP.get(text.strip())
+        if btn_cmd:
+            # Clear any stale pending action — user tapped a new button
+            self._pending_action.pop(chat_id, None)
+            handler = self._resolve_cmd_handler(btn_cmd)
+            if handler:
+                context.args = []
+                await handler(update, context)
+                return
 
         logger.info("Message received", user_id=chat_id, text_preview=text[:50])
 

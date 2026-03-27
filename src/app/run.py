@@ -249,9 +249,13 @@ async def main():
         cwd=os.getcwd(),
     )
 
+    _log.info("Running check_env...")
     check_env()
+    _log.info("check_env done, running print_config...")
     print_config()
+    _log.info("Checking Docker services...")
     docker_ok = start_docker_services()
+    _log.info("Docker check done", docker_ok=docker_ok)
     if not docker_ok:
         _log.warning("Docker services unavailable — ntfy, sandbox, monitoring will not work")
         try:
@@ -362,10 +366,11 @@ async def main():
         gpu_detect_task.cancel()
 
     # Propagate exit code to wrapper (42 = restart, 0 = stop).
-    # Use os._exit() to bypass asyncio/uvicorn cleanup that can swallow
-    # the exit code or cause CancelledError cascades on Windows.
+    # Use sys.exit() so that atexit handlers (llama-server cleanup) still run.
+    # The orchestrator's finally block has already stopped llama-server by this
+    # point, but atexit provides a second safety net.
     if orch.requested_exit_code is not None:
-        os._exit(orch.requested_exit_code)
+        sys.exit(orch.requested_exit_code)
 
 
 if __name__ == "__main__":

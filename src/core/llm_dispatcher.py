@@ -290,6 +290,54 @@ class LLMDispatcher:
         else:
             return await self._route_main_work(reqs, messages, tools)
 
+    def _compute_timeout(
+        self,
+        category: CallCategory,
+        reqs: "ModelRequirements",
+    ) -> float:
+        """Compute adaptive request timeout (seconds).
+
+        S9 — Adaptive Timeouts:
+          OVERHEAD hard cap  20s   (classifier/grader must be fast)
+          MAIN_WORK          TPS-based: (estimated_output_tokens / measured_tps) × 2.0
+                             Clamped to [20, 300] seconds.
+                             Falls back to difficulty heuristics when no TPS measured.
+
+        The returned value is passed as timeout_override to call_model(),
+        which uses it for both the litellm HTTP timeout (override − 5s) and
+        for outer asyncio cancellation should the HTTP layer not fire in time.
+        """
+        # ── OVERHEAD: hard 20s cap ────────────────────────────────────────
+        if category == CallCategory.OVERHEAD:
+            return 20.0
+
+        # ── MAIN_WORK: TPS-based adaptive timeout ─────────────────────────
+        _MAIN_WORK_MIN = 20.0
+        _MAIN_WORK_MAX = 300.0
+
+        # Try runtime measured_tps first (most accurate)
+        try:
+            from src.models.local_model_manager import get_runtime_state
+            runtime = get_runtime_state()
+            if runtime is not None and runtime.measured_tps > 0.0:
+                est_gen_secs = reqs.estimated_output_tokens / runtime.measured_tps
+                return max(_MAIN_WORK_MIN, min(_MAIN_WORK_MAX, est_gen_secs * 2.0))
+        except Exception:
+            pass
+
+        # Fallback: difficulty heuristic (no TPS data yet)
+        d = reqs.difficulty
+        if d <= 2:
+            return 25.0
+        elif d <= 4:
+            return 60.0
+        elif d <= 6:
+            return 120.0
+        elif d <= 8:
+            return 200.0
+        else:
+            return _MAIN_WORK_MAX
+
     async def _route_main_work(
         self,
         reqs: "ModelRequirements",
@@ -303,6 +351,8 @@ class LLMDispatcher:
         """
         from src.core.router import call_model
 
+        timeout = self._compute_timeout(CallCategory.MAIN_WORK, reqs)
+
         # Check swap budget — if exhausted, constrain to loaded model or cloud
         if self.swap_budget.exhausted and not reqs.local_only:
             reqs_copy = copy.copy(reqs)
@@ -311,7 +361,8 @@ class LLMDispatcher:
                 # Try the loaded model first by pinning it
                 reqs_copy.model_override = loaded
                 try:
-                    result = await call_model(reqs_copy, messages, tools)
+                    result = await call_model(reqs_copy, messages, tools,
+                                              timeout_override=timeout)
                     return result
                 except Exception:
                     # Loaded model failed — fall through to normal routing
@@ -321,7 +372,7 @@ class LLMDispatcher:
             # handle it (will likely pick cloud since budget is exhausted
             # and we can't swap)
 
-        result = await call_model(reqs, messages, tools)
+        result = await call_model(reqs, messages, tools, timeout_override=timeout)
         return result
 
     async def _route_overhead(
@@ -339,6 +390,8 @@ class LLMDispatcher:
         """
         from src.core.router import call_model, select_model, ModelRequirements
 
+        timeout = self._compute_timeout(CallCategory.OVERHEAD, reqs)
+
         loaded_name = self._get_loaded_model_name()
         loaded_litellm = self._get_loaded_litellm_name()
 
@@ -347,7 +400,8 @@ class LLMDispatcher:
             reqs_pinned = copy.copy(reqs)
             reqs_pinned.model_override = loaded_litellm
             try:
-                result = await call_model(reqs_pinned, messages, tools)
+                result = await call_model(reqs_pinned, messages, tools,
+                                          timeout_override=timeout)
                 return result
             except Exception as e:
                 logger.debug(
@@ -362,7 +416,8 @@ class LLMDispatcher:
         reqs_cloud = self._force_cloud_only(reqs_cloud)
 
         try:
-            result = await call_model(reqs_cloud, messages, tools)
+            result = await call_model(reqs_cloud, messages, tools,
+                                      timeout_override=timeout)
             return result
         except Exception as e:
             # Cloud also failed — this is a real error, propagate it

@@ -861,6 +861,7 @@ async def call_model(
     reqs: ModelRequirements,
     messages: list[dict],
     tools: list[dict] | None = None,
+    timeout_override: float | None = None,
 ) -> dict:
     """
     Call the best available model matching requirements.
@@ -946,14 +947,19 @@ async def call_model(
             )
             logger.debug("sampling params applied", task=_task, **sampling_params)
 
-        timeout_val = 60
-        if model.is_local:
-            timeout_val = 120
-        if is_thinking:
-            timeout_val = max(timeout_val, 180)
-        # Short timeout for trivial tasks (classification, routing)
-        if reqs.difficulty <= 3:
-            timeout_val = min(timeout_val, 20)
+        if timeout_override is not None:
+            # Caller (dispatcher) provides TPS-based or category-capped timeout
+            timeout_val = float(timeout_override)
+        else:
+            # Legacy heuristic fallback (used when called directly, not via dispatcher)
+            timeout_val = 60
+            if model.is_local:
+                timeout_val = 120
+            if is_thinking:
+                timeout_val = max(timeout_val, 180)
+            # Short timeout for trivial tasks (classification, routing)
+            if reqs.difficulty <= 3:
+                timeout_val = min(timeout_val, 20)
 
         use_tools = None
         if tools and model.supports_function_calling:

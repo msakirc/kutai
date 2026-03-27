@@ -157,6 +157,7 @@ REPLY_KEYBOARD = ReplyKeyboardMarkup(
         [KeyboardButton("/help")],
     ],
     resize_keyboard=True,
+    one_time_keyboard=False,
     is_persistent=True,
 )
 
@@ -212,6 +213,20 @@ class TelegramInterface:
         self._pending_clarifications: dict[int, int] = {}
         # Conversation flow: chat_id → {"command": str} for button-initiated arg prompts
         self._pending_action: dict[int, dict] = {}
+
+    async def _reply(self, update_or_msg, text: str, **kwargs):
+        """Send a reply that always includes the persistent reply keyboard.
+
+        If the caller supplies its own ``reply_markup`` (e.g. an
+        InlineKeyboardMarkup) we pass it through instead so inline buttons
+        still work.  Every other reply gets REPLY_KEYBOARD so the bottom
+        keyboard never disappears.
+        """
+        if "reply_markup" not in kwargs:
+            kwargs["reply_markup"] = REPLY_KEYBOARD
+        # Accept either an Update or a Message object
+        msg = getattr(update_or_msg, "message", update_or_msg)
+        return await msg.reply_text(text, **kwargs)
 
     def _resolve_cmd_handler(self, cmd: str):
         """Resolve a command string to its handler method."""
@@ -323,19 +338,23 @@ class TelegramInterface:
         ))
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # Send persistent reply keyboard first (sets the bottom keyboard)
-        await update.message.reply_text(
-            "🤖 *KutAI Online*\n\n"
-            "Send a message or use the buttons below.\n"
-            "Tap a category for more commands:",
-            parse_mode="Markdown",
-            reply_markup=REPLY_KEYBOARD,
-        )
-        # Send inline category menu
-        await update.message.reply_text(
+        # Clear any stale pending action
+        chat_id = update.effective_chat.id
+        self._pending_action.pop(chat_id, None)
+        # Send inline category menu first
+        await self._reply(update,
             "📂 *Command Categories*",
             parse_mode="Markdown",
             reply_markup=_build_category_keyboard()
+        )
+        # Send persistent reply keyboard LAST so it is the most recently
+        # established ReplyKeyboardMarkup — this ensures the bottom
+        # keyboard is visible even on clients that ignore is_persistent.
+        await self._reply(update,
+            "🤖 *KutAI Online*\n\n"
+            "Send a message or use the buttons below.",
+            parse_mode="Markdown",
+            reply_markup=REPLY_KEYBOARD,
         )
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -377,21 +396,16 @@ class TelegramInterface:
             "/restart — Restart KutAI\n\n"
             "_Tap /start for the button menu._"
         )
-        await update.message.reply_text(help_text, parse_mode="Markdown")
+        await self._reply(update,help_text, parse_mode="Markdown")
 
     # ─── Mission Commands ──────────────────────────────────────────────────────
 
     async def cmd_mission(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Create a new mission. /mission <description> or /mish <description>"""
         if not context.args:
-            await update.message.reply_text(
-                "Usage: /mission <description>\n"
-                "       /mission --workflow <description>\n"
-                "       /mish <description> (shorthand)\n\n"
-                "Examples:\n"
-                "  /mission Fix the login page bug\n"
-                "  /mission --workflow Build an inventory management app"
-            )
+            chat_id = update.effective_chat.id
+            self._pending_action[chat_id] = {"command": "mission"}
+            await self._reply(update, "🎯 Describe your mission:")
             return
 
         text_args = list(context.args)
@@ -403,7 +417,7 @@ class TelegramInterface:
 
         description = " ".join(text_args)
         if not description:
-            await update.message.reply_text("Please provide a mission description.")
+            await self._reply(update,"Please provide a mission description.")
             return
 
         # Let the classifier decide if this needs a workflow
@@ -424,7 +438,7 @@ class TelegramInterface:
                     initial_input={"idea": description, "product_name": description[:50]},
                     title=description[:80],
                 )
-                await update.message.reply_text(
+                await self._reply(update,
                     f"🔄 Workflow mission #{mission_id} created!\n"
                     f"_{description[:60]}_\n\n"
                     f"Use /wfstatus {mission_id} to track progress.",
@@ -432,7 +446,7 @@ class TelegramInterface:
                 )
             except Exception as e:
                 logger.error("workflow mission failed", error=str(e))
-                await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+                await self._reply(update,f"❌ {_friendly_error(str(e))}")
             return
 
         # Regular mission — create and plan
@@ -445,7 +459,7 @@ class TelegramInterface:
         if self.orchestrator:
             await self.orchestrator.plan_mission(mission_id, description[:80], description)
 
-        await update.message.reply_text(
+        await self._reply(update,
             f"🎯 Mission #{mission_id} created. Planning now...\n"
             f"_{description[:60]}_",
             parse_mode="Markdown",
@@ -455,7 +469,9 @@ class TelegramInterface:
     async def cmd_mission_workflow(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Create a workflow mission from menu button."""
         if not context.args:
-            await update.message.reply_text("Describe your product/workflow idea:")
+            chat_id = update.effective_chat.id
+            self._pending_action[chat_id] = {"command": "mission_wf"}
+            await self._reply(update, "🔄 Describe your product/workflow idea:")
             return
         # Inject --workflow and delegate
         context.args = ["--workflow"] + list(context.args)
@@ -465,7 +481,7 @@ class TelegramInterface:
         """List active missions."""
         missions = await get_active_missions()
         if not missions:
-            await update.message.reply_text("No active missions.")
+            await self._reply(update,"No active missions.")
             return
 
         lines = ["📋 *Active Missions:*\n"]
@@ -486,13 +502,13 @@ class TelegramInterface:
             wf_tag = f" \\[{workflow}]" if workflow else ""
             lines.append(f"  {badge} #{mid} {title}{wf_tag}{task_info}")
 
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await self._reply(update,"\n".join(lines), parse_mode="Markdown")
 
     async def cmd_add_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not context.args:
-            await update.message.reply_text(
-                "Usage: /task <description> [--model <litellm_name>]"
-            )
+            chat_id = update.effective_chat.id
+            self._pending_action[chat_id] = {"command": "task"}
+            await self._reply(update, "📋 Describe the task:")
             return
         raw_args = list(context.args)
         chat_id = update.message.chat_id
@@ -520,23 +536,23 @@ class TelegramInterface:
         )
         self.user_last_task_id[chat_id] = task_id
         pin_msg = f" (pinned: {model_override})" if model_override else ""
-        await update.message.reply_text(f"✅ Task #{task_id} queued.{pin_msg}")
+        await self._reply(update,f"✅ Task #{task_id} queued.{pin_msg}")
 
 
     async def cmd_view_queue(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         tasks = await get_ready_tasks(limit=15)
         if not tasks:
-            await update.message.reply_text(" No pending tasks. System is idle.")
+            await self._reply(update," No pending tasks. System is idle.")
             return
         msg = " *Task Queue:*\n\n"
         for t in tasks:
             agent = t.get('agent_type', '?')
             msg += f"#{t['id']} [{agent}|{t['tier']}] {t['title'][:50]}\n"
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        await self._reply(update,msg, parse_mode="Markdown")
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats = await get_daily_stats()
-        await update.message.reply_text(
+        await self._reply(update,
             f"⚙️ *System Status*\n\n"
             f"✅ Completed: {stats['completed']}\n"
             f"⏳ Pending: {stats['pending']}\n"
@@ -550,7 +566,7 @@ class TelegramInterface:
         if self.orchestrator:
             await self.orchestrator.daily_digest()
         else:
-            await update.message.reply_text("Orchestrator not connected.")
+            await self._reply(update,"Orchestrator not connected.")
 
     async def cmd_debug(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show ALL tasks with full status details."""
@@ -569,7 +585,7 @@ class TelegramInterface:
         missions = [dict(row) for row in await cursor2.fetchall()]
 
         if not tasks and not missions:
-            await update.message.reply_text("Database is empty.")
+            await self._reply(update,"Database is empty.")
             return
 
         msg = "🔍 *FULL SYSTEM DEBUG*\n\n"
@@ -613,15 +629,15 @@ class TelegramInterface:
         if len(msg) > 4000:
             parts = [msg[i:i+4000] for i in range(0, len(msg), 4000)]
             for part in parts:
-                await update.message.reply_text(part, parse_mode="Markdown")
+                await self._reply(update,part, parse_mode="Markdown")
         else:
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            await self._reply(update,msg, parse_mode="Markdown")
 
 
     async def cmd_reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Reset a specific stuck task back to pending."""
         if not context.args:
-            await update.message.reply_text(
+            await self._reply(update,
                 "Usage:\n"
                 "/reset <task_id> — Reset one task to pending\n"
                 "/reset failed — Reset all failed tasks\n"
@@ -639,7 +655,7 @@ class TelegramInterface:
             )
             count = cursor.rowcount
             await db.commit()
-            await update.message.reply_text(f"♻️ Reset {count} failed task(s) to pending.")
+            await self._reply(update,f"♻️ Reset {count} failed task(s) to pending.")
 
         elif arg == "stuck":
             db = await get_db()
@@ -649,7 +665,7 @@ class TelegramInterface:
             )
             count = cursor.rowcount
             await db.commit()
-            await update.message.reply_text(f"♻️ Reset {count} stuck task(s) to pending.")
+            await self._reply(update,f"♻️ Reset {count} stuck task(s) to pending.")
 
         elif arg == "blocked":
             # Clear all dependency references so blocked tasks can run
@@ -660,7 +676,7 @@ class TelegramInterface:
             )
             count = cursor.rowcount
             await db.commit()
-            await update.message.reply_text(
+            await self._reply(update,
                 f"♻️ Cleared dependencies on {count} blocked task(s). They'll run now."
             )
 
@@ -668,9 +684,9 @@ class TelegramInterface:
             try:
                 task_id = int(arg)
                 await update_task(task_id, status="pending", retry_count=0, error=None)
-                await update.message.reply_text(f"♻️ Task #{task_id} reset to pending.")
+                await self._reply(update,f"♻️ Task #{task_id} reset to pending.")
             except ValueError:
-                await update.message.reply_text("Invalid argument. Use a task ID, 'failed', 'stuck', or 'blocked'.")
+                await self._reply(update,"Invalid argument. Use a task ID, 'failed', 'stuck', or 'blocked'.")
 
 
     async def cmd_reset_all(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -679,7 +695,7 @@ class TelegramInterface:
             InlineKeyboardButton("☢️ Yes, wipe everything", callback_data="resetall_confirm"),
             InlineKeyboardButton("Cancel", callback_data="resetall_cancel"),
         ]]
-        await update.message.reply_text(
+        await self._reply(update,
             "⚠️ This will delete ALL missions, tasks, memory, and conversations.\n"
             "Are you sure?",
             reply_markup=InlineKeyboardMarkup(keyboard)
@@ -693,7 +709,7 @@ class TelegramInterface:
         Uses a hard exit after a short delay as a fallback in case the
         graceful shutdown path is blocked (e.g. stuck LLM call).
         """
-        await update.message.reply_text("🔄 Restarting KutAI...")
+        await self._reply(update,"🔄 Restarting KutAI...")
         if self.orchestrator:
             self.orchestrator.requested_exit_code = 42
             self.orchestrator.shutdown_event.set()
@@ -708,7 +724,7 @@ class TelegramInterface:
             InlineKeyboardButton("⏹ Yes, stop KutAI", callback_data="stop_confirm"),
             InlineKeyboardButton("Cancel", callback_data="stop_cancel"),
         ]]
-        await update.message.reply_text(
+        await self._reply(update,
             "⚠️ *Stop KutAI?*\nYou will need to manually restart the process.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard)
@@ -729,7 +745,7 @@ class TelegramInterface:
         if not context.args:
             recent = await get_recent_completed_tasks(limit=5)
             if not recent:
-                await update.message.reply_text("No completed tasks found.")
+                await self._reply(update,"No completed tasks found.")
                 return
             lines = ["📄 *Recent completed tasks:*\n"]
             for t in recent:
@@ -737,22 +753,22 @@ class TelegramInterface:
                 title = t.get("title", "untitled")[:60]
                 lines.append(f"• #{tid} — {title}")
             lines.append("\nUse /result <id> to view full result.")
-            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            await self._reply(update,"\n".join(lines), parse_mode="Markdown")
             return
         try:
             task_id = int(context.args[0])
         except ValueError:
-            await update.message.reply_text("Task ID must be a number.")
+            await self._reply(update,"Task ID must be a number.")
             return
         task = await get_task(task_id)
         if not task:
-            await update.message.reply_text(f"Task #{task_id} not found.")
+            await self._reply(update,f"Task #{task_id} not found.")
             return
         result = task.get("result", "")
         status = task.get("status", "unknown")
         title = task.get("title", "untitled")
         if not result:
-            await update.message.reply_text(
+            await self._reply(update,
                 f"Task #{task_id} ({status}): no result yet."
             )
             return
@@ -760,14 +776,14 @@ class TelegramInterface:
         text = header + str(result)
         if len(text) > 4000:
             text = text[:3950] + "\n\n_(truncated — result too long)_"
-        await update.message.reply_text(text, parse_mode="Markdown")
+        await self._reply(update,text, parse_mode="Markdown")
 
     # ─── Phase 3 Commands ──────────────────────────────────────────────
 
     async def cmd_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Cancel a task or mission and its children."""
         if not context.args:
-            await update.message.reply_text(
+            await self._reply(update,
                 "Usage: /cancel <task_id or mission_id>\n"
                 "Cancels a task (and children) or an entire mission."
             )
@@ -775,13 +791,13 @@ class TelegramInterface:
         try:
             item_id = int(context.args[0])
         except ValueError:
-            await update.message.reply_text("ID must be a number.")
+            await self._reply(update,"ID must be a number.")
             return
 
         # Try cancelling as a task first
         success = await cancel_task(item_id)
         if success:
-            await update.message.reply_text(
+            await self._reply(update,
                 f"🚫 Task #{item_id} and its children cancelled."
             )
             return
@@ -797,18 +813,18 @@ class TelegramInterface:
                 if t.get("status") in ("pending", "processing", "blocked"):
                     await cancel_task(t["id"])
                     cancelled_count += 1
-            await update.message.reply_text(
+            await self._reply(update,
                 f"🚫 Mission #{item_id} cancelled ({cancelled_count} tasks also cancelled)."
             )
         else:
-            await update.message.reply_text(
+            await self._reply(update,
                 f"#{item_id} not found or already finished."
             )
 
     async def cmd_priority(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Change task priority."""
         if len(context.args) < 2:
-            await update.message.reply_text(
+            await self._reply(update,
                 "Usage: /priority <task_id> <1-10>"
             )
             return
@@ -818,35 +834,35 @@ class TelegramInterface:
             if not 1 <= level <= 10:
                 raise ValueError
         except ValueError:
-            await update.message.reply_text(
+            await self._reply(update,
                 "Task ID and priority (1-10) must be numbers."
             )
             return
 
         success = await reprioritize_task(task_id, level)
         if success:
-            await update.message.reply_text(
+            await self._reply(update,
                 f"✅ Task #{task_id} priority set to {level}."
             )
         else:
-            await update.message.reply_text(
+            await self._reply(update,
                 f"Task #{task_id} not found or not pending/processing."
             )
 
     async def cmd_graph(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show text DAG of task dependencies for a mission."""
         if not context.args:
-            await update.message.reply_text("Usage: /graph <mission_id>")
+            await self._reply(update,"Usage: /graph <mission_id>")
             return
         try:
             mission_id = int(context.args[0])
         except ValueError:
-            await update.message.reply_text("Mission ID must be a number.")
+            await self._reply(update,"Mission ID must be a number.")
             return
 
         tasks = await get_task_tree(mission_id)
         if not tasks:
-            await update.message.reply_text(
+            await self._reply(update,
                 f"No tasks found for mission #{mission_id}."
             )
             return
@@ -881,7 +897,7 @@ class TelegramInterface:
         # Render root tasks (no parent) then their children
         _render(None)
 
-        await update.message.reply_text(
+        await self._reply(update,
             "\n".join(lines), parse_mode="Markdown"
         )
 
@@ -891,11 +907,11 @@ class TelegramInterface:
             try:
                 new_limit = float(context.args[0])
                 await set_budget("daily", daily_limit=new_limit)
-                await update.message.reply_text(
+                await self._reply(update,
                     f"💰 Daily budget set to ${new_limit:.2f}"
                 )
             except ValueError:
-                await update.message.reply_text(
+                await self._reply(update,
                     "Usage: /budget [daily_limit]\n"
                     "Example: /budget 1.50"
                 )
@@ -903,7 +919,7 @@ class TelegramInterface:
 
         budget = await get_budget("daily")
         if not budget:
-            await update.message.reply_text(
+            await self._reply(update,
                 "💰 No daily budget set.\n"
                 "Use /budget <amount> to set one.\n"
                 "Example: /budget 1.00"
@@ -911,7 +927,7 @@ class TelegramInterface:
             return
 
         today = budget.get("last_reset_date", "N/A")
-        await update.message.reply_text(
+        await self._reply(update,
             f"💰 *Cost Budget*\n\n"
             f"Daily limit: ${budget['daily_limit']:.4f}\n"
             f"Spent today: ${budget['spent_today']:.4f}\n"
@@ -923,13 +939,13 @@ class TelegramInterface:
     async def cmd_cost(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show per-mission cost breakdown."""
         if not context.args:
-            await update.message.reply_text("Usage: /cost <mission\\_id>",
+            await self._reply(update,"Usage: /cost <mission\\_id>",
                                             parse_mode="Markdown")
             return
         try:
             mission_id = int(context.args[0])
         except ValueError:
-            await update.message.reply_text("Mission ID must be a number.")
+            await self._reply(update,"Mission ID must be a number.")
             return
 
         try:
@@ -941,7 +957,7 @@ class TelegramInterface:
             cost_data = {}
 
         if not cost_data or cost_data.get("total_cost", 0) == 0:
-            await update.message.reply_text(f"No cost data for mission #{mission_id}")
+            await self._reply(update,f"No cost data for mission #{mission_id}")
             return
 
         import json as _json
@@ -958,13 +974,13 @@ class TelegramInterface:
             for phase, pcost in sorted(by_phase.items()):
                 lines.append(f"  {phase}: ${pcost:.4f}")
 
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await self._reply(update,"\n".join(lines), parse_mode="Markdown")
 
     async def cmd_model_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show model performance statistics."""
         stats = await get_model_stats()
         if not stats:
-            await update.message.reply_text("📊 No model stats yet.")
+            await self._reply(update,"📊 No model stats yet.")
             return
 
         lines = ["📊 *Model Performance Stats*\n"]
@@ -978,7 +994,7 @@ class TelegramInterface:
                 f"Cost: ${s['avg_cost']:.4f}"
             )
 
-        await update.message.reply_text(
+        await self._reply(update,
             "\n".join(lines), parse_mode="Markdown"
         )
 
@@ -986,7 +1002,7 @@ class TelegramInterface:
         """Show active mission workspaces."""
         workspaces = list_mission_workspaces()
         if not workspaces:
-            await update.message.reply_text("📁 No mission workspaces active.")
+            await self._reply(update,"📁 No mission workspaces active.")
             return
 
         lines = ["📁 *Mission Workspaces*\n"]
@@ -998,7 +1014,7 @@ class TelegramInterface:
                 f"{ws['file_count']} files{lock_str}"
             )
 
-        await update.message.reply_text(
+        await self._reply(update,
             "\n".join(lines), parse_mode="Markdown"
         )
 
@@ -1014,11 +1030,11 @@ class TelegramInterface:
             msg = f"{header}\n\n{timeline}"
             if len(msg) > 4000:
                 msg = msg[:4000] + "\n... (truncated)"
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            await self._reply(update,msg, parse_mode="Markdown")
         except (ValueError, IndexError):
-            await update.message.reply_text("Usage: /progress [mission_id]")
+            await self._reply(update,"Usage: /progress [mission_id]")
         except Exception as e:
-            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+            await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
     async def cmd_audit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show audit log for a task. /audit [task_id]"""
@@ -1032,26 +1048,26 @@ class TelegramInterface:
             msg = f"{header}\n\n{log_text}"
             if len(msg) > 4000:
                 msg = msg[:4000] + "\n... (truncated)"
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            await self._reply(update,msg, parse_mode="Markdown")
         except (ValueError, IndexError):
-            await update.message.reply_text("Usage: /audit [task_id]")
+            await self._reply(update,"Usage: /audit [task_id]")
         except Exception as e:
-            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+            await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
     async def cmd_metrics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show system metrics summary. /metrics"""
         try:
             from src.infra.metrics import format_metrics_summary
             msg = format_metrics_summary()
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            await self._reply(update,msg, parse_mode="Markdown")
         except Exception as e:
-            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+            await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
     async def cmd_replay(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Replay task execution trace. /replay <task_id>"""
         args = context.args
         if not args:
-            await update.message.reply_text("Usage: /replay <task_id>")
+            await self._reply(update,"Usage: /replay <task_id>")
             return
         try:
             from src.infra.tracing import get_trace, format_trace
@@ -1061,24 +1077,24 @@ class TelegramInterface:
             msg = f"🔄 *Trace for Task #{task_id}*\n\n{trace_text}"
             if len(msg) > 4000:
                 msg = msg[:4000] + "\n... (truncated)"
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            await self._reply(update,msg, parse_mode="Markdown")
         except (ValueError, IndexError):
-            await update.message.reply_text("Usage: /replay <task_id>")
+            await self._reply(update,"Usage: /replay <task_id>")
         except Exception as e:
-            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+            await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
     async def cmd_feedback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Rate a completed task. /feedback <task_id> <good|bad|partial> [reason]"""
         args = context.args
         if len(args) < 2:
-            await update.message.reply_text("Usage: /feedback <task_id> <good|bad|partial> [reason]")
+            await self._reply(update,"Usage: /feedback <task_id> <good|bad|partial> [reason]")
             return
         try:
             from src.memory.feedback import record_feedback
             task_id = int(args[0])
             rating = args[1].lower()
             if rating not in ("good", "bad", "partial"):
-                await update.message.reply_text("Rating must be: good, bad, or partial")
+                await self._reply(update,"Rating must be: good, bad, or partial")
                 return
             reason = " ".join(args[2:]) if len(args) > 2 else ""
             # Enrich with model/agent info from the task record
@@ -1096,11 +1112,11 @@ class TelegramInterface:
             msg = f"{emoji} Feedback recorded for task #{task_id}: *{rating}*"
             if reason:
                 msg += f"\nReason: _{reason}_"
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            await self._reply(update,msg, parse_mode="Markdown")
         except (ValueError, IndexError):
-            await update.message.reply_text("Usage: /feedback <task_id> <good|bad|partial> [reason]")
+            await self._reply(update,"Usage: /feedback <task_id> <good|bad|partial> [reason]")
         except Exception as e:
-            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+            await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
     async def cmd_autonomy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Set or view risk autonomy threshold. /autonomy [low|medium|high|paranoid]"""
@@ -1116,14 +1132,14 @@ class TelegramInterface:
             if not args:
                 current = get_autonomy_threshold()
                 level_name = next((k for k, v in levels.items() if v == current), f"custom ({current})")
-                await update.message.reply_text(
+                await self._reply(update,
                     f"🛡️ *Autonomy Level*\n\nCurrent threshold: *{level_name}* (score ≥{current} requires approval)",
                     parse_mode="Markdown",
                 )
                 return
             level = args[0].lower()
             if level not in levels:
-                await update.message.reply_text(f"Unknown level. Choose: {', '.join(levels.keys())}")
+                await self._reply(update,f"Unknown level. Choose: {', '.join(levels.keys())}")
                 return
             threshold = levels[level]
             set_autonomy_threshold(threshold)
@@ -1133,17 +1149,17 @@ class TelegramInterface:
                 "medium": "require approval for high-risk tasks only",
                 "high": "require approval only for very dangerous tasks",
             }[level]
-            await update.message.reply_text(
+            await self._reply(update,
                 f"🛡️ Autonomy set to *{level}* — will {desc}.",
                 parse_mode="Markdown",
             )
         except Exception as e:
-            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+            await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
     async def cmd_ingest(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Ingest a URL or file into the knowledge base."""
         if not context.args:
-            await update.message.reply_text(
+            await self._reply(update,
                 "Usage: /ingest <url\\_or\\_filepath>\n\n"
                 "Examples:\n"
                 "/ingest https://docs.example.com/api\n"
@@ -1153,29 +1169,29 @@ class TelegramInterface:
             return
 
         source = " ".join(context.args)
-        await update.message.reply_text(f"📥 Ingesting: {source}...")
+        await self._reply(update,f"📥 Ingesting: {source}...")
 
         try:
             result = await ingest_document(source)
 
             if result["status"] == "ok":
-                await update.message.reply_text(
+                await self._reply(update,
                     f"✅ Ingested *{result['chunks']}* chunks from "
                     f"`{result['source']}`\n\n"
                     f"Knowledge is now available to all agents.",
                     parse_mode="Markdown",
                 )
             else:
-                await update.message.reply_text(
+                await self._reply(update,
                     f"❌ Ingestion failed: {result.get('error', 'unknown error')}"
                 )
         except ImportError:
-            await update.message.reply_text(
+            await self._reply(update,
                 "❌ Memory system not available. "
                 "Install chromadb: pip install chromadb"
             )
         except Exception as e:
-            await update.message.reply_text(
+            await self._reply(update,
                 f"❌ {_friendly_error(str(e))}"
             )
 
@@ -1184,7 +1200,7 @@ class TelegramInterface:
     async def cmd_credential(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Manage stored credentials for external services."""
         if not context.args:
-            await update.message.reply_text(
+            await self._reply(update,
                 "Usage:\n"
                 "/credential list — Show stored services\n"
                 "/credential add <service> <json\\_data> — Store credential\n"
@@ -1203,22 +1219,22 @@ class TelegramInterface:
 
                 services = await list_credentials()
                 if not services:
-                    await update.message.reply_text(
+                    await self._reply(update,
                         "No credentials stored. Use /credential add to add one."
                     )
                 else:
                     lines = ["*Stored Credentials:*\n"]
                     for svc in services:
                         lines.append(f"  `{svc}`")
-                    await update.message.reply_text(
+                    await self._reply(update,
                         "\n".join(lines), parse_mode="Markdown"
                     )
             except Exception as e:
-                await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+                await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
         elif sub == "add":
             if len(context.args) < 3:
-                await update.message.reply_text(
+                await self._reply(update,
                     "Usage: /credential add <service> <json\\_data>\n"
                     'Example: /credential add github \\{"token": "ghp\\_xxx"\\}',
                     parse_mode="Markdown",
@@ -1233,7 +1249,7 @@ class TelegramInterface:
 
                 data = _json.loads(json_str)
             except (ValueError, TypeError):
-                await update.message.reply_text(
+                await self._reply(update,
                     "Invalid JSON data. Make sure to use proper JSON format."
                 )
                 return
@@ -1242,16 +1258,16 @@ class TelegramInterface:
                 from ..security.credential_store import store_credential
 
                 await store_credential(service_name, data)
-                await update.message.reply_text(
+                await self._reply(update,
                     f"Stored credential for `{service_name}`.",
                     parse_mode="Markdown",
                 )
             except Exception as e:
-                await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+                await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
         elif sub == "remove":
             if len(context.args) < 2:
-                await update.message.reply_text(
+                await self._reply(update,
                     "Usage: /credential remove <service>"
                 )
                 return
@@ -1262,19 +1278,19 @@ class TelegramInterface:
 
                 deleted = await delete_credential(service_name)
                 if deleted:
-                    await update.message.reply_text(
+                    await self._reply(update,
                         f"Removed credential for `{service_name}`.",
                         parse_mode="Markdown",
                     )
                 else:
-                    await update.message.reply_text(
+                    await self._reply(update,
                         f"No credential found for '{service_name}'."
                     )
             except Exception as e:
-                await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+                await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
         else:
-            await update.message.reply_text(
+            await self._reply(update,
                 "Unknown subcommand. Use: list, add, or remove."
             )
 
@@ -1293,27 +1309,27 @@ class TelegramInterface:
                 )
                 rows = await cursor.fetchall()
                 if not rows:
-                    await update.message.reply_text("No active missions.")
+                    await self._reply(update,"No active missions.")
                     return
                 buttons = []
                 for r in rows:
                     label = f"#{r['id']} — {r['title'][:40]} ({r['status']})"
                     buttons.append([InlineKeyboardButton(label, callback_data=f"wfstatus:{r['id']}")])
                 buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="wfstatus_dismiss")])
-                await update.message.reply_text(
+                await self._reply(update,
                     "*Active Missions* — tap to view details:",
                     parse_mode="Markdown",
                     reply_markup=InlineKeyboardMarkup(buttons),
                 )
             except Exception as e:
-                await update.message.reply_text(f"Usage: /wfstatus <mission\\_id>",
+                await self._reply(update,f"Usage: /wfstatus <mission\\_id>",
                                                 parse_mode="Markdown")
             return
 
         try:
             mission_id = int(context.args[0])
         except ValueError:
-            await update.message.reply_text("Mission ID must be a number.")
+            await self._reply(update,"Mission ID must be a number.")
             return
 
         try:
@@ -1323,12 +1339,12 @@ class TelegramInterface:
 
             mission = await get_mission(mission_id)
             if not mission:
-                await update.message.reply_text(f"Mission #{mission_id} not found.")
+                await self._reply(update,f"Mission #{mission_id} not found.")
                 return
 
             tasks = await get_tasks_for_mission(mission_id)
             if not tasks:
-                await update.message.reply_text(
+                await self._reply(update,
                     f"No tasks found for mission #{mission_id}."
                 )
                 return
@@ -1348,9 +1364,9 @@ class TelegramInterface:
             cancel_button = InlineKeyboardMarkup([[
                 InlineKeyboardButton("🗑 Cancel Mission", callback_data=f"wfcancel:{mission_id}")
             ]])
-            await update.message.reply_text(msg, reply_markup=cancel_button)
+            await self._reply(update,msg, reply_markup=cancel_button)
         except Exception as e:
-            await update.message.reply_text(
+            await self._reply(update,
                 f"❌ {_friendly_error(str(e))}"
             )
 
@@ -1366,7 +1382,7 @@ class TelegramInterface:
             if len(args) >= 2 and args[0] == "retry":
                 task_id = int(args[1])
                 await retry_dlq_task(task_id)
-                await update.message.reply_text(
+                await self._reply(update,
                     f"\u2705 Task #{task_id} re-queued from dead-letter queue."
                 )
                 return
@@ -1374,7 +1390,7 @@ class TelegramInterface:
             if len(args) >= 2 and args[0] == "discard":
                 task_id = int(args[1])
                 await resolve_dlq_task(task_id, resolution="discarded")
-                await update.message.reply_text(
+                await self._reply(update,
                     f"\U0001f5d1 Task #{task_id} discarded from dead-letter queue."
                 )
                 return
@@ -1410,16 +1426,16 @@ class TelegramInterface:
             else:
                 lines.append("\n\u2705 No quarantined tasks!")
 
-            await update.message.reply_text(
+            await self._reply(update,
                 "\n".join(lines), parse_mode="Markdown"
             )
         except Exception as e:
-            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+            await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
     async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Resume a failed or paused workflow."""
         if not context.args:
-            await update.message.reply_text("Usage: /resume <mission\\_id>",
+            await self._reply(update,"Usage: /resume <mission\\_id>",
                                             parse_mode="Markdown")
             return
 
@@ -1427,7 +1443,7 @@ class TelegramInterface:
             mission_id_str = context.args[0]
             mission_id = int(mission_id_str)
         except ValueError:
-            await update.message.reply_text("Mission ID must be a number.")
+            await self._reply(update,"Mission ID must be a number.")
             return
 
         try:
@@ -1436,14 +1452,14 @@ class TelegramInterface:
             runner = WorkflowRunner()
             resumed_id = await runner.resume(mission_id)
 
-            await update.message.reply_text(
+            await self._reply(update,
                 f"\u25b6\ufe0f Workflow resumed for mission #{resumed_id}\n"
                 f"Use /wfstatus {resumed_id} to track progress."
             )
         except ValueError as e:
-            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+            await self._reply(update,f"❌ {_friendly_error(str(e))}")
         except Exception as e:
-            await update.message.reply_text(
+            await self._reply(update,
                 f"❌ {_friendly_error(str(e))}"
             )
 
@@ -1451,7 +1467,7 @@ class TelegramInterface:
         """Pause a task or mission: /pause <mission_id|task_id>"""
         args = context.args or []
         if not args:
-            await update.message.reply_text("Usage: /pause <mission\\_id>\nPauses all pending/processing tasks for the mission.",
+            await self._reply(update,"Usage: /pause <mission\\_id>\nPauses all pending/processing tasks for the mission.",
                                            parse_mode="Markdown")
             return
         try:
@@ -1465,13 +1481,13 @@ class TelegramInterface:
                 )
                 await db.commit()
                 count = result.rowcount
-            await update.message.reply_text(f"\u23f8 Mission #{mission_id}: paused {count} task(s).")
+            await self._reply(update,f"\u23f8 Mission #{mission_id}: paused {count} task(s).")
             logger.info("mission paused via command", mission_id=mission_id, tasks_paused=count)
         except ValueError:
-            await update.message.reply_text("Please provide a valid integer mission ID.")
+            await self._reply(update,"Please provide a valid integer mission ID.")
         except Exception as e:
             logger.exception("pause command failed", error=str(e))
-            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+            await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
     async def cmd_load(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/load full|heavy|shared|minimal|auto — set GPU load mode"""
@@ -1480,7 +1496,7 @@ class TelegramInterface:
             from src.infra.load_manager import get_load_mode, is_auto_managed
             current = await get_load_mode()
             auto_str = " (auto-managed)" if is_auto_managed() else " (manual)"
-            await update.message.reply_text(
+            await self._reply(update,
                 f"Current load mode: *{current}*{auto_str}\n\n"
                 "Usage: `/load full|heavy|shared|minimal|auto`\n"
                 "• *full* — all GPU available\n"
@@ -1495,7 +1511,7 @@ class TelegramInterface:
         if choice == "auto":
             from src.infra.load_manager import enable_auto_management
             await enable_auto_management()
-            await update.message.reply_text(
+            await self._reply(update,
                 "GPU load mode set to *auto-managed*. "
                 "Will adjust based on external GPU usage.",
                 parse_mode="Markdown",
@@ -1504,19 +1520,19 @@ class TelegramInterface:
             return
         from src.infra.load_manager import set_load_mode
         msg = await set_load_mode(choice, source="user")
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        await self._reply(update,msg, parse_mode="Markdown")
         logger.info("load mode changed via command", mode=choice)
 
     async def cmd_tune(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/tune — force an auto-tuning cycle and report results."""
-        await update.message.reply_text("Running tuning cycle...")
+        await self._reply(update,"Running tuning cycle...")
         try:
             from src.models.auto_tuner import maybe_run_tuning
             report = await maybe_run_tuning(force=True)
 
             tuned = report.get("tuned_models", {}) if report else {}
             if not tuned:
-                await update.message.reply_text("No models needed tuning adjustment.")
+                await self._reply(update,"No models needed tuning adjustment.")
                 return
 
             lines = ["*Auto-Tuning Report*\n"]
@@ -1529,14 +1545,14 @@ class TelegramInterface:
                     lines.append(f"  {cap}: {vals['old']:.1f} {arrow} {vals['new']:.1f}")
             lines.append(f"\n_{len(report.get('skipped', []))} models skipped (no data)_")
 
-            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            await self._reply(update,"\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             logger.error("tune command failed", error=str(e))
-            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+            await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
     async def cmd_improve(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/improve — run self-improvement analysis and show proposals."""
-        await update.message.reply_text("Analyzing system performance...")
+        await self._reply(update,"Analyzing system performance...")
         try:
             from ..memory.self_improvement import (
                 analyze_and_propose, format_proposals_for_telegram
@@ -1545,9 +1561,9 @@ class TelegramInterface:
             msg = format_proposals_for_telegram(proposals)
             # Split if too long
             if len(msg) > 4000:
-                await update.message.reply_text(msg[:4000], parse_mode="Markdown")
+                await self._reply(update,msg[:4000], parse_mode="Markdown")
             else:
-                await update.message.reply_text(msg, parse_mode="Markdown")
+                await self._reply(update,msg, parse_mode="Markdown")
 
             # Save full report
             if proposals:
@@ -1559,12 +1575,12 @@ class TelegramInterface:
                     path = f"workspace/results/improvement_report_{datetime.now().strftime('%Y%m%d')}.md"
                     with open(path, "w", encoding="utf-8") as f:
                         f.write(report)
-                    await update.message.reply_text(f"Full report saved: {path}")
+                    await self._reply(update,f"Full report saved: {path}")
                 except Exception:
                     pass
         except Exception as e:
             logger.error("improve command failed", error=str(e))
-            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+            await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
     # ── Phase 14.4: /remember and /recall ─────────────────────────────────────
 
@@ -1572,7 +1588,7 @@ class TelegramInterface:
         """Store a user fact in the knowledge base for later recall."""
         text = " ".join(context.args) if context.args else ""
         if not text:
-            await update.message.reply_text(
+            await self._reply(update,
                 "Usage: `/remember <fact or note>`\n"
                 "Example: `/remember The staging server is at 10.0.1.50`",
                 parse_mode="Markdown",
@@ -1586,20 +1602,20 @@ class TelegramInterface:
                 source="telegram",
                 importance=8,
             )
-            await update.message.reply_text(
+            await self._reply(update,
                 f"✅ Remembered! (id: `{doc_id or 'stored'}`)\n"
                 f"Use `/recall` to search your notes later.",
                 parse_mode="Markdown",
             )
         except Exception as e:
             logger.error("remember command failed", error=str(e))
-            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+            await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
     async def cmd_recall(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Search the knowledge base for previously stored facts."""
         query_text = " ".join(context.args) if context.args else ""
         if not query_text:
-            await update.message.reply_text(
+            await self._reply(update,
                 "Usage: `/recall <search query>`\n"
                 "Example: `/recall staging server address`",
                 parse_mode="Markdown",
@@ -1609,7 +1625,7 @@ class TelegramInterface:
             from ..memory.vector_store import query as vs_query
             results = await vs_query(query_text, collection="semantic", top_k=5)
             if not results:
-                await update.message.reply_text("No matching memories found.")
+                await self._reply(update,"No matching memories found.")
                 return
             lines = ["🔍 *Recall results:*\n"]
             for i, r in enumerate(results, 1):
@@ -1620,10 +1636,10 @@ class TelegramInterface:
                 lines.append(f"{i}. {text}{tag}")
                 if score:
                     lines.append(f"   _relevance: {score:.2f}_")
-            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            await self._reply(update,"\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             logger.error("recall command failed", error=str(e))
-            await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+            await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Smart handler: LLM-classified message routing with clarification priority."""
@@ -1641,7 +1657,7 @@ class TelegramInterface:
 
                 await file_obj.download_to_drive(str(filepath))
 
-                await update.message.reply_text(
+                await self._reply(update,
                     f"\U0001f4ce File received: `{filename}`\n"
                     f"Use `/ingest {filepath}` to add to knowledge base.",
                     parse_mode="Markdown"
@@ -1650,7 +1666,7 @@ class TelegramInterface:
                 return
             except Exception as e:
                 logger.error(f"Failed to handle file upload: {e}")
-                await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+                await self._reply(update,f"❌ {_friendly_error(str(e))}")
                 return
 
         text = update.message.text
@@ -1676,8 +1692,11 @@ class TelegramInterface:
                 try:
                     await handler(update, context)
                 except Exception as e:
-                    await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
-                return
+                    await self._reply(update, f"❌ {_friendly_error(str(e))}")
+            else:
+                logger.warning("pending_action handler not found", command=cmd)
+                await self._reply(update, f"❌ Unknown command: {cmd}")
+            return
 
         # ═══════════════════════════════════════════════════════
         # PRIORITY 1: Check for pending clarification (state-based)
@@ -1700,7 +1719,7 @@ class TelegramInterface:
                                           error="Clarification dismissed by user")
                     except Exception:
                         pass
-                    await update.message.reply_text(
+                    await self._reply(update,
                         f"🗑 Dismissed clarification for task #{old_id}."
                     )
                 # Fall through to normal routing (don't return)
@@ -1783,7 +1802,7 @@ class TelegramInterface:
                 agent_type="assistant",
             )
             self.user_last_task_id[chat_id] = task_id
-            await update.message.reply_text(f"❓ Task #{task_id} queued.")
+            await self._reply(update,f"❓ Task #{task_id} queued.")
             return
 
         if msg_type == "shopping":
@@ -1796,7 +1815,7 @@ class TelegramInterface:
                 context={"chat_id": chat_id},
             )
             self.user_last_task_id[chat_id] = task_id
-            await update.message.reply_text(
+            await self._reply(update,
                 f"🛒 Shopping task #{task_id} queued.\n"
                 f"I'll search prices and compare options for you.",
             )
@@ -1827,7 +1846,7 @@ class TelegramInterface:
                     context=task_context,
                 )
                 self.user_last_task_id[chat_id] = task_id
-                await update.message.reply_text(
+                await self._reply(update,
                     f"🔗 Continuing task #{parent_id}. Queued as #{task_id}."
                 )
                 return
@@ -1862,7 +1881,7 @@ class TelegramInterface:
                         initial_input={"idea": text, "product_name": text[:50]},
                         title=text[:80],
                     )
-                    await update.message.reply_text(
+                    await self._reply(update,
                         f"🔄 Workflow mission #{mission_id} created!\n"
                         f"_{text[:60]}_\n\n"
                         f"Use /wfstatus {mission_id} to track progress.",
@@ -1870,12 +1889,12 @@ class TelegramInterface:
                     )
                 except Exception as e:
                     logger.error("workflow mission failed", error=str(e))
-                    await update.message.reply_text(f"❌ {_friendly_error(str(e))}")
+                    await self._reply(update,f"❌ {_friendly_error(str(e))}")
             else:
                 mission_id = await add_mission(title=text[:80], description=text, priority=5)
                 if self.orchestrator:
                     await self.orchestrator.plan_mission(mission_id, text[:80], text)
-                await update.message.reply_text(
+                await self._reply(update,
                     f"🎯 Mission #{mission_id} created. Planning now..."
                 )
             self.user_last_task_id.pop(chat_id, None)
@@ -1893,7 +1912,7 @@ class TelegramInterface:
                 context=task_context if task_context else None,
             )
             self.user_last_task_id[chat_id] = task_id
-            await update.message.reply_text(f"\u2705 Task #{task_id} queued.")
+            await self._reply(update,f"\u2705 Task #{task_id} queued.")
 
     # ─── Message Classification Helpers ───────────────────────────────────────
 
@@ -2139,7 +2158,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             # Clean up tracking
             self._pending_clarifications.pop(chat_id, None)
 
-            await update.message.reply_text(
+            await self._reply(update,
                 f"\u21a9\ufe0f Got it. Resuming task #{task_id} with your input."
             )
             logger.info("clarification received, task resumed",
@@ -2154,7 +2173,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         except Exception as e:
             logger.error("failed to resume clarification",
                          task_id=task_id, error=str(e))
-            await update.message.reply_text(
+            await self._reply(update,
                 f"❌ {_friendly_error(str(e))}"
             )
 
@@ -2199,12 +2218,12 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             }
             emoji = type_emoji.get(input_type, "\U0001f4ac")
             mission_str = f" Linked to Mission #{related_mission}." if related_mission else ""
-            await update.message.reply_text(
+            await self._reply(update,
                 f"{emoji} Logged as {input_type} #{input_id}.{mission_str}"
             )
         except Exception as e:
             logger.error("failed to log user input", error=str(e))
-            await update.message.reply_text(f"Logged your {input_type}. (Note: save had an issue, check logs)")
+            await self._reply(update,f"Logged your {input_type}. (Note: save had an issue, check logs)")
 
     async def _handle_status_query(self, text: str, chat_id: int, update: Update, context):
         """Look up existing tasks/missions matching the user's status question."""
@@ -2236,7 +2255,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     latest = completed[-1]
                     preview = (latest["result"] or "")[:200]
                     msg += f"\n\nLatest result from _{latest['title']}_:\n{preview}"
-                await update.message.reply_text(msg, parse_mode="Markdown")
+                await self._reply(update,msg, parse_mode="Markdown")
                 return
 
             task = await get_task(ref_id)
@@ -2247,10 +2266,10 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     msg += f"\n\nResult:\n{preview}"
                 elif task["status"] == "failed" and task.get("error"):
                     msg += f"\n\nError: {task['error'][:200]}"
-                await update.message.reply_text(msg, parse_mode="Markdown")
+                await self._reply(update,msg, parse_mode="Markdown")
                 return
 
-            await update.message.reply_text(f"Could not find mission or task #{ref_id}.")
+            await self._reply(update,f"Could not find mission or task #{ref_id}.")
             return
 
         # 2) Search recent tasks/missions by keyword matching
@@ -2312,10 +2331,10 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             msg = header + "\n\n".join(matches[:5])
             if len(msg) > 4000:
                 msg = msg[:4000] + "\n... (truncated)"
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            await self._reply(update,msg, parse_mode="Markdown")
         else:
             # Fallback: show general progress
-            await update.message.reply_text("📊 No matching tasks found. Showing general progress:")
+            await self._reply(update,"📊 No matching tasks found. Showing general progress:")
             await self.cmd_progress(update, context)
 
     async def _handle_casual(self, text: str, update: Update):
@@ -2333,9 +2352,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             )
             response = await call_model(reqs, [{"role": "user", "content": text}])
             reply = response.get("content", "Hey! How can I help?")
-            await update.message.reply_text(reply[:1000])
+            await self._reply(update,reply[:1000])
         except Exception:
-            await update.message.reply_text("Hey! Send me a task or mission to work on.")
+            await self._reply(update,"Hey! Send me a task or mission to work on.")
 
     async def _handle_load_control(self, text: str, update: Update):
         """Handle natural language GPU load control."""
@@ -2343,7 +2362,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         if any(w in lower for w in ["game", "gaming", "play"]):
             from ..infra.load_manager import set_load_mode
             msg = await set_load_mode("minimal", source="user")
-            await update.message.reply_text(
+            await self._reply(update,
                 f"\U0001f3ae Switching to minimal mode for gaming.\n{msg}\n"
                 "Use `/load auto` when you're done.",
                 parse_mode="Markdown",
@@ -2351,11 +2370,11 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         elif any(w in lower for w in ["free", "done", "finished", "back"]):
             from ..infra.load_manager import enable_auto_management
             await enable_auto_management()
-            await update.message.reply_text(
+            await self._reply(update,
                 "GPU auto-management re-enabled. I'll use what's available."
             )
         else:
-            await update.message.reply_text(
+            await self._reply(update,
                 "Use `/load full|heavy|shared|minimal|auto` to control GPU usage.",
                 parse_mode="Markdown",
             )
@@ -2365,10 +2384,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
     async def cmd_todo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Add a todo item. /todo <title>"""
         if not context.args:
-            await update.message.reply_text(
-                "Usage: /todo <what to remember>\n\n"
-                "Example: /todo Buy groceries"
-            )
+            chat_id = update.effective_chat.id
+            self._pending_action[chat_id] = {"command": "todo"}
+            await self._reply(update, "📝 What do you need to remember?")
             return
 
         title = " ".join(context.args)
@@ -2376,7 +2394,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         buttons = [[InlineKeyboardButton(
             "✅ Done", callback_data=f"todo_toggle:{todo_id}"
         )]]
-        await update.message.reply_text(
+        await self._reply(update,
             f"📝 Added: *{title}*\n(#{todo_id})",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons),
@@ -2386,7 +2404,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         """List all todos. /todos"""
         todos = await get_todos()
         if not todos:
-            await update.message.reply_text("📋 No todo items yet. Use /todo to add one.")
+            await self._reply(update,"📋 No todo items yet. Use /todo to add one.")
             return
 
         lines = ["📋 *Your Todos*\n"]
@@ -2408,19 +2426,19 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
         text = "\n".join(lines)
         markup = InlineKeyboardMarkup(buttons) if buttons else None
-        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=markup)
+        await self._reply(update,text, parse_mode="Markdown", reply_markup=markup)
 
     async def cmd_cleartodos(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Delete all completed todos. /cleartodos"""
         done_todos = await get_todos(status="done")
         if not done_todos:
-            await update.message.reply_text("No completed todos to clear.")
+            await self._reply(update,"No completed todos to clear.")
             return
 
         for todo in done_todos:
             await delete_todo(todo["id"])
 
-        await update.message.reply_text(
+        await self._reply(update,
             f"🗑️ Cleared {len(done_todos)} completed todo(s)."
         )
 
@@ -2429,7 +2447,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
     async def cmd_shop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """General shopping assistant. /shop <query>"""
         if not context.args:
-            await update.message.reply_text("Usage: /shop <what you're looking for>")
+            chat_id = update.effective_chat.id
+            self._pending_action[chat_id] = {"command": "shop"}
+            await self._reply(update, "🛒 What are you looking for?")
             return
         query = " ".join(context.args)
         chat_id = update.effective_chat.id
@@ -2442,7 +2462,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             context={"chat_id": chat_id},
         )
         self.user_last_task_id[chat_id] = task_id
-        await update.message.reply_text(
+        await self._reply(update,
             f"🛒 Shopping task #{task_id} queued.\n"
             f"I'll search prices and compare options for you.",
         )
@@ -2450,7 +2470,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
     async def cmd_research_product(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Deep product research. /research_product <product>"""
         if not context.args:
-            await update.message.reply_text("Usage: /research\\_product <product name>")
+            chat_id = update.effective_chat.id
+            self._pending_action[chat_id] = {"command": "research_product"}
+            await self._reply(update, "🔍 Which product to research in depth?")
             return
         product = " ".join(context.args)
         chat_id = update.effective_chat.id
@@ -2464,7 +2486,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             agent_type="product_researcher",
             context={"shopping_sub_intent": "deep_research", "chat_id": chat_id},
         )
-        await update.message.reply_text(
+        await self._reply(update,
             f"🔬 Deep research queued for *{product}* (task #{task_id})",
             parse_mode="Markdown",
         )
@@ -2472,7 +2494,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
     async def cmd_price(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Quick price check. /price <product>"""
         if not context.args:
-            await update.message.reply_text("Usage: /price <product name>")
+            chat_id = update.effective_chat.id
+            self._pending_action[chat_id] = {"command": "price"}
+            await self._reply(update, "💰 Which product to check prices for?")
             return
         product = " ".join(context.args)
         chat_id = update.effective_chat.id
@@ -2485,7 +2509,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             agent_type="shopping_advisor",
             context={"shopping_sub_intent": "price_check", "chat_id": chat_id},
         )
-        await update.message.reply_text(
+        await self._reply(update,
             f"🔍 Price check queued for *{product}* (task #{task_id})",
             parse_mode="Markdown",
         )
@@ -2493,7 +2517,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
     async def cmd_watch(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Set up price watch. /watch <product> [target_price]"""
         if not context.args:
-            await update.message.reply_text("Usage: /watch <product> [target\\_price]")
+            chat_id = update.effective_chat.id
+            self._pending_action[chat_id] = {"command": "watch"}
+            await self._reply(update, "⏰ Which product to watch? (e.g. 'RTX 4070 under 25k')")
             return
         args = list(context.args)
         target_price = None
@@ -2505,7 +2531,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             pass
         product = " ".join(args)
         if not product:
-            await update.message.reply_text("Usage: /watch <product> [target\\_price]")
+            await self._reply(update,"Usage: /watch <product> [target\\_price]")
             return
         chat_id = update.effective_chat.id
         price_info = f" Target: {target_price} TL." if target_price else ""
@@ -2523,7 +2549,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         if target_price:
             msg += f" (target: {target_price} TL)"
         msg += f" — task #{task_id}"
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        await self._reply(update,msg, parse_mode="Markdown")
 
     async def cmd_deals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show currently tracked deals. /deals"""
@@ -2565,12 +2591,12 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     lines.append("No active price watches.")
             else:
                 lines.append("No active price watches.")
-            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            await self._reply(update,"\n".join(lines), parse_mode="Markdown")
         except ImportError:
-            await update.message.reply_text("Shopping module not yet available.")
+            await self._reply(update,"Shopping module not yet available.")
         except Exception as e:
             logger.warning("deals command failed", error=str(e))
-            await update.message.reply_text("Could not fetch deals right now.")
+            await self._reply(update,"Could not fetch deals right now.")
 
     async def cmd_mystuff(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show user profile — owned items, preferences. /mystuff"""
@@ -2591,24 +2617,26 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     lines.append(f"  • {k}: {v}")
             if len(lines) == 1:
                 lines.append("No items or preferences recorded yet.")
-            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            await self._reply(update,"\n".join(lines), parse_mode="Markdown")
         except ImportError:
-            await update.message.reply_text("Shopping module not yet available.")
+            await self._reply(update,"Shopping module not yet available.")
         except Exception as e:
             logger.warning("mystuff command failed", error=str(e))
-            await update.message.reply_text("Could not fetch your profile right now.")
+            await self._reply(update,"Could not fetch your profile right now.")
 
     async def cmd_compare(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Direct comparison. /compare <product1> vs <product2>"""
         if not context.args:
-            await update.message.reply_text("Usage: /compare <product1> vs <product2>")
+            chat_id = update.effective_chat.id
+            self._pending_action[chat_id] = {"command": "compare"}
+            await self._reply(update, "⚖️ Compare what? (e.g. 'iPhone 15 vs Samsung S24')")
             return
         text = " ".join(context.args)
         # Split on " vs " (case-insensitive)
         import re
         parts = re.split(r"\s+vs\.?\s+", text, flags=re.IGNORECASE)
         if len(parts) < 2:
-            await update.message.reply_text(
+            await self._reply(update,
                 "Please use 'vs' to separate products.\nExample: /compare iPhone 15 vs Samsung S24"
             )
             return
@@ -2623,7 +2651,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             agent_type="shopping_advisor",
             context={"shopping_sub_intent": "compare", "chat_id": chat_id},
         )
-        await update.message.reply_text(
+        await self._reply(update,
             f"⚖️ Comparison queued: *{product1}* vs *{product2}* (task #{task_id})",
             parse_mode="Markdown",
         )
@@ -2655,7 +2683,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         buttons = [[InlineKeyboardButton(
             "✅ Done", callback_data=f"todo_toggle:{todo_id}"
         )]]
-        await update.message.reply_text(
+        await self._reply(update,
             f"📝 Added: *{title}*",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons),
@@ -2709,6 +2737,13 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         data = query.data
 
         # ── Interactive Menu Callbacks ──────────────────────────
+
+        # Any menu interaction cancels a previous pending_action to prevent
+        # stale prompts from capturing unrelated user input (Bug 2 / Bug 3).
+        if data.startswith(("menu_cat:", "menu_cmd:", "menu_ask:", "menu_back")):
+            chat_id = query.message.chat_id
+            self._pending_action.pop(chat_id, None)
+
         if data == "menu_back":
             await query.edit_message_text(
                 "🤖 *Autonomous AI Orchestrator*\n\n"
@@ -2738,7 +2773,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             if handler:
                 context.args = []
                 # Send a message so the handler has something to reply_text on
-                msg = await query.message.reply_text(f"⏳ /{cmd}...")
+                msg = await query.message.reply_text(f"⏳ /{cmd}...", reply_markup=REPLY_KEYBOARD)
                 # Wrap in a lightweight object matching what handlers expect
                 class _CallbackUpdate:
                     """Minimal update shim so cmd_* handlers work from callbacks."""
@@ -2748,9 +2783,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 try:
                     await handler(_CallbackUpdate(msg), context)
                 except Exception as e:
-                    await msg.reply_text(f"❌ {_friendly_error(str(e))}")
+                    await msg.reply_text(f"❌ {_friendly_error(str(e))}", reply_markup=REPLY_KEYBOARD)
             else:
-                await query.message.reply_text(f"Unknown command: /{cmd}")
+                await query.message.reply_text(f"Unknown command: /{cmd}", reply_markup=REPLY_KEYBOARD)
             # Restore the original menu message to top-level categories
             try:
                 await query.message.edit_text(
@@ -2765,8 +2800,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             cmd = data.split(":", 1)[1]
             prompt = _CMD_ARG_PROMPTS.get(cmd, f"Enter argument for /{cmd}:")
             chat_id = query.message.chat_id
+            # _pending_action was cleared above; now set the new one
             self._pending_action[chat_id] = {"command": cmd}
-            await query.message.reply_text(f"💬 {prompt}")
+            await query.message.reply_text(f"💬 {prompt}", reply_markup=REPLY_KEYBOARD)
             return
 
         # ── Todo Callbacks ─────────────────────────────────────
@@ -2830,24 +2866,19 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 "todo_id": todo_id,
                 "todo_title": todo["title"],
             }
-            from telegram import ForceReply
             await query.message.reply_text(
                 f"🤖 *Help with: {todo['title']}*\n"
                 f"Suggested action: _{suggestion or 'Help me with this'}_\n\n"
-                f"Edit below and send, or tap Cancel.",
+                f"Type your request below, or tap Cancel.",
                 parse_mode="Markdown",
+                reply_markup=REPLY_KEYBOARD,
+            )
+            # Send cancel button as a separate inline message
+            await query.message.reply_text(
+                f"💬 {prompt_text}",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("❌ Cancel", callback_data="todo_help_cancel")
                 ]]),
-            )
-            # ForceReply with the suggestion as placeholder to guide input
-            await query.message.get_bot().send_message(
-                chat_id=query.message.chat_id,
-                text=prompt_text,
-                reply_markup=ForceReply(
-                    selective=True,
-                    input_field_placeholder="Edit and send...",
-                ),
             )
             return
 
@@ -2970,14 +3001,16 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 await self.app.bot.send_message(
                     chat_id=TELEGRAM_ADMIN_CHAT_ID,
                     text=text,
-                    parse_mode="Markdown"
+                    parse_mode="Markdown",
+                    reply_markup=REPLY_KEYBOARD,
                 )
                 return
             except Exception as e:
                 # First fallback: retry without markdown
                 try:
                     await self.app.bot.send_message(
-                        chat_id=TELEGRAM_ADMIN_CHAT_ID, text=text
+                        chat_id=TELEGRAM_ADMIN_CHAT_ID, text=text,
+                        reply_markup=REPLY_KEYBOARD,
                     )
                     return
                 except Exception:
@@ -3132,7 +3165,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         text = update.message.text or ""
         todo_info = getattr(self, "_last_todo_help", None)
         if not todo_info:
-            await update.message.reply_text("❌ Help session expired. Try again from the reminder.")
+            await self._reply(update,"❌ Help session expired. Try again from the reminder.")
             return
         self._last_todo_help = None
         todo_id = todo_info["todo_id"]
@@ -3144,4 +3177,4 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             priority=8,
             context={"todo_id": todo_id, "local_only": True, "prefer_quality": True},
         )
-        await update.message.reply_text(f"✅ Task #{task_id} created!")
+        await self._reply(update,f"✅ Task #{task_id} created!")

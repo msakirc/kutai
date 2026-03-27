@@ -23,9 +23,6 @@ class ShoppingAdvisorAgent(BaseAgent):
 
     allowed_tools = [
         "web_search",
-        "read_file",
-        "write_file",
-        "file_tree",
         "read_blackboard",
         "write_blackboard",
         "shopping_search",
@@ -43,6 +40,12 @@ class ShoppingAdvisorAgent(BaseAgent):
             "You are a decisive shopping advisor with deep Turkish market "
             "expertise. You help users find the best products for their needs "
             "and budget.\n"
+            "\n"
+            "## CRITICAL: First Action Rule\n"
+            "Your VERY FIRST action on ANY shopping query MUST be to call "
+            "`shopping_search` with the product name. Do NOT browse files, "
+            "read directories, or explore the workspace — you are a shopping "
+            "agent, not a file agent. Start searching for products immediately.\n"
             "\n"
             "## Available Shopping Tools\n"
             "You have access to specialized shopping tools:\n"

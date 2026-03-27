@@ -331,6 +331,28 @@ async def init_db():
     """)
     await db.commit()
 
+    # Migration: fix next_run / last_run values that were stored with
+    # Python's datetime.isoformat() format (2026-03-26T10:00:00+00:00)
+    # instead of SQLite-compatible format (2026-03-26 10:00:00).
+    # SQLite's datetime('now') returns the latter, so isoformat values
+    # never compare as <= datetime('now'), causing scheduled tasks to
+    # never fire.  Strip timezone suffix and replace the 'T' separator.
+    try:
+        await db.execute("""
+            UPDATE scheduled_tasks
+            SET next_run = REPLACE(SUBSTR(next_run, 1, 19), 'T', ' ')
+            WHERE next_run LIKE '%T%'
+        """)
+        await db.execute("""
+            UPDATE scheduled_tasks
+            SET last_run = REPLACE(SUBSTR(last_run, 1, 19), 'T', ' ')
+            WHERE last_run LIKE '%T%'
+        """)
+        await db.commit()
+        logger.info("Migration: fixed isoformat timestamps in scheduled_tasks")
+    except Exception as e:
+        logger.debug(f"scheduled_tasks timestamp migration skipped: {e}")
+
     # Verify schema
     cursor = await db.execute("PRAGMA table_info(tasks)")
     columns = [row[1] for row in await cursor.fetchall()]

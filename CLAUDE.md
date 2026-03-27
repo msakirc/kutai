@@ -18,9 +18,9 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 
 ### Process Management
 - **NEVER use taskkill on llama-server** — it corrupts model state and VRAM
-- **NEVER force-kill KutAI** — use `/restart` or `/stop` via Telegram, or exit code 42
+- **NEVER force-kill KutAI** when Telegram is responsive — use `/restart` or `/stop` via Telegram, or exit code 42. However, if the bot is hung and `/restart` doesn't work, killing the **orchestrator process** (NOT llama-server) is acceptable — the wrapper will auto-restart it.
 - The wrapper (`kutai_wrapper.py`) manages the orchestrator lifecycle
-- The wrapper has a file lock (`logs/wrapper.lock`) to prevent duplicates
+- The wrapper has a file lock (`logs/wrapper.lock`) to prevent duplicates. After power failures, the lock can become stale — the lock mechanism uses zero-padded PIDs and stale-lock recovery (checks if PID is alive before refusing to start).
 
 ### Testing
 - **ALWAYS test changes before committing** — run `python -c "from src.module import X"` at minimum
@@ -50,6 +50,12 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 - Embedding model is `intfloat/multilingual-e5-small` (384 dims) — don't mix with other models
 - The `memory` table uses exact key lookup — use `semantic_recall()` for fuzzy search
 - Shopping after `/shop` must route to `shopping_advisor` agent, NOT `idea_to_product` workflow
+- **Datetime format for scheduled_tasks**: NEVER use `datetime.isoformat()` when storing to `scheduled_tasks.next_run` or `last_run` — use `strftime("%Y-%m-%d %H:%M:%S")` because SQLite's `datetime('now')` returns space-separated format. ISO format (with `T`) causes string comparison failures.
+- **Shopping agents must NOT have file tools**: `shopping_advisor`, `product_researcher`, and `deal_analyst` must NOT have `read_file`, `write_file`, or `file_tree` in their `allowed_tools` — these cause the LLM to waste iterations browsing the filesystem instead of searching products.
+
+### Telegram Bot Patterns
+- **`_pending_action` flow**: When a command is called without args (e.g. `/shop`), it stores `_pending_action[chat_id]` and prompts the user. The NEXT message MUST be handled by checking `_pending_action` BEFORE calling the message classifier — otherwise it gets misclassified (e.g. "Coffee machine" routed to a workflow instead of shopping).
+- **`REPLY_KEYBOARD` on every reply**: Every `reply_text` call must include `reply_markup=REPLY_KEYBOARD` or the persistent keyboard buttons disappear. The `_reply()` helper method handles this automatically — always prefer `_reply()` over raw `reply_text`.
 
 ### Git
 - Commit messages follow conventional commits: `feat()`, `fix()`, `docs:`, `test:`

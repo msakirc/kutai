@@ -33,89 +33,180 @@ _LOCK_FILE = Path("logs/wrapper.lock")
 _lock_handle = None
 
 
+def _is_pid_alive(pid: int) -> bool:
+    """Check if a process with the given PID is still running."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            # PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = kernel32.OpenProcess(0x1000, False, pid)
+            if handle:
+                kernel32.CloseHandle(handle)
+                return True
+        except Exception:
+            pass
+        return False
+    else:
+        try:
+            os.kill(pid, 0)  # signal 0 = existence check, no actual signal
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True  # process exists but we lack permission
+        except Exception:
+            return False
+
+
 def _check_single_instance():
     """Exit if another wrapper is already running. Uses OS-level file lock.
 
     On Windows, uses msvcrt.locking for a byte-range lock on the lock file.
-    The file is opened in 'r+' or 'w' mode (creating if needed), then a
-    non-blocking exclusive lock is attempted on the first 10 bytes.
-    The lock is held for the lifetime of the process (file handle kept open).
+    The file is kept open for the lifetime of the process so the lock persists.
+
+    Robustness against power failures / hard kills:
+    - Windows auto-releases msvcrt byte-range locks when a process dies
+    - If the lock file exists but the lock is stale (PID dead), we clean up
+      and re-acquire
+    - PID is zero-padded to a fixed width to ensure the locked byte range
+      is always valid
     """
     global _lock_handle
     _LOCK_FILE.parent.mkdir(exist_ok=True)
 
+    # Fixed width for PID string — ensures the file always has enough bytes
+    # for the lock range.  PIDs on Windows fit in 6 digits; we use 10 for safety.
+    _PID_WIDTH = 10
+    _LOCK_BYTES = _PID_WIDTH  # lock exactly as many bytes as we write
+
     try:
         import msvcrt
+    except ImportError:
+        msvcrt = None
 
-        # Open or create the lock file. Use 'a' to avoid truncating
-        # (which could interfere with reading the existing PID for errors).
-        # Then seek to 0 so the lock is at the start of the file.
+    if msvcrt is not None:
+        _acquire_lock_msvcrt(msvcrt, _LOCK_BYTES, _PID_WIDTH)
+    else:
+        _acquire_lock_unix(_PID_WIDTH)
+
+
+def _acquire_lock_msvcrt(msvcrt, lock_bytes: int, pid_width: int):
+    """Windows lock acquisition with stale-lock recovery."""
+    global _lock_handle
+
+    def _open_lock_file():
+        """Open (or create) the lock file and ensure it has enough bytes."""
         if _LOCK_FILE.exists():
-            _lock_handle = open(_LOCK_FILE, "r+")
+            fh = open(_LOCK_FILE, "r+")
         else:
-            _lock_handle = open(_LOCK_FILE, "w")
-        _lock_handle.seek(0)
+            fh = open(_LOCK_FILE, "w")
+        # Ensure file has at least lock_bytes of content so locking
+        # doesn't fail on short / empty files.
+        fh.seek(0, 2)  # seek to end
+        size = fh.tell()
+        if size < lock_bytes:
+            fh.write(" " * (lock_bytes - size))
+            fh.flush()
+        fh.seek(0)
+        return fh
 
-        # Try exclusive lock (non-blocking) on first 10 bytes.
-        # Using 10 bytes instead of 1 to be safe across Windows versions.
-        # Fails immediately if another process holds this lock.
+    def _try_lock(fh):
+        """Attempt non-blocking exclusive lock. Returns True on success."""
         try:
-            msvcrt.locking(_lock_handle.fileno(), msvcrt.LK_NBLCK, 10)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, lock_bytes)
+            return True
         except (OSError, IOError):
-            # Another wrapper holds the lock — read its PID
-            try:
-                _lock_handle.seek(0)
-                existing_pid = _lock_handle.read().strip()
-            except Exception:
-                existing_pid = "unknown"
-            _lock_handle.close()
-            _lock_handle = None
-            print(f"ERROR: Another wrapper is already running (PID {existing_pid}).")
-            print("Kill it first or delete logs/wrapper.lock")
-            sys.exit(1)
+            return False
 
-        # Lock acquired — write our PID
+    _lock_handle = _open_lock_file()
+
+    if _try_lock(_lock_handle):
+        # Lock acquired — write our PID (fixed width, zero-padded)
         _lock_handle.seek(0)
         _lock_handle.truncate()
-        _lock_handle.write(str(os.getpid()))
+        _lock_handle.write(str(os.getpid()).zfill(pid_width))
         _lock_handle.flush()
+        return
 
+    # Lock failed — another process might hold it, or it could be stale.
+    # Read the PID and check if it's alive.
+    try:
+        _lock_handle.seek(0)
+        existing_pid_str = _lock_handle.read().strip()
+        existing_pid = int(existing_pid_str)
+    except (ValueError, OSError):
+        existing_pid = None
+
+    if existing_pid is not None and _is_pid_alive(existing_pid):
+        # Another wrapper is genuinely running
+        _lock_handle.close()
+        _lock_handle = None
+        print(f"ERROR: Another wrapper is already running (PID {existing_pid}).")
+        print("Use /kutai_stop in Telegram or delete logs/wrapper.lock")
+        sys.exit(1)
+
+    # PID is dead or unreadable — stale lock (e.g. after power failure).
+    # Close and delete, then re-create and lock.
+    print(f"[Wrapper] Stale lock detected (PID {existing_pid or '?'} is dead). Cleaning up.")
+    _lock_handle.close()
+    _lock_handle = None
+    try:
+        _LOCK_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    _lock_handle = _open_lock_file()
+    if _try_lock(_lock_handle):
+        _lock_handle.seek(0)
+        _lock_handle.truncate()
+        _lock_handle.write(str(os.getpid()).zfill(pid_width))
+        _lock_handle.flush()
+        return
+
+    # Still can't lock after cleanup — something unexpected
+    _lock_handle.close()
+    _lock_handle = None
+    print("ERROR: Could not acquire wrapper lock even after stale-lock cleanup.")
+    sys.exit(1)
+
+
+def _acquire_lock_unix(pid_width: int):
+    """Unix lock acquisition using fcntl, with PID-based fallback."""
+    global _lock_handle
+    try:
+        import fcntl
+        _lock_handle = open(_LOCK_FILE, "w")
+        fcntl.flock(_lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_handle.write(str(os.getpid()).zfill(pid_width))
+        _lock_handle.flush()
+    except (OSError, IOError):
+        print("ERROR: Another wrapper is already running.")
+        sys.exit(1)
     except ImportError:
-        # Non-Windows fallback: try fcntl
-        try:
-            import fcntl
-            _lock_handle = open(_LOCK_FILE, "w")
-            fcntl.flock(_lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            _lock_handle.write(str(os.getpid()))
-            _lock_handle.flush()
-        except (OSError, IOError):
-            print("ERROR: Another wrapper is already running.")
-            sys.exit(1)
-        except ImportError:
-            # No locking available, fall back to PID check
-            if _LOCK_FILE.exists():
-                try:
-                    old_pid = int(_LOCK_FILE.read_text().strip())
-                    import ctypes
-                    kernel32 = ctypes.windll.kernel32
-                    handle = kernel32.OpenProcess(0x1000, False, old_pid)
-                    if handle:
-                        kernel32.CloseHandle(handle)
-                        print(f"ERROR: Another wrapper is already running (PID {old_pid}).")
-                        sys.exit(1)
-                except Exception:
-                    pass
-            _LOCK_FILE.write_text(str(os.getpid()))
+        # No OS-level locking available — fall back to PID check
+        if _LOCK_FILE.exists():
+            try:
+                old_pid = int(_LOCK_FILE.read_text().strip())
+                if _is_pid_alive(old_pid):
+                    print(f"ERROR: Another wrapper is already running (PID {old_pid}).")
+                    sys.exit(1)
+                else:
+                    print(f"[Wrapper] Stale lock (PID {old_pid} is dead). Cleaning up.")
+            except Exception:
+                pass
+        _LOCK_FILE.write_text(str(os.getpid()).zfill(pid_width))
 
 
 def _cleanup_lock():
     """Release lock and remove lock file on exit."""
     global _lock_handle
+    _LOCK_BYTES = 10  # must match _PID_WIDTH in _check_single_instance
     if _lock_handle:
         try:
             import msvcrt
             _lock_handle.seek(0)
-            msvcrt.locking(_lock_handle.fileno(), msvcrt.LK_UNLOCK, 10)
+            msvcrt.locking(_lock_handle.fileno(), msvcrt.LK_UNLOCK, _LOCK_BYTES)
         except Exception:
             pass
         try:
@@ -207,7 +298,9 @@ class KutAIWrapper:
         # Brief pause to ensure any in-flight getUpdates long-poll request
         # from the wrapper has fully completed before the orchestrator starts
         # its own polling.  Without this, both pollers can race.
-        await asyncio.sleep(1)
+        # 3s gives the wrapper's short-timeout poll (5s) time to finish and
+        # release the Telegram connection before the orchestrator claims it.
+        await asyncio.sleep(3)
 
         venv_python = self._find_python()
         _wlog(f"Starting orchestrator (python={venv_python})")
@@ -385,8 +478,8 @@ class KutAIWrapper:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(
                         f"{base_url}/getUpdates",
-                        params={"offset": offset, "timeout": 30},
-                        timeout=aiohttp.ClientTimeout(total=40),
+                        params={"offset": offset, "timeout": 5},
+                        timeout=aiohttp.ClientTimeout(total=15),
                     ) as resp:
                         data = await resp.json()
 

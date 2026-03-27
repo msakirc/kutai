@@ -33,6 +33,10 @@ from ..app.telegram_bot import TelegramInterface
 
 logger = get_logger("core.orchestrator")
 
+# SQLite-compatible datetime format (no 'T', no timezone offset).
+# Must match what datetime('now') returns for <= comparisons to work.
+_DB_DT_FMT = "%Y-%m-%d %H:%M:%S"
+
 
     # Default timeouts per agent type (seconds).  Override via
     # tasks.timeout_seconds column for per-task control.
@@ -758,8 +762,8 @@ class Orchestrator:
                     )
                     await update_scheduled_task(
                         sched_id,
-                        last_run=now.isoformat(),
-                        next_run=next_run.isoformat() if next_run else None,
+                        last_run=now.strftime(_DB_DT_FMT),
+                        next_run=next_run.strftime(_DB_DT_FMT) if next_run else None,
                     )
                     continue
 
@@ -784,8 +788,8 @@ class Orchestrator:
                 )
                 await update_scheduled_task(
                     sched_id,
-                    last_run=now.isoformat(),
-                    next_run=next_run.isoformat() if next_run else None,
+                    last_run=now.strftime(_DB_DT_FMT),
+                    next_run=next_run.strftime(_DB_DT_FMT) if next_run else None,
                 )
 
         except Exception as e:

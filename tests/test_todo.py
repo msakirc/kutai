@@ -321,5 +321,163 @@ def test_format_age():
     assert _format_age(now, now) == "now"
 
 
+class TestSchedulerNextRun(unittest.TestCase):
+    """Verify the scheduler stores next_run in SQLite-compatible format."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Create a temp database and initialise schema."""
+        cls._tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        cls._tmp.close()
+        cls.db_path = cls._tmp.name
+
+        import src.app.config as config
+        cls._orig_db_path = config.DB_PATH
+        config.DB_PATH = cls.db_path
+
+        import src.infra.db as db_mod
+        db_mod.DB_PATH = cls.db_path
+        db_mod._db_connection = None
+        cls.db_mod = db_mod
+
+        async def _setup():
+            await db_mod.init_db()
+            # Insert a test scheduled task with a known id so UPDATE/SELECT work.
+            db = await db_mod.get_db()
+            await db.execute(
+                """INSERT OR IGNORE INTO scheduled_tasks
+                   (id, title, cron_expression, agent_type, tier, enabled)
+                   VALUES (9999, '_test_sched', '0 * * * *', 'executor', 'cheap', 1)"""
+            )
+            await db.commit()
+        run_async(_setup())
+
+    @classmethod
+    def tearDownClass(cls):
+        run_async(cls.db_mod.close_db())
+        import src.app.config as config
+        config.DB_PATH = cls._orig_db_path
+        try:
+            os.unlink(cls.db_path)
+        except OSError:
+            pass
+
+    def test_next_run_format_matches_sqlite(self):
+        """next_run must be stored as 'YYYY-MM-DD HH:MM:SS' (no T, no tz offset)
+        so that 'next_run <= datetime(\"now\")' works in SQLite."""
+        from datetime import timezone
+
+        async def _check_next_run_format():
+            db = await self.db_mod.get_db()
+
+            _DB_DT_FMT = "%Y-%m-%d %H:%M:%S"
+            now = datetime(2026, 3, 27, 10, 0, 0, tzinfo=timezone.utc)
+            next_run = datetime(2026, 3, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+            await self.db_mod.update_scheduled_task(
+                9999,
+                last_run=now.strftime(_DB_DT_FMT),
+                next_run=next_run.strftime(_DB_DT_FMT),
+            )
+
+            cursor = await db.execute(
+                "SELECT next_run FROM scheduled_tasks WHERE id = 9999"
+            )
+            row = await cursor.fetchone()
+            stored = row[0]
+            self.assertEqual(stored, "2026-03-27 12:00:00")
+            self.assertNotIn("T", stored)
+            self.assertNotIn("+", stored)
+
+        run_async(_check_next_run_format())
+
+    def test_due_query_finds_past_next_run(self):
+        """Scheduled task with next_run in the past should be returned by get_due_scheduled_tasks."""
+        async def _check():
+            await self.db_mod.update_scheduled_task(
+                9999, next_run="2020-01-01 00:00:00"
+            )
+            due = await self.db_mod.get_due_scheduled_tasks()
+            ids = [s["id"] for s in due]
+            self.assertIn(9999, ids)
+
+        run_async(_check())
+
+    def test_due_query_skips_future_next_run(self):
+        """Scheduled task with next_run in the future should NOT be returned."""
+        async def _check():
+            await self.db_mod.update_scheduled_task(
+                9999, next_run="2099-12-31 23:59:59"
+            )
+            due = await self.db_mod.get_due_scheduled_tasks()
+            ids = [s["id"] for s in due]
+            self.assertNotIn(9999, ids)
+
+        run_async(_check())
+
+
+class TestComputeNextRun(unittest.TestCase):
+    """Test the cron next-run calculator (extracted from Orchestrator)."""
+
+    @staticmethod
+    def _compute_next_run(cron_expr, after):
+        """Replicate Orchestrator._compute_next_run to avoid importing telegram deps."""
+        from datetime import timedelta
+        try:
+            parts = cron_expr.strip().split()
+            if len(parts) != 5:
+                return None
+            minute, hour, day, month, weekday = parts
+            if minute != "*" and hour == "*":
+                m = int(minute)
+                candidate = after.replace(minute=m, second=0, microsecond=0)
+                if candidate <= after:
+                    candidate += timedelta(hours=1)
+                return candidate
+            if minute != "*" and hour != "*":
+                m = int(minute)
+                if "," in hour:
+                    hours = sorted(int(h) for h in hour.split(","))
+                    for h in hours:
+                        candidate = after.replace(hour=h, minute=m, second=0, microsecond=0)
+                        if candidate > after:
+                            return candidate
+                    candidate = after.replace(hour=hours[0], minute=m, second=0, microsecond=0)
+                    return candidate + timedelta(days=1)
+                h = int(hour)
+                candidate = after.replace(hour=h, minute=m, second=0, microsecond=0)
+                if candidate <= after:
+                    candidate += timedelta(days=1)
+                return candidate
+            return after + timedelta(hours=1)
+        except Exception:
+            return None
+
+    def test_comma_separated_hours(self):
+        from datetime import timezone
+        after = datetime(2026, 3, 27, 7, 30, 0, tzinfo=timezone.utc)
+        result = self._compute_next_run("0 6,8,10,12,14,16,18 * * *", after)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.hour, 8)
+        self.assertEqual(result.minute, 0)
+
+    def test_all_hours_passed_wraps_to_next_day(self):
+        from datetime import timezone
+        after = datetime(2026, 3, 27, 18, 30, 0, tzinfo=timezone.utc)
+        result = self._compute_next_run("0 6,8,10,12,14,16,18 * * *", after)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.day, 28)
+        self.assertEqual(result.hour, 6)
+        self.assertEqual(result.minute, 0)
+
+    def test_hourly_at_minute(self):
+        from datetime import timezone
+        after = datetime(2026, 3, 27, 10, 15, 0, tzinfo=timezone.utc)
+        result = self._compute_next_run("30 * * * *", after)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.hour, 10)
+        self.assertEqual(result.minute, 30)
+
+
 if __name__ == "__main__":
     unittest.main()

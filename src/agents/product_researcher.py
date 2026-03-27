@@ -21,8 +21,6 @@ class ProductResearcherAgent(BaseAgent):
 
     allowed_tools = [
         "web_search",
-        "read_file",
-        "file_tree",
         "read_blackboard",
         "write_blackboard",
         "shopping_search",

@@ -1035,7 +1035,11 @@ class Orchestrator:
                     task["title"], task.get("description", ""),
                 )
                 task_ctx["classification"] = dataclasses.asdict(classification)
-                if classification.confidence >= 0.7:
+                # Only let the classifier set agent_type when the task was
+                # created with the default ("executor").  Command handlers
+                # (e.g. /shop) explicitly set agent_type at creation time;
+                # the classifier must not overwrite those.
+                if classification.confidence >= 0.7 and agent_type == "executor":
                     task["agent_type"] = classification.agent_type
                     agent_type = classification.agent_type
                 if classification.agent_type == "shopping_advisor" and classification.shopping_sub_intent:

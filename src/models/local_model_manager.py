@@ -71,6 +71,12 @@ class LocalModelManager:
         self._total_swaps: int = 0
         self._thinking_enabled: bool = False  # tracks server-side thinking state
 
+        # Tracks how many inference requests are currently in-flight.
+        # Model swaps wait for this to reach zero before killing the server.
+        self._active_inference_count: int = 0
+        self._inference_idle = asyncio.Event()
+        self._inference_idle.set()  # starts idle
+
         self._scheduler = get_gpu_scheduler()
         self._job_object = self._create_job_object()
 
@@ -101,6 +107,8 @@ class LocalModelManager:
                 return None
 
             # JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+            # Affinity is ULONG_PTR (pointer-width integer), not a pointer.
+            # Using c_size_t which is the correct width on both 32- and 64-bit.
             class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
                 _fields_ = [
                     ("PerProcessUserTimeLimit", ctypes.c_int64),
@@ -109,7 +117,7 @@ class LocalModelManager:
                     ("MinimumWorkingSetSize", ctypes.c_size_t),
                     ("MaximumWorkingSetSize", ctypes.c_size_t),
                     ("ActiveProcessLimit", wintypes.DWORD),
-                    ("Affinity", ctypes.POINTER(ctypes.c_ulong)),
+                    ("Affinity", ctypes.c_size_t),
                     ("PriorityClass", wintypes.DWORD),
                     ("SchedulingClass", wintypes.DWORD),
                 ]
@@ -198,6 +206,19 @@ class LocalModelManager:
                     logger.warning("Killed orphaned llama-server process(es)")
         except Exception as e:
             logger.debug(f"Orphan cleanup skipped: {e}")
+
+    # ── Inference tracking ─────────────────────────────────────
+
+    def mark_inference_start(self) -> None:
+        """Mark that an inference request is starting against the current server."""
+        self._active_inference_count += 1
+        self._inference_idle.clear()
+
+    def mark_inference_end(self) -> None:
+        """Mark that an inference request has finished."""
+        self._active_inference_count = max(0, self._active_inference_count - 1)
+        if self._active_inference_count == 0:
+            self._inference_idle.set()
 
     # ── Public API ──────────────────────────────────────────────
 
@@ -305,6 +326,27 @@ class LocalModelManager:
             if self.current_model == model_name and await self._health_check():
                 logger.debug(f"Model {model_name} already healthy (resolved under lock)")
                 return True
+
+            # ── Wait for in-flight inference to finish before killing server ──
+            # This prevents killing llama-server while an HTTP request is mid-stream,
+            # which causes the HTTP client to hang on a dead TCP connection.
+            if self._active_inference_count > 0:
+                logger.info(
+                    f"Waiting for {self._active_inference_count} in-flight inference(s) "
+                    f"to drain before swap to {model_name}..."
+                )
+                try:
+                    await asyncio.wait_for(self._inference_idle.wait(), timeout=30)
+                    logger.info("Inference drained, proceeding with swap")
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        f"Inference drain timed out after 30s "
+                        f"({self._active_inference_count} still active). "
+                        f"Force-swapping — active requests will receive errors."
+                    )
+                    # Reset the counter so we don't get stuck forever
+                    self._active_inference_count = 0
+                    self._inference_idle.set()
 
             registry = get_registry()
             model_info = registry.get(model_name)
@@ -764,12 +806,46 @@ class LocalModelManager:
 
 # ─── Singleton ───────────────────────────────────────────────
 import os
+import atexit
 
 _manager: LocalModelManager | None = None
+
+
+def _atexit_kill_llama_server():
+    """Last-resort cleanup: kill llama-server when the Python process exits.
+
+    This runs even on sys.exit() and unhandled exceptions (but NOT os._exit()).
+    It uses synchronous subprocess calls because the event loop is gone by now.
+    """
+    global _manager
+    if _manager is None:
+        return
+
+    proc = _manager.process
+    if proc is not None and proc.poll() is None:
+        logger.info("atexit: killing llama-server (PID %d)", proc.pid)
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=3)
+        except Exception as e:
+            logger.warning("atexit: llama-server kill failed: %s", e)
+            # Fallback: taskkill by name
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/IM", "llama-server.exe"],
+                    capture_output=True, timeout=10,
+                )
+            except Exception:
+                pass
 
 
 def get_local_manager() -> LocalModelManager:
     global _manager
     if _manager is None:
         _manager = LocalModelManager()
+        atexit.register(_atexit_kill_llama_server)
     return _manager

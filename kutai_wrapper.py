@@ -554,6 +554,53 @@ class KutAIWrapper:
         )
         await self._send_telegram(msg)
 
+    # ── Post-exit Cleanup ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _kill_orphan_processes():
+        """Kill orphaned llama-server (and optionally Ollama) after orchestrator exits.
+
+        This is the ultimate safety net — the wrapper always survives the
+        orchestrator, so this covers crashes, taskkill, os._exit(), etc.
+        """
+        import subprocess as sp
+
+        # Kill llama-server
+        try:
+            result = sp.run(
+                ["taskkill", "/F", "/IM", "llama-server.exe"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                _wlog(f"Killed orphaned llama-server: {result.stdout.strip()}")
+            # returncode != 0 means no matching process — that's fine
+        except Exception as e:
+            _wlog(f"llama-server cleanup error: {e}")
+
+        # Stop Ollama if it's running (it auto-restarts via Windows startup,
+        # but we don't want it hogging VRAM between orchestrator restarts).
+        try:
+            result = sp.run(
+                ["taskkill", "/F", "/IM", "ollama.exe"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                _wlog(f"Stopped Ollama: {result.stdout.strip()}")
+        except Exception as e:
+            _wlog(f"Ollama cleanup error: {e}")
+
+        # Also kill ollama runner processes (ollama_llama_server.exe) that
+        # Ollama spawns for model inference — these hold VRAM.
+        try:
+            result = sp.run(
+                ["taskkill", "/F", "/IM", "ollama_llama_server.exe"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                _wlog(f"Stopped Ollama runner: {result.stdout.strip()}")
+        except Exception:
+            pass
+
     # ── Python Discovery ──────────────────────────────────────────────────
 
     @staticmethod

@@ -17,6 +17,11 @@ import litellm
 
 litellm.suppress_debug_info = True
 litellm.return_response_headers = True
+# Force LiteLLM to respect request-level timeouts. Without this,
+# LiteLLM may create httpx clients with no read timeout, causing
+# requests to local llama-server to hang indefinitely when the
+# server dies mid-inference (e.g. during a model swap).
+litellm.request_timeout = 120
 
 from src.infra.logging_config import get_logger
 from src.models.rate_limiter import get_rate_limit_manager
@@ -855,11 +860,17 @@ async def call_model(
 
         _max_tokens = min(reqs.estimated_output_tokens * 2, model.max_tokens)
 
+        # HTTP-level timeout should be slightly shorter than the asyncio.wait_for
+        # hard deadline. This ensures the HTTP client raises a clean TimeoutError
+        # rather than relying on asyncio task cancellation (which can fail to
+        # interrupt stuck TCP reads, especially on Windows).
+        http_timeout = max(10.0, float(timeout_val) - 5.0)
+
         completion_kwargs = dict(
             model=model.litellm_name,
             messages=_messages,
             max_tokens=_max_tokens,
-            timeout=float(timeout_val),
+            timeout=http_timeout,
         )
 
         if temperature is not None:
@@ -948,10 +959,17 @@ async def call_model(
                         vision=model.has_vision,
                     )
 
-                    response = await asyncio.wait_for(
-                        litellm.acompletion(**completion_kwargs),
-                        timeout=timeout_val,
-                    )
+                    # Track in-flight inference so model swaps can drain
+                    if local_manager:
+                        local_manager.mark_inference_start()
+                    try:
+                        response = await asyncio.wait_for(
+                            litellm.acompletion(**completion_kwargs),
+                            timeout=timeout_val,
+                        )
+                    finally:
+                        if local_manager:
+                            local_manager.mark_inference_end()
 
                     call_latency = time.time() - call_start
 
@@ -1088,7 +1106,18 @@ async def call_model(
                     if not model.is_local:
                         _get_circuit_breaker(model.provider).record_failure()
                     last_error = f"Timeout on {model.name}"
-                    logger.warning("model timeout", model_name=model.name, attempt=attempt + 1)
+                    logger.warning("model timeout", model_name=model.name, attempt=attempt + 1,
+                                   timeout_seconds=timeout_val)
+                    # For local models: check if server died (e.g. model swap killed it).
+                    # No point retrying against a dead server — fall through to next candidate.
+                    if model.is_local and local_manager:
+                        server_alive = await local_manager._health_check()
+                        if not server_alive:
+                            logger.warning(
+                                "local server dead after timeout — skipping retries",
+                                model_name=model.name,
+                            )
+                            break
                     continue
 
                 except Exception as e:

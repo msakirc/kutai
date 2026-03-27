@@ -1030,12 +1030,25 @@ class Orchestrator:
                 task_ctx = {}
 
             if "classification" not in task_ctx:
+                # If agent_type was explicitly set at creation (e.g. shopping
+                # tasks from /shop), trust it — don't let the classifier
+                # override with a wrong type (e.g. "coder" for "Coffee machine").
+                _pre_set_agent = agent_type if agent_type not in ("executor",) else None
+
                 from .task_classifier import classify_task as classify
                 classification = await classify(
                     task["title"], task.get("description", ""),
                 )
                 task_ctx["classification"] = dataclasses.asdict(classification)
-                if classification.confidence >= 0.7:
+                if _pre_set_agent:
+                    # Keep the pre-set agent_type, just store classification for context
+                    logger.debug(
+                        "keeping pre-set agent_type over classifier",
+                        task_id=task_id,
+                        pre_set=_pre_set_agent,
+                        classified_as=classification.agent_type,
+                    )
+                elif classification.confidence >= 0.7:
                     task["agent_type"] = classification.agent_type
                     agent_type = classification.agent_type
                 if classification.agent_type == "shopping_advisor" and classification.shopping_sub_intent:

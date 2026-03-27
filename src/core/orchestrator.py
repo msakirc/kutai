@@ -116,6 +116,20 @@ def _compute_max_concurrent(tasks: list[dict]) -> int:
     return min(base, 8)
 
 
+def _parse_task_difficulty(task: dict) -> int:
+    """Extract difficulty from a task's classification context.
+
+    Falls back to 5 (moderate) if not classified yet.
+    """
+    ctx = task.get("context", {})
+    if isinstance(ctx, str):
+        try:
+            ctx = json.loads(ctx)
+        except (json.JSONDecodeError, TypeError):
+            ctx = {}
+    cls = ctx.get("classification", {})
+    return max(1, min(10, int(cls.get("difficulty", 5))))
+
 
 class Orchestrator:
     def __init__(self, shutdown_event=None):
@@ -2092,6 +2106,36 @@ class Orchestrator:
                 max_concurrent = _compute_max_concurrent(candidate_tasks)
                 tasks = candidate_tasks[:max_concurrent]
 
+                # ── Quota planner: forward-looking queue scan ──
+                # Peek further ahead to inform cloud quota reservation.
+                # The quota planner uses max upcoming difficulty + capability
+                # needs to decide whether to reserve expensive cloud quota
+                # for harder tasks coming up.
+                try:
+                    from src.models.quota_planner import get_quota_planner
+                    _qp = get_quota_planner()
+                    # Use the full candidate batch (up to 8) for the scan.
+                    # For deeper lookahead, fetch more if we have tasks.
+                    _lookahead = candidate_tasks
+                    if len(candidate_tasks) >= 6:
+                        # Queue is busy — peek further ahead
+                        _lookahead = await get_ready_tasks(limit=30)
+                    if _lookahead:
+                        _max_diff = max(
+                            _parse_task_difficulty(t) for t in _lookahead
+                        )
+                        _qp.set_max_upcoming_difficulty(_max_diff)
+                        _qp.recalculate()
+                except Exception as _qp_err:
+                    logger.debug(f"Quota planner scan failed: {_qp_err}")
+
+                # Drain deferred grade queue if it's getting full
+                try:
+                    from src.core.llm_dispatcher import get_dispatcher
+                    await get_dispatcher().drain_grades_if_full()
+                except Exception as _gd_err:
+                    logger.debug(f"Grade queue drain check failed: {_gd_err}")
+
                 # Update queue depth metric for Prometheus/Grafana
                 try:
                     from src.infra.metrics import record_queue_depth
@@ -2205,6 +2249,14 @@ class Orchestrator:
                 else:
                     if self.cycle_count % 20 == 0:
                         logger.info(f"[Cycle {self.cycle_count}] Idle")
+
+                    # Drain deferred grades during idle (uses cloud if needed)
+                    try:
+                        from src.core.llm_dispatcher import get_dispatcher
+                        await get_dispatcher().drain_grades_if_idle()
+                    except Exception as _gd_err:
+                        logger.debug(f"Idle grade drain failed: {_gd_err}")
+
                     # Use shutdown-aware sleep instead of plain asyncio.sleep
                     try:
                         await asyncio.wait_for(

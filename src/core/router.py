@@ -321,6 +321,14 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
 
     candidates: list[ScoredModel] = []
 
+    # Fetch actual runtime state for the currently loaded local model.
+    # Used to apply runtime-aware scoring adjustments inside the loop.
+    try:
+        from src.models.local_model_manager import get_runtime_state
+        _loaded_runtime = get_runtime_state()
+    except Exception:
+        _loaded_runtime = None
+
     for name, model in registry.models.items():
         reasons: list[str] = []
 
@@ -343,6 +351,17 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
         needed_ctx = reqs.effective_context_needed
         if needed_ctx > 0 and model.context_length < needed_ctx:
             _skip(f"ctx({model.context_length}<{needed_ctx})"); continue
+
+        # Runtime context check: if this IS the loaded model, use the actual
+        # loaded ctx window (may be smaller than registry due to dynamic calc).
+        if (model.is_local and model.is_loaded and needed_ctx > 0
+                and _loaded_runtime is not None
+                and _loaded_runtime.model_name == name
+                and _loaded_runtime.context_length < needed_ctx):
+            _skip(
+                f"runtime_ctx({_loaded_runtime.context_length}<{needed_ctx})"
+            )
+            continue
         if reqs.needs_function_calling and not model.supports_function_calling:
             _skip("no_function_calling"); continue
         if reqs.needs_json_mode and not model.supports_json_mode:
@@ -517,7 +536,16 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
         # ═════════════════════════════════════════
 
         if model.is_local:
-            tps = model.tokens_per_second
+            # Prefer measured tok/s from live /metrics over static registry value.
+            # This reflects current GPU state (thermal throttle, context fill, etc.)
+            tps = (
+                _loaded_runtime.measured_tps
+                if (model.is_loaded
+                    and _loaded_runtime is not None
+                    and _loaded_runtime.model_name == name
+                    and _loaded_runtime.measured_tps > 0)
+                else model.tokens_per_second
+            )
             active = getattr(model, 'active_params_b', 0) or model.total_params_b
             if tps >= 50:
                 speed_score = 100
@@ -643,8 +671,22 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
         # Swap stickiness: strongly prefer loaded model to avoid 25s+ swap cost.
         # Only a significantly better model should justify a swap.
         if model.is_local and model.is_loaded:
-            composite *= 1.40
-            reasons.append("loaded")
+            # Reduce stickiness when thinking state mismatches the request:
+            # the loaded model is running without thinking (or vice-versa),
+            # making it less suitable — but not completely excluded so the
+            # swap budget logic in LLMDispatcher still has the final say.
+            _thinking_mismatch = (
+                reqs.needs_thinking
+                and _loaded_runtime is not None
+                and _loaded_runtime.model_name == name
+                and not _loaded_runtime.thinking_enabled
+            )
+            if _thinking_mismatch:
+                composite *= 1.10
+                reasons.append("thinking_mismatch")
+            else:
+                composite *= 1.40
+                reasons.append("loaded")
         elif model.is_local and not model.is_loaded:
             # Penalize unloaded models — swap is expensive
             composite *= 0.75

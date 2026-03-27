@@ -47,6 +47,28 @@ class ModelSwapRequest:
     success: bool = False
 
 
+@dataclass
+class ModelRuntimeState:
+    """
+    Actual runtime parameters of the currently loaded llama-server instance.
+
+    These may differ from registry defaults because of dynamic context/gpu_layer
+    recalculation at swap time (based on live VRAM readings).  The scorer in
+    router.py uses these values instead of static registry values so that:
+
+    - Hard context filter uses the *actual* loaded window, not the nominal one.
+    - Speed scoring uses *measured* tok/s from /metrics rather than estimates.
+    - Thinking-state mismatch reduces stickiness (1.10x) so tasks that need
+      thinking will trigger a swap rather than silently getting a worse model.
+    """
+    model_name: str
+    thinking_enabled: bool
+    context_length: int       # actual ctx window loaded (post dynamic-calc)
+    gpu_layers: int           # actual n-gpu-layers used
+    measured_tps: float = 0.0  # updated from /metrics after first generation
+    loaded_at: float = field(default_factory=time.time)
+
+
 class LocalModelManager:
     """
     Manages a single llama-server process.
@@ -76,6 +98,8 @@ class LocalModelManager:
         self._active_inference_count: int = 0
         self._inference_idle = asyncio.Event()
         self._inference_idle.set()  # starts idle
+
+        self.runtime_state: ModelRuntimeState | None = None  # populated after successful swap
 
         self._scheduler = get_gpu_scheduler()
         self._job_object = self._create_job_object()
@@ -435,6 +459,12 @@ class LocalModelManager:
                 self.current_model = model_name
                 self._thinking_enabled = enable_thinking
                 self._started_at = time.time()
+                self.runtime_state = ModelRuntimeState(
+                    model_name=model_name,
+                    thinking_enabled=enable_thinking,
+                    context_length=model_info.context_length,
+                    gpu_layers=model_info.gpu_layers,
+                )
                 registry.mark_loaded(model_name, self.api_base)
                 logger.info(
                     f"✅ Model {model_name} loaded in {swap_duration:.1f}s "
@@ -590,6 +620,7 @@ class LocalModelManager:
                 pass
 
         self.process = None
+        self.runtime_state = None
         if old_model:
             get_registry().mark_unloaded(old_model)
 
@@ -692,6 +723,13 @@ class LocalModelManager:
                         result["requests_pending"] = int(val)
                     elif m == "llamacpp_kv_cache_usage_ratio":
                         result["kv_cache_usage_percent"] = round(val * 100, 1)
+
+                # Update runtime_state.measured_tps from live /metrics so
+                # router.py can use actual tok/s for speed scoring.
+                tps = result.get("generation_tokens_per_second", 0.0)
+                if tps > 0 and self.runtime_state is not None:
+                    self.runtime_state.measured_tps = tps
+
         except Exception as e:
             logger.debug(f"Failed to fetch llama-server metrics: {e}")
 
@@ -842,3 +880,8 @@ def get_local_manager() -> LocalModelManager:
         _manager = LocalModelManager()
         atexit.register(_atexit_kill_llama_server)
     return _manager
+
+
+def get_runtime_state() -> ModelRuntimeState | None:
+    """Return the runtime state of the currently loaded model, or None."""
+    return _manager.runtime_state if _manager is not None else None

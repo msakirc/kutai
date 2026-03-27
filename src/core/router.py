@@ -702,6 +702,65 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
 
     candidates.sort(key=lambda c: -c.score)
 
+    # ── S7: Multi-model provider sibling rebalancing ──────────────────────────
+    # When one model in a provider is heavily congested (>70% utilization) and
+    # a sibling from the same provider has low utilization (<30%), nudge the
+    # sibling's score upward so load distributes across provider capacity rather
+    # than hammering a single endpoint.  The nudge is modest (+8%) so it only
+    # changes ordering when candidates are close in score — it never overrides a
+    # genuinely superior model.
+    # Only applies to cloud models (local models have a single GPU slot, so
+    # sibling rebalancing is irrelevant there).
+    try:
+        _rl_mgr_s7 = get_rate_limit_manager()
+        _prov_groups: dict[str, list[ScoredModel]] = {}
+        for _c in candidates:
+            if not _c.model.is_local:
+                _p = _c.model.provider
+                _prov_groups.setdefault(_p, []).append(_c)
+
+        _rebalanced = False
+        for _provider, _group in _prov_groups.items():
+            if len(_group) < 2:
+                continue
+            # Compute utilization for every model in this provider group once
+            _group_utils = [
+                (_sc, _rl_mgr_s7.get_utilization(_sc.model.litellm_name))
+                for _sc in _group
+            ]
+            # Is there at least one heavily-congested model in this group?
+            _max_util = max(u for _, u in _group_utils)
+            if _max_util < 70:
+                continue  # no congestion in this provider — skip
+            # Find the name of the most congested model for logging
+            _congested_name = next(
+                sc.model.name for sc, u in _group_utils if u == _max_util
+            )
+            # Nudge all underutilized siblings (<30% util)
+            for _sc, _sib_util in _group_utils:
+                if _sib_util < 30:
+                    _old = _sc.score
+                    _sc.score *= 1.08
+                    _sc.composite_score = _sc.score
+                    _sc.reasons.append(
+                        f"sibling_rebal({_provider}:{_max_util:.0f}%>"
+                        f"{_sib_util:.0f}%)"
+                    )
+                    logger.debug(
+                        "sibling rebalancing nudge",
+                        sibling=_sc.model.name,
+                        congested_model=_congested_name,
+                        provider=_provider,
+                        max_util=f"{_max_util:.0f}%",
+                        sibling_util=f"{_sib_util:.0f}%",
+                        score_change=f"{_old:.1f}->{_sc.score:.1f}",
+                    )
+                    _rebalanced = True
+        if _rebalanced:
+            candidates.sort(key=lambda c: -c.score)
+    except Exception as _e7:
+        logger.debug("sibling rebalancing failed", error=str(_e7))
+
     # Logging
     if candidates:
         top3 = candidates[:3]

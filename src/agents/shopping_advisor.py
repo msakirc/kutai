@@ -16,8 +16,8 @@ class ShoppingAdvisorAgent(BaseAgent):
         "Main conversational agent for shopping queries — interprets intent, "
         "delegates search, presents results"
     )
-    default_tier = "medium"
-    min_tier = "cheap"
+    default_tier = "quality"
+    min_tier = "medium"
     max_iterations = 8
     can_create_subtasks = True
 

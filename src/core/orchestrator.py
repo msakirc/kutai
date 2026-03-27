@@ -2109,24 +2109,25 @@ class Orchestrator:
                         f"Processing {len(tasks)} task(s): {task_names}"
                     )
 
-                    # Partition tasks: at most 1 local-model task runs at a time
+                    # Partition tasks: only tasks that are guaranteed to NOT
+                    # need llama-server can run in parallel.  Since the router
+                    # decides local vs cloud at call time, we conservatively
+                    # treat any task that *might* use the local model as local.
+                    # Only agent_types that never touch the LLM are "safe".
+                    _CLOUD_SAFE_AGENTS = {
+                        "assistant",  # casual replies (quick LLM but low priority)
+                    }
                     if len(tasks) > 1:
                         local_tasks = []
                         cloud_tasks = []
                         for t in tasks:
-                            ctx = t.get("context", "{}")
-                            if isinstance(ctx, str):
-                                try:
-                                    ctx = json.loads(ctx)
-                                except (json.JSONDecodeError, TypeError):
-                                    ctx = {}
-                            cls = ctx.get("classification", {}) if isinstance(ctx, dict) else {}
-                            if cls.get("local_only", False):
-                                local_tasks.append(t)
-                            else:
+                            if t.get("agent_type") in _CLOUD_SAFE_AGENTS:
                                 cloud_tasks.append(t)
+                            else:
+                                local_tasks.append(t)
 
-                        # Run at most 1 local task concurrently with cloud tasks
+                        # Run at most 1 local-model task; cloud-safe tasks can
+                        # run alongside it without causing model swap storms.
                         batch = cloud_tasks + local_tasks[:1]
                         deferred = local_tasks[1:]
                     else:

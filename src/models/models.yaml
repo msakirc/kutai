@@ -55,6 +55,19 @@ cloud:
   #     code_generation: 9.0
   #     reasoning: 7.5
   #
+  # Example: per-model sampling overrides
+  # Qwen3-32B-Q4_K_M:
+  #   sampling:
+  #     default:            # applies to all task types unless overridden
+  #       temperature: 0.3
+  #       top_p: 0.95
+  #     coding:             # task-specific override (highest priority)
+  #       temperature: 0.1
+  #       top_p: 0.9
+  #     creative:
+  #       temperature: 0.7
+  #       top_p: 0.95
+  #
   # Example: disable a model
   # old-model-v1:
   #   disabled: true

@@ -218,7 +218,7 @@ def start_docker_services():
     try:
         result = subprocess.run(
             ["docker", "compose", "-f", compose_file, "up", "-d"],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=15,
         )
         if result.returncode == 0:
             _log.info("Docker Compose services started")

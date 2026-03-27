@@ -1332,3 +1332,40 @@ def get_task_params(task_type: str | None) -> dict:
     if not task_type:
         return dict(_DEFAULT_PARAMS)
     return dict(_TASK_PARAM_DEFAULTS.get(task_type, _DEFAULT_PARAMS))
+
+
+# ─── Sampling parameter keys that are passed through to the LLM ─────────────
+SAMPLING_KEYS = ("temperature", "top_p", "top_k", "repeat_penalty", "min_p")
+
+
+def get_sampling_params(
+    task_type: str | None,
+    sampling_overrides: dict[str, dict[str, float]] | None = None,
+) -> dict[str, float]:
+    """
+    Return merged sampling parameters with cascading priority:
+
+      1. Model + task override  (sampling_overrides[task_type])
+      2. Model default override (sampling_overrides["default"])
+      3. Task-type default      (_TASK_PARAM_DEFAULTS[task_type])
+      4. Global default         (_DEFAULT_PARAMS)
+
+    Only returns keys listed in SAMPLING_KEYS.
+    """
+    # Start with global defaults
+    params = dict(_DEFAULT_PARAMS)
+
+    # Layer task-type defaults
+    if task_type and task_type in _TASK_PARAM_DEFAULTS:
+        params.update(_TASK_PARAM_DEFAULTS[task_type])
+
+    if sampling_overrides:
+        # Layer model-level "default" overrides
+        if "default" in sampling_overrides:
+            params.update(sampling_overrides["default"])
+        # Layer model+task-specific overrides (highest priority)
+        if task_type and task_type in sampling_overrides:
+            params.update(sampling_overrides[task_type])
+
+    # Filter to only recognized sampling keys
+    return {k: v for k, v in params.items() if k in SAMPLING_KEYS}

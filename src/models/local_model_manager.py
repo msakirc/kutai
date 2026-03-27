@@ -234,13 +234,19 @@ class LocalModelManager:
         If different model or thinking state differs, swaps (blocks until ready).
         """
         if self.current_model == model_name:
-            if self._thinking_enabled == enable_thinking and await self._health_check():
+            if await self._health_check():
+                # Model is loaded and healthy — skip restart even if thinking
+                # state differs.  Restarting the server just to toggle thinking
+                # causes swap storms that freeze the entire system.  Thinking
+                # is controlled via chat_template_kwargs at the server level,
+                # but the cost of a full restart far outweighs the benefit.
+                if self._thinking_enabled != enable_thinking:
+                    logger.debug(
+                        f"Ignoring thinking state change "
+                        f"{self._thinking_enabled} -> {enable_thinking} "
+                        f"for {model_name} (avoiding swap storm)"
+                    )
                 return True
-            if self._thinking_enabled != enable_thinking:
-                logger.info(
-                    f"Thinking state change: {self._thinking_enabled} -> {enable_thinking}, "
-                    f"restarting {model_name}"
-                )
             else:
                 # Loaded but unhealthy — restart
                 logger.warning(f"Model {model_name} unhealthy, restarting")
@@ -474,7 +480,6 @@ class LocalModelManager:
             "--flash-attn", "auto",
             "--metrics",
             # ── Performance flags ──
-            "--mlock",              # lock model weights in RAM (prevent swap to disk)
             "--threads", str(self._get_inference_threads()),
             "--batch-size", "2048", # prompt processing batch size (higher = faster prefill)
             "--ubatch-size", "512", # micro-batch for generation
@@ -504,8 +509,8 @@ class LocalModelManager:
 
             self.process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 creationflags=creation_flags,
             )
             self._assign_to_job(self.process)
@@ -569,18 +574,6 @@ class LocalModelManager:
             except Exception:
                 pass
 
-        # Close stdout/stderr pipes to avoid ResourceWarning about unclosed files
-        try:
-            if self.process.stdout:
-                self.process.stdout.close()
-        except Exception:
-            pass
-        try:
-            if self.process.stderr:
-                self.process.stderr.close()
-        except Exception:
-            pass
-
         self.process = None
         if old_model:
             get_registry().mark_unloaded(old_model)
@@ -594,14 +587,9 @@ class LocalModelManager:
             while (time.time() - start) < timeout:
                 # Check if process died
                 if self.process and self.process.poll() is not None:
-                    stderr = ""
-                    try:
-                        stderr = self.process.stderr.read().decode()[-500:]
-                    except Exception:
-                        pass
                     logger.error(
                         f"llama-server process exited with code "
-                        f"{self.process.returncode}: {stderr}"
+                        f"{self.process.returncode}"
                     )
                     return False
 
@@ -765,16 +753,6 @@ class LocalModelManager:
                 )
                 model_name = self.current_model
                 # Close pipes before discarding the process reference
-                try:
-                    if self.process.stdout:
-                        self.process.stdout.close()
-                except Exception:
-                    pass
-                try:
-                    if self.process.stderr:
-                        self.process.stderr.close()
-                except Exception:
-                    pass
                 self.process = None
                 self.current_model = None
                 consecutive_health_failures = 0

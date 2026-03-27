@@ -90,6 +90,11 @@ class ModelInfo:
     specialty: str = ""
     family: str = ""                        # detected family key
 
+    # Per-model sampling overrides (from models.yaml)
+    # Keys are task types or "default"; values are dicts of sampling params.
+    # Example: {"default": {"temperature": 0.3}, "coding": {"temperature": 0.1}}
+    sampling_overrides: dict[str, dict[str, float]] = field(default_factory=dict)
+
     # Score provenance (for auto-tuner blending)
     profile_scores: dict[str, float] = field(default_factory=dict)
     benchmark_scores: dict[str, float] = field(default_factory=dict)
@@ -964,11 +969,18 @@ class ModelRegistry:
             # ── 5. Load custom endpoints ──
             new_models.update(self._load_custom_endpoints())
 
-            # ── Apply YAML capability overrides ──
+            # ── Apply YAML capability + sampling overrides ──
             for model_name, model_overrides in overrides.items():
-                if model_name in new_models and "capabilities" in model_overrides:
+                if model_name not in new_models:
+                    continue
+                if "capabilities" in model_overrides:
                     for cap_name, score in model_overrides["capabilities"].items():
                         new_models[model_name].capabilities[cap_name] = float(score)
+                if "sampling" in model_overrides:
+                    new_models[model_name].sampling_overrides = {
+                        k: {pk: float(pv) for pk, pv in v.items()}
+                        for k, v in model_overrides["sampling"].items()
+                    }
 
             self.models = new_models
 

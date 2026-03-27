@@ -820,12 +820,15 @@ async def call_model(
                     last_error = f"Failed to load local model {model.name}"
                     continue
         if is_thinking:
-            temperature = None   # thinking models control sampling internally
+            sampling_params = None   # thinking models control sampling internally
         else:
-            from ..models.model_profiles import get_task_params
+            from ..models.model_profiles import get_sampling_params
             _task = reqs.effective_task or reqs.primary_capability
-            temperature = get_task_params(_task).get("temperature", 0.3)
-            logger.debug("task params applied", task=_task, temperature=temperature)
+            sampling_params = get_sampling_params(
+                _task,
+                sampling_overrides=getattr(model, "sampling_overrides", None),
+            )
+            logger.debug("sampling params applied", task=_task, **sampling_params)
 
         timeout_val = 60
         if model.is_local:
@@ -873,8 +876,9 @@ async def call_model(
             timeout=http_timeout,
         )
 
-        if temperature is not None:
-            completion_kwargs["temperature"] = temperature
+        if sampling_params is not None:
+            for _sp_key, _sp_val in sampling_params.items():
+                completion_kwargs[_sp_key] = _sp_val
         elif model.thinking_model and not is_thinking:
             # Thinking models skip temperature when thinking — but when
             # thinking is disabled we need to set it explicitly.

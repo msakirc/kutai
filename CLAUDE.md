@@ -8,6 +8,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 - **Telegram interface**: `src/app/telegram_bot.py` (TelegramInterface class, ~3000 lines)
 - **Agents**: `src/agents/` — base.py (ReAct loop), specialized agents (coder, researcher, planner, etc.)
 - **LLM routing**: `src/core/router.py` — routes tasks to best available local model
+- **LLM dispatch**: `src/core/llm_dispatcher.py` — centralized LLM call coordinator (MAIN_WORK vs OVERHEAD)
 - **Model management**: `src/models/local_model_manager.py` — manages llama-server lifecycle
 - **Database**: SQLite via `src/infra/db.py` (aiosqlite, WAL mode)
 - **Vector store**: ChromaDB via `src/memory/vector_store.py`
@@ -43,6 +44,16 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 - Inline menus use callback queries handled in `handle_callback()`
 - **The wrapper polls Telegram when KutAI is down** using non-destructive mode (never advances offset past non-wrapper updates, preserving them for the orchestrator)
 
+### LLM Dispatch & Model Routing
+- **All LLM calls go through `LLMDispatcher`** (`src/core/llm_dispatcher.py`) — NEVER call `call_model()` directly from agents, classifiers, or graders
+- Two call categories: `MAIN_WORK` (agent execution, can trigger model swaps) and `OVERHEAD` (classifier, grader, self-reflection — CANNOT trigger swaps, uses loaded model or cloud)
+- **Deferred grading**: Non-urgent tasks (priority < 8) defer grading to `GradeQueue` instead of swapping models. Grading happens when: model naturally swaps for main work, cloud has headroom, or queue exceeds threshold
+- **Proactive GPU loading**: If queue has ANY tasks a local model can handle, load one — don't wait for local_only/prefer_local flags. Local inference is free.
+- **Model-aware task ordering**: After fetching ready tasks, reorder by loaded model affinity (up to +0.9 priority boost, never overrides 2+ priority gap)
+- **Loaded model runtime state**: `ModelRuntimeState` tracks actual thinking_enabled, context_length, gpu_layers, measured_tps — scorer uses these instead of static ModelInfo
+- **Swap budget**: Max 3 swaps per 5 minutes. Exemptions: local_only, priority>=9
+- See `docs/orchestrator-xray.md` for full architecture documentation
+
 ### Common Pitfalls
 - Missing `import asyncio` in `base.py` — agents use asyncio.wait_for extensively
 - `BLOCKED_PATTERNS` must be defined before `LOCAL_BLOCKED_PATTERNS` in `shell.py`
@@ -52,6 +63,8 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 - Shopping after `/shop` must route to `shopping_advisor` agent, NOT `idea_to_product` workflow
 - **Datetime format for scheduled_tasks**: NEVER use `datetime.isoformat()` when storing to `scheduled_tasks.next_run` or `last_run` — use `strftime("%Y-%m-%d %H:%M:%S")` because SQLite's `datetime('now')` returns space-separated format. ISO format (with `T`) causes string comparison failures.
 - **Shopping agents must NOT have file tools**: `shopping_advisor`, `product_researcher`, and `deal_analyst` must NOT have `read_file`, `write_file`, or `file_tree` in their `allowed_tools` — these cause the LLM to waste iterations browsing the filesystem instead of searching products.
+- **Never call `call_model()` directly** — always use `LLMDispatcher.request()`. Direct calls bypass swap protection, quota management, and deferred grading.
+- **`shopping_advisor` task profile** must exist in `TASK_PROFILES` (capabilities.py) — without it, shopping tasks fall back to a flat adhoc profile with bad scoring.
 
 ### Telegram Bot Patterns
 - **`_pending_action` flow**: When a command is called without args (e.g. `/shop`), it stores `_pending_action[chat_id]` and prompts the user. The NEXT message MUST be handled by checking `_pending_action` BEFORE calling the message classifier — otherwise it gets misclassified (e.g. "Coffee machine" routed to a workflow instead of shopping).
@@ -77,6 +90,8 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 | `src/app/telegram_bot.py` | All Telegram UI — commands, buttons, callbacks |
 | `src/core/orchestrator.py` | Main loop, task processing, agent dispatch |
 | `src/core/router.py` | LLM model selection and routing |
+| `src/core/llm_dispatcher.py` | Centralized LLM call coordinator — all LLM calls go through here |
+| `docs/orchestrator-xray.md` | Architecture X-ray: routing, concurrency, resource management |
 | `src/agents/base.py` | ReAct agent loop, tool execution, context building |
 | `src/infra/db.py` | Database schema, queries, memory storage |
 | `src/memory/rag.py` | RAG pipeline for agent context injection |

@@ -1833,6 +1833,11 @@ class TelegramInterface:
                 agent_type="shopping_advisor",
                 context={"chat_id": chat_id},
             )
+            if task_id is None:
+                await self._reply(update,
+                    "🛒 A shopping search for this is already in progress.",
+                )
+                return
             self.user_last_task_id[chat_id] = task_id
             await self._reply(update,
                 f"🛒 Shopping task #{task_id} queued.\n"
@@ -2023,7 +2028,16 @@ Or: {{"type": "task", "confidence": 0.8}}"""
     @staticmethod
     def _classify_message_by_keywords(text: str) -> dict:
         """Fast keyword fallback for message classification."""
-        lower = text.lower()
+        lower = text.lower().strip()
+        # Very short or purely numeric messages are ambiguous — don't let
+        # the LLM classifier turn them into missions/tasks.
+        # Exclude meaningful short words that may be clarification responses.
+        _SHORT_PASSTHROUGH = {
+            "yes", "no", "ok", "evet", "hayır", "yep", "nah", "nope",
+            "yea", "yeah", "hay", "aha", "ehm",
+        }
+        if (len(lower) <= 3 or lower.isdigit()) and lower not in _SHORT_PASSTHROUGH:
+            return {"type": "casual"}
         # Todo items
         if any(w in lower for w in [
             "remind me", "don't forget", "dont forget", "todo",
@@ -2480,6 +2494,11 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             agent_type="shopping_advisor",
             context={"chat_id": chat_id},
         )
+        if task_id is None:
+            await self._reply(update,
+                "🛒 A shopping search for this is already in progress.",
+            )
+            return
         self.user_last_task_id[chat_id] = task_id
         await self._reply(update,
             f"🛒 Shopping task #{task_id} queued.\n"

@@ -185,6 +185,37 @@ Context: After completing plan_v4 Phases 2-11 implementation pass.
 38. **External webhook triggers**: Start goals/tasks from GitHub webhooks (new issue →
     auto-investigate), CI failures (auto-create bugfix task), or cron schedules.
 
+39. **Web Admin Dashboard**: Lightweight web dashboard (FastAPI + Jinja2 or simple SPA)
+    showing real-time mission status, agent activity, model utilization, memory stats,
+    and task queue. Accessible from any device without clogging Telegram. Should include:
+    - Live task queue with status indicators
+    - Agent execution timeline (which agent is running, iteration count)
+    - Model manager state (loaded model, VRAM usage, swap queue)
+    - Memory/vector store stats (collection sizes, recent queries)
+    - System metrics (CPU, RAM, GPU utilization)
+    - Quick actions (cancel task, restart orchestrator, force model swap)
+
+40. **Per-Model Sampling Overrides**: Temperature, top_p, top_k, repeat_penalty and other
+    sampling parameters configurable per model AND per agent type. Stored in models.yaml
+    or a new `model_profiles.yaml`. Overrides flow: agent request → router → model call →
+    llama-server API body. Also support llama-server-level parameters (like `--temp`,
+    `--top-k`) that are passed at server startup for the loaded model. Architecture:
+    - `ModelRegistry` holds per-model default sampling params
+    - `BaseAgent` can specify agent-level sampling preferences
+    - Router merges: agent prefs → model defaults → system defaults (in priority order)
+    - Params passed in the `/chat/completions` request body to llama-server
+
+41. **Local Accuracy Benchmarks**: Test GGUF models before deploying them in production
+    using an LLM-as-judge grading system. Architecture:
+    - Small curated test suite per capability dimension (reasoning, code gen, instruction
+      following, Turkish language, JSON compliance, tool calling)
+    - Run test prompts against the candidate model
+    - Grade responses using a known-good model (e.g. best available local or cloud model)
+    - Score feeds into `ModelRegistry.capability_scores` to update model profiles
+    - Can run on-demand (`/benchmark <model>`) or automatically when new GGUF detected
+    - Results stored in DB for historical comparison
+    - Integration with existing `benchmark_fetcher.py` and auto-tuner
+
 ---
 
 ## D. Deferred Shopping Plan Items

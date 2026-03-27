@@ -2143,6 +2143,16 @@ class Orchestrator:
                 except Exception:
                     pass
 
+                # ── Proactive GPU loading ──
+                # If GPU is idle and queue has work, load the best-fit model
+                # BEFORE tasks start. Local inference is free — don't waste GPU.
+                if candidate_tasks:
+                    try:
+                        from src.core.llm_dispatcher import get_dispatcher
+                        await get_dispatcher().ensure_gpu_utilized(candidate_tasks)
+                    except Exception as _gpu_err:
+                        logger.debug(f"Proactive GPU load failed: {_gpu_err}")
+
                 if tasks:
                     task_names = [
                         f"#{t['id']}({t.get('agent_type','?')})"

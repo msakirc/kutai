@@ -522,6 +522,130 @@ class LLMDispatcher:
             )
             await self.grade_queue.drain(use_cloud=True)
 
+    # ─── Proactive GPU Loading ───────────────────────────────────────────
+
+    async def ensure_gpu_utilized(self, upcoming_tasks: list[dict]):
+        """Proactively load a local model if GPU is idle and queue has work.
+
+        Called from the orchestrator main loop. If no model is loaded and
+        there are tasks in the queue that ANY local model can handle,
+        load the best-fit model. Local inference is free — don't waste the GPU.
+
+        Args:
+            upcoming_tasks: List of task dicts from get_ready_tasks()
+        """
+        try:
+            from src.models.local_model_manager import get_local_manager
+            manager = get_local_manager()
+
+            if manager.current_model:
+                return  # already loaded, nothing to do
+
+            if not upcoming_tasks:
+                return  # no work, stay idle (save power)
+
+            best_model = self._find_best_local_for_batch(upcoming_tasks)
+            if best_model:
+                logger.info(
+                    "proactive GPU load",
+                    model=best_model,
+                    queue_depth=len(upcoming_tasks),
+                )
+                await manager.ensure_model(
+                    best_model,
+                    reason="proactive_load",
+                )
+        except Exception as e:
+            logger.debug(f"Proactive GPU load failed: {e}")
+
+    def _find_best_local_for_batch(self, tasks: list[dict]) -> str | None:
+        """Find the local model that can serve the most upcoming tasks.
+
+        Considers agent_type, difficulty, capabilities needed. Returns the
+        model name (not litellm_name) or None if no local model is suitable.
+        """
+        try:
+            import json as _json
+            from src.models.model_registry import get_registry
+            from src.models.capabilities import (
+                score_model_for_task, TASK_PROFILES,
+                TaskRequirements as CapTaskReqs,
+            )
+            from src.core.router import CAPABILITY_TO_TASK, AGENT_REQUIREMENTS
+
+            registry = get_registry()
+            local_models = [m for m in registry.all_models() if m.is_local]
+
+            if not local_models:
+                return None
+
+            # Score each local model by how many tasks it can handle
+            model_scores: dict[str, int] = {}
+            for model in local_models:
+                if model.demoted:
+                    continue
+                match_count = 0
+                for task in tasks:
+                    ctx = task.get("context", {})
+                    if isinstance(ctx, str):
+                        try:
+                            ctx = _json.loads(ctx)
+                        except (Exception,):
+                            ctx = {}
+                    cls = ctx.get("classification", {})
+                    agent_type = task.get(
+                        "agent_type", cls.get("agent_type", "executor"),
+                    )
+                    difficulty = max(1, min(10, int(cls.get("difficulty", 5))))
+
+                    # Resolve task key for profile lookup
+                    task_key = agent_type
+                    if task_key in CAPABILITY_TO_TASK:
+                        task_key = CAPABILITY_TO_TASK[task_key]
+                    template = AGENT_REQUIREMENTS.get(agent_type)
+                    if template:
+                        task_key = template.task or task_key
+
+                    if task_key not in TASK_PROFILES:
+                        continue
+
+                    # Build minimal requirements for scoring
+                    cap_reqs = CapTaskReqs(
+                        task_name=task_key,
+                        needs_function_calling=cls.get("needs_tools", False),
+                        needs_vision=cls.get("needs_vision", False),
+                        needs_thinking=cls.get("needs_thinking", False),
+                    )
+
+                    # Check if model meets minimum capability
+                    min_score = max(0.0, (difficulty - 1) * 0.47)
+                    cap_score = score_model_for_task(
+                        model.capabilities,
+                        model.operational_dict(),
+                        cap_reqs,
+                    )
+                    if cap_score >= min_score:
+                        match_count += 1
+
+                if match_count > 0:
+                    model_scores[model.name] = match_count
+
+            if not model_scores:
+                return None
+
+            # Pick model that serves the most tasks
+            best = max(model_scores, key=model_scores.get)
+            logger.debug(
+                "proactive load candidates",
+                scores=model_scores,
+                selected=best,
+            )
+            return best
+
+        except Exception as e:
+            logger.debug(f"_find_best_local_for_batch failed: {e}")
+            return None
+
     # ─── Metrics ─────────────────────────────────────────────────────────
 
     def get_stats(self) -> dict:

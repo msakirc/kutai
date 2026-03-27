@@ -332,9 +332,9 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
     for name, model in registry.models.items():
         reasons: list[str] = []
 
-        # ═════════════════════════════════════════
-        # Hard Filters
-        # ═════════════════════════════════════════
+        # ╔══════════════════════════════════════════╗
+        # ║  LAYER 1: Eligibility (hard pass/fail)  ║
+        # ╚══════════════════════════════════════════╝
 
         def _skip(reason: str) -> bool:
             logger.debug("model filtered", model_name=name, reason=reason,
@@ -381,6 +381,14 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
             if est_cost > reqs.max_cost:
                 _skip(f"cost({est_cost:.4f}>{reqs.max_cost:.4f})"); continue
 
+        # Coding-specialty models use XML function-call format incompatible with
+        # non-code tasks (classification, research, conversation, …).  A 0.50x
+        # multiplier in the ranking section was too weak — the model could still
+        # win if its capability score was high enough.  Hard-filter instead.
+        if (model.specialty == "coding" and effective_task
+                and effective_task not in {"coder", "implementer", "fixer", "test_generator"}):
+            _skip(f"coding_specialty_mismatch(task={effective_task})"); continue
+
         if not model.is_local:
             cb = _get_circuit_breaker(model.provider)
             if cb.is_degraded:
@@ -402,9 +410,11 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
                         if _model_vram > _budget_mb:
                             _skip(f"vram_budget({_model_vram}>{_budget_mb}MB)"); continue
 
-        # ═════════════════════════════════════════
-        # 1. CAPABILITY FIT (0-100)
-        # ═════════════════════════════════════════
+        # ╔══════════════════════════════════════════╗
+        # ║  LAYER 2: Capability gate              ║
+        # ╚══════════════════════════════════════════╝
+
+        # ─── 1. Capability fit (0–100) ───────────────────────────────
 
         cap_score_raw = score_model_for_task(
             model_capabilities=model.capabilities,
@@ -640,41 +650,47 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
             + speed_score * weights["speed"]
         ) / total_weight
 
-        # Thinking bonus: reward thinking models when thinking is requested
+        # ╔══════════════════════════════════════════════════════════════╗
+        # ║  LAYER 3: Ranking adjustments (3 conceptual groups)         ║
+        # ║                                                              ║
+        # ║  Group A — Thinking fitness (+20% capability boost)         ║
+        # ║  Group B — Specialty alignment (+15% match)                 ║
+        # ║  Group C — Swap stickiness (+40% loaded / -25% unloaded,   ║
+        # ║             or +10% on thinking-state mismatch)             ║
+        # ║                                                              ║
+        # ║  NOTE: coding_model mismatch was here as 0.50x but has been ║
+        # ║  moved to Layer 1 (hard filter) — see eligibility section.  ║
+        # ║  prefer_local boost (was 1.15x) is now fully expressed by   ║
+        # ║  weight modifiers in the composite formula above.           ║
+        # ╚══════════════════════════════════════════════════════════════╝
+
+        # Group A: Thinking fitness
+        # Reward thinking models when the task explicitly requests CoT.
+        # Note: loaded-model thinking *mismatch* is handled by Group C.
         if reqs.needs_thinking and model.thinking_model:
             composite *= 1.20
             reasons.append("thinking_bonus")
 
-        # Specialty bonus/penalty: reward matches, penalize mismatches.
-        # Coding models output XML function calls instead of JSON — they
-        # should NEVER be picked for classification, research, or general tasks.
+        # Group B: Specialty alignment
+        # Specialty-matched models have architecturally better outputs for
+        # that task type (e.g. code-tuned models for code tasks).
+        # Mismatch is now a hard filter (Layer 1), so only the bonus remains.
         if model.specialty and effective_task:
-            specialty_match = {
+            _specialty_tasks = {
                 "coding": {"coder", "implementer", "fixer", "test_generator"},
                 "reasoning": {"planner", "architect", "analyst"},
                 "vision": {"visual_reviewer"},
             }
-            matched_tasks = specialty_match.get(model.specialty, set())
-            if effective_task in matched_tasks:
+            _matched = _specialty_tasks.get(model.specialty, set())
+            if effective_task in _matched:
                 composite *= 1.15
                 reasons.append(f"specialty={model.specialty}")
-            elif model.specialty == "coding":
-                # Coding models are harmful for non-coding tasks
-                composite *= 0.50
-                reasons.append("coding_model_mismatch")
 
-        # Prefer local: boost all local models when the agent prefers local
-        if reqs.prefer_local and model.is_local:
-            composite *= 1.15
-            reasons.append("prefer_local")
-
-        # Swap stickiness: strongly prefer loaded model to avoid 25s+ swap cost.
-        # Only a significantly better model should justify a swap.
+        # Group C: Swap stickiness
+        # Strongly prefer the already-loaded model (avoids 25s+ GPU warm-up).
+        # Only a substantially better model should justify triggering a swap.
+        # Thinking-state mismatch reduces — but does not eliminate — stickiness.
         if model.is_local and model.is_loaded:
-            # Reduce stickiness when thinking state mismatches the request:
-            # the loaded model is running without thinking (or vice-versa),
-            # making it less suitable — but not completely excluded so the
-            # swap budget logic in LLMDispatcher still has the final say.
             _thinking_mismatch = (
                 reqs.needs_thinking
                 and _loaded_runtime is not None
@@ -688,7 +704,6 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
                 composite *= 1.40
                 reasons.append("loaded")
         elif model.is_local and not model.is_loaded:
-            # Penalize unloaded models — swap is expensive
             composite *= 0.75
             reasons.append("needs_swap")
 

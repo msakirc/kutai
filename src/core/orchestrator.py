@@ -116,6 +116,85 @@ def _compute_max_concurrent(tasks: list[dict]) -> int:
     return min(base, 8)
 
 
+def _reorder_by_model_affinity(tasks: list[dict]) -> list[dict]:
+    """Reorder tasks to prefer those matching the currently loaded local model.
+
+    Boost is per-model (what's loaded), reducing swaps by batching compatible
+    work. Max boost is +0.9, so a 2+ priority gap is NEVER overridden.
+
+    Returns a new sorted list (does not mutate input).
+    """
+    if not tasks or len(tasks) <= 1:
+        return tasks
+
+    try:
+        from src.models.local_model_manager import get_local_manager
+        from src.models.model_registry import get_registry
+        from src.models.capabilities import (
+            score_model_for_task, TASK_PROFILES,
+            TaskRequirements as CapTaskReqs,
+        )
+        from src.core.router import CAPABILITY_TO_TASK, AGENT_REQUIREMENTS
+
+        manager = get_local_manager()
+        if not manager.current_model:
+            return tasks  # nothing loaded, can't optimize
+
+        registry = get_registry()
+        model_info = registry.get(manager.current_model)
+        if not model_info:
+            return tasks
+
+        def _sort_key(task: dict):
+            priority = task.get("priority", 5)
+            ctx = task.get("context", {})
+            if isinstance(ctx, str):
+                try:
+                    ctx = json.loads(ctx)
+                except (json.JSONDecodeError, TypeError):
+                    ctx = {}
+            cls = ctx.get("classification", {})
+            agent_type = task.get("agent_type", cls.get("agent_type", "executor"))
+            difficulty = max(1, min(10, int(cls.get("difficulty", 5))))
+
+            # Resolve task key
+            task_key = agent_type
+            if task_key in CAPABILITY_TO_TASK:
+                task_key = CAPABILITY_TO_TASK[task_key]
+            template = AGENT_REQUIREMENTS.get(agent_type)
+            if template:
+                task_key = template.task or task_key
+
+            # Quick capability check: can loaded model handle this task?
+            fit = 0.0
+            if task_key in TASK_PROFILES:
+                cap_reqs = CapTaskReqs(
+                    task_name=task_key,
+                    needs_function_calling=cls.get("needs_tools", False),
+                    needs_vision=cls.get("needs_vision", False),
+                )
+                min_score = max(0.0, (difficulty - 1) * 0.47)
+                cap_score = score_model_for_task(
+                    model_info.capabilities,
+                    model_info.operational_dict(),
+                    cap_reqs,
+                )
+                if cap_score >= min_score and cap_score > 0:
+                    # Normalize fit to 0.0-1.0 range (cap_score is 0-10)
+                    fit = min(1.0, cap_score / 10.0)
+
+            # Boost by fit * 0.9, so max boost < 1 priority level
+            effective_priority = priority + (fit * 0.9)
+            # Sort descending by effective priority, then FIFO by created_at
+            return (-effective_priority, task.get("created_at", ""))
+
+        return sorted(tasks, key=_sort_key)
+
+    except Exception as e:
+        logger.debug(f"Model affinity reorder failed: {e}")
+        return tasks
+
+
 def _parse_task_difficulty(task: dict) -> int:
     """Extract difficulty from a task's classification context.
 
@@ -2103,6 +2182,12 @@ class Orchestrator:
 
                 # Get a generous batch, then compute how many to actually run
                 candidate_tasks = await get_ready_tasks(limit=8)
+
+                # ── Model-aware task reordering ──
+                # Boost tasks that match the currently loaded model to reduce swaps.
+                # Max boost is +0.9 priority, so a 2+ priority gap is never overridden.
+                candidate_tasks = _reorder_by_model_affinity(candidate_tasks)
+
                 max_concurrent = _compute_max_concurrent(candidate_tasks)
                 tasks = candidate_tasks[:max_concurrent]
 

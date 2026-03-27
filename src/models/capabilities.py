@@ -332,7 +332,23 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.VISION:                0.1,
         Cap.CONVERSATION:          0.1,
         Cap.STRUCTURED_OUTPUT:     0.3,
-    }
+    },
+    "shopping_advisor": {
+        Cap.REASONING:             0.7,
+        Cap.PLANNING:              0.3,
+        Cap.ANALYSIS:              0.9,
+        Cap.CODE_GENERATION:       0.0,
+        Cap.CODE_REASONING:        0.0,
+        Cap.SYSTEM_DESIGN:         0.0,
+        Cap.PROSE_QUALITY:         0.5,
+        Cap.INSTRUCTION_ADHERENCE: 0.8,
+        Cap.DOMAIN_KNOWLEDGE:      1.0,
+        Cap.CONTEXT_UTILIZATION:   0.7,
+        Cap.STRUCTURED_OUTPUT:     0.8,
+        Cap.TOOL_USE:              0.6,
+        Cap.VISION:                0.2,
+        Cap.CONVERSATION:          0.5,
+    },
 }
 
 

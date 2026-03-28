@@ -606,6 +606,12 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
             elif est_generation_secs > 60:       # >1 min: mild penalty
                 speed_score = max(0, speed_score - 15)
                 reasons.append(f"moderate({est_generation_secs:.0f}s)")
+
+            # Amplify speed score when prefer_speed is set — measured TPS directly boosts score
+            if reqs.prefer_speed and tps > 0:
+                # Normalize TPS: 50+ tok/s → 1.0 boost, 5 tok/s → 0.1 boost
+                tps_boost = min(1.0, tps / 50.0)
+                speed_score = speed_score * (0.5 + tps_boost * 0.5)
         else:
             speed_map = {
                 "groq": 95, "cerebras": 95, "sambanova": 80,

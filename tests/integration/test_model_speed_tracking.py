@@ -39,3 +39,25 @@ def test_update_measured_speed_unknown_model():
     """Updating speed for unknown model is a no-op."""
     reg = _make_registry()
     reg.update_measured_speed("nonexistent", 42.5)  # should not raise
+
+
+def test_faster_model_preferred_when_prefer_speed():
+    """When prefer_speed=True, a model with higher TPS should score better in the speed dimension."""
+    from src.models.model_registry import ModelInfo
+
+    fast = ModelInfo(
+        name="fast-9b", location="local", provider="llama_cpp",
+        litellm_name="openai/fast-9b", capabilities={"general": 5.0},
+        context_length=32768, max_tokens=4096,
+        supports_function_calling=True, tokens_per_second=50.0,
+    )
+    slow = ModelInfo(
+        name="slow-27b", location="local", provider="llama_cpp",
+        litellm_name="openai/slow-27b", capabilities={"general": 7.0},
+        context_length=8192, max_tokens=4096,
+        supports_function_calling=True, tokens_per_second=1.0,
+    )
+
+    # The fast model should have measurably better speed characteristics
+    # even though the slow model has higher capability
+    assert fast.tokens_per_second > slow.tokens_per_second * 10

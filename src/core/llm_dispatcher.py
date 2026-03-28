@@ -356,7 +356,7 @@ class LLMDispatcher:
         # Check swap budget — if exhausted, constrain to loaded model or cloud
         if self.swap_budget.exhausted and not reqs.local_only:
             reqs_copy = copy.copy(reqs)
-            loaded = self._get_loaded_model_name()
+            loaded = self._get_loaded_litellm_name()
             if loaded:
                 # Try the loaded model first by pinning it
                 reqs_copy.model_override = loaded
@@ -531,7 +531,8 @@ class LLMDispatcher:
         return None  # grade will be applied retroactively
 
     async def on_model_swap(self, old_model: str | None, new_model: str | None):
-        """Called when a model swap occurs. Drains applicable deferred grades.
+        """Called when a model swap occurs. Drains deferred grades and
+        signals backpressure that new capacity is available.
 
         Called by ensure_model() after a successful swap.
         """
@@ -557,6 +558,22 @@ class LLMDispatcher:
                     new_model=new_model,
                     drained=drained,
                 )
+
+        # Signal backpressure queue — a model swap means new local capacity
+        # is available. Queued MAIN_WORK calls that failed because the old
+        # model couldn't handle them may succeed with the new one.
+        try:
+            from src.infra.backpressure import get_backpressure_queue
+            bp = get_backpressure_queue()
+            if bp._queue:
+                bp.signal_capacity_available()
+                logger.info(
+                    "signaled backpressure after swap",
+                    new_model=new_model,
+                    bp_depth=len(bp._queue),
+                )
+        except Exception:
+            pass
 
     async def drain_grades_if_idle(self):
         """Called from main loop when no tasks are running.

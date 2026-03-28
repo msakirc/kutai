@@ -258,7 +258,7 @@ class TestLLMDispatcherRouting(unittest.TestCase):
 
     # ── OVERHEAD routing ──
 
-    # 14. OVERHEAD pinned to loaded model
+    # 14. OVERHEAD routes through _exclude_unloaded_local (no pinning)
     def test_dispatcher_overhead_uses_loaded_model(self):
         dispatcher = self._make_dispatcher()
         reqs = _make_reqs()
@@ -267,11 +267,9 @@ class TestLLMDispatcherRouting(unittest.TestCase):
 
         mock_call = AsyncMock(return_value=mock_result)
 
-        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_litellm_name",
-                   return_value="openai/model-a"), \
-             patch("src.core.router.call_model", mock_call), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._force_cloud_only",
-                   side_effect=lambda r: r):
+        with patch("src.core.llm_dispatcher.LLMDispatcher._exclude_unloaded_local",
+                   side_effect=lambda r: r), \
+             patch("src.core.router.call_model", mock_call):
 
             from src.core.llm_dispatcher import CallCategory
             result = run_async(dispatcher.request(
@@ -280,12 +278,14 @@ class TestLLMDispatcherRouting(unittest.TestCase):
                 messages=messages,
             ))
 
-        # Should have been called with the pinned (loaded) model
+        # Single call_model call — loaded model + cloud as candidates
         self.assertTrue(mock_call.called)
+        self.assertEqual(mock_call.call_count, 1)
+        # No model_override — select_model naturally prefers loaded model
         called_reqs = mock_call.call_args[0][0]
-        self.assertEqual(called_reqs.model_override, "openai/model-a")
+        self.assertIsNone(called_reqs.model_override)
 
-    # 15. no model loaded → cloud
+    # 15. no model loaded → exclude_unloaded excludes all local → cloud only
     def test_dispatcher_overhead_falls_to_cloud_when_no_loaded(self):
         dispatcher = self._make_dispatcher()
         reqs = _make_reqs()
@@ -294,11 +294,9 @@ class TestLLMDispatcherRouting(unittest.TestCase):
 
         mock_call = AsyncMock(return_value=mock_result)
 
-        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_litellm_name",
-                   return_value=None), \
-             patch("src.core.router.call_model", mock_call), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._force_cloud_only",
-                   side_effect=lambda r: r):
+        with patch("src.core.llm_dispatcher.LLMDispatcher._exclude_unloaded_local",
+                   side_effect=lambda r: r), \
+             patch("src.core.router.call_model", mock_call):
 
             from src.core.llm_dispatcher import CallCategory
             result = run_async(dispatcher.request(
@@ -307,8 +305,9 @@ class TestLLMDispatcherRouting(unittest.TestCase):
                 messages=messages,
             ))
 
-        # Should fall through to cloud (call_model called once, no loaded model)
+        # Single call_model — when no model loaded, all local excluded → cloud
         self.assertTrue(mock_call.called)
+        self.assertEqual(mock_call.call_count, 1)
 
     # ── MAIN_WORK routing ──
 
@@ -471,9 +470,7 @@ class TestLLMDispatcherRouting(unittest.TestCase):
         mock_call = AsyncMock(return_value={"content": "ok", "model": "m"})
 
         with patch("src.core.router.call_model", mock_call), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_litellm_name",
-                   return_value=None), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._force_cloud_only",
+             patch("src.core.llm_dispatcher.LLMDispatcher._exclude_unloaded_local",
                    side_effect=lambda r: r):
 
             from src.core.llm_dispatcher import CallCategory
@@ -532,12 +529,10 @@ class TestLLMDispatcherIntegration(unittest.TestCase):
         mock_call = AsyncMock(return_value={"content": "ok", "model": "openai/m"})
         mock_ensure = AsyncMock()
 
-        # Patch ensure_model at the local_model_manager level
-        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_litellm_name",
-                   return_value="openai/model-a"), \
-             patch("src.core.router.call_model", mock_call), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._force_cloud_only",
-                   side_effect=lambda r: r):
+        # _exclude_unloaded_local is the mechanism that prevents swaps
+        with patch("src.core.llm_dispatcher.LLMDispatcher._exclude_unloaded_local",
+                   side_effect=lambda r: r), \
+             patch("src.core.router.call_model", mock_call):
 
             # Patch ensure_model via the module that would be imported
             with patch.dict("sys.modules", {
@@ -588,6 +583,124 @@ class TestLLMDispatcherIntegration(unittest.TestCase):
 
         self.assertEqual(count, 1)
         self.assertEqual(callback_results, [0.88])
+
+    # 26. _exclude_unloaded_local keeps loaded model + cloud
+    def test_exclude_unloaded_local_keeps_loaded_model(self):
+        dispatcher = self._make_dispatcher()
+
+        from src.core.router import ModelRequirements
+        reqs = ModelRequirements(task="classifier", difficulty=2)
+
+        # Set up: model-a is loaded, model-b and model-c are unloaded
+        mock_model_a = MagicMock()
+        mock_model_a.is_local = True
+        mock_model_a.name = "model-a"
+        mock_model_a.litellm_name = "openai/model-a"
+
+        mock_model_b = MagicMock()
+        mock_model_b.is_local = True
+        mock_model_b.name = "model-b"
+        mock_model_b.litellm_name = "openai/model-b"
+
+        mock_cloud = MagicMock()
+        mock_cloud.is_local = False
+        mock_cloud.name = "gemini-flash"
+        mock_cloud.litellm_name = "gemini/flash"
+
+        mock_reg = MagicMock()
+        mock_reg.all_models.return_value = [mock_model_a, mock_model_b, mock_cloud]
+
+        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_model_name",
+                   return_value="model-a"), \
+             patch("src.models.model_registry.get_registry",
+                   return_value=mock_reg):
+            result = dispatcher._exclude_unloaded_local(reqs)
+
+        # Unloaded local model-b should be excluded
+        self.assertIn("openai/model-b", result.exclude_models)
+        # Loaded model-a should NOT be excluded
+        self.assertNotIn("openai/model-a", result.exclude_models)
+        # Cloud should NOT be excluded
+        self.assertNotIn("gemini/flash", result.exclude_models)
+        # local_only should be False
+        self.assertFalse(result.local_only)
+
+    # 27. _exclude_unloaded_local with nothing loaded excludes all local
+    def test_exclude_unloaded_local_no_model_loaded(self):
+        dispatcher = self._make_dispatcher()
+
+        from src.core.router import ModelRequirements
+        reqs = ModelRequirements(task="classifier", difficulty=2)
+
+        mock_model_a = MagicMock()
+        mock_model_a.is_local = True
+        mock_model_a.name = "model-a"
+        mock_model_a.litellm_name = "openai/model-a"
+
+        mock_reg = MagicMock()
+        mock_reg.all_models.return_value = [mock_model_a]
+
+        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_model_name",
+                   return_value=None), \
+             patch("src.models.model_registry.get_registry",
+                   return_value=mock_reg):
+            result = dispatcher._exclude_unloaded_local(reqs)
+
+        # All local models excluded (none loaded)
+        self.assertIn("openai/model-a", result.exclude_models)
+
+    # 28. grade drain respects max_batch
+    def test_grade_drain_max_batch(self):
+        dispatcher = self._make_dispatcher()
+
+        from src.core.llm_dispatcher import PendingGrade
+        for i in range(10):
+            grade = PendingGrade(
+                task_id=f"t{i}",
+                task_title="Test",
+                task_description="Do X",
+                response_text="Done",
+                generating_model="model-a",
+                task_name="test",
+                priority=5,
+            )
+            run_async(dispatcher.grade_queue.enqueue(grade))
+
+        self.assertEqual(dispatcher.grade_queue.depth, 10)
+
+        mock_grade_fn = AsyncMock(return_value=0.7)
+
+        with patch("src.core.router.grade_response", mock_grade_fn):
+            count = run_async(dispatcher.grade_queue.drain(
+                available_model="model-b", max_batch=3,
+            ))
+
+        # Should only process 3, leaving 7
+        self.assertEqual(count, 3)
+        self.assertEqual(dispatcher.grade_queue.depth, 7)
+
+    # 29. grade_response uses priority=1
+    def test_grade_response_uses_low_priority(self):
+        """grade_response should use priority=1 so grading never blocks main work."""
+        captured_reqs = {}
+
+        async def _fake_request(category, reqs, messages, tools=None):
+            captured_reqs["priority"] = reqs.priority
+            return {"content": '{"score": 4, "reason": "ok"}', "model": "m"}
+
+        dispatcher = self._make_dispatcher()
+        with patch("src.core.llm_dispatcher.get_dispatcher", return_value=dispatcher), \
+             patch.object(dispatcher, "request",
+                          side_effect=_fake_request):
+            from src.core.router import grade_response
+            score = run_async(grade_response(
+                task_title="Test",
+                task_description="Test desc",
+                response_text="Some response text that is long enough",
+                generating_model="model-x",
+            ))
+
+        self.assertEqual(captured_reqs.get("priority"), 1)
 
 
 # ─── Singleton Tests ──────────────────────────────────────────────────────────

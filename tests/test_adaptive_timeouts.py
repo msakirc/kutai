@@ -227,8 +227,7 @@ class TestDispatcherPassesTimeout(unittest.TestCase):
                        return_value=None), \
                  patch("src.core.router.call_model",
                        side_effect=_fake_call_model), \
-                 patch.object(d, "_get_loaded_litellm_name", return_value=None), \
-                 patch.object(d, "_force_cloud_only",
+                 patch.object(d, "_exclude_unloaded_local",
                               side_effect=lambda r: r):
                 from src.core.router import ModelRequirements
                 reqs = ModelRequirements(task="classifier", difficulty=3)

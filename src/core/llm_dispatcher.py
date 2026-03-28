@@ -143,13 +143,19 @@ class GradeQueue:
         self,
         available_model: str | None = None,
         use_cloud: bool = False,
+        max_batch: int = 3,
     ) -> int:
-        """Drain as many pending grades as possible.
+        """Drain pending grades in small batches.
+
+        Processes at most `max_batch` grades per call so the orchestrator's
+        main loop can interleave main work between drain cycles.  Remaining
+        eligible grades stay in the queue for the next drain call.
 
         Args:
             available_model: Currently loaded local model name (litellm_name).
                              Grades whose generating_model != this can be graded.
             use_cloud: If True, use cloud for remaining grades.
+            max_batch: Maximum grades to process in this call (default 3).
 
         Returns:
             Number of grades completed.
@@ -166,7 +172,7 @@ class GradeQueue:
                     available_model
                     and grade.generating_model != available_model
                 )
-                if can_grade_locally or use_cloud:
+                if (can_grade_locally or use_cloud) and len(to_process) < max_batch:
                     to_process.append(grade)
                 else:
                     remaining.append(grade)
@@ -176,7 +182,8 @@ class GradeQueue:
         if not to_process:
             return 0
 
-        # Process grades outside the lock
+        # Process grades outside the lock — one at a time so GPU scheduler
+        # can interleave higher-priority requests between grades.
         completed = 0
         for grade in to_process:
             try:
@@ -384,60 +391,57 @@ class LLMDispatcher:
         """Route an OVERHEAD call. CANNOT trigger model swaps.
 
         Strategy:
-          1. If a local model is loaded, try it (free, no swap needed)
-          2. If loaded model won't work, go to cloud
-          3. Never trigger a model swap for overhead
+          Exclude unloaded local models so select_model() can only pick:
+            - The currently loaded model (free, no swap)
+            - Cloud models (fallback)
+
+          call_model() handles the rest naturally:
+            1. Tries loaded model first (ranked highest: free + loaded)
+            2. GPU scheduler queues request — up to 60s waiting room
+            3. If GPU times out, falls through to cloud candidates
+            4. If cloud also fails, backpressure retries (swap-aware)
+
+          This replaces the old pinning approach which:
+            - Made backpressure useless (same pinned model = same failure)
+            - Skipped the local GPU waiting room entirely
+            - Jumped to cloud aggressively
         """
-        from src.core.router import call_model, select_model, ModelRequirements
+        from src.core.router import call_model
 
         timeout = self._compute_timeout(CallCategory.OVERHEAD, reqs)
 
-        loaded_name = self._get_loaded_model_name()
-        loaded_litellm = self._get_loaded_litellm_name()
-
-        if loaded_litellm:
-            # Try loaded model first — it's free and requires no swap
-            reqs_pinned = copy.copy(reqs)
-            reqs_pinned.model_override = loaded_litellm
-            try:
-                result = await call_model(reqs_pinned, messages, tools,
-                                          timeout_override=timeout)
-                return result
-            except Exception as e:
-                logger.debug(
-                    "overhead: loaded model failed, trying cloud",
-                    loaded_model=loaded_name,
-                    error=str(e),
-                )
-
-        # Loaded model unavailable or failed — use cloud
-        # Exclude all local models to prevent swap
-        reqs_cloud = copy.copy(reqs)
-        reqs_cloud = self._force_cloud_only(reqs_cloud)
+        reqs_safe = copy.copy(reqs)
+        reqs_safe = self._exclude_unloaded_local(reqs_safe)
 
         try:
-            result = await call_model(reqs_cloud, messages, tools,
+            result = await call_model(reqs_safe, messages, tools,
                                       timeout_override=timeout)
             return result
         except Exception as e:
-            # Cloud also failed — this is a real error, propagate it
             raise RuntimeError(
-                f"OVERHEAD call failed: no loaded model and cloud unavailable. "
+                f"OVERHEAD call failed: loaded model and cloud unavailable. "
                 f"Task: {reqs.effective_task or reqs.primary_capability}, "
                 f"Error: {e}"
             ) from e
 
-    def _force_cloud_only(self, reqs: "ModelRequirements") -> "ModelRequirements":
-        """Modify requirements to exclude all local models (prevent swaps)."""
-        from src.models.model_registry import get_registry
-        registry = get_registry()
+    def _exclude_unloaded_local(self, reqs: "ModelRequirements") -> "ModelRequirements":
+        """Exclude local models that aren't loaded. Prevents swap triggers
+        while keeping the loaded model as a candidate alongside cloud.
 
-        local_models = [
+        If no model is loaded, all local models are excluded (cloud only).
+        """
+        from src.models.model_registry import get_registry
+
+        registry = get_registry()
+        loaded_name = self._get_loaded_model_name()
+
+        unloaded_local = [
             m.litellm_name for m in registry.all_models()
-            if m.is_local
+            if m.is_local and m.name != loaded_name
         ]
+
         existing_excludes = list(reqs.exclude_models) if reqs.exclude_models else []
-        reqs.exclude_models = list(set(existing_excludes + local_models))
+        reqs.exclude_models = list(set(existing_excludes + unloaded_local))
         reqs.local_only = False  # override in case it was set
         return reqs
 

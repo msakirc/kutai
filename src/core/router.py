@@ -1412,6 +1412,7 @@ async def grade_response(
         grading_reqs = ModelRequirements(
             task="reviewer",
             difficulty=3,
+            priority=1,  # lowest priority — never block main work for GPU
             estimated_input_tokens=800,
             estimated_output_tokens=50,
             prefer_speed=True,

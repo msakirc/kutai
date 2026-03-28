@@ -18,22 +18,37 @@
 
 All models tested with `--n-gpu-layers 99` (llama-server auto-clamps to VRAM capacity).
 
+### Benchmark v1 (Driver 546.x, 2026-03-28)
+
 | Model | Size | Gen tok/s | Prompt tok/s | VRAM | Load | Thinking | Status |
 |-------|------|----------|-------------|------|------|----------|--------|
-| **nerdsking-python-7B** | 5.1GB | **82.6** | 2662 | 6.3GB | 6s | NO | Full GPU, fast but code-only |
-| **Qwen3.5-9B-UD-Q4_K_XL** | 5.6GB | **53.0** | 432 | 7.6GB | 7s | YES* | Full GPU, best general-purpose speed |
-| **Qwen3-Coder-30B-A3B (MoE)** | 17GB | **7.1** | 76 | 7.6GB | 50s | NO | Partial GPU, good for code |
-| **GLM-4.7-Flash-UD-Q4_K_XL** | 17GB | **5.6** | 58 | 7.6GB | 49s | YES (forced) | Partial GPU, forced thinking wastes tokens |
-| **Qwen3.5-35B-A3B-UD (MoE)** | 21GB | **4.4** | 47 | 7.6GB | 62s | YES* | Partial GPU, highest quality |
-| **Qwen3.5-27B.Q4_K_M** | 16GB | **0.6** | 5 | 7.7GB | 49s | YES | Mostly CPU, medium test timed out (120s) |
-| **gemma-3-27b-heretic** | 14GB | **1.0** | 7 | 7.6GB | 26s | NO | Mostly CPU, medium test timed out |
-| **Apriel-15B-Thinker** | 12GB | **4.8** | 23 | 6.0GB | ~5s | NO* | Needs `--no-jinja --chat-template chatml`. Default Jinja template crashes llama-server. Reasoning baked into content text. |
+| nerdsking-python-7B | 5.1GB | 82.6 | 2662 | 6.3GB | 6s | NO | Full GPU |
+| Qwen3.5-9B-UD | 5.6GB | 53.0 | 432 | 7.6GB | 7s | YES* | Full GPU |
+| Qwen3-Coder-30B-A3B (MoE) | 17GB | 7.1 | 76 | 7.6GB | 50s | NO | Partial GPU |
+| GLM-4.7-Flash | 17GB | 5.6 | 58 | 7.6GB | 49s | YES (forced) | Partial GPU |
+| Qwen3.5-35B-A3B-UD (MoE) | 21GB | 4.4 | 47 | 7.6GB | 62s | YES* | Partial GPU |
+| Qwen3.5-27B | 16GB | 0.6 | 5 | 7.7GB | 49s | YES | Mostly CPU, timed out |
+| gemma-3-27b-heretic | 14GB | 1.0 | 7 | 7.6GB | 26s | NO | Mostly CPU, timed out |
+| Apriel-15B-Thinker | 12GB | 4.8 | 23 | 6.0GB | ~5s | NO* | Needs --no-jinja |
 
-*Thinking models: Qwen3.5-9B and 35B have thinking capability but it can be disabled via `--chat-template-kwargs`. GLM-4.7-Flash ignores the disable flag.
+### Benchmark v2 (Driver 595.97, 2026-03-29) — CURRENT
 
-**Benchmark methodology**: All models tested with `--n-gpu-layers 99` (auto-fit to VRAM). Short test: 1-sentence prompt, 50 output tokens. Medium test: ~100 token prompt, 200 output tokens. Medium gen tok/s used as the definitive speed metric.
+| Model | Size | Gen tok/s | Prompt tok/s | VRAM | Load | Thinking | Status |
+|-------|------|----------|-------------|------|------|----------|--------|
+| **nerdsking-python-7B** | 5.1GB | **87.6** | 2017 | 7.0GB | 4s | NO | Full GPU, code-only |
+| **Qwen3.5-35B-A3B-UD (MoE)** | 21GB | **33.2** | 65 | 6.9GB | 19s | YES* | **Best quality+speed combo** |
+| **Qwen3-Coder-30B-A3B (MoE)** | 17GB | **29.5** | 62 | 7.3GB | 14s | NO | Fast, good for code |
+| **GLM-4.7-Flash-UD** | 17GB | **27.6** | 53 | 7.2GB | 16s | YES (forced) | Fast but wastes thinking tokens |
+| **Qwen3.5-9B-UD** | 5.6GB | **25.4** | 267 | 7.1GB | 7s | YES* | Fast, best prompt throughput |
+| **Apriel-15B-Thinker** | 12GB | **4.9** | 82 | 7.1GB | 10s | NO | Slow, needs --no-jinja |
+| **gemma-3-27b-heretic** | 14GB | **3.1** | 40 | 7.3GB | 14s | NO | Slow, borderline usable |
+| **Qwen3.5-27B** | 16GB | **2.8** | 32 | 6.5GB | 14s | YES | Near demote threshold |
 
-**Orchestrator vs benchmark**: The orchestrator's conservative `calculate_gpu_layers()` gave GLM only 16-17 layers (1.2 tok/s). With auto-fit (`--n-gpu-layers 99`), GLM reaches 5.6 tok/s — a **4.7x improvement** from the same model with better params.
+**Driver impact**: MoE models improved 4-7.5x. Qwen3.5-35B-A3B went from slowest quality model (4.4 tok/s) to fastest (33.2 tok/s). Dense models >12GB improved 3-5x.
+
+*Thinking models: Qwen3.5-9B and 35B have thinking capability but can be disabled via `--chat-template-kwargs`. GLM-4.7-Flash ignores the disable flag.
+
+**Benchmark methodology**: All models tested with `--fit` (no explicit --n-gpu-layers). Short test: 1-sentence prompt, 50 output tokens. Medium test: ~100 token prompt, 200 output tokens. Medium gen tok/s used as the definitive speed metric. Script: `scripts/benchmark_all.py`.
 
 ### Speed Tiers
 

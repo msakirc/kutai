@@ -701,6 +701,10 @@ class LLMDispatcher:
             for model in local_models:
                 if model.demoted:
                     continue
+                # Skip specialty/code-only models for proactive loading —
+                # they can't handle general tasks (classification, chat, etc.)
+                if model.specialty in ("code", "coding") or not model.supports_function_calling:
+                    continue
                 match_count = 0
                 for task in tasks:
                     ctx = task.get("context", {})

@@ -1318,17 +1318,26 @@ async def call_model(
                 local_manager.release_inference_slot()
 
     # ── All candidates exhausted — try backpressure queue ──
-    from ..infra.backpressure import get_backpressure_queue
-
-    bp_queue = get_backpressure_queue()
     call_id = f"{reqs.agent_type}:{reqs.primary_capability}"
+
+    # Skip backpressure when model_override is set: if we pinned a specific
+    # model and it failed, retrying the same model won't help.  Let the caller
+    # (dispatcher) handle fallback (e.g. OVERHEAD → try cloud).
+    # Also skip backpressure on retries (prevent infinite recursion).
+    if reqs.model_override or getattr(reqs, '_is_retry', False):
+        raise RuntimeError(
+            f"All models failed for '{call_id}'. "
+            f"Last error: {last_error}"
+        )
+
+    from ..infra.backpressure import get_backpressure_queue
+    bp_queue = get_backpressure_queue()
 
     logger.warning(
         "all models failed fallback to backpressure",
         call_id=call_id,
         last_error=last_error,
     )
-
 
     # Create a retry callable that re-runs selection + call
     async def _retry_call():
@@ -1337,13 +1346,6 @@ async def call_model(
         # Recursive call — but with a flag to prevent infinite backpressure
         reqs._is_retry = True
         return await call_model(reqs, messages, tools)
-
-    # Check if this is already a retry (prevent infinite recursion)
-    if getattr(reqs, '_is_retry', False):
-        raise RuntimeError(
-            f"All models failed after backpressure retry for "
-            f"'{call_id}'. Last error: {last_error}"
-        )
 
     try:
         return await bp_queue.enqueue(

@@ -1981,7 +1981,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         "workflow" for mission-type messages that need the workflow engine.
         """
         try:
-            from ..core.router import ModelRequirements, call_model
+            from ..core.router import ModelRequirements
 
             # Build context hint
             context_parts = []

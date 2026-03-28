@@ -34,7 +34,7 @@ async def _llm_call(
         mission_id: Optional mission ID for cost attribution (future use).
     """
     try:
-        from src.core.router import ModelRequirements, call_model
+        from src.core.router import ModelRequirements
 
         reqs = ModelRequirements(
             task="shopping",

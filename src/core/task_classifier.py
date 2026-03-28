@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 
 from src.infra.logging_config import get_logger
-from .router import ModelRequirements, call_model
+from .router import ModelRequirements
 
 logger = get_logger("core.task_classifier")
 

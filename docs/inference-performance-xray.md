@@ -46,6 +46,19 @@ All models tested with `--n-gpu-layers 99` (llama-server auto-clamps to VRAM cap
 
 **Driver impact**: MoE models improved 4-7.5x. Qwen3.5-35B-A3B went from slowest quality model (4.4 tok/s) to fastest (33.2 tok/s). Dense models >12GB improved 3-5x.
 
+**IMPORTANT: Benchmark results are highly driver-dependent.** The v1→v2 jump (NVIDIA 546→595) changed the entire model ranking. Speeds may regress with future driver updates, VRAM pressure changes, or thermal throttling. The auto-demote system (2 tok/s threshold) and TPS EMA tracking handle this at runtime — if a model underperforms its benchmarked speed, it gets demoted and the user is notified via Telegram.
+
+### Model Roster Recommendation
+
+**Keep**: Qwen3.5-35B-A3B (MoE), Qwen3-Coder-30B (MoE), GLM-4.7-Flash, Qwen3.5-9B — all >25 tok/s, good coverage.
+
+**Replace gemma-3-27b-heretic** (3.1 tok/s, dense 27B, poor speed-to-quality ratio on 8GB VRAM). Ideal replacement profile:
+- **Architecture**: MoE (mixture-of-experts) with 3-4B active params — these run at 25-35 tok/s on 8GB VRAM because only active experts need GPU bandwidth. Dense models >12B are too slow on this hardware.
+- **Size**: 15-35B total params, 3-8B active params. File size 10-20GB GGUF (Q4_K or higher).
+- **Quantization**: Q4_K_XL or Q4_K_M — best speed/quality tradeoff for 8GB VRAM. Avoid IQ4_XS (gemma's quant was likely part of its poor performance).
+- **Capability gap to fill**: A strong general-purpose conversational model with good instruction following and Turkish language support. The current roster has code (Qwen3-Coder), quality reasoning (Qwen3.5-35B), speed (9B), but lacks a model optimized for multilingual chat and creative tasks.
+- **Avoid**: Dense models >12B params, thinking-only models (waste tokens), models without chat template support.
+
 *Thinking models: Qwen3.5-9B and 35B have thinking capability but can be disabled via `--chat-template-kwargs`. GLM-4.7-Flash ignores the disable flag.
 
 **Benchmark methodology**: All models tested with `--fit` (no explicit --n-gpu-layers). Short test: 1-sentence prompt, 50 output tokens. Medium test: ~100 token prompt, 200 output tokens. Medium gen tok/s used as the definitive speed metric. Script: `scripts/benchmark_all.py`.

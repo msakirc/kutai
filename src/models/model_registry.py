@@ -1507,7 +1507,6 @@ class ModelRegistry:
             info.tokens_per_second = info.tokens_per_second * (1 - alpha) + measured_tps * alpha
 
         # Auto-demote local models below minimum usable speed.
-        # Dense models >16GB on 8GB VRAM typically run at 0.6-1.3 tok/s — unusable.
         _MIN_USABLE_TPS = 2.0
         if info.is_local and info.tokens_per_second < _MIN_USABLE_TPS and not info.demoted:
             info.demoted = True
@@ -1515,6 +1514,19 @@ class ModelRegistry:
                 f"Auto-demoted {model_name}: {info.tokens_per_second:.1f} tok/s "
                 f"< {_MIN_USABLE_TPS} minimum"
             )
+            # Notify user via Telegram
+            try:
+                import asyncio
+                from src.app.telegram_bot import get_telegram
+                tg = get_telegram()
+                if tg:
+                    asyncio.ensure_future(tg.send_notification(
+                        f"⚠️ Model **{model_name}** auto-demoted: "
+                        f"{info.tokens_per_second:.1f} tok/s (below {_MIN_USABLE_TPS} minimum). "
+                        f"Consider removing this model or checking GPU drivers."
+                    ))
+            except Exception:
+                pass  # best-effort notification
 
     def local_models(self) -> list[ModelInfo]:
         models = self.models

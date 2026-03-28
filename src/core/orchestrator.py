@@ -49,7 +49,7 @@ AGENT_TIMEOUTS: dict[str, int] = {
     "test_generator": 180,
     "reviewer":       120,
     "visual_reviewer":120,
-    "researcher":     180,
+    "researcher":     300,
     "analyst":        240,
     "writer":         180,
     "summarizer":     120,

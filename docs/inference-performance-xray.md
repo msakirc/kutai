@@ -27,7 +27,7 @@ All models tested with `--n-gpu-layers 99` (llama-server auto-clamps to VRAM cap
 | **Qwen3.5-35B-A3B-UD (MoE)** | 21GB | **4.4** | 47 | 7.6GB | 62s | YES* | Partial GPU, highest quality |
 | **Qwen3.5-27B.Q4_K_M** | 16GB | **0.6** | 5 | 7.7GB | 49s | YES | Mostly CPU, medium test timed out (120s) |
 | **gemma-3-27b-heretic** | 14GB | **1.0** | 7 | 7.6GB | 26s | NO | Mostly CPU, medium test timed out |
-| **Apriel-15B-Thinker** | 12GB | **FAIL** | -- | -- | >90s | -- | Failed to load (OOM or format issue) |
+| **Apriel-15B-Thinker** | 12GB | **4.8** | 23 | 6.0GB | ~5s | NO* | Needs `--no-jinja --chat-template chatml`. Default Jinja template crashes llama-server. Reasoning baked into content text. |
 
 *Thinking models: Qwen3.5-9B and 35B have thinking capability but it can be disabled via `--chat-template-kwargs`. GLM-4.7-Flash ignores the disable flag.
 

@@ -1406,7 +1406,11 @@ async def grade_response(
             exclude_models=[generating_model] if generating_model else [],
         )
 
-        result = await call_model(
+        # Route through dispatcher as OVERHEAD — grading must NEVER trigger
+        # model swaps (this was the root cause of the swap storm bug).
+        from src.core.llm_dispatcher import get_dispatcher, CallCategory
+        result = await get_dispatcher().request(
+            CallCategory.OVERHEAD,
             grading_reqs,
             messages=[{
                 "role": "user",
@@ -1488,4 +1492,9 @@ AGENT_REQUIREMENTS: dict[str, ModelRequirements] = {
     "assistant":      ModelRequirements(task="assistant",      difficulty=3, estimated_output_tokens=2000, prefer_local=True, prefer_speed=True),
     "executor":       ModelRequirements(task="executor",       difficulty=3, estimated_output_tokens=1000, needs_function_calling=True, prefer_speed=True, prefer_local=True),
     "summarizer":     ModelRequirements(task="summarizer",     difficulty=4, estimated_output_tokens=2000, prefer_speed=True, prefer_local=True),
+    # ── Shopping agents → prefer local, need tool calling ──
+    "shopping_advisor":    ModelRequirements(task="shopping_advisor",    difficulty=5, estimated_output_tokens=2500, needs_function_calling=True, prefer_local=True, prefer_speed=True),
+    "product_researcher":  ModelRequirements(task="shopping_advisor",    difficulty=4, estimated_output_tokens=2000, needs_function_calling=True, prefer_local=True, prefer_speed=True),
+    "deal_analyst":        ModelRequirements(task="shopping_advisor",    difficulty=5, estimated_output_tokens=2000, needs_function_calling=True, prefer_local=True),
+    "shopping_clarifier":  ModelRequirements(task="shopping_advisor",    difficulty=3, estimated_output_tokens=1000, prefer_local=True, prefer_speed=True),
 }

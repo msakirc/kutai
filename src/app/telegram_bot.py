@@ -2005,7 +2005,10 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     context="; ".join(context_parts) if context_parts else "none",
                 ),
             }]
-            response = await call_model(reqs, messages)
+            from ..core.llm_dispatcher import get_dispatcher, CallCategory
+            response = await get_dispatcher().request(
+                CallCategory.OVERHEAD, reqs, messages,
+            )
             from ..core.task_classifier import _extract_json
             raw = response.get("content", "").strip()
             result = _extract_json(raw)
@@ -2373,7 +2376,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
     async def _handle_casual(self, text: str, update: Update):
         """Handle casual messages with a quick LLM response (no task creation)."""
         try:
-            from ..core.router import ModelRequirements, call_model
+            from ..core.router import ModelRequirements
+            from ..core.llm_dispatcher import get_dispatcher, CallCategory
             reqs = ModelRequirements(
                 task="assistant",
                 agent_type="assistant",
@@ -2383,7 +2387,10 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 estimated_input_tokens=100,
                 estimated_output_tokens=100,
             )
-            response = await call_model(reqs, [{"role": "user", "content": text}])
+            response = await get_dispatcher().request(
+                CallCategory.OVERHEAD, reqs,
+                [{"role": "user", "content": text}],
+            )
             reply = response.get("content", "Hey! How can I help?")
             await self._reply(update,reply[:1000])
         except Exception:
@@ -2524,6 +2531,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             agent_type="product_researcher",
             context={"shopping_sub_intent": "deep_research", "chat_id": chat_id},
         )
+        if task_id is None:
+            await self._reply(update, "🔬 A research task for this product is already in progress.")
+            return
         await self._reply(update,
             f"🔬 Deep research queued for *{product}* (task #{task_id})",
             parse_mode="Markdown",
@@ -2547,6 +2557,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             agent_type="shopping_advisor",
             context={"shopping_sub_intent": "price_check", "chat_id": chat_id},
         )
+        if task_id is None:
+            await self._reply(update, "🔍 A price check for this is already in progress.")
+            return
         await self._reply(update,
             f"🔍 Price check queued for *{product}* (task #{task_id})",
             parse_mode="Markdown",
@@ -2583,11 +2596,14 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             context={"shopping_sub_intent": "deal_hunt", "chat_id": chat_id,
                      "target_price": target_price},
         )
+        if task_id is None:
+            await self._reply(update, "👁️ A price watch for this product is already active.")
+            return
         msg = f"👁️ Price watch set for *{product}*"
         if target_price:
             msg += f" (target: {target_price} TL)"
         msg += f" — task #{task_id}"
-        await self._reply(update,msg, parse_mode="Markdown")
+        await self._reply(update, msg, parse_mode="Markdown")
 
     async def cmd_deals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show currently tracked deals. /deals"""
@@ -2689,6 +2705,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             agent_type="shopping_advisor",
             context={"shopping_sub_intent": "compare", "chat_id": chat_id},
         )
+        if task_id is None:
+            await self._reply(update, "⚖️ This comparison is already in progress.")
+            return
         await self._reply(update,
             f"⚖️ Comparison queued: *{product1}* vs *{product2}* (task #{task_id})",
             parse_mode="Markdown",

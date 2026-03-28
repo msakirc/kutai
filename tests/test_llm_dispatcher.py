@@ -346,8 +346,8 @@ class TestLLMDispatcherRouting(unittest.TestCase):
 
         mock_call = AsyncMock(return_value=mock_result)
 
-        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_model_name",
-                   return_value="model-a"), \
+        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_litellm_name",
+                   return_value="openai/model-a"), \
              patch("src.core.router.call_model", mock_call):
 
             from src.core.llm_dispatcher import CallCategory
@@ -360,7 +360,7 @@ class TestLLMDispatcherRouting(unittest.TestCase):
         # With exhausted budget, the loaded model is tried first via model_override
         self.assertTrue(mock_call.called)
         first_call_reqs = mock_call.call_args_list[0][0][0]
-        self.assertEqual(first_call_reqs.model_override, "model-a")
+        self.assertEqual(first_call_reqs.model_override, "openai/model-a")
 
     # ── Grading ──
 

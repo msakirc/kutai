@@ -245,6 +245,8 @@ BACKOFF_RESET_AFTER = 600  # reset backoff after 10 min stable
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 WRAPPER_LOG = LOG_DIR / "wrapper_meta.log"
+CLAUDE_REMOTE_SIGNAL = LOG_DIR / "claude_remote.signal"
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 def _wlog(msg: str):
@@ -274,6 +276,8 @@ class KutAIWrapper:
         self._telegram_poller = None
         self._shutdown = False
         self._wrapper_start_time = time.time()
+        self._signal_watcher: asyncio.Task | None = None
+        self._claude_process: asyncio.subprocess.Process | None = None
 
     # ── Subprocess Management ─────────────────────────────────────────────
 
@@ -540,6 +544,64 @@ class KutAIWrapper:
                 print(f"[Wrapper] Telegram poll error: {e}")
                 await asyncio.sleep(5)
 
+    # ── Signal File Watcher ──────────────────────────────────────────────
+
+    async def _start_signal_watcher(self):
+        """Start background task that watches for signal files."""
+        if self._signal_watcher:
+            return
+        self._signal_watcher = asyncio.create_task(self._signal_watch_loop())
+
+    async def _stop_signal_watcher(self):
+        if self._signal_watcher:
+            self._signal_watcher.cancel()
+            try:
+                await self._signal_watcher
+            except asyncio.CancelledError:
+                pass
+            self._signal_watcher = None
+
+    async def _signal_watch_loop(self):
+        """Poll for signal files while the orchestrator is running."""
+        while True:
+            try:
+                await asyncio.sleep(3)
+                if CLAUDE_REMOTE_SIGNAL.exists():
+                    CLAUDE_REMOTE_SIGNAL.unlink()
+                    await self._start_claude_remote()
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                _wlog(f"Signal watcher error: {e!r}")
+                await asyncio.sleep(10)
+
+    async def _start_claude_remote(self):
+        """Spawn a Claude Code remote-control session."""
+        # Kill existing session if any
+        if self._claude_process and self._claude_process.returncode is None:
+            _wlog("Claude remote-control session already running, skipping")
+            await self._send_telegram("🖥️ Claude Code session already running.")
+            return
+
+        _wlog("Starting Claude Code remote-control session")
+        try:
+            self._claude_process = await asyncio.create_subprocess_exec(
+                "claude", "remote-control",
+                cwd=str(PROJECT_ROOT),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await self._send_telegram(
+                "🖥️ *Claude Code remote-control started*\n"
+                f"PID: `{self._claude_process.pid}`"
+            )
+        except FileNotFoundError:
+            _wlog("'claude' command not found — is Claude Code installed?")
+            await self._send_telegram("❌ `claude` command not found. Is Claude Code installed?")
+        except Exception as e:
+            _wlog(f"Failed to start Claude remote-control: {e!r}")
+            await self._send_telegram(f"❌ Failed to start Claude Code: `{e!r}`")
+
     async def _send_status(self):
         uptime_w = int(time.time() - self._wrapper_start_time)
         uptime_k = int(time.time() - self.start_time) if self.start_time and self.running else 0
@@ -622,10 +684,15 @@ class KutAIWrapper:
         """Main wrapper loop."""
         _wlog(f"KutAI Wrapper started (auto_restart={self.auto_restart})")
 
+        # Clean up stale signal files from previous runs
+        if CLAUDE_REMOTE_SIGNAL.exists():
+            CLAUDE_REMOTE_SIGNAL.unlink()
+
         # Start KutAI immediately
         await self.start_kutai()
         if self.running:
             await self._notify_started()
+            await self._start_signal_watcher()
         else:
             _wlog("Initial start failed — entering Telegram poll mode")
             await self._start_telegram_poller()
@@ -633,6 +700,7 @@ class KutAIWrapper:
         while not self._shutdown:
             try:
                 exit_code = await self.wait_for_exit()
+                await self._stop_signal_watcher()
                 self._maybe_reset_backoff()
 
                 if exit_code == -1:
@@ -643,6 +711,7 @@ class KutAIWrapper:
                         await asyncio.sleep(1)
                     if self.running:
                         await self._notify_started()
+                        await self._start_signal_watcher()
                     continue
 
                 _wlog(f"KutAI exited with code {exit_code}")
@@ -655,6 +724,7 @@ class KutAIWrapper:
                     await self.start_kutai()
                     if self.running:
                         await self._notify_started()
+                        await self._start_signal_watcher()
                     continue
 
                 elif exit_code == 0:
@@ -667,6 +737,7 @@ class KutAIWrapper:
                         await asyncio.sleep(1)
                     if self.running:
                         await self._notify_started()
+                        await self._start_signal_watcher()
                     continue
 
                 else:
@@ -696,6 +767,7 @@ class KutAIWrapper:
                         await self.start_kutai()
                         if self.running:
                             await self._notify_started()
+                            await self._start_signal_watcher()
 
             except asyncio.CancelledError:
                 break
@@ -716,6 +788,7 @@ class KutAIWrapper:
         # Shutdown
         if self.running:
             await self.stop_kutai()
+        await self._stop_signal_watcher()
         await self._stop_telegram_poller()
         _wlog("Wrapper exiting.")
 

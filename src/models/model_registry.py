@@ -82,6 +82,7 @@ class ModelInfo:
     active_params_b: float = 0.0
     quantization: str = ""
     gpu_layers: int = 0
+    _gpu_layers_from_override: bool = False  # True if set via models.yaml
     total_layers: int = 0
     file_size_mb: float = 0.0
     tokens_per_second: float = 0.0          # measured at runtime
@@ -94,6 +95,10 @@ class ModelInfo:
     # Keys are task types or "default"; values are dicts of sampling params.
     # Example: {"default": {"temperature": 0.3}, "coding": {"temperature": 0.1}}
     sampling_overrides: dict[str, dict[str, float]] = field(default_factory=dict)
+
+    # Per-model llama-server extra flags (from models.yaml or family detection)
+    # Example: ["--no-jinja", "--chat-template", "chatml"]
+    extra_server_flags: list[str] = field(default_factory=list)
 
     # Score provenance (for auto-tuner blending)
     profile_scores: dict[str, float] = field(default_factory=dict)
@@ -1057,6 +1062,7 @@ class ModelRegistry:
             context_length = model_overrides.get("context_length", raw["native_ctx"])
 
             # GPU layers
+            _gpu_layers_from_override = "gpu_layers" in model_overrides and model_overrides["gpu_layers"]
             gpu_layers = model_overrides.get("gpu_layers") or calculate_gpu_layers(
                 file_size_mb=raw["file_size_mb"],
                 n_layers=raw["n_layers"],
@@ -1084,6 +1090,16 @@ class ModelRegistry:
                 min(context_length // 4, 16384),
             )
 
+            # Determine per-model server flags
+            extra_server_flags = list(model_overrides.get("extra_server_flags", []))
+            if not extra_server_flags:
+                # Family-based defaults
+                if raw["is_moe"]:
+                    extra_server_flags = ["--override-kv", "tokenizer.ggml.eos_token_id=int:151645"]
+                name_lower = name.lower()
+                if "apriel" in name_lower:
+                    extra_server_flags = ["--no-jinja", "--chat-template", "chatml"]
+
             model = ModelInfo(
                 name=name,
                 location="local",
@@ -1102,12 +1118,14 @@ class ModelRegistry:
                 active_params_b=raw["active_params_b"],
                 quantization=raw["quantization"],
                 gpu_layers=gpu_layers,
+                _gpu_layers_from_override=_gpu_layers_from_override,
                 total_layers=raw["n_layers"],
                 file_size_mb=raw["file_size_mb"],
                 load_time_seconds=max(10, raw["file_size_mb"] / 500),
                 priority_class=priority_class,
                 specialty=specialty,
                 family=raw["family_key"] or "unknown",
+                extra_server_flags=extra_server_flags,
             )
             result[name] = model
 
@@ -1165,6 +1183,7 @@ class ModelRegistry:
         context_length = overrides.get("context_length", cfg.get("context_length", native_ctx))
 
         available_vram = self._get_available_vram()
+        _gpu_layers_from_override = "gpu_layers" in overrides and overrides["gpu_layers"]
         gpu_layers = overrides.get("gpu_layers") or calculate_gpu_layers(
             file_size_mb=meta.get("file_size_mb", 0),
             n_layers=n_layers,
@@ -1192,6 +1211,7 @@ class ModelRegistry:
             active_params_b=active_params,
             quantization=quantization,
             gpu_layers=gpu_layers,
+            _gpu_layers_from_override=_gpu_layers_from_override,
             total_layers=n_layers,
             file_size_mb=meta.get("file_size_mb", 0),
             load_time_seconds=max(10, meta.get("file_size_mb", 0) / 500),
@@ -1467,6 +1487,24 @@ class ModelRegistry:
 
     def all_models(self) -> list[ModelInfo]:
         return list(self.models.values())
+
+    def update_measured_speed(self, model_name: str, measured_tps: float) -> None:
+        """Update a model's tokens_per_second using exponential moving average.
+
+        Called by the router after each successful inference call to keep
+        the speed estimate fresh.  EMA smooths out variance from different
+        prompt lengths and concurrent load.
+        """
+        info = self.models.get(model_name)
+        if info is None:
+            return
+        if info.tokens_per_second <= 0:
+            # First measurement — use raw value
+            info.tokens_per_second = measured_tps
+        else:
+            # EMA with alpha=0.3 (recent measurements weighted 30%)
+            alpha = 0.3
+            info.tokens_per_second = info.tokens_per_second * (1 - alpha) + measured_tps * alpha
 
     def local_models(self) -> list[ModelInfo]:
         models = self.models

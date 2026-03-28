@@ -1152,8 +1152,6 @@ async def call_model(
                         output_tokens = response.usage.completion_tokens or 0
                         if output_tokens > 0 and call_latency > 0:
                             tok_per_sec = output_tokens / call_latency
-                            registry = get_registry()
-                            registry.update_speed(model.name, tok_per_sec)
                             logger.info(
                                 "llm performance",
                                 model_name=model.name,
@@ -1162,6 +1160,12 @@ async def call_model(
                                 latency=f"{call_latency:.1f}s",
                                 speed=f"{tok_per_sec:.1f} tok/s",
                             )
+                            # Feed measured speed back into registry for future scoring
+                            try:
+                                registry = get_registry()
+                                registry.update_measured_speed(model.name, tok_per_sec)
+                            except Exception:
+                                pass  # non-critical
 
                     # Extract tool calls
                     msg = response.choices[0].message

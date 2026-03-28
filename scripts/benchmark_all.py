@@ -12,14 +12,18 @@ PORT = 8080
 
 # (name, filename, ctx_size, extra_args)
 MODELS = [
-    ("Qwen3.5-9B-UD", "Qwen3.5-9B-UD-Q4_K_XL.gguf", 32768, []),
+    ("Qwen3.5-9B-UD", "Qwen3.5-9B-UD-Q4_K_XL.gguf", 32768,
+     ["--chat-template-kwargs", '{"enable_thinking": false}']),
     ("Qwen3.5-35B-A3B (MoE)", "Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf", 8192,
-     ["--override-kv", "tokenizer.ggml.eos_token_id=int:151645"]),
-    ("Qwen3.5-27B", "Qwen3.5-27B.Q4_K_M.gguf", 8192, []),
+     ["--override-kv", "tokenizer.ggml.eos_token_id=int:151645",
+      "--chat-template-kwargs", '{"enable_thinking": false}']),
+    ("Qwen3.5-27B", "Qwen3.5-27B.Q4_K_M.gguf", 8192,
+     ["--chat-template-kwargs", '{"enable_thinking": false}']),
     ("GLM-4.7-Flash", "GLM-4.7-Flash-UD-Q4_K_XL.gguf", 4096,
      ["--override-kv", "tokenizer.ggml.eos_token_id=int:151645"]),
     ("Qwen3-Coder-30B (MoE)", "Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf", 8192,
-     ["--override-kv", "tokenizer.ggml.eos_token_id=int:151645"]),
+     ["--override-kv", "tokenizer.ggml.eos_token_id=int:151645",
+      "--chat-template-kwargs", '{"enable_thinking": false}']),
     ("Apriel-15B", "ServiceNow-AI_Apriel-1.6-15b-Thinker-Q6_K_L.gguf", 8192,
      ["--no-jinja", "--chat-template", "chatml"]),
     ("gemma-3-27b", "gemma-3-27b-it-heretic-v1.2.IQ4_XS.gguf", 8192, []),

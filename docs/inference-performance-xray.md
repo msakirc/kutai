@@ -37,9 +37,9 @@ All models tested with `--n-gpu-layers 99` (llama-server auto-clamps to VRAM cap
 |-------|------|----------|-------------|------|------|----------|--------|
 | **nerdsking-python-7B** | 5.1GB | **87.6** | 2017 | 7.0GB | 4s | NO | Full GPU, code-only |
 | **Qwen3.5-35B-A3B-UD (MoE)** | 21GB | **33.2** | 65 | 6.9GB | 19s | YES* | **Best quality+speed combo** |
-| **Qwen3-Coder-30B-A3B (MoE)** | 17GB | **29.5** | 62 | 7.3GB | 14s | NO | Fast, good for code |
+| **Qwen3-Coder-30B-A3B (MoE)** | 17GB | **29.5** | 62 | 7.3GB | 14s | NO* | Fast, good for code |
 | **GLM-4.7-Flash-UD** | 17GB | **27.6** | 53 | 7.2GB | 16s | YES (forced) | Fast but wastes thinking tokens |
-| **Qwen3.5-9B-UD** | 5.6GB | **25.4** | 267 | 7.1GB | 7s | YES* | Fast, best prompt throughput |
+| **Qwen3.5-9B-UD** | 5.6GB | **25.4** | 267 | 7.1GB | 7s | NO* | Fast, best prompt throughput |
 | **Apriel-15B-Thinker** | 12GB | **4.9** | 82 | 7.1GB | 10s | NO | Slow, needs --no-jinja |
 | **gemma-3-27b-heretic** | 14GB | **3.1** | 40 | 7.3GB | 14s | NO | Slow, borderline usable |
 | **Qwen3.5-27B** | 16GB | **2.8** | 32 | 6.5GB | 14s | YES | Near demote threshold |
@@ -59,7 +59,7 @@ All models tested with `--n-gpu-layers 99` (llama-server auto-clamps to VRAM cap
 - **Capability gap to fill**: A strong general-purpose conversational model with good instruction following and Turkish language support. The current roster has code (Qwen3-Coder), quality reasoning (Qwen3.5-35B), speed (9B), but lacks a model optimized for multilingual chat and creative tasks.
 - **Avoid**: Dense models >12B params, thinking-only models (waste tokens), models without chat template support.
 
-*Thinking models: Qwen3.5-9B and 35B have thinking capability but can be disabled via `--chat-template-kwargs`. GLM-4.7-Flash ignores the disable flag.
+*Thinking models: Qwen3.5 family (9B, 27B, 35B) and Qwen3-Coder have thinking capability. KutAI passes `--chat-template-kwargs {"enable_thinking": false}` at server startup to disable it — this works correctly for these models. The benchmark script (`scripts/benchmark_all.py`) also passes this flag so results reflect production behavior. GLM-4.7-Flash ignores the disable flag and always generates reasoning_content (no workaround at the llama-server level).
 
 **Benchmark methodology**: All models tested with `--fit` (no explicit --n-gpu-layers). Short test: 1-sentence prompt, 50 output tokens. Medium test: ~100 token prompt, 200 output tokens. Medium gen tok/s used as the definitive speed metric. Script: `scripts/benchmark_all.py`.
 

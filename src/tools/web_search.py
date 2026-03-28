@@ -161,6 +161,28 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
             _perplexica_disabled_at = 0.0
             logger.info("perplexica: re-enabling after cooldown")
 
+    # Skip Perplexica if loaded model is too slow or uses thinking mode.
+    # Perplexica's LLM synthesis takes 50-70s even with fast models;
+    # slow or thinking models would take 500s+ and always timeout.
+    _MIN_PERPLEXICA_TPS = 5.0
+    try:
+        from src.core.llm_dispatcher import get_dispatcher
+        dispatcher = get_dispatcher()
+        model_speed = dispatcher.get_loaded_model_speed()
+        is_thinking = dispatcher.is_loaded_model_thinking()
+        if model_speed > 0 and model_speed < _MIN_PERPLEXICA_TPS:
+            logger.debug(
+                "perplexica: skipping, model too slow",
+                speed=f"{model_speed:.1f}",
+                min_required=_MIN_PERPLEXICA_TPS,
+            )
+            return None
+        if is_thinking:
+            logger.debug("perplexica: skipping, thinking model wastes tokens")
+            return None
+    except Exception:
+        pass  # can't check speed — proceed anyway
+
     # Discover available models
     models = await _discover_perplexica_models(perplexica_url)
     if not models:

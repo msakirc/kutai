@@ -464,6 +464,34 @@ class LLMDispatcher:
         except Exception:
             return None
 
+    def get_loaded_model_speed(self) -> float:
+        """Get the currently loaded model's measured tok/s. Returns 0 if unknown."""
+        try:
+            from src.models.local_model_manager import get_local_manager
+            manager = get_local_manager()
+            if manager.runtime_state and manager.runtime_state.measured_tps > 0:
+                return manager.runtime_state.measured_tps
+            # Fall back to registry value
+            if manager.current_model:
+                from src.models.model_registry import get_registry
+                info = get_registry().get(manager.current_model)
+                if info:
+                    return info.tokens_per_second
+        except Exception:
+            pass
+        return 0.0
+
+    def is_loaded_model_thinking(self) -> bool:
+        """Check if the currently loaded model has thinking enabled."""
+        try:
+            from src.models.local_model_manager import get_local_manager
+            manager = get_local_manager()
+            if manager.runtime_state:
+                return manager.runtime_state.thinking_enabled
+        except Exception:
+            pass
+        return False
+
     # ─── Deferred Grading ────────────────────────────────────────────────
 
     async def request_grade(

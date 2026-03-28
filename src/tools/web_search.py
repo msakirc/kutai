@@ -127,6 +127,66 @@ async def _discover_perplexica_models(base_url: str) -> dict | None:
         return None
 
 
+async def _search_searxng_direct(
+    query: str, max_results: int = 10
+) -> str | None:
+    """Search SearXNG directly, bypassing Vane's LLM synthesis.
+
+    SearXNG runs inside the Vane Docker container. When exposed on a
+    separate port (SEARXNG_URL), we can query it for raw search results
+    in 6-10s instead of waiting 40-75s for Vane's full LLM pipeline.
+
+    Falls back gracefully if SearXNG is not exposed or unavailable.
+    """
+    searxng_url = os.getenv("SEARXNG_URL", "").strip()
+    if not searxng_url:
+        return None
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{searxng_url}/search",
+                params={
+                    "q": query,
+                    "format": "json",
+                    "engines": "duckduckgo,google,bing,brave",
+                },
+                timeout=aiohttp.ClientTimeout(total=12),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                results = data.get("results", [])
+                if not results:
+                    return None
+
+                # Format as readable text for the agent
+                parts = []
+                for r in results[:max_results]:
+                    title = r.get("title", "")
+                    url = r.get("url", "")
+                    snippet = r.get("content", "")[:300]
+                    if title and url:
+                        parts.append(f"**{title}**\n{snippet}\n{url}")
+
+                if not parts:
+                    return None
+
+                formatted = "\n\n".join(parts)
+                logger.info(
+                    "searxng direct search ok",
+                    result_count=len(parts),
+                    query=query[:50],
+                )
+                return formatted
+
+    except asyncio.TimeoutError:
+        logger.debug("searxng direct search timeout (12s)", query=query[:50])
+    except Exception as e:
+        logger.debug("searxng direct search failed", error=str(e))
+    return None
+
+
 async def _search_perplexica(query: str, max_results: int, focus_mode: str):
     """
     Search using Perplexica/Vane API.
@@ -210,7 +270,7 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
             async with session.post(
                 f"{perplexica_url}/api/search",
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=15),
+                timeout=aiohttp.ClientTimeout(total=45),
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
@@ -254,7 +314,7 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
 
     except asyncio.TimeoutError:
         _perplexica_fail_count += 1
-        logger.warning("perplexica search timeout (15s)", query=query)
+        logger.warning("perplexica search timeout (45s)", query=query)
     except Exception as e:
         _perplexica_fail_count += 1
         logger.warning("perplexica search error", error=f"{type(e).__name__}: {e}", query=query)
@@ -294,7 +354,10 @@ async def _embed_web_results(query: str, results_text: str) -> None:
 
 async def web_search(query: str, max_results: int = 5, search_type: str = "web") -> str:
     """
-    Search the web using Perplexica/Vane (primary), with DuckDuckGo fallback.
+    Search the web using Perplexica/Vane (primary), with SearXNG direct and DuckDuckGo fallbacks.
+
+    Fallback chain: Perplexica (45s, AI-synthesized) → SearXNG direct (12s, raw results)
+    → DuckDuckGo package → curl/DuckDuckGo API.
 
     Before issuing a live search, checks the web_knowledge vector store
     for recent relevant cached results (Phase D knowledge accumulation).
@@ -364,7 +427,14 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web")
 
             return result_text
 
-    # Method 1: duckduckgo-search package (ddgs 9.x)
+    # Method 1: SearXNG direct (raw results, no LLM synthesis, ~6-10s)
+    searxng_result = await _search_searxng_direct(query, max_results)
+    if searxng_result:
+        # Embed in background (non-blocking)
+        asyncio.ensure_future(_embed_web_results(query, searxng_result))
+        return searxng_result
+
+    # Method 3: duckduckgo-search package (ddgs 9.x)
     if _DDGS is not None:
         try:
             # ddgs 9.x: DDGS().text() returns a list directly
@@ -388,7 +458,7 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web")
         except Exception as e:
             logger.warning("duckduckgo search failed, using curl fallback", error=str(e))
 
-    # Method 2: curl via shell (Docker container has internet)
+    # Method 4: curl via shell (Docker container has internet)
     try:
         safe_query = urllib.parse.quote_plus(query)
         # DuckDuckGo Instant Answer API (free, no key needed)

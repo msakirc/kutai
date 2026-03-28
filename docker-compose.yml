@@ -47,6 +47,7 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
+      - "3002:8080"  # SearXNG direct access (bypasses Vane LLM)
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

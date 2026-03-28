@@ -1506,6 +1506,16 @@ class ModelRegistry:
             alpha = 0.3
             info.tokens_per_second = info.tokens_per_second * (1 - alpha) + measured_tps * alpha
 
+        # Auto-demote local models below minimum usable speed.
+        # Dense models >16GB on 8GB VRAM typically run at 0.6-1.3 tok/s — unusable.
+        _MIN_USABLE_TPS = 2.0
+        if info.is_local and info.tokens_per_second < _MIN_USABLE_TPS and not info.demoted:
+            info.demoted = True
+            logger.info(
+                f"Auto-demoted {model_name}: {info.tokens_per_second:.1f} tok/s "
+                f"< {_MIN_USABLE_TPS} minimum"
+            )
+
     def local_models(self) -> list[ModelInfo]:
         models = self.models
         return [m for m in models.values() if m.is_local]

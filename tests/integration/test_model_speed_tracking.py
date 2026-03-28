@@ -61,3 +61,47 @@ def test_faster_model_preferred_when_prefer_speed():
     # The fast model should have measurably better speed characteristics
     # even though the slow model has higher capability
     assert fast.tokens_per_second > slow.tokens_per_second * 10
+
+
+def test_very_slow_model_gets_demoted():
+    """A local model measured at <2 tok/s should be auto-demoted."""
+    info = ModelInfo(
+        name="slow-model", location="local", provider="llama_cpp",
+        litellm_name="openai/slow-model", capabilities={},
+        context_length=8192, max_tokens=4096, tokens_per_second=0.0,
+    )
+    reg = ModelRegistry.__new__(ModelRegistry)
+    reg.models = {"slow-model": info}
+
+    reg.update_measured_speed("slow-model", 1.0)
+    assert info.tokens_per_second == 1.0
+    assert info.demoted is True
+
+
+def test_fast_model_not_demoted():
+    """A model at 10 tok/s should NOT be demoted."""
+    info = ModelInfo(
+        name="fast-model", location="local", provider="llama_cpp",
+        litellm_name="openai/fast-model", capabilities={},
+        context_length=8192, max_tokens=4096, tokens_per_second=0.0,
+    )
+    reg = ModelRegistry.__new__(ModelRegistry)
+    reg.models = {"fast-model": info}
+
+    reg.update_measured_speed("fast-model", 10.0)
+    assert info.tokens_per_second == 10.0
+    assert info.demoted is False
+
+
+def test_cloud_model_not_demoted_even_if_slow():
+    """Cloud models should not be auto-demoted regardless of speed."""
+    info = ModelInfo(
+        name="cloud-model", location="cloud", provider="openai",
+        litellm_name="gpt-4o-mini", capabilities={},
+        context_length=128000, max_tokens=4096, tokens_per_second=0.0,
+    )
+    reg = ModelRegistry.__new__(ModelRegistry)
+    reg.models = {"cloud-model": info}
+
+    reg.update_measured_speed("cloud-model", 0.5)
+    assert info.demoted is False

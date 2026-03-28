@@ -737,8 +737,24 @@ class LLMDispatcher:
             if not model_scores:
                 return None
 
-            # Pick model that serves the most tasks
-            best = max(model_scores, key=model_scores.get)
+            # Pick model that serves the most tasks, breaking ties by speed.
+            # Prefer: (1) measured TPS if available, (2) MoE models (fast on
+            # partial GPU), (3) smaller file size (more layers fit on GPU).
+            def _model_priority(name):
+                info = registry.get(name)
+                match = model_scores[name]
+                if info and info.tokens_per_second > 0:
+                    speed = info.tokens_per_second
+                elif info and info.model_type == "moe":
+                    speed = 30.0  # MoE models typically fast on this hardware
+                elif info:
+                    # Estimate: smaller file = more GPU layers = faster
+                    speed = max(1.0, 50.0 - info.file_size_mb / 500)
+                else:
+                    speed = 1.0
+                return (match, speed)
+
+            best = max(model_scores, key=_model_priority)
             logger.debug(
                 "proactive load candidates",
                 scores=model_scores,

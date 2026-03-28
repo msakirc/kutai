@@ -1,7 +1,7 @@
 # KutAI Orchestrator X-Ray: Model Routing, Concurrency & Resource Management
 
-> Future architecture document. Describes current state problems and planned solutions.
-> Living document — update as implementation progresses.
+> Architecture reference document. All 11 problems and 10 solutions are **implemented**.
+> Living document — update as system evolves.
 
 ---
 
@@ -40,7 +40,7 @@
 - Performance history (success_rate * avg_grade, needs 3+ calls)
 - Speed (measured TPS for local, provider tier for cloud)
 
-**8+ post-composite multipliers**: thinking 1.20x, specialty match 1.15x, coding mismatch 0.50x, prefer_local 1.15x, loaded stickiness 1.40x, unloaded 0.75x
+**3-layer scoring (S8)**: Layer 1 (eligibility hard filters incl. coding mismatch), Layer 2 (capability gate), Layer 3 (3 multiplier groups: thinking 1.20x, specialty 1.15x, stickiness 1.40x/1.10x/0.75x)
 
 **Weight profiles by difficulty**:
 - d<=3: cost=35, cap=20, avail=20, speed=15, perf=10
@@ -102,7 +102,7 @@ Per-model rate limits exist but selection doesn't spread load across provider's 
 
 ---
 
-## Planned Solutions
+## Solutions (All Implemented)
 
 ### S1: Centralized LLM Dispatcher (`src/core/llm_dispatcher.py`)
 
@@ -143,21 +143,16 @@ New task state: `executed_pending_grade` between execution and grading.
 
 Tasks in `executed_pending_grade` are "done" for dependency purposes — downstream tasks can start. Grading updates quality metadata retroactively.
 
-### S3: Cloud Quota Management
+### S3: Cloud Quota Management ✅
 
 **3a. Forward-looking queue scan** (every main loop cycle):
-```
-upcoming = get_ready_tasks(limit=30)
-queue_profile = analyze(upcoming)  # difficulty, vision, tools, thinking, priorities
-quota_planner.update_queue_profile(queue_profile)
-quota_planner.recalculate()
-```
+Builds a `QueueProfile` dataclass from upcoming tasks analyzing: max difficulty, vision count, tool count, thinking count, hard_tasks count, cloud_only count. Passed to `QuotaPlanner.set_queue_profile()`.
 
-**3b. Per-model utilization in selection:**
-Replace binary has_capacity() with headroom-weighted availability score. Naturally spreads load across provider's models.
+**3b. Graduated availability scoring:**
+Replaced binary `has_capacity()` gate with continuous headroom curve: `avail_score = max(5, 95 - effective_util * 0.90)`. Uses `max(model_util, provider_util)` for effective utilization. Daily limit exhaustion remains a hard gate (`avail_score=0`). Added `RateLimitManager.is_daily_exhausted()`.
 
 **3c. Reserve quota for hard upcoming tasks:**
-When queue contains difficulty>=7 tasks, raise expensive_threshold so easy overhead doesn't consume paid cloud.
+`QueueProfile.cloud_only_count >= 3` → threshold ≥ 6. `needs_thinking_count >= 2` with moderate util → threshold ≥ 6. Max difficulty ≥ 8 → threshold ≥ max_diff - 1.
 
 ### S4: Proactive GPU Loading
 
@@ -206,12 +201,12 @@ When a model from a provider has high utilization (>70%) and a sibling has low (
 
 Everything else folds into dimensions.
 
-### S9: Adaptive Timeouts
+### S9: Adaptive Timeouts ✅
 
-Based on measured TPS and estimated tokens:
-- OVERHEAD: hard cap 20s
-- MAIN_WORK: generation_time * 2.0, clamped 20-300s
-- GPU acquire: estimated_queue_wait + model_load + generation + buffer
+Based on measured TPS (`ModelRuntimeState.measured_tps`) and estimated tokens:
+- **OVERHEAD**: hard cap 20s (via `LLMDispatcher._compute_timeout()`)
+- **MAIN_WORK**: `output_tokens / measured_tps * 2.0`, clamped [20, 300]s; difficulty heuristic fallback
+- **GPU acquire**: `max(30, min(180, est_gen * 3.0 + 15))` using measured TPS; difficulty heuristic when no TPS; priority ≥ 10 → 30s (fail fast to cloud)
 
 ### S10: Swap Budget
 
@@ -219,21 +214,19 @@ Max 3 swaps per 5 minutes. Exemptions: local_only (no choice), priority>=9 (urge
 
 ---
 
-## Implementation Order
+## Implementation Order (All Complete)
 
-| Phase | Solution | Effort | Dependencies |
-|-------|----------|--------|-------------|
-| 1 | S1: LLM Dispatcher | Large | None — foundation |
-| 2 | S3c: QuotaPlanner queue scan | Small | S1 |
-| 3 | S4: Proactive GPU loading | Medium | S1 |
-| 4 | S2: Deferred grading queue | Medium | S1 |
-| 5 | S5: Model-aware task ordering | Medium | S1 |
-| 6 | S6: Runtime state tracking | Small | S1 |
-| 7 | S3a+S3b: Full quota management | Medium | S1, S6 |
-| 8 | S7: Provider load balancing | Small | S3b |
-| 9 | S8: Scoring reorganization | Large | All above stable |
-| 10 | S9+S10: Timeouts + swap budget | Medium | S6 |
-| 11 | Add shopping_advisor task profile | Tiny | None |
+| Phase | Solution | Commit | Tests |
+|-------|----------|--------|-------|
+| 1 | S1: LLM Dispatcher + S10: Swap Budget + S2: Deferred Grading | `072a156` | 27 |
+| 2 | S3c: QuotaPlanner queue scan | `d16afca` | — |
+| 3 | S4: Proactive GPU loading | `dd46a03` | — |
+| 4 | S5: Model-aware task ordering + shopping_advisor profile | `6908aa2` | 15 |
+| 5 | S6: Runtime state tracking | `017da5c` | 17 |
+| 6 | S7: Provider sibling rebalancing | `5deb446` | 8 |
+| 7 | S8: 3-layer scoring architecture | `574d443` | 12 |
+| 8 | S9: Adaptive timeouts (LLM call + GPU acquire) | `58f3ecc` | 11 |
+| 9 | S3a: Queue profile + S3b: Graduated availability | (pending commit) | 15 |
 
 ---
 

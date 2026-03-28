@@ -2192,12 +2192,11 @@ class Orchestrator:
                 tasks = candidate_tasks[:max_concurrent]
 
                 # ── Quota planner: forward-looking queue scan ──
-                # Peek further ahead to inform cloud quota reservation.
-                # The quota planner uses max upcoming difficulty + capability
-                # needs to decide whether to reserve expensive cloud quota
-                # for harder tasks coming up.
+                # Build a full QueueProfile from upcoming tasks so the planner
+                # can reserve cloud quota for tasks that genuinely need it
+                # (vision, thinking, hard difficulty).
                 try:
-                    from src.models.quota_planner import get_quota_planner
+                    from src.models.quota_planner import get_quota_planner, QueueProfile
                     _qp = get_quota_planner()
                     # Use the full candidate batch (up to 8) for the scan.
                     # For deeper lookahead, fetch more if we have tasks.
@@ -2206,10 +2205,30 @@ class Orchestrator:
                         # Queue is busy — peek further ahead
                         _lookahead = await get_ready_tasks(limit=30)
                     if _lookahead:
-                        _max_diff = max(
-                            _parse_task_difficulty(t) for t in _lookahead
-                        )
-                        _qp.set_max_upcoming_difficulty(_max_diff)
+                        _profile = QueueProfile()
+                        _profile.total_tasks = len(_lookahead)
+                        for _t in _lookahead:
+                            _d = _parse_task_difficulty(_t)
+                            _profile.max_difficulty = max(_profile.max_difficulty, _d)
+                            if _d >= 7:
+                                _profile.hard_tasks_count += 1
+                            # Extract capability needs from classification context
+                            _ctx = _t.get("context", {})
+                            if isinstance(_ctx, str):
+                                try:
+                                    import json as _json
+                                    _ctx = _json.loads(_ctx)
+                                except Exception:
+                                    _ctx = {}
+                            _cls = _ctx.get("classification", {})
+                            if _cls.get("needs_vision", False):
+                                _profile.needs_vision_count += 1
+                                _profile.cloud_only_count += 1  # vision = cloud only
+                            if _cls.get("needs_tools", False):
+                                _profile.needs_tools_count += 1
+                            if _cls.get("needs_thinking", False):
+                                _profile.needs_thinking_count += 1
+                        _qp.set_queue_profile(_profile)
                         _qp.recalculate()
                 except Exception as _qp_err:
                     logger.debug(f"Quota planner scan failed: {_qp_err}")

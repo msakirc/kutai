@@ -451,6 +451,16 @@ class RateLimitManager:
         state = self._provider_limits.get(provider)
         return state.utilization_pct() if state else 0.0
 
+    def is_daily_exhausted(self, litellm_name: str) -> bool:
+        """Check if a model's daily request limit is exhausted."""
+        state = self.model_limits.get(litellm_name)
+        if not state:
+            return False
+        if state.rpd_remaining is not None and state.rpd_remaining <= 0:
+            if state.rpd_reset_at and time.time() < state.rpd_reset_at:
+                return True
+        return False
+
     def get_status(self) -> dict:
         """Full status for diagnostics."""
         models = {}

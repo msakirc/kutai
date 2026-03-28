@@ -497,29 +497,33 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
                 reqs.estimated_input_tokens + reqs.estimated_output_tokens
             )
 
-            # Check BOTH model-level and provider-level capacity
-            has_model_cap = rl_manager.has_capacity(
-                model.litellm_name, model.provider, total_tokens,
-            )
+            # ── Graduated headroom scoring (S3b) ──
+            # Replaced binary has_capacity() gate with continuous scoring.
+            # Uses utilization percentage to compute a smooth availability
+            # score so models near their limit gracefully degrade rather
+            # than cliff-dropping from 50→25 when they cross the capacity
+            # threshold.
             model_util = rl_manager.get_utilization(model.litellm_name)
             provider_util = rl_manager.get_provider_utilization(
                 model.provider,
             )
-
-            if has_model_cap and model_util < 50:
-                avail_score = 95
-            elif has_model_cap and model_util < 80:
-                avail_score = 75
-                reasons.append(f"util={model_util:.0f}%")
-            elif has_model_cap:
-                avail_score = 50
-                reasons.append(f"util={model_util:.0f}%")
-            elif provider_util < 100:
-                avail_score = 25
-                reasons.append("model_limited")
+            # Check daily limit exhaustion (hard gate — no graduated
+            # fallback; if daily limit is gone, the model is useless).
+            _daily_exhausted = rl_manager.is_daily_exhausted(
+                model.litellm_name,
+            )
+            if _daily_exhausted:
+                avail_score = 0
+                reasons.append("daily_exhausted")
             else:
-                avail_score = 5
-                reasons.append("rate_limited")
+                # Smooth curve: 100% util → 5, 0% util → 95
+                # Blends model-level and provider-level utilization (worst wins)
+                _effective_util = max(model_util, provider_util)
+                avail_score = max(5, int(95 - _effective_util * 0.90))
+                if _effective_util >= 80:
+                    reasons.append(f"util={_effective_util:.0f}%")
+                elif _effective_util >= 50:
+                    reasons.append(f"util={_effective_util:.0f}%")
 
         # ═════════════════════════════════════════
         # 4. PERFORMANCE HISTORY (0-100)
@@ -1049,11 +1053,31 @@ async def call_model(
             from ..models.local_model_manager import get_local_manager
             local_manager = get_local_manager()
 
+            # ── S9: Adaptive GPU acquire timeout ────────────────────
+            # Estimate wait = current_generation_time + this_generation_time + buffer.
+            # Uses runtime measured_tps when available; otherwise heuristic.
+            try:
+                from src.models.local_model_manager import get_runtime_state as _grs
+                _rs = _grs()
+                _tps = _rs.measured_tps if (_rs and _rs.measured_tps > 0) else 0
+            except Exception:
+                _tps = 0
+
+            if reqs.priority >= 10:
+                _gpu_timeout = 30.0  # critical tasks fail fast to try cloud
+            elif _tps > 0:
+                # Estimated generation time for current + this request + buffer
+                _est_gen = reqs.estimated_output_tokens / _tps
+                _gpu_timeout = max(30.0, min(180.0, _est_gen * 3.0 + 15.0))
+            else:
+                # No TPS data — use difficulty heuristic
+                _gpu_timeout = 120.0 if reqs.difficulty >= 5 else 60.0
+
             granted = await local_manager.acquire_inference_slot(
                 priority=reqs.priority,
                 task_id=reqs.agent_type,  # or actual task_id if available
                 agent_type=reqs.agent_type,
-                timeout=120 if reqs.priority < 10 else 30,
+                timeout=_gpu_timeout,
             )
 
             if not granted:

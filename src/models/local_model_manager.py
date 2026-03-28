@@ -518,6 +518,7 @@ class LocalModelManager:
         cmd = [
             str(LLAMA_SERVER_PATH),
             "--model", model.path,
+            "--alias", "local-model",  # stable name for Perplexica/Vane integration
             "--port", str(self.port),
             "--host", "127.0.0.1",
             "--n-gpu-layers", str(model.gpu_layers),

@@ -354,8 +354,21 @@ class BaseAgent:
                 f"## Prior Tool Result\n{task_context['tool_result']}"
             )
 
+        # ── User clarification (answer to a previous needs_clarification) ──
+        if "user_clarification" in task_context:
+            answer = task_context["user_clarification"]
+            history = task_context.get("clarification_history", [])
+            parts.append(
+                f"## User Clarification\n"
+                f"You previously asked for clarification. The user answered: **{answer}**\n"
+                f"Do NOT ask for clarification again. Use this answer and proceed with the task."
+            )
+            if len(history) > 1:
+                parts.append(f"Previous answers: {history}")
+
         # Remaining context (exclude internal / already-handled keys)
-        _skip = {"workspace_snapshot", "tool_result", "prior_steps", "tool_depth", "recent_conversation"}
+        _skip = {"workspace_snapshot", "tool_result", "prior_steps", "tool_depth",
+                 "recent_conversation", "user_clarification", "clarification_history"}
         extra = {k: v for k, v in task_context.items() if k not in _skip}
         if extra:
             parts.append(

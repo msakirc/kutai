@@ -333,24 +333,39 @@ try:
 
     async def _tool_shopping_search(query: str) -> str:
         """Analyze a shopping query, then execute searches via scrapers and return actual product results."""
+        import asyncio as _asyncio
         try:
             from ..shopping.resilience.fallback_chain import get_product_with_fallback
 
-            analyzed = await _analyze_query(query)
-            plan = await _generate_search_plan(analyzed)
+            # Run query analysis with a timeout — fall back to empty analysis if LLM is slow
+            analyzed = {}
+            plan = []
+            try:
+                analyzed = await _asyncio.wait_for(_analyze_query(query), timeout=15)
+                plan = await _asyncio.wait_for(_generate_search_plan(analyzed), timeout=15)
+            except (_asyncio.TimeoutError, Exception):
+                pass  # proceed with direct search using query as-is
 
-            # Extract sources from the plan (phase-1 search tasks)
+            # Extract sources from the plan (flat list of task dicts with "phase" key)
             sources: list[str] = []
-            for task in plan.get("phase_1", plan.get("tasks", [])):
-                src = task.get("source", "")
-                if src and src not in sources:
-                    sources.append(src)
+            if plan:
+                phase_1_tasks = [t for t in plan if isinstance(t, dict) and t.get("phase") == 1] if isinstance(plan, list) else plan.get("phase_1", plan.get("tasks", []))
+                for task in phase_1_tasks:
+                    for src in task.get("sources", []):
+                        if src and src not in sources:
+                            sources.append(src)
 
-            # Execute actual product search via fallback chain
-            products = await get_product_with_fallback(
-                query,
-                sources=sources if sources else None,
-            )
+            # Execute actual product search via fallback chain (30s cap)
+            try:
+                products = await _asyncio.wait_for(
+                    get_product_with_fallback(
+                        query,
+                        sources=sources if sources else None,
+                    ),
+                    timeout=30,
+                )
+            except _asyncio.TimeoutError:
+                products = []
 
             return _json_shopping.dumps({
                 "analysis": analyzed,

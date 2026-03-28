@@ -20,87 +20,57 @@ NOTE — PARTIAL DEPRECATION (plan item #70):
 """
 from __future__ import annotations
 
-import os
 import time
-
-import aiohttp
 
 from src.infra.logging_config import get_logger
 
 logger = get_logger("shopping.integrations.perplexica")
 
-_PERPLEXICA_URL = os.getenv("PERPLEXICA_URL", "http://localhost:3001")
 
-
-# DEPRECATED: use `src.tools.web_search.web_search` instead.
-# This function bypasses the circuit-breaker, model-discovery, and
-# DuckDuckGo fallback logic that live in web_search.py.  It is kept
-# here only to avoid breaking existing imports; do not add new callers.
+# Thin wrapper: delegates to web_search._search_perplexica which handles
+# model discovery, circuit-breaking, and the correct Vane API format.
+# Kept for backward compatibility with fallback_chain.py imports.
 async def search_perplexica(query: str, focus: str = "shopping") -> dict:
     """
-    Call the Perplexica API for broad web research.
+    Call the Perplexica/Vane API for broad web research.
+
+    Delegates to `src.tools.web_search._search_perplexica` which handles
+    model discovery, circuit-breaking, and the correct Vane API format.
 
     Args:
         query: The search query string.
         focus: Focus mode — "shopping", "web", "academic", etc.
 
     Returns:
-        dict with keys: answer (str), sources (list[dict]), raw (dict).
+        dict with keys: answer (str), sources (list[dict]).
         On failure returns {"answer": "", "sources": [], "error": str}.
     """
-    url = f"{_PERPLEXICA_URL}/api/search"
-
-    # Map shopping focus to Perplexica's focusMode
+    # Map shopping focus to web_search focus modes
     focus_map = {
-        "shopping": "webSearch",
-        "web": "webSearch",
-        "academic": "academicSearch",
+        "shopping": "web",
+        "web": "web",
+        "academic": "academic",
     }
-
-    payload = {
-        "query": query,
-        "focusMode": focus_map.get(focus, "webSearch"),
-    }
+    search_type = focus_map.get(focus, "web")
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=120),
-            ) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    logger.warning(
-                        "perplexica shopping search failed",
-                        status=resp.status,
-                        body=body[:300],
-                    )
-                    return {"answer": "", "sources": [], "error": f"HTTP {resp.status}"}
+        from src.tools.web_search import _search_perplexica
 
-                data = await resp.json()
-                answer = data.get("message", data.get("answer", ""))
-                sources = []
-                for src in data.get("sources", []):
-                    meta = src.get("metadata", {})
-                    sources.append({
-                        "title": meta.get("title", ""),
-                        "url": meta.get("url", ""),
-                        "snippet": src.get("content", "")[:300],
-                    })
+        result = await _search_perplexica(query, max_results=10, focus_mode=search_type)
+        if result:
+            logger.debug(
+                "perplexica shopping search ok (via web_search)",
+                answer_len=len(result.get("answer", "")),
+                source_count=len(result.get("sources", [])),
+            )
+            return {"answer": result["answer"], "sources": result["sources"]}
 
-                logger.debug(
-                    "perplexica shopping search ok",
-                    answer_len=len(answer),
-                    source_count=len(sources),
-                )
-                return {"answer": answer, "sources": sources, "raw": data}
+        # Perplexica unavailable or returned nothing — return empty result
+        logger.debug("perplexica returned no result for shopping query")
+        return {"answer": "", "sources": [], "error": "no result from perplexica"}
 
-    except aiohttp.ClientError as e:
-        logger.warning("perplexica connection error", error=str(e))
-        return {"answer": "", "sources": [], "error": str(e)}
     except Exception as e:
-        logger.warning("perplexica search error", error=str(e))
+        logger.warning("perplexica shopping search error", error=str(e))
         return {"answer": "", "sources": [], "error": str(e)}
 
 

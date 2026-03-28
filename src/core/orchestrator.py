@@ -1550,8 +1550,8 @@ class Orchestrator:
         # Check if this is a todo suggestion task — trigger reminder when all done
         task_ctx = task.get("context", {})
         if isinstance(task_ctx, str):
-            import json
-            task_ctx = json.loads(task_ctx)
+            import json as _json_ctx
+            task_ctx = _json_ctx.loads(task_ctx)
         if task_ctx.get("todo_suggest_batch"):
             await self._check_todo_suggestions_complete(task_ctx)
 

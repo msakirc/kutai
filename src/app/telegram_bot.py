@@ -132,6 +132,7 @@ MENU_CATEGORIES = [
         ("☢️ Reset All", "resetall", False, None),
         ("🔄 Restart", "kutai_restart", False, None),
         ("⏹ Stop", "kutai_stop", False, None),
+        ("🖥️ Claude Code", "claude", False, None),
     ]),
 ]
 
@@ -339,6 +340,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("restart", self.cmd_kutai_restart))
         self.app.add_handler(CommandHandler("kutai_stop", self.cmd_kutai_stop))
         self.app.add_handler(CommandHandler("stop", self.cmd_kutai_stop))
+        self.app.add_handler(CommandHandler("claude", self.cmd_claude))
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.REPLY,
@@ -743,6 +745,14 @@ class TelegramInterface:
             self.orchestrator.shutdown_event.set()
         import threading
         threading.Timer(5.0, lambda: os._exit(0)).start()
+
+    # ─── Claude Code Remote Control ─────────────────────────────────────
+
+    async def cmd_claude(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Request the wrapper to start a Claude Code remote-control session."""
+        signal_file = Path("logs/claude_remote.signal")
+        signal_file.write_text(datetime.now().isoformat(), encoding="utf-8")
+        await self._reply(update, "🖥️ Claude Code remote-control session requested.\nWrapper will start it shortly.")
 
     # ─── Result Command ─────────────────────────────────────────────────
 
@@ -1935,6 +1945,9 @@ class TelegramInterface:
                 priority=TASK_PRIORITY["critical"],
                 context=task_context if task_context else None,
             )
+            if task_id is None:
+                await self._reply(update, "⏳ A similar task is already in progress.")
+                return
             self.user_last_task_id[chat_id] = task_id
             await self._reply(update,f"\u2705 Task #{task_id} queued.")
 

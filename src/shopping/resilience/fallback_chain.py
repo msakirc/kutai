@@ -70,7 +70,7 @@ async def get_product_with_fallback(
 ) -> list[dict]:
     """Search for products using a degradation chain.
 
-    Order: dedicated scraper(s) -> Perplexica -> generic web search -> cache.
+    Order: dedicated scraper(s) for each source -> Perplexica -> Google CSE -> cache.
 
     Parameters
     ----------
@@ -86,9 +86,23 @@ async def get_product_with_fallback(
     """
     from src.shopping.resilience.cache_fallback import get_stale_product
 
-    chain_fns = build_fallback_chain(sources[0] if sources else "default")
+    # Phase 1: Try each source's dedicated scraper
+    effective_sources = [s for s in (sources or []) if s != "default"]
+    for source in effective_sources:
+        try:
+            from src.shopping.scrapers import get_scraper
+            scraper_cls = get_scraper(source)
+            if scraper_cls is not None:
+                scraper = scraper_cls()
+                results = await scraper.search(product_query)
+                if results:
+                    return results
+        except Exception as exc:
+            logger.warning("Scraper %s failed for '%s': %s", source, product_query, exc)
 
-    for fn in chain_fns:
+    # Phase 2: Shared fallbacks (Perplexica, Google CSE)
+    shared_chain = build_fallback_chain("default")
+    for fn in shared_chain:
         try:
             if asyncio.iscoroutinefunction(fn):
                 results = await fn(product_query)

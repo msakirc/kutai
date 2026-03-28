@@ -78,12 +78,15 @@ async def _discover_perplexica_models(base_url: str) -> dict | None:
         for provider in providers:
             pid = provider.get("id", "")
             for cm in provider.get("chatModels", []):
-                key = cm.get("key", "")
+                # Vane chat models may have "key" (cloud) or only "id"/"name" (local-openai).
+                # Use key if present, otherwise fall back to name then id.
+                key = cm.get("key") or cm.get("name") or cm.get("id", "")
                 if key and key != "error" and key not in skip_models:
                     all_chat_models.append({"providerId": pid, "key": key})
             for em in provider.get("embeddingModels", []):
-                if em.get("key") and em.get("key") != "error" and not embedding_model:
-                    embedding_model = {"providerId": pid, "key": em["key"]}
+                em_key = em.get("key") or em.get("name") or em.get("id", "")
+                if em_key and em_key != "error" and not embedding_model:
+                    embedding_model = {"providerId": pid, "key": em_key}
 
         # Prefer local llama-server if it actually has models loaded.
         local_provider = next(
@@ -91,9 +94,10 @@ async def _discover_perplexica_models(base_url: str) -> dict | None:
             None,
         )
         if local_provider and local_provider.get("chatModels"):
+            cm0 = local_provider["chatModels"][0]
             chat_model = {
                 "providerId": local_provider["id"],
-                "key": local_provider["chatModels"][0].get("key", "local-model"),
+                "key": cm0.get("key") or cm0.get("name") or cm0.get("id", "local-model"),
             }
         elif all_chat_models:
             chat_model = all_chat_models[0]
@@ -184,7 +188,7 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
             async with session.post(
                 f"{perplexica_url}/api/search",
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=45),
+                timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
@@ -228,7 +232,7 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
 
     except asyncio.TimeoutError:
         _perplexica_fail_count += 1
-        logger.warning("perplexica search timeout (180s)", query=query)
+        logger.warning("perplexica search timeout (15s)", query=query)
     except Exception as e:
         _perplexica_fail_count += 1
         logger.warning("perplexica search error", error=f"{type(e).__name__}: {e}", query=query)

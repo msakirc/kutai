@@ -1465,6 +1465,9 @@ class ModelRegistry:
                 return m
         return None
 
+    def all_models(self) -> list[ModelInfo]:
+        return list(self.models.values())
+
     def local_models(self) -> list[ModelInfo]:
         models = self.models
         return [m for m in models.values() if m.is_local]

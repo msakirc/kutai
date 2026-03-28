@@ -88,6 +88,7 @@ class LocalModelManager:
 
         self._swap_lock = asyncio.Lock()
         self._swap_queue: asyncio.Queue[ModelSwapRequest] = asyncio.Queue()
+        self.swap_in_progress: bool = False  # True while model is being swapped
         self._last_request_time: float = 0.0
         self._started_at: float = 0.0
         self._total_swaps: int = 0
@@ -357,140 +358,148 @@ class LocalModelManager:
                 logger.debug(f"Model {model_name} already healthy (resolved under lock)")
                 return True
 
-            # ── Wait for in-flight inference to finish before killing server ──
-            # This prevents killing llama-server while an HTTP request is mid-stream,
-            # which causes the HTTP client to hang on a dead TCP connection.
-            if self._active_inference_count > 0:
-                logger.info(
-                    f"Waiting for {self._active_inference_count} in-flight inference(s) "
-                    f"to drain before swap to {model_name}..."
-                )
-                try:
-                    await asyncio.wait_for(self._inference_idle.wait(), timeout=30)
-                    logger.info("Inference drained, proceeding with swap")
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        f"Inference drain timed out after 30s "
-                        f"({self._active_inference_count} still active). "
-                        f"Force-swapping — active requests will receive errors."
-                    )
-                    # Reset the counter so we don't get stuck forever
-                    self._active_inference_count = 0
-                    self._inference_idle.set()
+            self.swap_in_progress = True
+            try:
+                return await self._do_swap(model_name, reason, enable_thinking)
+            finally:
+                self.swap_in_progress = False
 
-            registry = get_registry()
-            model_info = registry.get(model_name)
-
-            if not model_info or not model_info.is_local:
-                logger.error(f"Model '{model_name}' not found in registry or not local")
-                return False
-
-            if not model_info.path or not Path(model_info.path).is_file():
-                logger.error(f"GGUF file not found: {model_info.path}")
-                return False
-
-            # Pre-swap checks
-            gpu_monitor = get_gpu_monitor()
-            state = gpu_monitor.get_state()
-            if not state.can_load_model:
-                logger.error(
-                    f"Insufficient RAM to load {model_name}: "
-                    f"{state.ram_available_mb}MB available, need >4096MB free"
-                )
-                return False
-
-            old_model = self.current_model
+    async def _do_swap(self, model_name: str, reason: str = "", enable_thinking: bool = False) -> bool:
+        """Inner swap logic, called under _swap_lock with swap_in_progress=True."""
+        # ── Wait for in-flight inference to finish before killing server ──
+        # This prevents killing llama-server while an HTTP request is mid-stream,
+        # which causes the HTTP client to hang on a dead TCP connection.
+        if self._active_inference_count > 0:
             logger.info(
-                f"🔄 Model swap: {old_model or '(none)'} → {model_name} "
-                f"(reason: {reason})"
+                f"Waiting for {self._active_inference_count} in-flight inference(s) "
+                f"to drain before swap to {model_name}..."
             )
-            swap_start = time.time()
-
-            # Stop existing server
-            await self._stop_server()
-
-            # ── Recalculate context + gpu_layers with live memory state ──
-            # Server is stopped, so readings reflect true free memory.
-            gpu_monitor.invalidate_cache()  # force fresh reading
-            fresh_state = gpu_monitor.get_state()
-
-            from .model_registry import calculate_dynamic_context
-
-            # Check for user override in models.yaml
-            registry_overrides = registry.get_overrides(model_name)
-
-            if "context_length" not in registry_overrides:
-                new_ctx = calculate_dynamic_context(
-                    file_size_mb=model_info.file_size_mb,
-                    n_layers=model_info.total_layers,
-                    gpu_layers=model_info.gpu_layers,
-                    available_ram_mb=fresh_state.ram_available_mb,
-                    available_vram_mb=fresh_state.gpu.vram_free_mb,
-                    family_key=model_info.family,
+            try:
+                await asyncio.wait_for(self._inference_idle.wait(), timeout=30)
+                logger.info("Inference drained, proceeding with swap")
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Inference drain timed out after 30s "
+                    f"({self._active_inference_count} still active). "
+                    f"Force-swapping — active requests will receive errors."
                 )
-                if new_ctx != model_info.context_length:
-                    logger.info(
-                        f"📐 Dynamic context: {model_info.context_length} → {new_ctx} "
-                        f"(RAM free: {fresh_state.ram_available_mb}MB, "
-                        f"VRAM free: {fresh_state.gpu.vram_free_mb}MB)"
-                    )
-                    model_info.context_length = new_ctx
+                # Reset the counter so we don't get stuck forever
+                self._active_inference_count = 0
+                self._inference_idle.set()
 
-            # Only apply gpu_layers if user explicitly overrides in models.yaml.
-            # Otherwise, llama-server --fit auto-calculates optimal layers.
-            if "gpu_layers" in registry_overrides:
-                model_info.gpu_layers = registry_overrides["gpu_layers"]
-                model_info._gpu_layers_from_override = True
-            else:
-                model_info._gpu_layers_from_override = False
+        registry = get_registry()
+        model_info = registry.get(model_name)
 
-            # Start new server
-            success = await self._start_server(model_info, enable_thinking=enable_thinking)
+        if not model_info or not model_info.is_local:
+            logger.error(f"Model '{model_name}' not found in registry or not local")
+            return False
 
-            swap_duration = time.time() - swap_start
-            self._total_swaps += 1
+        if not model_info.path or not Path(model_info.path).is_file():
+            logger.error(f"GGUF file not found: {model_info.path}")
+            return False
 
-            if success:
-                self.current_model = model_name
-                self._thinking_enabled = enable_thinking
-                self._started_at = time.time()
-                self.runtime_state = ModelRuntimeState(
-                    model_name=model_name,
-                    thinking_enabled=enable_thinking,
-                    context_length=model_info.context_length,
-                    gpu_layers=model_info.gpu_layers,
-                )
-                registry.mark_loaded(model_name, self.api_base)
+        # Pre-swap checks
+        gpu_monitor = get_gpu_monitor()
+        state = gpu_monitor.get_state()
+        if not state.can_load_model:
+            logger.error(
+                f"Insufficient RAM to load {model_name}: "
+                f"{state.ram_available_mb}MB available, need >4096MB free"
+            )
+            return False
+
+        old_model = self.current_model
+        logger.info(
+            f"🔄 Model swap: {old_model or '(none)'} → {model_name} "
+            f"(reason: {reason})"
+        )
+        swap_start = time.time()
+
+        # Stop existing server
+        await self._stop_server()
+
+        # ── Recalculate context + gpu_layers with live memory state ──
+        # Server is stopped, so readings reflect true free memory.
+        gpu_monitor.invalidate_cache()  # force fresh reading
+        fresh_state = gpu_monitor.get_state()
+
+        from .model_registry import calculate_dynamic_context
+
+        # Check for user override in models.yaml
+        registry_overrides = registry.get_overrides(model_name)
+
+        if "context_length" not in registry_overrides:
+            new_ctx = calculate_dynamic_context(
+                file_size_mb=model_info.file_size_mb,
+                n_layers=model_info.total_layers,
+                gpu_layers=model_info.gpu_layers,
+                available_ram_mb=fresh_state.ram_available_mb,
+                available_vram_mb=fresh_state.gpu.vram_free_mb,
+                family_key=model_info.family,
+            )
+            if new_ctx != model_info.context_length:
                 logger.info(
-                    f"✅ Model {model_name} loaded in {swap_duration:.1f}s "
-                    f"(swap #{self._total_swaps})"
+                    f"📐 Dynamic context: {model_info.context_length} → {new_ctx} "
+                    f"(RAM free: {fresh_state.ram_available_mb}MB, "
+                    f"VRAM free: {fresh_state.gpu.vram_free_mb}MB)"
                 )
-                # Notify dispatcher for deferred grade draining & swap budget
-                try:
-                    from src.core.llm_dispatcher import get_dispatcher
-                    old_litellm = None
-                    new_litellm = None
-                    if old_model:
-                        old_info = registry.get(old_model)
-                        old_litellm = old_info.litellm_name if old_info else None
-                    new_info = registry.get(model_name)
-                    new_litellm = new_info.litellm_name if new_info else None
-                    asyncio.ensure_future(
-                        get_dispatcher().on_model_swap(old_litellm, new_litellm)
-                    )
-                except Exception as _e:
-                    logger.debug(f"Dispatcher swap notification failed: {_e}")
-                return True
-            else:
-                self.current_model = None
-                registry.mark_unloaded(model_name)
-                # Demote failed model so the router skips it on retry
-                registry.demote_model(model_name, duration=300)
-                logger.error(
-                    f"❌ Failed to load {model_name} after {swap_duration:.1f}s "
-                    f"(demoted for 5 min)"
+                model_info.context_length = new_ctx
+
+        # Only apply gpu_layers if user explicitly overrides in models.yaml.
+        # Otherwise, llama-server --fit auto-calculates optimal layers.
+        if "gpu_layers" in registry_overrides:
+            model_info.gpu_layers = registry_overrides["gpu_layers"]
+            model_info._gpu_layers_from_override = True
+        else:
+            model_info._gpu_layers_from_override = False
+
+        # Start new server
+        success = await self._start_server(model_info, enable_thinking=enable_thinking)
+
+        swap_duration = time.time() - swap_start
+        self._total_swaps += 1
+
+        if success:
+            self.current_model = model_name
+            self._thinking_enabled = enable_thinking
+            self._started_at = time.time()
+            self.runtime_state = ModelRuntimeState(
+                model_name=model_name,
+                thinking_enabled=enable_thinking,
+                context_length=model_info.context_length,
+                gpu_layers=model_info.gpu_layers,
+            )
+            registry.mark_loaded(model_name, self.api_base)
+            logger.info(
+                f"✅ Model {model_name} loaded in {swap_duration:.1f}s "
+                f"(swap #{self._total_swaps})"
+            )
+            # Notify dispatcher for deferred grade draining & swap budget
+            try:
+                from src.core.llm_dispatcher import get_dispatcher
+                old_litellm = None
+                new_litellm = None
+                if old_model:
+                    old_info = registry.get(old_model)
+                    old_litellm = old_info.litellm_name if old_info else None
+                new_info = registry.get(model_name)
+                new_litellm = new_info.litellm_name if new_info else None
+                asyncio.ensure_future(
+                    get_dispatcher().on_model_swap(old_litellm, new_litellm)
                 )
-                return False
+            except Exception as _e:
+                logger.debug(f"Dispatcher swap notification failed: {_e}")
+            return True
+        else:
+            self.current_model = None
+            registry.mark_unloaded(model_name)
+            # Demote failed model so the router skips it on retry
+            registry.demote_model(model_name, duration=300)
+            logger.error(
+                f"❌ Failed to load {model_name} after {swap_duration:.1f}s "
+                f"(demoted for 5 min)"
+            )
+            return False
 
     @staticmethod
     def _get_inference_threads() -> int:
@@ -516,7 +525,6 @@ class LocalModelManager:
             "--alias", "local-model",  # stable name for Perplexica/Vane integration
             "--port", str(self.port),
             "--host", "127.0.0.1",
-            # --n-gpu-layers omitted: llama-server --fit auto-calculates.
             "--ctx-size", str(model.context_length),
             "--flash-attn", "auto",
             "--metrics",
@@ -526,9 +534,15 @@ class LocalModelManager:
             "--ubatch-size", "512", # micro-batch for generation
         ]
 
-        # Only pass explicit gpu_layers if user overrode in models.yaml
+        # Always pass explicit --n-gpu-layers for deterministic VRAM usage.
+        # --fit auto-calculates but allocates fewer layers under runtime VRAM
+        # pressure (e.g. 1013MB baseline vs 760MB in clean benchmark), causing
+        # 12.9 tok/s instead of 25.4 tok/s.  Passing 99 forces maximum offload
+        # — llama-server caps at the model's actual layer count.
         if getattr(model, '_gpu_layers_from_override', False) and model.gpu_layers > 0:
             cmd.extend(["--n-gpu-layers", str(model.gpu_layers)])
+        else:
+            cmd.extend(["--n-gpu-layers", "99"])
 
         # Control thinking via chat_template_kwargs (server-level flag,
         # not supported per-request by llama-server).

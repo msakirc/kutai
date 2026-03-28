@@ -414,17 +414,29 @@ class LLMDispatcher:
             3. If GPU times out, falls through to cloud candidates
             4. If cloud also fails, backpressure retries (swap-aware)
 
-          This replaces the old pinning approach which:
-            - Made backpressure useless (same pinned model = same failure)
-            - Skipped the local GPU waiting room entirely
-            - Jumped to cloud aggressively
+          Swap-awareness:
+            When a model swap is in progress, local model is unavailable.
+            OVERHEAD calls skip local entirely and go cloud-only to avoid
+            piling up in the GPU scheduler queue (cascade failure).
         """
         from src.core.router import call_model
 
         timeout = self._compute_timeout(CallCategory.OVERHEAD, reqs)
 
         reqs_safe = copy.copy(reqs)
-        reqs_safe = self._exclude_unloaded_local(reqs_safe)
+
+        # If a model swap is in progress, skip local model entirely.
+        # OVERHEAD tasks queuing for GPU during a swap causes cascade
+        # failures: each times out at 120s, retries via backpressure,
+        # filling the queue again in an infinite loop.
+        if self._is_swap_in_progress():
+            logger.debug(
+                "overhead skipping local — swap in progress",
+                task=reqs.effective_task or reqs.primary_capability,
+            )
+            reqs_safe = self._exclude_all_local(reqs_safe)
+        else:
+            reqs_safe = self._exclude_unloaded_local(reqs_safe)
 
         try:
             result = await call_model(reqs_safe, messages, tools,
@@ -436,6 +448,26 @@ class LLMDispatcher:
                 f"Task: {reqs.effective_task or reqs.primary_capability}, "
                 f"Error: {e}"
             ) from e
+
+    def _is_swap_in_progress(self) -> bool:
+        """Check if a model swap is currently in progress."""
+        try:
+            from src.models.local_model_manager import get_local_manager
+            manager = get_local_manager()
+            return manager.swap_in_progress
+        except Exception:
+            return False
+
+    def _exclude_all_local(self, reqs: "ModelRequirements") -> "ModelRequirements":
+        """Exclude ALL local models. Used during swaps to force cloud-only routing."""
+        from src.models.model_registry import get_registry
+
+        registry = get_registry()
+        all_local = [m.litellm_name for m in registry.all_models() if m.is_local]
+        existing_excludes = list(reqs.exclude_models) if reqs.exclude_models else []
+        reqs.exclude_models = list(set(existing_excludes + all_local))
+        reqs.local_only = False
+        return reqs
 
     def _exclude_unloaded_local(self, reqs: "ModelRequirements") -> "ModelRequirements":
         """Exclude local models that aren't loaded. Prevents swap triggers

@@ -54,7 +54,7 @@ async def _llm_call(
         messages.append({"role": "user", "content": prompt})
         from src.core.llm_dispatcher import get_dispatcher, CallCategory
         response = await get_dispatcher().request(
-            CallCategory.MAIN_WORK, reqs, messages,
+            CallCategory.OVERHEAD, reqs, messages,
         )
         return response.get("content", "")
     except Exception as e:

@@ -365,16 +365,29 @@ class LLMDispatcher:
             reqs_copy = copy.copy(reqs)
             loaded = self._get_loaded_litellm_name()
             if loaded:
-                # Try the loaded model first by pinning it
-                reqs_copy.model_override = loaded
-                try:
-                    result = await call_model(reqs_copy, messages, tools,
-                                              timeout_override=timeout)
-                    return result
-                except Exception:
-                    # Loaded model failed — fall through to normal routing
-                    # which may try cloud
-                    pass
+                # Skip pinning if task prefers speed but loaded model is too
+                # slow (e.g. web_search agents need >10 tok/s for Perplexica).
+                # Let normal routing pick a better model (may trigger a swap
+                # via exemption or fall back to cloud).
+                loaded_speed = self.get_loaded_model_speed()
+                if reqs.prefer_speed and loaded_speed > 0 and loaded_speed < 10.0:
+                    logger.info(
+                        "skip slow-model pin for speed-critical task",
+                        loaded_speed=loaded_speed,
+                        task=reqs.effective_task or reqs.primary_capability,
+                    )
+                    # Fall through to normal routing below
+                else:
+                    # Try the loaded model first by pinning it
+                    reqs_copy.model_override = loaded
+                    try:
+                        result = await call_model(reqs_copy, messages, tools,
+                                                  timeout_override=timeout)
+                        return result
+                    except Exception:
+                        # Loaded model failed — fall through to normal routing
+                        # which may try cloud
+                        pass
             # If no model loaded or loaded model failed, let normal routing
             # handle it (will likely pick cloud since budget is exhausted
             # and we can't swap)

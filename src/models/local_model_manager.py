@@ -414,7 +414,7 @@ class LocalModelManager:
             gpu_monitor.invalidate_cache()  # force fresh reading
             fresh_state = gpu_monitor.get_state()
 
-            from .model_registry import calculate_dynamic_context, calculate_gpu_layers
+            from .model_registry import calculate_dynamic_context
 
             # Check for user override in models.yaml
             registry_overrides = registry.get_overrides(model_name)
@@ -436,18 +436,13 @@ class LocalModelManager:
                     )
                     model_info.context_length = new_ctx
 
-            if "gpu_layers" not in registry_overrides:
-                new_layers = calculate_gpu_layers(
-                    file_size_mb=model_info.file_size_mb,
-                    n_layers=model_info.total_layers,
-                    available_vram_mb=fresh_state.gpu.vram_free_mb,
-                    context_length=model_info.context_length,
-                )
-                if new_layers != model_info.gpu_layers:
-                    logger.info(
-                        f"📐 Dynamic GPU layers: {model_info.gpu_layers} → {new_layers}"
-                    )
-                    model_info.gpu_layers = new_layers
+            # Only apply gpu_layers if user explicitly overrides in models.yaml.
+            # Otherwise, llama-server --fit auto-calculates optimal layers.
+            if "gpu_layers" in registry_overrides:
+                model_info.gpu_layers = registry_overrides["gpu_layers"]
+                model_info._gpu_layers_from_override = True
+            else:
+                model_info._gpu_layers_from_override = False
 
             # Start new server
             success = await self._start_server(model_info, enable_thinking=enable_thinking)
@@ -521,7 +516,7 @@ class LocalModelManager:
             "--alias", "local-model",  # stable name for Perplexica/Vane integration
             "--port", str(self.port),
             "--host", "127.0.0.1",
-            "--n-gpu-layers", str(model.gpu_layers),
+            # --n-gpu-layers omitted: llama-server --fit auto-calculates.
             "--ctx-size", str(model.context_length),
             "--flash-attn", "auto",
             "--metrics",
@@ -530,6 +525,10 @@ class LocalModelManager:
             "--batch-size", "2048", # prompt processing batch size (higher = faster prefill)
             "--ubatch-size", "512", # micro-batch for generation
         ]
+
+        # Only pass explicit gpu_layers if user overrode in models.yaml
+        if getattr(model, '_gpu_layers_from_override', False) and model.gpu_layers > 0:
+            cmd.extend(["--n-gpu-layers", str(model.gpu_layers)])
 
         # Control thinking via chat_template_kwargs (server-level flag,
         # not supported per-request by llama-server).
@@ -540,9 +539,9 @@ class LocalModelManager:
                 _json.dumps({"enable_thinking": enable_thinking}),
             ])
 
-        # MoE models benefit from these flags
-        if model.model_type == "moe":
-            cmd.extend(["--override-kv", "tokenizer.ggml.eos_token_id=int:151645"])
+        # Per-model server flags (MoE override-kv, Apriel --no-jinja, etc.)
+        if hasattr(model, 'extra_server_flags') and model.extra_server_flags:
+            cmd.extend(model.extra_server_flags)
 
         logger.info(f"Starting llama-server: {' '.join(cmd)}...")
 

@@ -102,6 +102,11 @@ class LocalModelManager:
 
         self.runtime_state: ModelRuntimeState | None = None  # populated after successful swap
 
+        # Set by idle unloader before stopping, cleared after.
+        # Prevents the health watchdog from misinterpreting a deliberate
+        # idle unload as a crash.
+        self._idle_unload_in_progress: bool = False
+
         self._scheduler = get_gpu_scheduler()
         self._job_object = self._create_job_object()
 
@@ -767,8 +772,8 @@ class LocalModelManager:
 
     async def run_idle_unloader(
         self,
-        check_interval: float = 60,
-        max_idle_minutes: float = 10,
+        check_interval: float = 30,
+        max_idle_minutes: float = 1,
     ) -> None:
         """
         Background task: unload model if idle for too long.
@@ -788,9 +793,13 @@ class LocalModelManager:
                     f"Model {self.current_model} idle for "
                     f"{self.idle_seconds:.0f}s (>{max_idle}s), unloading"
                 )
-                async with self._swap_lock:
-                    await self._stop_server()
-                    self.current_model = None
+                self._idle_unload_in_progress = True
+                try:
+                    async with self._swap_lock:
+                        await self._stop_server()
+                        self.current_model = None
+                finally:
+                    self._idle_unload_in_progress = False
 
     async def run_health_watchdog(self, check_interval: float = 30) -> None:
         """
@@ -815,6 +824,15 @@ class LocalModelManager:
 
             # ── Crash detection (process exited) ──
             if self.process and self.process.poll() is not None:
+                # If the idle unloader is deliberately stopping the server,
+                # don't treat it as a crash — it will clear current_model itself.
+                if self._idle_unload_in_progress:
+                    logger.debug(
+                        "Watchdog: process exited during idle unload, not a crash"
+                    )
+                    consecutive_health_failures = 0
+                    continue
+
                 logger.error(
                     f"llama-server crashed! Restarting {self.current_model}..."
                 )

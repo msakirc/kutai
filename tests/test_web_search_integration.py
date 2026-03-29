@@ -274,7 +274,7 @@ class TestPerplexicaBackend(unittest.TestCase):
 # ===========================================================================
 
 class TestWebSearchFallback(unittest.TestCase):
-    """Tests for the Perplexica -> ddgs fallback logic."""
+    """Tests for the ddgs -> Perplexica fallback logic (new primary order)."""
 
     def setUp(self):
         self._orig_models = _ws_mod._perplexica_models
@@ -285,16 +285,18 @@ class TestWebSearchFallback(unittest.TestCase):
         _ws_mod._perplexica_models = self._orig_models
         _ws_mod._perplexica_fail_count = self._orig_fail_count
 
-    def test_perplexica_down_falls_to_ddgs(self):
-        """When Perplexica returns None, ddgs should be used."""
+    def test_ddgs_primary_returns_search_results(self):
+        """ddgs is now primary — results should be formatted as 'Search results for ...'."""
         mock_perp = AsyncMock(return_value=None)
         with patch.object(_ws_mod, "_search_perplexica", mock_perp):
-            result = run_async(_ws_mod.web_search("Python tutorial", max_results=3))
+            with patch("src.tools.page_fetch.fetch_pages", new_callable=AsyncMock, return_value={}):
+                result = run_async(_ws_mod.web_search("Python tutorial", max_results=3))
 
         self.assertIsInstance(result, str)
         # ddgs backend formats results as "Search results for '...'"
         self.assertIn("Search results for", result)
-        mock_perp.assert_awaited_once()
+        # Perplexica should NOT be called since ddgs succeeded
+        mock_perp.assert_not_awaited()
 
     # -- Network test (may be skipped in CI) --
     def test_full_pipeline(self):
@@ -432,6 +434,130 @@ class TestResearcherAgentFlow(unittest.TestCase):
 
         # Verify the agent produced a final result
         self.assertIsNotNone(result)
+
+
+# ===========================================================================
+# 5. TestDDGSWithPageFetch — new primary search path
+# ===========================================================================
+
+class TestDDGSWithPageFetch(unittest.TestCase):
+    """Tests for the ddgs + page fetch primary search path."""
+
+    def setUp(self):
+        _reset_ws_state()
+
+    def tearDown(self):
+        _reset_ws_state()
+
+    @patch.object(_ws_mod, "_search_perplexica", new_callable=AsyncMock, return_value=None)
+    @patch.object(_ws_mod, "_search_searxng_direct", new_callable=AsyncMock, return_value=None)
+    def test_ddgs_with_page_fetch_returns_content(self, mock_searxng, mock_perp):
+        """ddgs results + page content should be included in output."""
+        mock_ddgs_results = [
+            {"title": "Coffee Guide", "body": "Best coffee machines reviewed", "href": "https://example.com/coffee"},
+            {"title": "Machine Reviews", "body": "Top picks for 2026", "href": "https://example.com/reviews"},
+        ]
+
+        mock_page_content = {
+            "https://example.com/coffee": "Detailed review of coffee machines including DeLonghi and Philips models with prices.",
+        }
+
+        with patch.object(_ws_mod, "_DDGS") as mock_ddgs_cls:
+            mock_instance = MagicMock()
+            mock_instance.text.return_value = mock_ddgs_results
+            mock_ddgs_cls.return_value = mock_instance
+
+            with patch("src.tools.page_fetch.fetch_pages", new_callable=AsyncMock, return_value=mock_page_content):
+                result = run_async(_ws_mod.web_search("coffee machine reviews", max_results=5))
+
+        self.assertIn("Coffee Guide", result)
+        self.assertIn("DeLonghi", result)  # from page content
+
+    @patch.object(_ws_mod, "_search_perplexica", new_callable=AsyncMock, return_value=None)
+    @patch.object(_ws_mod, "_search_searxng_direct", new_callable=AsyncMock, return_value=None)
+    def test_ddgs_without_page_fetch_still_works(self, mock_searxng, mock_perp):
+        """If page fetch fails entirely, snippets-only results should still be returned."""
+        mock_ddgs_results = [
+            {"title": "Python Docs", "body": "Official Python documentation", "href": "https://docs.python.org"},
+        ]
+
+        with patch.object(_ws_mod, "_DDGS") as mock_ddgs_cls:
+            mock_instance = MagicMock()
+            mock_instance.text.return_value = mock_ddgs_results
+            mock_ddgs_cls.return_value = mock_instance
+
+            with patch("src.tools.page_fetch.fetch_pages", new_callable=AsyncMock, return_value={}):
+                result = run_async(_ws_mod.web_search("Python tutorial", max_results=3))
+
+        self.assertIn("Python Docs", result)
+        self.assertIn("Official Python documentation", result)
+
+
+# ===========================================================================
+# 6. TestFallbackOrder — verify ddgs is primary, Perplexica is fallback
+# ===========================================================================
+
+class TestFallbackOrder(unittest.TestCase):
+    """Verify ddgs is tried BEFORE Perplexica."""
+
+    def setUp(self):
+        _reset_ws_state()
+
+    def tearDown(self):
+        _reset_ws_state()
+
+    def test_ddgs_is_primary_perplexica_is_fallback(self):
+        """ddgs should be called first; Perplexica only if ddgs fails."""
+        call_order = []
+
+        async def mock_perp(*args, **kwargs):
+            call_order.append("perplexica")
+            return {"answer": "Perplexica answer", "sources": [{"title": "t", "url": "u", "snippet": "s"}]}
+
+        original_ddgs = _ws_mod._DDGS
+
+        class MockDDGS:
+            def text(self, *a, **kw):
+                call_order.append("ddgs")
+                return [{"title": "DDG Result", "body": "snippet", "href": "https://example.com"}]
+
+        _ws_mod._DDGS = MockDDGS
+        try:
+            with patch.object(_ws_mod, "_search_perplexica", side_effect=mock_perp):
+                with patch("src.tools.page_fetch.fetch_pages", new_callable=AsyncMock, return_value={}):
+                    result = run_async(_ws_mod.web_search("test query"))
+
+            # ddgs should be first, perplexica should NOT be called
+            self.assertEqual(call_order[0], "ddgs")
+            self.assertNotIn("perplexica", call_order)
+        finally:
+            _ws_mod._DDGS = original_ddgs
+
+    def test_perplexica_called_when_ddgs_fails(self):
+        """If ddgs returns nothing, Perplexica should be tried as fallback."""
+        call_order = []
+
+        async def mock_perp(*args, **kwargs):
+            call_order.append("perplexica")
+            return {"answer": "Perplexica answer", "sources": [{"title": "t", "url": "u", "snippet": "s"}]}
+
+        original_ddgs = _ws_mod._DDGS
+
+        class MockDDGS:
+            def text(self, *a, **kw):
+                call_order.append("ddgs")
+                return []  # empty results
+
+        _ws_mod._DDGS = MockDDGS
+        try:
+            with patch.object(_ws_mod, "_search_perplexica", side_effect=mock_perp):
+                result = run_async(_ws_mod.web_search("test query"))
+
+            self.assertIn("ddgs", call_order)
+            self.assertIn("perplexica", call_order)
+            self.assertIn("Perplexica", result)
+        finally:
+            _ws_mod._DDGS = original_ddgs
 
 
 if __name__ == "__main__":

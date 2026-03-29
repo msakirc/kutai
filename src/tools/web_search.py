@@ -1,6 +1,7 @@
 # tools/web_search.py
 """
-Web search using Perplexica/Vane (primary) — with DuckDuckGo and curl fallback.
+Web search using DuckDuckGo + page content fetch (primary).
+Fallback chain: ddgs+pages → Perplexica/Vane → SearXNG direct → curl.
 """
 import asyncio
 import json
@@ -375,10 +376,10 @@ async def _embed_web_results(query: str, results_text: str) -> None:
 
 async def web_search(query: str, max_results: int = 5, search_type: str = "web") -> str:
     """
-    Search the web using Perplexica/Vane (primary), with SearXNG direct and DuckDuckGo fallbacks.
+    Search the web using DuckDuckGo + page fetch (primary), with Perplexica and curl fallbacks.
 
-    Fallback chain: Perplexica (45s, AI-synthesized) → SearXNG direct (12s, raw results)
-    → DuckDuckGo package → curl/DuckDuckGo API.
+    Fallback chain: ddgs+page_fetch (primary) → Perplexica/Vane (AI-synthesized)
+    → SearXNG direct (raw results) → curl/DuckDuckGo API.
 
     Before issuing a live search, checks the web_knowledge vector store
     for recent relevant cached results (Phase D knowledge accumulation).
@@ -424,11 +425,46 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web")
     except Exception:
         is_degraded = False
 
-    # Method 0: Try Perplexica/Vane first (if available and not degraded)
+    # Method 1 (primary): DuckDuckGo + page content fetch
+    if _DDGS is not None:
+        try:
+            results = _DDGS().text(query, max_results=max_results)
+            if results:
+                logger.debug("ddgs search ok", count=len(results))
+
+                # Fetch full page content for top results
+                urls = [r.get("href", "") for r in results if r.get("href")]
+                page_contents = {}
+                if urls:
+                    try:
+                        from src.tools.page_fetch import fetch_pages
+                        page_contents = await fetch_pages(urls, max_pages=3, max_chars=1500)
+                        logger.debug("page_fetch: fetched pages", count=len(page_contents))
+                    except Exception as e:
+                        logger.debug("page_fetch: skipped", error=str(e)[:100])
+
+                # Format: snippets + page content where available
+                lines = []
+                for i, r in enumerate(results, 1):
+                    title = r.get("title", "No title")
+                    body = r.get("body", "")[:200]
+                    href = r.get("href", "")
+                    parts = [f"{i}. **{title}**\n   {body}\n   {href}"]
+                    if href in page_contents:
+                        parts.append(f"   ---\n   {page_contents[href]}")
+                    lines.append("\n".join(parts))
+
+                result_text = f"Search results for '{query}':\n\n" + "\n\n".join(lines)
+                await _embed_web_results(query, result_text)
+                return result_text
+        except Exception as e:
+            logger.warning("ddgs primary search failed", error=str(e))
+
+    # Method 2 (fallback): Perplexica/Vane AI synthesis
     if not is_degraded:
         perplexica_result = await _search_perplexica(query, max_results, search_type)
         if perplexica_result:
-            logger.debug("using perplexica backend for web search")
+            logger.debug("using perplexica fallback for web search")
             lines = [
                 "## AI-Synthesized Answer (from Perplexica)\n",
                 perplexica_result["answer"],
@@ -445,51 +481,18 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web")
                 "specific is missing.**"
             )
             result_text = "\n".join(lines)
-
-            # Phase D: Embed Perplexica results (comprehensive, higher value)
             await _embed_web_results(query, result_text)
-
             return result_text
 
-    # Method 1: SearXNG direct (raw results, no LLM synthesis, ~6-10s)
-    # NOTE: SearXNG's engines (duckduckgo, google, brave) are frequently
-    # suspended/CAPTCHAd inside Docker. Only wikipedia/wolframalpha survive.
-    # If SearXNG returns fewer than 3 results, skip to ddgs which is more reliable.
+    # Method 3 (fallback): SearXNG direct (raw results, no LLM)
     searxng_result = await _search_searxng_direct(query, max_results)
-    if searxng_result and searxng_result.count("**") >= 6:  # at least 3 results (each has 2 **)
+    if searxng_result and searxng_result.count("**") >= 6:
         asyncio.ensure_future(_embed_web_results(query, searxng_result))
         return searxng_result
-    elif searxng_result:
-        logger.debug("searxng: too few results, falling through to ddgs")
 
-    # Method 3: duckduckgo-search package (ddgs 9.x)
-    if _DDGS is not None:
-        try:
-            # ddgs 9.x: DDGS().text() returns a list directly
-            results = _DDGS().text(query, max_results=max_results)
-            if results:
-                logger.debug("using duckduckgo-search backend", count=len(results))
-                lines = []
-                for i, r in enumerate(results, 1):
-                    title = r.get("title", "No title")
-                    body = r.get("body", "")[:200]
-                    href = r.get("href", "")
-                    lines.append(f"{i}. **{title}**\n   {body}\n   {href}")
-                result_text = f"Search results for '{query}':\n\n" + "\n\n".join(lines)
-
-                # Phase D: Embed DDG results
-                await _embed_web_results(query, result_text)
-
-                return result_text
-            else:
-                return f"No results found for '{query}'"
-        except Exception as e:
-            logger.warning("duckduckgo search failed, using curl fallback", error=str(e))
-
-    # Method 4: curl via shell (Docker container has internet)
+    # Method 4 (last resort): curl DuckDuckGo
     try:
         safe_query = urllib.parse.quote_plus(query)
-        # DuckDuckGo Instant Answer API (free, no key needed)
         url = f"https://api.duckduckgo.com/?q={safe_query}&format=json&no_html=1&no_redirect=1"
 
         result = await run_shell(
@@ -497,7 +500,6 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web")
             timeout=15,
         )
 
-        # Strip the prefix from shell output
         if result.startswith("\u2705"):
             result = result[1:].strip()
 
@@ -507,14 +509,11 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web")
             return f"Search returned non-JSON response for '{query}':\n{result[:1000]}"
 
         lines = []
-
-        # Abstract (direct answer)
         if data.get("Abstract"):
             lines.append(f"**Summary:** {data['Abstract']}")
             if data.get("AbstractURL"):
                 lines.append(f"Source: {data['AbstractURL']}")
 
-        # Related topics
         for topic in data.get("RelatedTopics", [])[:max_results]:
             if isinstance(topic, dict) and "Text" in topic:
                 text = topic["Text"][:200]
@@ -522,10 +521,8 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web")
                 lines.append(f"- {text}\n  {url}")
 
         if lines:
-            logger.debug("curl search results", count=len(lines))
             return f"Search results for '{query}':\n\n" + "\n\n".join(lines)
 
-        # If instant answer API returned nothing useful, try HTML scraping
         scrape_url = f"https://html.duckduckgo.com/html/?q={safe_query}"
         scrape_result = await run_shell(
             f'curl -s --max-time 10 "{scrape_url}" | grep -oP \'<a rel="nofollow" class="result__a" href="[^"]*">[^<]*</a>\' | head -5',
@@ -536,12 +533,10 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web")
             scrape_result = scrape_result[1:].strip()
 
         if scrape_result and "\u274c" not in scrape_result:
-            logger.debug("using curl scraping backend for web search")
             return f"Search results for '{query}':\n\n{scrape_result}"
 
-        logger.debug("no results found from curl fallback")
-        return f"No results found for '{query}'. DuckDuckGo returned empty response."
+        return f"No results found for '{query}'. All search backends failed."
 
     except Exception as e:
-        logger.exception("web search curl fallback failed", error=str(e))
+        logger.exception("web search all backends failed", error=str(e))
         return f"Search error: {e}"

@@ -247,6 +247,7 @@ LOG_DIR.mkdir(exist_ok=True)
 WRAPPER_LOG = LOG_DIR / "wrapper_meta.log"
 CLAUDE_REMOTE_SIGNAL = LOG_DIR / "claude_remote.signal"
 PROJECT_ROOT = Path(__file__).resolve().parent
+CLAUDE_CMD = Path(os.environ.get("APPDATA", "")) / "npm" / "claude.cmd"
 
 
 def _wlog(msg: str):
@@ -585,8 +586,9 @@ class KutAIWrapper:
 
         _wlog("Starting Claude Code remote-control session")
         try:
+            claude_bin = str(CLAUDE_CMD) if CLAUDE_CMD.exists() else "claude"
             self._claude_process = await asyncio.create_subprocess_exec(
-                "claude", "remote-control",
+                claude_bin, "remote-control",
                 cwd=str(PROJECT_ROOT),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

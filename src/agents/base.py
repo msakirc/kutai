@@ -1506,9 +1506,16 @@ class BaseAgent:
                             _tool_timeout = 120 if tool_name in (
                                 "shell", "shell_stdin", "shell_sequential",
                             ) else 60
-                            tool_output = await asyncio.wait_for(
+                            # Build task hints for context-aware tools
+                        _hints = {
+                            "agent_type": self.name,
+                            "search_depth": task.get("search_depth") or (task.get("context", {}) if isinstance(task.get("context"), dict) else {}).get("search_depth"),
+                            "shopping_sub_intent": task.get("shopping_sub_intent"),
+                        }
+
+                        tool_output = await asyncio.wait_for(
                                 execute_tool(
-                                    tool_name, agent_type=self.name, **tool_args
+                                    tool_name, agent_type=self.name, task_hints=_hints, **tool_args
                                 ),
                                 timeout=_tool_timeout,
                             )

@@ -977,7 +977,7 @@ def _trigger_reindex(filepath: str | None) -> None:
         pass
 
 
-async def execute_tool(tool_name: str, agent_type: str | None = None, **kwargs: Any) -> str:
+async def execute_tool(tool_name: str, agent_type: str | None = None, task_hints: dict | None = None, **kwargs: Any) -> str:
     """
     Execute a registered tool by name.
 
@@ -1012,6 +1012,10 @@ async def execute_tool(tool_name: str, agent_type: str | None = None, **kwargs: 
                 pass
 
     func = TOOL_REGISTRY[tool_name]["function"]
+
+    # Inject task_hints for web_search (before kwargs filtering so it passes through)
+    if tool_name == "web_search" and task_hints:
+        kwargs["_task_hints"] = task_hints
 
     # ── Filter kwargs to accepted parameters ──
     valid_params = _TOOL_PARAMS.get(tool_name)

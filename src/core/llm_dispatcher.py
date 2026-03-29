@@ -33,6 +33,10 @@ from src.infra.logging_config import get_logger
 
 logger = get_logger("core.llm_dispatcher")
 
+# Cold-start wait parameters (patchable in tests)
+_COLD_START_WAIT_TIMEOUT = 15.0   # max seconds to wait for model load
+_COLD_START_POLL_INTERVAL = 0.5   # poll interval while waiting
+
 
 # ─── Call Categories ─────────────────────────────────────────────────────────
 
@@ -418,10 +422,19 @@ class LLMDispatcher:
             When a model swap is in progress, local model is unavailable.
             OVERHEAD calls skip local entirely and go cloud-only to avoid
             piling up in the GPU scheduler queue (cascade failure).
+
+          Cold-start awareness:
+            When no model is loaded and no cloud is available, but a
+            proactive load is in progress, wait briefly for it to complete
+            rather than failing immediately.
         """
         from src.core.router import call_model
 
         timeout = self._compute_timeout(CallCategory.OVERHEAD, reqs)
+
+        # ── Cold-start wait: if no model loaded, no cloud, but load in progress ──
+        if not self._get_loaded_model_name() and self._should_wait_for_cold_start():
+            await self._wait_for_model_load(reqs)
 
         reqs_safe = copy.copy(reqs)
 
@@ -429,7 +442,12 @@ class LLMDispatcher:
         # OVERHEAD tasks queuing for GPU during a swap causes cascade
         # failures: each times out at 120s, retries via backpressure,
         # filling the queue again in an infinite loop.
-        if self._is_swap_in_progress():
+        #
+        # Exception: if a model just finished loading (cold-start wait
+        # completed), swap_in_progress may still be True briefly.
+        # Check current_model to distinguish "swap between models"
+        # from "initial load completing".
+        if self._is_swap_in_progress() and not self._get_loaded_model_name():
             logger.debug(
                 "overhead skipping local — swap in progress",
                 task=reqs.effective_task or reqs.primary_capability,
@@ -448,6 +466,67 @@ class LLMDispatcher:
                 f"Task: {reqs.effective_task or reqs.primary_capability}, "
                 f"Error: {e}"
             ) from e
+
+    def _should_wait_for_cold_start(self) -> bool:
+        """Check if we should wait for a model to load on cold start.
+
+        Returns True when:
+          1. No cloud models are available (local-only setup)
+          2. A model swap/load is in progress (proactive load started)
+        """
+        # Check if cloud models exist
+        if self._has_cloud_models():
+            return False  # cloud available, no need to wait
+
+        # Check if a load is in progress
+        return self._is_swap_in_progress()
+
+    def _has_cloud_models(self) -> bool:
+        """Check if any cloud models are available in the registry."""
+        try:
+            from src.models.model_registry import get_registry
+            registry = get_registry()
+            return any(not m.is_local for m in registry.all_models())
+        except Exception:
+            return False
+
+    async def _wait_for_model_load(self, reqs: "ModelRequirements") -> None:
+        """Wait for a model to finish loading (cold-start / post-idle).
+
+        Polls _get_loaded_model_name() until a model is available or
+        the timeout expires. Used only when no cloud fallback exists.
+        """
+        task_desc = reqs.effective_task or reqs.primary_capability
+        logger.info(
+            "overhead waiting for model load (cold start)",
+            task=task_desc,
+            timeout=_COLD_START_WAIT_TIMEOUT,
+        )
+
+        deadline = time.monotonic() + _COLD_START_WAIT_TIMEOUT
+        while time.monotonic() < deadline:
+            await asyncio.sleep(_COLD_START_POLL_INTERVAL)
+            if self._get_loaded_model_name():
+                elapsed = _COLD_START_WAIT_TIMEOUT - (deadline - time.monotonic())
+                logger.info(
+                    "model loaded, overhead proceeding",
+                    task=task_desc,
+                    waited=f"{elapsed:.1f}s",
+                )
+                return
+            # If swap is no longer in progress and still no model, stop waiting
+            if not self._is_swap_in_progress():
+                logger.debug(
+                    "swap finished but no model loaded — stop waiting",
+                    task=task_desc,
+                )
+                return
+
+        logger.warning(
+            "cold-start wait timed out, proceeding without model",
+            task=task_desc,
+            timeout=_COLD_START_WAIT_TIMEOUT,
+        )
 
     def _is_swap_in_progress(self) -> bool:
         """Check if a model swap is currently in progress."""

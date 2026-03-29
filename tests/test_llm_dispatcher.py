@@ -703,6 +703,187 @@ class TestLLMDispatcherIntegration(unittest.TestCase):
         self.assertEqual(captured_reqs.get("priority"), 1)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Cold-Start Wait Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestColdStartWait(unittest.TestCase):
+    """Test that OVERHEAD calls wait for proactive model load on cold start."""
+
+    def _make_dispatcher(self):
+        import src.core.llm_dispatcher as mod
+        mod._dispatcher = None
+        from src.core.llm_dispatcher import LLMDispatcher
+        return LLMDispatcher()
+
+    # 30. OVERHEAD waits for model load when no model loaded and no cloud
+    def test_overhead_waits_for_cold_start_load(self):
+        """When no model is loaded and no cloud available, OVERHEAD should
+        wait for the proactive load to complete rather than failing immediately."""
+        dispatcher = self._make_dispatcher()
+        reqs = _make_reqs()
+        messages = [{"role": "user", "content": "classify this"}]
+        mock_result = {"content": "ok", "model": "openai/model-a"}
+
+        # Simulate: no model loaded initially, then loaded after wait
+        load_count = {"calls": 0}
+
+        def fake_get_loaded_name():
+            load_count["calls"] += 1
+            if load_count["calls"] >= 3:  # loaded after a few polls
+                return "model-a"
+            return None
+
+        mock_model_a = MagicMock()
+        mock_model_a.is_local = True
+        mock_model_a.name = "model-a"
+        mock_model_a.litellm_name = "openai/model-a"
+
+        mock_reg = MagicMock()
+        mock_reg.all_models.return_value = [mock_model_a]
+
+        mock_mgr = MagicMock()
+        mock_mgr.swap_in_progress = True  # proactive load in progress
+
+        mock_call = AsyncMock(return_value=mock_result)
+
+        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_model_name",
+                   side_effect=fake_get_loaded_name), \
+             patch("src.models.model_registry.get_registry",
+                   return_value=mock_reg), \
+             patch("src.models.local_model_manager.get_local_manager",
+                   return_value=mock_mgr), \
+             patch("src.core.router.call_model", mock_call):
+
+            from src.core.llm_dispatcher import CallCategory
+            result = run_async(dispatcher.request(
+                category=CallCategory.OVERHEAD,
+                reqs=reqs,
+                messages=messages,
+            ))
+
+        # Should have succeeded after waiting for model load
+        self.assertEqual(result, mock_result)
+        mock_call.assert_called_once()
+
+    # 31. OVERHEAD times out waiting if model never loads
+    def test_overhead_cold_start_timeout(self):
+        """If model never loads within timeout, OVERHEAD should fail gracefully."""
+        dispatcher = self._make_dispatcher()
+        reqs = _make_reqs()
+        messages = [{"role": "user", "content": "classify this"}]
+
+        mock_model_a = MagicMock()
+        mock_model_a.is_local = True
+        mock_model_a.name = "model-a"
+        mock_model_a.litellm_name = "openai/model-a"
+
+        mock_reg = MagicMock()
+        mock_reg.all_models.return_value = [mock_model_a]
+
+        mock_mgr = MagicMock()
+        mock_mgr.swap_in_progress = True
+        mock_mgr.current_model = None
+
+        mock_call = AsyncMock(side_effect=RuntimeError("no models"))
+
+        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_model_name",
+                   return_value=None), \
+             patch("src.models.model_registry.get_registry",
+                   return_value=mock_reg), \
+             patch("src.models.local_model_manager.get_local_manager",
+                   return_value=mock_mgr), \
+             patch("src.core.router.call_model", mock_call), \
+             patch("src.core.llm_dispatcher._COLD_START_WAIT_TIMEOUT", 0.3), \
+             patch("src.core.llm_dispatcher._COLD_START_POLL_INTERVAL", 0.1):
+
+            from src.core.llm_dispatcher import CallCategory
+            with self.assertRaises(RuntimeError) as ctx:
+                run_async(dispatcher.request(
+                    category=CallCategory.OVERHEAD,
+                    reqs=reqs,
+                    messages=messages,
+                ))
+            self.assertIn("OVERHEAD call failed", str(ctx.exception))
+
+    # 32. OVERHEAD skips wait when cloud is available
+    def test_overhead_no_wait_when_cloud_available(self):
+        """When cloud models are available, OVERHEAD should not wait — just use cloud."""
+        dispatcher = self._make_dispatcher()
+        reqs = _make_reqs()
+        messages = [{"role": "user", "content": "classify this"}]
+        mock_result = {"content": "ok", "model": "claude-3-haiku"}
+
+        mock_model_a = MagicMock()
+        mock_model_a.is_local = True
+        mock_model_a.name = "model-a"
+        mock_model_a.litellm_name = "openai/model-a"
+
+        mock_cloud = MagicMock()
+        mock_cloud.is_local = False
+        mock_cloud.name = "haiku"
+        mock_cloud.litellm_name = "claude-3-haiku"
+
+        mock_reg = MagicMock()
+        mock_reg.all_models.return_value = [mock_model_a, mock_cloud]
+
+        mock_call = AsyncMock(return_value=mock_result)
+
+        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_model_name",
+                   return_value=None), \
+             patch("src.models.model_registry.get_registry",
+                   return_value=mock_reg), \
+             patch("src.core.router.call_model", mock_call):
+
+            from src.core.llm_dispatcher import CallCategory
+            result = run_async(dispatcher.request(
+                category=CallCategory.OVERHEAD,
+                reqs=reqs,
+                messages=messages,
+            ))
+
+        # Should succeed immediately without waiting
+        self.assertEqual(result, mock_result)
+        mock_call.assert_called_once()
+
+    # 33. OVERHEAD skips wait when no swap in progress (nothing loading)
+    def test_overhead_no_wait_when_nothing_loading(self):
+        """When no model is loaded and nothing is loading, don't wait forever."""
+        dispatcher = self._make_dispatcher()
+        reqs = _make_reqs()
+        messages = [{"role": "user", "content": "classify this"}]
+
+        mock_model_a = MagicMock()
+        mock_model_a.is_local = True
+        mock_model_a.name = "model-a"
+        mock_model_a.litellm_name = "openai/model-a"
+
+        mock_reg = MagicMock()
+        mock_reg.all_models.return_value = [mock_model_a]
+
+        mock_mgr = MagicMock()
+        mock_mgr.swap_in_progress = False  # nothing loading
+        mock_mgr.current_model = None
+
+        mock_call = AsyncMock(side_effect=RuntimeError("no models"))
+
+        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_model_name",
+                   return_value=None), \
+             patch("src.models.model_registry.get_registry",
+                   return_value=mock_reg), \
+             patch("src.models.local_model_manager.get_local_manager",
+                   return_value=mock_mgr), \
+             patch("src.core.router.call_model", mock_call):
+
+            from src.core.llm_dispatcher import CallCategory
+            with self.assertRaises(RuntimeError):
+                run_async(dispatcher.request(
+                    category=CallCategory.OVERHEAD,
+                    reqs=reqs,
+                    messages=messages,
+                ))
+
+
 # ─── Singleton Tests ──────────────────────────────────────────────────────────
 
 class TestGetDispatcherSingleton(unittest.TestCase):

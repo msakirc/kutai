@@ -299,6 +299,21 @@ class BaseAgent:
 
         return has_verb and has_target
 
+    @staticmethod
+    def _get_search_depth(task: dict) -> str:
+        """Extract search_depth from task classification context.
+
+        Returns "none" if not classified or missing.
+        """
+        ctx = task.get("context") or {}
+        if isinstance(ctx, str):
+            try:
+                ctx = json.loads(ctx)
+            except (json.JSONDecodeError, TypeError):
+                ctx = {}
+        cls = ctx.get("classification", {})
+        return cls.get("search_depth", "none") or "none"
+
     # ------------------------------------------------------------------ #
     #  Tier helpers                                                       #
     # ------------------------------------------------------------------ #
@@ -1200,7 +1215,7 @@ class BaseAgent:
 
             action_type = parsed.get("action", "final_answer")
 
-            # ── HALLUCINATION GUARD (unchanged) ──
+            # ── HALLUCINATION GUARD (action tasks) ──
             has_tools = (
                 self.allowed_tools is None or len(self.allowed_tools) > 0
             )
@@ -1243,6 +1258,60 @@ class BaseAgent:
                 await self._safe_log(
                     task_id, "system",
                     f"[hallucination_guard] Rejected premature final_answer",
+                    None, 0,
+                )
+                await self._save_checkpoint(
+                    task_id, iteration + 1, messages, total_cost,
+                    used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
+                    completed_tool_ops, format_retries,
+                )
+                continue
+
+            # ── SEARCH-REQUIRED GUARD ──
+            # The classifier already decided this task needs web search
+            # (search_depth != "none"). If the LLM jumps to final_answer
+            # without calling web_search, reject and force a search.
+            _has_web_search = (
+                self.allowed_tools is None
+                or "web_search" in (self.allowed_tools or [])
+            )
+            _search_depth = self._get_search_depth(task)
+            _search_used = any(
+                t == "web_search" for t in tools_used
+            )
+            if (
+                action_type == "final_answer"
+                and _has_web_search
+                and _search_depth in ("quick", "standard", "deep")
+                and not _search_used
+                and iteration < 3
+            ):
+                task_title = task.get("title", "")
+                logger.warning(
+                    f"[Task #{task_id}] ⚠️ Search-required guard triggered "
+                    f"(search_depth={_search_depth}, iter={iteration})"
+                )
+                messages.append({"role": "assistant", "content": content})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "STOP. This task requires a web search but you "
+                        "answered without searching. Your answer may contain "
+                        "fabricated information.\n\n"
+                        f"Task: {task_title}\n\n"
+                        "You MUST call web_search first to get real, "
+                        "up-to-date information. Example:\n"
+                        "```json\n"
+                        '{"action": "tool_call", "tool": "web_search", '
+                        '"args": {"query": "your search query here"}}\n'
+                        "```\n\n"
+                        "Respond with ONLY the JSON block. No explanation."
+                    ),
+                })
+                await self._safe_log(
+                    task_id, "system",
+                    f"[search_guard] Rejected final_answer without web_search "
+                    f"(depth={_search_depth})",
                     None, 0,
                 )
                 await self._save_checkpoint(
@@ -1509,7 +1578,7 @@ class BaseAgent:
                             # Build task hints for context-aware tools
                             _hints = {
                                 "agent_type": self.name,
-                                "search_depth": task.get("search_depth") or (task.get("context", {}) if isinstance(task.get("context"), dict) else {}).get("search_depth"),
+                                "search_depth": self._get_search_depth(task),
                                 "shopping_sub_intent": task.get("shopping_sub_intent"),
                             }
 

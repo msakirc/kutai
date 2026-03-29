@@ -358,21 +358,36 @@ class Orchestrator:
 
         # 1. Tasks stuck in "processing" for more than 5 minutes
         cursor = await db.execute(
-            """SELECT id, title FROM tasks
+            """SELECT id, title, retry_count, max_retries FROM tasks
                WHERE status = 'processing'
                AND started_at < datetime('now', '-5 minutes')"""
         )
         stuck = [dict(row) for row in await cursor.fetchall()]
         for task in stuck:
-            logger.warning(
-                f"[Watchdog] Task #{task['id']} stuck in processing, "
-                f"resetting"
-            )
-            await db.execute(
-                "UPDATE tasks SET status = 'pending', "
-                "retry_count = retry_count + 1 WHERE id = ?",
-                (task["id"],)
-            )
+            retry_count = task.get("retry_count", 0) or 0
+            max_retries = task.get("max_retries", 3) or 3
+            if retry_count >= max_retries:
+                logger.warning(
+                    f"[Watchdog] Task #{task['id']} stuck in processing "
+                    f"and exhausted retries ({retry_count}/{max_retries}), "
+                    f"marking failed"
+                )
+                await db.execute(
+                    "UPDATE tasks SET status = 'failed', "
+                    "error = 'Stuck in processing — retries exhausted (watchdog)' "
+                    "WHERE id = ?",
+                    (task["id"],)
+                )
+            else:
+                logger.warning(
+                    f"[Watchdog] Task #{task['id']} stuck in processing, "
+                    f"resetting (retry {retry_count + 1}/{max_retries})"
+                )
+                await db.execute(
+                    "UPDATE tasks SET status = 'pending', "
+                    "retry_count = retry_count + 1 WHERE id = ?",
+                    (task["id"],)
+                )
 
         # 2. Tasks blocked by FAILED dependencies
         cursor2 = await db.execute(
@@ -1546,9 +1561,14 @@ class Orchestrator:
         # Silent tasks (e.g., todo suggestions) skip Telegram notification entirely
         task_ctx_raw = task.get("context", "{}")
         if isinstance(task_ctx_raw, str):
-            task_ctx_parsed = json.loads(task_ctx_raw)
+            try:
+                task_ctx_parsed = json.loads(task_ctx_raw)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                task_ctx_parsed = {}
         else:
             task_ctx_parsed = task_ctx_raw
+        if not isinstance(task_ctx_parsed, dict):
+            task_ctx_parsed = {}
         is_interactive = task.get("priority", 5) >= TASK_PRIORITY.get("critical", 10)
         is_mission_subtask = task.get("mission_id") and task.get("parent_task_id")
 

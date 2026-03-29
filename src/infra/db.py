@@ -560,7 +560,7 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
         await db.execute("BEGIN IMMEDIATE")
 
         cursor = await db.execute(
-            """SELECT id, title, status FROM tasks
+            """SELECT id, title, status, started_at FROM tasks
                WHERE task_hash = ?
                  AND status IN ('pending', 'processing')
                LIMIT 1""",
@@ -569,6 +569,28 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
         duplicate = await cursor.fetchone()
         if duplicate:
             dup = dict(duplicate)
+            # If the duplicate is stuck in 'processing' for >10 minutes,
+            # reset it instead of blocking the new task creation.
+            if dup["status"] == "processing" and dup.get("started_at"):
+                stuck_cursor = await db.execute(
+                    """SELECT 1 FROM tasks
+                       WHERE id = ? AND status = 'processing'
+                         AND started_at < datetime('now', '-10 minutes')""",
+                    (dup["id"],)
+                )
+                if await stuck_cursor.fetchone():
+                    logger.warning(
+                        f"Task dedup: duplicate #{dup['id']} stuck in "
+                        f"processing — resetting to pending"
+                    )
+                    await db.execute(
+                        "UPDATE tasks SET status = 'pending', "
+                        "retry_count = COALESCE(retry_count, 0) + 1 "
+                        "WHERE id = ?",
+                        (dup["id"],)
+                    )
+                    await db.commit()
+                    return dup["id"]
             logger.info(
                 f"⏭️ Task dedup: '{title[:50]}' matches pending task "
                 f"#{dup['id']} — skipping creation"
@@ -760,10 +782,14 @@ async def claim_task(task_id: int) -> bool:
     Returns True if this caller won the race, False if already taken.
     """
     db = await get_db()
+    # Use strftime format (space-separated, no TZ) so SQLite datetime()
+    # comparisons in the watchdog work correctly.  isoformat() produces
+    # a 'T' separator which breaks `started_at < datetime('now', ...)`.
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     cursor = await db.execute(
         "UPDATE tasks SET status = 'processing', started_at = ? "
         "WHERE id = ? AND status = 'pending'",
-        (datetime.now(timezone.utc).isoformat(), task_id)
+        (now_str, task_id)
     )
     await db.commit()
     return cursor.rowcount > 0

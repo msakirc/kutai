@@ -587,8 +587,8 @@ class KutAIWrapper:
         _wlog("Starting Claude Code remote-control session")
         try:
             claude_bin = str(CLAUDE_CMD) if CLAUDE_CMD.exists() else "claude"
-            self._claude_process = await asyncio.create_subprocess_exec(
-                claude_bin, "remote-control",
+            self._claude_process = await asyncio.create_subprocess_shell(
+                f'"{claude_bin}" remote-control',
                 cwd=str(PROJECT_ROOT),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

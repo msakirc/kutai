@@ -16,9 +16,9 @@ _MIN_BUDGET_PER_PAGE = 200
 _MAX_BUDGET_RATIO = 0.4
 
 _INTENT_BOOSTS = {
-    "product": {"prices": 1.5, "reviews": 0.0},
-    "reviews": {"prices": 0.0, "reviews": 1.5},
-    "market":  {"prices": 0.5, "reviews": 0.5},
+    "product": {"prices": 0.3, "reviews": 0.0},
+    "reviews": {"prices": 0.0, "reviews": 0.3},
+    "market":  {"prices": 0.1, "reviews": 0.1},
     "research": {"prices": 0.0, "reviews": 0.0},
     "factual": {"prices": 0.0, "reviews": 0.0},
 }

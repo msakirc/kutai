@@ -992,6 +992,7 @@ class BaseAgent:
             total_cost = checkpoint.get("total_cost", 0.0)
             used_model = checkpoint.get("used_model", "unknown")
             tools_used = checkpoint.get("tools_used", False)
+            tools_used_names: set[str] = set(checkpoint.get("tools_used_names", []))
             _compat_retried = checkpoint.get("validation_retried", False)
             custom_validation_retried = _compat_retried
             task_type_validation_retried = _compat_retried
@@ -1032,6 +1033,7 @@ class BaseAgent:
             total_cost = 0.0
             used_model = "unknown"
             tools_used = False
+            tools_used_names: set[str] = set()
             custom_validation_retried = False
             task_type_validation_retried = False
             format_retries = 0
@@ -1276,9 +1278,7 @@ class BaseAgent:
                 or "web_search" in (self.allowed_tools or [])
             )
             _search_depth = self._get_search_depth(task)
-            _search_used = any(
-                t == "web_search" for t in tools_used
-            )
+            _search_used = "web_search" in tools_used_names
             if (
                 action_type == "final_answer"
                 and _has_web_search
@@ -1504,6 +1504,7 @@ class BaseAgent:
             if action_type == "tool_call":
                 tools_used = True
                 tool_name = parsed.get("tool", "")
+                tools_used_names.add(tool_name)
                 tool_args = parsed.get("args", {})
                 if not isinstance(tool_args, dict):
                     tool_args = {}
@@ -2089,6 +2090,7 @@ class BaseAgent:
         validation_retried: bool,
         completed_tool_ops: dict[str, str] | None = None,
         format_retries: int = 0,
+        tools_used_names: set[str] | None = None,
     ) -> None:
         """Persist agent loop state so execution can resume after a crash."""
         if task_id == "?":
@@ -2101,6 +2103,7 @@ class BaseAgent:
                 "used_model": used_model,
                 "reqs": dataclasses.asdict(reqs),
                 "tools_used": tools_used,
+                "tools_used_names": list(tools_used_names or []),
                 "validation_retried": validation_retried,
                 "format_retries": format_retries,
                 "completed_tool_ops": completed_tool_ops or {},

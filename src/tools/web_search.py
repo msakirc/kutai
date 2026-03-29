@@ -195,6 +195,55 @@ async def _discover_perplexica_models(base_url: str) -> dict | None:
         return None
 
 
+async def _search_brave(query: str, max_results: int = 5) -> list[dict] | None:
+    """Search using Brave Search API (free tier: 2000 queries/month, 1 qps).
+
+    Returns ddgs-compatible list of dicts with keys: title, body, href.
+    Returns None if no API key or on any error (graceful skip).
+    """
+    api_key = os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                headers={
+                    "X-Subscription-Token": api_key,
+                    "Accept": "application/json",
+                },
+                params={"q": query, "count": str(max_results)},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning("brave search failed", status=resp.status)
+                    return None
+                data = await resp.json()
+
+        web_results = data.get("web", {}).get("results", [])
+        if not web_results:
+            return None
+
+        # Convert to ddgs-compatible format
+        results = []
+        for r in web_results[:max_results]:
+            results.append({
+                "title": r.get("title", ""),
+                "body": r.get("description", ""),
+                "href": r.get("url", ""),
+            })
+
+        logger.info("brave search ok", count=len(results), query=query[:50])
+        return results
+
+    except asyncio.TimeoutError:
+        logger.debug("brave search timeout (10s)", query=query[:50])
+    except Exception as e:
+        logger.debug("brave search failed", error=str(e))
+    return None
+
+
 async def _search_searxng_direct(
     query: str, max_results: int = 10
 ) -> str | None:
@@ -606,6 +655,18 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web",
                 return result_text
         except Exception as e:
             logger.warning("ddgs primary search failed", error=str(e))
+
+    # Method 1.5 (secondary): Brave Search API
+    brave_results = await _search_brave(query, effective_max)
+    if brave_results:
+        logger.debug("brave search ok, using as fallback", count=len(brave_results))
+        urls = [r.get("href", "") for r in brave_results if r.get("href")]
+        if params.use_deep_pipeline and urls:
+            result_text = await _deep_search_pipeline(query, brave_results, urls, intent, params)
+        else:
+            result_text = await _quick_search_pipeline(query, brave_results, urls)
+        await _embed_web_results(query, result_text)
+        return result_text
 
     # Method 2 (fallback): Perplexica/Vane AI synthesis
     if not is_degraded:

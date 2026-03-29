@@ -560,5 +560,180 @@ class TestFallbackOrder(unittest.TestCase):
             _ws_mod._DDGS = original_ddgs
 
 
+# ===========================================================================
+# 7. TestBraveSearch — Brave Search API backend
+# ===========================================================================
+
+class TestBraveSearch(unittest.TestCase):
+    """Tests for the Brave Search API backend."""
+
+    def test_brave_skipped_without_api_key(self):
+        """No API key -> returns None gracefully."""
+        with patch.dict(os.environ, {}, clear=False):
+            # Ensure BRAVE_SEARCH_API_KEY is not set
+            os.environ.pop("BRAVE_SEARCH_API_KEY", None)
+            result = run_async(_ws_mod._search_brave("test query", 5))
+            self.assertIsNone(result)
+
+    @patch.dict(os.environ, {"BRAVE_SEARCH_API_KEY": "test-key-123"})
+    def test_brave_returns_formatted_results(self):
+        """Mock Brave API response -> returns ddgs-compatible format."""
+        mock_brave_response = {
+            "web": {"results": [
+                {"title": "Test Result", "description": "A test description", "url": "https://example.com/test"},
+                {"title": "Another Result", "description": "More info here", "url": "https://example.com/another"},
+            ]}
+        }
+        resp = _make_aiohttp_response(status=200, json_data=mock_brave_response)
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_session([resp])()):
+            result = run_async(_ws_mod._search_brave("test query", 5))
+
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 2)
+        # Verify ddgs-compatible keys
+        self.assertEqual(result[0]["title"], "Test Result")
+        self.assertEqual(result[0]["body"], "A test description")
+        self.assertEqual(result[0]["href"], "https://example.com/test")
+
+    @patch.dict(os.environ, {"BRAVE_SEARCH_API_KEY": "test-key-123"})
+    def test_brave_timeout_returns_none(self):
+        """Timeout -> returns None gracefully."""
+        async def _mock_search(*args, **kwargs):
+            raise asyncio.TimeoutError()
+
+        with patch("aiohttp.ClientSession") as mock_cls:
+            mock_session = MagicMock()
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+            mock_session.get = MagicMock(side_effect=asyncio.TimeoutError)
+            mock_cls.return_value = mock_session
+            result = run_async(_ws_mod._search_brave("test query", 5))
+
+        self.assertIsNone(result)
+
+    @patch.dict(os.environ, {"BRAVE_SEARCH_API_KEY": "test-key-123"})
+    def test_brave_empty_results_returns_none(self):
+        """Empty results array -> returns None."""
+        mock_brave_response = {"web": {"results": []}}
+        resp = _make_aiohttp_response(status=200, json_data=mock_brave_response)
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_session([resp])()):
+            result = run_async(_ws_mod._search_brave("test query", 5))
+
+        self.assertIsNone(result)
+
+    @patch.dict(os.environ, {"BRAVE_SEARCH_API_KEY": "test-key-123"})
+    def test_brave_http_error_returns_none(self):
+        """Non-200 HTTP status -> returns None."""
+        resp = _make_aiohttp_response(status=429, text_data="Rate limited")
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_session([resp])()):
+            result = run_async(_ws_mod._search_brave("test query", 5))
+
+        self.assertIsNone(result)
+
+
+# ===========================================================================
+# 8. TestBraveFallbackIntegration — Brave in fallback chain
+# ===========================================================================
+
+class TestBraveFallbackIntegration(unittest.TestCase):
+    """Tests that Brave is called after ddgs fails but before Perplexica."""
+
+    def setUp(self):
+        _reset_ws_state()
+
+    def tearDown(self):
+        _reset_ws_state()
+
+    def test_brave_called_when_ddgs_fails(self):
+        """If ddgs returns nothing, Brave should be tried before Perplexica."""
+        call_order = []
+
+        original_ddgs = _ws_mod._DDGS
+
+        class MockDDGS:
+            def text(self, *a, **kw):
+                call_order.append("ddgs")
+                return []  # empty results
+
+        async def mock_brave(query, max_results):
+            call_order.append("brave")
+            return [
+                {"title": "Brave Result", "body": "From Brave", "href": "https://brave.com/result"},
+            ]
+
+        async def mock_perp(*args, **kwargs):
+            call_order.append("perplexica")
+            return {"answer": "Perplexica answer", "sources": []}
+
+        _ws_mod._DDGS = MockDDGS
+        try:
+            with patch.object(_ws_mod, "_search_brave", side_effect=mock_brave):
+                with patch.object(_ws_mod, "_search_perplexica", side_effect=mock_perp):
+                    with patch("src.tools.page_fetch.fetch_pages", new_callable=AsyncMock, return_value={}):
+                        result = run_async(_ws_mod.web_search("test query"))
+
+            self.assertEqual(call_order, ["ddgs", "brave"])
+            self.assertIn("Brave Result", result)
+            self.assertNotIn("perplexica", call_order)
+        finally:
+            _ws_mod._DDGS = original_ddgs
+
+    def test_perplexica_called_when_brave_also_fails(self):
+        """If both ddgs and Brave fail, Perplexica should be tried."""
+        call_order = []
+
+        original_ddgs = _ws_mod._DDGS
+
+        class MockDDGS:
+            def text(self, *a, **kw):
+                call_order.append("ddgs")
+                return []
+
+        async def mock_brave(query, max_results):
+            call_order.append("brave")
+            return None  # Brave also fails
+
+        async def mock_perp(*args, **kwargs):
+            call_order.append("perplexica")
+            return {"answer": "Perplexica answer", "sources": [{"title": "t", "url": "u", "snippet": "s"}]}
+
+        _ws_mod._DDGS = MockDDGS
+        try:
+            with patch.object(_ws_mod, "_search_brave", side_effect=mock_brave):
+                with patch.object(_ws_mod, "_search_perplexica", side_effect=mock_perp):
+                    result = run_async(_ws_mod.web_search("test query"))
+
+            self.assertEqual(call_order, ["ddgs", "brave", "perplexica"])
+            self.assertIn("Perplexica", result)
+        finally:
+            _ws_mod._DDGS = original_ddgs
+
+    def test_brave_skipped_when_ddgs_succeeds(self):
+        """If ddgs succeeds, Brave should NOT be called."""
+        call_order = []
+
+        original_ddgs = _ws_mod._DDGS
+
+        class MockDDGS:
+            def text(self, *a, **kw):
+                call_order.append("ddgs")
+                return [{"title": "DDG Result", "body": "snippet", "href": "https://example.com"}]
+
+        async def mock_brave(query, max_results):
+            call_order.append("brave")
+            return [{"title": "Brave Result", "body": "From Brave", "href": "https://brave.com"}]
+
+        _ws_mod._DDGS = MockDDGS
+        try:
+            with patch.object(_ws_mod, "_search_brave", side_effect=mock_brave):
+                with patch("src.tools.page_fetch.fetch_pages", new_callable=AsyncMock, return_value={}):
+                    result = run_async(_ws_mod.web_search("test query"))
+
+            self.assertEqual(call_order, ["ddgs"])
+            self.assertNotIn("brave", call_order)
+        finally:
+            _ws_mod._DDGS = original_ddgs
+
+
 if __name__ == "__main__":
     unittest.main()

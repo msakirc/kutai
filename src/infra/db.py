@@ -317,6 +317,21 @@ async def init_db():
         )
     """)
 
+    # Web source quality tracking
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS web_source_quality (
+            domain TEXT PRIMARY KEY,
+            success_count INTEGER DEFAULT 0,
+            fail_count INTEGER DEFAULT 0,
+            block_count INTEGER DEFAULT 0,
+            avg_relevance REAL DEFAULT 0.0,
+            last_success TIMESTAMP,
+            last_failure TIMESTAMP,
+            last_block TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     await db.commit()
 
     # Seed todo reminder (every 2h during Turkey daytime: 9,11,13,15,17,19,21 TR = 6,8,10,12,14,16,18 UTC)
@@ -452,6 +467,7 @@ async def init_db():
         ("idx_credentials_service", "credentials", "service_name"),
         ("idx_todo_status", "todo_items", "status"),
         ("idx_todo_created", "todo_items", "created_at"),
+        ("idx_web_source_quality_domain", "web_source_quality", "domain"),
     ]
     for idx_name, table, columns_str in _indexes:
         try:
@@ -2059,3 +2075,69 @@ async def update_model_stats(
         pass  # best-effort
 
 
+# ─── Web Source Quality Tracking ───────────────────────────────────────────
+
+
+async def record_source_quality(
+    domain: str, success: bool, blocked: bool = False, relevance: float = 0.0
+) -> None:
+    """Upsert domain quality record, incrementing counts and updating timestamps."""
+    try:
+        db = await get_db()
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        # Try to insert first, then update on conflict
+        if blocked:
+            await db.execute("""
+                INSERT INTO web_source_quality (domain, block_count, last_block, updated_at)
+                VALUES (?, 1, ?, ?)
+                ON CONFLICT(domain) DO UPDATE SET
+                    block_count = block_count + 1,
+                    last_block = excluded.last_block,
+                    updated_at = excluded.updated_at
+            """, (domain, now, now))
+        elif success:
+            # Update avg_relevance with incremental mean
+            await db.execute("""
+                INSERT INTO web_source_quality (domain, success_count, avg_relevance, last_success, updated_at)
+                VALUES (?, 1, ?, ?, ?)
+                ON CONFLICT(domain) DO UPDATE SET
+                    success_count = success_count + 1,
+                    avg_relevance = (avg_relevance * success_count + ?) / (success_count + 1),
+                    last_success = excluded.last_success,
+                    updated_at = excluded.updated_at
+            """, (domain, relevance, now, now, relevance))
+        else:
+            await db.execute("""
+                INSERT INTO web_source_quality (domain, fail_count, last_failure, updated_at)
+                VALUES (?, 1, ?, ?)
+                ON CONFLICT(domain) DO UPDATE SET
+                    fail_count = fail_count + 1,
+                    last_failure = excluded.last_failure,
+                    updated_at = excluded.updated_at
+            """, (domain, now, now))
+
+        await db.commit()
+    except Exception as e:
+        logger.debug("record_source_quality failed: %s", e)
+
+
+async def get_source_quality(domains: list[str]) -> dict[str, dict]:
+    """Return quality info for a list of domains.
+
+    Returns {domain: {success_count, fail_count, block_count, avg_relevance, ...}}.
+    """
+    if not domains:
+        return {}
+    try:
+        db = await get_db()
+        placeholders = ",".join("?" for _ in domains)
+        cursor = await db.execute(
+            f"SELECT * FROM web_source_quality WHERE domain IN ({placeholders})",
+            domains,
+        )
+        rows = await cursor.fetchall()
+        return {row["domain"]: dict(row) for row in rows}
+    except Exception as e:
+        logger.debug("get_source_quality failed: %s", e)
+        return {}

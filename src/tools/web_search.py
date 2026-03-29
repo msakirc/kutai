@@ -452,6 +452,61 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
 
 
 # ---------------------------------------------------------------------------
+# Source quality tracking helpers
+# ---------------------------------------------------------------------------
+
+
+async def _reorder_urls_by_quality(urls: list[str]) -> list[str]:
+    """Reorder URLs putting known-good domains first."""
+    from src.infra.db import get_source_quality
+
+    domains = list({urllib.parse.urlparse(u).netloc for u in urls})
+    quality = await get_source_quality(domains)
+
+    def score(url):
+        domain = urllib.parse.urlparse(url).netloc
+        q = quality.get(domain)
+        if not q:
+            return 0.5  # unknown = neutral
+        total = q["success_count"] + q["fail_count"] + q["block_count"]
+        if total == 0:
+            return 0.5
+        success_rate = q["success_count"] / total
+        return success_rate * 0.7 + min(q["avg_relevance"], 1.0) * 0.3
+
+    return sorted(urls, key=score, reverse=True)
+
+
+def _record_fetch_quality_fire_and_forget(
+    fetched_urls: dict[str, str],
+    all_urls: list[str],
+    relevance_scores: dict[str, float] | None = None,
+) -> None:
+    """Record source quality for fetched pages (fire-and-forget).
+
+    fetched_urls: {url: text} for successfully fetched pages
+    all_urls: all URLs that were attempted
+    relevance_scores: optional {url: bm25_score} from deep pipeline
+    """
+    async def _do_record():
+        from src.infra.db import record_source_quality
+
+        for url in all_urls:
+            domain = urllib.parse.urlparse(url).netloc
+            if not domain:
+                continue
+            if url in fetched_urls:
+                text = fetched_urls[url]
+                rel = (relevance_scores or {}).get(url, 0.0)
+                await record_source_quality(domain, success=True, relevance=rel)
+            else:
+                # We don't know if it was blocked or just failed — record as fail
+                await record_source_quality(domain, success=False)
+
+    asyncio.ensure_future(_do_record())
+
+
+# ---------------------------------------------------------------------------
 # Quick and deep search pipelines
 # ---------------------------------------------------------------------------
 
@@ -460,11 +515,18 @@ async def _quick_search_pipeline(query: str, ddgs_results: list, urls: list) -> 
     page_contents = {}
     if urls:
         try:
+            urls = await _reorder_urls_by_quality(urls)
+        except Exception:
+            pass  # quality DB not available yet — use original order
+        try:
             from src.tools.page_fetch import fetch_pages
             page_contents = await fetch_pages(urls, max_pages=3, max_chars=1500)
             logger.debug("page_fetch: fetched pages", count=len(page_contents))
         except Exception as e:
             logger.debug("page_fetch: skipped", error=str(e)[:100])
+
+        # Record quality (fire-and-forget)
+        _record_fetch_quality_fire_and_forget(page_contents, urls[:3])
 
     lines = []
     for i, r in enumerate(ddgs_results, 1):
@@ -498,6 +560,12 @@ async def _deep_search_pipeline(
 
     max_tier = _INTENT_TIER_MAP.get(intent, 1)
 
+    # Reorder URLs by domain quality before fetching
+    try:
+        urls = await _reorder_urls_by_quality(urls)
+    except Exception:
+        pass  # quality DB not available yet — use original order
+
     # Fetch more pages with more content for deep search
     page_htmls = await fetch_pages(urls, max_pages=params.max_results, max_chars=50000, max_tier=max_tier)
     logger.debug("deep pipeline: fetched pages", count=len(page_htmls))
@@ -519,6 +587,12 @@ async def _deep_search_pipeline(
 
     # Score relevance and allocate budgets
     budgeted = score_and_budget(contents, query, total_budget=params.total_budget, intent=intent)
+
+    # Record quality with relevance scores (fire-and-forget)
+    relevance_scores = {b.content.url: b.relevance_score for b in budgeted}
+    _record_fetch_quality_fire_and_forget(
+        page_htmls, urls[:params.max_results], relevance_scores=relevance_scores
+    )
 
     # Format output
     lines = []

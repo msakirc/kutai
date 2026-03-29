@@ -385,8 +385,8 @@ class KutAIWrapper:
                         f.write(f"[{name}] {line}\n")
                 except Exception:
                     pass
-        except Exception:
-            pass
+        except Exception as e:
+            _wlog(f"_pipe_output({name}) error: {e!r}")
 
     # ── Backoff Logic ─────────────────────────────────────────────────────
 
@@ -703,6 +703,7 @@ class KutAIWrapper:
             try:
                 exit_code = await self.wait_for_exit()
                 await self._stop_signal_watcher()
+                self._kill_orphan_processes()
                 self._maybe_reset_backoff()
 
                 if exit_code == -1:
@@ -772,6 +773,7 @@ class KutAIWrapper:
                             await self._start_signal_watcher()
 
             except asyncio.CancelledError:
+                _wlog("Main loop cancelled (CancelledError)")
                 break
             except Exception as exc:
                 _wlog(f"UNHANDLED ERROR in main loop: {exc!r}")
@@ -812,6 +814,8 @@ async def async_main():
     except Exception as exc:
         _wlog(f"FATAL: async_main crashed: {exc!r}")
         raise
+    finally:
+        _wlog("Wrapper process ending (finally block)")
 
 
 if __name__ == "__main__":
@@ -822,3 +826,5 @@ if __name__ == "__main__":
     except Exception as exc:
         _wlog(f"FATAL top-level: {exc!r}")
         raise
+    finally:
+        _wlog("Wrapper process terminated.")

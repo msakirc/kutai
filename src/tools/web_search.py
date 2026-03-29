@@ -157,7 +157,8 @@ async def _search_searxng_direct(
                 params={
                     "q": query,
                     "format": "json",
-                    "engines": "duckduckgo,google,bing,brave",
+                    "language": "en",
+                    "engines": "duckduckgo,google,bing,brave,wikipedia",
                 },
                 timeout=aiohttp.ClientTimeout(total=12),
             ) as resp:
@@ -451,11 +452,15 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web")
             return result_text
 
     # Method 1: SearXNG direct (raw results, no LLM synthesis, ~6-10s)
+    # NOTE: SearXNG's engines (duckduckgo, google, brave) are frequently
+    # suspended/CAPTCHAd inside Docker. Only wikipedia/wolframalpha survive.
+    # If SearXNG returns fewer than 3 results, skip to ddgs which is more reliable.
     searxng_result = await _search_searxng_direct(query, max_results)
-    if searxng_result:
-        # Embed in background (non-blocking)
+    if searxng_result and searxng_result.count("**") >= 6:  # at least 3 results (each has 2 **)
         asyncio.ensure_future(_embed_web_results(query, searxng_result))
         return searxng_result
+    elif searxng_result:
+        logger.debug("searxng: too few results, falling through to ddgs")
 
     # Method 3: duckduckgo-search package (ddgs 9.x)
     if _DDGS is not None:

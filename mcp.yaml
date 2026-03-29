@@ -1,0 +1,27 @@
+# MCP Server Configuration for KutAI
+#
+# Servers with auto_connect: true are connected on startup.
+# Others can be connected on-demand via the MCPClient API.
+#
+# Environment variables use ${VAR_NAME} syntax and are expanded at load time.
+
+mcp_servers:
+  # Official Fetch MCP — robust web content extraction + markdown conversion
+  # Complements the existing web_search pipeline for single-page deep reads
+  fetch:
+    command: ["npx", "-y", "@anthropic-ai/mcp-fetch@latest"]
+    auto_connect: false
+
+  # Official Sequential Thinking MCP — structured multi-step reasoning
+  # Useful for complex shopping comparisons and research synthesis
+  sequential_thinking:
+    command: ["npx", "-y", "@modelcontextprotocol/server-sequential-thinking"]
+    auto_connect: false
+
+  # Official GitHub MCP — issue/PR management
+  # Activate only if GITHUB_TOKEN is set
+  github:
+    command: ["npx", "-y", "@modelcontextprotocol/server-github"]
+    auto_connect: false
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"

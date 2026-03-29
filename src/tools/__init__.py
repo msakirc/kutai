@@ -318,7 +318,9 @@ except Exception as e:
 # Shopping intelligence tools
 try:
     import json as _json_shopping
+    import dataclasses as _dataclasses
 
+    from ..shopping.models import Product as _Product
     from ..shopping.intelligence.query_analyzer import analyze_query as _analyze_query
     from ..shopping.intelligence.search_planner import generate_search_plan as _generate_search_plan
     from ..shopping.intelligence.product_matcher import match_products as _match_products
@@ -367,11 +369,12 @@ try:
             except _asyncio.TimeoutError:
                 products = []
 
+            products_dicts = [_dataclasses.asdict(p) if _dataclasses.is_dataclass(p) else p for p in products]
             return _json_shopping.dumps({
                 "analysis": analyzed,
                 "search_plan": plan,
-                "products": products,
-                "product_count": len(products),
+                "products": products_dicts,
+                "product_count": len(products_dicts),
             }, indent=2, default=str)
         except Exception as exc:
             return _json_shopping.dumps({"error": f"{type(exc).__name__}: {exc}"})
@@ -379,7 +382,8 @@ try:
     async def _tool_shopping_compare(products: str) -> str:
         """Compare products with value scoring and delivery comparison."""
         try:
-            product_list = _json_shopping.loads(products)
+            raw_list = _json_shopping.loads(products)
+            product_list = [_Product(**d) if isinstance(d, dict) else d for d in raw_list]
             scores = await _score_products(product_list)
             delivery = await _compare_delivery(product_list)
             return _json_shopping.dumps({"scores": scores, "delivery": delivery}, indent=2, default=str)
@@ -551,6 +555,78 @@ try:
         "example": (
             '{"action": "tool_call", "tool": "shopping_price_watch", '
             '"args": {"user_id": "123", "action": "add", "product_name": "iPhone 15", "target_price": "40000"}}'
+        ),
+    }
+
+    async def _tool_shopping_fetch_reviews(url: str, source: str = "") -> str:
+        """Fetch product reviews from a scraper given a product URL."""
+        try:
+            from ..shopping.scrapers import get_scraper, list_scrapers
+
+            # Determine which scraper to use
+            scraper_name = source.strip() if source else ""
+
+            if not scraper_name:
+                # Auto-detect from URL domain
+                _domain_map = {
+                    "trendyol": "trendyol",
+                    "hepsiburada": "hepsiburada",
+                    "amazon.com.tr": "amazon_tr",
+                    "amazon": "amazon_tr",
+                    "akakce": "akakce",
+                    "sahibinden": "sahibinden",
+                    "sikayetvar": "sikayetvar",
+                    "eksisozluk": "eksisozluk",
+                    "technopat": "technopat",
+                    "donanimhaber": "donanimhaber",
+                    "koctas": "koctas",
+                    "ikea": "ikea",
+                    "getir": "getir",
+                    "migros": "migros",
+                }
+                url_lower = url.lower()
+                for domain_key, name in _domain_map.items():
+                    if domain_key in url_lower:
+                        scraper_name = name
+                        break
+
+            if not scraper_name:
+                available = list(list_scrapers().keys())
+                return _json_shopping.dumps({
+                    "error": "Could not detect scraper from URL. Provide 'source' arg.",
+                    "available_scrapers": available,
+                })
+
+            scraper_cls = get_scraper(scraper_name)
+            if scraper_cls is None:
+                available = list(list_scrapers().keys())
+                return _json_shopping.dumps({
+                    "error": f"Unknown scraper: {scraper_name}",
+                    "available_scrapers": available,
+                })
+
+            scraper = scraper_cls()
+            reviews = await scraper.get_reviews(url)
+
+            return _json_shopping.dumps({
+                "source": scraper_name,
+                "url": url,
+                "reviews": reviews,
+                "review_count": len(reviews),
+            }, indent=2, default=str)
+        except Exception as exc:
+            return _json_shopping.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+    _optional_tools["shopping_fetch_reviews"] = {
+        "function": _tool_shopping_fetch_reviews,
+        "description": (
+            "Fetch product reviews from a scraper given a product URL. "
+            "Args: url (str: product page URL), "
+            "source (str, optional: scraper name like 'trendyol', 'amazon_tr', 'hepsiburada' — auto-detected from URL if omitted)"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "shopping_fetch_reviews", '
+            '"args": {"url": "https://www.trendyol.com/product-p-123456", "source": "trendyol"}}'
         ),
     }
 except Exception as e:

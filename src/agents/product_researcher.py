@@ -26,6 +26,7 @@ class ProductResearcherAgent(BaseAgent):
         "shopping_search",
         "shopping_compare",
         "shopping_reviews",
+        "shopping_fetch_reviews",
         "shopping_constraints",
     ]
 

@@ -67,10 +67,10 @@ async def execute_with_fallback(
 async def get_product_with_fallback(
     product_query: str,
     sources: list[str] | None = None,
-) -> list[dict]:
+) -> list:
     """Search for products using a degradation chain.
 
-    Order: dedicated scraper(s) for each source -> Perplexica -> Google CSE -> cache.
+    Order: dedicated scraper(s) for each source -> Google CSE -> cache.
 
     Parameters
     ----------
@@ -82,7 +82,7 @@ async def get_product_with_fallback(
 
     Returns
     -------
-    List of product dicts from the first source that yields results.
+    List of Product dataclass instances from the first source that yields results.
     """
     from src.shopping.resilience.cache_fallback import get_stale_product
 
@@ -100,7 +100,8 @@ async def get_product_with_fallback(
         except Exception as exc:
             logger.warning("Scraper %s failed for '%s': %s", source, product_query, exc)
 
-    # Phase 2: Shared fallbacks (Perplexica, Google CSE)
+    # Phase 2: Shared fallbacks (Google CSE — Perplexica skipped because it
+    # returns synthesis text, not structured product data)
     shared_chain = build_fallback_chain("default")
     for fn in shared_chain:
         try:
@@ -148,14 +149,6 @@ def build_fallback_chain(source: str) -> list[Callable]:
         except Exception:
             return []
 
-    async def _perplexica_search(query: str) -> list[dict]:
-        """Fallback to Perplexica shopping search."""
-        try:
-            from src.shopping.integrations import search_perplexica
-            return await search_perplexica(query)
-        except Exception:
-            return []
-
     async def _google_cse_search(query: str) -> list[dict]:
         """Fallback to Google CSE."""
         try:
@@ -170,7 +163,8 @@ def build_fallback_chain(source: str) -> list[Callable]:
     if source != "default":
         chain.append(_scraper_search)
 
-    chain.append(_perplexica_search)
+    # Perplexica is intentionally excluded: it returns synthesis text
+    # (answer + sources dict), not structured Product data.
     chain.append(_google_cse_search)
 
     return chain

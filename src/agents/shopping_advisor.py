@@ -28,6 +28,7 @@ class ShoppingAdvisorAgent(BaseAgent):
         "shopping_search",
         "shopping_compare",
         "shopping_reviews",
+        "shopping_fetch_reviews",
         "shopping_constraints",
         "shopping_timing",
         "shopping_alternatives",

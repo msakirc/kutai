@@ -390,13 +390,14 @@ class TestFallbackChain(unittest.TestCase):
     def test_build_fallback_chain(self):
         from src.shopping.resilience.fallback_chain import build_fallback_chain
         chain = build_fallback_chain("akakce")
-        self.assertTrue(len(chain) >= 2)  # scraper + perplexica + google_cse
+        # scraper + google_cse (Perplexica excluded — returns text, not products)
+        self.assertTrue(len(chain) >= 2)
 
     def test_build_fallback_chain_default(self):
         from src.shopping.resilience.fallback_chain import build_fallback_chain
         chain = build_fallback_chain("default")
-        # Default should not include the dedicated scraper
-        self.assertTrue(len(chain) >= 2)
+        # Default: google_cse only (no dedicated scraper, no Perplexica)
+        self.assertTrue(len(chain) >= 1)
 
 
 if __name__ == "__main__":

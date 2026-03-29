@@ -27,6 +27,7 @@ class DealAnalystAgent(BaseAgent):
         "shopping_timing",
         "shopping_alternatives",
         "shopping_reviews",
+        "shopping_fetch_reviews",
     ]
 
     def get_system_prompt(self, task: dict) -> str:

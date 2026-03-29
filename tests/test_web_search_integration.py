@@ -193,14 +193,14 @@ class TestPerplexicaBackend(unittest.TestCase):
         self.assertIn("embeddingModel", result)
         self.assertEqual(result["embeddingModel"]["key"], "text-embedding-3-small")
 
-    def test_model_discovery_prefers_groq_compound(self):
-        """When providers list has groq/compound, it should be preferred."""
+    def test_model_discovery_skips_groq_compound(self):
+        """groq/compound is in skip_models (hangs on Vane), so first non-skipped model wins."""
         resp = _make_aiohttp_response(status=200, json_data=MOCK_PROVIDERS_DATA)
         with patch("aiohttp.ClientSession", return_value=_make_aiohttp_session([resp])()):
             result = run_async(_ws_mod._discover_perplexica_models("http://localhost:3000"))
 
         self.assertIsNotNone(result)
-        self.assertEqual(result["chatModel"]["key"], "groq/compound")
+        self.assertEqual(result["chatModel"]["key"], "llama-3.3-70b-versatile")
         self.assertEqual(result["chatModel"]["providerId"], "groq")
 
     def test_model_discovery_fallback_without_groq(self):

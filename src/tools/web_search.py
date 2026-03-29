@@ -430,6 +430,15 @@ async def _quick_search_pipeline(query: str, ddgs_results: list, urls: list) -> 
     return f"Search results for '{query}':\n\n" + "\n\n".join(lines)
 
 
+_INTENT_TIER_MAP = {
+    "factual": 0,   # HTTP only — fast, no escalation needed
+    "product": 1,   # up to TLS fingerprinting
+    "reviews": 1,   # up to TLS fingerprinting
+    "market": 2,    # up to stealth (if available)
+    "research": 2,  # up to stealth (if available)
+}
+
+
 async def _deep_search_pipeline(
     query: str, ddgs_results: list, urls: list, intent: str, params: _SearchParams
 ) -> str:
@@ -438,8 +447,10 @@ async def _deep_search_pipeline(
     from src.tools.content_extract import extract_content
     from src.tools.relevance import score_and_budget
 
+    max_tier = _INTENT_TIER_MAP.get(intent, 1)
+
     # Fetch more pages with more content for deep search
-    page_htmls = await fetch_pages(urls, max_pages=params.max_results, max_chars=50000)
+    page_htmls = await fetch_pages(urls, max_pages=params.max_results, max_chars=50000, max_tier=max_tier)
     logger.debug("deep pipeline: fetched pages", count=len(page_htmls))
 
     if not page_htmls:

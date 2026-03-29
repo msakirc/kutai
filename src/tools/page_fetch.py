@@ -57,15 +57,41 @@ def extract_main_text(html: str, max_chars: int = 1500) -> str:
 
 
 async def fetch_page_content(
-    session: aiohttp.ClientSession,
+    session: aiohttp.ClientSession | None,
     url: str,
     max_chars: int = 1500,
     timeout: float = 8.0,
+    max_tier: int = 1,
 ) -> str | None:
     """Fetch a single page and extract main text.
 
     Returns extracted text, or None on any error (timeout, non-HTML, HTTP error).
+
+    When ``max_tier >= 0``, tries the tiered scraper first (which handles
+    TLS fingerprinting and auto-escalation).  Falls back to plain aiohttp
+    if the scraper is unavailable or ``session`` is provided explicitly.
     """
+    # --- Try tiered scraper first ---
+    try:
+        from src.tools.scraper import scrape_url, ScrapeTier
+
+        tier = ScrapeTier(min(max_tier, ScrapeTier.BROWSER))
+        result = await scrape_url(url, max_tier=tier, timeout=timeout)
+        if result.ok:
+            text = extract_main_text(result.html, max_chars=max_chars)
+            if text and len(text) >= 50:
+                logger.debug("page_fetch: scraper ok", url=url[:80], tier=result.tier.name, text_len=len(text))
+                return text
+            logger.debug("page_fetch: scraper html ok but too little text", url=url[:80], text_len=len(text) if text else 0)
+        else:
+            logger.debug("page_fetch: scraper failed", url=url[:80], tier=result.tier.name, error=result.error)
+    except Exception as e:
+        logger.debug("page_fetch: scraper unavailable, falling back to aiohttp", error=str(e)[:100])
+
+    # --- Fallback: plain aiohttp (original path) ---
+    if session is None:
+        return None
+
     try:
         async with session.get(
             url,
@@ -106,11 +132,14 @@ async def fetch_pages(
     max_pages: int = 3,
     max_chars: int = 1500,
     total_timeout: float = 12.0,
+    max_tier: int = 1,
 ) -> dict[str, str]:
     """Fetch multiple pages in parallel, returning {url: extracted_text}.
 
     Only fetches http/https URLs. Limits to max_pages.
     Returns dict of successfully fetched pages (may be empty).
+
+    ``max_tier`` controls scraper escalation (0=HTTP, 1=TLS, 2=stealth, 3=browser).
     """
     # Filter to http(s) only and limit count
     valid_urls = [u for u in urls if u.startswith(("http://", "https://"))][:max_pages]
@@ -122,7 +151,7 @@ async def fetch_pages(
     try:
         async with aiohttp.ClientSession() as session:
             tasks = [
-                fetch_page_content(session, url, max_chars=max_chars)
+                fetch_page_content(session, url, max_chars=max_chars, max_tier=max_tier)
                 for url in valid_urls
             ]
             fetched = await asyncio.wait_for(

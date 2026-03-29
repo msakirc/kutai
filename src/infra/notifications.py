@@ -1,8 +1,13 @@
 # notifications.py
 """
-ntfy-based notification handlers.
+Notification handlers with fallback chain.
 
-Two handlers:
+Delivery chain (tried in order):
+  1. ntfy       — if NTFY_URL is configured
+  2. Telegram   — if TELEGRAM_ADMIN_CHAT_ID is configured (async)
+  3. File log   — always writes to logs/notifications.log
+
+Logging handlers for the Python logging system:
   NtfyAlertHandler  — immediate push to orchestrator-errors (ERROR+)
   NtfyBatchHandler  — buffered flush to orchestrator-logs (INFO+)
 
@@ -11,7 +16,9 @@ dedicated file-only logger so we never recurse into ourselves.
 """
 
 import atexit
+import json
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -99,6 +106,136 @@ def send_ntfy(
             "send_ntfy: network failure sending to topic=%s: %s", topic, exc
         )
         return None
+
+
+# ─── File-based notification log ──────────────────────────────────────────────
+
+_notification_logger = logging.getLogger("infra.notifications.file")
+_notification_logger.propagate = False
+
+
+def _attach_notification_file_sink():
+    """Attach a JSON-line file handler to the notification file logger."""
+    os.makedirs("logs", exist_ok=True)
+    fh = logging.FileHandler("logs/notifications.log", encoding="utf-8")
+    fh.setFormatter(logging.Formatter("%(message)s"))  # raw JSON lines
+    _notification_logger.addHandler(fh)
+    _notification_logger.setLevel(logging.INFO)
+
+
+_attach_notification_file_sink()
+
+
+def _write_notification_to_file(
+    title: str,
+    message: str,
+    priority: int = 3,
+    level: str = "info",
+) -> None:
+    """Write a single JSON-line notification to logs/notifications.log."""
+    entry = {
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        "level": level,
+        "title": title,
+        "message": message,
+        "priority": priority,
+    }
+    _notification_logger.info(json.dumps(entry, ensure_ascii=False))
+
+
+# ─── Telegram DM notification ────────────────────────────────────────────────
+
+async def notify_telegram(
+    title: str,
+    message: str,
+    priority: int = 3,
+) -> bool:
+    """
+    Send a notification directly to the admin via Telegram bot.
+
+    Returns True if the message was sent, False otherwise.
+    Requires a running bot Application with a valid bot token.
+    Never raises — failures are logged internally.
+    """
+    try:
+        cfg = _cfg()
+        chat_id = cfg.TELEGRAM_ADMIN_CHAT_ID
+        if not chat_id:
+            return False
+
+        from telegram import Bot
+        token = cfg.TELEGRAM_BOT_TOKEN
+        if not token:
+            return False
+
+        bot = Bot(token=token)
+        priority_icons = {5: "🔴", 4: "🟠", 3: "🟡", 2: "🔵", 1: "⚪"}
+        icon = priority_icons.get(priority, "🟡")
+        text = f"{icon} *{title}*\n{message}"
+
+        await bot.send_message(
+            chat_id=int(chat_id),
+            text=text,
+            parse_mode="Markdown",
+        )
+        return True
+    except Exception as exc:
+        _handler_error_logger.warning(
+            "notify_telegram failed: %s", exc,
+        )
+        return False
+
+
+# ─── Unified notify() — fallback chain ───────────────────────────────────────
+
+_standard_logger = logging.getLogger("infra.notifications")
+
+
+def notify(
+    title: str,
+    message: str,
+    priority: int = 3,
+    tags: list[str] | None = None,
+    level: str = "info",
+) -> str:
+    """
+    Send a notification through the fallback chain.
+
+    Tries in order:
+      1. ntfy (if NTFY_URL is set)
+      2. Telegram (if TELEGRAM_ADMIN_CHAT_ID is set) — scheduled as async task
+      3. File log (always)
+
+    Returns the method used: "ntfy", "telegram", or "file".
+    Never raises.
+    """
+    # Always write to file log
+    _write_notification_to_file(title, message, priority, level)
+    _standard_logger.info("[notification] %s: %s", title, message)
+
+    # Try ntfy
+    cfg = _cfg()
+    if cfg.NTFY_URL:
+        topic = cfg.NTFY_TOPIC_ERRORS if priority >= 4 else cfg.NTFY_TOPIC_LOGS
+        status = send_ntfy(topic, title, message, priority=priority, tags=tags)
+        if status and 200 <= status < 300:
+            return "ntfy"
+
+    # Try Telegram (best-effort, fire-and-forget)
+    if cfg.TELEGRAM_ADMIN_CHAT_ID:
+        try:
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(notify_telegram(title, message, priority))
+            except RuntimeError:
+                # No event loop running — run synchronously
+                asyncio.run(notify_telegram(title, message, priority))
+            return "telegram"
+        except Exception as exc:
+            _handler_error_logger.warning("notify: telegram fallback failed: %s", exc)
+
+    return "file"
 
 
 # ─── NtfyAlertHandler — immediate, ERROR+ ─────────────────────────────────────

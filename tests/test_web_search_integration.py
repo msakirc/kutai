@@ -735,5 +735,163 @@ class TestBraveFallbackIntegration(unittest.TestCase):
             _ws_mod._DDGS = original_ddgs
 
 
+# ===========================================================================
+# 9. TestGoogleCSESearch — Google Custom Search Engine backend
+# ===========================================================================
+
+class TestGoogleCSESearch(unittest.TestCase):
+    """Tests for the Google CSE backend."""
+
+    def test_gcse_skipped_without_api_key(self):
+        """No API key -> returns None gracefully."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GOOGLE_CSE_API_KEY", None)
+            os.environ.pop("GOOGLE_CSE_CX", None)
+            result = run_async(_ws_mod._search_google_cse("test query", 5))
+            self.assertIsNone(result)
+
+    def test_gcse_skipped_without_cx(self):
+        """API key set but no CX -> returns None."""
+        with patch.dict(os.environ, {"GOOGLE_CSE_API_KEY": "key123"}, clear=False):
+            os.environ.pop("GOOGLE_CSE_CX", None)
+            result = run_async(_ws_mod._search_google_cse("test query", 5))
+            self.assertIsNone(result)
+
+    @patch.dict(os.environ, {"GOOGLE_CSE_API_KEY": "test-key", "GOOGLE_CSE_CX": "test-cx"})
+    def test_gcse_returns_formatted_results(self):
+        """Mock CSE API response -> returns ddgs-compatible format."""
+        mock_cse_response = {
+            "items": [
+                {"title": "Best Laptops 2026", "snippet": "Top laptop picks reviewed", "link": "https://example.com/laptops"},
+                {"title": "Laptop Buying Guide", "snippet": "How to choose a laptop", "link": "https://example.com/guide"},
+            ]
+        }
+        resp = _make_aiohttp_response(status=200, json_data=mock_cse_response)
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_session([resp])()):
+            result = run_async(_ws_mod._search_google_cse("best laptops", 5))
+
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["title"], "Best Laptops 2026")
+        self.assertEqual(result[0]["body"], "Top laptop picks reviewed")
+        self.assertEqual(result[0]["href"], "https://example.com/laptops")
+
+    @patch.dict(os.environ, {"GOOGLE_CSE_API_KEY": "test-key", "GOOGLE_CSE_CX": "test-cx"})
+    def test_gcse_timeout_returns_none(self):
+        """Timeout -> returns None gracefully."""
+        with patch("aiohttp.ClientSession") as mock_cls:
+            mock_session = MagicMock()
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+            mock_session.get = MagicMock(side_effect=asyncio.TimeoutError)
+            mock_cls.return_value = mock_session
+            result = run_async(_ws_mod._search_google_cse("test query", 5))
+
+        self.assertIsNone(result)
+
+    @patch.dict(os.environ, {"GOOGLE_CSE_API_KEY": "test-key", "GOOGLE_CSE_CX": "test-cx"})
+    def test_gcse_empty_items_returns_none(self):
+        """Empty items array -> returns None."""
+        mock_cse_response = {"items": []}
+        resp = _make_aiohttp_response(status=200, json_data=mock_cse_response)
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_session([resp])()):
+            result = run_async(_ws_mod._search_google_cse("test query", 5))
+
+        self.assertIsNone(result)
+
+    @patch.dict(os.environ, {"GOOGLE_CSE_API_KEY": "test-key", "GOOGLE_CSE_CX": "test-cx"})
+    def test_gcse_http_error_returns_none(self):
+        """Non-200 HTTP status -> returns None."""
+        resp = _make_aiohttp_response(status=403, text_data="Forbidden")
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_session([resp])()):
+            result = run_async(_ws_mod._search_google_cse("test query", 5))
+
+        self.assertIsNone(result)
+
+
+# ===========================================================================
+# 10. TestGoogleCSEFallbackIntegration — Google CSE in fallback chain
+# ===========================================================================
+
+class TestGoogleCSEFallbackIntegration(unittest.TestCase):
+    """Tests that Google CSE is called after Brave fails but before Perplexica."""
+
+    def setUp(self):
+        _reset_ws_state()
+
+    def tearDown(self):
+        _reset_ws_state()
+
+    def test_gcse_called_when_ddgs_and_brave_fail(self):
+        """If ddgs and Brave return nothing, Google CSE should be tried before Perplexica."""
+        call_order = []
+
+        original_ddgs = _ws_mod._DDGS
+
+        class MockDDGS:
+            def text(self, *a, **kw):
+                call_order.append("ddgs")
+                return []
+
+        async def mock_brave(query, max_results):
+            call_order.append("brave")
+            return None
+
+        async def mock_gcse(query, max_results):
+            call_order.append("gcse")
+            return [
+                {"title": "CSE Result", "body": "From Google CSE", "href": "https://cse.google.com/result"},
+            ]
+
+        async def mock_perp(*args, **kwargs):
+            call_order.append("perplexica")
+            return {"answer": "Perplexica answer", "sources": []}
+
+        _ws_mod._DDGS = MockDDGS
+        try:
+            with patch.object(_ws_mod, "_search_brave", side_effect=mock_brave):
+                with patch.object(_ws_mod, "_search_google_cse", side_effect=mock_gcse):
+                    with patch.object(_ws_mod, "_search_perplexica", side_effect=mock_perp):
+                        with patch("src.tools.page_fetch.fetch_pages", new_callable=AsyncMock, return_value={}):
+                            result = run_async(_ws_mod.web_search("test query"))
+
+            self.assertEqual(call_order, ["ddgs", "brave", "gcse"])
+            self.assertIn("CSE Result", result)
+            self.assertNotIn("perplexica", call_order)
+        finally:
+            _ws_mod._DDGS = original_ddgs
+
+    def test_gcse_skipped_when_brave_succeeds(self):
+        """If Brave succeeds, Google CSE should NOT be called."""
+        call_order = []
+
+        original_ddgs = _ws_mod._DDGS
+
+        class MockDDGS:
+            def text(self, *a, **kw):
+                call_order.append("ddgs")
+                return []
+
+        async def mock_brave(query, max_results):
+            call_order.append("brave")
+            return [{"title": "Brave Result", "body": "From Brave", "href": "https://brave.com/result"}]
+
+        async def mock_gcse(query, max_results):
+            call_order.append("gcse")
+            return [{"title": "CSE Result", "body": "From CSE", "href": "https://cse.google.com/result"}]
+
+        _ws_mod._DDGS = MockDDGS
+        try:
+            with patch.object(_ws_mod, "_search_brave", side_effect=mock_brave):
+                with patch.object(_ws_mod, "_search_google_cse", side_effect=mock_gcse):
+                    with patch("src.tools.page_fetch.fetch_pages", new_callable=AsyncMock, return_value={}):
+                        result = run_async(_ws_mod.web_search("test query"))
+
+            self.assertEqual(call_order, ["ddgs", "brave"])
+            self.assertNotIn("gcse", call_order)
+        finally:
+            _ws_mod._DDGS = original_ddgs
+
+
 if __name__ == "__main__":
     unittest.main()

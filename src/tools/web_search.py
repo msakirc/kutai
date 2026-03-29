@@ -1,7 +1,7 @@
 # tools/web_search.py
 """
 Web search using DuckDuckGo + page content fetch (primary).
-Fallback chain: ddgs+pages → Perplexica/Vane → SearXNG direct → curl.
+Fallback chain: ddgs+pages → Brave → Google CSE → Perplexica/Vane → SearXNG direct → curl.
 
 Supports two pipelines:
 - **Quick** (factual queries): page_fetch + simple snippet formatting.
@@ -241,6 +241,57 @@ async def _search_brave(query: str, max_results: int = 5) -> list[dict] | None:
         logger.debug("brave search timeout (10s)", query=query[:50])
     except Exception as e:
         logger.debug("brave search failed", error=str(e))
+    return None
+
+
+async def _search_google_cse(query: str, max_results: int = 10) -> list[dict] | None:
+    """Search using Google Custom Search Engine.
+
+    Free tier: 100 queries/day. Returns None if not configured.
+    API: https://www.googleapis.com/customsearch/v1
+    Params: key, cx, q, num
+    """
+    api_key = os.getenv("GOOGLE_CSE_API_KEY", "").strip()
+    cx = os.getenv("GOOGLE_CSE_CX", "").strip()
+    if not api_key or not cx:
+        return None
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://www.googleapis.com/customsearch/v1",
+                params={
+                    "key": api_key,
+                    "cx": cx,
+                    "q": query,
+                    "num": str(min(max_results, 10)),
+                },
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning("google cse search failed", status=resp.status)
+                    return None
+                data = await resp.json()
+
+        items = data.get("items", [])
+        if not items:
+            return None
+
+        results = []
+        for item in items[:max_results]:
+            results.append({
+                "title": item.get("title", ""),
+                "body": item.get("snippet", ""),
+                "href": item.get("link", ""),
+            })
+
+        logger.info("google cse search ok", count=len(results), query=query[:50])
+        return results
+
+    except asyncio.TimeoutError:
+        logger.debug("google cse search timeout (10s)", query=query[:50])
+    except Exception as e:
+        logger.debug("google cse search failed", error=str(e))
     return None
 
 
@@ -656,8 +707,9 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web",
     """
     Search the web using DuckDuckGo + page fetch (primary), with Perplexica and curl fallbacks.
 
-    Fallback chain: ddgs+page_fetch (primary) → Perplexica/Vane (AI-synthesized)
-    → SearXNG direct (raw results) → curl/DuckDuckGo API.
+    Fallback chain: ddgs+page_fetch (primary) → Brave Search → Google CSE
+    → Perplexica/Vane (AI-synthesized) → SearXNG direct (raw results)
+    → curl/DuckDuckGo API.
 
     Pipeline selection (quick vs deep) is automatic based on ``_task_hints``:
     - **Quick**: factual queries — snippet + page_fetch formatting.
@@ -739,6 +791,18 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web",
             result_text = await _deep_search_pipeline(query, brave_results, urls, intent, params)
         else:
             result_text = await _quick_search_pipeline(query, brave_results, urls)
+        await _embed_web_results(query, result_text)
+        return result_text
+
+    # Method 1.75 (tertiary): Google Custom Search Engine (100 queries/day free)
+    gcse_results = await _search_google_cse(query, effective_max)
+    if gcse_results:
+        logger.debug("google cse search ok, using as fallback", count=len(gcse_results))
+        urls = [r.get("href", "") for r in gcse_results if r.get("href")]
+        if params.use_deep_pipeline and urls:
+            result_text = await _deep_search_pipeline(query, gcse_results, urls, intent, params)
+        else:
+            result_text = await _quick_search_pipeline(query, gcse_results, urls)
         await _embed_web_results(query, result_text)
         return result_text
 

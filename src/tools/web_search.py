@@ -35,6 +35,14 @@ _perplexica_disabled_at: float = 0.0
 _PERPLEXICA_MAX_FAILURES = 3      # Disable after N consecutive failures
 _PERPLEXICA_RETRY_AFTER = 300.0   # Re-enable after 5 minutes
 
+# Phrases that indicate Perplexica couldn't find real data
+_NO_DATA_PHRASES = [
+    "cannot provide", "no data available", "no specific", "purely speculative",
+    "not available", "unable to find", "no confirmed", "no information",
+    "do not contain", "does not contain", "no relevant", "couldn't find",
+    "could not find", "no results found",
+]
+
 
 async def _discover_perplexica_models(base_url: str) -> dict | None:
     """
@@ -293,6 +301,18 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
                     _perplexica_fail_count += 1
                     return None
 
+                # Quality gate: reject "I don't know" answers
+                if not sources:  # 0 sources = Perplexica's SearXNG found nothing useful
+                    _perplexica_fail_count += 1
+                    logger.debug("perplexica: rejecting answer with 0 sources", answer_preview=answer[:100])
+                    return None
+
+                answer_lower = answer.lower()
+                if any(phrase in answer_lower for phrase in _NO_DATA_PHRASES):
+                    _perplexica_fail_count += 1
+                    logger.debug("perplexica: rejecting 'no data' answer", answer_preview=answer[:100])
+                    return None
+
                 # Success - reset failure counter
                 _perplexica_fail_count = 0
 
@@ -408,17 +428,20 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web")
         perplexica_result = await _search_perplexica(query, max_results, search_type)
         if perplexica_result:
             logger.debug("using perplexica backend for web search")
-            lines = [perplexica_result["answer"]]
+            lines = [
+                "## AI-Synthesized Answer (from Perplexica)\n",
+                perplexica_result["answer"],
+            ]
             if perplexica_result["sources"]:
-                lines.append("\n**Sources:**")
+                lines.append("\n### Sources")
                 for i, src in enumerate(perplexica_result["sources"], 1):
                     title = src.get("title", "Untitled")
                     url = src.get("url", "")
-                    lines.append(f"{i}. [{title}]({url})")
+                    lines.append(f"- [{title}]({url})")
             lines.append(
-                "\n[AI-synthesized answer with sources. "
-                "You should respond with final_answer now unless "
-                "something specific is missing.]"
+                "\n**Note: This answer is already synthesized from multiple "
+                "sources. Use it as your final answer unless something "
+                "specific is missing.**"
             )
             result_text = "\n".join(lines)
 

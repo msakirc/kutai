@@ -1283,6 +1283,24 @@ class Orchestrator:
             except asyncio.TimeoutError:
                 timeout_err = f"TimeoutError: Task timed out after {timeout_seconds}s"
                 logger.error("task timeout", task_id=task_id, timeout_seconds=timeout_seconds, error=timeout_err)
+
+                # Try to recover last checkpoint result before failing
+                try:
+                    from src.infra.db import load_task_checkpoint
+                    checkpoint = await load_task_checkpoint(task_id)
+                    if checkpoint:
+                        last_messages = checkpoint.get("messages", [])
+                        # Look for the last assistant message with a tool result
+                        for msg in reversed(last_messages):
+                            if msg.get("role") == "user" and "Tool Result" in msg.get("content", ""):
+                                logger.info(f"[Task #{task_id}] Timeout recovery: using checkpoint from iteration {checkpoint.get('iteration', '?')}")
+                                result_text = f"(Partial result from iteration {checkpoint.get('iteration', '?')} before timeout)\n\n{msg['content'][:3000]}"
+                                await update_task(task_id, status="completed", result=result_text)
+                                await self.telegram.send_result(task_id, title, result_text, "timeout-recovery", 0)
+                                return
+                except Exception as recovery_err:
+                    logger.debug(f"[Task #{task_id}] Checkpoint recovery failed: {recovery_err}")
+
                 await update_task(
                     task_id, status="failed", error=timeout_err
                 )
@@ -1849,6 +1867,27 @@ class Orchestrator:
             logger.debug(f"[Task #{task_id}] Could not look up failed model: {e}")
 
         try:
+            error_ctx = {
+                "failed_task_id": task_id,
+                "failed_agent_type": agent_type,
+                "error": error_str,
+                "original_title": title,
+                "prefer_speed": is_timeout,
+                "exclude_models": [failed_model] if failed_model else [],
+            }
+
+            # Inherit clarification context from failed task
+            failed_ctx = failed_task.get("context", {})
+            if isinstance(failed_ctx, str):
+                try:
+                    failed_ctx = json.loads(failed_ctx)
+                except (json.JSONDecodeError, TypeError):
+                    failed_ctx = {}
+            if failed_ctx.get("user_clarification"):
+                error_ctx["user_clarification"] = failed_ctx["user_clarification"]
+            if failed_ctx.get("clarification_history"):
+                error_ctx["clarification_history"] = failed_ctx["clarification_history"]
+
             recovery_task_id = await add_task(
                 title=stable_title,
                 description=recovery_description,
@@ -1857,14 +1896,7 @@ class Orchestrator:
                 agent_type="error_recovery",
                 tier="medium",
                 priority=max(failed_task.get("priority", 5), 7),
-                context={
-                    "failed_task_id": task_id,
-                    "failed_agent_type": agent_type,
-                    "error": error_str,
-                    "original_title": title,
-                    "prefer_speed": is_timeout,
-                    "exclude_models": [failed_model] if failed_model else [],
-                },
+                context=error_ctx,
             )
             if recovery_task_id:
                 logger.info(

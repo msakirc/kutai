@@ -45,6 +45,7 @@ class TaskClassification:
     confidence: float = 0.5
     method: str = "keyword"
     shopping_sub_intent: str | None = None
+    search_depth: str = "none"
 
 
 # ─── LLM Classification Prompt ────────────────────────────────────────────
@@ -82,6 +83,11 @@ Determine:
 - needs_thinking: does this need deep multi-step reasoning?
 - local_only: personal/sensitive data that shouldn't go to cloud?
 - priority: "critical" | "high" | "normal" | "low" | "background"
+- search_depth: how much web research does this need?
+  "deep" — market analysis, multi-source research, review synthesis
+  "standard" — product info, comparison, how-to with examples
+  "quick" — simple fact, definition, date, status
+  "none" — no web search needed (code tasks, file operations)
 
 BIAS: Most tasks need difficulty 4-6. Only use 8+ for genuinely complex work.
 Default to needs_tools=false unless the task clearly requires execution.
@@ -89,7 +95,7 @@ Default to local_only=false unless personal data is explicitly mentioned.
 
 Task: {task_description}
 
-Respond as: {{"agent_type": "coder", "difficulty": 6, "needs_tools": true, "needs_vision": false, "needs_thinking": false, "local_only": false, "priority": "normal"}}"""
+Respond as: {{"agent_type": "coder", "difficulty": 6, "needs_tools": true, "needs_vision": false, "needs_thinking": false, "local_only": false, "priority": "normal", "search_depth": "none"}}"""
 
 
 PRIORITY_MAP = {
@@ -119,6 +125,39 @@ def _classify_shopping_sub_intent(text: str) -> str | None:
         if any(kw in text_lower for kw in keywords):
             return sub_intent
     return "exploration"  # default sub-intent for shopping tasks
+
+
+# ─── Search Depth Detection ──────────────────────────────────────────────
+
+_SEARCH_DEPTH_RULES: list[tuple[str, list[str]]] = [
+    ("deep", [
+        "analyze", "analyse", "research in detail", "in detail", "market analysis",
+        "competitor analysis", "in-depth", "comprehensive",
+        "multi-source", "synthesize", "synthesis",
+    ]),
+    ("standard", [
+        "price", "fiyat", "fiyatı", "ne kadar", "how much",
+        "compare", "karşılaştır", "vs ", " vs ",
+        "review", "inceleme", "best ", "en iyi",
+        "recommend", "tavsiye", "öneri",
+    ]),
+    ("none", [
+        "write ", "fix ", "implement", "refactor", "debug",
+        "create ", "build ", "deploy", "test ",
+    ]),
+]
+
+
+def _classify_search_depth(text: str) -> str:
+    """Classify how much web search depth a task needs.
+
+    Returns: "deep", "standard", "quick", or "none".
+    """
+    text_lower = text.lower()
+    for depth, keywords in _SEARCH_DEPTH_RULES:
+        if any(kw in text_lower for kw in keywords):
+            return depth
+    return "quick"  # default for general questions
 
 
 # ─── Public API ────────────────────────────────────────────────────────────
@@ -172,6 +211,8 @@ async def _classify_with_llm(title: str, description: str) -> TaskClassification
     raw = response.get("content", "").strip()
     result = _extract_json(raw)
 
+    search_depth = result.get("search_depth") or _classify_search_depth(title + " " + description)
+
     cls = TaskClassification(
         agent_type=result.get("agent_type", "executor"),
         difficulty=max(1, min(10, int(result.get("difficulty", 5)))),
@@ -182,6 +223,7 @@ async def _classify_with_llm(title: str, description: str) -> TaskClassification
         priority=PRIORITY_MAP.get(result.get("priority", "normal"), 5),
         confidence=0.85,
         method="llm",
+        search_depth=search_depth,
     )
 
     logger.info(
@@ -234,6 +276,7 @@ _KEYWORD_RULES: list[tuple[str, int, list[str]]] = [
 def _classify_by_keywords(title: str, description: str) -> TaskClassification:
     """Fast keyword-based classification. Last resort only."""
     text = f"{title} {description}".lower()
+    search_depth = _classify_search_depth(text)
 
     for agent_type, difficulty, keywords in _KEYWORD_RULES:
         if any(kw in text for kw in keywords):
@@ -248,6 +291,7 @@ def _classify_by_keywords(title: str, description: str) -> TaskClassification:
                 needs_vision=(agent_type == "visual_reviewer"),
                 confidence=0.4,
                 method="keyword",
+                search_depth=search_depth,
             )
 
     return TaskClassification(
@@ -255,4 +299,5 @@ def _classify_by_keywords(title: str, description: str) -> TaskClassification:
         difficulty=5,
         confidence=0.3,
         method="keyword_default",
+        search_depth=search_depth,
     )

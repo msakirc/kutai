@@ -70,6 +70,21 @@ _BUDGET_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Extended budget patterns: "30k", "30bin", "$500", "under 500", "budget 500",
+# "max 500", "bütçe 30000", "30.000 lira", "30000₺"
+_BUDGET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # Turkish lira: "5000 TL", "5.000 TL", "5000₺", "5000 lira"
+    (re.compile(r"(\d[\d.,]*)\s*(tl|lira|₺)", re.IGNORECASE), "TRY"),
+    # Turkish shorthand: "30k", "30bin" (interpret as TRY)
+    (re.compile(r"(\d+)\s*(?:k|bin)\b", re.IGNORECASE), "TRY_k"),
+    # Turkish budget keyword: "bütçe 30000", "bütçem 5000"
+    (re.compile(r"b[üu]t[çc]e\w*\s+(\d[\d.,]*)", re.IGNORECASE), "TRY"),
+    # English dollar: "$500", "$ 500"
+    (re.compile(r"\$\s*(\d[\d.,]*)", re.IGNORECASE), "USD"),
+    # English keywords: "under 500", "budget 500", "max 500"
+    (re.compile(r"(?:under|budget|max|maximum)\s+(\d[\d.,]*)", re.IGNORECASE), "AMB"),
+]
+
 _CONSTRAINT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("dimensional", re.compile(r"\d+\s*(cm|mm|m|inç|inch)\b", re.IGNORECASE)),
     ("budget", _BUDGET_RE),
@@ -98,6 +113,12 @@ def _extract_constraints(raw: str) -> list[str]:
     for ctype, pattern in _CONSTRAINT_PATTERNS:
         if pattern.search(raw):
             found.append(ctype)
+    # Also check extended budget patterns if not already detected
+    if "budget" not in found:
+        for pattern, _ in _BUDGET_PATTERNS:
+            if pattern.search(raw):
+                found.append("budget")
+                break
     return found
 
 
@@ -108,13 +129,35 @@ def _detect_urgency(lower: str) -> str:
 
 
 def _extract_budget(raw: str) -> float | None:
-    m = _BUDGET_RE.search(raw)
-    if m:
-        try:
-            return float(m.group(1).replace(".", "").replace(",", "."))
-        except ValueError:
-            return None
+    """Extract a numeric budget from the query string.
+
+    Supports Turkish (TL, lira, ₺, k/bin shorthand, bütçe keyword)
+    and English ($, under/budget/max prefix) patterns.
+    """
+    for pattern, currency_hint in _BUDGET_PATTERNS:
+        m = pattern.search(raw)
+        if m:
+            try:
+                val = float(m.group(1).replace(".", "").replace(",", "."))
+                if currency_hint == "TRY_k":
+                    val *= 1000
+                return val
+            except ValueError:
+                continue
     return None
+
+
+def _is_vague_query(raw_query: str, constraints: list[str], budget: float | None) -> bool:
+    """Determine if a query is too vague and would benefit from clarification.
+
+    A query is vague when it's a single generic product word (like "laptop",
+    "phone", "tablet") with no budget, brand, use-case, or feature qualifiers.
+    """
+    words = raw_query.strip().split()
+    # Very short queries with no constraints are vague
+    if len(words) <= 2 and not constraints and budget is None:
+        return True
+    return False
 
 
 def _fallback_analyze(raw_query: str) -> dict:
@@ -122,19 +165,23 @@ def _fallback_analyze(raw_query: str) -> dict:
     lower = normalize_turkish(raw_query)
     variants = generate_search_variants(raw_query)
     lang = detect_language(raw_query)
+    constraints = _extract_constraints(raw_query)
+    budget = _extract_budget(raw_query)
+    vague = _is_vague_query(raw_query, constraints, budget)
 
     return {
         "intent": _detect_intent(lower),
         "category": _detect_category(lower),
         "products_mentioned": variants[1:] if len(variants) > 1 else [],
-        "constraints": _extract_constraints(raw_query),
+        "constraints": constraints,
         "missing_info": [],
         "follow_up_questions": [],
         "urgency": _detect_urgency(lower),
         "experience_level": "unknown",
         "search_complexity": "simple" if len(raw_query.split()) <= 4 else "moderate",
         "language": lang,
-        "budget": _extract_budget(raw_query),
+        "budget": budget,
+        "needs_clarification": vague,
         "source": "fallback",
     }
 
@@ -210,6 +257,14 @@ async def analyze_query(raw_query: str) -> dict:
             }
             for key, default in defaults.items():
                 result.setdefault(key, default)
+
+            # Derive needs_clarification if the LLM didn't set it
+            if "needs_clarification" not in result:
+                result["needs_clarification"] = _is_vague_query(
+                    raw_query,
+                    result.get("constraints", []),
+                    result.get("budget"),
+                )
 
             result["source"] = "llm"
             logger.info("Query analysed via LLM: intent=%s", result["intent"])

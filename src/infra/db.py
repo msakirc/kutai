@@ -1423,7 +1423,7 @@ async def toggle_todo(todo_id: int) -> str:
         new_status = "done"
         await db.execute(
             "UPDATE todo_items SET status = 'done', completed_at = ? WHERE id = ?",
-            (datetime.now(timezone.utc).isoformat(), todo_id),
+            (datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), todo_id),
         )
     await db.commit()
     return new_status

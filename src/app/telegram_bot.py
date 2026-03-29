@@ -2877,7 +2877,11 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
         # ── Todo Callbacks ─────────────────────────────────────
         if data.startswith("todo_toggle:"):
-            todo_id = int(data.split(":")[1])
+            try:
+                todo_id = int(data.split(":")[1])
+            except (ValueError, IndexError):
+                await query.answer("Invalid todo ID")
+                return
             new_status = await toggle_todo(todo_id)
             icon = "✅" if new_status == "done" else "⬜"
             await query.answer(f"{icon} {'Done!' if new_status == 'done' else 'Reopened'}")
@@ -2898,19 +2902,6 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 pass
             return
 
-        if data.startswith("todo_ai:"):
-            todo_id = int(data.split(":")[1])
-            todo = await get_todo(todo_id)
-            if todo:
-                task_id = await add_task(
-                    title=f"Help with: {todo['title'][:40]}",
-                    description=f"Help the user with this todo item: {todo['title']}\n{todo.get('description', '')}",
-                    tier="auto",
-                    priority=8,
-                )
-                await query.answer(f"Task #{task_id} created!")
-            return
-
         if data == "todo_close":
             try:
                 await query.delete_message()
@@ -2919,36 +2910,40 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             return
 
         if data.startswith("todo_help:"):
-            todo_id = int(data.split(":")[1])
+            try:
+                todo_id = int(data.split(":")[1])
+            except (ValueError, IndexError):
+                await query.answer("Invalid todo ID")
+                return
             todo = await get_todo(todo_id)
             if not todo:
                 await query.answer("Todo not found")
                 return
-            # Get suggestion from the reminder message text
             suggestion = self._extract_suggestion_from_message(
                 query.message.text, todo_id
             )
             prompt_text = suggestion or f"Help me with: {todo['title']}"
-            # Store pending help action so reply is routed correctly
             chat_id = query.message.chat_id
             self._pending_action[chat_id] = {
                 "command": "_todo_help",
                 "todo_id": todo_id,
                 "todo_title": todo["title"],
+                "suggestion": suggestion,
             }
-            await query.message.reply_text(
-                f"🤖 *Help with: {todo['title']}*\n"
-                f"Suggested action: _{suggestion or 'Help me with this'}_\n\n"
-                f"Type your request below, or tap Cancel.",
-                parse_mode="Markdown",
-                reply_markup=REPLY_KEYBOARD,
+            buttons = []
+            if suggestion:
+                buttons.append(
+                    InlineKeyboardButton("✅ Accept", callback_data=f"todo_help_accept:{todo_id}")
+                )
+            buttons.append(
+                InlineKeyboardButton("❌ Cancel", callback_data="todo_help_cancel")
             )
-            # Send cancel button as a separate inline message
             await query.message.reply_text(
-                f"💬 {prompt_text}",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("❌ Cancel", callback_data="todo_help_cancel")
-                ]]),
+                f"🤖 *Help with: {todo['title']}*\n\n"
+                f"💡 _{prompt_text}_\n\n"
+                f"Tap *Accept* to run this suggestion, type a custom request, or Cancel.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([buttons]),
             )
             return
 
@@ -2959,6 +2954,35 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 await query.delete_message()
             except Exception:
                 await query.edit_message_text("(cancelled)")
+            return
+
+        if data.startswith("todo_help_accept:"):
+            try:
+                todo_id = int(data.split(":")[1])
+            except (ValueError, IndexError):
+                await query.answer("Invalid todo ID")
+                return
+            chat_id = query.message.chat_id
+            pending = self._pending_action.pop(chat_id, None)
+            if not pending or pending.get("todo_id") != todo_id:
+                await query.answer("Help session expired")
+                return
+            suggestion = pending.get("suggestion") or f"Help with: {pending['todo_title']}"
+            todo_title = pending["todo_title"]
+            task_id = await add_task(
+                title=f"Help with: {todo_title[:40]}",
+                description=suggestion,
+                tier="auto",
+                priority=6,
+                context={"todo_id": todo_id, "local_only": True},
+            )
+            try:
+                await query.edit_message_text(
+                    f"✅ Task #{task_id} created: _{suggestion[:80]}_",
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                await query.answer(f"Task #{task_id} created!")
             return
 
         # ── Workflow Status Callbacks ────────────────────────────
@@ -3235,16 +3259,23 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         text = update.message.text or ""
         todo_info = getattr(self, "_last_todo_help", None)
         if not todo_info:
-            await self._reply(update,"❌ Help session expired. Try again from the reminder.")
+            await self._reply(update, "❌ Help session expired. Try again from the reminder.")
             return
         self._last_todo_help = None
         todo_id = todo_info["todo_id"]
         todo_title = todo_info["todo_title"]
+        suggestion = todo_info.get("suggestion", "")
+        # User typed a custom request — use it, but include suggestion as context
+        description = text
+        if suggestion and text.lower().strip() in ("yes", "ok", "do it", "evet", "tamam"):
+            description = suggestion
+        elif suggestion:
+            description = f"User request: {text}\nOriginal suggestion: {suggestion}"
         task_id = await add_task(
             title=f"Help with: {todo_title[:40]}",
-            description=text,
+            description=description,
             tier="auto",
-            priority=8,
-            context={"todo_id": todo_id, "local_only": True, "prefer_quality": True},
+            priority=6,
+            context={"todo_id": todo_id, "local_only": True},
         )
-        await self._reply(update,f"✅ Task #{task_id} created!")
+        await self._reply(update, f"✅ Task #{task_id} created!")

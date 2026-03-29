@@ -436,7 +436,7 @@ class TestDBAdvanced:
 
             await toggle_todo(tid)
             todo_toggled = await get_todo(tid)
-            assert todo_toggled["status"] == "completed"
+            assert todo_toggled["status"] == "done"
 
             await delete_todo(tid)
             todos_after = await get_todos()

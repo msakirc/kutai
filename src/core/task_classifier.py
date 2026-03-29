@@ -147,17 +147,81 @@ _SEARCH_DEPTH_RULES: list[tuple[str, list[str]]] = [
     ]),
 ]
 
+# ─── Time-Sensitive Query Detection ─────────────────────────────────────
+
+# Patterns that indicate time-sensitive queries requiring fresh web data.
+# Organized by upgrade level: "standard" patterns get higher priority than "quick".
+
+_TIME_SENSITIVE_STANDARD: list[str] = [
+    # Match lineups / predicted XIs
+    "predicted xi", "lineup", "kadro", "ilk 11", "ilk onbir",
+    # Live scores / match results
+    "score", "skor", "maç", "match result",
+    # Financial prices (change frequently)
+    "stock price", "share price", "exchange rate", "dolar kuru",
+    "altın fiyatı", "euro kuru", "borsa",
+]
+
+_TIME_SENSITIVE_QUICK: list[str] = [
+    # Temporal words (English)
+    "today", "tonight", "tomorrow", "next week", "this week", "this month",
+    "next monday", "next tuesday", "next wednesday", "next thursday",
+    "next friday", "next saturday", "next sunday", "this weekend",
+    # Temporal words (Turkish)
+    "bugün", "yarın", "bu hafta", "gelecek hafta", "bu akşam",
+    "bu ay", "gelecek ay", "bu gece", "haftaya",
+    # Current/live events
+    "weather", "hava durumu",
+    # Recency markers (English)
+    "latest", "current", "recent", "right now", "live", "breaking",
+    # Recency markers (Turkish)
+    "güncel", "son dakika", "şu an", "anlık", "şu anda",
+]
+
+# Depth ordering for comparison
+_DEPTH_ORDER = {"none": 0, "quick": 1, "standard": 2, "deep": 3}
+
+
+def _apply_time_sensitivity(text_lower: str, depth: str) -> str:
+    """Upgrade search depth if the query contains time-sensitive patterns.
+
+    - _TIME_SENSITIVE_STANDARD patterns upgrade to at least "standard"
+    - _TIME_SENSITIVE_QUICK patterns upgrade to at least "quick"
+    """
+    current = _DEPTH_ORDER.get(depth, 0)
+
+    # Check standard-level patterns first (higher upgrade)
+    if current < _DEPTH_ORDER["standard"]:
+        if any(kw in text_lower for kw in _TIME_SENSITIVE_STANDARD):
+            return "standard"
+
+    # Check quick-level patterns
+    if current < _DEPTH_ORDER["quick"]:
+        if any(kw in text_lower for kw in _TIME_SENSITIVE_QUICK):
+            return "quick"
+
+    return depth
+
 
 def _classify_search_depth(text: str) -> str:
     """Classify how much web search depth a task needs.
 
     Returns: "deep", "standard", "quick", or "none".
+    Applies time-sensitivity upgrades after initial classification.
     """
     text_lower = text.lower()
-    for depth, keywords in _SEARCH_DEPTH_RULES:
+
+    # Initial classification from keyword rules
+    depth = "quick"  # default for general questions
+    for d, keywords in _SEARCH_DEPTH_RULES:
         if any(kw in text_lower for kw in keywords):
-            return depth
-    return "quick"  # default for general questions
+            depth = d
+            break
+
+    # Upgrade if time-sensitive patterns detected
+    depth = _apply_time_sensitivity(text_lower, depth)
+
+    return depth
 
 
 # ─── Public API ────────────────────────────────────────────────────────────

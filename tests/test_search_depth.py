@@ -35,5 +35,63 @@ class TestSearchDepthClassification(unittest.TestCase):
         self.assertEqual(_classify_search_depth("COMPARE products"), "standard")
 
 
+class TestTimeSensitiveDetection(unittest.TestCase):
+    """Time-sensitive queries must be upgraded to at least quick/standard."""
+
+    def test_predicted_xi_is_at_least_quick(self):
+        depth = _classify_search_depth("predicted xi for turkey next tuesday")
+        self.assertIn(depth, ("quick", "standard", "deep"))
+
+    def test_weather_is_quick(self):
+        depth = _classify_search_depth("weather in istanbul tomorrow")
+        self.assertIn(depth, ("quick", "standard"))
+
+    def test_stock_price_is_standard(self):
+        depth = _classify_search_depth("current price of AAPL stock")
+        self.assertIn(depth, ("standard", "deep"))
+
+    def test_turkish_time_sensitive(self):
+        depth = _classify_search_depth("bugün dolar kuru ne")
+        self.assertIn(depth, ("standard", "deep"))
+
+    def test_match_lineup_is_standard(self):
+        depth = _classify_search_depth("turkey vs kosovo lineup tonight")
+        self.assertIn(depth, ("standard", "deep"))
+
+    def test_non_time_sensitive_stays_none(self):
+        depth = _classify_search_depth("write a python function to sort a list")
+        self.assertEqual(depth, "none")
+
+    def test_score_is_standard(self):
+        depth = _classify_search_depth("what is the score of the match")
+        self.assertIn(depth, ("standard", "deep"))
+
+    def test_turkish_match_query(self):
+        depth = _classify_search_depth("bu akşam maç kadrosu")
+        self.assertIn(depth, ("standard", "deep"))
+
+    def test_exchange_rate_turkish(self):
+        depth = _classify_search_depth("altın fiyatı ne kadar")
+        self.assertIn(depth, ("standard", "deep"))
+
+    def test_latest_news(self):
+        depth = _classify_search_depth("latest news about AI")
+        self.assertIn(depth, ("quick", "standard", "deep"))
+
+    def test_son_dakika(self):
+        depth = _classify_search_depth("son dakika haberleri")
+        self.assertIn(depth, ("quick", "standard", "deep"))
+
+    def test_tomorrow_does_not_stay_none(self):
+        """A query with 'tomorrow' must not be classified as 'none'."""
+        depth = _classify_search_depth("what happens tomorrow")
+        self.assertNotEqual(depth, "none")
+
+    def test_deep_not_downgraded(self):
+        """Time-sensitivity should not downgrade an already-deep classification."""
+        depth = _classify_search_depth("analyze stock price trends in detail today")
+        self.assertEqual(depth, "deep")
+
+
 if __name__ == "__main__":
     unittest.main()

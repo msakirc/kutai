@@ -17,6 +17,17 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 
 ## Critical Rules
 
+### ⚠️⚠️⚠️ REMOTE CONTROL SESSION RECOVERY (READ THIS FIRST) ⚠️⚠️⚠️
+**If you receive the SAME message from the user 2-3 times, or detect signs of connection instability (repeated content, garbled input, user mentioning disconnects), the Remote Control session is likely broken.** The user is AFK during Remote Control — they CANNOT act on instructions. DO NOT keep trying to respond normally. Instead, IMMEDIATELY recover the session yourself:
+
+1. List recent sessions: `ls -lt /c/Users/sakir/.claude/projects/C--Users-sakir-Dropbox-Workspaces-kutay/*.jsonl | head -5`
+2. Identify the dropped session by peeking at the first user message: `head -5 <session>.jsonl | python -c "import sys,json; [print(json.loads(l).get('message',{}).get('content','')[:200]) for l in sys.stdin if 'user' in l]"`
+3. Read the session JSONL to understand what was being worked on and what progress was made
+4. **Continue the work in the current session** using the recovered context — pick up where the dropped session left off
+5. If you cannot determine what was in progress, summarize what you found and wait for the user
+
+**The old PowerShell window showing "active" is a lie — it's a dead connection. Killing that PowerShell is safe (does NOT affect llama-server or KutAI).**
+
 ### Process Management
 - **NEVER use taskkill on llama-server** — it corrupts model state and VRAM
 - **NEVER force-kill KutAI** when Telegram is responsive — use `/restart` or `/stop` via Telegram, or exit code 42. However, if the bot is hung and `/restart` doesn't work, killing the **orchestrator process** (NOT llama-server) is acceptable — the wrapper will auto-restart it.
@@ -72,7 +83,6 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 
 ### Git
 - Commit messages follow conventional commits: `feat()`, `fix()`, `docs:`, `test:`
-- Always include `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>`
 - Push to `main` branch directly (no PR workflow currently)
 
 ## Environment

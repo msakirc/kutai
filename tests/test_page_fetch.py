@@ -97,7 +97,7 @@ class TestFetchPageContent(unittest.TestCase):
     """Test single page fetching with mocked HTTP."""
 
     def test_successful_fetch(self):
-        html = "<html><body><article><p>Great article about Python.</p></article></body></html>"
+        html = "<html><body><article><p>Great article about Python with detailed examples and comprehensive coverage of the topic.</p></article></body></html>"
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.headers = {"content-type": "text/html; charset=utf-8"}
@@ -158,22 +158,22 @@ class TestFetchPages(unittest.TestCase):
 
     def test_fetches_multiple_pages(self):
         pages = {
-            "https://a.com": "<html><body><p>Page A content</p></body></html>",
-            "https://b.com": "<html><body><p>Page B content</p></body></html>",
+            "https://a.com": "<html><body><p>Page A content with enough text to pass the minimum length threshold for extraction.</p></body></html>",
+            "https://b.com": "<html><body><p>Page B content with enough text to pass the minimum length threshold for extraction.</p></body></html>",
         }
 
-        async def mock_get(url, **kwargs):
+        def mock_get(url, **kwargs):
             resp = AsyncMock()
             resp.status = 200
             resp.headers = {"content-type": "text/html"}
             resp.text = AsyncMock(return_value=pages.get(url, ""))
-            ctx = AsyncMock()
+            ctx = MagicMock()
             ctx.__aenter__ = AsyncMock(return_value=resp)
             ctx.__aexit__ = AsyncMock(return_value=False)
             return ctx
 
         with patch("aiohttp.ClientSession") as mock_cls:
-            session = AsyncMock()
+            session = MagicMock()
             session.get = mock_get
             mock_cls.return_value.__aenter__ = AsyncMock(return_value=session)
             mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -193,16 +193,16 @@ class TestFetchPages(unittest.TestCase):
         urls = [f"https://example.com/{i}" for i in range(10)]
 
         with patch("aiohttp.ClientSession") as mock_cls:
-            session = AsyncMock()
+            session = MagicMock()
             call_count = {"n": 0}
 
-            async def mock_get(url, **kwargs):
+            def mock_get(url, **kwargs):
                 call_count["n"] += 1
                 resp = AsyncMock()
                 resp.status = 200
                 resp.headers = {"content-type": "text/html"}
-                resp.text = AsyncMock(return_value=f"<html><body><p>Content {url}</p></body></html>")
-                ctx = AsyncMock()
+                resp.text = AsyncMock(return_value=f"<html><body><p>Content for {url} with enough text to pass the minimum length threshold.</p></body></html>")
+                ctx = MagicMock()
                 ctx.__aenter__ = AsyncMock(return_value=resp)
                 ctx.__aexit__ = AsyncMock(return_value=False)
                 return ctx
@@ -220,14 +220,14 @@ class TestFetchPages(unittest.TestCase):
         urls = ["ftp://example.com/file", "https://real.com"]
 
         with patch("aiohttp.ClientSession") as mock_cls:
-            session = AsyncMock()
+            session = MagicMock()
 
-            async def mock_get(url, **kwargs):
+            def mock_get(url, **kwargs):
                 resp = AsyncMock()
                 resp.status = 200
                 resp.headers = {"content-type": "text/html"}
-                resp.text = AsyncMock(return_value="<html><body><p>Real content</p></body></html>")
-                ctx = AsyncMock()
+                resp.text = AsyncMock(return_value="<html><body><p>Real content with enough text to pass the minimum length threshold for extraction.</p></body></html>")
+                ctx = MagicMock()
                 ctx.__aenter__ = AsyncMock(return_value=resp)
                 ctx.__aexit__ = AsyncMock(return_value=False)
                 return ctx

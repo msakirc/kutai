@@ -2,7 +2,6 @@
 """Async page fetcher with HTML content extraction using BeautifulSoup."""
 
 import asyncio
-import inspect
 import re
 
 import aiohttp
@@ -68,17 +67,13 @@ async def fetch_page_content(
     Returns extracted text, or None on any error (timeout, non-HTML, HTTP error).
     """
     try:
-        _get_result = session.get(
+        async with session.get(
             url,
             timeout=aiohttp.ClientTimeout(total=timeout),
             headers={"User-Agent": _USER_AGENT},
             allow_redirects=True,
             max_redirects=3,
-        )
-        # Support both sync-returning and async-returning session.get patterns
-        if inspect.iscoroutine(_get_result):
-            _get_result = await _get_result
-        async with _get_result as resp:
+        ) as resp:
             # Skip non-HTML responses
             content_type = resp.headers.get("content-type", "")
             if "text/html" not in content_type and "text/xhtml" not in content_type:
@@ -91,8 +86,8 @@ async def fetch_page_content(
 
             html = await resp.text(encoding=None)  # let aiohttp detect encoding
             text = extract_main_text(html, max_chars=max_chars)
-            if not text:
-                logger.debug("page_fetch: no content extracted", url=url[:80])
+            if not text or len(text) < 50:
+                logger.debug("page_fetch: too little content", url=url[:80], text_len=len(text) if text else 0)
                 return None
 
             logger.debug("page_fetch: ok", url=url[:80], text_len=len(text))

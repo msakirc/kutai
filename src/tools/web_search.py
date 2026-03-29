@@ -2,11 +2,20 @@
 """
 Web search using DuckDuckGo + page content fetch (primary).
 Fallback chain: ddgs+pages → Perplexica/Vane → SearXNG direct → curl.
+
+Supports two pipelines:
+- **Quick** (factual queries): page_fetch + simple snippet formatting.
+- **Deep** (product/review/research queries): page_fetch → Trafilatura
+  extraction → BM25 relevance scoring → budget-allocated output.
+
+Pipeline selection is automatic based on task hints (search_depth,
+shopping_sub_intent, agent_type).
 """
 import asyncio
 import json
 import os
 import urllib.parse
+from dataclasses import dataclass
 
 import aiohttp
 
@@ -14,6 +23,56 @@ from src.infra.logging_config import get_logger
 from src.tools import run_shell
 
 logger = get_logger("tools.web_search")
+
+
+# ---------------------------------------------------------------------------
+# Intent inference — maps task hints to search parameters
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _SearchParams:
+    max_results: int
+    max_chars_per_page: int
+    total_budget: int
+    use_deep_pipeline: bool
+
+_INTENT_PARAMS = {
+    "factual":  _SearchParams(max_results=5,  max_chars_per_page=1500, total_budget=5000,  use_deep_pipeline=False),
+    "product":  _SearchParams(max_results=7,  max_chars_per_page=2000, total_budget=10000, use_deep_pipeline=True),
+    "reviews":  _SearchParams(max_results=8,  max_chars_per_page=2500, total_budget=15000, use_deep_pipeline=True),
+    "market":   _SearchParams(max_results=10, max_chars_per_page=3000, total_budget=20000, use_deep_pipeline=True),
+    "research": _SearchParams(max_results=10, max_chars_per_page=3000, total_budget=20000, use_deep_pipeline=True),
+}
+
+
+def _infer_search_intent(hints: dict) -> tuple[str, _SearchParams]:
+    """Infer search intent from task context. Returns (intent_name, params)."""
+    depth = hints.get("search_depth")
+    if depth == "deep":
+        return "research", _INTENT_PARAMS["research"]
+    if depth == "standard":
+        return "product", _INTENT_PARAMS["product"]
+    if depth == "quick":
+        return "factual", _INTENT_PARAMS["factual"]
+
+    sub = hints.get("shopping_sub_intent")
+    if sub in ("research", "exploration"):
+        return "market", _INTENT_PARAMS["market"]
+    if sub in ("compare", "price_check", "deal_hunt", "upgrade"):
+        return "product", _INTENT_PARAMS["product"]
+    if sub in ("purchase_advice", "complaint_return_help"):
+        return "reviews", _INTENT_PARAMS["reviews"]
+
+    agent = hints.get("agent_type", "")
+    agent_map = {
+        "researcher": "research",
+        "analyst": "research",
+        "deal_analyst": "market",
+        "shopping_advisor": "product",
+        "product_researcher": "product",
+    }
+    intent = agent_map.get(agent, "factual")
+    return intent, _INTENT_PARAMS[intent]
 
 # Try to use ddgs package (formerly duckduckgo-search)
 _DDGS = None
@@ -343,6 +402,91 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
         return None
 
 
+# ---------------------------------------------------------------------------
+# Quick and deep search pipelines
+# ---------------------------------------------------------------------------
+
+async def _quick_search_pipeline(query: str, ddgs_results: list, urls: list) -> str:
+    """Existing fast path: page_fetch + simple format."""
+    page_contents = {}
+    if urls:
+        try:
+            from src.tools.page_fetch import fetch_pages
+            page_contents = await fetch_pages(urls, max_pages=3, max_chars=1500)
+            logger.debug("page_fetch: fetched pages", count=len(page_contents))
+        except Exception as e:
+            logger.debug("page_fetch: skipped", error=str(e)[:100])
+
+    lines = []
+    for i, r in enumerate(ddgs_results, 1):
+        title = r.get("title", "No title")
+        body = r.get("body", "")[:200]
+        href = r.get("href", "")
+        parts = [f"{i}. **{title}**\n   {body}\n   {href}"]
+        if href in page_contents:
+            parts.append(f"   ---\n   {page_contents[href]}")
+        lines.append("\n".join(parts))
+
+    return f"Search results for '{query}':\n\n" + "\n\n".join(lines)
+
+
+async def _deep_search_pipeline(
+    query: str, ddgs_results: list, urls: list, intent: str, params: _SearchParams
+) -> str:
+    """Deep path: fetch pages -> Trafilatura -> BM25 -> budget allocation."""
+    from src.tools.page_fetch import fetch_pages
+    from src.tools.content_extract import extract_content
+    from src.tools.relevance import score_and_budget
+
+    # Fetch more pages with more content for deep search
+    page_htmls = await fetch_pages(urls, max_pages=params.max_results, max_chars=50000)
+    logger.debug("deep pipeline: fetched pages", count=len(page_htmls))
+
+    if not page_htmls:
+        logger.debug("deep pipeline: no pages fetched, falling back to quick")
+        return await _quick_search_pipeline(query, ddgs_results, urls)
+
+    # Extract content with Trafilatura
+    contents = []
+    for url, html in page_htmls.items():
+        extracted = extract_content(html, url=url)
+        if extracted.text and extracted.word_count > 10:
+            contents.append(extracted)
+
+    if not contents:
+        logger.debug("deep pipeline: no content extracted, falling back to quick")
+        return await _quick_search_pipeline(query, ddgs_results, urls)
+
+    # Score relevance and allocate budgets
+    budgeted = score_and_budget(contents, query, total_budget=params.total_budget, intent=intent)
+
+    # Format output
+    lines = []
+    for i, r in enumerate(ddgs_results, 1):
+        title = r.get("title", "No title")
+        body = r.get("body", "")[:150]
+        href = r.get("href", "")
+        lines.append(f"{i}. **{title}** — {body} ({href})")
+
+    lines.append("\n---\n**Detailed content (by relevance):**\n")
+    for b in budgeted:
+        if not b.truncated_text:
+            continue
+        title = b.content.title or b.content.url.split("/")[-1] or "Untitled"
+        tags = []
+        if b.content.has_prices:
+            tags.append("prices")
+        if b.content.has_reviews:
+            tags.append("reviews")
+        tag_str = f" [{', '.join(tags)}]" if tags else ""
+        lines.append(f"### {title}{tag_str}")
+        lines.append(f"Source: {b.content.url}")
+        lines.append(b.truncated_text)
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 async def _embed_web_results(query: str, results_text: str) -> None:
     """Phase D: Embed web search results into web_knowledge collection."""
     try:
@@ -374,19 +518,28 @@ async def _embed_web_results(query: str, results_text: str) -> None:
         logger.debug("Web result embedding skipped: %s", e)
 
 
-async def web_search(query: str, max_results: int = 5, search_type: str = "web") -> str:
+async def web_search(query: str, max_results: int = 5, search_type: str = "web", _task_hints: dict | None = None) -> str:
     """
     Search the web using DuckDuckGo + page fetch (primary), with Perplexica and curl fallbacks.
 
     Fallback chain: ddgs+page_fetch (primary) → Perplexica/Vane (AI-synthesized)
     → SearXNG direct (raw results) → curl/DuckDuckGo API.
 
+    Pipeline selection (quick vs deep) is automatic based on ``_task_hints``:
+    - **Quick**: factual queries — snippet + page_fetch formatting.
+    - **Deep**: product/review/research queries — Trafilatura extraction,
+      BM25 relevance scoring, and budget-allocated output.
+
     Before issuing a live search, checks the web_knowledge vector store
     for recent relevant cached results (Phase D knowledge accumulation).
 
     search_type: "web", "academic", or "code"
     """
-    logger.info("web search query", query=query, max_results=max_results, search_type=search_type)
+    hints = _task_hints or {}
+    intent, params = _infer_search_intent(hints)
+    effective_max = max(max_results, params.max_results)
+
+    logger.info("web search query", query=query, max_results=effective_max, intent=intent, search_type=search_type)
 
     # Phase D: Check existing web knowledge before live search
     try:
@@ -425,36 +578,19 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web")
     except Exception:
         is_degraded = False
 
-    # Method 1 (primary): DuckDuckGo + page content fetch
+    # Method 1 (primary): DuckDuckGo + page fetch (quick or deep)
     if _DDGS is not None:
         try:
-            results = _DDGS().text(query, max_results=max_results)
+            results = _DDGS().text(query, max_results=effective_max)
             if results:
-                logger.debug("ddgs search ok", count=len(results))
-
-                # Fetch full page content for top results
+                logger.debug("ddgs search ok", count=len(results), intent=intent)
                 urls = [r.get("href", "") for r in results if r.get("href")]
-                page_contents = {}
-                if urls:
-                    try:
-                        from src.tools.page_fetch import fetch_pages
-                        page_contents = await fetch_pages(urls, max_pages=3, max_chars=1500)
-                        logger.debug("page_fetch: fetched pages", count=len(page_contents))
-                    except Exception as e:
-                        logger.debug("page_fetch: skipped", error=str(e)[:100])
 
-                # Format: snippets + page content where available
-                lines = []
-                for i, r in enumerate(results, 1):
-                    title = r.get("title", "No title")
-                    body = r.get("body", "")[:200]
-                    href = r.get("href", "")
-                    parts = [f"{i}. **{title}**\n   {body}\n   {href}"]
-                    if href in page_contents:
-                        parts.append(f"   ---\n   {page_contents[href]}")
-                    lines.append("\n".join(parts))
+                if params.use_deep_pipeline and urls:
+                    result_text = await _deep_search_pipeline(query, results, urls, intent, params)
+                else:
+                    result_text = await _quick_search_pipeline(query, results, urls)
 
-                result_text = f"Search results for '{query}':\n\n" + "\n\n".join(lines)
                 await _embed_web_results(query, result_text)
                 return result_text
         except Exception as e:

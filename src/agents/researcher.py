@@ -25,6 +25,8 @@ class ResearcherAgent(BaseAgent):
         "file_tree",
         "api_lookup",
         "api_call",
+        "play_store",
+        "github",
     ]
 
     def get_system_prompt(self, task: dict) -> str:

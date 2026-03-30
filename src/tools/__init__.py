@@ -707,6 +707,80 @@ try:
 except Exception as e:
     logger.debug(f"Shopping tools not available — {type(e).__name__}: {e}")
 
+# Play Store tools
+try:
+    from .play_store import play_store_search, play_store_app, play_store_reviews, play_store_similar
+    import json as _json_ps
+
+    async def _tool_play_store(action: str = "search", query: str = "", app_id: str = "", count: int = 10) -> str:
+        """Search Play Store, get app details, reviews, or find similar apps."""
+        try:
+            if action == "search" and query:
+                results = await play_store_search(query, count=count)
+                return _json_ps.dumps(results, ensure_ascii=False, indent=2)
+            elif action == "app" and app_id:
+                result = await play_store_app(app_id)
+                return _json_ps.dumps(result, ensure_ascii=False, indent=2)
+            elif action == "reviews" and app_id:
+                results = await play_store_reviews(app_id, count=count)
+                return _json_ps.dumps(results, ensure_ascii=False, indent=2)
+            elif action == "similar" and app_id:
+                results = await play_store_similar(app_id)
+                return _json_ps.dumps(results, ensure_ascii=False, indent=2)
+            else:
+                return 'Usage: action="search" query="..." OR action="app"|"reviews"|"similar" app_id="com.example.app"'
+        except Exception as e:
+            return f"Play Store error: {e}"
+
+    _optional_tools["play_store"] = {
+        "function": _tool_play_store,
+        "description": 'Search Google Play Store, get app details/reviews/similar apps. Args: action ("search"|"app"|"reviews"|"similar"), query (str), app_id (str), count (int)',
+        "example": '{"action": "tool_call", "tool": "play_store", "args": {"action": "search", "query": "review platform"}}',
+    }
+except Exception as e:
+    logger.warning(f"play_store tool not available — {type(e).__name__}: {e}")
+
+# GitHub search tools
+try:
+    from .github_search import github_search_repos, github_search_code, github_repo_readme
+    import json as _json_gh
+
+    async def _tool_github(action: str = "repos", query: str = "", repo: str = "", count: int = 10) -> str:
+        """Search GitHub repos/code or fetch README. Args: action (repos|code|readme), query/repo, count."""
+        try:
+            if action == "repos" and query:
+                results = await github_search_repos(query, count=count)
+                return _json_gh.dumps(results, ensure_ascii=False, indent=2)
+            elif action == "code" and query:
+                results = await github_search_code(query, count=count)
+                return _json_gh.dumps(results, ensure_ascii=False, indent=2)
+            elif action == "readme" and repo:
+                return await github_repo_readme(repo)
+            else:
+                return 'Usage: action="repos" query="..." OR action="code" query="..." OR action="readme" repo="owner/repo"'
+        except Exception as e:
+            return f"GitHub error: {e}"
+
+    _optional_tools["github"] = {
+        "function": _tool_github,
+        "description": 'Search GitHub repos/code or fetch README. Args: action ("repos"|"code"|"readme"), query (str), repo (str "owner/repo"), count (int)',
+        "example": '{"action": "tool_call", "tool": "github", "args": {"action": "repos", "query": "web scraping python"}}',
+    }
+except Exception as e:
+    logger.warning(f"github tool not available — {type(e).__name__}: {e}")
+
+# PDF extraction tool (standalone, supplements documents.read_pdf)
+try:
+    from .pdf_extract import extract_pdf
+
+    _optional_tools["read_pdf_advanced"] = {
+        "function": extract_pdf,
+        "description": "Extract text from a PDF file with multi-backend fallback (PyMuPDF/pdfplumber/PyPDF2). Args: file_path (str), max_pages (int, default 50)",
+        "example": '{"action": "tool_call", "tool": "read_pdf_advanced", "args": {"file_path": "/path/to/document.pdf"}}',
+    }
+except Exception as e:
+    logger.warning(f"read_pdf_advanced tool not available — {type(e).__name__}: {e}")
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------

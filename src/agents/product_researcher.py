@@ -28,6 +28,7 @@ class ProductResearcherAgent(BaseAgent):
         "shopping_reviews",
         "shopping_fetch_reviews",
         "shopping_constraints",
+        "play_store",
     ]
 
     def get_system_prompt(self, task: dict) -> str:

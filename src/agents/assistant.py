@@ -26,6 +26,10 @@ class AssistantAgent(BaseAgent):
         "shell",
         "api_lookup",
         "api_call",
+        "play_store",
+        "github",
+        "read_pdf",
+        "read_pdf_advanced",
     ]
 
     def get_system_prompt(self, task: dict) -> str:

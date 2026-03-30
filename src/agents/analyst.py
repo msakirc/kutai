@@ -24,6 +24,7 @@ class AnalystAgent(BaseAgent):
         "write_file",
         "file_tree",
         "shell",
+        "github",
     ]
 
     def get_system_prompt(self, task: dict) -> str:

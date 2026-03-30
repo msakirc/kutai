@@ -23,8 +23,15 @@ MAX_QUEUE_WAIT_SECONDS: float = 300  # 5 minutes
 # Maximum queue depth before rejecting new requests
 MAX_QUEUE_DEPTH: int = 20
 
+# Maximum retry attempts before giving up (prevents 43-attempt spirals)
+MAX_RETRY_ATTEMPTS: int = 5
+
 # Retry intervals (exponential backoff)
 RETRY_INTERVALS: list[float] = [5, 10, 20, 40, 60]
+
+# Minimum time between retries — capacity signals can advance next_retry_at
+# but never below this floor relative to the last attempt.
+MIN_RETRY_GAP_SECONDS: float = 5.0
 
 
 @dataclass
@@ -137,7 +144,7 @@ class BackpressureQueue:
         self._has_items.set()
 
         logger.info(
-            f"📥 Backpressure: queued call '{call_id}' "
+            f"Backpressure: queued call '{call_id}' "
             f"(priority={priority}, queue_depth={len(self._queue)}, "
             f"error: {last_error[:80]})"
         )
@@ -208,17 +215,39 @@ class BackpressureQueue:
             for entry in ready[:3]:  # max 3 concurrent retries
                 asyncio.create_task(self._retry_call(entry))
 
-            # Short sleep to prevent tight loop
-            await asyncio.sleep(2)
+            # Sleep between processor cycles — long enough to let retries
+            # complete and backoff timers advance, short enough to be responsive.
+            await asyncio.sleep(5)
 
     async def _retry_call(self, entry: QueuedCall) -> None:
         """Attempt to retry a queued call."""
         entry.attempt += 1
+        entry._last_attempt_at = time.time()
         self.total_retried += 1
 
+        # Give up after max attempts — stop the 43-retry spirals
+        if entry.attempt > MAX_RETRY_ATTEMPTS:
+            logger.warning(
+                f"Backpressure: giving up on '{entry.call_id}' "
+                f"after {entry.attempt} attempts "
+                f"({entry.wait_seconds:.1f}s). "
+                f"Last error: {entry.last_error[:80]}"
+            )
+            if not entry.result_future.done():
+                entry.result_future.set_exception(
+                    RuntimeError(
+                        f"Backpressure exhausted after {entry.attempt} retries "
+                        f"for '{entry.call_id}'. Last error: {entry.last_error}"
+                    )
+                )
+            async with self._lock:
+                self._queue = [e for e in self._queue if e is not entry]
+                self.total_expired += 1
+            return
+
         logger.info(
-            f"🔄 Backpressure retry: '{entry.call_id}' "
-            f"(attempt={entry.attempt}, "
+            f"Backpressure retry: '{entry.call_id}' "
+            f"(attempt={entry.attempt}/{MAX_RETRY_ATTEMPTS}, "
             f"waited={entry.wait_seconds:.1f}s)"
         )
 
@@ -237,7 +266,7 @@ class BackpressureQueue:
                 self._queue = [e for e in self._queue if e is not entry]
 
             logger.info(
-                f"✅ Backpressure success: '{entry.call_id}' "
+                f"Backpressure success: '{entry.call_id}' "
                 f"after {entry.attempt} retries "
                 f"({entry.wait_seconds:.1f}s total wait)"
             )
@@ -253,17 +282,31 @@ class BackpressureQueue:
             )
 
     def signal_capacity_available(self) -> None:
-        """Signal that rate limit capacity has been restored, triggering faster retries."""
+        """Signal that capacity has been restored (rate limit reset or model swap).
+
+        Advances next_retry_at to be sooner, but never below MIN_RETRY_GAP_SECONDS
+        after the last attempt. This prevents the spam loop where capacity signals
+        cause immediate retries that fail instantly and re-enter the queue.
+        """
         if self._queue:
             now = time.time()
+            signaled = 0
             for entry in self._queue:
-                if not entry.result_future.done():
-                    entry.next_retry_at = now  # make eligible immediately
-            self._has_items.set()
-            logger.info(
-                f"Backpressure: capacity signal — "
-                f"{len(self._queue)} queued calls eligible for retry"
-            )
+                if entry.result_future.done():
+                    continue
+                # Respect minimum gap since last attempt
+                last_attempt = getattr(entry, '_last_attempt_at', 0.0)
+                earliest = last_attempt + MIN_RETRY_GAP_SECONDS
+                new_retry = max(now, earliest)
+                if new_retry < entry.next_retry_at:
+                    entry.next_retry_at = new_retry
+                    signaled += 1
+            if signaled:
+                self._has_items.set()
+                logger.info(
+                    f"Backpressure: capacity signal — "
+                    f"{signaled}/{len(self._queue)} calls advanced"
+                )
 
     def stop(self) -> None:
         self._running = False

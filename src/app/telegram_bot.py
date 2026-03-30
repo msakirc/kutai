@@ -73,133 +73,153 @@ def _looks_like_product_idea(description: str) -> bool:
     has_phrase = any(kw in desc_lower for kw in _PRODUCT_KEYWORDS[11:])
     return (has_verb and has_noun) or has_phrase
 
-# ─── Interactive Menu Definitions ─────────────────────────────────────────
-# Each category: (emoji_label, key, [(button_label, command, needs_arg, arg_prompt)])
-MENU_CATEGORIES = [
-    ("🎯 Missions & Tasks", "missions", [
-        ("🎯 New Mission", "mission", True, "Describe your mission:"),
-        ("🔄 Workflow Mission", "mission_wf", True, "Describe the product/workflow idea:"),
-        ("📋 Add Task", "task", True, "Describe the task:"),
-        ("📋 List Missions", "missions", False, None),
-        ("📬 Queue", "queue", False, None),
-        ("🚫 Cancel", "cancel", True, "Which mission or task ID to cancel?"),
-        ("🔢 Priority", "priority", True, "Enter: <id> <priority 1-10>"),
-        ("⏸️ Pause", "pause", True, "Which mission ID to pause?"),
-        ("▶️ Resume", "resume", True, "Which mission ID to resume?"),
-        ("🌳 Graph", "graph", True, "Which mission ID to graph?"),
-        ("📋 WF Status", "wfstatus", True, "Which mission ID for workflow status?"),
-        ("📄 Result", "result", True, "Which task ID to view result for? (empty for recent)"),
-    ]),
-    ("📊 Status & Costs", "monitoring", [
-        ("📊 Status", "status", False, None),
-        ("📰 Digest", "digest", False, None),
-        ("📈 Progress", "progress", True, "Which mission ID? (empty for all)"),
-        ("💰 Cost", "cost", True, "Which mission ID for cost breakdown?"),
-        ("💵 Budget", "budget", True, "Enter daily budget limit (empty to view):"),
-        ("🤖 Model Stats", "modelstats", False, None),
-    ]),
-    ("🛒 Shopping", "shopping", [
-        ("🛒 Find Product", "shop", True, "What are you looking for? (e.g. 'motherboard under 10k TL')"),
-        ("💰 Compare Prices", "price", True, "Which product to check prices for?"),
-        ("⚖️ Compare", "compare", True, "Compare what? (e.g. 'iPhone 15 vs Samsung S24')"),
-        ("⏰ Price Watch", "watch", True, "Which product to watch? (e.g. 'RTX 4070 under 25k')"),
-        ("🔍 Product Research", "research_product", True, "Which product to research in depth?"),
-        ("🏷️ My Deals", "deals", False, None),
-        ("📦 My Stuff", "mystuff", False, None),
-    ]),
-    ("📝 Personal", "personal", [
-        ("📝 Add Todo", "todo", True, "What do you need to remember?"),
-        ("📋 My Todos", "todos", False, None),
-        ("🗑️ Clear Done", "cleartodos", False, None),
-        ("💾 Remember", "remember", True, "What should I remember?"),
-        ("🔎 Recall", "recall", True, "What do you want to recall?"),
-        ("📥 Ingest", "ingest", True, "Send a URL or file path to ingest:"),
-        ("⭐ Feedback", "feedback", True, "Enter: <task_id> <good|bad|partial> [reason]"),
-    ]),
-    ("⚙️ System & Admin", "system", [
-        ("🎚️ Autonomy", "autonomy", True, "Set level: low, medium, high, or paranoid"),
-        ("🖥️ Load", "load", True, "Set load mode (minimal/normal/auto):"),
-        ("🐛 Debug", "debug", False, None),
-        ("📉 Metrics", "metrics", False, None),
-        ("🔍 Audit", "audit", True, "Which task ID to audit?"),
-        ("🔁 Replay", "replay", True, "Which task ID to replay?"),
-        ("🗂️ Workspaces", "workspace", False, None),
-        ("🧪 Improve", "improve", False, None),
-        ("🎛️ Tune", "tune", True, "What setting to tune?"),
-        ("🔑 Credential", "credential", True, "Credential key=value (or key to view):"),
-        ("📭 DLQ", "dlq", False, None),
-        ("♻️ Reset", "reset", True, "Reset what? (task ID, 'failed', 'stuck', 'blocked')"),
-        ("☢️ Reset All", "resetall", False, None),
-        ("🔄 Restart", "kutai_restart", False, None),
-        ("⏹ Stop", "kutai_stop", False, None),
-        ("🖥️ Claude Code", "claude", False, None),
-    ]),
-]
+# ─── Reply Keyboard Navigation System ────────────────────────────────────
+# All navigation uses reply keyboard swaps. Inline keyboards only for
+# contextual actions (todo toggles, mission management, confirmations).
 
+import time as _time
 
-def _build_category_keyboard() -> InlineKeyboardMarkup:
-    """Build the top-level category selection keyboard."""
-    rows = []
-    for i in range(0, len(MENU_CATEGORIES), 2):
-        row = []
-        for cat_label, cat_key, _ in MENU_CATEGORIES[i:i+2]:
-            row.append(InlineKeyboardButton(cat_label, callback_data=f"menu_cat:{cat_key}"))
-        rows.append(row)
-    return InlineKeyboardMarkup(rows)
+def _make_keyboard(rows: list[list[str]], **kwargs) -> ReplyKeyboardMarkup:
+    """Build a ReplyKeyboardMarkup from a list of string rows."""
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(btn) for btn in row] for row in rows],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        is_persistent=True,
+        **kwargs,
+    )
 
+# ── Keyboard Definitions ─────────────────────────────────────────────────
 
-# Persistent reply keyboard — always visible at the bottom of the chat.
-# Most-used actions on top row, one tap each. No /stop or /restart (dangerous).
-REPLY_KEYBOARD = ReplyKeyboardMarkup(
-    [
-        [KeyboardButton("🛒 Shop"), KeyboardButton("📝 Todo"), KeyboardButton("🎯 Mission")],
-        [KeyboardButton("📋 Todos"), KeyboardButton("📊 Status"), KeyboardButton("🔍 Missions")],
-        [KeyboardButton("💰 Price"), KeyboardButton("⚖️ Compare"), KeyboardButton("⚡ Quick")],
-    ],
-    resize_keyboard=True,
-    one_time_keyboard=False,
-    is_persistent=True,
-)
+REPLY_KEYBOARD = _make_keyboard([
+    ["⚡ Hizmet", "🛒 Alışveriş", "📋 Listem"],
+    ["🎯 Görevler", "⚙️ Sistem"],
+])
 
-# Map reply-keyboard button labels to commands (without slash)
-_REPLY_BUTTON_MAP = {
-    "🛒 Shop": "shop",
-    "📝 Todo": "todo",
-    "🎯 Mission": "mission",
-    "📋 Todos": "todos",
-    "📊 Status": "status",
-    "🔍 Missions": "missions",
-    "💰 Price": "price",
-    "⚖️ Compare": "compare",
-    "⚡ Quick": "quick",
+KB_HIZMET = _make_keyboard([
+    ["🏥 Eczane", "💰 Döviz", "🌤 Hava"],
+    ["⛽ Yakıt", "🕌 Namaz", "📰 Haber"],
+    ["🪙 Altın", "🌍 Deprem"],
+    ["🔙 Geri"],
+])
+
+KB_ALISVERIS = _make_keyboard([
+    ["⚡ Hızlı Ara", "🔬 Detaylı Araştır"],
+    ["🔙 Geri"],
+])
+
+KB_LISTEM = _make_keyboard([
+    ["📝 Yeni Ekle"],
+    ["🔙 Geri"],
+])
+
+KB_GOREVLER = _make_keyboard([
+    ["🎯 Yeni Görev", "📬 İş Kuyruğu"],
+    ["🔙 Geri"],
+])
+
+KB_WORKFLOW_SELECT = _make_keyboard([
+    ["⚡ Hızlı Cevap", "📊 Araştır & Raporla"],
+    ["🏗 Yeni Proje", "🤖 Otomatik"],
+    ["💻 Kod / Diğer"],
+    ["🔙 Geri"],
+])
+
+KB_SISTEM = _make_keyboard([
+    ["🖥 Yük Modu", "🐛 Debug"],
+    ["📭 DLQ"],
+    ["🔄 Yeniden Başlat", "⏹ Durdur"],
+    ["🔙 Geri"],
+])
+
+KB_YUK_MODU = _make_keyboard([
+    ["⚡ Full", "🔋 Heavy", "⚖️ Shared"],
+    ["🔻 Minimal", "🤖 Otomatik"],
+    ["🔙 Geri"],
+])
+
+KB_BASLAT = _make_keyboard([
+    ["▶️ Başlat"],
+])
+
+# ── Keyboard State Management ────────────────────────────────────────────
+
+# Which parent keyboard each sub-keyboard returns to on "Geri"
+_KB_PARENT: dict[str, ReplyKeyboardMarkup] = {
+    "hizmet": REPLY_KEYBOARD,
+    "alisveris": REPLY_KEYBOARD,
+    "listem": REPLY_KEYBOARD,
+    "gorevler": REPLY_KEYBOARD,
+    "sistem": REPLY_KEYBOARD,
+    "workflow_select": KB_GOREVLER,
+    "yuk_modu": KB_SISTEM,
+    "debug": KB_SISTEM,
+    "dlq": KB_SISTEM,
 }
 
+# Map ALL known button labels to handler info.
+# Format: button_text -> (action_type, value)
+#   "cmd"      -> call cmd_<value> with no args
+#   "cmd_args" -> set pending_action for <value>, prompt user
+#   "category" -> switch keyboard to <value> category
+#   "special"  -> handled by dedicated logic in _handle_special_button
+_BUTTON_ACTIONS: dict[str, tuple[str, str]] = {
+    # ── Top-level categories ──
+    "⚡ Hizmet": ("category", "hizmet"),
+    "🛒 Alışveriş": ("category", "alisveris"),
+    "📋 Listem": ("category", "listem"),
+    "🎯 Görevler": ("category", "gorevler"),
+    "⚙️ Sistem": ("category", "sistem"),
+    # ── Hizmet sub-buttons ──
+    "🏥 Eczane": ("special", "pharmacy"),
+    "💰 Döviz": ("special", "exchange"),
+    "🌤 Hava": ("special", "weather"),
+    "⛽ Yakıt": ("special", "fuel"),
+    "🕌 Namaz": ("special", "prayer"),
+    "📰 Haber": ("special", "news"),
+    "🪙 Altın": ("special", "gold"),
+    "🌍 Deprem": ("special", "earthquake"),
+    # ── Alışveriş sub-buttons ──
+    "⚡ Hızlı Ara": ("cmd_args", "shop"),
+    "🔬 Detaylı Araştır": ("cmd_args", "research_product"),
+    # ── Listem sub-buttons ──
+    "📝 Yeni Ekle": ("cmd_args", "todo"),
+    # ── Görevler sub-buttons ──
+    "🎯 Yeni Görev": ("special", "new_mission"),
+    "📬 İş Kuyruğu": ("cmd", "view_queue"),
+    # ── Workflow selection ──
+    "⚡ Hızlı Cevap": ("special", "wf_quick"),
+    "📊 Araştır & Raporla": ("special", "wf_research"),
+    "🏗 Yeni Proje": ("special", "wf_project"),
+    "🤖 Otomatik": ("special", "wf_auto"),
+    "💻 Kod / Diğer": ("special", "wf_other"),
+    # ── Sistem sub-buttons ──
+    "🖥 Yük Modu": ("category", "yuk_modu"),
+    "🐛 Debug": ("special", "debug"),
+    "📭 DLQ": ("special", "dlq"),
+    "🔄 Yeniden Başlat": ("special", "restart"),
+    "⏹ Durdur": ("special", "stop"),
+    # ── Yük Modu sub-buttons ──
+    "⚡ Full": ("special", "load_full"),
+    "🔋 Heavy": ("special", "load_heavy"),
+    "⚖️ Shared": ("special", "load_shared"),
+    "🔻 Minimal": ("special", "load_minimal"),
+    # ── Wrapper start ──
+    "▶️ Başlat": ("special", "start_kutai"),
+    # ── Back ──
+    "🔙 Geri": ("special", "back"),
+}
 
-def _build_command_keyboard(cat_key: str) -> InlineKeyboardMarkup:
-    """Build the command buttons for a specific category."""
-    for _, key, commands in MENU_CATEGORIES:
-        if key == cat_key:
-            rows = []
-            row = []
-            for btn_label, cmd, needs_arg, prompt in commands:
-                cb = f"menu_ask:{cmd}" if needs_arg else f"menu_cmd:{cmd}"
-                row.append(InlineKeyboardButton(btn_label, callback_data=cb))
-                if len(row) >= 3:
-                    rows.append(row)
-                    row = []
-            if row:
-                rows.append(row)
-            rows.append([InlineKeyboardButton("⬅️ Back", callback_data="menu_back")])
-            return InlineKeyboardMarkup(rows)
-    return _build_category_keyboard()  # fallback
+# Prompt texts for cmd_args actions
+_CMD_ARG_PROMPTS: dict[str, str] = {
+    "shop": "🔍 Ne arıyorsun?",
+    "research_product": "🔬 Hangi ürünü araştıralım?",
+    "todo": "📝 Ne ekleyelim?",
+    "mission": "🎯 Ne yapılsın?",
+}
 
-
-# Map command -> prompt for conversation flow
-_CMD_ARG_PROMPTS: dict[str, str] = {}
-for _, _, cmds in MENU_CATEGORIES:
-    for _, cmd, needs_arg, prompt in cmds:
-        if needs_arg and prompt:
-            _CMD_ARG_PROMPTS[cmd] = prompt
+# Pending action timeout (seconds)
+_PENDING_ACTION_TIMEOUT = 300
 
 # Map command string -> actual method name (where they differ)
 _CMD_METHOD_MAP: dict[str, str] = {
@@ -224,59 +244,613 @@ class TelegramInterface:
         self.user_last_task_id = {}
         # Explicit clarification tracking: chat_id → task_id
         self._pending_clarifications: dict[int, int] = {}
-        # Conversation flow: chat_id → {"command": str} for button-initiated arg prompts
+        # Conversation flow: chat_id → {"command": str, "ts": float} for button-initiated arg prompts
         self._pending_action: dict[int, dict] = {}
+        # Track current keyboard state per chat: chat_id → state name
+        self._kb_state: dict[int, str] = {}
+        # Store mission description during workflow selection
+        self._pending_mission: dict[int, str] = {}
 
     async def _reply(self, update_or_msg, text: str, **kwargs):
-        """Send a reply that always includes the persistent reply keyboard.
+        """Send a reply with the current keyboard state.
 
         If the caller supplies its own ``reply_markup`` (e.g. an
         InlineKeyboardMarkup) we pass it through instead so inline buttons
-        still work.  Every other reply gets REPLY_KEYBOARD so the bottom
-        keyboard never disappears.
+        still work.  Every other reply gets the current keyboard for the chat.
         """
         if "reply_markup" not in kwargs:
-            kwargs["reply_markup"] = REPLY_KEYBOARD
+            # Use current keyboard state, default to REPLY_KEYBOARD
+            chat_id = None
+            msg = getattr(update_or_msg, "message", update_or_msg)
+            if hasattr(msg, "chat"):
+                chat_id = msg.chat.id
+            kwargs["reply_markup"] = self._get_current_keyboard(chat_id)
         # Accept either an Update or a Message object
         msg = getattr(update_or_msg, "message", update_or_msg)
         return await msg.reply_text(text, **kwargs)
+
+    def _get_current_keyboard(self, chat_id: int | None) -> ReplyKeyboardMarkup:
+        """Return the keyboard for the current navigation state."""
+        if chat_id is None:
+            return REPLY_KEYBOARD
+        state = self._kb_state.get(chat_id, "main")
+        return {
+            "main": REPLY_KEYBOARD,
+            "hizmet": KB_HIZMET,
+            "alisveris": KB_ALISVERIS,
+            "listem": KB_LISTEM,
+            "gorevler": KB_GOREVLER,
+            "sistem": KB_SISTEM,
+            "workflow_select": KB_WORKFLOW_SELECT,
+            "yuk_modu": KB_YUK_MODU,
+            "debug": KB_SISTEM,
+            "dlq": KB_SISTEM,
+        }.get(state, REPLY_KEYBOARD)
+
+    async def _swap_keyboard(self, update, state: str, text: str = None, **kwargs):
+        """Switch the reply keyboard to a new state and optionally send a message."""
+        chat_id = update.effective_chat.id
+        self._kb_state[chat_id] = state
+        kb = self._get_current_keyboard(chat_id)
+        if text:
+            msg = getattr(update, "message", update)
+            return await msg.reply_text(text, reply_markup=kb, **kwargs)
+        # Send a minimal message to trigger keyboard swap
+        msg = getattr(update, "message", update)
+        return await msg.reply_text("⌨️", reply_markup=kb)
 
     def _resolve_cmd_handler(self, cmd: str):
         """Resolve a command string to its handler method."""
         method_name = _CMD_METHOD_MAP.get(cmd, f"cmd_{cmd}")
         return getattr(self, method_name, None)
 
+    # ── Category & Special Button Handlers ────────────────────────────────
+
+    async def _handle_category_button(self, update, context, category: str):
+        """Handle a category button tap — swap keyboard and show auto-content."""
+        chat_id = update.effective_chat.id
+
+        if category == "listem":
+            # Auto-list todos
+            self._kb_state[chat_id] = "listem"
+            try:
+                from src.app.reminders import build_todo_list_message
+                text, markup = await build_todo_list_message()
+                if text:
+                    await update.message.reply_text(
+                        text, parse_mode="Markdown", reply_markup=markup,
+                    )
+                else:
+                    await update.message.reply_text(
+                        "📋 *Listem*\n\nHenüz bir şey yok.",
+                        parse_mode="Markdown",
+                    )
+            except Exception as e:
+                logger.error("Failed to load todos", error=str(e))
+                await update.message.reply_text("📋 *Listem*\n\nTodo listesi yüklenemedi.",
+                                                parse_mode="Markdown")
+            # Send keyboard swap message
+            await update.message.reply_text("⌨️", reply_markup=KB_LISTEM)
+            return
+
+        if category == "gorevler":
+            # Auto-list active missions
+            self._kb_state[chat_id] = "gorevler"
+            try:
+                missions = await get_active_missions()
+                if missions:
+                    lines = ["🎯 *Görevler*\n"]
+                    buttons = []
+                    for i, m in enumerate(missions[:10], 1):
+                        status_icon = {"running": "🔄", "pending": "⏳",
+                                       "paused": "⏸", "needs_clarification": "❓"
+                                       }.get(m.get("status", ""), "📋")
+                        title = m.get("title", m.get("description", "?"))[:50]
+                        lines.append(f"{i}. {status_icon} {title}")
+                        buttons.append(InlineKeyboardButton(
+                            f"{i}", callback_data=f"m:task:detail:{m['id']}"))
+                    # Arrange buttons in rows of 5
+                    btn_rows = [buttons[j:j+5] for j in range(0, len(buttons), 5)]
+                    await update.message.reply_text(
+                        "\n".join(lines), parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup(btn_rows) if btn_rows else None,
+                    )
+                else:
+                    await update.message.reply_text(
+                        "🎯 *Görevler*\n\nAktif görev yok.",
+                        parse_mode="Markdown",
+                    )
+            except Exception as e:
+                logger.error("Failed to load missions", error=str(e))
+                await update.message.reply_text("🎯 *Görevler*\n\nGörev listesi yüklenemedi.",
+                                                parse_mode="Markdown")
+            await update.message.reply_text("⌨️", reply_markup=KB_GOREVLER)
+            return
+
+        if category == "sistem":
+            # Auto-print dashboard
+            self._kb_state[chat_id] = "sistem"
+            dashboard = await self._build_system_dashboard()
+            await update.message.reply_text(dashboard, parse_mode="Markdown")
+            await update.message.reply_text("⌨️", reply_markup=KB_SISTEM)
+            return
+
+        # Simple category swap (hizmet, alisveris, yuk_modu)
+        kb_map = {
+            "hizmet": KB_HIZMET,
+            "alisveris": KB_ALISVERIS,
+            "yuk_modu": KB_YUK_MODU,
+        }
+        kb = kb_map.get(category)
+        if kb:
+            self._kb_state[chat_id] = category
+            await update.message.reply_text("⌨️", reply_markup=kb)
+
+    async def _handle_special_button(self, update, context, action: str):
+        """Handle special button actions (quick services, workflow, lifecycle, etc.)."""
+        chat_id = update.effective_chat.id
+
+        # ── Back button ──
+        if action == "back":
+            current_state = self._kb_state.get(chat_id, "main")
+            parent_kb = _KB_PARENT.get(current_state, REPLY_KEYBOARD)
+            # Find parent state name
+            parent_state = "main"
+            for state_name, kb in [("hizmet", KB_HIZMET), ("alisveris", KB_ALISVERIS),
+                                    ("listem", KB_LISTEM), ("gorevler", KB_GOREVLER),
+                                    ("sistem", KB_SISTEM), ("yuk_modu", KB_YUK_MODU)]:
+                if parent_kb is kb or (state_name in _KB_PARENT and _KB_PARENT.get(current_state) is kb):
+                    parent_state = state_name
+                    break
+            if parent_kb is REPLY_KEYBOARD:
+                parent_state = "main"
+            self._kb_state[chat_id] = parent_state
+            await update.message.reply_text("⌨️", reply_markup=parent_kb)
+            return
+
+        # ── Quick Services ──
+        if action in ("pharmacy", "exchange", "weather", "fuel", "prayer",
+                      "news", "gold", "earthquake"):
+            await self._handle_quick_service(update, context, action)
+            return
+
+        # ── New Mission (workflow selection flow) ──
+        if action == "new_mission":
+            self._pending_action[chat_id] = {
+                "command": "_workflow_select",
+                "ts": _time.time(),
+            }
+            await self._reply(update, "🎯 Ne yapılsın?")
+            return
+
+        # ── Workflow selection buttons ──
+        if action.startswith("wf_"):
+            mission_desc = self._pending_mission.pop(chat_id, None)
+            if not mission_desc:
+                await self._reply(update, "❌ Görev açıklaması bulunamadı. Tekrar dene.")
+                self._kb_state[chat_id] = "gorevler"
+                await update.message.reply_text("⌨️", reply_markup=KB_GOREVLER)
+                return
+            await self._create_mission_with_workflow(update, context, mission_desc, action)
+            return
+
+        # ── Debug ──
+        if action == "debug":
+            self._kb_state[chat_id] = "debug"
+            await self._show_debug_tasks(update, context)
+            return
+
+        # ── DLQ ──
+        if action == "dlq":
+            self._kb_state[chat_id] = "dlq"
+            await self._show_dlq_tasks(update, context)
+            return
+
+        # ── GPU Load Modes ──
+        if action.startswith("load_"):
+            mode = action.replace("load_", "")
+            if mode == "auto":
+                context.args = ["auto"]
+            else:
+                context.args = [mode]
+            await self.cmd_load(update, context)
+            return
+
+        # ── Restart / Stop ──
+        if action == "restart":
+            await update.message.reply_text(
+                "⚠️ KutAI yeniden başlatılsın mı?",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Evet", callback_data="m:confirm:restart"),
+                     InlineKeyboardButton("❌ Hayır", callback_data="m:confirm:cancel")],
+                ]),
+            )
+            return
+
+        if action == "stop":
+            await update.message.reply_text(
+                "⚠️ KutAI durdurulsun mu?",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Evet", callback_data="m:confirm:stop"),
+                     InlineKeyboardButton("❌ Hayır", callback_data="m:confirm:cancel")],
+                ]),
+            )
+            return
+
+        if action == "start_kutai":
+            # Handled by wrapper — just send the text so wrapper picks it up
+            await update.message.reply_text("▶️ Başlatılıyor...")
+            return
+
+        logger.warning("Unhandled special button", action=action)
+
+    async def _build_system_dashboard(self) -> str:
+        """Build the system status dashboard text."""
+        lines = ["📊 *KutAI Durum*\n━━━━━━━━━━━━━━━━━━━━"]
+        try:
+            # Model info
+            if self.orchestrator and hasattr(self.orchestrator, 'local_model_manager'):
+                lmm = self.orchestrator.local_model_manager
+                if lmm and hasattr(lmm, 'current_model') and lmm.current_model:
+                    model_name = lmm.current_model
+                    lines.append(f"🤖 Model: {model_name}")
+                    if hasattr(lmm, 'runtime_state') and lmm.runtime_state:
+                        rs = lmm.runtime_state
+                        tps = getattr(rs, 'measured_tps', None)
+                        gpu = getattr(rs, 'gpu_layers', None)
+                        thinking = getattr(rs, 'thinking_enabled', None)
+                        parts = []
+                        if tps:
+                            parts.append(f"{tps:.1f} t/s")
+                        if gpu:
+                            parts.append(f"GPU: {gpu} katman")
+                        if thinking is not None:
+                            parts.append(f"Thinking: {'ON' if thinking else 'OFF'}")
+                        if parts:
+                            lines.append(f"   {' | '.join(parts)}")
+                else:
+                    lines.append("🤖 Model: yüklü değil")
+            else:
+                lines.append("🤖 Model: bilgi yok")
+
+            # Load mode
+            try:
+                from src.infra.load_manager import get_load_mode
+                load_mode = await get_load_mode()
+                lines.append(f"🖥 Yük Modu: {load_mode}")
+            except Exception:
+                pass
+
+            # Queue stats
+            try:
+                ready = await get_ready_tasks()
+                stats = await get_daily_stats()
+                pending = len(ready) if ready else 0
+                completed = stats.get("completed", 0) if stats else 0
+                failed = stats.get("failed", 0) if stats else 0
+                lines.append(f"\n📋 Kuyruk: {pending} bekleyen")
+                lines.append(f"   Bugün: {completed} tamamlandı | {failed} başarısız")
+            except Exception:
+                lines.append("\n📋 Kuyruk: bilgi alınamadı")
+
+            # Cost
+            try:
+                budget_info = await get_budget()
+                if budget_info:
+                    spent = budget_info.get("spent_today", 0)
+                    limit = budget_info.get("daily_limit", 0)
+                    lines.append(f"💰 Bugün: ${spent:.2f} / ${limit:.2f}")
+            except Exception:
+                pass
+
+            # Uptime
+            if self.orchestrator and hasattr(self.orchestrator, 'start_time'):
+                import time
+                uptime_s = time.time() - self.orchestrator.start_time
+                hours = int(uptime_s // 3600)
+                mins = int((uptime_s % 3600) // 60)
+                lines.append(f"⏱ Çalışma: {hours}s {mins}dk")
+
+        except Exception as e:
+            lines.append(f"\n❌ Dashboard hatası: {_friendly_error(str(e))}")
+
+        return "\n".join(lines)
+
+    async def _show_debug_tasks(self, update, context):
+        """Show recent tasks for debugging."""
+        try:
+            tasks = await get_recent_completed_tasks(limit=10)
+            if not tasks:
+                await self._reply(update, "🐛 Son görev bulunamadı.")
+                return
+            lines = ["🐛 *Son Görevler*\n"]
+            buttons = []
+            for i, t in enumerate(tasks[:10], 1):
+                title = (t.get("title") or t.get("description", "?"))[:40]
+                agent = t.get("agent_type", "?")
+                status_icon = {"completed": "✅", "failed": "❌", "running": "🔄"
+                               }.get(t.get("status", ""), "📋")
+                # Time ago
+                try:
+                    updated = datetime.fromisoformat(t.get("updated_at", ""))
+                    ago = (datetime.now() - updated).total_seconds()
+                    if ago < 60:
+                        time_str = f"{int(ago)}sn"
+                    elif ago < 3600:
+                        time_str = f"{int(ago/60)}dk"
+                    else:
+                        time_str = f"{int(ago/3600)}s"
+                    time_str += " önce"
+                except Exception:
+                    time_str = ""
+                lines.append(f"{i}. {status_icon} {title} — {agent} — {time_str}")
+                buttons.append(InlineKeyboardButton(
+                    f"{i}", callback_data=f"m:debug:detail:{t['id']}"))
+            btn_rows = [buttons[j:j+5] for j in range(0, len(buttons), 5)]
+            await update.message.reply_text(
+                "\n".join(lines), parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(btn_rows) if btn_rows else None,
+            )
+        except Exception as e:
+            logger.error("Debug tasks failed", error=str(e))
+            await self._reply(update, f"❌ {_friendly_error(str(e))}")
+
+    async def _show_dlq_tasks(self, update, context):
+        """Show failed/stuck tasks (dead letter queue)."""
+        try:
+            db = await get_db()
+            cursor = await db.execute(
+                "SELECT id, title, description, status, error, agent_type, updated_at "
+                "FROM tasks WHERE status IN ('failed', 'stuck', 'blocked') "
+                "ORDER BY updated_at DESC LIMIT 10"
+            )
+            tasks = [dict(r) for r in await cursor.fetchall()]
+            if not tasks:
+                await self._reply(update, "📭 *DLQ*\n\nBaşarısız görev yok.", parse_mode="Markdown")
+                return
+            lines = ["📭 *Başarısız Görevler*\n"]
+            buttons = []
+            for i, t in enumerate(tasks, 1):
+                title = (t.get("title") or t.get("description", "?"))[:40]
+                error_short = (t.get("error") or "")[:30]
+                lines.append(f"{i}. ❌ {title}")
+                if error_short:
+                    lines.append(f"   _{error_short}_")
+                buttons.append(InlineKeyboardButton(
+                    f"{i}", callback_data=f"m:dlq:detail:{t['id']}"))
+            btn_rows = [buttons[j:j+5] for j in range(0, len(buttons), 5)]
+            await update.message.reply_text(
+                "\n".join(lines), parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(btn_rows) if btn_rows else None,
+            )
+        except Exception as e:
+            logger.error("DLQ listing failed", error=str(e))
+            await self._reply(update, f"❌ {_friendly_error(str(e))}")
+
+    async def _handle_quick_service(self, update, context, service: str):
+        """Handle quick service API calls (no LLM needed)."""
+        # Check location for location-dependent services
+        if service in ("pharmacy", "weather", "prayer"):
+            try:
+                from src.memory.preferences import get_user_preference
+                lat = await get_user_preference(update.effective_chat.id, "location_lat")
+                if not lat:
+                    await self._start_location_setup(update, service)
+                    return
+            except Exception:
+                await self._start_location_setup(update, service)
+                return
+
+        service_handlers = {
+            "pharmacy": self._quick_pharmacy,
+            "exchange": self._quick_exchange,
+            "weather": self._quick_weather,
+            "fuel": self._quick_fuel,
+            "prayer": self._quick_prayer,
+            "news": self._quick_news,
+            "gold": self._quick_gold,
+            "earthquake": self._quick_earthquake,
+        }
+        handler = service_handlers.get(service)
+        if handler:
+            try:
+                await handler(update, context)
+            except Exception as e:
+                logger.error(f"Quick service {service} failed", error=str(e))
+                await self._reply(update, f"❌ {service} servisi şu an kullanılamıyor.")
+        else:
+            await self._reply(update, f"❌ Bilinmeyen servis: {service}")
+
+    async def _start_location_setup(self, update, original_service: str):
+        """Start the location setup flow for location-dependent services."""
+        chat_id = update.effective_chat.id
+        self._pending_action[chat_id] = {
+            "command": "_location_setup",
+            "original_service": original_service,
+            "ts": _time.time(),
+        }
+        location_kb = ReplyKeyboardMarkup(
+            [[KeyboardButton("📍 Konumumu Paylaş", request_location=True)],
+             [KeyboardButton("✏️ İlçe Adı Yaz")],
+             [KeyboardButton("❌ İptal")]],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
+        await update.message.reply_text(
+            "📍 Konum bilgin henüz kayıtlı değil.\n"
+            "En doğru sonuç için konumunu paylaş:",
+            reply_markup=location_kb,
+        )
+
+    async def _create_mission_with_workflow(self, update, context, description: str, wf_action: str):
+        """Create a mission with the selected workflow type."""
+        chat_id = update.effective_chat.id
+        workflow = None
+
+        if wf_action == "wf_quick":
+            # Single agent, no workflow
+            workflow = None
+        elif wf_action == "wf_research":
+            workflow = "research"
+        elif wf_action == "wf_project":
+            workflow = "i2p_v2"
+        elif wf_action == "wf_auto":
+            # Let LLM decide — pass through to normal mission creation
+            workflow = None  # Will be classified by _classify_user_message
+        elif wf_action == "wf_other":
+            await self._reply(update,
+                "🚧 Bu iş akışları henüz menüden desteklenmiyor.\n"
+                "Görevini yazarak gönder, LLM doğru akışa yönlendirecek.\n\n"
+                "Örnekler:\n"
+                "• \"router.py'deki hatayı düzelt\"\n"
+                "• \"db modülünü refaktör et\"\n"
+                "• \"agent base sınıfını dokümante et\""
+            )
+            self._kb_state[chat_id] = "gorevler"
+            await update.message.reply_text("⌨️", reply_markup=KB_GOREVLER)
+            return
+
+        # Create the mission
+        try:
+            if wf_action == "wf_auto":
+                # Use existing mission creation with LLM classification
+                context.args = description.split()
+                await self.cmd_mission(update, context)
+            elif workflow:
+                mission_id = await add_mission(description)
+                await add_task(description, mission_id=mission_id, priority=TASK_PRIORITY,
+                              metadata={"workflow": workflow})
+                await self._reply(update,
+                    f"✅ Görev oluşturuldu (#{mission_id})\n"
+                    f"İş akışı: {workflow}\n"
+                    f"📋 {description[:100]}")
+            else:
+                # Quick single task
+                mission_id = await add_mission(description)
+                await add_task(description, mission_id=mission_id, priority=TASK_PRIORITY)
+                await self._reply(update,
+                    f"✅ Görev oluşturuldu (#{mission_id})\n"
+                    f"📋 {description[:100]}")
+        except Exception as e:
+            logger.error("Mission creation failed", error=str(e))
+            await self._reply(update, f"❌ Görev oluşturulamadı: {_friendly_error(str(e))}")
+
+        self._kb_state[chat_id] = "gorevler"
+        await update.message.reply_text("⌨️", reply_markup=KB_GOREVLER)
+
+    # ── Quick Service Implementations ─────────────────────────────────────
+
+    async def _quick_pharmacy(self, update, context):
+        """Find pharmacies on duty using the pharmacy tool."""
+        from src.memory.preferences import get_user_preference
+        chat_id = update.effective_chat.id
+        lat = await get_user_preference(chat_id, "location_lat")
+        lon = await get_user_preference(chat_id, "location_lon")
+        district = await get_user_preference(chat_id, "location_district")
+        city = await get_user_preference(chat_id, "location_city")
+        await self._reply(update, "🏥 Nöbetçi eczaneler aranıyor...")
+        try:
+            from src.tools.pharmacy import find_pharmacies_on_duty
+            result = await find_pharmacies_on_duty(
+                lat=float(lat), lon=float(lon),
+                district=district, city=city
+            )
+            await self._reply(update, result or "Nöbetçi eczane bulunamadı.")
+        except Exception as e:
+            await self._reply(update, f"❌ Eczane araması başarısız: {_friendly_error(str(e))}")
+
+    async def _quick_exchange(self, update, context):
+        """Get exchange rates from free API."""
+        await self._reply(update, "💰 Döviz kurları alınıyor...")
+        try:
+            from src.tools.free_apis import call_free_api
+            result = await call_free_api("exchange_rates")
+            await self._reply(update, result or "Döviz kuru bilgisi alınamadı.")
+        except Exception as e:
+            await self._reply(update, f"❌ Döviz kuru alınamadı: {_friendly_error(str(e))}")
+
+    async def _quick_weather(self, update, context):
+        """Get weather from free API."""
+        from src.memory.preferences import get_user_preference
+        chat_id = update.effective_chat.id
+        lat = await get_user_preference(chat_id, "location_lat")
+        lon = await get_user_preference(chat_id, "location_lon")
+        await self._reply(update, "🌤 Hava durumu alınıyor...")
+        try:
+            from src.tools.free_apis import call_free_api
+            result = await call_free_api("weather", lat=float(lat), lon=float(lon))
+            await self._reply(update, result or "Hava durumu bilgisi alınamadı.")
+        except Exception as e:
+            await self._reply(update, f"❌ Hava durumu alınamadı: {_friendly_error(str(e))}")
+
+    async def _quick_fuel(self, update, context):
+        """Get fuel prices from free API."""
+        await self._reply(update, "⛽ Yakıt fiyatları alınıyor...")
+        try:
+            from src.tools.free_apis import call_free_api
+            result = await call_free_api("fuel_prices")
+            await self._reply(update, result or "Yakıt fiyatı bilgisi alınamadı.")
+        except Exception as e:
+            await self._reply(update, f"❌ Yakıt fiyatları alınamadı: {_friendly_error(str(e))}")
+
+    async def _quick_prayer(self, update, context):
+        """Get prayer times from free API."""
+        from src.memory.preferences import get_user_preference
+        chat_id = update.effective_chat.id
+        lat = await get_user_preference(chat_id, "location_lat")
+        lon = await get_user_preference(chat_id, "location_lon")
+        await self._reply(update, "🕌 Namaz vakitleri alınıyor...")
+        try:
+            from src.tools.free_apis import call_free_api
+            result = await call_free_api("prayer_times", lat=float(lat), lon=float(lon))
+            await self._reply(update, result or "Namaz vakti bilgisi alınamadı.")
+        except Exception as e:
+            await self._reply(update, f"❌ Namaz vakitleri alınamadı: {_friendly_error(str(e))}")
+
+    async def _quick_news(self, update, context):
+        """Get news headlines."""
+        await self._reply(update, "📰 Haberler alınıyor...")
+        try:
+            from src.tools.free_apis import call_free_api
+            result = await call_free_api("news_headlines")
+            await self._reply(update, result or "Haber alınamadı.")
+        except Exception as e:
+            await self._reply(update, f"❌ Haberler alınamadı: {_friendly_error(str(e))}")
+
+    async def _quick_gold(self, update, context):
+        """Get gold prices from free API."""
+        await self._reply(update, "🪙 Altın fiyatları alınıyor...")
+        try:
+            from src.tools.free_apis import call_free_api
+            result = await call_free_api("gold_prices")
+            await self._reply(update, result or "Altın fiyatı bilgisi alınamadı.")
+        except Exception as e:
+            await self._reply(update, f"❌ Altın fiyatları alınamadı: {_friendly_error(str(e))}")
+
+    async def _quick_earthquake(self, update, context):
+        """Get recent earthquake info from free API."""
+        await self._reply(update, "🌍 Deprem bilgileri alınıyor...")
+        try:
+            from src.tools.free_apis import call_free_api
+            result = await call_free_api("earthquake")
+            await self._reply(update, result or "Deprem bilgisi alınamadı.")
+        except Exception as e:
+            await self._reply(update, f"❌ Deprem bilgileri alınamadı: {_friendly_error(str(e))}")
+
     async def set_bot_commands(self):
         """Register the / command list with Telegram so autocomplete is up to date."""
         commands = [
-            BotCommand("start", "Show main menu"),
-            BotCommand("help", "Command reference"),
-            BotCommand("mission", "Create a new mission"),
-            BotCommand("task", "Add a quick task"),
-            BotCommand("missions", "List active missions"),
-            BotCommand("queue", "View task queue"),
-            BotCommand("status", "System status"),
-            BotCommand("cancel", "Cancel a task or mission"),
-            BotCommand("pause", "Pause a mission"),
-            BotCommand("resume", "Resume a mission"),
-            BotCommand("progress", "Mission progress"),
-            BotCommand("wfstatus", "Workflow status"),
-            BotCommand("digest", "Daily digest"),
-            BotCommand("result", "View completed task result"),
-            BotCommand("shop", "Shopping assistant"),
-            BotCommand("price", "Quick price check"),
-            BotCommand("watch", "Set up price watch"),
-            BotCommand("deals", "Active deals & watches"),
-            BotCommand("compare", "Compare products"),
-            BotCommand("todo", "Add a personal todo"),
-            BotCommand("todos", "List your todos"),
-            BotCommand("remember", "Save something to memory"),
-            BotCommand("recall", "Search memory"),
-            BotCommand("budget", "View/set cost budget"),
-            BotCommand("load", "GPU load control"),
-            BotCommand("debug", "Full system debug"),
-            BotCommand("stop", "Stop KutAI"),
-            BotCommand("restart", "Restart KutAI"),
+            BotCommand("start", "Ana menü"),
+            BotCommand("help", "Komut rehberi"),
+            BotCommand("mission", "Görev oluştur"),
+            BotCommand("shop", "Ürün ara"),
+            BotCommand("todo", "Todo ekle"),
+            BotCommand("todos", "Todoları listele"),
+            BotCommand("status", "Sistem durumu"),
+            BotCommand("debug", "Debug bilgisi"),
+            BotCommand("load", "GPU yük modu"),
+            BotCommand("stop", "KutAI durdur"),
+            BotCommand("restart", "KutAI yeniden başlat"),
         ]
         try:
             await self.app.bot.set_my_commands(commands)
@@ -336,6 +910,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("compare", self.cmd_compare))
         self.app.add_handler(CommandHandler("result", self.cmd_result))
         self.app.add_handler(CommandHandler("skillstats", self.cmd_skillstats))
+        self.app.add_handler(CommandHandler("trace", self.cmd_trace))
         # Wrapper control commands
         self.app.add_handler(CommandHandler("kutai_restart", self.cmd_kutai_restart))
         self.app.add_handler(CommandHandler("restart", self.cmd_kutai_restart))
@@ -353,59 +928,40 @@ class TelegramInterface:
         ))
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # Clear any stale pending action
+        """Show main menu and reset keyboard to default state."""
         chat_id = update.effective_chat.id
         self._pending_action.pop(chat_id, None)
-        # Send inline category menu with full command access
+        self._kb_state[chat_id] = "main"
         await self._reply(update,
             "🤖 *KutAI Online*\n\n"
-            "Use the buttons below or just send a message.",
+            "Aşağıdaki butonları kullan veya mesaj yaz.",
             parse_mode="Markdown",
-            reply_markup=_build_category_keyboard(),
+            reply_markup=REPLY_KEYBOARD,
         )
-        # Refresh the persistent reply keyboard (must be separate message)
-        await self._reply(update, "⌨️", reply_markup=REPLY_KEYBOARD)
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show categorized command reference."""
+        """Show command reference."""
         help_text = (
-            "📖 *KutAI Command Reference*\n\n"
-            "*Missions & Tasks*\n"
-            "/mission — Create a mission\n"
-            "/task — Quick task\n"
-            "/missions — List missions\n"
-            "/queue — Task queue\n"
-            "/cancel — Cancel task or mission\n"
-            "/pause, /resume — Pause/resume\n"
-            "/wfstatus — Workflow status\n"
-            "/result — View task result\n\n"
-            "*Status & Costs*\n"
-            "/status — System overview\n"
-            "/digest — Daily digest\n"
-            "/progress — Timeline\n"
-            "/cost — Mission costs\n"
-            "/budget — Cost budget\n\n"
-            "*Shopping*\n"
-            "/shop — Find products\n"
-            "/price — Price check\n"
-            "/compare — X vs Y\n"
-            "/watch — Price alerts\n"
-            "/deals — Active watches & deals\n"
-            "/mystuff — Your owned items\n\n"
-            "*Personal*\n"
-            "/todo — Add reminder\n"
-            "/todos — My list\n"
-            "/remember — Save fact\n"
-            "/recall — Search facts\n\n"
-            "*System*\n"
-            "/load — GPU control\n"
-            "/autonomy — Risk level\n"
-            "/debug — Full dump\n"
-            "/stop — Stop KutAI (with confirmation)\n"
-            "/restart — Restart KutAI\n\n"
-            "_Tap /start for the button menu._"
+            "📖 *KutAI Komut Rehberi*\n\n"
+            "*Menü Butonları*\n"
+            "⚡ Hizmet — Eczane, döviz, hava, yakıt, namaz, haber, altın, deprem\n"
+            "🛒 Alışveriş — Hızlı ara, detaylı araştır\n"
+            "📋 Listem — Todo listesi\n"
+            "🎯 Görevler — Görev oluştur, kuyruk\n"
+            "⚙️ Sistem — Durum, yük modu, debug, DLQ\n\n"
+            "*Slash Komutları (hâlâ çalışır)*\n"
+            "/mission — Görev oluştur\n"
+            "/shop — Ürün ara\n"
+            "/todo — Todo ekle\n"
+            "/todos — Todoları listele\n"
+            "/status — Sistem durumu\n"
+            "/debug — Debug bilgisi\n"
+            "/load — GPU yük modu\n"
+            "/stop — KutAI durdur\n"
+            "/restart — KutAI yeniden başlat\n\n"
+            "_Tam liste için butonları kullan._"
         )
-        await self._reply(update,help_text, parse_mode="Markdown")
+        await self._reply(update, help_text, parse_mode="Markdown")
 
     # ─── Mission Commands ──────────────────────────────────────────────────────
 
@@ -422,7 +978,7 @@ class TelegramInterface:
 
         if "--workflow" in text_args:
             text_args.remove("--workflow")
-            workflow = "idea_to_product_v2"
+            workflow = "i2p_v2"
 
         description = " ".join(text_args)
         if not description:
@@ -432,8 +988,8 @@ class TelegramInterface:
         # Let the classifier decide if this needs a workflow
         if not workflow:
             classification = await self._classify_user_message(description)
-            if classification.get("workflow") == "idea_to_product":
-                workflow = "idea_to_product_v2"
+            if classification.get("workflow") == "i2p":
+                workflow = "i2p_v2"
 
         chat_id = update.message.chat_id
 
@@ -1015,6 +1571,91 @@ class TelegramInterface:
             "\n".join(lines), parse_mode="Markdown"
         )
 
+    async def cmd_trace(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show end-to-end trace for a task."""
+        args = context.args
+        if not args:
+            await self._reply(update, "Usage: /trace <task_id>")
+            return
+
+        try:
+            task_id = int(args[0])
+        except ValueError:
+            await self._reply(update, "Invalid task ID")
+            return
+
+        from src.infra.db import get_db
+        db = await get_db()
+
+        # Get task info
+        cursor = await db.execute(
+            "SELECT * FROM tasks WHERE id = ?", (task_id,)
+        )
+        task = await cursor.fetchone()
+        if not task:
+            await self._reply(update, f"Task #{task_id} not found")
+            return
+
+        task = dict(task)
+        lines = [f"📋 *Task #{task_id} Trace*\n"]
+        lines.append(f"Title: {task.get('title', '?')[:60]}")
+        lines.append(f"Agent: {task.get('agent_type', '?')}")
+        lines.append(f"Status: {task.get('status', '?')}")
+        lines.append(f"Priority: {task.get('priority', '?')}")
+
+        # Timeline
+        created = task.get('created_at', '?')
+        started = task.get('started_at', '')
+        completed = task.get('completed_at', '')
+
+        lines.append(f"\n⏱ *Timeline*")
+        lines.append(f"Created: {created}")
+        if started:
+            lines.append(f"Started: {started}")
+        if completed:
+            lines.append(f"Completed: {completed}")
+        if started and completed:
+            try:
+                t1 = datetime.strptime(started.replace("T", " ")[:19], "%Y-%m-%d %H:%M:%S")
+                t2 = datetime.strptime(completed.replace("T", " ")[:19], "%Y-%m-%d %H:%M:%S")
+                duration = (t2 - t1).total_seconds()
+                lines.append(f"Duration: {duration:.0f}s")
+            except Exception:
+                pass
+
+        # Cost
+        cost = task.get('cost', 0) or 0
+        if cost > 0:
+            lines.append(f"\n💰 Cost: ${cost:.4f}")
+
+        # Quality
+        quality = task.get('quality_score', 0) or 0
+        if quality > 0:
+            lines.append(f"Quality: {quality}/5")
+
+        # Error
+        error = task.get('error', '')
+        if error:
+            lines.append(f"\n❌ Error: {error[:200]}")
+
+        # Check for injected skills
+        import json as _json_trace
+        ctx = task.get('context', '{}')
+        try:
+            ctx_dict = _json_trace.loads(ctx) if isinstance(ctx, str) else ctx
+            skills = ctx_dict.get('injected_skills', [])
+            if skills:
+                lines.append(f"\n🎯 Skills: {', '.join(skills)}")
+        except Exception:
+            pass
+
+        # Result preview
+        result = task.get('result', '')
+        if result:
+            lines.append(f"\n📄 Result: {result[:300]}...")
+
+        await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+
     async def cmd_skillstats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show skill injection A/B metrics."""
         from src.infra.db import get_skill_metrics_summary
@@ -1422,7 +2063,7 @@ class TelegramInterface:
                     mission_ctx = _json.loads(mission_ctx)
                 except (ValueError, TypeError):
                     mission_ctx = {}
-            workflow_name = mission_ctx.get("workflow_name", "idea_to_product_v2")
+            workflow_name = mission_ctx.get("workflow_name", "i2p_v2")
 
             progress = compute_phase_progress(tasks)
             msg = format_status_message(workflow_name, mission_id, progress)
@@ -1739,42 +2380,64 @@ class TelegramInterface:
             return
 
         # ═══════════════════════════════════════════════════════
-        # PRIORITY -1: Reply-keyboard button taps → route to command
+        # PRIORITY -1: Reply-keyboard button taps → route via _BUTTON_ACTIONS
         # ═══════════════════════════════════════════════════════
-        btn_cmd = _REPLY_BUTTON_MAP.get(text.strip())
-        if btn_cmd:
+        btn_action = _BUTTON_ACTIONS.get(text.strip())
+        if btn_action:
             # Clear any stale pending action — user tapped a new button
             self._pending_action.pop(chat_id, None)
-            handler = self._resolve_cmd_handler(btn_cmd)
-            if handler:
-                context.args = []
-                await handler(update, context)
-                return
+            action_type, action_value = btn_action
+            try:
+                if action_type == "category":
+                    await self._handle_category_button(update, context, action_value)
+                elif action_type == "cmd":
+                    handler = self._resolve_cmd_handler(action_value)
+                    if handler:
+                        context.args = []
+                        await handler(update, context)
+                elif action_type == "cmd_args":
+                    prompt = _CMD_ARG_PROMPTS.get(action_value, f"Enter input:")
+                    self._pending_action[chat_id] = {
+                        "command": action_value,
+                        "ts": _time.time(),
+                    }
+                    await self._reply(update, prompt)
+                elif action_type == "special":
+                    await self._handle_special_button(update, context, action_value)
+            except Exception as e:
+                logger.error("Button action failed", action=action_value, error=str(e))
+                await self._reply(update, f"❌ {_friendly_error(str(e))}")
+            return
 
         logger.info("Message received", user_id=chat_id, text_preview=text[:50])
 
         # ═══════════════════════════════════════════════════════
-        # PRIORITY 0: Button-initiated conversation flow
+        # PRIORITY 0: Button-initiated conversation flow (with timeout)
         # ═══════════════════════════════════════════════════════
         pending_action = self._pending_action.pop(chat_id, None)
         if pending_action:
-            cmd = pending_action["command"]
-            if cmd == "_todo_help":
-                self._last_todo_help = pending_action
-                await self.cmd__todo_help(update, context)
-                return
-            handler = self._resolve_cmd_handler(cmd)
-            if handler:
-                # Simulate command with text as args
-                context.args = text.split() if text.strip() else []
-                try:
-                    await handler(update, context)
-                except Exception as e:
-                    await self._reply(update, f"❌ {_friendly_error(str(e))}")
+            # Check timeout
+            if _time.time() - pending_action.get("ts", 0) > _PENDING_ACTION_TIMEOUT:
+                logger.info("Pending action expired", command=pending_action.get("command"))
+                # Fall through to normal routing
             else:
-                logger.warning("pending_action handler not found", command=cmd)
-                await self._reply(update, f"❌ Unknown command: {cmd}")
-            return
+                cmd = pending_action["command"]
+                if cmd == "_todo_help":
+                    self._last_todo_help = pending_action
+                    await self.cmd__todo_help(update, context)
+                    return
+                handler = self._resolve_cmd_handler(cmd)
+                if handler:
+                    # Simulate command with text as args
+                    context.args = text.split() if text.strip() else []
+                    try:
+                        await handler(update, context)
+                    except Exception as e:
+                        await self._reply(update, f"❌ {_friendly_error(str(e))}")
+                else:
+                    logger.warning("pending_action handler not found", command=cmd)
+                    await self._reply(update, f"❌ Unknown command: {cmd}")
+                return
 
         # ═══════════════════════════════════════════════════════
         # PRIORITY 1: Check for pending clarification (state-based)
@@ -1955,12 +2618,12 @@ class TelegramInterface:
 
         if msg_type == "mission":
             # Classifier decides if this needs workflow engine
-            if msg_workflow == "idea_to_product":
+            if msg_workflow == "i2p":
                 try:
                     from ..workflows.engine.runner import WorkflowRunner
                     runner = WorkflowRunner()
                     mission_id = await runner.start(
-                        workflow_name="idea_to_product_v2",
+                        workflow_name="i2p_v2",
                         initial_input={"idea": text, "product_name": text[:50]},
                         title=text[:80],
                     )
@@ -2022,7 +2685,7 @@ Categories:
 - "casual": greeting, thanks, small talk
 
 If type is "mission", also decide if this needs a full product workflow:
-- "workflow": "idea_to_product" ONLY if the user explicitly wants to BUILD/CREATE/DEVELOP a new product from scratch
+- "workflow": "i2p" ONLY if the user explicitly wants to BUILD/CREATE/DEVELOP a new product from scratch
 - "workflow": null if it's a simpler mission (research, analysis, fix something, write a report)
 
 IMPORTANT: If the user asks about progress/status/updates on a SPECIFIC existing task or search, classify as "status_query", NOT "shopping" or "mission".
@@ -2033,7 +2696,7 @@ Context: {context}
 
 Message: {message}
 
-Respond as: {{"type": "mission", "confidence": 0.9, "workflow": "idea_to_product"}}
+Respond as: {{"type": "mission", "confidence": 0.9, "workflow": "i2p"}}
 Or: {{"type": "task", "confidence": 0.8}}"""
 
     async def _classify_user_message(self, text: str) -> dict:
@@ -2185,7 +2848,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             result = {"type": "mission"}
             # Keyword fallback for workflow detection
             if _looks_like_product_idea(text):
-                result["workflow"] = "idea_to_product"
+                result["workflow"] = "i2p"
             return result
         return {"type": "task"}
 
@@ -3203,7 +3866,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                         mission_ctx = _json.loads(mission_ctx)
                     except (ValueError, TypeError):
                         mission_ctx = {}
-                workflow_name = mission_ctx.get("workflow_name", "idea_to_product_v2")
+                workflow_name = mission_ctx.get("workflow_name", "i2p_v2")
                 progress = compute_phase_progress(tasks)
                 msg = format_status_message(workflow_name, mission_id, progress)
                 cancel_button = InlineKeyboardMarkup([[

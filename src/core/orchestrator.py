@@ -65,6 +65,20 @@ AGENT_TIMEOUTS: dict[str, int] = {
     "shopping_clarifier":  120,
 }
 
+async def _check_internet() -> bool:
+    """Quick internet connectivity check (3 s timeout)."""
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as s:
+            async with s.head(
+                "https://duckduckgo.com",
+                timeout=aiohttp.ClientTimeout(total=3),
+            ) as r:
+                return r.status < 500
+    except Exception:
+        return False
+
+
 # Maximum number of independent tasks to run concurrently.
 MAX_CONCURRENT_TASKS: int = int(os.getenv("MAX_CONCURRENT_TASKS", "3"))
 
@@ -1308,6 +1322,19 @@ class Orchestrator:
                 except Exception as e:
                     logger.debug(f"[Task #{task_id}] Snapshot skipped: {e}")
 
+            # ── Internet connectivity pre-check for web-dependent tasks ──
+            classification = task_ctx.get("classification", {})
+            if classification.get("search_depth", "none") != "none":
+                if not await _check_internet():
+                    logger.warning(
+                        "internet unreachable, deferring web task",
+                        task_id=task_id,
+                    )
+                    await update_task(
+                        task_id, started_at=None, status="pending",
+                    )
+                    return
+
             # ── Determine timeout ──
             timeout_seconds = (
                 task.get("timeout_seconds")
@@ -1729,6 +1756,19 @@ class Orchestrator:
             )
 
         logger.info("task completed", task_id=task_id, model=model, cost=cost, iterations=iterations)
+
+        # ── Quality grade notification — warn user about low-quality results ──
+        quality_score = result.get("quality_score")
+        if quality_score and quality_score < 4:
+            try:
+                chat_id = task_ctx_parsed.get("chat_id")
+                if chat_id and not task_ctx_parsed.get("silent"):
+                    await self.telegram.app.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"⚠️ Task #{task_id} quality score: {quality_score}/5 — result may need review",
+                    )
+            except Exception:
+                pass
 
         # Check if this is a todo suggestion task — trigger reminder when all done
         task_ctx = task.get("context", {})

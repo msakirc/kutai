@@ -17,6 +17,36 @@ from ..infra.logging_config import get_logger
 logger = get_logger("tools")
 
 # ---------------------------------------------------------------------------
+# Tool health tracking — disable tools that fail repeatedly (circuit breaker)
+# ---------------------------------------------------------------------------
+import time as _time_mod
+
+_tool_failures: dict[str, list[float]] = {}  # tool_name -> list of failure timestamps
+_TOOL_FAILURE_THRESHOLD = 3
+_TOOL_FAILURE_WINDOW = 600  # 10 minutes
+
+
+def _record_tool_failure(tool_name: str):
+    """Record a tool failure. After 3 failures in 10 minutes, tool is temporarily disabled."""
+    now = _time_mod.time()
+    if tool_name not in _tool_failures:
+        _tool_failures[tool_name] = []
+    _tool_failures[tool_name].append(now)
+    # Prune old entries
+    _tool_failures[tool_name] = [
+        t for t in _tool_failures[tool_name] if now - t < _TOOL_FAILURE_WINDOW
+    ]
+
+
+def _is_tool_circuit_open(tool_name: str) -> bool:
+    """Check if a tool is temporarily disabled due to repeated failures."""
+    failures = _tool_failures.get(tool_name, [])
+    now = _time_mod.time()
+    recent = [t for t in failures if now - t < _TOOL_FAILURE_WINDOW]
+    return len(recent) >= _TOOL_FAILURE_THRESHOLD
+
+
+# ---------------------------------------------------------------------------
 # Imports — must match the public API of each module we built
 # ---------------------------------------------------------------------------
 from .shell import run_shell, run_shell_with_stdin, run_shell_sequential
@@ -1273,6 +1303,15 @@ async def execute_tool(tool_name: str, agent_type: str | None = None, task_hints
         available = ", ".join(sorted(TOOL_REGISTRY.keys()))
         return f"❌ Unknown tool: '{tool_name}'. Available: {available}"
 
+    # ── Circuit breaker: skip tools that keep failing ──
+    if _is_tool_circuit_open(tool_name):
+        return (
+            f"⚠️ Tool '{tool_name}' temporarily disabled "
+            f"(failed {_TOOL_FAILURE_THRESHOLD} times in "
+            f"{_TOOL_FAILURE_WINDOW // 60} minutes). "
+            f"Try a different approach."
+        )
+
     # Phase 8.2: Per-agent shell command allowlist enforcement
     if agent_type and tool_name in ("shell", "shell_stdin", "shell_sequential"):
         _cmd = kwargs.get("command", "") or kwargs.get("commands", "")
@@ -1314,6 +1353,7 @@ async def execute_tool(tool_name: str, agent_type: str | None = None, task_hints
 
     except TypeError as exc:
         # Almost always a missing required argument
+        _record_tool_failure(tool_name)
         expected = (
             ", ".join(sorted(valid_params)) if valid_params else "(unknown)"
         )
@@ -1324,5 +1364,6 @@ async def execute_tool(tool_name: str, agent_type: str | None = None, task_hints
         )
 
     except Exception as exc:
+        _record_tool_failure(tool_name)
         logger.error(f"Tool '{tool_name}' error: {exc}", exc_info=True)
         return f"❌ Tool error ({tool_name}): {type(exc).__name__}: {exc}"

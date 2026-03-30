@@ -836,6 +836,18 @@ class BaseAgent:
         result = head + [summary] + middle + tail
         final = self._count_tokens(result, model)
         logger.info(f"Context compressed (drop): {current} → {final} tokens")
+
+        # Inject context budget warning so the agent knows to wrap up
+        remaining_pct = max(0, 100 - int(final * 100 / ctx_window))
+        result.append({
+            "role": "user",
+            "content": (
+                f"[System: Context {remaining_pct}% remaining. "
+                f"Earlier messages were compressed. "
+                f"Focus on completing the task efficiently.]"
+            ),
+        })
+
         return result
 
     # ------------------------------------------------------------------ #

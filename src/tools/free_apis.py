@@ -655,6 +655,61 @@ async def _discover_from_mcp_registry() -> int:
     return count
 
 
+async def _discover_from_clawhub(categories: list[str] | None = None) -> int:
+    """Discover APIs from ClawHub skill descriptions (category-based search)."""
+
+    if categories is None:
+        categories = ["travel", "weather", "finance", "health", "news", "sports", "music", "food", "government"]
+
+    count = 0
+    try:
+        async with aiohttp.ClientSession() as session:
+            for category in categories:
+                try:
+                    # ClawHub has a search endpoint
+                    url = f"https://clawhub.ai/api/skills/search?q={category}&limit=50"
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=15),
+                                          headers={"User-Agent": "KutAI/1.0"}) as resp:
+                        if resp.status != 200:
+                            # Try alternative: scrape the category page
+                            continue
+                        data = await resp.json()
+                        skills = data.get("skills", data.get("results", []))
+
+                        for skill in skills:
+                            desc = skill.get("description", "")
+                            name = skill.get("name", "")
+
+                            # Extract API references from skill descriptions
+                            # Look for URLs that look like APIs
+                            api_urls = re.findall(r'https?://(?:api\.|[\w-]+\.(?:com|org|io|dev)/(?:api|v\d))[^\s"\'<>]*', desc)
+
+                            for api_url in api_urls:
+                                base = api_url.split("/api")[0] + "/api" if "/api" in api_url else api_url.split("?")[0]
+                                from src.infra.db import upsert_free_api
+                                await upsert_free_api({
+                                    "name": f"ClawHub: {name[:40]}",
+                                    "category": category,
+                                    "base_url": base,
+                                    "auth_type": "unknown",
+                                    "description": desc[:200],
+                                    "example_endpoint": api_url,
+                                    "source": "clawhub",
+                                    "verified": 0,
+                                })
+                                count += 1
+                except Exception as e:
+                    logger.debug(f"ClawHub category '{category}' failed: {e}")
+                    continue
+
+                # Rate limit: 1 request per second
+                await asyncio.sleep(1)
+    except Exception as e:
+        logger.debug(f"ClawHub discovery failed: {e}")
+
+    return count
+
+
 async def discover_new_apis(source: str = "all") -> int:
     """Discover new free APIs from external registries.
 
@@ -662,6 +717,7 @@ async def discover_new_apis(source: str = "all") -> int:
     - "public-apis": GitHub public-apis README
     - "free-apis": free-apis.github.io JSON
     - "mcp": MCP server registry
+    - "clawhub": ClawHub skill descriptions (category-based)
     - "all": all sources
 
     Returns the number of newly discovered APIs.
@@ -712,6 +768,10 @@ async def discover_new_apis(source: str = "all") -> int:
     # Source 3: MCP server registry
     if source in ("all", "mcp"):
         discovered += await _discover_from_mcp_registry()
+
+    # Source 4: ClawHub category-based discovery
+    if source in ("all", "clawhub"):
+        discovered += await _discover_from_clawhub()
 
     # Refresh the in-memory cache
     await refresh_db_cache()

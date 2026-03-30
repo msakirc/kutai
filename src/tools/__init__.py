@@ -822,6 +822,33 @@ try:
 except Exception as e:
     logger.warning(f"pharmacy tool not available — {type(e).__name__}: {e}")
 
+# Project scaffolding tool (heavy-lifting for i2p workflow)
+try:
+    from .scaffolder import scaffold_project, list_stacks, recommend_stack
+
+    async def _tool_scaffold(stack: str = "", project_name: str = "", output_dir: str = "") -> str:
+        if not stack:
+            return list_stacks()
+        if not project_name:
+            return "Error: project_name is required"
+        return await scaffold_project(stack, project_name, output_dir)
+
+    async def _tool_recommend_stack(project_type: str = "", requirements: str = "") -> str:
+        return recommend_stack(project_type, requirements)
+
+    _optional_tools["scaffold"] = {
+        "function": _tool_scaffold,
+        "description": 'Generate project skeleton. Args: stack (fastapi|nextjs|expo|flask), project_name, output_dir. Call with no args to list stacks.',
+        "example": '{"action": "tool_call", "tool": "scaffold", "args": {"stack": "fastapi", "project_name": "my_app"}}',
+    }
+    _optional_tools["recommend_stack"] = {
+        "function": _tool_recommend_stack,
+        "description": 'Recommend a tech stack for a project type. Args: project_type (web_app|mobile_app|api_service|saas), requirements (str, optional). Call with no args to list project types.',
+        "example": '{"action": "tool_call", "tool": "recommend_stack", "args": {"project_type": "web_app"}}',
+    }
+except Exception as e:
+    logger.warning(f"scaffold tool not available — {type(e).__name__}: {e}")
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------

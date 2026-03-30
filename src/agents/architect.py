@@ -24,6 +24,8 @@ class ArchitectAgent(BaseAgent):
         "read_file",
         "write_file",
         "web_search",
+        "scaffold",
+        "recommend_stack",
     ]
 
     def get_system_prompt(self, task: dict) -> str:

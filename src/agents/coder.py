@@ -36,6 +36,8 @@ class CoderAgent(BaseAgent):
         "git_diff",
         "run_code",
         "web_search",
+        "scaffold",
+        "recommend_stack",
     ]
 
     def get_system_prompt(self, task: dict) -> str:

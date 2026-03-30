@@ -160,9 +160,9 @@ class TestLLMClassification(unittest.IsolatedAsyncioTestCase):
 class TestTaskClassification(unittest.IsolatedAsyncioTestCase):
     """Verify classify_task with mocked LLM and keyword fallback."""
 
-    @patch("src.core.task_classifier.call_model", new_callable=AsyncMock)
-    async def test_classify_shoplist_app(self, mock_call):
-        mock_call.return_value = {
+    async def test_classify_shoplist_app(self):
+        mock_dispatcher = MagicMock()
+        mock_dispatcher.request = AsyncMock(return_value={
             "content": json.dumps({
                 "agent_type": "planner",
                 "difficulty": 6,
@@ -172,20 +172,21 @@ class TestTaskClassification(unittest.IsolatedAsyncioTestCase):
                 "local_only": False,
                 "priority": "normal",
             })
-        }
-        result = await classify_task(
-            "Build shoplist app",
-            "Build an app that allows multiple users to share and manage shoplists",
-        )
+        })
+        with patch("src.core.llm_dispatcher.get_dispatcher", return_value=mock_dispatcher):
+            result = await classify_task(
+                "Build shoplist app",
+                "Build an app that allows multiple users to share and manage shoplists",
+            )
         self.assertIsInstance(result, TaskClassification)
         self.assertEqual(result.agent_type, "planner")
         self.assertEqual(result.difficulty, 6)
         self.assertTrue(result.needs_thinking)
         self.assertEqual(result.method, "llm")
 
-    @patch("src.core.task_classifier.call_model", new_callable=AsyncMock)
-    async def test_classify_web_search(self, mock_call):
-        mock_call.return_value = {
+    async def test_classify_web_search(self):
+        mock_dispatcher = MagicMock()
+        mock_dispatcher.request = AsyncMock(return_value={
             "content": json.dumps({
                 "agent_type": "researcher",
                 "difficulty": 4,
@@ -195,11 +196,12 @@ class TestTaskClassification(unittest.IsolatedAsyncioTestCase):
                 "local_only": False,
                 "priority": "normal",
             })
-        }
-        result = await classify_task(
-            "Research Python frameworks",
-            "Search the web for the best Python frameworks for web development",
-        )
+        })
+        with patch("src.core.llm_dispatcher.get_dispatcher", return_value=mock_dispatcher):
+            result = await classify_task(
+                "Research Python frameworks",
+                "Search the web for the best Python frameworks for web development",
+            )
         self.assertIsInstance(result, TaskClassification)
         self.assertEqual(result.agent_type, "researcher")
         self.assertEqual(result.difficulty, 4)

@@ -71,7 +71,8 @@ def _make_model_info(name="test-model", is_local=True, demoted=False,
     info.capabilities = capabilities if capabilities is not None else {}
     info.context_length = 8192
     info.max_tokens = 4096
-    info.supports_function_calling = False
+    info.supports_function_calling = True
+    info.specialty = None
     info.has_vision = False
     info.total_params_b = 7.0
     info.active_params_b = 7.0
@@ -84,7 +85,7 @@ def _make_model_info(name="test-model", is_local=True, demoted=False,
         "provider": "llama_cpp",
         "context_length": 8192,
         "max_tokens": 4096,
-        "supports_function_calling": False,
+        "supports_function_calling": True,
         "supports_json_mode": False,
         "thinking_model": False,
         "has_vision": False,
@@ -353,6 +354,7 @@ class TestFindBestLocalForBatch(unittest.TestCase):
 
         mock_registry = MagicMock()
         mock_registry.all_models.return_value = [model_a, model_b]
+        mock_registry.get.side_effect = lambda name: model_a if name == "model-a" else model_b
 
         with patch("src.models.model_registry.get_registry",
                    return_value=mock_registry), \

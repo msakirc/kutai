@@ -59,7 +59,8 @@ class TestSQLColumnWhitelist(unittest.TestCase):
         expected = {"title", "description", "agent_type", "status", "tier",
                     "priority", "result", "error", "error_category", "context",
                     "retry_count", "max_retries", "started_at", "completed_at",
-                    "task_hash", "requires_approval", "depends_on", "max_cost"}
+                    "task_hash", "requires_approval", "depends_on", "max_cost",
+                    "cost", "quality_score"}
         self.assertEqual(_TASK_COLUMNS, expected)
 
 

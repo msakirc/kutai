@@ -88,7 +88,11 @@ class LocalModelManager:
 
         self._swap_lock = asyncio.Lock()
         self._swap_queue: asyncio.Queue[ModelSwapRequest] = asyncio.Queue()
-        self.swap_in_progress: bool = False  # True while model is being swapped
+        # Swap state: 0.0 = no swap in progress, >0 = monotonic time swap started.
+        # Using a timestamp instead of a boolean lets callers detect stale reads:
+        # if swap_started_at changed between their read and their action, the
+        # state they read is stale.
+        self.swap_started_at: float = 0.0
         self._last_request_time: float = 0.0
         self._started_at: float = 0.0
         self._total_swaps: int = 0
@@ -99,6 +103,9 @@ class LocalModelManager:
         self._active_inference_count: int = 0
         self._inference_idle = asyncio.Event()
         self._inference_idle.set()  # starts idle
+        # Generation counter — bumped on force-swap so orphaned inferences
+        # from pre-swap generations don't corrupt the count when they finish.
+        self._inference_generation: int = 0
 
         self.runtime_state: ModelRuntimeState | None = None  # populated after successful swap
 
@@ -239,13 +246,31 @@ class LocalModelManager:
 
     # ── Inference tracking ─────────────────────────────────────
 
-    def mark_inference_start(self) -> None:
-        """Mark that an inference request is starting against the current server."""
+    def mark_inference_start(self) -> int:
+        """Mark that an inference request is starting against the current server.
+
+        Returns the current inference generation. Callers MUST pass this value
+        back to mark_inference_end() so that orphaned inferences from a
+        pre-force-swap generation don't corrupt the counter.
+        """
         self._active_inference_count += 1
         self._inference_idle.clear()
+        return self._inference_generation
 
-    def mark_inference_end(self) -> None:
-        """Mark that an inference request has finished."""
+    def mark_inference_end(self, generation: int | None = None) -> None:
+        """Mark that an inference request has finished.
+
+        Args:
+            generation: The generation returned by mark_inference_start().
+                        If the generation doesn't match the current one
+                        (a force-swap happened), the decrement is skipped
+                        because the counter was already reset.
+        """
+        if generation is not None and generation != self._inference_generation:
+            # This inference started before a force-swap — the counter was
+            # already reset when the generation was bumped. Decrementing
+            # would make the counter go negative (or undercount new inferences).
+            return
         self._active_inference_count = max(0, self._active_inference_count - 1)
         if self._active_inference_count == 0:
             self._inference_idle.set()
@@ -363,14 +388,14 @@ class LocalModelManager:
                 logger.debug(f"Model {model_name} already healthy (resolved under lock)")
                 return True
 
-            self.swap_in_progress = True
+            self.swap_started_at = time.monotonic()
             try:
                 return await self._do_swap(model_name, reason, enable_thinking)
             finally:
-                self.swap_in_progress = False
+                self.swap_started_at = 0.0
 
     async def _do_swap(self, model_name: str, reason: str = "", enable_thinking: bool = False) -> bool:
-        """Inner swap logic, called under _swap_lock with swap_in_progress=True."""
+        """Inner swap logic, called under _swap_lock with swap_started_at set."""
         # ── Wait for in-flight inference to finish before killing server ──
         # This prevents killing llama-server while an HTTP request is mid-stream,
         # which causes the HTTP client to hang on a dead TCP connection.
@@ -388,7 +413,11 @@ class LocalModelManager:
                     f"({self._active_inference_count} still active). "
                     f"Force-swapping — active requests will receive errors."
                 )
-                # Reset the counter so we don't get stuck forever
+                # Bump the generation so orphaned mark_inference_end() calls
+                # from pre-swap inferences are ignored. Then reset the counter
+                # cleanly — any future decrements from the old generation will
+                # see a mismatched generation and skip.
+                self._inference_generation += 1
                 self._active_inference_count = 0
                 self._inference_idle.set()
 

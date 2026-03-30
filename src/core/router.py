@@ -1115,9 +1115,13 @@ async def call_model(
                         vision=model.has_vision,
                     )
 
-                    # Track in-flight inference so model swaps can drain
+                    # Track in-flight inference so model swaps can drain.
+                    # Capture the generation so mark_inference_end() knows
+                    # whether a force-swap happened while we were running
+                    # (in which case the counter was already reset).
+                    _inf_gen = None
                     if local_manager:
-                        local_manager.mark_inference_start()
+                        _inf_gen = local_manager.mark_inference_start()
                     try:
                         response = await asyncio.wait_for(
                             litellm.acompletion(**completion_kwargs),
@@ -1125,7 +1129,7 @@ async def call_model(
                         )
                     finally:
                         if local_manager:
-                            local_manager.mark_inference_end()
+                            local_manager.mark_inference_end(_inf_gen)
 
                     call_latency = time.time() - call_start
 

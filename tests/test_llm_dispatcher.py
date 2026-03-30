@@ -539,6 +539,7 @@ class TestLLMDispatcherIntegration(unittest.TestCase):
                 "src.models.local_model_manager": MagicMock(
                     get_local_manager=MagicMock(return_value=MagicMock(
                         current_model="model-a",
+                        swap_started_at=0.0,
                         ensure_model=mock_ensure,
                     ))
                 )
@@ -743,7 +744,7 @@ class TestColdStartWait(unittest.TestCase):
         mock_reg.all_models.return_value = [mock_model_a]
 
         mock_mgr = MagicMock()
-        mock_mgr.swap_in_progress = True  # proactive load in progress
+        mock_mgr.swap_started_at = 1.0  # proactive load in progress
 
         mock_call = AsyncMock(return_value=mock_result)
 
@@ -782,7 +783,7 @@ class TestColdStartWait(unittest.TestCase):
         mock_reg.all_models.return_value = [mock_model_a]
 
         mock_mgr = MagicMock()
-        mock_mgr.swap_in_progress = True
+        mock_mgr.swap_started_at = 1.0
         mock_mgr.current_model = None
 
         mock_call = AsyncMock(side_effect=RuntimeError("no models"))
@@ -862,7 +863,7 @@ class TestColdStartWait(unittest.TestCase):
         mock_reg.all_models.return_value = [mock_model_a]
 
         mock_mgr = MagicMock()
-        mock_mgr.swap_in_progress = False  # nothing loading
+        mock_mgr.swap_started_at = 0.0  # nothing loading
         mock_mgr.current_model = None
 
         mock_call = AsyncMock(side_effect=RuntimeError("no models"))

@@ -438,16 +438,19 @@ class LLMDispatcher:
 
         reqs_safe = copy.copy(reqs)
 
-        # If a model swap is in progress, skip local model entirely.
-        # OVERHEAD tasks queuing for GPU during a swap causes cascade
-        # failures: each times out at 120s, retries via backpressure,
-        # filling the queue again in an infinite loop.
-        #
-        # Exception: if a model just finished loading (cold-start wait
-        # completed), swap_in_progress may still be True briefly.
-        # Check current_model to distinguish "swap between models"
-        # from "initial load completing".
-        if self._is_swap_in_progress() and not self._get_loaded_model_name():
+        # ── Atomic swap-state check ──
+        # Snapshot swap_version + loaded model atomically. If the swap
+        # version changes between our snapshot and call_model's execution,
+        # the exclusion list may be stale — but that's safe because:
+        #   - If swap completed: loaded model changed, but we only kept
+        #     it as a candidate (select_model will see it's now different).
+        #   - If swap started: we excluded unloaded models already.
+        # The timestamp lets us detect these transitions for logging.
+        _sv = self._swap_version()
+        _loaded = self._get_loaded_model_name()
+
+        if _sv > 0 and not _loaded:
+            # Swap in progress, no model available yet → cloud only
             logger.debug(
                 "overhead skipping local — swap in progress",
                 task=reqs.effective_task or reqs.primary_capability,
@@ -533,9 +536,22 @@ class LLMDispatcher:
         try:
             from src.models.local_model_manager import get_local_manager
             manager = get_local_manager()
-            return manager.swap_in_progress
+            return manager.swap_started_at > 0
         except Exception:
             return False
+
+    def _swap_version(self) -> float:
+        """Return the swap_started_at timestamp for staleness detection.
+
+        Callers can snapshot this value, perform work, then compare against
+        a second read to detect if a swap started or completed in between.
+        Returns 0.0 if no swap in progress.
+        """
+        try:
+            from src.models.local_model_manager import get_local_manager
+            return get_local_manager().swap_started_at
+        except Exception:
+            return 0.0
 
     def _exclude_all_local(self, reqs: "ModelRequirements") -> "ModelRequirements":
         """Exclude ALL local models. Used during swaps to force cloud-only routing."""

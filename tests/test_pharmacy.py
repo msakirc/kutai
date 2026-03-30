@@ -12,6 +12,8 @@ from src.tools.pharmacy import (
     _get_osrm_distance,
     _get_user_location,
     _fetch_duty_pharmacies_eczaneler_gen_tr,
+    _fetch_pharmacy_coordinates,
+    _normalize_turkish,
     find_nearest_pharmacy,
 )
 
@@ -73,6 +75,19 @@ def test_get_user_location_invalid(monkeypatch):
     monkeypatch.setenv("USER_LON", "29.0")
     result = _get_user_location()
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _normalize_turkish
+# ---------------------------------------------------------------------------
+
+def test_normalize_turkish():
+    """Turkish special characters should be normalized."""
+    assert _normalize_turkish("çankaya") == "cankaya"
+    assert _normalize_turkish("şişli") == "sisli"
+    assert _normalize_turkish("beyoğlu") == "beyoglu"
+    assert _normalize_turkish("üsküdar") == "uskudar"
+    assert _normalize_turkish("gümüşhane") == "gumushane"
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +155,233 @@ def test_osrm_distance_failure():
 
     assert dist_km == -1.0
     assert dur_min == -1.0
+
+
+# ---------------------------------------------------------------------------
+# _fetch_duty_pharmacies_eczaneler_gen_tr (mocked HTML)
+# ---------------------------------------------------------------------------
+
+# Realistic HTML snippet mimicking eczaneler.gen.tr structure
+MOCK_ECZANELER_HTML = """
+<html><body>
+<table class="table table-striped mt-2">
+<tr><td colspan="3">
+<div class="row">
+<div class="col-4 col-lg-3"><img class="ikon" src="/resimler/ikon/eczane.png"/> Eczane</div>
+<div class="col-4 col-lg-6"><img class="ikon" src="/resimler/ikon/adres.png"/> Adres</div>
+<div class="col-4 col-lg-3"><img class="ikon" src="/resimler/ikon/telefon.png"/> Telefon</div>
+</div></td></tr>
+
+<tr><td class="border-bottom" colspan="3"><div class="row" style="font-size:110%;">
+<div class="col-lg-3"><a href="/eczane/ankara-cankaya-atakule-eczanesi"><span class="isim">Atakule Eczanesi</span></a></div>
+<div class="col-lg-6">Hosdere Caddesi, Piyade Sokak No:26/A Cankaya / Ankara
+<div class="py-2"><span class="text-success font-weight-bold">» </span><span class="font-italic">Atakule AVM yanı</span></div>
+<div class="my-2"><span class="px-2 py-1 rounded bg-info text-white font-weight-bold">Çankaya</span></div>
+</div>
+<div class="col-lg-3 py-lg-2">0 (312) 441-56-59</div>
+</div></td></tr>
+
+<tr><td class="border-bottom" colspan="3"><div class="row" style="font-size:110%;">
+<div class="col-lg-3"><a href="/eczane/ankara-kecioren-yildiz-eczanesi"><span class="isim">Yıldız Eczanesi</span></a></div>
+<div class="col-lg-6">Etlik Caddesi No:12 Kecioren / Ankara
+<div class="my-2"><span class="px-2 py-1 rounded bg-info text-white font-weight-bold">Keçiören</span></div>
+</div>
+<div class="col-lg-3 py-lg-2">0 (312) 555-12-34</div>
+</div></td></tr>
+
+<tr><td class="border-bottom" colspan="3"><div class="row" style="font-size:110%;">
+<div class="col-lg-3"><a href="/eczane/ankara-cankaya-lalem-eczanesi"><span class="isim">Lalem Eczanesi</span></a></div>
+<div class="col-lg-6">Huzur Mahallesi, 1066.Cadde No:35 Balgat / Çankaya / Ankara
+<div class="my-2"><span class="px-2 py-1 rounded bg-info text-white font-weight-bold">Çankaya</span></div>
+</div>
+<div class="col-lg-3 py-lg-2">0 (312) 287-45-67</div>
+</div></td></tr>
+</table>
+</body></html>
+"""
+
+
+def _make_scrape_result(html, status=200, ok=True):
+    """Create a mock ScrapeResult."""
+    mock = MagicMock()
+    mock.html = html
+    mock.status = status
+    mock.ok = ok
+    return mock
+
+
+def test_eczaneler_gen_tr_parses_pharmacies():
+    """Should parse pharmacy name, address, district, phone, detail_url from HTML."""
+    with patch(
+        "src.tools.scraper.scrape_url",
+        new_callable=AsyncMock,
+        return_value=_make_scrape_result(MOCK_ECZANELER_HTML),
+    ):
+        results = _run(_fetch_duty_pharmacies_eczaneler_gen_tr("ankara"))
+
+    assert len(results) == 3
+    # First pharmacy
+    assert results[0]["pharmacyName"] == "Atakule Eczanesi"
+    assert "Hosdere" in results[0]["address"] or "Piyade" in results[0]["address"]
+    assert results[0]["district"] == "Çankaya"
+    assert "441-56-59" in results[0]["phone"]
+    assert results[0]["detail_url"] == "https://www.eczaneler.gen.tr/eczane/ankara-cankaya-atakule-eczanesi"
+    # Second pharmacy
+    assert results[1]["pharmacyName"] == "Yıldız Eczanesi"
+    assert results[1]["district"] == "Keçiören"
+
+
+def test_eczaneler_gen_tr_district_filter():
+    """Should filter pharmacies by district when specified."""
+    with patch(
+        "src.tools.scraper.scrape_url",
+        new_callable=AsyncMock,
+        return_value=_make_scrape_result(MOCK_ECZANELER_HTML),
+    ):
+        results = _run(_fetch_duty_pharmacies_eczaneler_gen_tr("ankara", "cankaya"))
+
+    # Only Çankaya pharmacies (Atakule + Lalem), not Keçiören (Yıldız)
+    assert len(results) == 2
+    names = [r["pharmacyName"] for r in results]
+    assert "Atakule Eczanesi" in names
+    assert "Lalem Eczanesi" in names
+    assert "Yıldız Eczanesi" not in names
+
+
+def test_eczaneler_gen_tr_skips_header_rows():
+    """Header rows (without span.isim) should be skipped."""
+    with patch(
+        "src.tools.scraper.scrape_url",
+        new_callable=AsyncMock,
+        return_value=_make_scrape_result(MOCK_ECZANELER_HTML),
+    ):
+        results = _run(_fetch_duty_pharmacies_eczaneler_gen_tr("ankara"))
+
+    # Should not include "Eczane" header text as a pharmacy
+    names = [r["pharmacyName"] for r in results]
+    assert "Eczane" not in names
+
+
+def test_eczaneler_gen_tr_date_in_url():
+    """URL should include today's date as tarih parameter."""
+    from datetime import datetime
+
+    call_args = {}
+
+    async def mock_scrape(url, **kwargs):
+        call_args["url"] = url
+        return _make_scrape_result("<html><body></body></html>")
+
+    with patch("src.tools.scraper.scrape_url", side_effect=mock_scrape):
+        _run(_fetch_duty_pharmacies_eczaneler_gen_tr("istanbul"))
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    assert f"tarih={today}" in call_args["url"]
+    assert "nobetci-istanbul" in call_args["url"]
+
+
+def test_eczaneler_gen_tr_http_failure():
+    """Should return empty list on HTTP failure."""
+    with patch(
+        "src.tools.scraper.scrape_url",
+        new_callable=AsyncMock,
+        return_value=_make_scrape_result("", status=403, ok=False),
+    ):
+        results = _run(_fetch_duty_pharmacies_eczaneler_gen_tr("ankara"))
+
+    assert results == []
+
+
+# ---------------------------------------------------------------------------
+# _fetch_pharmacy_coordinates (mocked)
+# ---------------------------------------------------------------------------
+
+MOCK_DETAIL_HTML_WITH_MAP = """
+<html><body>
+<h1>Atakule Eczanesi</h1>
+<iframe src="https://maps.google.com/maps?q=39.8857,32.8543&output=embed"></iframe>
+</body></html>
+"""
+
+MOCK_DETAIL_HTML_NO_MAP = """
+<html><body>
+<h1>Some Pharmacy</h1>
+<p>No map here</p>
+</body></html>
+"""
+
+
+def test_fetch_pharmacy_coordinates_from_maps_embed():
+    """Should extract coordinates from Google Maps embed."""
+    with patch(
+        "src.tools.scraper.scrape_url",
+        new_callable=AsyncMock,
+        return_value=_make_scrape_result(MOCK_DETAIL_HTML_WITH_MAP),
+    ):
+        coords = _run(_fetch_pharmacy_coordinates("https://www.eczaneler.gen.tr/eczane/test"))
+
+    assert coords is not None
+    assert abs(coords[0] - 39.8857) < 0.001
+    assert abs(coords[1] - 32.8543) < 0.001
+
+
+def test_fetch_pharmacy_coordinates_no_map():
+    """Should return None when no map embed found."""
+    with patch(
+        "src.tools.scraper.scrape_url",
+        new_callable=AsyncMock,
+        return_value=_make_scrape_result(MOCK_DETAIL_HTML_NO_MAP),
+    ):
+        coords = _run(_fetch_pharmacy_coordinates("https://www.eczaneler.gen.tr/eczane/test"))
+
+    assert coords is None
+
+
+def test_fetch_pharmacy_coordinates_empty_url():
+    """Should return None for empty URL without making requests."""
+    coords = _run(_fetch_pharmacy_coordinates(""))
+    assert coords is None
+
+
+def test_fetch_pharmacy_coordinates_data_attributes():
+    """Should extract coordinates from data-lat/data-lng attributes."""
+    html = '<html><body><div data-lat="40.123" data-lng="29.456"></div></body></html>'
+    with patch(
+        "src.tools.scraper.scrape_url",
+        new_callable=AsyncMock,
+        return_value=_make_scrape_result(html),
+    ):
+        coords = _run(_fetch_pharmacy_coordinates("https://www.eczaneler.gen.tr/eczane/test"))
+
+    assert coords is not None
+    assert abs(coords[0] - 40.123) < 0.001
+    assert abs(coords[1] - 29.456) < 0.001
+
+
+# ---------------------------------------------------------------------------
+# Pharmacy dataclass
+# ---------------------------------------------------------------------------
+
+def test_pharmacy_dataclass_detail_url():
+    """Pharmacy dataclass should support detail_url field."""
+    p = Pharmacy(
+        name="Test", address="Addr", district="Dist",
+        detail_url="https://www.eczaneler.gen.tr/eczane/test"
+    )
+    assert p.detail_url == "https://www.eczaneler.gen.tr/eczane/test"
+    assert p.distance_km == -1.0  # default
+
+
+def test_pharmacy_dataclass_defaults():
+    """Pharmacy should have sensible defaults for optional fields."""
+    p = Pharmacy(name="Test", address="Addr", district="Dist")
+    assert p.phone == ""
+    assert p.lat == 0.0
+    assert p.lon == 0.0
+    assert p.distance_km == -1.0
+    assert p.walking_min == -1.0
+    assert p.driving_min == -1.0
+    assert p.detail_url == ""
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +521,10 @@ def test_find_nearest_pharmacy_no_results(monkeypatch):
         new_callable=AsyncMock,
         return_value=[],
     ), patch(
+        "src.tools.pharmacy._fetch_duty_pharmacies_eczaneler_gen_tr",
+        new_callable=AsyncMock,
+        return_value=[],
+    ), patch(
         "src.tools.pharmacy._fetch_duty_pharmacies_web",
         new_callable=AsyncMock,
         return_value=[],
@@ -286,3 +532,45 @@ def test_find_nearest_pharmacy_no_results(monkeypatch):
         result = _run(find_nearest_pharmacy(city="istanbul", district="kadikoy"))
 
     assert "No duty pharmacies found" in result
+
+
+def test_find_nearest_pharmacy_detail_url_coordinate_fetch(monkeypatch):
+    """Should try fetching coordinates from detail_url before geocoding."""
+    monkeypatch.setenv("USER_LAT", "39.925")
+    monkeypatch.setenv("USER_LON", "32.855")
+
+    mock_pharmacies = [
+        {
+            "pharmacyName": "Test Eczanesi",
+            "address": "Test Adres",
+            "district": "Cankaya",
+            "phone": "0312-111-2233",
+            "detail_url": "https://www.eczaneler.gen.tr/eczane/test",
+        },
+    ]
+
+    with patch(
+        "src.tools.pharmacy._fetch_duty_pharmacies_eczaneler_gen_tr",
+        new_callable=AsyncMock,
+        return_value=mock_pharmacies,
+    ), patch(
+        "src.tools.pharmacy._fetch_pharmacy_coordinates",
+        new_callable=AsyncMock,
+        return_value=(39.886, 32.854),
+    ) as mock_coord_fetch, patch(
+        "src.tools.pharmacy._geocode_address",
+        new_callable=AsyncMock,
+        return_value=None,
+    ) as mock_geocode, patch(
+        "src.tools.pharmacy._get_osrm_distance",
+        new_callable=AsyncMock,
+        return_value=(-1.0, -1.0),
+    ):
+        result = _run(find_nearest_pharmacy(city="ankara", district=""))
+
+    # Should have called coordinate fetch
+    mock_coord_fetch.assert_called_once_with("https://www.eczaneler.gen.tr/eczane/test")
+    # Should NOT have called geocode (coordinates already found)
+    mock_geocode.assert_not_called()
+    assert "Test Eczanesi" in result
+    assert "km" in result

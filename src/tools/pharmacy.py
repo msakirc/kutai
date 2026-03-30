@@ -33,6 +33,7 @@ class Pharmacy:
     distance_km: float = -1.0  # -1 = not calculated
     walking_min: float = -1.0
     driving_min: float = -1.0
+    detail_url: str = ""
 
 
 def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -152,51 +153,171 @@ async def _fetch_duty_pharmacies_nosyapi(city: str, district: str) -> list[dict]
         return []
 
 
-async def _fetch_duty_pharmacies_eczaneler_gen_tr(city: str) -> list[dict]:
+async def _fetch_duty_pharmacies_eczaneler_gen_tr(city: str, district: str = "") -> list[dict]:
     """Scrape duty pharmacies from eczaneler.gen.tr (no API key needed)."""
+    from datetime import datetime
     try:
         from src.tools.scraper import scrape_url, ScrapeTier
-        url = f"https://www.eczaneler.gen.tr/nobetci-{city.lower()}"
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        url = f"https://www.eczaneler.gen.tr/nobetci-{city.lower()}?tarih={today}"
         result = await scrape_url(url, max_tier=ScrapeTier.TLS)
         if not result.ok:
+            logger.debug(f"eczaneler.gen.tr: HTTP {result.status}")
             return []
 
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(result.html, "lxml")
 
         pharmacies = []
-        # eczaneler.gen.tr has pharmacy cards in table rows or div blocks
-        rows = soup.select("tr.bg-white, tr.bg-light") or soup.select(".eczane-card") or soup.find_all("tr")
+        # Structure: Bootstrap table.table-striped tables
+        # Each <tr> has one <td colspan=3> containing a div.row with:
+        #   col-lg-3: <a href="/eczane/..."><span class="isim">Name</span></a>
+        #   col-lg-6: address text, <span class="bg-info">District</span>
+        #   col-lg-3: phone number
+        # First row of each table is a header (contains "Eczane" / "Adres" icons)
+        for table in soup.find_all("table"):
+            for row in table.find_all("tr"):
+                # Skip header rows (no <span class="isim">)
+                name_span = row.find("span", class_="isim")
+                if not name_span:
+                    continue
 
-        for row in rows:
-            cells = row.find_all("td")
-            if len(cells) >= 2:
-                name_cell = cells[0].get_text(strip=True) if cells else ""
-                address_cell = cells[1].get_text(strip=True) if len(cells) > 1 else ""
-                # Try to extract district from address or separate cell
-                district = ""
+                name = name_span.get_text(strip=True)
+                if not name or len(name) <= 2:
+                    continue
+
+                # Detail URL from parent <a>
+                detail_url = ""
+                link = name_span.find_parent("a")
+                if link and link.get("href", "").startswith("/"):
+                    detail_url = f"https://www.eczaneler.gen.tr{link['href']}"
+
+                # Find the Bootstrap columns inside the row
+                cols = row.select("div.col-lg-3, div.col-lg-6")
+
+                # Address column (col-lg-6)
+                address = ""
+                found_district = ""
+                for col in cols:
+                    if "col-lg-6" in col.get("class", []):
+                        # District badge: <span class="bg-info ...">District</span>
+                        district_badge = col.find("span", class_="bg-info")
+                        if district_badge:
+                            found_district = district_badge.get_text(strip=True)
+                        # Address is the direct text content (before sub-elements)
+                        # Get all text, then remove district and landmark text
+                        addr_parts = []
+                        for child in col.children:
+                            if isinstance(child, str):
+                                t = child.strip()
+                                if t:
+                                    addr_parts.append(t)
+                            elif child.name is None:
+                                continue
+                            elif "col-lg" not in " ".join(child.get("class", [])):
+                                # Skip nested divs with district/landmark
+                                pass
+                        if not addr_parts:
+                            # Fallback: get first text node from col-lg-6
+                            full_text = col.get_text(separator="|", strip=True)
+                            parts = [p.strip() for p in full_text.split("|") if p.strip()]
+                            # First part that looks like an address
+                            for p in parts:
+                                if len(p) > 15 and p != found_district:
+                                    address = p
+                                    break
+                        else:
+                            address = " ".join(addr_parts)
+                        break
+
+                # If address still empty, try getting first substantial text from col-lg-6
+                if not address:
+                    addr_col = row.select_one("div.col-lg-6")
+                    if addr_col:
+                        # Get text of first text node or NavigableString
+                        for item in addr_col.contents:
+                            text = item if isinstance(item, str) else ""
+                            if not text and hasattr(item, "string") and item.string:
+                                text = item.string
+                            text = text.strip() if text else ""
+                            if len(text) > 10:
+                                address = text
+                                break
+
+                # Phone: last col-lg-3 (first one is the name column)
                 phone = ""
-                if len(cells) > 2:
-                    for cell in cells[2:]:
-                        text = cell.get_text(strip=True)
-                        if text.startswith("0") or text.startswith("("):
-                            phone = text
-                        elif len(text) < 30:
-                            district = text
+                phone_cols = row.select("div.col-lg-3")
+                if len(phone_cols) >= 2:
+                    phone = phone_cols[-1].get_text(strip=True)
 
-                if name_cell and len(name_cell) > 2:
-                    pharmacies.append({
-                        "pharmacyName": name_cell,
-                        "address": address_cell,
-                        "district": district,
-                        "phone": phone,
-                    })
+                pharmacy = {
+                    "pharmacyName": name,
+                    "address": address,
+                    "district": found_district,
+                    "phone": phone,
+                    "detail_url": detail_url,
+                }
 
-        logger.debug(f"eczaneler.gen.tr: found {len(pharmacies)} pharmacies for {city}")
+                # Filter by district if specified
+                if district:
+                    dist_lower = _normalize_turkish(district.lower())
+                    found_lower = _normalize_turkish(found_district.lower())
+                    addr_lower = _normalize_turkish(address.lower())
+                    if dist_lower not in found_lower and dist_lower not in addr_lower:
+                        continue
+
+                pharmacies.append(pharmacy)
+
+        logger.debug(
+            f"eczaneler.gen.tr: found {len(pharmacies)} pharmacies for {city}"
+            + (f"/{district}" if district else "")
+        )
         return pharmacies
     except Exception as e:
         logger.debug(f"eczaneler.gen.tr scrape failed: {e}")
         return []
+
+
+def _normalize_turkish(text: str) -> str:
+    """Normalize Turkish characters for case-insensitive comparison."""
+    return (
+        text.replace("ı", "i")
+        .replace("ş", "s")
+        .replace("ç", "c")
+        .replace("ö", "o")
+        .replace("ü", "u")
+        .replace("ğ", "g")
+    )
+
+
+async def _fetch_pharmacy_coordinates(detail_url: str) -> tuple[float, float] | None:
+    """Fetch lat/lon from a pharmacy's detail page on eczaneler.gen.tr."""
+    if not detail_url:
+        return None
+    try:
+        from src.tools.scraper import scrape_url, ScrapeTier
+        result = await scrape_url(detail_url, max_tier=ScrapeTier.HTTP, timeout=5.0)
+        if not result.ok:
+            return None
+
+        import re
+        # Look for Google Maps embed with coordinates
+        coords = re.findall(r'maps[^"]*?[?&]q=(-?\d+\.?\d*),(-?\d+\.?\d*)', result.html)
+        if coords:
+            return float(coords[0][0]), float(coords[0][1])
+
+        # Alternative: data-lat/data-lng attributes
+        coords = re.findall(
+            r'data-lat["\s=:]+(-?\d+\.?\d*).*?data-lng["\s=:]+(-?\d+\.?\d*)',
+            result.html,
+        )
+        if coords:
+            return float(coords[0][0]), float(coords[0][1])
+
+    except Exception as e:
+        logger.debug(f"Coordinate fetch failed for {detail_url[:50]}: {e}")
+    return None
 
 
 async def _fetch_duty_pharmacies_web(city: str, district: str = "") -> list[dict]:
@@ -241,17 +362,12 @@ async def find_nearest_pharmacy(
         # District specified: Nosyapi API -> eczaneler.gen.tr (filtered) -> web search
         pharmacies_raw = await _fetch_duty_pharmacies_nosyapi(city, district)
         if not pharmacies_raw:
-            all_city = await _fetch_duty_pharmacies_eczaneler_gen_tr(city)
-            if all_city:
-                # Filter by district (case-insensitive partial match)
-                dist_lower = district.lower()
-                pharmacies_raw = [
-                    p for p in all_city
-                    if dist_lower in p.get("district", "").lower()
-                    or dist_lower in p.get("address", "").lower()
-                ]
-                if not pharmacies_raw:
-                    pharmacies_raw = all_city  # fallback: return all if filter yields nothing
+            pharmacies_raw = await _fetch_duty_pharmacies_eczaneler_gen_tr(city, district)
+            if not pharmacies_raw:
+                # Try city-wide if district filter yields nothing
+                all_city = await _fetch_duty_pharmacies_eczaneler_gen_tr(city)
+                if all_city:
+                    pharmacies_raw = all_city
         if not pharmacies_raw:
             pharmacies_raw = await _fetch_duty_pharmacies_web(city, district)
     else:
@@ -281,6 +397,7 @@ async def find_nearest_pharmacy(
             phone=p.get("phone", ""),
             lat=float(p.get("lat", 0) or 0),
             lon=float(p.get("lng", p.get("lon", 0)) or 0),
+            detail_url=p.get("detail_url", ""),
         )
         pharmacies.append(pharmacy)
 
@@ -289,17 +406,27 @@ async def find_nearest_pharmacy(
     if user_loc and pharmacies:
         user_lat, user_lon = user_loc
 
+        # Limit detail page fetches to avoid hammering the server
+        detail_fetch_budget = 10
         for pharmacy in pharmacies:
             if pharmacy.lat and pharmacy.lon:
                 # Haversine for quick straight-line distance
                 pharmacy.distance_km = round(_haversine(
                     user_lat, user_lon, pharmacy.lat, pharmacy.lon
                 ), 2)
-            elif pharmacy.address:
-                # Try geocoding the address
-                coords = await _geocode_address(f"{pharmacy.address}, {city}, Turkey")
-                if coords:
-                    pharmacy.lat, pharmacy.lon = coords
+            else:
+                # Try detail page for coordinates (Google Maps embed)
+                if pharmacy.detail_url and detail_fetch_budget > 0:
+                    detail_fetch_budget -= 1
+                    coords = await _fetch_pharmacy_coordinates(pharmacy.detail_url)
+                    if coords:
+                        pharmacy.lat, pharmacy.lon = coords
+                # Fall back to geocoding
+                if not (pharmacy.lat and pharmacy.lon) and pharmacy.address:
+                    coords = await _geocode_address(f"{pharmacy.address}, {city}, Turkey")
+                    if coords:
+                        pharmacy.lat, pharmacy.lon = coords
+                if pharmacy.lat and pharmacy.lon:
                     pharmacy.distance_km = round(_haversine(
                         user_lat, user_lon, pharmacy.lat, pharmacy.lon
                     ), 2)

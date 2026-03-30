@@ -30,6 +30,7 @@ class AssistantAgent(BaseAgent):
         "github",
         "read_pdf",
         "read_pdf_advanced",
+        "pharmacy",
     ]
 
     def get_system_prompt(self, task: dict) -> str:

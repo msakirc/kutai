@@ -781,6 +781,17 @@ try:
 except Exception as e:
     logger.warning(f"read_pdf_advanced tool not available — {type(e).__name__}: {e}")
 
+try:
+    from .pharmacy import find_nearest_pharmacy
+
+    _optional_tools["pharmacy"] = {
+        "function": find_nearest_pharmacy,
+        "description": 'Find nearest duty pharmacy (nöbetçi eczane). Args: city (str), district (str), include_route (bool). Uses .env USER_LAT/USER_LON for distances.',
+        "example": '{"action": "tool_call", "tool": "pharmacy", "args": {"city": "istanbul", "district": "kadikoy"}}',
+    }
+except Exception as e:
+    logger.warning(f"pharmacy tool not available — {type(e).__name__}: {e}")
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------

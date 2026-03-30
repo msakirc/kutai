@@ -962,6 +962,7 @@ class BaseAgent:
 
     async def _execute_react_loop(self, task: dict) -> dict:
         """ReAct loop with requirements-based model selection."""
+        _start_time = time.time()
         task_id = task.get("id", "?")
         mission_id = task.get("mission_id")
 
@@ -1053,6 +1054,17 @@ class BaseAgent:
         _progress_last_sent = time.time()
 
         for iteration in range(start_iteration, self.max_iterations):
+            # ── Check if task was cancelled while running ──
+            if iteration > 0 and iteration % 2 == 0:
+                try:
+                    from ..infra.db import get_task as _get_task
+                    _current = await _get_task(task_id)
+                    if _current and _current.get("status") == "cancelled":
+                        logger.info(f"[Task #{task_id}] Cancelled by user, aborting")
+                        return {"status": "cancelled", "result": "Task cancelled by user"}
+                except Exception:
+                    pass
+
             logger.info(
                 f"[Task #{task_id}] Agent '{self.name}' iteration "
                 f"{iteration + 1}/{self.max_iterations}"

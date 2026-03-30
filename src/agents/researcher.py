@@ -17,6 +17,7 @@ class ResearcherAgent(BaseAgent):
     # 4 iterations max. Perplexica results include a hint to finalize
     # immediately, so most tasks complete in 2 iterations.
     max_iterations = 4
+    enable_self_reflection = True
 
     allowed_tools = [
         "web_search",

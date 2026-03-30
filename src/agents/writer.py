@@ -17,6 +17,7 @@ class WriterAgent(BaseAgent):
     # 3 iterations: (1) read project context, (2) write docs/prose,
     # (3) verify output.  Writing is primarily generative, not iterative.
     max_iterations = 3
+    enable_self_reflection = True
 
     allowed_tools = [
         "read_file",

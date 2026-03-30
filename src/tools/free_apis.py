@@ -288,6 +288,26 @@ API_REGISTRY: list[FreeAPI] = [
         description="EnUygun flight and bus ticket search (MCP endpoint). Turkish travel aggregator.",
         example_endpoint="https://mcp.enuygun.com/mcp",
     ),
+    FreeAPI(
+        name="Kiwi Tequila",
+        category="travel",
+        base_url="https://tequila-api.kiwi.com",
+        auth_type="apikey_header",
+        env_var="KIWI_API_KEY",
+        rate_limit="free tier (generous)",
+        description="Multi-modal travel search: flights + buses + trains + ferries. 750+ carriers. Free API key from tequila.kiwi.com.",
+        example_endpoint="https://tequila-api.kiwi.com/v2/search?fly_from=IST&fly_to=ANK&date_from=01/04/2026&date_to=05/04/2026",
+    ),
+    FreeAPI(
+        name="Rome2rio",
+        category="travel",
+        base_url="https://free.rome2rio.com",
+        auth_type="apikey_param",
+        env_var="ROME2RIO_API_KEY",
+        rate_limit="100000/month free",
+        description="Route planning across all transport modes. 160+ countries. Free tier 100K req/month. Returns routes and durations, estimated price ranges.",
+        example_endpoint="https://free.rome2rio.com/api/1.4/json/Search?key={key}&oName=Istanbul&dName=Ankara",
+    ),
 ]
 
 

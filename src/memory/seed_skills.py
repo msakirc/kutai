@@ -176,10 +176,10 @@ SEED_SKILLS = [
     # --- Travel/Tickets ---
     {
         "name": "travel_ticket_routing",
-        "description": "For flight and bus ticket prices in Turkey, check EnUygun MCP or use web_search targeting enuygun.com, obilet.com.",
-        "trigger_pattern": "uçak|flight|bilet|ticket|otobüs|bus|enuygun|obilet|seyahat|travel",
-        "tool_sequence": "First try: web_search targeting enuygun.com or obilet.com. EnUygun also has an MCP endpoint at mcp.enuygun.com.",
-        "examples": "istanbul ankara uçak bileti; en ucuz otobüs bileti; flight prices to Antalya",
+        "description": "For flight, bus, train ticket prices: use api_call with Kiwi Tequila (multi-modal, 750+ carriers) or Rome2rio (route planning). For Turkish trains (YHT), TCDD has a reverse-engineered API.",
+        "trigger_pattern": "uçak|flight|bilet|ticket|otobüs|bus|tren|train|yht|tcdd|enuygun|obilet|seyahat|travel|sefer",
+        "tool_sequence": "1. api_call api_name=Kiwi Tequila (needs KIWI_API_KEY, free). 2. api_call api_name=Rome2rio for route planning. 3. web_search targeting enuygun.com or obilet.com as fallback.",
+        "examples": "istanbul ankara uçak bileti; en ucuz otobüs bileti; YHT bilet fiyatı; tren sefer saatleri",
     },
     # --- Turkish Holidays ---
     {

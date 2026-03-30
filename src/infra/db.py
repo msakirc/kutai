@@ -332,6 +332,24 @@ async def init_db():
         )
     """)
 
+    # Free API registry (auto-growth)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS free_api_registry (
+            name TEXT PRIMARY KEY,
+            category TEXT NOT NULL,
+            base_url TEXT NOT NULL,
+            auth_type TEXT DEFAULT 'none',
+            env_var TEXT,
+            rate_limit TEXT,
+            description TEXT,
+            example_endpoint TEXT,
+            source TEXT DEFAULT 'static',
+            verified INTEGER DEFAULT 0,
+            last_checked TIMESTAMP,
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     await db.commit()
 
     # Seed todo reminder (every 2h during Turkey daytime: 9,11,13,15,17,19,21 TR = 6,8,10,12,14,16,18 UTC)
@@ -468,6 +486,8 @@ async def init_db():
         ("idx_todo_status", "todo_items", "status"),
         ("idx_todo_created", "todo_items", "created_at"),
         ("idx_web_source_quality_domain", "web_source_quality", "domain"),
+        ("idx_free_api_registry_category", "free_api_registry", "category"),
+        ("idx_free_api_registry_source", "free_api_registry", "source"),
     ]
     for idx_name, table, columns_str in _indexes:
         try:
@@ -2141,3 +2161,72 @@ async def get_source_quality(domains: list[str]) -> dict[str, dict]:
     except Exception as e:
         logger.debug("get_source_quality failed: %s", e)
         return {}
+
+
+# --- Free API Registry Operations ---
+
+async def upsert_free_api(api_data: dict) -> None:
+    """Insert or update a free API in the registry."""
+    try:
+        db = await get_db()
+        await db.execute(
+            """INSERT INTO free_api_registry
+               (name, category, base_url, auth_type, env_var, rate_limit,
+                description, example_endpoint, source, verified, last_checked)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(name) DO UPDATE SET
+                   category = excluded.category,
+                   base_url = excluded.base_url,
+                   auth_type = excluded.auth_type,
+                   env_var = excluded.env_var,
+                   rate_limit = excluded.rate_limit,
+                   description = excluded.description,
+                   example_endpoint = excluded.example_endpoint,
+                   source = excluded.source,
+                   verified = excluded.verified,
+                   last_checked = excluded.last_checked
+            """,
+            (
+                api_data["name"],
+                api_data.get("category", "misc"),
+                api_data["base_url"],
+                api_data.get("auth_type", "none"),
+                api_data.get("env_var"),
+                api_data.get("rate_limit", "unknown"),
+                api_data.get("description", ""),
+                api_data.get("example_endpoint", ""),
+                api_data.get("source", "static"),
+                api_data.get("verified", 0),
+                api_data.get("last_checked"),
+            ),
+        )
+        await db.commit()
+    except Exception as e:
+        logger.debug("upsert_free_api failed: %s", e)
+
+
+async def get_all_free_apis() -> list[dict]:
+    """Fetch all APIs from the registry."""
+    try:
+        db = await get_db()
+        cursor = await db.execute(
+            "SELECT * FROM free_api_registry ORDER BY category, name"
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+    except Exception as e:
+        logger.debug("get_all_free_apis failed: %s", e)
+        return []
+
+
+async def get_free_apis_by_category(category: str) -> list[dict]:
+    """Fetch APIs matching a category (case-insensitive)."""
+    try:
+        db = await get_db()
+        cursor = await db.execute(
+            "SELECT * FROM free_api_registry WHERE LOWER(category) = LOWER(?) ORDER BY name",
+            (category,),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+    except Exception as e:
+        logger.debug("get_free_apis_by_category failed: %s", e)
+        return []

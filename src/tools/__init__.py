@@ -318,7 +318,7 @@ except Exception as e:
 
 # Free API registry tools
 try:
-    from .free_apis import find_apis, call_api, get_api, API_REGISTRY
+    from .free_apis import find_apis, call_api, get_api, API_REGISTRY, discover_new_apis
 
     async def _tool_api_lookup(query: str = "", category: str = "") -> str:
         """Find free APIs matching a query or category."""
@@ -367,6 +367,11 @@ try:
 
         return await call_api(api, endpoint=endpoint or None, params=parsed_params)
 
+    async def _tool_discover_apis(source: str = "all") -> str:
+        """Discover new free APIs from external registries."""
+        count = await discover_new_apis(source=source)
+        return f"Discovered {count} new APIs. Use api_lookup to search them."
+
     _optional_tools["api_lookup"] = {
         "function": _tool_api_lookup,
         "description": "Find free APIs by category or query. Args: query (str), category (str). Categories: weather, currency, news, geo, time, knowledge, translation, network, fun",
@@ -376,6 +381,11 @@ try:
         "function": _tool_api_call,
         "description": "Call a registered free API. Args: api_name (str), endpoint (str, optional), params (str JSON, optional)",
         "example": '{"action": "tool_call", "tool": "api_call", "args": {"api_name": "wttr.in"}}',
+    }
+    _optional_tools["discover_apis"] = {
+        "function": _tool_discover_apis,
+        "description": "Discover new free APIs from external registries. Args: source (str, 'all'|'public-apis'|'free-apis'). Fetches and stores newly found APIs.",
+        "example": '{"action": "tool_call", "tool": "discover_apis", "args": {"source": "all"}}',
     }
 except Exception as e:
     logger.warning(f"api_lookup/api_call tools not available — {type(e).__name__}: {e}")

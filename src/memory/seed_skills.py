@@ -129,9 +129,9 @@ SEED_SKILLS = [
     {
         "name": "pharmacy_on_duty",
         "description": "For finding pharmacies on duty (nöbetçi eczane) in Turkey, use the pharmacy tool which calculates distance from your location.",
-        "trigger_pattern": "eczane|pharmacy|nöbetçi|nobetci|on.duty|ilaç|medicine",
-        "tool_sequence": "tool=pharmacy (preferred — calculates distance from your location). Args: city, district. Falls back to api_call with Nosyapi if pharmacy tool unavailable.",
-        "examples": "nöbetçi eczane kadıköy; pharmacy on duty istanbul; en yakın açık eczane",
+        "trigger_pattern": "eczane|pharmacy|nöbetçi|nobetci|on.duty|ilaç|medicine|eczaneler",
+        "tool_sequence": "tool=pharmacy. Pass city='ankara' for all districts, or city='ankara' district='cankaya' for specific district. Falls back to eczaneler.gen.tr web scraping if no API key.",
+        "examples": "nöbetçi eczane kadıköy; pharmacy on duty istanbul; en yakın açık eczane; ankara nöbetçi eczaneler; nöbetçi eczane istanbul",
     },
     # --- Earthquake ---
     {

@@ -105,6 +105,32 @@ def _get_user_location() -> tuple[float, float] | None:
     return None
 
 
+async def _get_user_city_district() -> tuple[str, str]:
+    """Get user's city and district. DB prefs > .env > empty."""
+    try:
+        from src.infra.db import get_user_pref
+        city = await get_user_pref("city", "")
+        district = await get_user_pref("district", "")
+        if city and district:
+            return city, district
+    except Exception:
+        pass
+    return os.getenv("USER_CITY", "istanbul"), os.getenv("USER_DISTRICT", "")
+
+
+async def _get_user_coords() -> tuple[float, float] | None:
+    """Get user's coordinates. DB prefs > .env > None."""
+    try:
+        from src.infra.db import get_user_pref
+        lat = await get_user_pref("lat", "")
+        lon = await get_user_pref("lon", "")
+        if lat and lon:
+            return float(lat), float(lon)
+    except Exception:
+        pass
+    return _get_user_location()  # falls back to .env
+
+
 async def _fetch_duty_pharmacies_nosyapi(city: str, district: str) -> list[dict]:
     """Fetch duty pharmacies from Nosyapi."""
     key = os.getenv("NOSYAPI_KEY", "")
@@ -126,13 +152,63 @@ async def _fetch_duty_pharmacies_nosyapi(city: str, district: str) -> list[dict]
         return []
 
 
-async def _fetch_duty_pharmacies_web(city: str, district: str) -> list[dict]:
-    """Fallback: scrape duty pharmacies via web search."""
+async def _fetch_duty_pharmacies_eczaneler_gen_tr(city: str) -> list[dict]:
+    """Scrape duty pharmacies from eczaneler.gen.tr (no API key needed)."""
+    try:
+        from src.tools.scraper import scrape_url, ScrapeTier
+        url = f"https://www.eczaneler.gen.tr/nobetci-{city.lower()}"
+        result = await scrape_url(url, max_tier=ScrapeTier.TLS)
+        if not result.ok:
+            return []
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(result.html, "lxml")
+
+        pharmacies = []
+        # eczaneler.gen.tr has pharmacy cards in table rows or div blocks
+        rows = soup.select("tr.bg-white, tr.bg-light") or soup.select(".eczane-card") or soup.find_all("tr")
+
+        for row in rows:
+            cells = row.find_all("td")
+            if len(cells) >= 2:
+                name_cell = cells[0].get_text(strip=True) if cells else ""
+                address_cell = cells[1].get_text(strip=True) if len(cells) > 1 else ""
+                # Try to extract district from address or separate cell
+                district = ""
+                phone = ""
+                if len(cells) > 2:
+                    for cell in cells[2:]:
+                        text = cell.get_text(strip=True)
+                        if text.startswith("0") or text.startswith("("):
+                            phone = text
+                        elif len(text) < 30:
+                            district = text
+
+                if name_cell and len(name_cell) > 2:
+                    pharmacies.append({
+                        "pharmacyName": name_cell,
+                        "address": address_cell,
+                        "district": district,
+                        "phone": phone,
+                    })
+
+        logger.debug(f"eczaneler.gen.tr: found {len(pharmacies)} pharmacies for {city}")
+        return pharmacies
+    except Exception as e:
+        logger.debug(f"eczaneler.gen.tr scrape failed: {e}")
+        return []
+
+
+async def _fetch_duty_pharmacies_web(city: str, district: str = "") -> list[dict]:
+    """Fallback: search for duty pharmacies via web search."""
     from src.tools.web_search import web_search
-    query = f"nöbetçi eczane {city} {district}"
-    result = await web_search(query, max_results=5, _task_hints={"search_depth": "quick"})
-    # Return raw text — agent can parse it
-    return [{"name": "Web search results", "address": result[:2000]}]
+    query = f"nöbetçi eczane {city}"
+    if district:
+        query += f" {district}"
+    query += " site:eczaneler.gen.tr OR site:nobetcieczane.com.tr"
+    result = await web_search(query, max_results=3, _task_hints={"search_depth": "quick"})
+    # Don't stuff raw text into a fake pharmacy dict — return it as a special marker
+    return [{"_raw_search": True, "text": result[:3000]}]
 
 
 async def find_nearest_pharmacy(
@@ -147,23 +223,53 @@ async def find_nearest_pharmacy(
     """
     import json
 
-    # Default city/district from env if not provided
+    # Default city/district from DB prefs, then env
+    if not city or not district:
+        pref_city, pref_district = await _get_user_city_district()
+        if not city:
+            city = pref_city
+        if not district:
+            district = pref_district
+
     if not city:
-        city = os.getenv("USER_CITY", "istanbul")
-    if not district:
-        district = os.getenv("USER_DISTRICT", "")
+        return ("Sehir belirtilmedi. Lutfen sehir parametresi girin.\n"
+                "Ornek: find_nearest_pharmacy(city='ankara') veya "
+                "find_nearest_pharmacy(city='istanbul', district='kadikoy')")
 
-    if not district:
-        return ("District not specified. Set USER_DISTRICT in .env or pass district parameter.\n"
-                "Example: find_nearest_pharmacy(city='istanbul', district='kadikoy')")
+    # Fetch duty pharmacies — different fallback chains for district vs city-wide
+    if district:
+        # District specified: Nosyapi API -> eczaneler.gen.tr (filtered) -> web search
+        pharmacies_raw = await _fetch_duty_pharmacies_nosyapi(city, district)
+        if not pharmacies_raw:
+            all_city = await _fetch_duty_pharmacies_eczaneler_gen_tr(city)
+            if all_city:
+                # Filter by district (case-insensitive partial match)
+                dist_lower = district.lower()
+                pharmacies_raw = [
+                    p for p in all_city
+                    if dist_lower in p.get("district", "").lower()
+                    or dist_lower in p.get("address", "").lower()
+                ]
+                if not pharmacies_raw:
+                    pharmacies_raw = all_city  # fallback: return all if filter yields nothing
+        if not pharmacies_raw:
+            pharmacies_raw = await _fetch_duty_pharmacies_web(city, district)
+    else:
+        # City-wide (no district): eczaneler.gen.tr -> web search
+        pharmacies_raw = await _fetch_duty_pharmacies_eczaneler_gen_tr(city)
+        if not pharmacies_raw:
+            pharmacies_raw = await _fetch_duty_pharmacies_web(city)
 
-    # Fetch duty pharmacies
-    pharmacies_raw = await _fetch_duty_pharmacies_nosyapi(city, district)
     if not pharmacies_raw:
-        pharmacies_raw = await _fetch_duty_pharmacies_web(city, district)
+        return f"No duty pharmacies found for {city}" + (f"/{district}" if district else "") + "."
 
-    if not pharmacies_raw:
-        return f"No duty pharmacies found for {city}/{district}."
+    # Handle web search fallback — return search results directly
+    if pharmacies_raw and pharmacies_raw[0].get("_raw_search"):
+        text = pharmacies_raw[0]["text"]
+        header = f"Nobetci Eczaneler -- {city.title()}"
+        if district:
+            header += f" / {district.title()}"
+        return header + "\n\n" + text + "\n\n(Kaynak: web aramasi)"
 
     # Parse into Pharmacy objects
     pharmacies = []
@@ -179,7 +285,7 @@ async def find_nearest_pharmacy(
         pharmacies.append(pharmacy)
 
     # Calculate distances if user location is available
-    user_loc = _get_user_location()
+    user_loc = await _get_user_coords()
     if user_loc and pharmacies:
         user_lat, user_lon = user_loc
 
@@ -220,7 +326,10 @@ async def find_nearest_pharmacy(
         pharmacies.sort(key=lambda p: p.distance_km if p.distance_km >= 0 else 999)
 
     # Format output
-    lines = [f"Nobetci Eczaneler -- {city.title()} / {district.title()}\n"]
+    header = f"Nobetci Eczaneler -- {city.title()}"
+    if district:
+        header += f" / {district.title()}"
+    lines = [header + "\n"]
 
     for i, p in enumerate(pharmacies, 1):
         lines.append(f"{i}. **{p.name}**")

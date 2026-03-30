@@ -11,6 +11,7 @@ from src.tools.pharmacy import (
     _geocode_address,
     _get_osrm_distance,
     _get_user_location,
+    _fetch_duty_pharmacies_eczaneler_gen_tr,
     find_nearest_pharmacy,
 )
 
@@ -208,14 +209,65 @@ def test_find_nearest_pharmacy_without_location(monkeypatch):
     assert "Yuruyus" not in result
 
 
-def test_find_nearest_pharmacy_no_district(monkeypatch):
-    """Should return helpful message when no district is set."""
+def test_find_nearest_pharmacy_no_district_uses_eczaneler_gen_tr(monkeypatch):
+    """City-wide query (no district) should try eczaneler.gen.tr scraper."""
+    monkeypatch.delenv("USER_DISTRICT", raising=False)
+    monkeypatch.delenv("USER_LAT", raising=False)
+    monkeypatch.delenv("USER_LON", raising=False)
+
+    mock_pharmacies = [
+        {"pharmacyName": "Merkez Eczanesi", "address": "Kizilay Mah.", "district": "Cankaya", "phone": ""},
+        {"pharmacyName": "Yildiz Eczanesi", "address": "Ulus Mah.", "district": "Altindag", "phone": ""},
+    ]
+
+    with patch(
+        "src.tools.pharmacy._fetch_duty_pharmacies_eczaneler_gen_tr",
+        new_callable=AsyncMock,
+        return_value=mock_pharmacies,
+    ):
+        result = _run(find_nearest_pharmacy(city="ankara", district=""))
+
+    assert "Nobetci Eczaneler" in result
+    assert "Ankara" in result
+    assert "Merkez Eczanesi" in result
+    assert "Yildiz Eczanesi" in result
+
+
+def test_find_nearest_pharmacy_no_city(monkeypatch):
+    """Should return helpful message when no city is given."""
+    monkeypatch.delenv("USER_CITY", raising=False)
     monkeypatch.delenv("USER_DISTRICT", raising=False)
 
-    result = _run(find_nearest_pharmacy(city="istanbul", district=""))
+    with patch(
+        "src.tools.pharmacy._get_user_city_district",
+        new_callable=AsyncMock,
+        return_value=("", ""),
+    ):
+        result = _run(find_nearest_pharmacy(city="", district=""))
 
-    assert "District not specified" in result
-    assert "USER_DISTRICT" in result
+    assert "Sehir" in result
+
+
+def test_find_nearest_pharmacy_web_fallback(monkeypatch):
+    """City-wide query with no scraper results should fall back to web search."""
+    monkeypatch.delenv("USER_DISTRICT", raising=False)
+    monkeypatch.delenv("USER_LAT", raising=False)
+    monkeypatch.delenv("USER_LON", raising=False)
+
+    with patch(
+        "src.tools.pharmacy._fetch_duty_pharmacies_eczaneler_gen_tr",
+        new_callable=AsyncMock,
+        return_value=[],
+    ), patch(
+        "src.tools.pharmacy._fetch_duty_pharmacies_web",
+        new_callable=AsyncMock,
+        return_value=[{"_raw_search": True, "text": "Pharmacy X - Kizilay, Pharmacy Y - Ulus"}],
+    ):
+        result = _run(find_nearest_pharmacy(city="ankara", district=""))
+
+    assert "Nobetci Eczaneler" in result
+    assert "web aramasi" in result
+    assert "Pharmacy X" in result
 
 
 def test_find_nearest_pharmacy_no_results(monkeypatch):

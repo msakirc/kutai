@@ -27,6 +27,7 @@ class ResearcherAgent(BaseAgent):
         "api_call",
         "play_store",
         "github",
+        "pharmacy",
     ]
 
     def get_system_prompt(self, task: dict) -> str:

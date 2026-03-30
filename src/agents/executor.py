@@ -26,6 +26,7 @@ class ExecutorAgent(BaseAgent):
         "write_file",
         "file_tree",
         "run_code",
+        "pharmacy",
     ]
 
     def get_system_prompt(self, task: dict) -> str:

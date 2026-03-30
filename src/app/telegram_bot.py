@@ -2497,6 +2497,124 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
     # ─── Shopping Commands ──────────────────────────────────────────────────
 
+    # ── Two-tier shopping: simple queries vs research missions ──
+
+    _SHOPPING_MISSION_KEYWORDS_TR = {"araştır", "karşılaştır", "analiz et", "detaylı"}
+    _SHOPPING_MISSION_KEYWORDS_EN = {"compare", "research", "analyze", "vs"}
+    _SHOPPING_MISSION_SUB_INTENTS = {"research", "exploration", "compare"}
+
+    @staticmethod
+    def _is_complex_shopping_query(query: str, sub_intent: str | None = None) -> bool:
+        """Determine if a shopping query needs a full research mission.
+
+        Returns True for queries that benefit from the 3-task pipeline
+        (researcher -> analyst -> advisor).  Simple price checks and
+        single-product lookups return False.
+        """
+        if sub_intent and sub_intent in TelegramInterface._SHOPPING_MISSION_SUB_INTENTS:
+            return True
+
+        q_lower = query.lower()
+
+        # Turkish research keywords
+        for kw in TelegramInterface._SHOPPING_MISSION_KEYWORDS_TR:
+            if kw in q_lower:
+                return True
+
+        # English keywords — "vs" requires 2+ products (avoid false positives)
+        for kw in TelegramInterface._SHOPPING_MISSION_KEYWORDS_EN:
+            if kw == "vs":
+                # Must appear between two product-like tokens
+                import re
+                if re.search(r'\S+\s+vs\.?\s+\S+', q_lower):
+                    return True
+            elif kw in q_lower:
+                return True
+
+        return False
+
+    async def _create_shopping_mission(
+        self, query: str, chat_id: int, sub_intent: str | None = None,
+    ) -> int:
+        """Create a shopping mission with researcher -> analyst -> advisor pipeline."""
+        mission_id = await add_mission(
+            title=f"Shopping: {query[:60]}",
+            description=query,
+            priority=8,
+            context={"chat_id": chat_id, "shopping_query": query, "sub_intent": sub_intent or "research"},
+        )
+
+        # Task 1: Product research (no dependencies)
+        task1_id = await add_task(
+            title=f"Research: {query[:50]}",
+            description=(
+                f"Research products for: {query}\n\n"
+                "Use shopping_search to find products across sources. "
+                f"Write findings to blackboard key 'shopping_top_products' (mission_id={mission_id}). "
+                f"Write price comparisons to blackboard key 'shopping_price_comparisons' (mission_id={mission_id})."
+            ),
+            agent_type="product_researcher",
+            priority=8,
+            mission_id=mission_id,
+            context={
+                "chat_id": chat_id,
+                "silent": True,
+                "mission_id": mission_id,
+                "shopping_query": query,
+            },
+        )
+
+        # Task 2: Deal analysis (depends on research)
+        task2_id = await add_task(
+            title=f"Analyze deals: {query[:50]}",
+            description=(
+                f"Analyze deals and timing for: {query}\n\n"
+                f"Read blackboard keys 'shopping_top_products' and 'shopping_price_comparisons' (mission_id={mission_id}). "
+                "Evaluate value, detect fake discounts, check timing. "
+                f"Write findings to blackboard key 'shopping_deal_verdicts' (mission_id={mission_id})."
+            ),
+            agent_type="deal_analyst",
+            priority=8,
+            depends_on=[task1_id],
+            mission_id=mission_id,
+            context={
+                "chat_id": chat_id,
+                "silent": True,
+                "mission_id": mission_id,
+                "shopping_query": query,
+            },
+        )
+
+        # Task 3: Synthesis & recommendation (depends on both)
+        task3_id = await add_task(
+            title=f"Recommend: {query[:50]}",
+            description=(
+                f"Final shopping recommendation for: {query}\n\n"
+                f"Read ALL blackboard keys: 'shopping_top_products', "
+                f"'shopping_price_comparisons', 'shopping_deal_verdicts' (mission_id={mission_id}). "
+                "Synthesize into a clear recommendation with top pick, budget option, "
+                "alternatives, warnings, and timing advice."
+            ),
+            agent_type="shopping_advisor",
+            priority=7,
+            depends_on=[task1_id, task2_id],
+            mission_id=mission_id,
+            context={
+                "chat_id": chat_id,
+                "mission_id": mission_id,
+                "shopping_query": query,
+                "is_synthesis": True,
+            },
+        )
+
+        logger.info(
+            "shopping mission created",
+            mission_id=mission_id,
+            tasks=[task1_id, task2_id, task3_id],
+            query=query[:80],
+        )
+        return mission_id
+
     async def cmd_shop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """General shopping assistant. /shop <query>"""
         if not context.args:
@@ -2506,6 +2624,19 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             return
         query = " ".join(context.args)
         chat_id = update.effective_chat.id
+
+        # Two-tier routing: complex queries get a full research mission
+        if self._is_complex_shopping_query(query):
+            mission_id = await self._create_shopping_mission(query, chat_id)
+            await self._reply(
+                update,
+                f"🔬 Shopping research mission #{mission_id} started.\n"
+                "I'll research products, analyze deals, and send you a "
+                "recommendation. This may take a few minutes.",
+            )
+            return
+
+        # Simple query: single shopping_advisor task (existing flow)
         task_id = await add_task(
             title=query[:80],
             description=query,
@@ -2709,20 +2840,16 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             return
         product1, product2 = parts[0].strip(), parts[1].strip()
         chat_id = update.effective_chat.id
-        task_id = await add_task(
-            title=f"Compare: {product1[:20]} vs {product2[:20]}",
-            description=f"Compare these products: {product1} vs {product2}. "
-                        f"Cover price, specs, pros/cons, and recommendation for Turkey market.",
-            tier="auto",
-            priority=TASK_PRIORITY.get("high", 8),
-            agent_type="shopping_advisor",
-            context={"shopping_sub_intent": "compare", "chat_id": chat_id},
+        query = f"{product1} vs {product2}"
+
+        # Comparisons always use the research mission pipeline
+        mission_id = await self._create_shopping_mission(
+            query, chat_id, sub_intent="compare",
         )
-        if task_id is None:
-            await self._reply(update, "⚖️ This comparison is already in progress.")
-            return
-        await self._reply(update,
-            f"⚖️ Comparison queued: *{product1}* vs *{product2}* (task #{task_id})",
+        await self._reply(
+            update,
+            f"⚖️ Comparison mission #{mission_id} started: *{product1}* vs *{product2}*\n"
+            "I'll research both products, analyze deals, and send a recommendation.",
             parse_mode="Markdown",
         )
 

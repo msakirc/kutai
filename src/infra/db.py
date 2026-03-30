@@ -386,6 +386,13 @@ async def init_db():
         UPDATE scheduled_tasks SET cron_expression = '0 6,8,10,12,14,16,18 * * *'
         WHERE id = 9999 AND cron_expression = '0 9,11,13,15,17,19,21 * * *'
     """)
+
+    # Seed price watch checker (daily at noon UTC = 15:00 Turkey time)
+    await db.execute("""
+        INSERT OR IGNORE INTO scheduled_tasks (id, title, description, cron_expression, agent_type, enabled, context)
+        VALUES (9998, 'Price Watch Check', 'Re-scrape watched products and notify on price drops', '0 12 * * *', 'system', 1, '{"type": "price_watch_check"}')
+    """)
+
     await db.commit()
 
     # Migration: fix next_run / last_run values that were stored with

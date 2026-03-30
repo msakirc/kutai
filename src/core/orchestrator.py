@@ -875,6 +875,27 @@ class Orchestrator:
                     )
                     continue
 
+                # Special handling: price watch checker
+                if sched_ctx.get("type") == "price_watch_check":
+                    try:
+                        from src.app.price_watch_checker import check_price_watches
+                        summary = await check_price_watches(self.telegram)
+                        logger.info(
+                            f"[Scheduler] Price watch check complete: {summary}"
+                        )
+                    except Exception as e:
+                        logger.error(f"[Scheduler] Price watch check failed: {e}")
+                    now = datetime.now(timezone.utc)
+                    next_run = self._compute_next_run(
+                        sched.get("cron_expression", "0 * * * *"), now
+                    )
+                    await update_scheduled_task(
+                        sched_id,
+                        last_run=now.strftime(_DB_DT_FMT),
+                        next_run=next_run.strftime(_DB_DT_FMT) if next_run else None,
+                    )
+                    continue
+
                 task_id = await add_task(
                     title=title,
                     description=sched.get("description", ""),
@@ -1308,16 +1329,32 @@ class Orchestrator:
                     timeout_seconds=timeout_seconds,
                 )
                 # Phase 4.6: Wire progress streaming
+                _task_start_time = time.time()
+
                 async def _progress_cb(tid, iteration, max_iter, summary):
                     if self.telegram:
+                        elapsed = int(time.time() - _task_start_time)
                         msg = (
-                            f"\U0001f504 *Task #{tid}* — iteration {iteration}/{max_iter}\n"
+                            f"\U0001f504 *Task #{tid}* — iteration {iteration}/{max_iter} ({elapsed}s elapsed)\n"
                             f"{summary[:200]}"
                         )
                         try:
                             await self.telegram.send_notification(msg)
                         except Exception:
                             pass
+
+                # Send "task started" notification
+                try:
+                    task_ctx = json.loads(task.get("context", "{}"))
+                    if not task_ctx.get("silent"):
+                        chat_id = task_ctx.get("chat_id")
+                        if chat_id and hasattr(self, 'telegram') and self.telegram:
+                            await self.telegram.app.bot.send_message(
+                                chat_id=chat_id,
+                                text=f"\U0001f680 Task #{task['id']} assigned to {agent_type}, starting...",
+                            )
+                except Exception:
+                    pass
 
                 coro = agent.execute(task, progress_callback=_progress_cb)
 

@@ -39,6 +39,12 @@ async def init_price_watch_db() -> None:
         "CREATE INDEX IF NOT EXISTS idx_pw_active ON price_watches(triggered, expired)"
     )
 
+    # Migration: add product_url column if missing
+    try:
+        await db.execute("ALTER TABLE price_watches ADD COLUMN product_url TEXT")
+    except Exception:
+        pass  # column already exists
+
     await db.execute("""
         CREATE TABLE IF NOT EXISTS price_watch_history (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,6 +73,7 @@ async def add_price_watch(
     target_price: float = None,
     source: str = None,
     historical_low: float = None,
+    product_url: str = None,
 ) -> int:
     """Create a new price watch and return its watch_id."""
     db = await get_memory_db()
@@ -75,11 +82,11 @@ async def add_price_watch(
         """
         INSERT INTO price_watches
             (user_id, product_name, current_price, target_price,
-             source, historical_low, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             source, historical_low, product_url, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (user_id, product_name, current_price, target_price,
-         source, historical_low, now, now),
+         source, historical_low, product_url, now, now),
     )
     watch_id = cur.lastrowid
 
@@ -115,7 +122,7 @@ async def get_all_active_watches() -> list[dict]:
     cur = await db.execute(
         """
         SELECT id, user_id, product_name, current_price, target_price,
-               source, historical_low, created_at, updated_at
+               source, historical_low, product_url, created_at, updated_at
         FROM price_watches
         WHERE triggered = 0 AND expired = 0
         ORDER BY updated_at ASC

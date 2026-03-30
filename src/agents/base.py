@@ -1198,6 +1198,7 @@ class BaseAgent:
                         task_id, iteration + 1, messages, total_cost,
                         used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
                         completed_tool_ops, format_retries,
+                        tools_used_names,
                     )
                     continue
                 else:
@@ -1356,6 +1357,7 @@ class BaseAgent:
                         used_model, reqs, tools_used,
                         custom_validation_retried or task_type_validation_retried,
                         completed_tool_ops, format_retries,
+                        tools_used_names,
                     )
                     continue
 

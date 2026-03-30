@@ -5533,7 +5533,7 @@
             "14.3"
           ],
           "condition": "Only execute if payment hasn't been switched to live mode yet",
-          "instruction": "Switch payment integration from test mode to live mode. Execute the exact step from launch_checklist. Verify: Stripe (or equivalent) dashboard shows live mode, webhook endpoint is receiving live events, test a \$0 authorization or minimum charge and immediately refund to verify the live connection works. Output: payment_live_mode_active, verification_result.",
+          "instruction": "Switch payment integration from test mode to live mode. Execute the exact step from launch_checklist. Verify: Stripe (or equivalent) dashboard shows live mode, webhook endpoint is receiving live events, test a $0 authorization or minimum charge and immediately refund to verify the live connection works. Output: payment_live_mode_active, verification_result.",
           "output_artifacts": [
             "payment_live"
           ]

@@ -233,7 +233,7 @@ def validate_dependencies(wf: WorkflowDefinition) -> list[str]:
         is_depended_on = sid in depended_on
         phase = step.get("phase", "")
         # Phase 1 steps are roots — they're expected to have no deps
-        if not has_deps and not is_depended_on and phase != "phase_1":
+        if not has_deps and not is_depended_on and phase != "phase_1" and step.get("type") != "recurring":
             errors.append(
                 f"Orphan step '{sid}' (phase {phase}): not connected "
                 f"to any other step via depends_on"

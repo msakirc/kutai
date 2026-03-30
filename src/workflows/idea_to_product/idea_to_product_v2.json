@@ -4096,7 +4096,7 @@
       "phase": "phase_9",
       "name": "coverage_analysis",
       "agent": "executor",
-      "depends_on": [],
+      "depends_on": ["8.0"],
       "may_need_clarification": false,
       "input_artifacts": [
         "implementation_backlog"

@@ -25,7 +25,7 @@ class TestResolveDependencies(unittest.TestCase):
     def test_resolve_skips_missing(self):
         """Unknown step IDs are logged and skipped."""
         step_to_task = {"0.1": 10}
-        with self.assertLogs("src.workflows.engine.runner", level="WARNING") as cm:
+        with self.assertLogs("workflows.engine.runner", level="WARNING") as cm:
             result = resolve_dependencies(["0.1", "MISSING_STEP"], step_to_task)
         self.assertEqual(result, [10])
         self.assertTrue(any("MISSING_STEP" in msg for msg in cm.output))
@@ -37,7 +37,7 @@ class TestResolveDependencies(unittest.TestCase):
 
     def test_resolve_all_missing(self):
         """All missing step IDs returns empty result with warnings."""
-        with self.assertLogs("src.workflows.engine.runner", level="WARNING"):
+        with self.assertLogs("workflows.engine.runner", level="WARNING"):
             result = resolve_dependencies(["X", "Y"], {"0.1": 10})
         self.assertEqual(result, [])
 

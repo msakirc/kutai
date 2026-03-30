@@ -22,9 +22,10 @@ class ReviewTracker:
         self.max_cycles = max_cycles
         self._failures: defaultdict[str, int] = defaultdict(int)
 
-    def record_failure(self, step_id: str) -> None:
+    def record_failure(self, step_id: str) -> str:
         """Increment failure count for the given step."""
         self._failures[step_id] += 1
+        return "escalate" if self.should_escalate(step_id) else "retry"
 
     def should_escalate(self, step_id: str) -> bool:
         """Return True if failures >= max_cycles for the step."""

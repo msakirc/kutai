@@ -456,6 +456,7 @@ async def _trigger_template_expansion(mission_id: int, backlog_text: str) -> Non
             inserted_ids = []
             try:
                 for t in tasks:
+                    t.pop("depends_on_steps", None)
                     task_id = await insert_task(**t)
                     inserted_ids.append(task_id)
             except Exception as insert_err:

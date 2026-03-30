@@ -172,7 +172,7 @@ class TestMissionWorkflowCommand(unittest.TestCase):
 
         mock_start.assert_called_once()
         call_kwargs = mock_start.call_args[1]
-        self.assertEqual(call_kwargs["initial_input"]["idea"],
+        self.assertEqual(call_kwargs["initial_input"]["raw_idea"],
                          "Build a chat app")
 
     @patch("src.workflows.engine.runner.WorkflowRunner.start",

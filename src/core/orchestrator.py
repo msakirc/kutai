@@ -1214,7 +1214,7 @@ class Orchestrator:
 
                 # Check if this step should delegate to CodingPipeline
                 from ..workflows.engine.pipeline_bridge import should_delegate_to_pipeline
-                template_step_id = task_ctx.get("template_step_id", "")
+                template_step_id = task_ctx.get("workflow_step_id", "")
                 if should_delegate_to_pipeline(template_step_id, agent_type):
                     agent_type = "pipeline"
                     task["agent_type"] = "pipeline"

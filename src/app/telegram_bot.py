@@ -443,7 +443,7 @@ class TelegramInterface:
                 runner = WorkflowRunner()
                 mission_id = await runner.start(
                     workflow_name=workflow,
-                    initial_input={"idea": description, "product_name": description[:50]},
+                    initial_input={"raw_idea": description, "product_name": description[:50]},
                     title=description[:80],
                 )
                 await self._reply(update,

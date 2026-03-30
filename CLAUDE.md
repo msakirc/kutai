@@ -110,6 +110,16 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 | `src/app/config.py` | Environment config constants |
 | `requirements.txt` | Python dependencies |
 
+## Strategic Context
+- **Competitive edge**: Local GPU management (swap budgets, affinity), Turkish shopping intelligence (15 scrapers), self-improving skills
+- **Don't compete on breadth** — depth in chosen domains beats framework ecosystems
+- **Detailed analysis**: `docs/research/2026-03-30-competitive-analysis.md`
+- **Known refactoring need**: `telegram_bot.py` (~3400 lines) should be split into modules
+- **Skill system**: Working but needs instrumentation to prove value. See `src/memory/skills.py`
+- **Search pipeline**: 4-tier scraper (HTTP→TLS→Stealth→Browser), Brave+GCSE fallbacks, source quality tracking. See `docs/web-search-xray.md`
+- **Shopping missions**: Two-tier — simple queries use single agent, complex queries create 3-task mission (researcher→analyst→advisor)
+- **Free API registry**: 13 static APIs + auto-growth from public-apis/free-apis. See `src/tools/free_apis.py`
+
 ## Todo Module
 - Table: `todo_items` in main DB
 - Commands: `/todo`, `/todos`, `/cleartodos`

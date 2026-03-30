@@ -34,6 +34,8 @@ class ShoppingAdvisorAgent(BaseAgent):
         "shopping_alternatives",
         "shopping_user_profile",
         "shopping_price_watch",
+        "api_lookup",
+        "api_call",
     ]
 
     def get_system_prompt(self, task: dict) -> str:

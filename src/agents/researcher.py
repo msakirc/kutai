@@ -23,6 +23,8 @@ class ResearcherAgent(BaseAgent):
         "read_file",
         "write_file",
         "file_tree",
+        "api_lookup",
+        "api_call",
     ]
 
     def get_system_prompt(self, task: dict) -> str:

@@ -323,8 +323,11 @@ class BaseAgent:
         try:
             from ..security.permissions import check_permission
             return check_permission(self.name, tool_name)
-        except Exception:
-            return True  # fail-open if permissions module unavailable
+        except ImportError:
+            return True  # Module not installed yet — allow
+        except Exception as exc:
+            logger.warning(f"Permission check failed for {self.name}/{tool_name}: {exc}")
+            return False  # Fail-closed on runtime errors
 
     def _escalate_requirements(self, reqs: ModelRequirements) -> ModelRequirements:
         """

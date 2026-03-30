@@ -229,7 +229,7 @@ async def cmd_mission(self, update, context):
     text_args = list(args)
     if "--workflow" in text_args:
         text_args.remove("--workflow")
-        workflow = "idea_to_product_v2"
+        workflow = "i2p_v2"
 
     description = " ".join(text_args)
     # ... rest of goal creation logic, using add_mission(workflow=workflow)
@@ -241,7 +241,7 @@ Show workflow badge for workflow missions:
 ```
 📋 Active Missions:
   🎯 #42 Fix login bug (3 tasks)
-  🔄 #43 Build inventory app [workflow: idea_to_product] (47/130 tasks)
+  🔄 #43 Build inventory app [workflow: i2p] (47/130 tasks)
 ```
 
 **Step 4: Update menu system**

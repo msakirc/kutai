@@ -462,7 +462,7 @@ class TestMissionLifecycle:
         import json
 
         async def _run():
-            ctx = {"user_id": 123, "workflow": "idea_to_product"}
+            ctx = {"user_id": 123, "workflow": "i2p"}
             mid = await add_mission(
                 title="Context test",
                 description="",
@@ -473,6 +473,6 @@ class TestMissionLifecycle:
             if isinstance(stored, str):
                 stored = json.loads(stored)
             assert stored.get("user_id") == 123
-            assert stored.get("workflow") == "idea_to_product"
+            assert stored.get("workflow") == "i2p"
 
         run_async(_run())

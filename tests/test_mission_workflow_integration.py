@@ -81,7 +81,7 @@ class TestMessageClassification(unittest.TestCase):
         text = "build me an app that allows users to share shoplists"
         result = TelegramInterface._classify_message_by_keywords(text)
         self.assertEqual(result["type"], "mission")
-        self.assertEqual(result.get("workflow"), "idea_to_product")
+        self.assertEqual(result.get("workflow"), "i2p")
 
     def test_keyword_fallback_mission_without_workflow(self):
         text = "research best frameworks for web development"
@@ -121,14 +121,14 @@ class TestLLMClassification(unittest.IsolatedAsyncioTestCase):
     @patch("src.core.router.call_model", new_callable=AsyncMock)
     async def test_llm_returns_mission_workflow(self, mock_call):
         mock_call.return_value = {
-            "content": '{"type": "mission", "confidence": 0.95, "workflow": "idea_to_product"}'
+            "content": '{"type": "mission", "confidence": 0.95, "workflow": "i2p"}'
         }
         iface = self._make_interface()
         result = await iface._classify_user_message(
             "build me an app that allows users to share shoplists"
         )
         self.assertEqual(result["type"], "mission")
-        self.assertEqual(result.get("workflow"), "idea_to_product")
+        self.assertEqual(result.get("workflow"), "i2p")
 
     @patch("src.core.router.call_model", new_callable=AsyncMock)
     async def test_llm_returns_task(self, mock_call):
@@ -225,12 +225,12 @@ class TestWorkflowCreation(unittest.TestCase):
     """Verify workflow definition loading and structure."""
 
     def test_workflow_definition_exists(self):
-        wf = load_workflow("idea_to_product_v2")
-        self.assertEqual(wf.plan_id, "idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
+        self.assertEqual(wf.plan_id, "i2p_v2")
         self.assertEqual(wf.version, "2.0")
 
     def test_workflow_has_phases(self):
-        wf = load_workflow("idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
         self.assertGreater(len(wf.phases), 0)
         phase_ids = [p["id"] for p in wf.phases]
         self.assertIn("phase_0", phase_ids)
@@ -255,7 +255,7 @@ class TestWorkflowRunnerStart(unittest.IsolatedAsyncioTestCase):
         runner.artifact_store.store = AsyncMock()
 
         mission_id = await runner.start(
-            "idea_to_product_v2",
+            "i2p_v2",
             initial_input={"raw_idea": "Build a shoplist sharing app"},
         )
 
@@ -265,7 +265,7 @@ class TestWorkflowRunnerStart(unittest.IsolatedAsyncioTestCase):
         mock_add_mission.assert_called_once()
         call_kwargs = mock_add_mission.call_args[1]
         context = call_kwargs["context"]
-        self.assertEqual(context["workflow_name"], "idea_to_product_v2")
+        self.assertEqual(context["workflow_name"], "i2p_v2")
         self.assertEqual(context["initial_input"]["raw_idea"], "Build a shoplist sharing app")
 
         # Verify tasks were created

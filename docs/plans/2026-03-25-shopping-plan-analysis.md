@@ -124,7 +124,7 @@ covers 80% of this. Add a `ShoppingAgent` that orchestrates the workflow.
 | 6.5 Gift Recommendation | - | Workflow variant |
 | 6.6 Exploration | Clarification flow | Guided conversation |
 
-**Recommendation**: Define as JSON workflows like `idea_to_product_v2`.
+**Recommendation**: Define as JSON workflows like `i2p_v2`.
 The engine already handles dependencies, phases, and artifact passing.
 
 ---

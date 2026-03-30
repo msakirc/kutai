@@ -911,7 +911,7 @@ git commit -m "feat(search): deep pipeline escalates scraper tier by intent (mar
 
 - [ ] **Step 1: Run the complete test suite**
 
-Run: `.venv/Scripts/python -m pytest tests/ -q --ignore=tests/test_phase2.py --ignore=tests/test_phase2_structured.py -k "not idea_to_product"`
+Run: `.venv/Scripts/python -m pytest tests/ -q --ignore=tests/test_phase2.py --ignore=tests/test_phase2_structured.py -k "not i2p"`
 Expected: All pass (existing + new tests)
 
 - [ ] **Step 2: Verify imports**

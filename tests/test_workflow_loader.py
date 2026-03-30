@@ -11,11 +11,11 @@ class TestWorkflowLoader(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Load the v2 workflow once for all tests."""
-        cls.wf = load_workflow("idea_to_product_v2")
+        cls.wf = load_workflow("i2p_v2")
 
     def test_load_v2_workflow(self):
         """Verify plan_id and version are correct."""
-        self.assertEqual(self.wf.plan_id, "idea_to_product_v2")
+        self.assertEqual(self.wf.plan_id, "i2p_v2")
         self.assertEqual(self.wf.version, "2.0")
 
     def test_workflow_has_17_phases(self):

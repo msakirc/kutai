@@ -129,9 +129,9 @@ if not has_deps and not is_depended_on and phase != "phase_1":
     errors.append(...)
 ```
 
-`phase_-1` (onboarding existing codebases) steps are root steps that intentionally have no dependencies, but they are NOT exempted. Running `validate_dependencies` on `idea_to_product_v2.json` would erroneously flag `phase_-1` steps as orphans.
+`phase_-1` (onboarding existing codebases) steps are root steps that intentionally have no dependencies, but they are NOT exempted. Running `validate_dependencies` on `i2p_v2.json` would erroneously flag `phase_-1` steps as orphans.
 
-**Impact:** The test `test_validate_dependencies_idea_to_product_v2` asserts `errors == []`. If `idea_to_product_v2.json` contains any `phase_-1` steps, this test will fail.
+**Impact:** The test `test_validate_dependencies_i2p_v2` asserts `errors == []`. If `i2p_v2.json` contains any `phase_-1` steps, this test will fail.
 
 **Fix:** Change the orphan exemption to `phase not in ("phase_1", "phase_-1", "phase_0")` or use `phase_num <= 0` numeric logic.
 
@@ -170,11 +170,11 @@ The fixture sorts local models by `m.active_params_b or m.total_params_b or 999`
 **File:** `tests/integration/test_workflow_pipeline.py` lines 43–66
 
 **Description:**
-Both `test_load_idea_to_product_v1` and `test_load_idea_to_product_v2` build the file path using `os.path.dirname(os.path.abspath(__file__))` traversal. This works when running `pytest` from the project root, but fails when running from `tests/integration/` directly, or when the source tree is relocated.
+Both `test_load_i2p_v1` and `test_load_i2p_v2` build the file path using `os.path.dirname(os.path.abspath(__file__))` traversal. This works when running `pytest` from the project root, but fails when running from `tests/integration/` directly, or when the source tree is relocated.
 
 The `loader.py` already provides `load_workflow(name)` which handles path resolution correctly. The test should use that instead of manual path construction.
 
-**Fix:** Replace the manual path construction with `from src.workflows.engine.loader import load_workflow; wf = load_workflow("idea_to_product_v1")` and check the resulting `WorkflowDefinition` object.
+**Fix:** Replace the manual path construction with `from src.workflows.engine.loader import load_workflow; wf = load_workflow("i2p_v1")` and check the resulting `WorkflowDefinition` object.
 
 ---
 
@@ -358,7 +358,7 @@ A lazy registry (instantiate on first `get_agent()` call) would isolate failures
 
 The rate limiter and circuit breaker logic in `router.py` is complex and untested. When the local llama-server returns a 429 or disconnects mid-stream, the retry/fallback logic has no test coverage.
 
-### OBS-4: Shopping workflow JSONs exist but `TestWorkflowJsonLoading` only tests `idea_to_product`
+### OBS-4: Shopping workflow JSONs exist but `TestWorkflowJsonLoading` only tests `i2p`
 
 There are 6 shopping workflow JSON files (`shopping.json`, `quick_search.json`, `exploration.json`, etc.) that are never loaded or validated in tests. A parametrized test across all workflow files would catch JSON syntax errors early.
 

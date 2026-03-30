@@ -17,6 +17,7 @@ WORKFLOW_PATTERNS: list[re.Pattern[str]] = [
         re.IGNORECASE,
     ),
     re.compile(r"idea\.to\.product", re.IGNORECASE),
+    re.compile(r"\bi2p\b", re.IGNORECASE),
     re.compile(r"full\s+product", re.IGNORECASE),
     re.compile(r"from\s+scratch\s+.+\s+(app|product|platform)", re.IGNORECASE),
     re.compile(r"mvp\s+.+\s+(build|create|develop)", re.IGNORECASE),

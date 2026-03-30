@@ -364,7 +364,7 @@ async def _check_conditional_triggers(
     try:
         from .loader import load_workflow
 
-        wf = load_workflow("idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
     except Exception:
         logger.debug("[Workflow Hook] Could not load workflow for conditional eval")
         return
@@ -430,7 +430,7 @@ async def _trigger_template_expansion(mission_id: int, backlog_text: str) -> Non
         from .expander import expand_template, expand_steps_to_tasks
         from ...infra.db import add_task as insert_task, update_task
 
-        wf = load_workflow("idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
         template = wf.get_template("feature_implementation_template")
         if not template:
             logger.warning("[Workflow Hook] feature_implementation_template not found")

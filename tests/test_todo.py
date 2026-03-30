@@ -204,7 +204,7 @@ class TestTodoClassification(unittest.TestCase):
             has_noun = any(kw in desc_lower for kw in _PRODUCT_KEYWORDS[5:])
             has_phrase = any(kw in desc_lower for kw in _PRODUCT_KEYWORDS[11:])
             if (has_verb and has_noun) or has_phrase:
-                result["workflow"] = "idea_to_product"
+                result["workflow"] = "i2p"
             return result
         return {"type": "task"}
 
@@ -238,7 +238,7 @@ class TestTodoClassification(unittest.TestCase):
             "Build a web app that lets users manage their inventory"
         )
         self.assertEqual(result["type"], "mission")
-        self.assertEqual(result.get("workflow"), "idea_to_product")
+        self.assertEqual(result.get("workflow"), "i2p")
 
     def test_bug_report_not_todo(self):
         result = self.classify("The login page is broken and shows an error")

@@ -271,7 +271,7 @@ No user data is ever uploaded. All discovery/import is pull-only.
 3. **Price watch scheduler** — daily at noon, decided but not implemented
 4. **Discount watcher watchers** — monitors for the monitors
 5. **Wrapper heartbeat** — orchestrator writes heartbeat file, wrapper detects hangs
-6. **i2p rename** — idea_to_product → i2p
+6. **i2p rename** — i2p → i2p
 7. **Skill metrics** — A/B measurement of skill injection impact
 8. **EnUygun MCP connection** — for flight/bus ticket search
 

@@ -33,13 +33,13 @@ def run_async(coro):
 
 @pytest.mark.integration
 class TestWorkflowJsonLoading:
-    """The idea_to_product workflow JSON files parse correctly."""
+    """The i2p workflow JSON files parse correctly."""
 
-    def test_load_idea_to_product_v1(self):
-        """idea_to_product_v1.json is valid JSON and has expected structure."""
+    def test_load_i2p_v1(self):
+        """i2p_v1.json is valid JSON and has expected structure."""
         workflow_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "src", "workflows", "idea_to_product", "idea_to_product_v1.json"
+            "src", "workflows", "i2p", "i2p_v1.json"
         )
         assert os.path.exists(workflow_path), f"Workflow file missing: {workflow_path}"
 
@@ -52,11 +52,11 @@ class TestWorkflowJsonLoading:
             f"Workflow JSON lacks expected keys. Keys found: {list(data.keys())}"
         )
 
-    def test_load_idea_to_product_v2(self):
-        """idea_to_product_v2.json is valid JSON."""
+    def test_load_i2p_v2(self):
+        """i2p_v2.json is valid JSON."""
         workflow_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "src", "workflows", "idea_to_product", "idea_to_product_v2.json"
+            "src", "workflows", "i2p", "i2p_v2.json"
         )
         assert os.path.exists(workflow_path), f"Workflow file missing: {workflow_path}"
 
@@ -83,7 +83,7 @@ class TestMissionCreation:
                 title="Build a todo app",
                 description="Idea-to-product pipeline test",
                 priority=7,
-                workflow="idea_to_product",
+                workflow="i2p",
             )
 
             # Add a root task to act as the parent

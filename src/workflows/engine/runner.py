@@ -2,7 +2,7 @@
 
 Usage:
     runner = WorkflowRunner()
-    mission_id = await runner.start("idea_to_product_v2", initial_input={"raw_idea": "Build a ..."})
+    mission_id = await runner.start("i2p_v2", initial_input={"raw_idea": "Build a ..."})
 """
 
 from __future__ import annotations

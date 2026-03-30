@@ -190,13 +190,13 @@ class TestMissionDBAPI(unittest.TestCase):
         """add_mission accepts workflow, repo_path, language, framework."""
         mid = run_async(self.db_mod.add_mission(
             "Project Mission", "desc",
-            workflow="idea_to_product_v2",
+            workflow="i2p_v2",
             repo_path="/tmp/repo",
             language="python",
             framework="fastapi"
         ))
         mission = run_async(self.db_mod.get_mission(mid))
-        self.assertEqual(mission["workflow"], "idea_to_product_v2")
+        self.assertEqual(mission["workflow"], "i2p_v2")
         self.assertEqual(mission["repo_path"], "/tmp/repo")
         self.assertEqual(mission["language"], "python")
         self.assertEqual(mission["framework"], "fastapi")

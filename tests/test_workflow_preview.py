@@ -22,7 +22,7 @@ class TestWorkflowPreview(unittest.TestCase):
     def test_preview_returns_structure(self):
         """Preview should return all expected top-level keys."""
         runner = WorkflowRunner()
-        result = self._run(runner.preview("idea_to_product_v2"))
+        result = self._run(runner.preview("i2p_v2"))
         self.assertIn("total_steps", result)
         self.assertIn("phases", result)
         self.assertIn("estimated_cost", result)
@@ -39,7 +39,7 @@ class TestWorkflowPreview(unittest.TestCase):
     def test_preview_has_phase_details(self):
         """Each phase entry should contain id, name, step_count, agents."""
         runner = WorkflowRunner()
-        result = self._run(runner.preview("idea_to_product_v2"))
+        result = self._run(runner.preview("i2p_v2"))
         for phase in result["phases"]:
             self.assertIn("phase_id", phase)
             self.assertIn("phase_name", phase)
@@ -51,14 +51,14 @@ class TestWorkflowPreview(unittest.TestCase):
     def test_preview_cost_positive(self):
         """Estimated cost should be a positive number."""
         runner = WorkflowRunner()
-        result = self._run(runner.preview("idea_to_product_v2"))
+        result = self._run(runner.preview("i2p_v2"))
         self.assertGreater(result["estimated_cost"], 0)
 
     def test_preview_with_existing_codebase(self):
         """With existing codebase, Phase -1 onboarding should be excluded."""
         runner = WorkflowRunner()
         result = self._run(
-            runner.preview("idea_to_product_v2", existing_codebase_path="/tmp/project")
+            runner.preview("i2p_v2", existing_codebase_path="/tmp/project")
         )
         # Should still have steps, just potentially fewer
         self.assertGreater(result["total_steps"], 0)
@@ -66,7 +66,7 @@ class TestWorkflowPreview(unittest.TestCase):
     def test_preview_includes_templates(self):
         """Template-related fields should be present."""
         runner = WorkflowRunner()
-        result = self._run(runner.preview("idea_to_product_v2"))
+        result = self._run(runner.preview("i2p_v2"))
         self.assertIn("templates", result)
         self.assertIn("template_estimated_steps", result)
         self.assertIsInstance(result["templates"], int)
@@ -75,8 +75,8 @@ class TestWorkflowPreview(unittest.TestCase):
     def test_preview_workflow_name_matches(self):
         """The returned workflow_name should match what was requested."""
         runner = WorkflowRunner()
-        result = self._run(runner.preview("idea_to_product_v2"))
-        self.assertEqual(result["workflow_name"], "idea_to_product_v2")
+        result = self._run(runner.preview("i2p_v2"))
+        self.assertEqual(result["workflow_name"], "i2p_v2")
 
 
 if __name__ == "__main__":

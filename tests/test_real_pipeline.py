@@ -154,7 +154,7 @@ class TestClassificationPipeline(unittest.IsolatedAsyncioTestCase):
             "build me an app that allows multiple users to share and manage their shoplists together"
         )
         self.assertEqual(result["type"], "mission")
-        self.assertEqual(result.get("workflow"), "idea_to_product")
+        self.assertEqual(result.get("workflow"), "i2p")
 
     def test_remind_me_is_todo(self):
         result = self._classify_keywords("remind me to buy milk tomorrow")

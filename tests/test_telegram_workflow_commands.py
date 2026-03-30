@@ -127,7 +127,7 @@ class TestWfstatusCommand(unittest.TestCase):
         mock_mission.return_value = {
             "id": 1,
             "title": "Test",
-            "context": '{"workflow_name": "idea_to_product_v2"}',
+            "context": '{"workflow_name": "i2p_v2"}',
         }
         mock_tasks.return_value = [
             {"id": 10, "status": "completed",

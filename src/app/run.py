@@ -360,7 +360,7 @@ async def main():
     # Phase 14.3: Start monitoring loop in background
     monitor_task = None
     try:
-        from ..infra.monitoring import run_monitoring_loop
+        from src.infra.monitoring import run_monitoring_loop
         monitor_task = asyncio.create_task(
             run_monitoring_loop(),
             name="monitoring_loop",
@@ -372,11 +372,11 @@ async def main():
     # Phase 3: Start GPU auto-detect loop
     gpu_detect_task = None
     try:
-        from ..infra.load_manager import run_gpu_autodetect_loop
+        from src.infra.load_manager import run_gpu_autodetect_loop
 
         async def _notify_gpu_change(msg: str):
             try:
-                from .config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID
+                from src.app.config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID
                 if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_CHAT_ID:
                     return
                 import aiohttp

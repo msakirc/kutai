@@ -1,5 +1,5 @@
 {
-  "plan_id": "idea_to_product_v2",
+  "plan_id": "i2p_v2",
   "version": "2.0",
   "metadata": {
     "description": "Complete plan to take a raw product idea from concept through launched, monitored software product. Designed for AI agent execution with human-in-the-loop via needs_clarification mechanism. Supports both greenfield and existing project onboarding via Phase -1.",
@@ -4103,7 +4103,9 @@
       "phase": "phase_9",
       "name": "coverage_analysis",
       "agent": "executor",
-      "depends_on": ["8.0"],
+      "depends_on": [
+        "8.0"
+      ],
       "may_need_clarification": false,
       "input_artifacts": [
         "implementation_backlog"

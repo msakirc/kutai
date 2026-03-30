@@ -71,7 +71,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 - ChromaDB is a required dependency — don't make it optional
 - Embedding model is `intfloat/multilingual-e5-small` (384 dims) — don't mix with other models
 - The `memory` table uses exact key lookup — use `semantic_recall()` for fuzzy search
-- Shopping after `/shop` must route to `shopping_advisor` agent, NOT `idea_to_product` workflow
+- Shopping after `/shop` must route to `shopping_advisor` agent, NOT `i2p` workflow
 - **Datetime format for scheduled_tasks**: NEVER use `datetime.isoformat()` when storing to `scheduled_tasks.next_run` or `last_run` — use `strftime("%Y-%m-%d %H:%M:%S")` because SQLite's `datetime('now')` returns space-separated format. ISO format (with `T`) causes string comparison failures.
 - **Shopping agents must NOT have file tools**: `shopping_advisor`, `product_researcher`, and `deal_analyst` must NOT have `read_file`, `write_file`, or `file_tree` in their `allowed_tools` — these cause the LLM to waste iterations browsing the filesystem instead of searching products.
 - **Never call `call_model()` directly** — always use `LLMDispatcher.request()`. Direct calls bypass swap protection, quota management, and deferred grading.

@@ -133,8 +133,8 @@ class TestWorkflowJsonFiles:
     """All workflow JSON files are valid and well-structured."""
 
     WORKFLOW_NAMES = [
-        "idea_to_product_v1",
-        "idea_to_product_v2",
+        "i2p_v1",
+        "i2p_v2",
     ]
 
     # Shopping-specific workflows (exist inside src/workflows/shopping/)
@@ -158,7 +158,7 @@ class TestWorkflowJsonFiles:
         return os.path.join(base, "src", "workflows", dir_name, name + ".json")
 
     @pytest.mark.parametrize("wf_name", [
-        "idea_to_product_v1", "idea_to_product_v2"
+        "i2p_v1", "i2p_v2"
     ])
     def test_workflow_json_valid(self, wf_name):
         """Workflow JSON is valid and has required top-level keys."""
@@ -176,38 +176,38 @@ class TestWorkflowJsonFiles:
     def test_load_workflow_via_loader(self):
         """WorkflowDefinition is loaded correctly via load_workflow()."""
         from src.workflows.engine.loader import load_workflow
-        wf = load_workflow("idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
         assert wf.plan_id, "WorkflowDefinition.plan_id is empty"
         assert len(wf.steps) > 0, "WorkflowDefinition.steps is empty"
         assert len(wf.phases) > 0, "WorkflowDefinition.phases is empty"
 
-    def test_validate_dependencies_idea_to_product_v2(self):
-        """idea_to_product_v2 has no broken dependency references or cycles."""
+    def test_validate_dependencies_i2p_v2(self):
+        """i2p_v2 has no broken dependency references or cycles."""
         from src.workflows.engine.loader import load_workflow, validate_dependencies
-        wf = load_workflow("idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
         errors = validate_dependencies(wf)
         assert errors == [], (
-            f"Dependency validation errors in idea_to_product_v2:\n"
+            f"Dependency validation errors in i2p_v2:\n"
             + "\n".join(f"  - {e}" for e in errors)
         )
 
-    def test_validate_dependencies_idea_to_product_v1(self):
-        """idea_to_product_v1 has no broken dependency references."""
+    def test_validate_dependencies_i2p_v1(self):
+        """i2p_v1 has no broken dependency references."""
         from src.workflows.engine.loader import load_workflow, validate_dependencies
-        wf = load_workflow("idea_to_product_v1")
+        wf = load_workflow("i2p_v1")
         errors = validate_dependencies(wf)
         # v1 may have orphan steps (it's older) — we only fail on cycles and
         # unknown references, not orphans.
         hard_errors = [e for e in errors if "cycle" in e.lower() or "unknown" in e.lower()]
         assert hard_errors == [], (
-            "idea_to_product_v1 has critical dependency errors:\n"
+            "i2p_v1 has critical dependency errors:\n"
             + "\n".join(f"  - {e}" for e in hard_errors)
         )
 
     def test_get_phase_steps_returns_subset(self):
         """get_phase_steps returns only steps for the requested phase."""
         from src.workflows.engine.loader import load_workflow
-        wf = load_workflow("idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
         if not wf.phases:
             pytest.skip("No phases in workflow")
         first_phase_id = wf.phases[0]["id"]

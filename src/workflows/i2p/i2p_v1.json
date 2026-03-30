@@ -1,5 +1,5 @@
 {
-  "plan_id": "idea_to_product_v1",
+  "plan_id": "i2p_v1",
   "version": "1.0",
   "metadata": {
     "description": "Complete plan to take a raw product idea from concept through launched, monitored software product. Designed for AI agent execution with human-in-the-loop via needs_clarification mechanism.",

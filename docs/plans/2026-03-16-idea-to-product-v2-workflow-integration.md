@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Integrate `idea_to_product_v2.json` as a first-class workflow engine into the existing orchestrator, enabling 24/7 autonomous execution of the complete product lifecycle (idea → research → design → build → launch → ops) while leveraging `CodingPipeline` for Phase 8 implementation work.
+**Goal:** Integrate `i2p_v2.json` as a first-class workflow engine into the existing orchestrator, enabling 24/7 autonomous execution of the complete product lifecycle (idea → research → design → build → launch → ops) while leveraging `CodingPipeline` for Phase 8 implementation work.
 
 **Architecture:** Build a generic `WorkflowEngine` in `src/workflows/engine/` that loads JSON workflow definitions, evaluates conditional groups, expands templates, and inserts tasks into the existing DB with proper dependency chains. The orchestrator's existing `get_ready_tasks()` → `claim_task()` → `execute` loop handles execution. Artifacts flow between steps via an extended blackboard store. Phase 8 delegates each feature's coding work to `CodingPipeline` (nested invocation). Phase 15 recurring steps map to the existing `scheduled_tasks` system. The engine is workflow-agnostic — any JSON definition following the schema can be loaded.
 
@@ -88,21 +88,21 @@ class TestWorkflowLoader(unittest.TestCase):
 
     def test_load_v2_workflow(self):
         from src.workflows.engine.loader import load_workflow
-        wf = load_workflow("idea_to_product_v2")
-        self.assertEqual(wf.plan_id, "idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
+        self.assertEqual(wf.plan_id, "i2p_v2")
         self.assertEqual(wf.version, "2.0")
         self.assertGreater(len(wf.phases), 0)
         self.assertGreater(len(wf.steps), 0)
 
     def test_workflow_has_17_phases(self):
         from src.workflows.engine.loader import load_workflow
-        wf = load_workflow("idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
         # Phase -1 through Phase 15 = 17 phases
         self.assertEqual(len(wf.phases), 17)
 
     def test_steps_have_required_fields(self):
         from src.workflows.engine.loader import load_workflow
-        wf = load_workflow("idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
         for step in wf.steps:
             self.assertIn("id", step)
             self.assertIn("agent", step)
@@ -111,7 +111,7 @@ class TestWorkflowLoader(unittest.TestCase):
 
     def test_workflow_has_templates(self):
         from src.workflows.engine.loader import load_workflow
-        wf = load_workflow("idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
         self.assertGreater(len(wf.templates), 0)
         tmpl = wf.templates[0]
         self.assertEqual(tmpl["template_id"], "feature_implementation_template")
@@ -119,7 +119,7 @@ class TestWorkflowLoader(unittest.TestCase):
 
     def test_workflow_has_conditional_groups(self):
         from src.workflows.engine.loader import load_workflow
-        wf = load_workflow("idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
         self.assertEqual(len(wf.conditional_groups), 6)
         group_ids = {g["group_id"] for g in wf.conditional_groups}
         self.assertIn("competitor_deep_dive", group_ids)
@@ -128,14 +128,14 @@ class TestWorkflowLoader(unittest.TestCase):
 
     def test_workflow_has_review_and_revision_policies(self):
         from src.workflows.engine.loader import load_workflow
-        wf = load_workflow("idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
         self.assertIn("review_policy", wf.metadata)
         self.assertIn("revision_policy", wf.metadata)
         self.assertEqual(wf.metadata["review_policy"]["max_review_cycles"], 3)
 
     def test_workflow_has_onboarding_policy(self):
         from src.workflows.engine.loader import load_workflow
-        wf = load_workflow("idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
         self.assertIn("onboarding_policy", wf.metadata)
         self.assertTrue(wf.metadata["onboarding_policy"]["never_rewrite_existing_code_unless_asked"])
 
@@ -146,13 +146,13 @@ class TestWorkflowLoader(unittest.TestCase):
 
     def test_dependency_graph_valid(self):
         from src.workflows.engine.loader import load_workflow, validate_dependencies
-        wf = load_workflow("idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
         errors = validate_dependencies(wf)
         self.assertEqual(errors, [])
 
     def test_get_recurring_steps(self):
         from src.workflows.engine.loader import load_workflow
-        wf = load_workflow("idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
         recurring = [s for s in wf.steps if s.get("type") == "recurring"]
         self.assertGreater(len(recurring), 10)  # Phase 15 has 20+ recurring steps
 ```
@@ -227,7 +227,7 @@ def load_workflow(workflow_name: str) -> WorkflowDefinition:
     """Load a workflow JSON definition by name.
 
     Searches for <name>.json in workflow subdirectories.
-    Handles both 'idea_to_product_v2' and 'idea_to_product' naming.
+    Handles both 'i2p_v2' and 'i2p' naming.
     """
     # Normalize: strip version suffix for directory lookup
     base_name = workflow_name
@@ -1162,7 +1162,7 @@ Expected: FAIL
 Usage:
     runner = WorkflowRunner()
     goal_id = await runner.start(
-        "idea_to_product_v2",
+        "i2p_v2",
         initial_input={"raw_idea": "Build a ..."},
     )
 """
@@ -1710,7 +1710,7 @@ async def _trigger_template_expansion(
         step_to_task = meta.get("step_to_task", {})
 
         # We need the full workflow definition for the template
-        wf = load_workflow("idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
         template = wf.get_template("feature_implementation_template")
         if not template:
             logger.error("feature_implementation_template not found")
@@ -1940,7 +1940,7 @@ async def cmd_product(update, context):
 
     if onboard_path:
         goal_id = await runner.start(
-            "idea_to_product_v2",
+            "i2p_v2",
             initial_input={},
             title=f"Onboard: {onboard_path}",
             existing_codebase_path=onboard_path,
@@ -1952,7 +1952,7 @@ async def cmd_product(update, context):
     else:
         idea = extract_idea_text(message_text)
         goal_id = await runner.start(
-            "idea_to_product_v2",
+            "i2p_v2",
             initial_input={"raw_idea": idea},
             title=f"Product: {idea[:80]}",
         )
@@ -2011,7 +2011,7 @@ class TestPipelineBridge(unittest.TestCase):
         from src.workflows.engine.pipeline_bridge import extract_feature_context
         step_ctx = {
             "workflow_step_id": "8.F-001.feat.5",
-            "workflow_context": {"workflow_id": "idea_to_product_v2"},
+            "workflow_context": {"workflow_id": "i2p_v2"},
         }
         feature_id, feature_name = extract_feature_context(step_ctx)
         self.assertEqual(feature_id, "F-001")
@@ -2129,7 +2129,7 @@ class TestWorkflowStatus(unittest.TestCase):
             "phase_0": {"completed": 8, "total": 8, "name": "Idea Capture"},
             "phase_1": {"completed": 3, "total": 12, "name": "Market Research"},
         }
-        msg = format_status_message("idea_to_product_v2", 42, progress)
+        msg = format_status_message("i2p_v2", 42, progress)
         self.assertIn("phase_0", msg.lower() or msg)
         self.assertIn("42", msg)
 ```
@@ -2439,7 +2439,7 @@ class TestWorkflowE2E(unittest.TestCase):
         runner.artifact_store._use_db = False
 
         goal_id = asyncio.run(runner.start(
-            "idea_to_product_v2",
+            "i2p_v2",
             initial_input={"raw_idea": "Build a task management app"},
             title="Test Product",
         ))
@@ -2477,7 +2477,7 @@ class TestWorkflowE2E(unittest.TestCase):
         runner.artifact_store._use_db = False
 
         goal_id = asyncio.run(runner.start(
-            "idea_to_product_v2",
+            "i2p_v2",
             initial_input={},
             title="Onboard Existing",
             existing_codebase_path="/home/user/myproject",
@@ -2495,7 +2495,7 @@ class TestWorkflowE2E(unittest.TestCase):
         from src.workflows.engine.loader import load_workflow
         from src.workflows.engine.expander import filter_steps_for_context
 
-        wf = load_workflow("idea_to_product_v2")
+        wf = load_workflow("i2p_v2")
         # All steps
         all_steps = wf.steps
         self.assertGreater(len(all_steps), 100)

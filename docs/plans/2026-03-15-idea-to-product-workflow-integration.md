@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Integrate the `idea_to_product_v1.json` workflow definition as a first-class workflow alongside the existing `CodingPipeline`, creating a generic workflow engine that can run any JSON-defined workflow 24/7 through the existing orchestrator.
+**Goal:** Integrate the `i2p_v1.json` workflow definition as a first-class workflow alongside the existing `CodingPipeline`, creating a generic workflow engine that can run any JSON-defined workflow 24/7 through the existing orchestrator.
 
 **Architecture:** Build a `WorkflowEngine` that loads JSON workflow definitions, expands them into goals+tasks with proper dependency chains in the DB, and lets the existing orchestrator poll/execute them like any other task. The CodingPipeline stays as a specialized fast-path for coding-only tasks. Idea-to-Product becomes a high-level workflow that can *invoke* the CodingPipeline for its Phase 8 implementation steps. An artifact store (blackboard-backed) passes outputs between steps. Template expansion creates concrete tasks from reusable templates.
 
@@ -66,15 +66,15 @@ class TestWorkflowLoader(unittest.TestCase):
 
     def test_load_workflow_definition(self):
         from src.workflows.engine.loader import load_workflow
-        wf = load_workflow("idea_to_product_v1")
-        self.assertEqual(wf.plan_id, "idea_to_product_v1")
+        wf = load_workflow("i2p_v1")
+        self.assertEqual(wf.plan_id, "i2p_v1")
         self.assertEqual(wf.version, "1.0")
         self.assertGreater(len(wf.phases), 0)
         self.assertGreater(len(wf.steps), 0)
 
     def test_workflow_has_phases_and_steps(self):
         from src.workflows.engine.loader import load_workflow
-        wf = load_workflow("idea_to_product_v1")
+        wf = load_workflow("i2p_v1")
         # 16 phases
         self.assertEqual(len(wf.phases), 16)
         # Steps have required fields
@@ -86,7 +86,7 @@ class TestWorkflowLoader(unittest.TestCase):
 
     def test_workflow_has_templates(self):
         from src.workflows.engine.loader import load_workflow
-        wf = load_workflow("idea_to_product_v1")
+        wf = load_workflow("i2p_v1")
         self.assertGreater(len(wf.templates), 0)
         tmpl = wf.templates[0]
         self.assertEqual(tmpl["template_id"], "feature_implementation_template")
@@ -99,7 +99,7 @@ class TestWorkflowLoader(unittest.TestCase):
 
     def test_dependency_graph_is_valid(self):
         from src.workflows.engine.loader import load_workflow, validate_dependencies
-        wf = load_workflow("idea_to_product_v1")
+        wf = load_workflow("i2p_v1")
         # All depends_on references exist as step IDs
         errors = validate_dependencies(wf)
         self.assertEqual(errors, [])
@@ -694,7 +694,7 @@ Expected: FAIL with ImportError
 
 Usage:
     runner = WorkflowRunner()
-    goal_id = await runner.start("idea_to_product_v1", raw_idea="Build a ...")
+    goal_id = await runner.start("i2p_v1", raw_idea="Build a ...")
 """
 import json
 import logging
@@ -1132,7 +1132,7 @@ from ..workflows.engine.runner import WorkflowRunner
 if should_start_workflow(message_text):
     runner = WorkflowRunner()
     goal_id = await runner.start(
-        "idea_to_product_v1",
+        "i2p_v1",
         initial_input={"raw_idea": message_text},
         title=f"Product: {message_text[:80]}",
     )
@@ -1656,8 +1656,8 @@ src/workflows/
 │   ├── pipeline.py         # Existing CodingPipeline (unchanged)
 │   ├── pipeline_context.py # Existing (unchanged)
 │   └── pipeline_utils.py   # Existing (unchanged)
-└── idea_to_product/
-    └── idea_to_product_v1.json  # Workflow definition (unchanged)
+└── i2p/
+    └── i2p_v1.json  # Workflow definition (unchanged)
 ```
 
 ### Key Design Decisions

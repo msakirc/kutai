@@ -8,6 +8,7 @@ prompts via ``get_tool_descriptions()``.
 """
 
 import inspect
+import os
 from typing import Any, Optional
 
 from ..parsing.code_embeddings import reindex_file
@@ -314,6 +315,70 @@ try:
 except Exception as e:
     mcp_client = None  # type: ignore[assignment]
     logger.debug(f"MCP client not available — {type(e).__name__}: {e}")
+
+# Free API registry tools
+try:
+    from .free_apis import find_apis, call_api, get_api, API_REGISTRY
+
+    async def _tool_api_lookup(query: str = "", category: str = "") -> str:
+        """Find free APIs matching a query or category."""
+        import json
+
+        if not query and not category:
+            # List all categories
+            categories = sorted(set(a.category for a in API_REGISTRY))
+            return f"Available API categories: {', '.join(categories)}\nUse category or query to find specific APIs."
+
+        apis = find_apis(category=category or None, query=query or None)
+        if not apis:
+            return f"No APIs found for query='{query}' category='{category}'"
+
+        results = []
+        for api in apis:
+            entry = {
+                "name": api.name,
+                "category": api.category,
+                "description": api.description,
+                "auth": api.auth_type,
+                "rate_limit": api.rate_limit,
+                "example": api.example_endpoint,
+            }
+            if api.env_var:
+                has_key = bool(os.getenv(api.env_var))
+                entry["api_key_configured"] = has_key
+            results.append(entry)
+
+        return json.dumps(results, indent=2)
+
+    async def _tool_api_call(api_name: str, endpoint: str = "", params: str = "") -> str:
+        """Call a registered free API by name."""
+        import json as _json
+        api = get_api(api_name)
+        if not api:
+            available = [a.name for a in API_REGISTRY]
+            return f"Unknown API: '{api_name}'. Available: {', '.join(available)}"
+
+        parsed_params = None
+        if params:
+            try:
+                parsed_params = _json.loads(params)
+            except _json.JSONDecodeError:
+                pass
+
+        return await call_api(api, endpoint=endpoint or None, params=parsed_params)
+
+    _optional_tools["api_lookup"] = {
+        "function": _tool_api_lookup,
+        "description": "Find free APIs by category or query. Args: query (str), category (str). Categories: weather, currency, news, geo, time, knowledge, translation, network, fun",
+        "example": '{"action": "tool_call", "tool": "api_lookup", "args": {"category": "weather"}}',
+    }
+    _optional_tools["api_call"] = {
+        "function": _tool_api_call,
+        "description": "Call a registered free API. Args: api_name (str), endpoint (str, optional), params (str JSON, optional)",
+        "example": '{"action": "tool_call", "tool": "api_call", "args": {"api_name": "wttr.in"}}',
+    }
+except Exception as e:
+    logger.warning(f"api_lookup/api_call tools not available — {type(e).__name__}: {e}")
 
 # Shopping intelligence tools
 try:
@@ -1033,6 +1098,23 @@ def list_tool_names() -> list[str]:
     return sorted(TOOL_REGISTRY.keys())
 
 
+def list_mcp_servers() -> dict:
+    """List configured MCP servers and their connection status."""
+    try:
+        from .mcp_client import mcp_client as _mcp, load_mcp_config
+        config = load_mcp_config()
+        result = {}
+        for name, cfg in config.items():
+            result[name] = {
+                "configured": True,
+                "connected": name in _mcp.connections,
+                "command": cfg.get("command", cfg.get("url", "?")),
+            }
+        return result
+    except Exception:
+        return {}
+
+
 def _trigger_reindex(filepath: str | None) -> None:
     """Re-index a single file after a write/edit/patch/diff tool call.
 
@@ -1069,6 +1151,29 @@ async def execute_tool(tool_name: str, agent_type: str | None = None, task_hints
     Returns:
         The tool's string output, or a descriptive error message.
     """
+    # ── Lazy MCP connection: connect on first use ──
+    if tool_name not in TOOL_REGISTRY and tool_name.startswith("mcp_"):
+        try:
+            from .mcp_client import mcp_client as _mcp, load_mcp_config
+            parts = tool_name.split("_", 2)
+            if len(parts) >= 2:
+                server_name = parts[1]
+                if server_name not in _mcp.connections:
+                    config = load_mcp_config()
+                    if server_name in config:
+                        cfg = config[server_name]
+                        if "url" in cfg:
+                            await _mcp.connect_sse(server_name, cfg["url"])
+                        elif "command" in cfg:
+                            await _mcp.connect_stdio(
+                                server_name, cfg["command"],
+                                env=cfg.get("env"),
+                            )
+                        _mcp.register_all_tools()
+                        logger.info("MCP server connected on-demand", server=server_name)
+        except Exception as e:
+            logger.warning("MCP lazy connect failed", server=server_name, error=str(e)[:100])
+
     if tool_name not in TOOL_REGISTRY:
         available = ", ".join(sorted(TOOL_REGISTRY.keys()))
         return f"❌ Unknown tool: '{tool_name}'. Available: {available}"

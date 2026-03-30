@@ -67,6 +67,16 @@ API_REGISTRY: list[FreeAPI] = [
         example_endpoint="https://open.er-api.com/v6/latest/USD",
     ),
     FreeAPI(
+        name="TCMB EVDS",
+        category="currency",
+        base_url="https://evds2.tcmb.gov.tr",
+        auth_type="apikey_param",
+        env_var="TCMB_EVDS_API_KEY",
+        rate_limit="unlimited",
+        description="Turkish Central Bank official exchange rates and economic data. Free API key from TCMB.",
+        example_endpoint="https://evds2.tcmb.gov.tr/service/evds/series=TP.DK.USD.A-TP.DK.EUR.A&startDate=01-01-2026&endDate=31-12-2026&type=json&key={key}",
+    ),
+    FreeAPI(
         name="Frankfurter",
         category="currency",
         base_url="https://api.frankfurter.dev",

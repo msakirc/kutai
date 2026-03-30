@@ -123,6 +123,9 @@ async def find_relevant_skills(task_text: str, limit: int = 3) -> list[dict]:
             )
             # Look up full skill data from DB for vector matches
             for r in results:
+                # Filter out distant matches (distance > 0.7)
+                if r.get("distance", 1.0) > 0.7:
+                    continue
                 meta = r.get("metadata", {})
                 skill_name = meta.get("skill_name", "")
                 if not skill_name:

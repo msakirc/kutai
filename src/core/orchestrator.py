@@ -1629,19 +1629,41 @@ class Orchestrator:
                 agent_type = task.get("agent_type", "executor")
                 title = task.get("title", "")
                 desc = task.get("description", "")[:200]
-                words = [w for w in title.lower().split() if len(w) > 3 and w.isalpha()]
-                if len(words) >= 2:
-                    trigger = "|".join(words[:5])
-                    skill_name = f"auto:{agent_type}:{title[:40]}"
-                    await add_skill(
-                        name=skill_name,
-                        description=f"Learned from task #{task_id}: {title}",
-                        trigger_pattern=trigger,
-                        tool_sequence=f"agent={agent_type}, iterations={iterations}, model={model}",
-                        examples=desc,
-                    )
-                    # Record success so find_relevant_skills can discover it
-                    await record_skill_outcome(skill_name, success=True)
+
+                # Better trigger: use classifier metadata
+                classification = task_ctx.get("classification", {}) if isinstance(task_ctx, dict) else {}
+                search_depth = classification.get("search_depth", "none")
+                sub_intent = classification.get("shopping_sub_intent", "")
+
+                # Build structured trigger
+                trigger_parts = [agent_type]
+                if search_depth != "none":
+                    trigger_parts.append(f"search:{search_depth}")
+                if sub_intent:
+                    trigger_parts.append(f"shop:{sub_intent}")
+                # Also keep keyword extraction but handle non-alpha words
+                words = [w.lower().strip(".,!?") for w in title.split() if len(w) >= 3]
+                trigger_parts.extend(sorted(set(words))[:5])
+                trigger = "|".join(trigger_parts)
+
+                # Extract tool/approach info
+                try:
+                    tools_info = f"agent={agent_type}, search_depth={search_depth}"
+                    if sub_intent:
+                        tools_info += f", shopping_intent={sub_intent}"
+                except Exception:
+                    tools_info = f"agent={agent_type}"
+
+                skill_name = f"auto:{agent_type}:{title[:40]}"
+                await add_skill(
+                    name=skill_name,
+                    description=f"Learned from task #{task_id}: {title}",
+                    trigger_pattern=trigger,
+                    tool_sequence=f"{tools_info}, iterations={iterations}, model={model}",
+                    examples=desc,
+                )
+                # Record success so find_relevant_skills can discover it
+                await record_skill_outcome(skill_name, success=True)
             except Exception:
                 pass
 

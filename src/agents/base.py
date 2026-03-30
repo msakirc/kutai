@@ -1273,18 +1273,19 @@ class BaseAgent:
             # ── SEARCH-REQUIRED GUARD ──
             # The classifier already decided this task needs web search
             # (search_depth != "none"). If the LLM jumps to final_answer
-            # without calling web_search, reject and force a search.
+            # without calling any data-fetching tool, reject and force a search.
+            _DATA_FETCH_TOOLS = {"web_search", "api_call", "api_lookup", "http_request", "shopping_search"}
             _has_web_search = (
                 self.allowed_tools is None
                 or "web_search" in (self.allowed_tools or [])
             )
             _search_depth = self._get_search_depth(task)
-            _search_used = "web_search" in tools_used_names
+            _data_fetched = bool(tools_used_names & _DATA_FETCH_TOOLS)
             if (
                 action_type == "final_answer"
                 and _has_web_search
                 and _search_depth in ("quick", "standard", "deep")
-                and not _search_used
+                and not _data_fetched
                 and iteration < 3
             ):
                 task_title = task.get("title", "")
@@ -1300,8 +1301,8 @@ class BaseAgent:
                         "answered without searching. Your answer may contain "
                         "fabricated information.\n\n"
                         f"Task: {task_title}\n\n"
-                        "You MUST call web_search first to get real, "
-                        "up-to-date information. Example:\n"
+                        "You MUST call web_search or api_call first to get "
+                        "real, up-to-date information. Example:\n"
                         "```json\n"
                         '{"action": "tool_call", "tool": "web_search", '
                         '"args": {"query": "your search query here"}}\n'
@@ -1311,7 +1312,7 @@ class BaseAgent:
                 })
                 await self._safe_log(
                     task_id, "system",
-                    f"[search_guard] Rejected final_answer without web_search "
+                    f"[search_guard] Rejected final_answer without data-fetching tool "
                     f"(depth={_search_depth})",
                     None, 0,
                 )

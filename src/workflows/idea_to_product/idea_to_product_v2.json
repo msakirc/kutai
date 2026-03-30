@@ -473,7 +473,9 @@
       "depends_on": [],
       "may_need_clarification": false,
       "input_artifacts": [
-        "raw_idea"
+        "raw_idea",
+        "project_conventions",
+        "strategic_context"
       ],
       "output_artifacts": [
         "raw_idea_document"
@@ -924,7 +926,8 @@
         "competitor_sentiment_analysis",
         "market_gap_analysis",
         "technology_trends",
-        "regulatory_requirements"
+        "regulatory_requirements",
+        "indirect_competitors_list"
       ],
       "output_artifacts": [
         "research_summary"
@@ -4045,7 +4048,11 @@
       "input_artifacts": [
         "sprint_plans",
         "work_breakdown",
-        "dependency_graph"
+        "dependency_graph",
+        "backend_scaffold",
+        "frontend_scaffold",
+        "ci_config",
+        "docker_compose_config"
       ],
       "output_artifacts": [
         "implementation_backlog"
@@ -4532,7 +4539,12 @@
       "input_artifacts": [
         "performance_optimizations",
         "cross_platform_fixes",
-        "a11y_fixes_applied"
+        "a11y_fixes_applied",
+        "critical_path_tests",
+        "negative_tests",
+        "boundary_tests",
+        "concurrency_tests",
+        "integrity_tests"
       ],
       "output_artifacts": [
         "regression_results"
@@ -4853,7 +4865,19 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "owasp_audit_result"
+        "owasp_audit_result",
+        "injection_test_result",
+        "xss_test_result",
+        "csrf_test_result",
+        "auth_security_result",
+        "authz_test_result",
+        "api_security_result",
+        "dependency_scan_result",
+        "security_headers_audit_result",
+        "encryption_verification_result",
+        "secrets_audit_result",
+        "logging_security_result",
+        "file_upload_security_result"
       ],
       "output_artifacts": [
         "security_fixes_applied"
@@ -6052,7 +6076,8 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "launch_go_no_go"
+        "launch_go_no_go",
+        "bug_report"
       ],
       "output_artifacts": [
         "launch_checklist"

@@ -125,6 +125,70 @@ SEED_SKILLS = [
         "tool_sequence": "1. play_store action=search to find competing apps. 2. play_store action=similar for direct competitors. 3. github action=repos for open source alternatives. 4. web_search for market size and trends.",
         "examples": "find competitors for a review platform app; analyze the todo app market; open source alternatives to Notion",
     },
+    # --- Pharmacy on Duty ---
+    {
+        "name": "pharmacy_on_duty",
+        "description": "For finding pharmacies on duty (nöbetçi eczane) in Turkey, use api_call with Nosyapi Pharmacy.",
+        "trigger_pattern": "eczane|pharmacy|nöbetçi|nobetci|on.duty|ilaç|medicine",
+        "tool_sequence": "tool=api_call, api_name=Nosyapi Pharmacy. Requires NOSYAPI_KEY. Query by city and district.",
+        "examples": "nöbetçi eczane kadıköy; pharmacy on duty istanbul; en yakın açık eczane",
+    },
+    # --- Earthquake ---
+    {
+        "name": "earthquake_data",
+        "description": "For earthquake data in Turkey, use api_call with Kandilli Observatory. Real-time seismic data.",
+        "trigger_pattern": "deprem|earthquake|sarsıntı|kandilli|seismic|zelzele",
+        "tool_sequence": "tool=api_call, api_name=Kandilli Observatory. Returns live earthquake list with magnitude, location, depth.",
+        "examples": "son depremler; earthquake in Turkey today; was there an earthquake",
+    },
+    # --- Gas Prices ---
+    {
+        "name": "fuel_price_routing",
+        "description": "For fuel/gas prices in Turkey, use api_call with Turkey Fuel Prices.",
+        "trigger_pattern": "benzin|mazot|diesel|lpg|yakıt|fuel|gas.price|akaryakıt|petrol",
+        "tool_sequence": "tool=api_call, api_name=Turkey Fuel Prices. Requires COLLECTAPI_KEY.",
+        "examples": "benzin fiyatı; mazot ne kadar; LPG fiyat istanbul",
+    },
+    # --- Gold Prices ---
+    {
+        "name": "gold_price_routing",
+        "description": "For gold prices in Turkey (gram altın, çeyrek, yarım, tam), use api_call with Gold Price Turkey.",
+        "trigger_pattern": "altın|gold|çeyrek|gram.altın|yarım.altın|tam.altın|cumhuriyet.altını",
+        "tool_sequence": "tool=api_call, api_name=Gold Price Turkey. Requires COLLECTAPI_KEY.",
+        "examples": "altın fiyatı; gram altın ne kadar; çeyrek altın fiyat",
+    },
+    # --- Map/Directions ---
+    {
+        "name": "map_directions_routing",
+        "description": "For directions, distance, and routing between locations, use api_call with OSRM or Nominatim for geocoding. Privacy-safe (no Google).",
+        "trigger_pattern": "yol.tarifi|directions|route|distance|mesafe|nasıl.gidilir|how.to.get|harita|map",
+        "tool_sequence": "1. Geocode addresses with api_call api_name=Nominatim. 2. Get route with api_call api_name=OSRM. Both are free, no API key, privacy-safe.",
+        "examples": "Kadıköy'den Taksim'e nasıl gidilir; distance from Ankara to Istanbul; walking route to nearest pharmacy",
+    },
+    # --- Prayer Times ---
+    {
+        "name": "prayer_times_routing",
+        "description": "For prayer/namaz times in Turkey, use api_call with Diyanet Prayer Times.",
+        "trigger_pattern": "namaz|ezan|prayer|imsak|iftar|sahur|akşam.ezanı|öğle.namazı",
+        "tool_sequence": "tool=api_call, api_name=Diyanet Prayer Times. Query by district code.",
+        "examples": "namaz vakitleri istanbul; ezan ne zaman; iftar saati",
+    },
+    # --- Travel/Tickets ---
+    {
+        "name": "travel_ticket_routing",
+        "description": "For flight and bus ticket prices in Turkey, check EnUygun MCP or use web_search targeting enuygun.com, obilet.com.",
+        "trigger_pattern": "uçak|flight|bilet|ticket|otobüs|bus|enuygun|obilet|seyahat|travel",
+        "tool_sequence": "First try: web_search targeting enuygun.com or obilet.com. EnUygun also has an MCP endpoint at mcp.enuygun.com.",
+        "examples": "istanbul ankara uçak bileti; en ucuz otobüs bileti; flight prices to Antalya",
+    },
+    # --- Turkish Holidays ---
+    {
+        "name": "turkish_holidays_routing",
+        "description": "For Turkish public holidays and calendar, use api_call with Turkey Holidays.",
+        "trigger_pattern": "tatil|holiday|resmi.tatil|bayram|arife|ramazan|kurban",
+        "tool_sequence": "tool=api_call, api_name=Turkey Holidays. Returns official public holidays for any year.",
+        "examples": "2026 resmi tatiller; next public holiday in Turkey; bayram ne zaman",
+    },
 ]
 
 

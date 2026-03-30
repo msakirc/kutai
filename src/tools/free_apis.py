@@ -180,6 +180,114 @@ API_REGISTRY: list[FreeAPI] = [
         description="Programming and general jokes. No API key.",
         example_endpoint="https://v2.jokeapi.dev/joke/Any",
     ),
+
+    # --- Turkish Pharmacy on Duty ---
+    FreeAPI(
+        name="Nosyapi Pharmacy",
+        category="health",
+        base_url="https://nosyapi.com/apiv2",
+        auth_type="apikey_param",
+        env_var="NOSYAPI_KEY",
+        rate_limit="100/day free",
+        description="Turkey pharmacy on duty (nöbetçi eczane) by city/district. Free tier: 100 requests/day.",
+        example_endpoint="https://nosyapi.com/apiv2/pharmacyOnDuty?city=istanbul&district=kadikoy&apikey={key}",
+    ),
+
+    # --- Earthquake/Disaster ---
+    FreeAPI(
+        name="Kandilli Observatory",
+        category="earthquake",
+        base_url="https://api.orhanaydogdu.com.tr",
+        auth_type="none",
+        env_var=None,
+        rate_limit="unlimited",
+        description="Turkey earthquake data from Kandilli Observatory (unofficial API wrapper). Real-time seismic data.",
+        example_endpoint="https://api.orhanaydogdu.com.tr/deprem/kandilli/live",
+    ),
+
+    # --- Gas/Fuel Prices ---
+    FreeAPI(
+        name="Turkey Fuel Prices",
+        category="fuel",
+        base_url="https://api.collectapi.com/gasPrice",
+        auth_type="apikey_header",
+        env_var="COLLECTAPI_KEY",
+        rate_limit="free tier available",
+        description="Turkey fuel/gas prices by city and fuel type. CollectAPI free tier.",
+        example_endpoint="https://api.collectapi.com/gasPrice/allUsa498",
+    ),
+
+    # --- Prayer Times ---
+    FreeAPI(
+        name="Diyanet Prayer Times",
+        category="religion",
+        base_url="https://ezanvakti.herokuapp.com",
+        auth_type="none",
+        env_var=None,
+        rate_limit="unlimited",
+        description="Turkey prayer times (namaz vakitleri) by city/district. Unofficial Diyanet API.",
+        example_endpoint="https://ezanvakti.herokuapp.com/vakitler?ilce=9541",
+    ),
+
+    # --- Turkish Holidays ---
+    FreeAPI(
+        name="Turkey Holidays",
+        category="calendar",
+        base_url="https://date.nager.at/api/v3",
+        auth_type="none",
+        env_var=None,
+        rate_limit="unlimited",
+        description="Public holidays for Turkey (and 100+ countries). No API key needed.",
+        example_endpoint="https://date.nager.at/api/v3/PublicHolidays/2026/TR",
+    ),
+
+    # --- Gold Prices ---
+    FreeAPI(
+        name="Gold Price Turkey",
+        category="currency",
+        base_url="https://api.collectapi.com/economy",
+        auth_type="apikey_header",
+        env_var="COLLECTAPI_KEY",
+        rate_limit="free tier available",
+        description="Live gold prices in Turkey (gram altın, çeyrek altın, etc.). CollectAPI.",
+        example_endpoint="https://api.collectapi.com/economy/goldPrice",
+    ),
+
+    # --- BIST Stock Market ---
+    FreeAPI(
+        name="BIST Stock Data",
+        category="finance",
+        base_url="https://api.collectapi.com/economy",
+        auth_type="apikey_header",
+        env_var="COLLECTAPI_KEY",
+        rate_limit="free tier available",
+        description="BIST (Borsa Istanbul) stock data. CollectAPI.",
+        example_endpoint="https://api.collectapi.com/economy/hpiIndex",
+    ),
+
+    # --- Routing/Directions ---
+    FreeAPI(
+        name="OSRM",
+        category="geo",
+        base_url="https://router.project-osrm.org",
+        auth_type="none",
+        env_var=None,
+        rate_limit="unlimited (public demo server)",
+        description="Open Source Routing Machine — driving/walking directions and distance. No API key. Privacy-safe (OpenStreetMap data).",
+        example_endpoint="https://router.project-osrm.org/route/v1/driving/28.9784,41.0082;29.0291,41.0082?overview=false",
+    ),
+
+    # --- Travel/Tickets ---
+    FreeAPI(
+        name="EnUygun Travel",
+        category="travel",
+        base_url="https://mcp.enuygun.com",
+        auth_type="none",
+        env_var=None,
+        rate_limit="unknown",
+        description="EnUygun flight and bus ticket search (MCP endpoint). Turkish travel aggregator.",
+        example_endpoint="https://mcp.enuygun.com/mcp",
+    ),
 ]
 
 
@@ -471,13 +579,70 @@ def _parse_free_apis_json(data: list) -> list[dict]:
     return apis
 
 
+async def _discover_from_mcp_registry() -> int:
+    """Discover APIs from the MCP server registry."""
+    count = 0
+    # Fetch from the official MCP registry GitHub
+    url = "https://raw.githubusercontent.com/modelcontextprotocol/servers/main/README.md"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status != 200:
+                    return 0
+                text = await resp.text()
+
+        # Parse MCP server entries from the markdown
+        # Format: "- **Name** - Description [Link](url)"
+        for match in re.finditer(r'\*\*([^*]+)\*\*\s*[-–]\s*([^\[]+)\[.*?\]\(([^)]+)\)', text):
+            name = match.group(1).strip()
+            description = match.group(2).strip()
+            entry_url = match.group(3).strip()
+
+            if not name or not description:
+                continue
+
+            # Categorize based on keywords in description
+            # Order matters: more specific categories checked first
+            desc_lower = description.lower()
+            category = "other"
+            if any(w in desc_lower for w in ["database", "sql", "postgres"]):
+                category = "database"
+            elif any(w in desc_lower for w in ["git", "github"]):
+                category = "development"
+            elif any(w in desc_lower for w in ["file", "storage", "drive"]):
+                category = "storage"
+            elif any(w in desc_lower for w in ["weather", "climate"]):
+                category = "weather"
+            elif any(w in desc_lower for w in ["search", "web", "browser"]):
+                category = "search"
+
+            from src.infra.db import upsert_free_api
+            await upsert_free_api({
+                "name": f"MCP: {name}",
+                "category": category,
+                "base_url": entry_url,
+                "auth_type": "mcp",
+                "description": description[:200],
+                "example_endpoint": entry_url,
+                "source": "mcp_registry",
+                "verified": 0,
+            })
+            count += 1
+
+    except Exception as e:
+        logger.debug(f"MCP registry discovery failed: {e}")
+
+    return count
+
+
 async def discover_new_apis(source: str = "all") -> int:
     """Discover new free APIs from external registries.
 
     Sources:
     - "public-apis": GitHub public-apis README
     - "free-apis": free-apis.github.io JSON
-    - "all": both
+    - "mcp": MCP server registry
+    - "all": all sources
 
     Returns the number of newly discovered APIs.
     """
@@ -523,6 +688,10 @@ async def discover_new_apis(source: str = "all") -> int:
                         logger.debug("free-apis.github.io fetch returned HTTP %d", resp.status)
             except Exception as e:
                 logger.debug("free-apis.github.io discovery failed: %s", e)
+
+    # Source 3: MCP server registry
+    if source in ("all", "mcp"):
+        discovered += await _discover_from_mcp_registry()
 
     # Refresh the in-memory cache
     await refresh_db_cache()

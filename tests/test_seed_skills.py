@@ -49,12 +49,12 @@ class TestSeedSkills(unittest.TestCase):
         except OSError:
             pass
 
-    def test_01_seed_adds_all_15_skills(self):
-        """First seed should add all 15 skills."""
+    def test_01_seed_adds_all_skills(self):
+        """First seed should add all skills."""
         from src.memory.seed_skills import seed_skills, SEED_SKILLS
         added = run_async(seed_skills())
         self.assertEqual(added, len(SEED_SKILLS))
-        self.assertEqual(added, 15)
+        self.assertEqual(added, 23)
 
     def test_02_seed_is_idempotent(self):
         """Second seed should add 0 new skills."""
@@ -63,10 +63,10 @@ class TestSeedSkills(unittest.TestCase):
         self.assertEqual(added, 0)
 
     def test_03_list_skills_returns_all(self):
-        """list_skills should return all 15 seeded skills."""
+        """list_skills should return all 23 seeded skills."""
         from src.memory.skills import list_skills
         skills = run_async(list_skills())
-        self.assertEqual(len(skills), 15)
+        self.assertEqual(len(skills), 23)
 
     def test_currency_query_matches_currency_skill(self):
         """'dolar kuru' should match currency_api_routing via regex."""

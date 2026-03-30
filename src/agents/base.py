@@ -480,6 +480,14 @@ class BaseAgent:
             skills_block = format_skills_for_prompt(relevant_skills)
             if skills_block:
                 parts.append(skills_block)
+            # Store injected skill names for feedback tracking
+            if relevant_skills:
+                try:
+                    _ctx = json.loads(task.get("context", "{}"))
+                    _ctx["injected_skills"] = [s["name"] for s in relevant_skills]
+                    task["context"] = json.dumps(_ctx)
+                except Exception:
+                    pass
         except Exception as exc:
             logger.debug(f"Skill library injection failed (non-critical): {exc}")
 

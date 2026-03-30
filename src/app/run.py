@@ -319,6 +319,15 @@ async def main():
             pass
         sys.exit(1)
 
+    # Seed routing skills (idempotent — only adds new ones)
+    try:
+        from src.memory.seed_skills import seed_skills
+        added = await seed_skills()
+        if added:
+            _log.info(f"Seeded {added} new routing skills")
+    except Exception as e:
+        _log.warning(f"Skill seeding failed (non-critical): {e}")
+
     _log.info("Starting orchestrator")
 
     import signal

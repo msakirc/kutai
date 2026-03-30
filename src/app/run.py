@@ -185,12 +185,46 @@ async def startup_health_check() -> bool:
             runtime_state["sandbox_available"] = False
             return False, str(e)
 
+    async def _check_deps():
+        """Verify critical Python dependencies are importable."""
+        missing = []
+        critical_deps = [
+            ("trafilatura", "content extraction (deep search)"),
+            ("bm25s", "relevance scoring (deep search)"),
+            ("ddgs", "DuckDuckGo search"),
+            ("aiohttp", "async HTTP"),
+            ("bs4", "HTML parsing"),
+            ("lxml", "fast HTML parser"),
+        ]
+        optional_deps = [
+            ("curl_cffi", "TLS fingerprint scraping"),
+            ("scrapling", "stealth/browser scraping"),
+        ]
+        for mod, purpose in critical_deps:
+            try:
+                __import__(mod)
+            except ImportError:
+                missing.append(f"{mod} ({purpose})")
+        if missing:
+            return False, f"MISSING critical: {', '.join(missing)}"
+        # Check optional deps — just log, don't degrade
+        opt_missing = []
+        for mod, purpose in optional_deps:
+            try:
+                __import__(mod)
+            except ImportError:
+                opt_missing.append(f"{mod} ({purpose})")
+        if opt_missing:
+            return True, f"OK (optional missing: {', '.join(opt_missing)})"
+        return True, "all dependencies available"
+
     await asyncio.gather(
         _async_check("ntfy", _ntfy, "ntfy_available"),
         _async_check("telegram", _telegram, "telegram_available"),
         _async_check("perplexica", _perplexica, "web_search_available"),
         _async_check("frontail", _frontail, "frontail_available"),
         _async_check("docker_sandbox", _docker_check),
+        _async_check("python_deps", _check_deps),
     )
 
     # Report summary

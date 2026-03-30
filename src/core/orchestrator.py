@@ -905,15 +905,44 @@ class Orchestrator:
 
     async def _start_todo_suggestions(self):
         """Create one suggestion task per pending todo item."""
-        from src.infra.db import get_todos, add_task
+        from src.infra.db import get_todos, add_task, get_db
         todos = await get_todos(status="pending")
         if not todos:
+            return
+
+        # Skip todos that already had a failed/cancelled suggestion attempt
+        # in the last 4 hours — prevents infinite retry loops.
+        db = await get_db()
+        recently_attempted: set[int] = set()
+        for todo in todos:
+            cursor = await db.execute(
+                """SELECT id FROM tasks
+                   WHERE title = ?
+                     AND status IN ('failed', 'cancelled')
+                     AND created_at > strftime('%Y-%m-%d %H:%M:%S',
+                                               datetime('now', '-4 hours'))
+                   LIMIT 1""",
+                (f"Suggest action for: {todo['title'][:50]}",),
+            )
+            if await cursor.fetchone():
+                recently_attempted.add(todo["id"])
+
+        eligible = [t for t in todos if t["id"] not in recently_attempted]
+        if not eligible and todos:
+            # All todos had recent failed attempts — just send reminder
+            logger.info(
+                f"[Todo] All {len(todos)} todos had recent failed suggestion "
+                f"attempts, sending reminder without suggestions"
+            )
+            from src.app.reminders import send_todo_reminder
+            if self.telegram:
+                await send_todo_reminder(self.telegram)
             return
 
         batch_id = f"todo_suggest_{int(datetime.now(timezone.utc).timestamp())}"
         task_ids = []
 
-        for todo in todos:
+        for todo in eligible:
             task_id = await add_task(
                 title=f"Suggest action for: {todo['title'][:50]}",
                 description=(

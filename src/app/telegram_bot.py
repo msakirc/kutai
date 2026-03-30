@@ -154,7 +154,7 @@ REPLY_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("🛒 Shop"), KeyboardButton("📝 Todo"), KeyboardButton("🎯 Mission")],
         [KeyboardButton("📋 Todos"), KeyboardButton("📊 Status"), KeyboardButton("🔍 Missions")],
-        [KeyboardButton("💰 Price"), KeyboardButton("⚖️ Compare"), KeyboardButton("📂 Menu")],
+        [KeyboardButton("💰 Price"), KeyboardButton("⚖️ Compare"), KeyboardButton("⚡ Quick")],
     ],
     resize_keyboard=True,
     one_time_keyboard=False,
@@ -171,7 +171,7 @@ _REPLY_BUTTON_MAP = {
     "🔍 Missions": "missions",
     "💰 Price": "price",
     "⚖️ Compare": "compare",
-    "📂 Menu": "start",
+    "⚡ Quick": "quick",
 }
 
 
@@ -335,6 +335,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("mystuff", self.cmd_mystuff))
         self.app.add_handler(CommandHandler("compare", self.cmd_compare))
         self.app.add_handler(CommandHandler("result", self.cmd_result))
+        self.app.add_handler(CommandHandler("skillstats", self.cmd_skillstats))
         # Wrapper control commands
         self.app.add_handler(CommandHandler("kutai_restart", self.cmd_kutai_restart))
         self.app.add_handler(CommandHandler("restart", self.cmd_kutai_restart))
@@ -1013,6 +1014,54 @@ class TelegramInterface:
         await self._reply(update,
             "\n".join(lines), parse_mode="Markdown"
         )
+
+    async def cmd_skillstats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show skill injection A/B metrics."""
+        from src.infra.db import get_skill_metrics_summary
+
+        summary = await get_skill_metrics_summary()
+        overall = summary.get("overall", {})
+        per_skill = summary.get("per_skill", [])
+
+        lines = ["*Skill Injection Metrics*\n"]
+
+        # Overall comparison
+        with_skills = overall.get("with_skills", {})
+        baseline = overall.get("baseline", {})
+
+        if with_skills or baseline:
+            lines.append("*A/B Comparison:*")
+            if with_skills:
+                lines.append(
+                    f"  With skills: {with_skills['success_rate']}% success "
+                    f"({with_skills['successes']}/{with_skills['total']}), "
+                    f"avg {with_skills['avg_iterations']} iter, "
+                    f"{with_skills['avg_duration']:.0f}s"
+                )
+            if baseline:
+                lines.append(
+                    f"  No skills: {baseline['success_rate']}% success "
+                    f"({baseline['successes']}/{baseline['total']}), "
+                    f"avg {baseline['avg_iterations']} iter, "
+                    f"{baseline['avg_duration']:.0f}s"
+                )
+
+            # Calculate lift
+            if with_skills and baseline and baseline.get("success_rate", 0) > 0:
+                lift = with_skills["success_rate"] - baseline["success_rate"]
+                indicator = "+" if lift > 0 else ""
+                lines.append(f"  Lift: {indicator}{lift:.1f}%")
+            lines.append("")
+        else:
+            lines.append("No data yet. Skills will be tracked as tasks complete.\n")
+
+        # Per-skill breakdown
+        if per_skill:
+            lines.append("*Top Skills:*")
+            for s in per_skill[:10]:
+                lines.append(f"  {s['name']}: {s['success_rate']}% ({s['successes']}/{s['total']})")
+
+        await self._reply(update, "\n".join(lines), parse_mode="Markdown")
 
     async def cmd_workspace(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show active mission workspaces."""
@@ -3072,6 +3121,19 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([buttons]),
             )
+            # Send prefilled reply keyboard so user can tap suggestion to accept
+            if suggestion:
+                truncated = suggestion[:60] if len(suggestion) > 60 else suggestion
+                prefill_kb = ReplyKeyboardMarkup(
+                    [[KeyboardButton(f"✅ {truncated}")],
+                     [KeyboardButton("❌ Cancel")]],
+                    resize_keyboard=True,
+                    one_time_keyboard=True,
+                )
+                await query.message.reply_text(
+                    "Or tap a button below:",
+                    reply_markup=prefill_kb,
+                )
             return
 
         if data == "todo_help_cancel":
@@ -3372,7 +3434,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         """Extract the 💡 suggestion line for a given todo from the reminder message."""
         if not message_text:
             return None
-        marker = f"*#{todo_id}*"
+        marker = f"#{todo_id}"
         lines = message_text.split("\n")
         for i, line in enumerate(lines):
             if marker in line and i + 1 < len(lines):
@@ -3392,9 +3454,15 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         todo_id = todo_info["todo_id"]
         todo_title = todo_info["todo_title"]
         suggestion = todo_info.get("suggestion", "")
-        # User typed a custom request — use it, but include suggestion as context
-        description = text
-        if suggestion and text.lower().strip() in ("yes", "ok", "do it", "evet", "tamam"):
+        # Handle prefilled keyboard taps and text responses
+        stripped = text.strip()
+        if stripped == "❌ Cancel":
+            await self._reply(update, "(cancelled)")
+            return
+        # Accept via prefilled keyboard button (starts with ✅)
+        if stripped.startswith("✅") and suggestion:
+            description = suggestion
+        elif suggestion and stripped.lower() in ("yes", "ok", "do it", "evet", "tamam"):
             description = suggestion
         elif suggestion:
             description = f"User request: {text}\nOriginal suggestion: {suggestion}"

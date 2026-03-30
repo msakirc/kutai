@@ -332,6 +332,15 @@ async def init_db():
         )
     """)
 
+    # User preferences (key-value store for location, display settings, etc.)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS user_preferences (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     # Free API registry (auto-growth)
     await db.execute("""
         CREATE TABLE IF NOT EXISTS free_api_registry (
@@ -347,6 +356,21 @@ async def init_db():
             verified INTEGER DEFAULT 0,
             last_checked TIMESTAMP,
             added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Skill injection A/B metrics
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS skill_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL,
+            skill_name TEXT NOT NULL,
+            injected INTEGER DEFAULT 1,
+            task_succeeded INTEGER DEFAULT 0,
+            iterations_used INTEGER DEFAULT 0,
+            agent_type TEXT DEFAULT '',
+            task_duration_seconds REAL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -488,6 +512,7 @@ async def init_db():
         ("idx_web_source_quality_domain", "web_source_quality", "domain"),
         ("idx_free_api_registry_category", "free_api_registry", "category"),
         ("idx_free_api_registry_source", "free_api_registry", "source"),
+        ("idx_skill_metrics_skill", "skill_metrics", "skill_name"),
     ]
     for idx_name, table, columns_str in _indexes:
         try:
@@ -2230,3 +2255,121 @@ async def get_free_apis_by_category(category: str) -> list[dict]:
     except Exception as e:
         logger.debug("get_free_apis_by_category failed: %s", e)
         return []
+
+
+# ─── User Preferences ──────────────────────────────────────────────────────
+
+async def get_user_pref(key: str, default: str = "") -> str:
+    """Get a user preference value."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT value FROM user_preferences WHERE key = ?", (key,)
+    )
+    row = await cursor.fetchone()
+    return row["value"] if row else default
+
+
+async def set_user_pref(key: str, value: str) -> None:
+    """Set a user preference value."""
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO user_preferences (key, value, updated_at) VALUES (?, ?, strftime('%Y-%m-%d %H:%M:%S', 'now')) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        (key, value),
+    )
+    await db.commit()
+
+
+async def get_all_user_prefs() -> dict:
+    """Get all user preferences as a dict."""
+    db = await get_db()
+    cursor = await db.execute("SELECT key, value FROM user_preferences")
+    rows = await cursor.fetchall()
+    return {row["key"]: row["value"] for row in rows}
+
+
+# ─── Skill Injection A/B Metrics ────────────────────────────────────────────
+
+
+async def record_skill_metric(task_id: int, skill_name: str, succeeded: bool,
+                               iterations: int = 0, agent_type: str = "",
+                               duration: float = 0.0) -> None:
+    """Record a skill injection outcome for A/B analysis."""
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO skill_metrics (task_id, skill_name, task_succeeded,
+           iterations_used, agent_type, task_duration_seconds)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (task_id, skill_name, 1 if succeeded else 0, iterations, agent_type, duration),
+    )
+    await db.commit()
+
+
+async def record_no_skill_metric(task_id: int, succeeded: bool,
+                                  iterations: int = 0, agent_type: str = "",
+                                  duration: float = 0.0) -> None:
+    """Record a task that ran WITHOUT skill injection (baseline)."""
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO skill_metrics (task_id, skill_name, injected, task_succeeded,
+           iterations_used, agent_type, task_duration_seconds)
+           VALUES (?, '_baseline_', 0, ?, ?, ?, ?)""",
+        (task_id, 1 if succeeded else 0, iterations, agent_type, duration),
+    )
+    await db.commit()
+
+
+async def get_skill_metrics_summary() -> dict:
+    """Get A/B comparison: tasks with skills vs without."""
+    db = await get_db()
+
+    # Overall: with skills vs baseline
+    cursor = await db.execute("""
+        SELECT
+            injected,
+            COUNT(*) as total,
+            SUM(task_succeeded) as successes,
+            AVG(iterations_used) as avg_iterations,
+            AVG(task_duration_seconds) as avg_duration
+        FROM skill_metrics
+        GROUP BY injected
+    """)
+    overall = {}
+    for row in await cursor.fetchall():
+        key = "with_skills" if row["injected"] else "baseline"
+        total = row["total"]
+        successes = row["successes"] or 0
+        overall[key] = {
+            "total": total,
+            "successes": successes,
+            "success_rate": round(successes / total * 100, 1) if total > 0 else 0,
+            "avg_iterations": round(row["avg_iterations"] or 0, 1),
+            "avg_duration": round(row["avg_duration"] or 0, 1),
+        }
+
+    # Per-skill breakdown
+    cursor2 = await db.execute("""
+        SELECT
+            skill_name,
+            COUNT(*) as total,
+            SUM(task_succeeded) as successes,
+            AVG(iterations_used) as avg_iterations
+        FROM skill_metrics
+        WHERE injected = 1
+        GROUP BY skill_name
+        ORDER BY total DESC
+        LIMIT 20
+    """)
+    per_skill = []
+    for row in await cursor2.fetchall():
+        total = row["total"]
+        successes = row["successes"] or 0
+        per_skill.append({
+            "name": row["skill_name"],
+            "total": total,
+            "successes": successes,
+            "success_rate": round(successes / total * 100, 1) if total > 0 else 0,
+            "avg_iterations": round(row["avg_iterations"] or 0, 1),
+        })
+
+    return {"overall": overall, "per_skill": per_skill}

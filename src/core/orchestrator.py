@@ -1525,6 +1525,36 @@ class Orchestrator:
                 except Exception:
                     pass
 
+                # Track skill A/B metrics for failed tasks
+                try:
+                    injected_skills = task_ctx.get("injected_skills", [])
+                    agent_type = task.get("agent_type", "")
+                    started = task.get("started_at", "")
+                    duration = 0.0
+                    if started:
+                        try:
+                            t1 = datetime.strptime(started.replace("T", " ")[:19], "%Y-%m-%d %H:%M:%S")
+                            t2 = datetime.now()
+                            duration = (t2 - t1).total_seconds()
+                        except Exception:
+                            pass
+                    from src.infra.db import record_skill_metric, record_no_skill_metric
+                    if injected_skills:
+                        for skill_name in injected_skills:
+                            await record_skill_metric(
+                                task_id=task_id, skill_name=skill_name,
+                                succeeded=False, iterations=retry_count,
+                                agent_type=agent_type, duration=duration,
+                            )
+                    else:
+                        await record_no_skill_metric(
+                            task_id=task_id, succeeded=False,
+                            iterations=retry_count, agent_type=agent_type,
+                            duration=duration,
+                        )
+                except Exception:
+                    pass  # Non-critical
+
     # ─── Result Handlers ─────────────────────────────────────────────────
 
     async def _handle_complete(self, task, result):
@@ -1566,6 +1596,37 @@ class Orchestrator:
             injected_skills = task_ctx.get("injected_skills", [])
             for skill_name in injected_skills:
                 await record_skill_outcome(skill_name, success=True)
+        except Exception:
+            pass  # Non-critical
+
+        # Track skill A/B metrics
+        try:
+            injected_skills = task_ctx.get("injected_skills", [])
+            agent_type = task.get("agent_type", "")
+            started = task.get("started_at", "")
+            completed_at_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            duration = 0.0
+            if started:
+                try:
+                    t1 = datetime.strptime(started.replace("T", " ")[:19], "%Y-%m-%d %H:%M:%S")
+                    t2 = datetime.strptime(completed_at_str, "%Y-%m-%d %H:%M:%S")
+                    duration = (t2 - t1).total_seconds()
+                except Exception:
+                    pass
+            from src.infra.db import record_skill_metric, record_no_skill_metric
+            if injected_skills:
+                for skill_name in injected_skills:
+                    await record_skill_metric(
+                        task_id=task_id, skill_name=skill_name,
+                        succeeded=True, iterations=iterations,
+                        agent_type=agent_type, duration=duration,
+                    )
+            else:
+                await record_no_skill_metric(
+                    task_id=task_id, succeeded=True,
+                    iterations=iterations, agent_type=agent_type,
+                    duration=duration,
+                )
         except Exception:
             pass  # Non-critical
 

@@ -2618,6 +2618,14 @@ class Orchestrator:
                 except Exception as e:
                     logger.debug(f"Self-improvement check failed: {e}")
 
+                # Write heartbeat for wrapper liveness detection
+                try:
+                    import time as _hb_time
+                    with open("logs/orchestrator.heartbeat", "w") as _hb:
+                        _hb.write(str(_hb_time.time()))
+                except Exception:
+                    pass
+
             except Exception as e:
                 logger.error(f"Loop error: {e}", exc_info=True)
                 await asyncio.sleep(30)

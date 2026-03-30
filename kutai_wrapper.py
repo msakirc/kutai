@@ -312,11 +312,17 @@ class KutAIWrapper:
 
         run_script = str(Path(__file__).parent / "src" / "app" / "run.py")
         try:
+            import subprocess as _sp
+            _kwargs = {}
+            if sys.platform == "win32":
+                _kwargs["creationflags"] = _sp.CREATE_NEW_PROCESS_GROUP
+
             self.process = await asyncio.create_subprocess_exec(
                 venv_python, run_script,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(Path(__file__).parent),
+                **_kwargs,
             )
         except Exception as e:
             _wlog(f"ERROR: Failed to spawn subprocess: {e}")
@@ -330,6 +336,15 @@ class KutAIWrapper:
         # Pipe output to console and log file
         asyncio.create_task(self._pipe_output(self.process.stdout, "stdout"))
         asyncio.create_task(self._pipe_output(self.process.stderr, "stderr"))
+
+    def _is_orchestrator_hung(self, max_stale_seconds=120):
+        hb_path = os.path.join("logs", "orchestrator.heartbeat")
+        try:
+            with open(hb_path, "r") as f:
+                last_beat = float(f.read().strip())
+            return (time.time() - last_beat) > max_stale_seconds
+        except (FileNotFoundError, ValueError):
+            return False  # No file yet = still starting up
 
     async def stop_kutai(self, timeout: int = 30):
         """Send SIGINT and wait for graceful shutdown."""
@@ -351,6 +366,7 @@ class KutAIWrapper:
 
         Returns -1 if no process is running. When the process reference is
         stale (already exited), clears it to prevent spin-loops.
+        Uses a timeout loop with heartbeat checking to detect hung processes.
         """
         if not self.process:
             # No subprocess — caller should enter poll mode, not spin
@@ -363,11 +379,26 @@ class KutAIWrapper:
             self.running = False
             self.last_exit_code = code
             return code
-        code = await self.process.wait()
-        self.process = None
-        self.running = False
-        self.last_exit_code = code
-        return code
+
+        # Timeout loop with heartbeat check
+        while True:
+            try:
+                code = await asyncio.wait_for(self.process.wait(), timeout=30)
+                self.process = None
+                self.running = False
+                self.last_exit_code = code
+                return code
+            except asyncio.TimeoutError:
+                if self._is_orchestrator_hung():
+                    _wlog("Orchestrator heartbeat stale >120s — killing hung process")
+                    try:
+                        self.process.kill()
+                    except Exception:
+                        pass
+                    self.process = None
+                    self.running = False
+                    self.last_exit_code = -1
+                    return -1
 
     # ── Output Piping ─────────────────────────────────────────────────────
 

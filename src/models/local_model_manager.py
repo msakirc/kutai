@@ -257,7 +257,7 @@ class LocalModelManager:
         self._inference_idle.clear()
         return self._inference_generation
 
-    def mark_inference_end(self, generation: int | None = None) -> None:
+    def mark_inference_end(self, generation: int) -> None:
         """Mark that an inference request has finished.
 
         Args:
@@ -266,7 +266,7 @@ class LocalModelManager:
                         (a force-swap happened), the decrement is skipped
                         because the counter was already reset.
         """
-        if generation is not None and generation != self._inference_generation:
+        if generation != self._inference_generation:
             # This inference started before a force-swap — the counter was
             # already reset when the generation was bumped. Decrementing
             # would make the counter go negative (or undercount new inferences).

@@ -182,12 +182,7 @@ class GradeQueue:
         completed = 0
         for grade in to_process:
             try:
-                score = await self._execute_grade(
-                    grade, use_cloud=not (
-                        available_model
-                        and grade.generating_model != available_model
-                    ),
-                )
+                score = await self._execute_grade(grade)
                 if score is not None and grade.on_graded:
                     await grade.on_graded(score)
                 completed += 1
@@ -204,9 +199,8 @@ class GradeQueue:
     async def _execute_grade(
         self,
         grade: PendingGrade,
-        use_cloud: bool = False,
     ) -> float | None:
-        """Execute a single grade. Uses router's grade_response internally."""
+        """Execute a single grade via dispatcher's OVERHEAD routing."""
         from src.core.router import grade_response
         return await grade_response(
             task_title=grade.task_title,
@@ -697,9 +691,9 @@ class LLMDispatcher:
         try:
             from src.infra.backpressure import get_backpressure_queue
             bp = get_backpressure_queue()
-            if bp._queue:
+            if bp.depth > 0:
                 await bp.signal_capacity_available()
-                logger.info(f"signaled backpressure after swap | new_model={new_model} bp_depth={len(bp._queue)}")
+                logger.info(f"signaled backpressure after swap | new_model={new_model} bp_depth={bp.depth}")
         except Exception:
             pass
 

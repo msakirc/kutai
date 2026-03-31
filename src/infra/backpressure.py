@@ -310,6 +310,11 @@ class BackpressureQueue:
                 f"{signaled}/{len(self._queue)} calls advanced"
             )
 
+    @property
+    def depth(self) -> int:
+        """Current queue depth."""
+        return len(self._queue)
+
     def stop(self) -> None:
         self._running = False
 

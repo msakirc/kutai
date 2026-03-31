@@ -49,8 +49,8 @@ class TestInferenceGeneration(unittest.TestCase):
                 self._inference_idle.clear()
                 return self._inference_generation
 
-            def mark_inference_end(self, generation: int | None = None) -> None:
-                if generation is not None and generation != self._inference_generation:
+            def mark_inference_end(self, generation: int) -> None:
+                if generation != self._inference_generation:
                     return  # orphaned — skip decrement
                 self._active_inference_count = max(0, self._active_inference_count - 1)
                 if self._active_inference_count == 0:
@@ -129,15 +129,6 @@ class TestInferenceGeneration(unittest.TestCase):
         t.mark_inference_end(gen_new)
         self.assertEqual(t._active_inference_count, 0)
         self.assertTrue(t._inference_idle.is_set())
-
-    def test_backward_compat_no_generation(self):
-        """mark_inference_end(None) still works for backward compatibility."""
-        t = self._make_manager()
-        t.mark_inference_start()
-        self.assertEqual(t._active_inference_count, 1)
-
-        t.mark_inference_end(None)  # no generation
-        self.assertEqual(t._active_inference_count, 0)
 
     def test_double_force_swap(self):
         """Two consecutive force-swaps don't break the counter."""

@@ -111,7 +111,7 @@ class QuotaPlanner:
             import asyncio
             from ..infra.backpressure import get_backpressure_queue
             bp = get_backpressure_queue()
-            if bp._queue:
+            if bp.depth > 0:
                 asyncio.ensure_future(bp.signal_capacity_available())
         except Exception:
             pass  # Queue may not be initialized yet

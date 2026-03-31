@@ -14,9 +14,9 @@ from dataclasses import dataclass
 
 import aiohttp
 
-from src.infra.logging_config import get_logger
+import logging
 
-logger = get_logger("tools.free_apis")
+logger = logging.getLogger(__name__)
 
 
 @dataclass

@@ -21,14 +21,32 @@ Public API:
     await delete(ids, collection)
     await get_collection_count(collection)
 """
+import logging
 import os
 import time
-from typing import Optional
+from typing import Optional, Callable, Awaitable
 
-from src.infra.logging_config import get_logger
-from src.memory.embeddings import get_embedding, get_expected_dimension
+logger = logging.getLogger(__name__)
 
-logger = get_logger("memory.vector_store")
+# --- Injectable dependencies (default to src.memory.embeddings) -----------
+_embed_fn = None
+_dimension_fn = None
+
+
+def _get_embed_fn():
+    global _embed_fn
+    if _embed_fn is None:
+        from src.memory.embeddings import get_embedding
+        _embed_fn = get_embedding
+    return _embed_fn
+
+
+def _get_dimension_fn():
+    global _dimension_fn
+    if _dimension_fn is None:
+        from src.memory.embeddings import get_expected_dimension
+        _dimension_fn = get_expected_dimension
+    return _dimension_fn
 
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -56,17 +74,22 @@ _collections: dict = {}
 _initialized = False
 
 
-async def init_store(persist_dir: str | None = None) -> bool:
+async def init_store(persist_dir: str | None = None, embed_fn=None, dimension_fn=None) -> bool:
     """
     Initialize the ChromaDB client and create collections.
 
     ChromaDB is a required dependency. Raises ImportError if not installed.
     Returns True on success, False on other errors.
     """
-    global _client, _collections, _initialized
+    global _client, _collections, _initialized, _embed_fn, _dimension_fn
 
     if _initialized:
         return True
+
+    if embed_fn is not None:
+        _embed_fn = embed_fn
+    if dimension_fn is not None:
+        _dimension_fn = dimension_fn
 
     db_dir = persist_dir or _DB_DIR
 
@@ -84,7 +107,7 @@ async def init_store(persist_dir: str | None = None) -> bool:
             ),
         )
 
-        expected_dim = get_expected_dimension()
+        expected_dim = _get_dimension_fn()()
 
         # Create or get collections with dimension tracking
         for name in COLLECTIONS:
@@ -159,7 +182,7 @@ async def embed_and_store(
         return None
 
     # Get embedding (as passage, not query)
-    embedding = await get_embedding(text, is_query=False)
+    embedding = await _get_embed_fn()(text, is_query=False)
 
     # Clean metadata — ChromaDB only allows str/int/float/bool values
     clean_meta = {}
@@ -244,7 +267,7 @@ async def query(
         return []
 
     # Get embedding for query (as query, not passage)
-    embedding = await get_embedding(text, is_query=True)
+    embedding = await _get_embed_fn()(text, is_query=True)
 
     try:
         query_kwargs = {

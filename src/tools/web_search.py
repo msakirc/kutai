@@ -19,10 +19,20 @@ from dataclasses import dataclass
 
 import aiohttp
 
-from src.infra.logging_config import get_logger
-from src.tools import run_shell
+import logging
 
-logger = get_logger("tools.web_search")
+logger = logging.getLogger(__name__)
+
+# Injectable shell executor — lazy import from src.tools by default
+_shell_fn = None
+
+
+def _get_shell_fn():
+    global _shell_fn
+    if _shell_fn is None:
+        from src.tools import run_shell
+        _shell_fn = run_shell
+    return _shell_fn
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +132,7 @@ async def _discover_perplexica_models(base_url: str) -> dict | None:
                 timeout=aiohttp.ClientTimeout(total=5),
             ) as resp:
                 if resp.status != 200:
-                    logger.warning("perplexica providers fetch failed", status=resp.status)
+                    logger.warning(f"perplexica providers fetch failed status={resp.status}")
                     return None
                 data = await resp.json()
 
@@ -175,23 +185,15 @@ async def _discover_perplexica_models(base_url: str) -> dict | None:
                 "chatModel": chat_model,
                 "embeddingModel": embedding_model,
             }
-            logger.info(
-                "perplexica models discovered",
-                chat=chat_model["key"],
-                embedding=embedding_model["key"],
-            )
+            logger.info(f"perplexica models discovered chat={chat_model['key']} embedding={embedding_model['key']}")
             return _perplexica_models
 
         # Don't cache failures — allow retry on next call
-        logger.warning(
-            "perplexica: missing models",
-            has_chat=chat_model is not None,
-            has_embedding=embedding_model is not None,
-        )
+        logger.warning(f"perplexica: missing models has_chat={chat_model is not None} has_embedding={embedding_model is not None}")
         return None
 
     except Exception as e:
-        logger.warning("perplexica provider discovery error", error=str(e))
+        logger.warning(f"perplexica provider discovery error: {e}")
         return None
 
 
@@ -217,7 +219,7 @@ async def _search_brave(query: str, max_results: int = 5) -> list[dict] | None:
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status != 200:
-                    logger.warning("brave search failed", status=resp.status)
+                    logger.warning(f"brave search failed status={resp.status}")
                     return None
                 data = await resp.json()
 
@@ -234,13 +236,13 @@ async def _search_brave(query: str, max_results: int = 5) -> list[dict] | None:
                 "href": r.get("url", ""),
             })
 
-        logger.info("brave search ok", count=len(results), query=query[:50])
+        logger.info(f"brave search ok count={len(results)} query={query[:50]}")
         return results
 
     except asyncio.TimeoutError:
-        logger.debug("brave search timeout (10s)", query=query[:50])
+        logger.debug(f"brave search timeout (10s) query={query[:50]}")
     except Exception as e:
-        logger.debug("brave search failed", error=str(e))
+        logger.debug(f"brave search failed: {e}")
     return None
 
 
@@ -269,7 +271,7 @@ async def _search_google_cse(query: str, max_results: int = 10) -> list[dict] | 
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status != 200:
-                    logger.warning("google cse search failed", status=resp.status)
+                    logger.warning(f"google cse search failed status={resp.status}")
                     return None
                 data = await resp.json()
 
@@ -285,13 +287,13 @@ async def _search_google_cse(query: str, max_results: int = 10) -> list[dict] | 
                 "href": item.get("link", ""),
             })
 
-        logger.info("google cse search ok", count=len(results), query=query[:50])
+        logger.info(f"google cse search ok count={len(results)} query={query[:50]}")
         return results
 
     except asyncio.TimeoutError:
-        logger.debug("google cse search timeout (10s)", query=query[:50])
+        logger.debug(f"google cse search timeout (10s) query={query[:50]}")
     except Exception as e:
-        logger.debug("google cse search failed", error=str(e))
+        logger.debug(f"google cse search failed: {e}")
     return None
 
 
@@ -342,17 +344,13 @@ async def _search_searxng_direct(
                     return None
 
                 formatted = "\n\n".join(parts)
-                logger.info(
-                    "searxng direct search ok",
-                    result_count=len(parts),
-                    query=query[:50],
-                )
+                logger.info(f"searxng direct search ok result_count={len(parts)} query={query[:50]}")
                 return formatted
 
     except asyncio.TimeoutError:
-        logger.debug("searxng direct search timeout (12s)", query=query[:50])
+        logger.debug(f"searxng direct search timeout (12s) query={query[:50]}")
     except Exception as e:
-        logger.debug("searxng direct search failed", error=str(e))
+        logger.debug(f"searxng direct search failed: {e}")
     return None
 
 
@@ -400,11 +398,7 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
         model_speed = dispatcher.get_loaded_model_speed()
         is_thinking = dispatcher.is_loaded_model_thinking()
         if model_speed > 0 and model_speed < _MIN_PERPLEXICA_TPS:
-            logger.debug(
-                "perplexica: skipping, model too slow",
-                speed=f"{model_speed:.1f}",
-                min_required=_MIN_PERPLEXICA_TPS,
-            )
+            logger.debug(f"perplexica: skipping, model too slow speed={model_speed:.1f} min_required={_MIN_PERPLEXICA_TPS}")
             return None
         if is_thinking:
             logger.debug("perplexica: skipping, thinking model wastes tokens")
@@ -443,12 +437,7 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
-                    logger.warning(
-                        "perplexica search failed",
-                        status=resp.status,
-                        body=body[:300],
-                        query=query,
-                    )
+                    logger.warning(f"perplexica search failed status={resp.status} body={body[:300]} query={query}")
                     _perplexica_fail_count += 1
                     return None
 
@@ -465,13 +454,13 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
                 # Quality gate: reject "I don't know" answers
                 if not sources:  # 0 sources = Perplexica's SearXNG found nothing useful
                     _perplexica_fail_count += 1
-                    logger.debug("perplexica: rejecting answer with 0 sources", answer_preview=answer[:100])
+                    logger.debug(f"perplexica: rejecting answer with 0 sources answer_preview={answer[:100]}")
                     return None
 
                 answer_lower = answer.lower()
                 if any(phrase in answer_lower for phrase in _NO_DATA_PHRASES):
                     _perplexica_fail_count += 1
-                    logger.debug("perplexica: rejecting 'no data' answer", answer_preview=answer[:100])
+                    logger.debug(f"perplexica: rejecting 'no data' answer answer_preview={answer[:100]}")
                     return None
 
                 # Success - reset failure counter
@@ -486,19 +475,15 @@ async def _search_perplexica(query: str, max_results: int, focus_mode: str):
                         "snippet": src.get("content", "")[:200],
                     })
 
-                logger.debug(
-                    "perplexica search ok",
-                    answer_len=len(answer),
-                    source_count=len(result["sources"]),
-                )
+                logger.debug(f"perplexica search ok answer_len={len(answer)} source_count={len(result['sources'])}")
                 return result
 
     except asyncio.TimeoutError:
         _perplexica_fail_count += 1
-        logger.warning("perplexica search timeout (45s)", query=query)
+        logger.warning(f"perplexica search timeout (45s) query={query}")
     except Exception as e:
         _perplexica_fail_count += 1
-        logger.warning("perplexica search error", error=f"{type(e).__name__}: {e}", query=query)
+        logger.warning(f"perplexica search error: {type(e).__name__}: {e} query={query}")
         return None
 
 
@@ -572,9 +557,9 @@ async def _quick_search_pipeline(query: str, ddgs_results: list, urls: list) -> 
         try:
             from src.tools.page_fetch import fetch_pages
             page_contents = await fetch_pages(urls, max_pages=3, max_chars=1500)
-            logger.debug("page_fetch: fetched pages", count=len(page_contents))
+            logger.debug(f"page_fetch: fetched pages count={len(page_contents)}")
         except Exception as e:
-            logger.debug("page_fetch: skipped", error=str(e)[:100])
+            logger.debug(f"page_fetch: skipped error={str(e)[:100]}")
 
         # Record quality (fire-and-forget)
         _record_fetch_quality_fire_and_forget(page_contents, urls[:3])
@@ -619,7 +604,7 @@ async def _deep_search_pipeline(
 
     # Fetch more pages with more content for deep search
     page_htmls = await fetch_pages(urls, max_pages=params.max_results, max_chars=50000, max_tier=max_tier)
-    logger.debug("deep pipeline: fetched pages", count=len(page_htmls))
+    logger.debug(f"deep pipeline: fetched pages count={len(page_htmls)}")
 
     if not page_htmls:
         logger.debug("deep pipeline: no pages fetched, falling back to quick")
@@ -725,7 +710,7 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web",
     intent, params = _infer_search_intent(hints)
     effective_max = max(max_results, params.max_results)
 
-    logger.info("web search query", query=query, max_results=effective_max, intent=intent, search_type=search_type)
+    logger.info(f"web search query={query} max_results={effective_max} intent={intent} search_type={search_type}")
 
     # Phase D: Check existing web knowledge before live search
     try:
@@ -769,7 +754,7 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web",
         try:
             results = _DDGS().text(query, max_results=effective_max)
             if results:
-                logger.debug("ddgs search ok", count=len(results), intent=intent)
+                logger.debug(f"ddgs search ok count={len(results)} intent={intent}")
                 urls = [r.get("href", "") for r in results if r.get("href")]
 
                 if params.use_deep_pipeline and urls:
@@ -780,12 +765,12 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web",
                 await _embed_web_results(query, result_text)
                 return result_text
         except Exception as e:
-            logger.warning("ddgs primary search failed", error=str(e))
+            logger.warning(f"ddgs primary search failed: {e}")
 
     # Method 1.5 (secondary): Brave Search API
     brave_results = await _search_brave(query, effective_max)
     if brave_results:
-        logger.debug("brave search ok, using as fallback", count=len(brave_results))
+        logger.debug(f"brave search ok, using as fallback count={len(brave_results)}")
         urls = [r.get("href", "") for r in brave_results if r.get("href")]
         if params.use_deep_pipeline and urls:
             result_text = await _deep_search_pipeline(query, brave_results, urls, intent, params)
@@ -797,7 +782,7 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web",
     # Method 1.75 (tertiary): Google Custom Search Engine (100 queries/day free)
     gcse_results = await _search_google_cse(query, effective_max)
     if gcse_results:
-        logger.debug("google cse search ok, using as fallback", count=len(gcse_results))
+        logger.debug(f"google cse search ok, using as fallback count={len(gcse_results)}")
         urls = [r.get("href", "") for r in gcse_results if r.get("href")]
         if params.use_deep_pipeline and urls:
             result_text = await _deep_search_pipeline(query, gcse_results, urls, intent, params)
@@ -841,7 +826,7 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web",
         safe_query = urllib.parse.quote_plus(query)
         url = f"https://api.duckduckgo.com/?q={safe_query}&format=json&no_html=1&no_redirect=1"
 
-        result = await run_shell(
+        result = await _get_shell_fn()(
             f'curl -s --max-time 10 "{url}"',
             timeout=15,
         )
@@ -870,7 +855,7 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web",
             return f"Search results for '{query}':\n\n" + "\n\n".join(lines)
 
         scrape_url = f"https://html.duckduckgo.com/html/?q={safe_query}"
-        scrape_result = await run_shell(
+        scrape_result = await _get_shell_fn()(
             f'curl -s --max-time 10 "{scrape_url}" | grep -oP \'<a rel="nofollow" class="result__a" href="[^"]*">[^<]*</a>\' | head -5',
             timeout=15,
         )
@@ -884,5 +869,5 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web",
         return f"No results found for '{query}'. All search backends failed."
 
     except Exception as e:
-        logger.exception("web search all backends failed", error=str(e))
+        logger.exception(f"web search all backends failed: {e}")
         return f"Search error: {e}"

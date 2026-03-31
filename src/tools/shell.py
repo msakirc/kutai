@@ -8,9 +8,9 @@ import asyncio
 import os
 from typing import Optional
 
-from src.infra.logging_config import get_logger
+import logging
 
-logger = get_logger("tools.shell")
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration — override via environment or config import

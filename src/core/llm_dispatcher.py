@@ -29,9 +29,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Awaitable, Optional
 
-from src.infra.logging_config import get_logger
+import logging
 
-logger = get_logger("core.llm_dispatcher")
+logger = logging.getLogger(__name__)
 
 # Cold-start wait parameters (patchable in tests)
 _COLD_START_WAIT_TIMEOUT = 15.0   # max seconds to wait for model load
@@ -73,11 +73,7 @@ class SwapBudget:
     def record_swap(self):
         """Record that a swap occurred."""
         self._timestamps.append(time.time())
-        logger.info(
-            "swap recorded",
-            recent_swaps=len(self._timestamps),
-            budget_remaining=max(0, self.max_swaps - len(self._timestamps)),
-        )
+        logger.info(f"swap recorded | recent_swaps={len(self._timestamps)} budget_remaining={max(0, self.max_swaps - len(self._timestamps))}")
 
     def _prune(self):
         cutoff = time.time() - self.window_seconds
@@ -136,12 +132,7 @@ class GradeQueue:
         """Add a grading request to the deferred queue."""
         async with self._lock:
             self._queue.append(grade)
-            logger.info(
-                "grade deferred",
-                task_id=grade.task_id,
-                queue_depth=len(self._queue),
-                generating_model=grade.generating_model,
-            )
+            logger.info(f"grade deferred | task_id={grade.task_id} queue_depth={len(self._queue)} generating_model={grade.generating_model}")
 
     async def drain(
         self,
@@ -201,21 +192,13 @@ class GradeQueue:
                     await grade.on_graded(score)
                 completed += 1
             except Exception as e:
-                logger.warning(
-                    "deferred grade failed",
-                    task_id=grade.task_id,
-                    error=str(e),
-                )
+                logger.warning(f"deferred grade failed | task_id={grade.task_id} error={e}")
                 # Re-queue failed grades
                 async with self._lock:
                     self._queue.append(grade)
 
         if completed > 0:
-            logger.info(
-                "grade queue drained",
-                completed=completed,
-                remaining=len(self._queue),
-            )
+            logger.info(f"grade queue drained | completed={completed} remaining={len(self._queue)}")
         return completed
 
     async def _execute_grade(
@@ -375,11 +358,7 @@ class LLMDispatcher:
                 # via exemption or fall back to cloud).
                 loaded_speed = self.get_loaded_model_speed()
                 if reqs.prefer_speed and loaded_speed > 0 and loaded_speed < 10.0:
-                    logger.info(
-                        "skip slow-model pin for speed-critical task",
-                        loaded_speed=loaded_speed,
-                        task=reqs.effective_task or reqs.primary_capability,
-                    )
+                    logger.info(f"skip slow-model pin for speed-critical task | loaded_speed={loaded_speed} task={reqs.effective_task or reqs.primary_capability}")
                     # Fall through to normal routing below
                 else:
                     # Try the loaded model first by pinning it
@@ -451,10 +430,7 @@ class LLMDispatcher:
 
         if _sv > 0 and not _loaded:
             # Swap in progress, no model available yet → cloud only
-            logger.debug(
-                "overhead skipping local — swap in progress",
-                task=reqs.effective_task or reqs.primary_capability,
-            )
+            logger.debug(f"overhead skipping local — swap in progress | task={reqs.effective_task or reqs.primary_capability}")
             reqs_safe = self._exclude_all_local(reqs_safe)
         else:
             reqs_safe = self._exclude_unloaded_local(reqs_safe)
@@ -500,36 +476,21 @@ class LLMDispatcher:
         the timeout expires. Used only when no cloud fallback exists.
         """
         task_desc = reqs.effective_task or reqs.primary_capability
-        logger.info(
-            "overhead waiting for model load (cold start)",
-            task=task_desc,
-            timeout=_COLD_START_WAIT_TIMEOUT,
-        )
+        logger.info(f"overhead waiting for model load (cold start) | task={task_desc} timeout={_COLD_START_WAIT_TIMEOUT}")
 
         deadline = time.monotonic() + _COLD_START_WAIT_TIMEOUT
         while time.monotonic() < deadline:
             await asyncio.sleep(_COLD_START_POLL_INTERVAL)
             if self._get_loaded_model_name():
                 elapsed = _COLD_START_WAIT_TIMEOUT - (deadline - time.monotonic())
-                logger.info(
-                    "model loaded, overhead proceeding",
-                    task=task_desc,
-                    waited=f"{elapsed:.1f}s",
-                )
+                logger.info(f"model loaded, overhead proceeding | task={task_desc} waited={elapsed:.1f}s")
                 return
             # If swap is no longer in progress and still no model, stop waiting
             if not self._is_swap_in_progress():
-                logger.debug(
-                    "swap finished but no model loaded — stop waiting",
-                    task=task_desc,
-                )
+                logger.debug(f"swap finished but no model loaded — stop waiting | task={task_desc}")
                 return
 
-        logger.warning(
-            "cold-start wait timed out, proceeding without model",
-            task=task_desc,
-            timeout=_COLD_START_WAIT_TIMEOUT,
-        )
+        logger.warning(f"cold-start wait timed out, proceeding without model | task={task_desc} timeout={_COLD_START_WAIT_TIMEOUT}")
 
     def _is_swap_in_progress(self) -> bool:
         """Check if a model swap is currently in progress."""
@@ -715,21 +676,13 @@ class LLMDispatcher:
         if old_model:
             drained = await self.grade_queue.drain(available_model=old_model)
             if drained:
-                logger.info(
-                    "drained grades before swap",
-                    old_model=old_model,
-                    drained=drained,
-                )
+                logger.info(f"drained grades before swap | old_model={old_model} drained={drained}")
 
         # After new model is ready, drain grades it can handle
         if new_model:
             drained = await self.grade_queue.drain(available_model=new_model)
             if drained:
-                logger.info(
-                    "drained grades after swap",
-                    new_model=new_model,
-                    drained=drained,
-                )
+                logger.info(f"drained grades after swap | new_model={new_model} drained={drained}")
 
         # Signal backpressure queue — a model swap means new local capacity
         # is available. Queued MAIN_WORK calls that failed because the old
@@ -739,11 +692,7 @@ class LLMDispatcher:
             bp = get_backpressure_queue()
             if bp._queue:
                 bp.signal_capacity_available()
-                logger.info(
-                    "signaled backpressure after swap",
-                    new_model=new_model,
-                    bp_depth=len(bp._queue),
-                )
+                logger.info(f"signaled backpressure after swap | new_model={new_model} bp_depth={len(bp._queue)}")
         except Exception:
             pass
 
@@ -755,15 +704,12 @@ class LLMDispatcher:
         if self.grade_queue.depth > 0:
             drained = await self.grade_queue.drain(use_cloud=True)
             if drained:
-                logger.info("drained grades during idle", drained=drained)
+                logger.info(f"drained grades during idle | drained={drained}")
 
     async def drain_grades_if_full(self):
         """Called periodically. If queue exceeds threshold, force drain via cloud."""
         if self.grade_queue.needs_drain:
-            logger.info(
-                "grade queue full, forcing cloud drain",
-                depth=self.grade_queue.depth,
-            )
+            logger.info(f"grade queue full, forcing cloud drain | depth={self.grade_queue.depth}")
             await self.grade_queue.drain(use_cloud=True)
 
     # ─── Proactive GPU Loading ───────────────────────────────────────────
@@ -790,11 +736,7 @@ class LLMDispatcher:
 
             best_model = self._find_best_local_for_batch(upcoming_tasks)
             if best_model:
-                logger.info(
-                    "proactive GPU load",
-                    model=best_model,
-                    queue_depth=len(upcoming_tasks),
-                )
+                logger.info(f"proactive GPU load | model={best_model} queue_depth={len(upcoming_tasks)}")
                 await manager.ensure_model(
                     best_model,
                     reason="proactive_load",
@@ -899,11 +841,7 @@ class LLMDispatcher:
                 return (match, speed)
 
             best = max(model_scores, key=_model_priority)
-            logger.debug(
-                "proactive load candidates",
-                scores=model_scores,
-                selected=best,
-            )
+            logger.debug(f"proactive load candidates | scores={model_scores} selected={best}")
             return best
 
         except Exception as e:

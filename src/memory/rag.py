@@ -12,14 +12,29 @@ Main function:
 The returned text block is injected into BaseAgent._build_context()
 between the task description and tool descriptions.
 """
+import logging
 import time
 from typing import Optional
 
-from src.infra.logging_config import get_logger
-from src.memory.vector_store import is_ready, query, embed_and_store
-from src.memory.embeddings import get_embedding
+logger = logging.getLogger(__name__)
 
-logger = get_logger("memory.rag")
+# --- Lazy imports for extraction readiness --------------------------------
+_vs_is_ready = None
+_vs_query = None
+_vs_embed_and_store = None
+_emb_get_embedding = None
+
+
+def _load_deps():
+    global _vs_is_ready, _vs_query, _vs_embed_and_store, _emb_get_embedding
+    if _vs_is_ready is not None:
+        return
+    from src.memory.vector_store import is_ready, query, embed_and_store
+    from src.memory.embeddings import get_embedding
+    _vs_is_ready = is_ready
+    _vs_query = query
+    _vs_embed_and_store = embed_and_store
+    _emb_get_embedding = get_embedding
 
 
 # ─── Configuration ──────────────────────────────────────────────────────────
@@ -379,7 +394,8 @@ async def retrieve_context(
         Formatted text block ready for prompt injection.
         Empty string if nothing relevant found.
     """
-    if not is_ready():
+    _load_deps()
+    if not _vs_is_ready():
         return ""
 
     title = task.get("title", "")
@@ -410,13 +426,13 @@ async def retrieve_context(
     web_results = []
 
     for q in queries:
-        episodic_results.extend(await query(
+        episodic_results.extend(await _vs_query(
             text=q, collection="episodic", top_k=5,
         ))
-        semantic_results.extend(await query(
+        semantic_results.extend(await _vs_query(
             text=q, collection="semantic", top_k=5,
         ))
-        error_results.extend(await query(
+        error_results.extend(await _vs_query(
             text=q, collection="errors", top_k=3,
         ))
 
@@ -424,12 +440,12 @@ async def retrieve_context(
     task_desc_lower = (title + description).lower()
     if any(kw in task_desc_lower for kw in ("shop", "buy", "price", "product", "compare")):
         for q in queries[:2]:  # Limit domain queries to reduce latency
-            shopping_results.extend(await query(
+            shopping_results.extend(await _vs_query(
                 text=q, collection="shopping", top_k=5,
             ))
 
     for q in queries[:2]:
-        web_results.extend(await query(
+        web_results.extend(await _vs_query(
             text=q, collection="web_knowledge", top_k=3,
         ))
 
@@ -598,6 +614,7 @@ async def store_fact(
     Returns:
         Document ID if stored, None otherwise.
     """
+    _load_deps()
     metadata = {
         "type": "fact",
         "category": category,
@@ -606,7 +623,7 @@ async def store_fact(
         "timestamp": time.time(),
     }
 
-    return await embed_and_store(
+    return await _vs_embed_and_store(
         text=text,
         metadata=metadata,
         collection="semantic",

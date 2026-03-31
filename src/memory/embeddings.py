@@ -16,9 +16,9 @@ import hashlib
 from collections import OrderedDict
 from typing import Optional
 
-from src.infra.logging_config import get_logger
+import logging
 
-logger = get_logger("memory.embeddings")
+logger = logging.getLogger(__name__)
 
 
 # ─── Configuration ───────────────────────────────────────────────────────────

@@ -588,12 +588,17 @@ class KutAIWrapper:
                         and text == "⚙️ Sistem"
                         and not self._is_orchestrator_healthy()
                     )
+                    is_logs_cmd = (
+                        chat_id == str(TELEGRAM_ADMIN_CHAT_ID)
+                        and text.startswith("/logs")
+                    )
                     is_wrapper_cmd = (
                         chat_id == str(TELEGRAM_ADMIN_CHAT_ID)
                         and (
                             text.startswith(("/kutai_start", "/kutai_status"))
                             or is_baslat
                             or is_sistem_unhealthy
+                            or is_logs_cmd
                         )
                     )
 
@@ -608,6 +613,9 @@ class KutAIWrapper:
 
                             elif text.startswith("/kutai_status"):
                                 await self._send_status()
+
+                            elif is_logs_cmd:
+                                await self._send_logs(text)
 
                             elif is_sistem_unhealthy:
                                 # Orchestrator is hung/dead — kill it and show Başlat
@@ -720,6 +728,65 @@ class KutAIWrapper:
             f"Last exit code: `{self.last_exit_code}`"
         )
         await self._send_telegram(msg)
+
+    async def _send_logs(self, text: str):
+        """Read and send last N lines of orchestrator.jsonl."""
+        import json as _json
+
+        parts = text.strip().split()
+        n = 20
+        if len(parts) > 1:
+            try:
+                n = min(int(parts[1]), 50)
+            except ValueError:
+                pass
+
+        log_path = Path("logs/orchestrator.jsonl")
+        if not log_path.exists():
+            await self._send_telegram("📋 No log file found.")
+            return
+
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 100_000))
+                chunk = f.read()
+                lines = chunk.strip().split("\n")
+
+            last_n = lines[-n:]
+            formatted = []
+            for line in last_n:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = _json.loads(line)
+                    ts = entry.get("timestamp", "?")
+                    if "T" in ts:
+                        ts = ts.split("T")[1][:8]
+                    elif " " in ts:
+                        ts = ts.split(" ")[1][:8]
+                    level = entry.get("level", "?")[:4]
+                    comp = entry.get("component", "?").split(".")[-1]
+                    msg = entry.get("message", "")[:120]
+                    icon = {"ERRO": "🔴", "CRIT": "🔴", "WARN": "🟡", "INFO": "⚪", "DEBU": "⚫"}.get(level, "⚪")
+                    formatted.append(f"{icon} `{ts}` *{comp}*: {msg}")
+                except (ValueError, KeyError):
+                    formatted.append(f"⚫ {line[:120]}")
+
+            if not formatted:
+                await self._send_telegram("📋 No log entries found.")
+                return
+
+            msg = "\n".join(formatted)
+            if len(msg) > 4000:
+                msg = msg[-4000:]
+                msg = "...(truncated)\n" + msg[msg.index("\n") + 1:]
+
+            await self._send_telegram(msg)
+        except Exception as e:
+            await self._send_telegram(f"❌ Error reading logs: {e}")
 
     # ── Post-exit Cleanup ──────────────────────────────────────────────────
 

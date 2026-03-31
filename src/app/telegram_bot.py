@@ -970,7 +970,7 @@ class TelegramInterface:
         elif wf_action == "wf_research":
             workflow = "research"
         elif wf_action == "wf_project":
-            workflow = "i2p_v2"
+            workflow = "i2p_v3"
         elif wf_action == "wf_auto":
             # Let LLM decide — pass through to normal mission creation
             workflow = None  # Will be classified by _classify_user_message
@@ -1265,7 +1265,7 @@ class TelegramInterface:
 
         if "--workflow" in text_args:
             text_args.remove("--workflow")
-            workflow = "i2p_v2"
+            workflow = "i2p_v3"
 
         description = " ".join(text_args)
         if not description:
@@ -1276,7 +1276,7 @@ class TelegramInterface:
         if not workflow:
             classification = await self._classify_user_message(description)
             if classification.get("workflow") == "i2p":
-                workflow = "i2p_v2"
+                workflow = "i2p_v3"
 
         chat_id = update.message.chat_id
 
@@ -2350,7 +2350,7 @@ class TelegramInterface:
                     mission_ctx = _json.loads(mission_ctx)
                 except (ValueError, TypeError):
                     mission_ctx = {}
-            workflow_name = mission_ctx.get("workflow_name", "i2p_v2")
+            workflow_name = mission_ctx.get("workflow_name", "i2p_v3")
 
             progress = compute_phase_progress(tasks)
             msg = format_status_message(workflow_name, mission_id, progress)
@@ -3067,7 +3067,7 @@ class TelegramInterface:
                     from ..workflows.engine.runner import WorkflowRunner
                     runner = WorkflowRunner()
                     mission_id = await runner.start(
-                        workflow_name="i2p_v2",
+                        workflow_name="i2p_v3",
                         initial_input={"idea": text, "product_name": text[:50]},
                         title=text[:80],
                     )
@@ -4418,7 +4418,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                         mission_ctx = _json.loads(mission_ctx)
                     except (ValueError, TypeError):
                         mission_ctx = {}
-                workflow_name = mission_ctx.get("workflow_name", "i2p_v2")
+                workflow_name = mission_ctx.get("workflow_name", "i2p_v3")
                 progress = compute_phase_progress(tasks)
                 msg = format_status_message(workflow_name, mission_id, progress)
                 cancel_button = InlineKeyboardMarkup([[

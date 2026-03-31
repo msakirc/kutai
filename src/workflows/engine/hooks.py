@@ -453,7 +453,7 @@ async def _check_conditional_triggers(
         from .loader import load_workflow
 
         # Try loading the workflow used by this mission
-        workflow_name = "i2p_v2"  # fallback
+        workflow_name = "i2p_v3"  # fallback
         try:
             from ...infra.db import get_mission
             mission = await get_mission(mission_id)
@@ -461,7 +461,7 @@ async def _check_conditional_triggers(
                 m_ctx = mission.get("context", "{}")
                 if isinstance(m_ctx, str):
                     m_ctx = json.loads(m_ctx)
-                workflow_name = m_ctx.get("workflow_name", "i2p_v2")
+                workflow_name = m_ctx.get("workflow_name", "i2p_v3")
         except Exception:
             pass
         wf = load_workflow(workflow_name)
@@ -513,7 +513,13 @@ async def _check_conditional_triggers(
 
 
 async def _trigger_template_expansion(mission_id: int, backlog_text: str) -> None:
-    """Expand feature_implementation_template for each feature in backlog."""
+    """Expand feature_implementation_template for each feature in backlog.
+
+    Respects ``depends_on_features`` from the backlog: the first task of a
+    dependent feature won't start until the last task of its prerequisite
+    feature completes.  After all features are expanded, inserts a
+    cross-feature integration test step.
+    """
     import json as _json
 
     try:
@@ -530,11 +536,27 @@ async def _trigger_template_expansion(mission_id: int, backlog_text: str) -> Non
         from .expander import expand_template, expand_steps_to_tasks
         from ...infra.db import add_task as insert_task, update_task
 
-        wf = load_workflow("i2p_v2")
+        # Try the workflow used by this mission, fall back to i2p_v3 then i2p_v2
+        workflow_name = "i2p_v3"
+        try:
+            from ...infra.db import get_mission
+            mission = await get_mission(mission_id)
+            if mission:
+                m_ctx = mission.get("context", "{}")
+                if isinstance(m_ctx, str):
+                    m_ctx = _json.loads(m_ctx)
+                workflow_name = m_ctx.get("workflow_name", "i2p_v3")
+        except Exception:
+            pass
+
+        wf = load_workflow(workflow_name)
         template = wf.get_template("feature_implementation_template")
         if not template:
             logger.warning("[Workflow Hook] feature_implementation_template not found")
             return
+
+        # Track feature_id → (first_task_id, last_task_id) for cross-feature deps
+        feature_task_range: dict[str, tuple[int, int]] = {}
 
         for feature in features:
             if not isinstance(feature, dict):
@@ -571,10 +593,89 @@ async def _trigger_template_expansion(mission_id: int, backlog_text: str) -> Non
                 )
                 continue  # Skip this feature, try next one
 
+            if inserted_ids:
+                feature_task_range[fid] = (inserted_ids[0], inserted_ids[-1])
+
             logger.info(
                 f"[Workflow Hook] Expanded template for feature '{fid}' "
                 f"({len(expanded)} steps \u2192 {len(tasks)} tasks)"
             )
+
+        # ── Wire cross-feature dependencies ──
+        # If feature B depends_on_features: ["A"], then B's first task
+        # should wait until A's last task completes.
+        for feature in features:
+            if not isinstance(feature, dict):
+                continue
+            fid = feature.get("id", feature.get("feature_id", "unknown"))
+            dep_features = feature.get("depends_on_features", [])
+            if not dep_features or fid not in feature_task_range:
+                continue
+
+            first_task_id = feature_task_range[fid][0]
+            prerequisite_task_ids = []
+            for dep_fid in dep_features:
+                if dep_fid in feature_task_range:
+                    prerequisite_task_ids.append(feature_task_range[dep_fid][1])
+
+            if prerequisite_task_ids:
+                try:
+                    dep_json = _json.dumps(prerequisite_task_ids)
+                    await update_task(first_task_id, depends_on=dep_json)
+                    logger.info(
+                        f"[Workflow Hook] Feature '{fid}' first task #{first_task_id} "
+                        f"depends on tasks {prerequisite_task_ids} (cross-feature)"
+                    )
+                except Exception as dep_err:
+                    logger.debug(
+                        f"[Workflow Hook] Could not set cross-feature deps: {dep_err}"
+                    )
+
+        # ── Insert cross-feature integration test step ──
+        # Runs after ALL features are done — tests interactions between features
+        if len(feature_task_range) >= 2:
+            all_last_tasks = [last for _, last in feature_task_range.values()]
+            feature_names = []
+            for f in features:
+                if isinstance(f, dict):
+                    feature_names.append(
+                        f.get("name", f.get("feature_name", f.get("id", "?")))
+                    )
+            try:
+                integration_task_id = await insert_task(
+                    title="[8.integration] Cross-feature integration tests",
+                    description=(
+                        f"Test interactions between all implemented features: "
+                        f"{', '.join(feature_names)}. "
+                        f"Verify: shared data flows correctly between features, "
+                        f"auth/permissions work across feature boundaries, "
+                        f"navigation between features works, "
+                        f"no conflicts in shared resources (DB, API routes, state). "
+                        f"Run the full test suite and report results."
+                    ),
+                    mission_id=mission_id,
+                    agent_type="test_generator",
+                    tier="auto",
+                    priority=7,
+                    depends_on=all_last_tasks,
+                    context={
+                        "workflow_step_id": "8.integration",
+                        "workflow_phase": "phase_8",
+                        "is_workflow_step": True,
+                        "difficulty": 6,
+                        "tools_hint": ["shell", "read_file", "write_file", "coverage",
+                                       "query_codebase", "codebase_map"],
+                        "output_artifacts": ["integration_test_results"],
+                    },
+                )
+                logger.info(
+                    f"[Workflow Hook] Created cross-feature integration test "
+                    f"task #{integration_task_id} (depends on {len(all_last_tasks)} features)"
+                )
+            except Exception as integ_err:
+                logger.debug(
+                    f"[Workflow Hook] Could not create integration test task: {integ_err}"
+                )
 
     except (ImportError, Exception) as e:
         logger.debug(f"[Workflow Hook] Template expansion failed: {e}")

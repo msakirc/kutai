@@ -2496,7 +2496,7 @@
         "implementation_backlog": {
           "type": "array",
           "min_items": 1,
-          "item_fields": ["feature_id", "feature_name", "epic_id", "sprint_id", "status", "template_ref"]
+          "item_fields": ["feature_id", "feature_name", "epic_id", "sprint_id", "status", "template_ref", "depends_on_features"]
         }
       }
     },

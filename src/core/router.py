@@ -1074,10 +1074,16 @@ async def call_model(
             elif _tps > 0:
                 # Estimated generation time for current + this request + buffer
                 _est_gen = reqs.estimated_output_tokens / _tps
-                _gpu_timeout = max(30.0, min(180.0, _est_gen * 3.0 + 15.0))
+                _gpu_timeout = max(15.0, min(180.0, _est_gen * 3.0 + 15.0))
             else:
                 # No TPS data — use difficulty heuristic
                 _gpu_timeout = 120.0 if reqs.difficulty >= 5 else 60.0
+
+            # Cap GPU wait to LLM timeout — no point waiting for GPU longer
+            # than the LLM call would take. Prevents OVERHEAD calls (20s LLM
+            # cap) from waiting 60s+ for GPU while MAIN_WORK hogs it.
+            if timeout_override and timeout_override > 0:
+                _gpu_timeout = min(_gpu_timeout, float(timeout_override))
 
             granted = await local_manager.acquire_inference_slot(
                 priority=reqs.priority,

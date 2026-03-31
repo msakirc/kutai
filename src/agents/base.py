@@ -551,8 +551,12 @@ class BaseAgent:
         """
         cleaned = content.strip()
 
-        # Strip <think>…</think> blocks (Qwen3/DeepSeek thinking models)
-        cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
+        # Strip <think>…</think> blocks (Qwen3/DeepSeek thinking models).
+        # Also handle unclosed <think> (token limit hit mid-think) and
+        # orphaned tags from models that ignore enable_thinking=false.
+        cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r"<think>.*", "", cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r"</?think>", "", cleaned).strip()
 
         # Try 1 — direct parse (strips leading fences too)
         parsed = self._try_parse_json(cleaned)

@@ -1196,14 +1196,23 @@ async def call_model(
 
                     thinking_content = _extract_thinking(msg) if is_thinking else None
 
-                    # llama-server ignores per-request chat_template_kwargs,
-                    # so thinking models may still emit <think> blocks even
-                    # when thinking wasn't requested.  Strip them from the
-                    # content so downstream parsers see clean output.
-                    if not is_thinking and model.thinking_model and msg.content:
+                    # Strip <think>…</think> blocks when thinking wasn't
+                    # requested.  This covers two cases:
+                    #  1. thinking_model with enable_thinking=false (llama-
+                    #     server ignores per-request chat_template_kwargs)
+                    #  2. Non-thinking models (e.g. Qwen 9B) that still emit
+                    #     <think> tokens despite enable_thinking=false
+                    # Also strip orphaned/unclosed <think> tags.
+                    if not is_thinking and msg.content and "<think>" in msg.content:
                         msg.content = re.sub(
                             r"<think>.*?</think>", "", msg.content, flags=re.DOTALL
-                        ).strip()
+                        )
+                        # Handle unclosed <think> (model hit token limit mid-think)
+                        msg.content = re.sub(
+                            r"<think>.*", "", msg.content, flags=re.DOTALL
+                        )
+                        msg.content = re.sub(r"</?think>", "", msg.content)
+                        msg.content = msg.content.strip()
 
                     if not model.is_local:
                         _get_circuit_breaker(model.provider).record_success()

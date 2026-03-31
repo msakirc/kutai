@@ -1393,20 +1393,56 @@ class Orchestrator:
                 timeout_err = f"TimeoutError: Task timed out after {timeout_seconds}s"
                 logger.error("task timeout", task_id=task_id, timeout_seconds=timeout_seconds, error=timeout_err)
 
-                # Try to recover last checkpoint result before failing
+                # Try to recover partial results from the last checkpoint
+                # before marking the task as failed.
+                partial_result = None
                 try:
                     from src.infra.db import load_task_checkpoint
                     checkpoint = await load_task_checkpoint(task_id)
                     if checkpoint:
                         last_messages = checkpoint.get("messages", [])
-                        # Look for the last assistant message with a tool result
+                        iter_num = checkpoint.get("iteration", "?")
+                        # Strategy 1: look for assistant final_answer that
+                        # was produced but not yet returned (agent timed out
+                        # between producing the answer and returning it).
                         for msg in reversed(last_messages):
-                            if msg.get("role") == "user" and "Tool Result" in msg.get("content", ""):
-                                logger.info(f"[Task #{task_id}] Timeout recovery: using checkpoint from iteration {checkpoint.get('iteration', '?')}")
-                                result_text = f"(Partial result from iteration {checkpoint.get('iteration', '?')} before timeout)\n\n{msg['content'][:3000]}"
-                                await update_task(task_id, status="completed", result=result_text)
-                                await self.telegram.send_result(task_id, title, result_text, "timeout-recovery", 0)
-                                return
+                            if msg.get("role") == "assistant" and msg.get("content"):
+                                c = msg["content"]
+                                # Quick check for final_answer JSON
+                                if "final_answer" in c and len(c) > 100:
+                                    partial_result = c[:3000]
+                                    break
+                        # Strategy 2: last tool result (user message echoing
+                        # a tool's output — usually the most informative).
+                        if not partial_result:
+                            for msg in reversed(last_messages):
+                                if msg.get("role") == "user" and "Tool Result" in msg.get("content", ""):
+                                    partial_result = msg["content"][:3000]
+                                    break
+                        # Strategy 3: last substantial assistant message
+                        if not partial_result:
+                            for msg in reversed(last_messages):
+                                if msg.get("role") == "assistant" and len(msg.get("content", "")) > 100:
+                                    partial_result = msg["content"][:3000]
+                                    break
+
+                        if partial_result:
+                            logger.info(f"[Task #{task_id}] Timeout recovery: using checkpoint from iteration {iter_num}")
+                            result_text = f"(Partial result from iteration {iter_num} before timeout)\n\n{partial_result}"
+                            task_ctx = task.get("context", {})
+                            if isinstance(task_ctx, str):
+                                try:
+                                    task_ctx = json.loads(task_ctx)
+                                except (json.JSONDecodeError, TypeError):
+                                    task_ctx = {}
+                            task_ctx["partial"] = True
+                            await update_task(
+                                task_id, status="completed",
+                                result=result_text,
+                                context=json.dumps(task_ctx),
+                            )
+                            await self.telegram.send_result(task_id, title, result_text, "timeout-recovery", 0)
+                            return
                 except Exception as recovery_err:
                     logger.debug(f"[Task #{task_id}] Checkpoint recovery failed: {recovery_err}")
 
@@ -2118,17 +2154,23 @@ class Orchestrator:
                 "exclude_models": [failed_model] if failed_model else [],
             }
 
-            # Inherit clarification context from failed task
+            # Inherit user-provided context from the failed task so the
+            # recovery agent (or any retry it spawns) doesn't re-ask the user
+            # for information they already provided.
             failed_ctx = failed_task.get("context", {})
             if isinstance(failed_ctx, str):
                 try:
                     failed_ctx = json.loads(failed_ctx)
                 except (json.JSONDecodeError, TypeError):
                     failed_ctx = {}
-            if failed_ctx.get("user_clarification"):
-                error_ctx["user_clarification"] = failed_ctx["user_clarification"]
-            if failed_ctx.get("clarification_history"):
-                error_ctx["clarification_history"] = failed_ctx["clarification_history"]
+            _INHERIT_KEYS = (
+                "chat_id", "user_clarification", "clarification_history",
+                "classification", "shopping_query", "shopping_sub_intent",
+                "mission_id", "silent",
+            )
+            for _key in _INHERIT_KEYS:
+                if _key in failed_ctx:
+                    error_ctx[_key] = failed_ctx[_key]
 
             recovery_task_id = await add_task(
                 title=stable_title,

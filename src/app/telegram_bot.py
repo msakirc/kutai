@@ -1020,18 +1020,12 @@ class TelegramInterface:
     async def _quick_pharmacy(self, update, context):
         """Find pharmacies on duty using the pharmacy tool."""
         from src.infra.db import get_user_pref
-        chat_id = update.effective_chat.id
-        lat = await get_user_pref("location_lat")
-        lon = await get_user_pref("location_lon")
         district = await get_user_pref("location_district")
         city = await get_user_pref("location_city")
         await self._reply(update, "🏥 Nöbetçi eczaneler aranıyor...")
         try:
-            from src.tools.pharmacy import find_pharmacies_on_duty
-            result = await find_pharmacies_on_duty(
-                lat=float(lat), lon=float(lon),
-                district=district, city=city
-            )
+            from src.tools.pharmacy import find_nearest_pharmacy
+            result = await find_nearest_pharmacy(city=city, district=district)
             await self._reply(update, result or "Nöbetçi eczane bulunamadı.")
         except Exception as e:
             await self._reply(update, f"❌ Eczane araması başarısız: {_friendly_error(str(e))}")

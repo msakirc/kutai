@@ -34,6 +34,36 @@ from src.infra.logging_config import get_logger
 logger = get_logger("shopping.scrapers.base")
 
 # ---------------------------------------------------------------------------
+# Tiered-scraper response shim
+# ---------------------------------------------------------------------------
+
+class _TieredResponse:
+    """Minimal httpx.Response-compatible wrapper around a ScrapeResult.
+
+    Allows the rest of BaseScraper (and all subclass ``validate_response``
+    implementations) to use the same ``.status_code``, ``.text``,
+    ``.headers``, and ``.json()`` interface regardless of which HTTP
+    backend was used.
+    """
+
+    def __init__(self, html: str, status: int, headers: dict) -> None:
+        self.status_code: int = status
+        self.text: str = html
+        self.headers: dict = headers
+        self.content: bytes = html.encode("utf-8", errors="replace")
+
+    def json(self, **kwargs: Any) -> Any:
+        return json.loads(self.text)
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}",
+                request=None,  # type: ignore[arg-type]
+                response=None,  # type: ignore[arg-type]
+            )
+
+# ---------------------------------------------------------------------------
 # User-Agent pool
 # ---------------------------------------------------------------------------
 
@@ -112,21 +142,36 @@ class BaseScraper(abc.ABC):
         """Fetch product reviews (up to *max_pages* pages)."""
 
     @abc.abstractmethod
-    def validate_response(self, response: httpx.Response) -> bool:
+    def validate_response(self, response: "_TieredResponse") -> bool:
         """Return ``True`` if the response contains real content (not a block page)."""
 
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
 
-    async def _fetch(self, url: str, **kwargs: Any) -> httpx.Response:
+    async def _fetch(self, url: str, **kwargs: Any) -> "_TieredResponse":
         """Fetch *url* with rate limiting, retries, UA rotation, and logging.
 
-        Keyword arguments are forwarded to ``httpx.AsyncClient.get``.
+        Uses the tiered scraper (curl_cffi TLS fingerprinting) to bypass
+        bot-detection on Turkish e-commerce sites.  Falls back to raw httpx
+        if the tiered scraper module is unavailable.
 
-        Raises ``httpx.HTTPStatusError`` after exhausting retries on server
-        errors, or ``httpx.RequestError`` on network-level failures.
+        Keyword arguments are kept for API compatibility but most are ignored
+        (the tiered scraper handles headers internally).  ``params`` is
+        appended to the URL if present.
+
+        Raises ``RuntimeError`` after exhausting retries.
         """
+        # --- handle query params (forward-compat with callers that pass params=) ---
+        params = kwargs.pop("params", None)
+        if params:
+            import urllib.parse as _up
+            qs = _up.urlencode(params)
+            url = f"{url}?{qs}" if "?" not in url else f"{url}&{qs}"
+
+        # Pop headers kwarg (kept for compat; tiered scraper uses its own UA)
+        kwargs.pop("headers", None)
+
         # --- daily budget guard ---
         daily = await get_daily_request_count(self.domain)
         budget = self._rate_cfg.get("daily_budget", 50)
@@ -150,22 +195,44 @@ class BaseScraper(abc.ABC):
             logger.debug("rate-limit wait", domain=self.domain, wait_s=round(wait, 2))
             await asyncio.sleep(wait)
 
-        # --- retry loop ---
-        headers = kwargs.pop("headers", {})
-        headers.setdefault("User-Agent", self._random_ua())
-        headers.setdefault("Accept-Language", "tr-TR,tr;q=0.9,en-US;q=0.5,en;q=0.3")
+        # --- tiered scraper import (lazy, falls back to httpx if missing) ---
+        try:
+            from src.tools.scraper import scrape_url, ScrapeTier
+            _USE_TIERED = True
+        except ImportError:
+            _USE_TIERED = False
 
         last_exc: BaseException | None = None
         start = time.monotonic()
 
         for attempt, backoff in enumerate(self._BACKOFF_SCHEDULE):
             try:
-                async with httpx.AsyncClient(
-                    follow_redirects=True,
-                    timeout=httpx.Timeout(30.0, connect=10.0),
-                ) as client:
-                    self._last_request_time = time.monotonic()
-                    response = await client.get(url, headers=headers, **kwargs)
+                self._last_request_time = time.monotonic()
+
+                if _USE_TIERED:
+                    result = await scrape_url(url, max_tier=ScrapeTier.TLS, timeout=30.0)
+                    response = _TieredResponse(
+                        html=result.html,
+                        status=result.status,
+                        headers=result.headers,
+                    )
+                else:
+                    # Fallback: raw httpx (for environments without curl_cffi)
+                    headers: dict = {}
+                    headers.setdefault("User-Agent", self._random_ua())
+                    headers.setdefault(
+                        "Accept-Language", "tr-TR,tr;q=0.9,en-US;q=0.5,en;q=0.3"
+                    )
+                    async with httpx.AsyncClient(
+                        follow_redirects=True,
+                        timeout=httpx.Timeout(30.0, connect=10.0),
+                    ) as client:
+                        raw = await client.get(url, headers=headers)
+                    response = _TieredResponse(
+                        html=raw.text,
+                        status=raw.status_code,
+                        headers=dict(raw.headers),
+                    )
 
                 elapsed_ms = int((time.monotonic() - start) * 1000)
 
@@ -211,7 +278,7 @@ class BaseScraper(abc.ABC):
 
                 return response
 
-            except httpx.RequestError as exc:
+            except Exception as exc:
                 last_exc = exc
                 logger.warning(
                     "request error, retrying",
@@ -249,22 +316,26 @@ class BaseScraper(abc.ABC):
         """
         root_url = f"https://www.{self.domain}.com/"
         try:
-            async with httpx.AsyncClient(
-                follow_redirects=True,
-                timeout=httpx.Timeout(15.0, connect=5.0),
-            ) as client:
-                resp = await client.head(
-                    root_url,
-                    headers={"User-Agent": self._random_ua()},
-                )
-                ok = 200 <= resp.status_code < 400
-                logger.info(
-                    "preflight check",
-                    domain=self.domain,
-                    status=resp.status_code,
-                    ok=ok,
-                )
-                return ok
+            try:
+                from src.tools.scraper import scrape_url, ScrapeTier
+                result = await scrape_url(root_url, max_tier=ScrapeTier.TLS, timeout=15.0)
+                ok = 200 <= result.status < 400
+            except ImportError:
+                async with httpx.AsyncClient(
+                    follow_redirects=True,
+                    timeout=httpx.Timeout(15.0, connect=5.0),
+                ) as client:
+                    resp = await client.head(
+                        root_url,
+                        headers={"User-Agent": self._random_ua()},
+                    )
+                    ok = 200 <= resp.status_code < 400
+            logger.info(
+                "preflight check",
+                domain=self.domain,
+                ok=ok,
+            )
+            return ok
         except Exception as exc:
             logger.warning(
                 "preflight check failed",

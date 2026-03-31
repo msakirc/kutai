@@ -168,7 +168,16 @@ class HepsiburadaScraper(BaseScraper):
         return products
 
     def _parse_search_html(self, html: str, max_results: int) -> list[Product]:
-        """Fallback: parse search results from raw HTML."""
+        """Parse search results from Hepsiburada HTML.
+
+        Hepsiburada uses CSS modules (hashed class names) so we rely on
+        ``data-test-id`` attributes and element structure instead of class names.
+
+        Card structure (as of 2026-03):
+          <article class="productCard-module_article__*">
+            <h2 data-test-id="title-N"><a title="Product Name" href="/slug-p-HBCV...">
+            <div data-test-id="final-price-N">PRICE TL</div>
+        """
         products: list[Product] = []
         now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -178,42 +187,53 @@ class HepsiburadaScraper(BaseScraper):
             logger.error("search HTML parse failed", error=str(exc))
             return []
 
-        cards = (
-            soup.select("li[data-productid]")
-            or soup.select("div.product-card")
-            or soup.select("div[data-test-id='product-card']")
-        )
+        import re as _re
+
+        # Cards are <article> elements whose class contains "productCard"
+        cards = soup.find_all("article", class_=_re.compile("productCard"))
+
+        # Fallback: old-style selectors
+        if not cards:
+            cards = (
+                soup.select("li[data-productid]")
+                or soup.select("div[data-test-id='product-card']")
+            )
 
         for card in cards[:max_results]:
             try:
-                # Name
-                name_el = (
-                    card.select_one("h3")
-                    or card.select_one("a[title]")
-                    or card.select_one("span.product-title")
+                # Name + URL: <h2 data-test-id="title-N"><a title="..." href="...">
+                title_el = card.find(
+                    attrs={"data-test-id": _re.compile(r"^title-\d+$")}
                 )
-                if name_el is None:
+                if title_el is None:
+                    # old-style fallback
+                    title_el = (
+                        card.find("h3")
+                        or card.find("a", title=True)
+                    )
+                if title_el is None:
                     continue
+
+                name_link = title_el.find("a", href=True) if title_el.name != "a" else title_el
+                if name_link is None:
+                    continue
+
                 name = normalize_product_name(
-                    name_el.get("title", "") or name_el.get_text(strip=True)
+                    name_link.get("title", "") or name_link.get_text(strip=True)
                 )
                 if not name:
                     continue
 
-                # URL
-                link_el = card.select_one("a[href]")
-                href = link_el["href"] if link_el else ""
+                href = name_link.get("href", "")
                 product_url = (
-                    href
-                    if href.startswith("http")
-                    else f"{_BASE_URL}{href}"
+                    href if href.startswith("http") else f"{_BASE_URL}{href}"
                 )
 
-                # Price
-                price_el = (
-                    card.select_one("div[data-test-id='price-current-price']")
-                    or card.select_one("span.product-price")
-                    or card.select_one("span[data-bind*='price']")
+                # Price: <div data-test-id="final-price-N">
+                price_el = card.find(
+                    attrs={"data-test-id": _re.compile(r"final-price-\d+")}
+                ) or card.find(
+                    attrs={"data-test-id": _re.compile(r"price-current")}
                 )
                 discounted_price: float | None = None
                 if price_el:
@@ -221,23 +241,29 @@ class HepsiburadaScraper(BaseScraper):
                         price_el.get_text(strip=True)
                     )
 
-                # Rating
-                rating: float | None = None
-                rating_el = card.select_one("span.rating-value")
-                if rating_el:
-                    try:
-                        rating = float(rating_el.get_text(strip=True))
-                    except (ValueError, TypeError):
-                        pass
+                # Original price (crossed out)
+                orig_el = card.find(
+                    attrs={"data-test-id": _re.compile(r"original-price|list-price")}
+                )
+                original_price: float | None = None
+                if orig_el:
+                    original_price = parse_turkish_price(orig_el.get_text(strip=True))
+
+                discount_pct: float | None = None
+                if original_price and discounted_price and original_price > discounted_price:
+                    discount_pct = round(
+                        (1 - discounted_price / original_price) * 100, 1
+                    )
 
                 products.append(
                     Product(
                         name=name,
                         url=product_url,
                         source="hepsiburada",
+                        original_price=original_price,
                         discounted_price=discounted_price,
+                        discount_percentage=discount_pct,
                         currency="TRY",
-                        rating=rating,
                         fetched_at=now_iso,
                     )
                 )
@@ -554,7 +580,7 @@ class HepsiburadaScraper(BaseScraper):
             return False
 
         # Check for bot-detection pages
-        block_markers = ("captcha", "challenge-platform", "are you human", "robot")
+        block_markers = ("captcha", "challenge-platform", "are you human", "are you a robot")
         for marker in block_markers:
             if marker in text.lower():
                 logger.warning("possible bot detection page", domain=self.domain)

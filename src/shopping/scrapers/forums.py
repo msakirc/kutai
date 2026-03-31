@@ -332,8 +332,8 @@ class TechnopatScraper(BaseScraper):
 class DonanimHaberScraper(BaseScraper):
     """Scrape discussions from DonanımHaber forum."""
 
-    _BASE_URL = "https://forum.donanimhaber.com"
-    _SEARCH_URL = "https://forum.donanimhaber.com/arama"
+    _BASE_URL = "https://www.donanimhaber.com"
+    _SEARCH_URL = "https://www.donanimhaber.com/search/"
 
     def __init__(self) -> None:
         super().__init__(domain="donanimhaber")
@@ -343,7 +343,7 @@ class DonanimHaberScraper(BaseScraper):
         if not _BS4_AVAILABLE:
             return []
 
-        params = {"kelime": query, "tip": "konu"}
+        params = {"q": query}
 
         try:
             response = await self._fetch(self._SEARCH_URL, params=params)
@@ -358,7 +358,12 @@ class DonanimHaberScraper(BaseScraper):
         return self._parse_search(response.text, max_results)
 
     def _parse_search(self, html: str, max_results: int) -> list[Product]:
-        """Parse DonanımHaber search results."""
+        """Parse DonanımHaber search results.
+
+        www.donanimhaber.com/search/?q=... returns news/review articles.
+        Each result is an ``<article class="blogItem ...">`` with a title
+        link in ``h3 a.baslik`` and the URL as a relative path.
+        """
         products: list[Product] = []
         now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -368,18 +373,23 @@ class DonanimHaberScraper(BaseScraper):
             logger.error("search HTML parse failed", error=str(exc))
             return []
 
+        # Primary: news article results from www.donanimhaber.com/search/
         threads = (
-            soup.select("div.konu-list-item")
+            soup.find_all("article", class_="blogItem")
+            or soup.select("div.konu-list-item")
             or soup.select("li.konu-baslik")
             or soup.select("tr.topic-list-item")
         )
 
         for thread in threads[:max_results]:
             try:
+                # Title link: <h3><a class="baslik" href="...">
                 title_el = (
-                    thread.select_one("a.konu-baslik")
-                    or thread.select_one("a.topic-title")
+                    thread.select_one("h3 a.baslik")
                     or thread.select_one("h3 a")
+                    or thread.select_one("h2 a")
+                    or thread.select_one("a.konu-baslik")
+                    or thread.select_one("a.topic-title")
                 )
                 if title_el is None:
                     continue
@@ -400,12 +410,22 @@ class DonanimHaberScraper(BaseScraper):
                     continue
 
                 specs: dict[str, Any] = {
-                    "type": "forum_thread",
+                    "type": "news_article",
                     "forum": "donanimhaber",
                     "relevance_score": round(score, 2),
                 }
 
-                # Reply / view counts
+                # Author / date from aciklama div
+                aciklama = thread.select_one("div.aciklama")
+                if aciklama:
+                    specs["summary"] = aciklama.get_text(strip=True)[:200]
+
+                # Date
+                time_el = thread.select_one("time") or thread.select_one("span.tarih")
+                if time_el:
+                    specs["date"] = time_el.get("datetime", time_el.get_text(strip=True))
+
+                # Reply / view counts (legacy forum structure)
                 stat_els = thread.select("span.konu-istatistik") or thread.select("span.stat")
                 for stat in stat_els:
                     stat_text = stat.get_text()
@@ -539,5 +559,5 @@ class DonanimHaberScraper(BaseScraper):
         text = response.text
         if not text or len(text) < 300:
             return False
-        markers = ("donanimhaber", "forum", "mesaj", "konu")
+        markers = ("donanimhaber", "forum", "mesaj", "konu", "search", "haber")
         return any(marker in text.lower() for marker in markers)

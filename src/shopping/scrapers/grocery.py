@@ -416,10 +416,20 @@ class GetirScraper(BaseScraper):
 
 @register_scraper("migros")
 class MigrosScraper(BaseScraper):
-    """Scrape grocery products from Migros (migros.com.tr)."""
+    """Scrape grocery products from Migros (migros.com.tr).
+
+    Note: Migros is an Angular SPA. The REST API (``/rest/products/search``)
+    returns results only when a store is selected in the session.  Without
+    a ``storeId`` cookie the API returns hitCount=0.  The ``/rest/search``
+    path is a 404 (deprecated).  HTML scraping also fails since all pages
+    return the SPA shell.  Currently this scraper returns empty results
+    unless a valid store session is configured.
+    """
 
     _BASE_URL = "https://www.migros.com.tr"
-    _API_URL = "https://www.migros.com.tr/rest/search"
+    # Updated endpoint: /rest/search → 404; /rest/products/search is live
+    # but requires a store session cookie to return results.
+    _API_URL = "https://www.migros.com.tr/rest/products/search"
 
     def __init__(self) -> None:
         super().__init__(domain="migros")
@@ -456,7 +466,8 @@ class MigrosScraper(BaseScraper):
         now_iso = datetime.now(timezone.utc).isoformat()
 
         try:
-            params = {"q": query, "sayfa": "1", "sirpieces": str(max_results)}
+            # param name changed from "q" to "term" in new endpoint
+            params = {"term": query, "sayfa": "1", "siralamaTipi": "1"}
             response = await self._fetch(self._API_URL, params=params)
 
             if response.status_code != 200:

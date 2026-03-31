@@ -1,8 +1,9 @@
 """Trendyol scraper -- Turkey's largest e-commerce marketplace.
 
-Uses Trendyol's public JSON APIs for search and reviews, and falls back
-to ``__NEXT_DATA__`` embedded in the product page HTML for product details.
-No browser automation required.
+Primary: HTML scraping of ``www.trendyol.com/sr`` (TLS tier required).
+Fallback: ``public.trendyol.com`` JSON API (may be unavailable - DNS issues
+observed as of 2026-03).  Product detail pages use ``__NEXT_DATA__`` embedded
+JSON first, then structured data extraction.
 """
 
 from __future__ import annotations
@@ -34,10 +35,13 @@ logger = get_logger("shopping.scrapers.trendyol")
 # API endpoints
 # ---------------------------------------------------------------------------
 
+# NOTE: public.trendyol.com has DNS failures as of 2026-03 -- kept as fallback
 _SEARCH_API = (
     "https://public.trendyol.com/discovery-web-searchgw-service"
     "/v2/api/infinite-scroll/sr"
 )
+# Primary HTML search endpoint (requires TLS tier, returns 403 on plain HTTP)
+_SEARCH_HTML_URL = "https://www.trendyol.com/sr"
 _REVIEW_API = "https://public-mdc.trendyol.com/discovery-web-socialgw-service/api"
 _PRODUCT_BASE = "https://www.trendyol.com"
 
@@ -59,7 +63,11 @@ class TrendyolScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     async def search(self, query: str, *, max_results: int = 20) -> list[Product]:
-        """Search Trendyol via the public discovery API."""
+        """Search Trendyol.
+
+        Strategy 1: scrape ``www.trendyol.com/sr`` HTML (TLS bypass, primary).
+        Strategy 2: ``public.trendyol.com`` JSON API (fallback; DNS may fail).
+        """
         # Cache
         try:
             cached = await get_cached_search(query, "trendyol")
@@ -69,41 +77,56 @@ class TrendyolScraper(BaseScraper):
         except Exception as exc:
             logger.debug("search cache lookup failed", error=str(exc))
 
-        params = {
-            "q": query,
-            "qt": query,
-            "st": query,
-            "os": "1",
-            "pi": "1",
-            "culture": "tr-TR",
-            "userGenderId": "0",
-            "pId": "0",
-            "scoringAlgorithmId": "2",
-            "categoryRelevancyEnabled": "false",
-            "isLegalRequirementConfirmed": "false",
-            "searchStrategyType": "DEFAULT",
-            "productStampType": "TypeA",
-        }
+        products: list[Product] = []
 
+        # --- Strategy 1: HTML scraping ---
         try:
-            response = await self._fetch(_SEARCH_API, params=params)
+            import urllib.parse as _up
+            html_url = f"{_SEARCH_HTML_URL}?q={_up.quote(query, safe='')}"
+            response = await self._fetch(html_url)
+            if response.status_code == 200:
+                products = self._parse_search_html(response.text, max_results)
+                if products:
+                    logger.info("search HTML parsed", count=len(products))
         except Exception as exc:
-            logger.error("search fetch failed", query=query, error=str(exc))
-            return []
+            logger.warning("search HTML fetch failed", query=query, error=str(exc))
 
-        if response.status_code != 200:
-            logger.warning("search non-200", query=query, status=response.status_code)
-            return []
-
-        products = self._parse_search_response(response, max_results)
+        # --- Strategy 2: JSON API fallback ---
+        if not products:
+            params = {
+                "q": query,
+                "qt": query,
+                "st": query,
+                "os": "1",
+                "pi": "1",
+                "culture": "tr-TR",
+                "userGenderId": "0",
+                "pId": "0",
+                "scoringAlgorithmId": "2",
+                "categoryRelevancyEnabled": "false",
+                "isLegalRequirementConfirmed": "false",
+                "searchStrategyType": "DEFAULT",
+                "productStampType": "TypeA",
+            }
+            try:
+                response = await self._fetch(_SEARCH_API, params=params)
+                if response.status_code == 200:
+                    products = self._parse_search_response(response, max_results)
+                else:
+                    logger.warning(
+                        "search API non-200", query=query, status=response.status_code
+                    )
+            except Exception as exc:
+                logger.error("search API fetch failed", query=query, error=str(exc))
 
         # Cache
-        try:
-            await cache_search(
-                query, "trendyol", [self._product_to_dict(p) for p in products]
-            )
-        except Exception as exc:
-            logger.debug("search cache write failed", error=str(exc))
+        if products:
+            try:
+                await cache_search(
+                    query, "trendyol", [self._product_to_dict(p) for p in products]
+                )
+            except Exception as exc:
+                logger.debug("search cache write failed", error=str(exc))
 
         return products
 
@@ -134,6 +157,104 @@ class TrendyolScraper(BaseScraper):
                 continue
 
         logger.info("search parsed", count=len(products))
+        return products
+
+    def _parse_search_html(self, html: str, max_results: int) -> list[Product]:
+        """Parse search results from Trendyol's HTML search page.
+
+        Trendyol renders ``<a class="product-card">`` elements server-side.
+        Each card contains ``span.product-brand``, ``span.product-name``,
+        ``div.price-section``, and an ``<img>`` tag.
+        """
+        products: list[Product] = []
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:
+            logger.warning("bs4 not available -- Trendyol HTML parsing disabled")
+            return []
+
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+        except Exception as exc:
+            logger.error("HTML parse failed", error=str(exc))
+            return []
+
+        cards = soup.find_all("a", class_="product-card")
+        logger.debug("trendyol HTML cards found", count=len(cards))
+
+        for card in cards[:max_results]:
+            try:
+                href = card.get("href", "")
+                if not href:
+                    continue
+                product_url = (
+                    href if href.startswith("http") else f"{_PRODUCT_BASE}{href}"
+                )
+
+                # Brand + product name
+                brand_el = card.select_one("span.product-brand")
+                name_el = card.select_one("span.product-name")
+                brand = brand_el.get_text(strip=True) if brand_el else ""
+                pname = name_el.get_text(strip=True) if name_el else ""
+                if not pname and not brand:
+                    continue
+                full_name = f"{brand} {pname}".strip() if brand else pname
+                full_name = normalize_product_name(full_name)
+
+                # Price (single or discounted)
+                # Trendyol shows: div.price-section (current) and
+                # optionally div.original-price (crossed out)
+                price_el = card.select_one(
+                    "div.price-section, [data-testid='price-section']"
+                )
+                discounted_price: float | None = None
+                if price_el:
+                    discounted_price = parse_turkish_price(
+                        price_el.get_text(strip=True)
+                    )
+
+                orig_price_el = card.select_one(
+                    "div.original-price, [data-testid='original-price']"
+                )
+                original_price: float | None = None
+                if orig_price_el:
+                    original_price = parse_turkish_price(
+                        orig_price_el.get_text(strip=True)
+                    )
+
+                discount_pct: float | None = None
+                if original_price and discounted_price and original_price > discounted_price:
+                    discount_pct = round(
+                        (1 - discounted_price / original_price) * 100, 1
+                    )
+
+                # Image
+                img_el = card.select_one("img")
+                image_url: str | None = None
+                if img_el:
+                    src = img_el.get("src") or img_el.get("data-src", "")
+                    if src and not src.startswith("data:"):
+                        image_url = src
+
+                products.append(
+                    Product(
+                        name=full_name,
+                        url=product_url,
+                        source="trendyol",
+                        original_price=original_price,
+                        discounted_price=discounted_price,
+                        discount_percentage=discount_pct,
+                        currency="TRY",
+                        image_url=image_url,
+                        fetched_at=now_iso,
+                    )
+                )
+            except Exception as exc:
+                logger.debug("HTML card parse error", error=str(exc))
+                continue
+
         return products
 
     def _parse_search_item(self, item: dict, now_iso: str) -> Product | None:

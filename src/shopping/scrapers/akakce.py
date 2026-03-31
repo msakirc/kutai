@@ -73,7 +73,7 @@ class AkakceScraper(BaseScraper):
             logger.debug("search cache lookup failed", error=str(exc))
 
         encoded = urllib.parse.quote(query, safe="")
-        url = f"{self._BASE_URL}/ara/{encoded}"
+        url = f"{self._BASE_URL}/arama/?q={encoded}"
 
         try:
             response = await self._fetch(url)

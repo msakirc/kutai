@@ -2699,8 +2699,12 @@ class Orchestrator:
                 # Write heartbeat for wrapper liveness detection
                 try:
                     import time as _hb_time
+                    _hb_ts = str(_hb_time.time())
                     with open("logs/orchestrator.heartbeat", "w") as _hb:
-                        _hb.write(str(_hb_time.time()))
+                        _hb.write(_hb_ts)
+                    # Also write to logs/heartbeat (checked by wrapper health check)
+                    with open("logs/heartbeat", "w") as _hb2:
+                        _hb2.write(_hb_ts)
                 except Exception:
                     pass
 

@@ -109,12 +109,13 @@ KB_ALISVERIS = _make_keyboard([
 ])
 
 KB_LISTEM = _make_keyboard([
-    ["📝 Yeni Ekle"],
+    ["📝 Yeni Ekle", "⏰ Hatırlat"],
     ["🔙 Geri"],
 ])
 
 KB_GOREVLER = _make_keyboard([
     ["🎯 Yeni Görev", "📬 İş Kuyruğu"],
+    ["⏰ Zamanla"],
     ["🔙 Geri"],
 ])
 
@@ -184,9 +185,11 @@ _BUTTON_ACTIONS: dict[str, tuple[str, str]] = {
     "🔬 Detaylı Araştır": ("cmd_args", "research_product"),
     # ── Listem sub-buttons ──
     "📝 Yeni Ekle": ("cmd_args", "todo"),
+    "⏰ Hatırlat": ("special", "reminder"),
     # ── Görevler sub-buttons ──
     "🎯 Yeni Görev": ("special", "new_mission"),
     "📬 İş Kuyruğu": ("cmd", "view_queue"),
+    "⏰ Zamanla": ("special", "schedule_task"),
     # ── Workflow selection ──
     "⚡ Hızlı Cevap": ("special", "wf_quick"),
     "📊 Araştır & Raporla": ("special", "wf_research"),
@@ -482,7 +485,176 @@ class TelegramInterface:
             await update.message.reply_text("▶️ Başlatılıyor...")
             return
 
+        # ── Reminder (one-shot) ──
+        if action == "reminder":
+            self._pending_action[chat_id] = {
+                "command": "_reminder_time",
+                "ts": _time.time(),
+            }
+            await self._reply(update,
+                "⏰ Ne zaman hatırlatılsın?\n\n"
+                "Örnekler:\n"
+                "• 10dk\n"
+                "• 1 saat\n"
+                "• yarın 09:00\n"
+                "• 14:30"
+            )
+            return
+
+        # ── Schedule Task (recurring) ──
+        if action == "schedule_task":
+            try:
+                from src.infra.db import get_scheduled_tasks
+                tasks = await get_scheduled_tasks()
+            except Exception:
+                tasks = []
+            lines = ["⏰ *Zamanlanmış Görevler*\n"]
+            if tasks:
+                day_map = {
+                    "1": "Pzt", "2": "Sal", "3": "Çar",
+                    "4": "Per", "5": "Cum", "6": "Cmt", "0": "Paz",
+                }
+                for i, t in enumerate(tasks, 1):
+                    cron = t.get("cron_expression", "")
+                    enabled = t.get("enabled", 1)
+                    status = "✅" if enabled else "⏸"
+                    # Human-readable cron summary
+                    parts = cron.strip().split() if cron else []
+                    if len(parts) == 5:
+                        m, h, dom, mo, dow = parts
+                        if h != "*" and m != "*" and "/" not in h and "," not in h:
+                            if dow != "*":
+                                day_label = day_map.get(dow, dow)
+                                schedule_str = f"her {day_label} {h}:{m.zfill(2)}"
+                            else:
+                                schedule_str = f"her gün {h}:{m.zfill(2)}"
+                        elif "/" in h:
+                            interval = h.split("/")[1]
+                            schedule_str = f"her {interval} saatte"
+                        elif h == "*" and m != "*":
+                            schedule_str = f"her saat {m}. dakikada"
+                        else:
+                            schedule_str = cron
+                    else:
+                        schedule_str = cron or "?"
+                    lines.append(f"{i}. {status} {t['title']} — {schedule_str}")
+            else:
+                lines.append("_(henüz görev yok)_")
+            lines.append("\n[Yeni eklemek için açıklama yaz]")
+            self._pending_action[chat_id] = {
+                "command": "_schedule_desc",
+                "ts": _time.time(),
+            }
+            await self._reply(update, "\n".join(lines))
+            return
+
         logger.warning("Unhandled special button", action=action)
+
+    # ── Reminder / Schedule helpers ────────────────────────────────────────
+
+    @staticmethod
+    def _parse_reminder_time(text: str):
+        """Parse a Turkish time expression into a datetime.
+
+        Supported formats:
+        - "10dk" / "10 dakika" / "10d" → now + N minutes
+        - "1 saat" / "1s" / "2s" → now + N hours
+        - "yarın 09:00" → tomorrow at HH:MM
+        - "14:30" → today at 14:30 (or tomorrow if already past)
+        - bare number without unit → treat as minutes
+
+        Returns a datetime or None if parsing fails.
+        """
+        from datetime import datetime, timedelta
+        import re
+
+        text = text.strip().lower()
+        now = datetime.now()
+
+        # N dakika / Ndk / Nd
+        m = re.match(r"^(\d+)\s*(?:dk|dakika|d(?:akika)?)$", text)
+        if m:
+            return now + timedelta(minutes=int(m.group(1)))
+
+        # N saat / Ns
+        m = re.match(r"^(\d+)\s*(?:saat|s(?:aat)?)$", text)
+        if m:
+            return now + timedelta(hours=int(m.group(1)))
+
+        # yarın HH:MM
+        m = re.match(r"^yarın\s+(\d{1,2}):(\d{2})$", text)
+        if m:
+            tomorrow = now.date() + timedelta(days=1)
+            return datetime(tomorrow.year, tomorrow.month, tomorrow.day,
+                            int(m.group(1)), int(m.group(2)))
+
+        # HH:MM (today, or tomorrow if past)
+        m = re.match(r"^(\d{1,2}):(\d{2})$", text)
+        if m:
+            candidate = now.replace(hour=int(m.group(1)), minute=int(m.group(2)),
+                                    second=0, microsecond=0)
+            if candidate <= now:
+                candidate += timedelta(days=1)
+            return candidate
+
+        # bare integer → minutes
+        m = re.match(r"^(\d+)$", text)
+        if m:
+            return now + timedelta(minutes=int(m.group(1)))
+
+        return None
+
+    @staticmethod
+    def _parse_cron_input(text: str):
+        """Parse a Turkish schedule description into a cron expression.
+
+        Supported patterns:
+        - "her gün 09:00"        → "0 9 * * *"
+        - "her gün 14:30"        → "30 14 * * *"
+        - "her 2 saatte"         → "0 */2 * * *"
+        - "her saat"             → "0 * * * *"
+        - "her pazartesi"        → "0 9 * * 1"
+        - "her pazartesi 14:00"  → "0 14 * * 1"
+        - "her salı 10:30"       → "30 10 * * 2"
+
+        Returns a cron string or None if parsing fails.
+        """
+        import re
+
+        text = text.strip().lower()
+
+        day_map = {
+            "pazartesi": "1", "salı": "2", "çarşamba": "3",
+            "perşembe": "4", "cuma": "5", "cumartesi": "6", "pazar": "0",
+        }
+
+        # her N saatte
+        m = re.match(r"^her\s+(\d+)\s*saatte?$", text)
+        if m:
+            return f"0 */{m.group(1)} * * *"
+
+        # her saat
+        if re.match(r"^her\s*saat$", text):
+            return "0 * * * *"
+
+        # her gün HH:MM
+        m = re.match(r"^her\s+gün\s+(\d{1,2}):(\d{2})$", text)
+        if m:
+            return f"{int(m.group(2))} {int(m.group(1))} * * *"
+
+        # her gün (default 09:00)
+        if re.match(r"^her\s+gün$", text):
+            return "0 9 * * *"
+
+        # her <weekday> HH:MM
+        for day_name, day_num in day_map.items():
+            m = re.match(rf"^her\s+{re.escape(day_name)}\s+(\d{{1,2}}):(\d{{2}})$", text)
+            if m:
+                return f"{int(m.group(2))} {int(m.group(1))} * * {day_num}"
+            if re.match(rf"^her\s+{re.escape(day_name)}$", text):
+                return f"0 9 * * {day_num}"
+
+        return None
 
     async def _build_system_dashboard(self) -> str:
         """Build the system status dashboard text."""
@@ -632,8 +804,8 @@ class TelegramInterface:
         # Check location for location-dependent services
         if service in ("pharmacy", "weather", "prayer"):
             try:
-                from src.memory.preferences import get_user_preference
-                lat = await get_user_preference(update.effective_chat.id, "location_lat")
+                from src.infra.db import get_user_pref
+                lat = await get_user_pref("location_lat")
                 if not lat:
                     await self._start_location_setup(update, service)
                     return
@@ -742,12 +914,12 @@ class TelegramInterface:
 
     async def _quick_pharmacy(self, update, context):
         """Find pharmacies on duty using the pharmacy tool."""
-        from src.memory.preferences import get_user_preference
+        from src.infra.db import get_user_pref
         chat_id = update.effective_chat.id
-        lat = await get_user_preference(chat_id, "location_lat")
-        lon = await get_user_preference(chat_id, "location_lon")
-        district = await get_user_preference(chat_id, "location_district")
-        city = await get_user_preference(chat_id, "location_city")
+        lat = await get_user_pref("location_lat")
+        lon = await get_user_pref("location_lon")
+        district = await get_user_pref("location_district")
+        city = await get_user_pref("location_city")
         await self._reply(update, "🏥 Nöbetçi eczaneler aranıyor...")
         try:
             from src.tools.pharmacy import find_pharmacies_on_duty
@@ -763,7 +935,7 @@ class TelegramInterface:
         """Get exchange rates from free API."""
         await self._reply(update, "💰 Döviz kurları alınıyor...")
         try:
-            from src.tools.free_apis import call_free_api
+            from src.tools.free_apis import call_api as call_free_api
             result = await call_free_api("exchange_rates")
             await self._reply(update, result or "Döviz kuru bilgisi alınamadı.")
         except Exception as e:
@@ -771,13 +943,13 @@ class TelegramInterface:
 
     async def _quick_weather(self, update, context):
         """Get weather from free API."""
-        from src.memory.preferences import get_user_preference
+        from src.infra.db import get_user_pref
         chat_id = update.effective_chat.id
-        lat = await get_user_preference(chat_id, "location_lat")
-        lon = await get_user_preference(chat_id, "location_lon")
+        lat = await get_user_pref("location_lat")
+        lon = await get_user_pref("location_lon")
         await self._reply(update, "🌤 Hava durumu alınıyor...")
         try:
-            from src.tools.free_apis import call_free_api
+            from src.tools.free_apis import call_api as call_free_api
             result = await call_free_api("weather", lat=float(lat), lon=float(lon))
             await self._reply(update, result or "Hava durumu bilgisi alınamadı.")
         except Exception as e:
@@ -787,7 +959,7 @@ class TelegramInterface:
         """Get fuel prices from free API."""
         await self._reply(update, "⛽ Yakıt fiyatları alınıyor...")
         try:
-            from src.tools.free_apis import call_free_api
+            from src.tools.free_apis import call_api as call_free_api
             result = await call_free_api("fuel_prices")
             await self._reply(update, result or "Yakıt fiyatı bilgisi alınamadı.")
         except Exception as e:
@@ -795,13 +967,13 @@ class TelegramInterface:
 
     async def _quick_prayer(self, update, context):
         """Get prayer times from free API."""
-        from src.memory.preferences import get_user_preference
+        from src.infra.db import get_user_pref
         chat_id = update.effective_chat.id
-        lat = await get_user_preference(chat_id, "location_lat")
-        lon = await get_user_preference(chat_id, "location_lon")
+        lat = await get_user_pref("location_lat")
+        lon = await get_user_pref("location_lon")
         await self._reply(update, "🕌 Namaz vakitleri alınıyor...")
         try:
-            from src.tools.free_apis import call_free_api
+            from src.tools.free_apis import call_api as call_free_api
             result = await call_free_api("prayer_times", lat=float(lat), lon=float(lon))
             await self._reply(update, result or "Namaz vakti bilgisi alınamadı.")
         except Exception as e:
@@ -811,7 +983,7 @@ class TelegramInterface:
         """Get news headlines."""
         await self._reply(update, "📰 Haberler alınıyor...")
         try:
-            from src.tools.free_apis import call_free_api
+            from src.tools.free_apis import call_api as call_free_api
             result = await call_free_api("news_headlines")
             await self._reply(update, result or "Haber alınamadı.")
         except Exception as e:
@@ -821,7 +993,7 @@ class TelegramInterface:
         """Get gold prices from free API."""
         await self._reply(update, "🪙 Altın fiyatları alınıyor...")
         try:
-            from src.tools.free_apis import call_free_api
+            from src.tools.free_apis import call_api as call_free_api
             result = await call_free_api("gold_prices")
             await self._reply(update, result or "Altın fiyatı bilgisi alınamadı.")
         except Exception as e:
@@ -831,7 +1003,7 @@ class TelegramInterface:
         """Get recent earthquake info from free API."""
         await self._reply(update, "🌍 Deprem bilgileri alınıyor...")
         try:
-            from src.tools.free_apis import call_free_api
+            from src.tools.free_apis import call_api as call_free_api
             result = await call_free_api("earthquake")
             await self._reply(update, result or "Deprem bilgisi alınamadı.")
         except Exception as e:
@@ -2426,6 +2598,132 @@ class TelegramInterface:
                     self._last_todo_help = pending_action
                     await self.cmd__todo_help(update, context)
                     return
+
+                # ── Workflow selection flow ──
+                if cmd == "_workflow_select":
+                    # User typed mission description, now show workflow picker
+                    self._pending_mission[chat_id] = text
+                    self._kb_state[chat_id] = "workflow_select"
+                    await update.message.reply_text(
+                        "🎯 Bu görev nasıl çalışsın?",
+                        reply_markup=KB_WORKFLOW_SELECT,
+                    )
+                    return
+
+                # ── Reminder flow ──
+                if cmd == "_reminder_time":
+                    parsed_dt = self._parse_reminder_time(text)
+                    if parsed_dt is None:
+                        await self._reply(update,
+                            "❌ Zaman anlaşılamadı. Tekrar dene:\n"
+                            "• 10dk\n• 1 saat\n• 14:30\n• yarın 09:00"
+                        )
+                        # Re-set so user can retry
+                        self._pending_action[chat_id] = {
+                            "command": "_reminder_time",
+                            "ts": _time.time(),
+                        }
+                        return
+                    self._pending_action[chat_id] = {
+                        "command": "_reminder_text",
+                        "reminder_time": parsed_dt,
+                        "ts": _time.time(),
+                    }
+                    time_str = parsed_dt.strftime("%d.%m.%Y %H:%M")
+                    await self._reply(update, f"📝 Ne hatırlatılsın? _(Saat: {time_str})_")
+                    return
+
+                if cmd == "_reminder_text":
+                    reminder_time = pending_action.get("reminder_time")
+                    if reminder_time is None:
+                        await self._reply(update, "❌ Hatırlatma zamanı kayboldu. Tekrar dene.")
+                        return
+                    try:
+                        from src.infra.db import add_scheduled_task
+                        next_run_str = reminder_time.strftime("%Y-%m-%d %H:%M:%S")
+                        task_id = await add_scheduled_task(
+                            title=f"Hatırlatma: {text[:60]}",
+                            description=text,
+                            cron_expression="",  # one-shot — no cron
+                            agent_type="notifier",
+                            tier="cheap",
+                            context={
+                                "one_shot": True,
+                                "chat_id": chat_id,
+                                "reminder_text": text,
+                                "next_run_override": next_run_str,
+                            },
+                        )
+                        # Override next_run directly so scheduler picks it up
+                        from src.infra.db import get_db
+                        db = await get_db()
+                        await db.execute(
+                            "UPDATE scheduled_tasks SET next_run=?, enabled=1 WHERE id=?",
+                            (next_run_str, task_id),
+                        )
+                        await db.commit()
+                        time_str = reminder_time.strftime("%d.%m.%Y %H:%M")
+                        await self._reply(update,
+                            f"✅ Hatırlatma kaydedildi!\n"
+                            f"⏰ {time_str}\n"
+                            f"📝 {text[:100]}"
+                        )
+                    except Exception as e:
+                        logger.error("Reminder creation failed", error=str(e))
+                        await self._reply(update, f"❌ Hatırlatma oluşturulamadı: {_friendly_error(str(e))}")
+                    return
+
+                # ── Schedule task flow ──
+                if cmd == "_schedule_desc":
+                    self._pending_action[chat_id] = {
+                        "command": "_schedule_cron",
+                        "schedule_desc": text,
+                        "ts": _time.time(),
+                    }
+                    await self._reply(update,
+                        "⏰ Ne sıklıkla?\n\n"
+                        "Örnekler:\n"
+                        "• her gün 09:00\n"
+                        "• her 2 saatte\n"
+                        "• her pazartesi\n"
+                        "• her saat"
+                    )
+                    return
+
+                if cmd == "_schedule_cron":
+                    schedule_desc = pending_action.get("schedule_desc", "")
+                    cron_expr = self._parse_cron_input(text)
+                    if cron_expr is None:
+                        await self._reply(update,
+                            "❌ Program anlaşılamadı. Tekrar dene:\n"
+                            "• her gün 09:00\n• her 2 saatte\n• her pazartesi\n• her saat"
+                        )
+                        self._pending_action[chat_id] = {
+                            "command": "_schedule_cron",
+                            "schedule_desc": schedule_desc,
+                            "ts": _time.time(),
+                        }
+                        return
+                    try:
+                        from src.infra.db import add_scheduled_task
+                        task_id = await add_scheduled_task(
+                            title=schedule_desc[:100],
+                            description=schedule_desc,
+                            cron_expression=cron_expr,
+                            agent_type="executor",
+                            tier="cheap",
+                            context={"chat_id": chat_id},
+                        )
+                        await self._reply(update,
+                            f"✅ Görev zamanlandı!\n"
+                            f"📋 {schedule_desc[:100]}\n"
+                            f"⏰ Cron: `{cron_expr}`"
+                        )
+                    except Exception as e:
+                        logger.error("Schedule task creation failed", error=str(e))
+                        await self._reply(update, f"❌ Görev zamanlanamadı: {_friendly_error(str(e))}")
+                    return
+
                 handler = self._resolve_cmd_handler(cmd)
                 if handler:
                     # Simulate command with text as args
@@ -3645,73 +3943,181 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         await query.answer()
         data = query.data
 
-        # ── Interactive Menu Callbacks ──────────────────────────
-
-        # Any menu interaction cancels a previous pending_action to prevent
-        # stale prompts from capturing unrelated user input (Bug 2 / Bug 3).
-        if data.startswith(("menu_cat:", "menu_cmd:", "menu_ask:", "menu_back")):
-            chat_id = query.message.chat_id
-            self._pending_action.pop(chat_id, None)
-
-        if data == "menu_back":
-            await query.edit_message_text(
-                "🤖 *Autonomous AI Orchestrator*\n\n"
-                "Tap a category below, or just send a message.",
-                parse_mode="Markdown",
-                reply_markup=_build_category_keyboard()
-            )
-            return
-
-        if data.startswith("menu_cat:"):
-            cat_key = data.split(":", 1)[1]
-            # Find category label
-            cat_label = cat_key
-            for label, key, _ in MENU_CATEGORIES:
-                if key == cat_key:
-                    cat_label = label
-                    break
-            await query.edit_message_text(
-                f"{cat_label}\n\nTap a command:",
-                reply_markup=_build_command_keyboard(cat_key)
-            )
-            return
-
-        if data.startswith("menu_cmd:"):
-            cmd = data.split(":", 1)[1]
-            handler = self._resolve_cmd_handler(cmd)
-            if handler:
-                context.args = []
-                # Send a message so the handler has something to reply_text on
-                msg = await query.message.reply_text(f"⏳ /{cmd}...", reply_markup=REPLY_KEYBOARD)
-                # Wrap in a lightweight object matching what handlers expect
-                class _CallbackUpdate:
-                    """Minimal update shim so cmd_* handlers work from callbacks."""
-                    def __init__(self, message):
-                        self.message = message
-                        self.effective_chat = message.chat
-                try:
-                    await handler(_CallbackUpdate(msg), context)
-                except Exception as e:
-                    await msg.reply_text(f"❌ {_friendly_error(str(e))}", reply_markup=REPLY_KEYBOARD)
-            else:
-                await query.message.reply_text(f"Unknown command: /{cmd}", reply_markup=REPLY_KEYBOARD)
-            # Restore the original menu message to top-level categories
+        # ── Mission Detail Callbacks ──────────────────────────────
+        if data.startswith("m:task:detail:"):
+            mission_id = int(data.split(":")[-1])
             try:
-                await query.message.edit_text(
-                    "Tap a category or send a message:",
-                    reply_markup=_build_category_keyboard()
+                mission = await get_mission(mission_id)
+                if not mission:
+                    await query.message.reply_text(f"Görev #{mission_id} bulunamadı.")
+                    return
+                title = mission.get("title", mission.get("description", "?"))[:50]
+                status = mission.get("status", "?")
+                priority = mission.get("priority", "?")
+                status_tr = {"running": "çalışıyor", "pending": "bekliyor",
+                            "paused": "duraklatıldı", "completed": "tamamlandı",
+                            "failed": "başarısız", "needs_clarification": "açıklama bekliyor"
+                            }.get(status, status)
+                text = (f"🎯 *{title}*\n"
+                        f"Durum: {status_tr} | Öncelik: {priority}")
+                buttons = []
+                if status in ("running", "pending"):
+                    buttons.append([
+                        InlineKeyboardButton("⏸ Duraklat", callback_data=f"m:task:pause:{mission_id}"),
+                        InlineKeyboardButton("🚫 İptal", callback_data=f"m:task:cancel:{mission_id}"),
+                    ])
+                elif status == "paused":
+                    buttons.append([
+                        InlineKeyboardButton("▶️ Devam", callback_data=f"m:task:resume:{mission_id}"),
+                        InlineKeyboardButton("🚫 İptal", callback_data=f"m:task:cancel:{mission_id}"),
+                    ])
+                buttons.append([
+                    InlineKeyboardButton("📄 Sonuç", callback_data=f"m:task:result:{mission_id}"),
+                ])
+                await query.message.reply_text(
+                    text, parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
                 )
-            except Exception:
-                pass  # message may have been deleted or is unchanged
+            except Exception as e:
+                await query.message.reply_text(f"❌ Hata: {e}")
             return
 
-        if data.startswith("menu_ask:"):
-            cmd = data.split(":", 1)[1]
-            prompt = _CMD_ARG_PROMPTS.get(cmd, f"Enter argument for /{cmd}:")
-            chat_id = query.message.chat_id
-            # _pending_action was cleared above; now set the new one
-            self._pending_action[chat_id] = {"command": cmd}
-            await query.message.reply_text(f"💬 {prompt}", reply_markup=REPLY_KEYBOARD)
+        if data.startswith("m:task:pause:"):
+            mid = int(data.split(":")[-1])
+            try:
+                await update_mission(mid, status="paused")
+                await query.message.reply_text(f"⏸ Görev #{mid} duraklatıldı.")
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
+            return
+
+        if data.startswith("m:task:resume:"):
+            mid = int(data.split(":")[-1])
+            try:
+                await update_mission(mid, status="pending")
+                await query.message.reply_text(f"▶️ Görev #{mid} devam ediyor.")
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
+            return
+
+        if data.startswith("m:task:cancel:"):
+            mid = int(data.split(":")[-1])
+            try:
+                await update_mission(mid, status="cancelled")
+                await query.message.reply_text(f"🚫 Görev #{mid} iptal edildi.")
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
+            return
+
+        if data.startswith("m:task:result:"):
+            mid = int(data.split(":")[-1])
+            try:
+                tasks = await get_tasks_for_mission(mid)
+                completed = [t for t in tasks if t.get("status") == "completed"]
+                if completed:
+                    last = completed[-1]
+                    result_text = last.get("result", "Sonuç yok.")
+                    if len(result_text) > 3000:
+                        result_text = result_text[:3000] + "..."
+                    await query.message.reply_text(f"📄 Sonuç:\n\n{result_text}")
+                else:
+                    await query.message.reply_text("📄 Henüz tamamlanmış görev yok.")
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
+            return
+
+        # ── Debug/DLQ Detail Callbacks ────────────────────────────
+        if data.startswith("m:debug:detail:"):
+            task_id = int(data.split(":")[-1])
+            try:
+                task = await get_task(task_id)
+                if not task:
+                    await query.message.reply_text(f"Görev #{task_id} bulunamadı.")
+                    return
+                title = (task.get("title") or task.get("description", "?"))[:50]
+                agent = task.get("agent_type", "?")
+                model = task.get("model_used", "?")
+                status = task.get("status", "?")
+                error = task.get("error", "")
+                duration = task.get("duration_seconds", "?")
+                text = (f"🐛 *Görev #{task_id}: {title}*\n\n"
+                        f"Agent: {agent}\n"
+                        f"Model: {model}\n"
+                        f"Durum: {status}\n"
+                        f"Süre: {duration}s")
+                if error:
+                    text += f"\n\nHata:\n`{error[:500]}`"
+                await query.message.reply_text(text, parse_mode="Markdown")
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
+            return
+
+        if data.startswith("m:dlq:detail:"):
+            task_id = int(data.split(":")[-1])
+            try:
+                task = await get_task(task_id)
+                if not task:
+                    await query.message.reply_text(f"Görev #{task_id} bulunamadı.")
+                    return
+                title = (task.get("title") or task.get("description", "?"))[:50]
+                error = task.get("error", "Hata bilgisi yok")
+                text = (f"📭 *DLQ #{task_id}: {title}*\n\n"
+                        f"Hata:\n`{error[:1000]}`")
+                retry_btn = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔄 Tekrar Dene", callback_data=f"m:dlq:retry:{task_id}"),
+                ]])
+                await query.message.reply_text(text, parse_mode="Markdown", reply_markup=retry_btn)
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
+            return
+
+        if data.startswith("m:dlq:retry:"):
+            task_id = int(data.split(":")[-1])
+            try:
+                await update_task(task_id, status="pending", error=None)
+                await query.message.reply_text(f"🔄 Görev #{task_id} kuyruğa geri eklendi.")
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
+            return
+
+        # ── Lifecycle Confirmation Callbacks ──────────────────────
+        if data == "m:confirm:restart":
+            try:
+                handler = getattr(self, 'cmd_kutai_restart', None)
+                if handler:
+                    context.args = []
+                    class _ConfirmUpdate:
+                        def __init__(self, message):
+                            self.message = message
+                            self.effective_chat = message.chat
+                    await handler(_ConfirmUpdate(query.message), context)
+                else:
+                    await query.message.reply_text("❌ Restart handler bulunamadı.")
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
+            return
+
+        if data == "m:confirm:stop":
+            try:
+                handler = getattr(self, 'cmd_kutai_stop', None)
+                if handler:
+                    context.args = ["--force"]
+                    class _ConfirmUpdate:
+                        def __init__(self, message):
+                            self.message = message
+                            self.effective_chat = message.chat
+                    await handler(_ConfirmUpdate(query.message), context)
+                else:
+                    await query.message.reply_text("❌ Stop handler bulunamadı.")
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
+            return
+
+        if data == "m:confirm:cancel":
+            try:
+                await query.edit_message_text("❌ İptal edildi.")
+            except Exception:
+                pass
             return
 
         # ── Todo Callbacks ─────────────────────────────────────

@@ -346,6 +346,21 @@ class KutAIWrapper:
         except (FileNotFoundError, ValueError):
             return False  # No file yet = still starting up
 
+    def _is_orchestrator_healthy(self) -> bool:
+        """Check if orchestrator is alive by reading heartbeat file.
+
+        Returns True if the heartbeat timestamp is fresher than 90 seconds.
+        Returns False if the file is missing, unreadable, or stale.
+        """
+        heartbeat_file = Path("logs/heartbeat")
+        if not heartbeat_file.exists():
+            return False
+        try:
+            ts = float(heartbeat_file.read_text().strip())
+            return (time.time() - ts) < 90
+        except (ValueError, OSError):
+            return False
+
     async def stop_kutai(self, timeout: int = 30):
         """Send SIGINT and wait for graceful shutdown."""
         if not self.process or self.process.returncode is not None:
@@ -431,8 +446,11 @@ class KutAIWrapper:
 
     # ── Telegram Notifications ────────────────────────────────────────────
 
-    async def _send_telegram(self, text: str):
-        """Send a message to the admin via Telegram API (no library needed)."""
+    async def _send_telegram(self, text: str, reply_markup: dict | None = None):
+        """Send a message to the admin via Telegram API (no library needed).
+
+        Optionally include a reply_markup dict (e.g. ReplyKeyboardMarkup JSON).
+        """
         if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_CHAT_ID:
             return
         import aiohttp
@@ -442,12 +460,29 @@ class KutAIWrapper:
             "text": text,
             "parse_mode": "Markdown",
         }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)):
                     pass
         except Exception as e:
             print(f"[Wrapper] Telegram send failed: {e}")
+
+    # Reply keyboard shown when KutAI is down — single [▶️ Başlat] button
+    _KB_BASLAT = {
+        "keyboard": [[{"text": "▶️ Başlat"}]],
+        "resize_keyboard": True,
+        "one_time_keyboard": False,
+        "is_persistent": True,
+    }
+
+    async def _send_baslat_prompt(self, reason: str = ""):
+        """Send the [▶️ Başlat] keyboard with an optional reason prefix."""
+        msg = "⚠️ KutAI durdu. Başlatmak için butona bas."
+        if reason:
+            msg = f"{reason}\n{msg}"
+        await self._send_telegram(msg, reply_markup=self._KB_BASLAT)
 
     async def _notify_crash(self, exit_code: int):
         last_lines = "\n".join(self.stderr_tail) if self.stderr_tail else "(no output)"
@@ -467,7 +502,8 @@ class KutAIWrapper:
     async def _notify_stopped(self):
         await self._send_telegram(
             "⏹ *KutAI Stopped*\n"
-            "Send /kutai\\_start to restart."
+            "Send /kutai\\_start to restart.",
+            reply_markup=self._KB_BASLAT,
         )
 
     async def _notify_started(self):
@@ -498,6 +534,12 @@ class KutAIWrapper:
         meant for the orchestrator, we NEVER advance offset past non-wrapper
         updates. We track processed wrapper command ids locally to skip
         re-processing them on subsequent polls.
+
+        Wrapper commands handled here (in addition to /kutai_start, /kutai_status):
+        - "▶️ Başlat" button: start the orchestrator (same as /kutai_start)
+        - "⚙️ Sistem" button: check health — if orchestrator is unhealthy, kill
+          it and present the [▶️ Başlat] keyboard so the user can restart.
+          If healthy, treat as non-wrapper update (let orchestrator handle it).
         """
         import aiohttp
         base_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -533,22 +575,52 @@ class KutAIWrapper:
                     text = msg.get("text", "")
                     chat_id = str(msg.get("chat", {}).get("id", ""))
 
+                    # Determine if this is a wrapper-handled command/button.
+                    # "⚙️ Sistem" is only treated as a wrapper command when the
+                    # orchestrator is unhealthy; otherwise it falls through to
+                    # be handled by the orchestrator's bot.
+                    is_baslat = (
+                        chat_id == str(TELEGRAM_ADMIN_CHAT_ID)
+                        and text == "▶️ Başlat"
+                    )
+                    is_sistem_unhealthy = (
+                        chat_id == str(TELEGRAM_ADMIN_CHAT_ID)
+                        and text == "⚙️ Sistem"
+                        and not self._is_orchestrator_healthy()
+                    )
                     is_wrapper_cmd = (
                         chat_id == str(TELEGRAM_ADMIN_CHAT_ID)
-                        and text.startswith(("/kutai_start", "/kutai_status"))
+                        and (
+                            text.startswith(("/kutai_start", "/kutai_status"))
+                            or is_baslat
+                            or is_sistem_unhealthy
+                        )
                     )
 
                     if is_wrapper_cmd:
                         if uid not in handled_wrapper_ids:
                             handled_wrapper_ids.add(uid)
 
-                            if text.startswith("/kutai_start"):
+                            if text.startswith("/kutai_start") or is_baslat:
                                 await self._send_telegram("🚀 Starting KutAI...")
                                 await self.start_kutai(_from_poller=True)
                                 return  # Exit poll loop — KutAI takes over
 
                             elif text.startswith("/kutai_status"):
                                 await self._send_status()
+
+                            elif is_sistem_unhealthy:
+                                # Orchestrator is hung/dead — kill it and show Başlat
+                                _wlog("⚙️ Sistem tapped but orchestrator is unhealthy — killing and presenting Başlat")
+                                if self.process and self.process.returncode is None:
+                                    try:
+                                        self.process.kill()
+                                        await self.process.wait()
+                                    except Exception as e:
+                                        _wlog(f"Failed to kill hung orchestrator: {e}")
+                                    self.process = None
+                                    self.running = False
+                                await self._send_baslat_prompt("🔴 KutAI yanıt vermiyor.")
 
                         if max_wrapper_id is None or uid > max_wrapper_id:
                             max_wrapper_id = uid

@@ -2484,7 +2484,7 @@
       "phase": "phase_8",
       "name": "implementation_backlog_initialization",
       "agent": "planner",
-      "difficulty": "easy",
+      "difficulty": "hard",
       "tools_hint": ["read_file", "write_file"],
       "depends_on": ["7.17"],
       "may_need_clarification": false,
@@ -4267,12 +4267,12 @@
           "agent": "planner",
           "difficulty": "medium",
           "tools_hint": ["read_file", "write_file"],
-          "instruction": "Create ordered implementation plan for this feature based on feature_spec_summary. List which steps are needed (some features may not need db_migration or frontend). For each needed step: what to implement, which files to create/modify, key constraints. Output feature_impl_plan.",
+          "instruction": "Create ordered implementation plan for this feature based on feature_spec_summary. Determine which steps are needed: set needs_db_migration, needs_backend, needs_frontend as true/false. For each needed step: what to implement, which files to create/modify, key constraints. If this is a backend-only feature (API, data pipeline, CLI), set needs_frontend=false. If no new tables/columns needed, set needs_db_migration=false. Output feature_impl_plan.",
           "output_artifacts": ["feature_impl_plan"],
           "artifact_schema": {
             "feature_impl_plan": {
               "type": "object",
-              "required_fields": ["steps", "files_to_create", "files_to_modify"]
+              "required_fields": ["steps", "files_to_create", "files_to_modify", "needs_db_migration", "needs_backend", "needs_frontend"]
             }
           }
         },
@@ -4343,6 +4343,7 @@
           "agent": "implementer",
           "difficulty": "medium",
           "tools_hint": ["shell", "write_file", "read_file", "edit_file", "lint", "query_codebase"],
+          "condition": "Only if feature_impl_plan.needs_frontend is true",
           "instruction": "Set up frontend for this feature: TypeScript types (API response/request, form, state, component props), API client functions using base client, and state management (query hooks, mutation hooks with optimistic updates and cache invalidation). Follow patterns from implementation_context.",
           "output_artifacts": ["frontend_state_files"],
           "artifact_schema": {
@@ -4358,6 +4359,7 @@
           "agent": "implementer",
           "difficulty": "medium",
           "tools_hint": ["shell", "write_file", "read_file", "edit_file", "lint", "query_codebase"],
+          "condition": "Only if feature_impl_plan.needs_frontend is true",
           "instruction": "Implement feature-specific UI components per screen_specifications using design system components and tokens. Include responsive behavior per responsive_spec at all breakpoints. Implement accessibility per accessibility_spec: headings, ARIA, keyboard nav, focus order. Implement forms with validation, error display, submit handling if applicable. Implement loading (Skeleton), error (inline + toast), and empty states.",
           "output_artifacts": ["frontend_component_files"],
           "artifact_schema": {
@@ -4373,6 +4375,7 @@
           "agent": "implementer",
           "difficulty": "medium",
           "tools_hint": ["shell", "write_file", "read_file", "edit_file", "lint", "query_codebase"],
+          "condition": "Only if feature_impl_plan.needs_frontend is true",
           "instruction": "Assemble pages: compose components, wire data bindings, action handlers, conditional rendering, route parameters. Implement all page states: loading, error, empty, success. Connect to routes per information_architecture.",
           "output_artifacts": ["frontend_page_files"],
           "artifact_schema": {
@@ -4388,6 +4391,7 @@
           "agent": "test_generator",
           "difficulty": "medium",
           "tools_hint": ["shell", "write_file", "read_file", "coverage"],
+          "condition": "Only if feature_impl_plan.needs_frontend is true",
           "instruction": "Write frontend unit tests for utilities, hooks, state management. Write component tests: render, interaction, conditional rendering, accessibility, page states (loading/error/empty). Run all tests and verify they pass.",
           "output_artifacts": ["frontend_test_files"],
           "artifact_schema": {

@@ -126,7 +126,8 @@ KB_WORKFLOW_SELECT = _make_keyboard([
 
 KB_SISTEM = _make_keyboard([
     ["🖥 Yük Modu", "🐛 Debug", "📭 DLQ"],
-    ["🔄 Yeniden Başlat", "⏹ Durdur", "🔙 Geri"],
+    ["🖥️ Claude Code", "🔄 Yeniden Başlat", "⏹ Durdur"],
+    ["🔙 Geri"],
 ])
 
 KB_YUK_MODU = _make_keyboard([
@@ -196,6 +197,7 @@ _BUTTON_ACTIONS: dict[str, tuple[str, str]] = {
     "🖥 Yük Modu": ("category", "yuk_modu"),
     "🐛 Debug": ("special", "debug"),
     "📭 DLQ": ("special", "dlq"),
+    "🖥️ Claude Code": ("special", "claude_code"),
     "🔄 Yeniden Başlat": ("special", "restart"),
     "⏹ Durdur": ("special", "stop"),
     # ── Yük Modu sub-buttons ──
@@ -507,6 +509,11 @@ class TelegramInterface:
                      InlineKeyboardButton("❌ Hayır", callback_data="m:confirm:cancel")],
                 ]),
             )
+            return
+
+        if action == "claude_code":
+            context.args = []
+            await self.cmd_claude(update, context)
             return
 
         if action == "start_kutai":

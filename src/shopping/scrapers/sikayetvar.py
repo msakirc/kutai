@@ -92,45 +92,75 @@ class SikayetvarScraper(BaseScraper):
             logger.error("search HTML parse failed", error=str(exc))
             return []
 
-        # Complaint cards
+        # Complaint cards — Sikayetvar uses article.card-v2 elements.
+        # Structure: <article class="card-v2 ga-v ga-c">
+        #   <h3 class="complaint-title">…title text…</h3>
+        #   <header class="profile-details">…UserName  BrandName  date…</header>
+        #   <section>…snippet text…</section>
+        # </article>
         cards = (
-            soup.select("article.complaint-card")
+            soup.select("article.card-v2")
+            or soup.select("article.complaint-card")
             or soup.select("div.complaint-item")
             or soup.select("div.card-v2")
         )
 
         for card in cards[:max_results]:
             try:
-                # Title
+                # Title — h3.complaint-title contains the title text directly
                 title_el = (
-                    card.select_one("h2.complaint-title a")
+                    card.select_one("h3.complaint-title")
+                    or card.select_one("h2.complaint-title")
+                    or card.select_one("h3.complaint-title a")
+                    or card.select_one("h2.complaint-title a")
                     or card.select_one("a.complaint-title")
                     or card.select_one("h3 a")
                 )
                 if title_el is None:
                     continue
+                # h3.complaint-title may be a plain element (no anchor child)
                 title = title_el.get_text(strip=True)
                 if not title:
                     continue
 
-                href = title_el.get("href", "")
+                # URL — look for any anchor inside the card
+                link_el = card.select_one("a[href]")
+                href = link_el.get("href", "") if link_el else ""
                 complaint_url = (
                     href if href.startswith("http") else f"{_BASE_URL}{href}"
                 )
 
-                # Brand
-                brand_el = (
-                    card.select_one("a.complaint-brand")
-                    or card.select_one("span.brand-name")
-                    or card.select_one("a[href*='/firma/']")
-                )
-                brand = brand_el.get_text(strip=True) if brand_el else None
+                # Brand — profile-details header contains "UserName  BrandName  date"
+                brand: str | None = None
+                profile_el = card.select_one("header.profile-details")
+                if profile_el:
+                    # Look for an anchor that links to a brand/company page
+                    brand_a = (
+                        profile_el.select_one("a[href*='/']")
+                        or profile_el.select_one("a")
+                    )
+                    if brand_a:
+                        brand = brand_a.get_text(strip=True) or None
+                if not brand:
+                    brand_el = (
+                        card.select_one("a.complaint-brand")
+                        or card.select_one("span.brand-name")
+                        or card.select_one("a[href*='/firma/']")
+                    )
+                    brand = brand_el.get_text(strip=True) if brand_el else None
 
-                # Date
-                date_el = card.select_one("time") or card.select_one("span.date")
+                # Date — look for time element or text matching date patterns
                 date_str: str | None = None
+                date_el = card.select_one("time")
                 if date_el:
                     date_str = date_el.get("datetime", date_el.get_text(strip=True))
+                else:
+                    # profile-details often contains e.g. "31 Mart 15:38  -"
+                    if profile_el:
+                        raw = profile_el.get_text(separator=" ", strip=True)
+                        m = re.search(r"\d{1,2}\s+\w+\s+\d{2}:\d{2}", raw)
+                        if m:
+                            date_str = m.group(0)
 
                 # Resolution status
                 resolved = False
@@ -295,24 +325,42 @@ class SikayetvarScraper(BaseScraper):
 
         # Listing page with multiple complaints
         cards = (
-            soup.select("article.complaint-card")
+            soup.select("article.card-v2")
+            or soup.select("article.complaint-card")
             or soup.select("div.complaint-item")
         )
 
         for card in cards:
             try:
-                title_el = card.select_one("h2 a") or card.select_one("a.complaint-title")
+                title_el = (
+                    card.select_one("h3.complaint-title")
+                    or card.select_one("h2.complaint-title")
+                    or card.select_one("h2 a")
+                    or card.select_one("a.complaint-title")
+                )
                 title = title_el.get_text(strip=True) if title_el else ""
 
                 # Snippet text
-                snippet_el = card.select_one("p.complaint-text") or card.select_one("div.description")
+                snippet_el = (
+                    card.select_one("section")
+                    or card.select_one("p.complaint-text")
+                    or card.select_one("div.description")
+                )
                 text = snippet_el.get_text(strip=True) if snippet_el else title
 
-                brand_el = card.select_one("a.complaint-brand") or card.select_one("span.brand-name")
-                brand = brand_el.get_text(strip=True) if brand_el else None
+                # Brand from profile header or dedicated element
+                brand: str | None = None
+                profile_el = card.select_one("header.profile-details")
+                if profile_el:
+                    brand_a = profile_el.select_one("a")
+                    if brand_a:
+                        brand = brand_a.get_text(strip=True) or None
+                if not brand:
+                    brand_el = card.select_one("a.complaint-brand") or card.select_one("span.brand-name")
+                    brand = brand_el.get_text(strip=True) if brand_el else None
 
                 date_el = card.select_one("time") or card.select_one("span.date")
-                date_str = (
+                date_str: str | None = (
                     date_el.get("datetime", date_el.get_text(strip=True))
                     if date_el
                     else None

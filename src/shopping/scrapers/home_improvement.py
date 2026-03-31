@@ -145,6 +145,14 @@ class KoctasScraper(BaseScraper):
         except Exception:
             return []
 
+        # Koctas embeds product data in the dataLayer script (Google Analytics
+        # enhanced ecommerce).  Parse 'impressions' array for name, price, id,
+        # brand, and category.  Product URLs follow /{slug}/p/{id} pattern.
+        products = self._parse_datalayer(html, soup, max_results, now_iso)
+        if products:
+            return products
+
+        # Legacy HTML card fallback (retained in case structure changes)
         cards = (
             soup.select("div.product-card")
             or soup.select("div.product-list-item")
@@ -220,6 +228,92 @@ class KoctasScraper(BaseScraper):
                 continue
 
         logger.info("search parsed", count=len(products))
+        return products
+
+    def _parse_datalayer(
+        self,
+        html: str,
+        soup: "BeautifulSoup",  # type: ignore[name-defined]
+        max_results: int,
+        now_iso: str,
+    ) -> list[Product]:
+        """Extract products from the Google Analytics dataLayer script.
+
+        Koctas uses enhanced ecommerce impressions which contain name, price,
+        id, brand, and category for every product on the page.  Product page
+        URLs are mapped from the anchor tags ``/p/`` pattern.
+        """
+        products: list[Product] = []
+
+        # Build id -> href map from anchor tags on the page
+        id_to_href: dict[str, str] = {}
+        for a in soup.find_all("a", href=True):
+            href: str = a["href"]
+            # URLs look like /{slug}/p/{id}
+            m = re.search(r"/p/(\d+)$", href)
+            if m:
+                id_to_href[m.group(1)] = href
+
+        # Find the dataLayer script with impressions
+        for script in soup.find_all("script"):
+            t: str = script.string or ""
+            if "impressions" not in t or "product-impressions" not in t:
+                continue
+
+            names = re.findall(r"'name'\s*:\s*'([^']+)'", t)
+            prices = re.findall(r"'price'\s*:\s*'([\d.,]+)'", t)
+            ids = re.findall(r"'id'\s*:\s*'(\d+)'", t)
+            brands = re.findall(r"'brand'\s*:\s*'([^']+)'", t)
+            categories = re.findall(r"'category'\s*:\s*'([^']+)'", t)
+
+            if not names:
+                break
+
+            for i in range(min(max_results, len(names))):
+                try:
+                    name = normalize_product_name(names[i])
+                    if not name:
+                        continue
+
+                    product_id = ids[i] if i < len(ids) else ""
+                    href = id_to_href.get(product_id, "")
+                    product_url = (
+                        href if href.startswith("http")
+                        else f"{self._BASE_URL}{href}" if href
+                        else f"{self._BASE_URL}/p/{product_id}"
+                    )
+
+                    price: float | None = None
+                    if i < len(prices):
+                        try:
+                            price = float(prices[i].replace(",", "."))
+                        except (ValueError, TypeError):
+                            pass
+
+                    specs: dict[str, Any] = {"type": "home_improvement"}
+                    if i < len(brands) and brands[i]:
+                        specs["brand"] = brands[i]
+                    if i < len(categories) and categories[i]:
+                        specs["category"] = categories[i]
+
+                    products.append(
+                        Product(
+                            name=name,
+                            url=product_url,
+                            source="koctas",
+                            discounted_price=price,
+                            currency="TRY",
+                            specs=specs,
+                            fetched_at=now_iso,
+                        )
+                    )
+                except Exception as exc:
+                    logger.debug("datalayer item parse error", error=str(exc))
+                    continue
+
+            break  # Only process the first matching script
+
+        logger.info("datalayer parsed", count=len(products))
         return products
 
     async def get_product(self, url: str) -> Product | None:
@@ -341,17 +435,28 @@ class KoctasScraper(BaseScraper):
 class IKEAScraper(BaseScraper):
     """Scrape furniture and home products from IKEA Turkey.
 
-    Uses ``extract_structured_data`` for Schema.org data extraction,
-    with focus on dimensional specifications.
+    The search page at /arama is a client-side SPA — HTML is empty.
+    Products are loaded via ``/api/search/products`` which currently
+    returns 503.  The scraper falls back to parsing the SPA shell,
+    which yields 0 results.  Marked ``is_available = False`` until the
+    backend is restored.
+
+    Uses ``extract_structured_data`` for Schema.org data extraction on
+    individual product pages (get_product still works).
     """
 
     _BASE_URL = "https://www.ikea.com.tr"
     _SEARCH_URL = "https://www.ikea.com.tr/arama"
+    # IKEA's internal search API is currently returning 503
+    is_available: bool = False
 
     def __init__(self) -> None:
         super().__init__(domain="ikea")
 
     async def search(self, query: str, *, max_results: int = 20) -> list[Product]:
+        if not self.is_available:
+            logger.debug("ikea search skipped: is_available=False (API 503)")
+            return []
         if not _BS4_AVAILABLE:
             return []
 

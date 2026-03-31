@@ -65,7 +65,15 @@ class SahibindenScraper(BaseScraper):
 
     Focus: electronics, furniture, appliances.
     Strict 15+ second delay between requests.
+
+    NOTE: Sahibinden employs strong bot detection (Cloudflare + proprietary
+    fingerprinting).  Even the TLS-bypass tier consistently returns a bot
+    challenge page.  ``requires_auth = True`` signals to callers that this
+    scraper is not reliably usable without a real browser session.
     """
+
+    # Strong bot detection — requires a real browser session (Playwright/etc.)
+    requires_auth: bool = True
 
     def __init__(self) -> None:
         super().__init__(domain="sahibinden")

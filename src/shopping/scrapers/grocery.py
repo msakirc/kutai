@@ -88,15 +88,25 @@ def _calculate_unit_price(
 
 @register_scraper("aktuelkatalog")
 class AktuelKatalogScraper(BaseScraper):
-    """Scrape weekly promotion catalogs from aktuelkatalog.com.tr."""
+    """Scrape weekly promotion catalogs from aktuelkatalog.com.tr.
+
+    NOTE: As of 2026-03 the domain resolves with a DNS failure
+    (getaddrinfo failed).  ``is_available = False`` disables search
+    calls until the domain is restored.
+    """
 
     _BASE_URL = "https://www.aktuelkatalog.com.tr"
     _SEARCH_URL = "https://www.aktuelkatalog.com.tr/ara"
+    # Domain DNS failure — disable until restored
+    is_available: bool = False
 
     def __init__(self) -> None:
         super().__init__(domain="aktuelkatalog")
 
     async def search(self, query: str, *, max_results: int = 20) -> list[Product]:
+        if not self.is_available:
+            logger.debug("aktuelkatalog search skipped: is_available=False (DNS failure)")
+            return []
         if not _BS4_AVAILABLE:
             return []
 
@@ -237,15 +247,32 @@ class AktuelKatalogScraper(BaseScraper):
 
 @register_scraper("getir")
 class GetirScraper(BaseScraper):
-    """Scrape grocery product data from Getir's web/API."""
+    """Scrape grocery product data from Getir's web/API.
+
+    NOTE: As of 2026-03 all Getir search endpoints return 403 or 404:
+    - /arama/?q=* → 404
+    - /api/search → 403
+    - /_next/data/{buildId}/search.json → 404
+    - /_next/static/{buildId}/_buildManifest.js → 403
+
+    The site is a Next.js SPA with no publicly accessible search API.
+    ``is_available = False`` disables search calls until a working
+    endpoint is identified.
+    """
 
     _BASE_URL = "https://getir.com"
     _API_URL = "https://getir.com/api"
+    # All known search endpoints return 403/404 — disable until fixed
+    is_available: bool = False
 
     def __init__(self) -> None:
         super().__init__(domain="getir")
 
     async def search(self, query: str, *, max_results: int = 20) -> list[Product]:
+        if not self.is_available:
+            logger.debug("getir search skipped: is_available=False (all endpoints dead)")
+            return []
+
         # Cache
         try:
             cached = await get_cached_search(query, "getir")

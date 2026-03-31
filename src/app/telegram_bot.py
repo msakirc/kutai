@@ -233,6 +233,39 @@ _CMD_METHOD_MAP: dict[str, str] = {
 }
 
 
+def _format_log_entries(lines: list[str], n: int = 20) -> str:
+    """Format the last N log lines for Telegram display."""
+    if not lines:
+        return "📋 No log entries found."
+
+    import json as _json
+    last_n = lines[-n:]
+    formatted = []
+    for line in last_n:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = _json.loads(line)
+            ts = entry.get("timestamp", "?")
+            if "T" in ts:
+                ts = ts.split("T")[1][:8]
+            elif " " in ts:
+                ts = ts.split(" ")[1][:8]
+            level = entry.get("level", "?")[:4]
+            comp = entry.get("component", "?").split(".")[-1]
+            msg = entry.get("message", "")[:120]
+            icon = {"ERRO": "🔴", "CRIT": "🔴", "WARN": "🟡", "INFO": "⚪", "DEBU": "⚫"}.get(level, "⚪")
+            formatted.append(f"{icon} `{ts}` *{comp}*: {msg}")
+        except (ValueError, KeyError):
+            formatted.append(f"⚫ {line[:120]}")
+
+    if not formatted:
+        return "📋 No log entries found."
+
+    return "\n".join(formatted)
+
+
 class TelegramInterface:
     def __init__(self, orchestrator=None):
         self.orchestrator = orchestrator
@@ -725,37 +758,47 @@ class TelegramInterface:
         return "\n".join(lines)
 
     async def _show_debug_tasks(self, update, context):
-        """Show recent tasks for debugging."""
+        """Show recent tasks for debugging (all statuses)."""
         try:
-            tasks = await get_recent_completed_tasks(limit=10)
+            db = await get_db()
+            cursor = await db.execute(
+                """SELECT id, title, description, agent_type, status, updated_at
+                   FROM tasks
+                   ORDER BY updated_at DESC
+                   LIMIT 10"""
+            )
+            tasks = [dict(r) for r in await cursor.fetchall()]
             if not tasks:
                 await self._reply(update, "🐛 Son görev bulunamadı.")
                 return
             lines = ["🐛 *Son Görevler*\n"]
             buttons = []
-            for i, t in enumerate(tasks[:10], 1):
+            for i, t in enumerate(tasks, 1):
                 title = (t.get("title") or t.get("description", "?"))[:40]
                 agent = t.get("agent_type", "?")
-                status_icon = {"completed": "✅", "failed": "❌", "running": "🔄"
+                status_icon = {"completed": "✅", "failed": "❌", "running": "🔄",
+                               "pending": "⏳", "paused": "⏸",
+                               "needs_clarification": "❓"
                                }.get(t.get("status", ""), "📋")
                 # Time ago
+                time_str = ""
                 try:
-                    updated = datetime.fromisoformat(t.get("updated_at", ""))
-                    ago = (datetime.now() - updated).total_seconds()
-                    if ago < 60:
-                        time_str = f"{int(ago)}sn"
-                    elif ago < 3600:
-                        time_str = f"{int(ago/60)}dk"
-                    else:
-                        time_str = f"{int(ago/3600)}s"
-                    time_str += " önce"
+                    updated = t.get("updated_at", "")
+                    if updated:
+                        updated_dt = datetime.fromisoformat(str(updated).replace(" ", "T"))
+                        ago = (datetime.now() - updated_dt).total_seconds()
+                        if ago < 60:
+                            time_str = f"{int(ago)}sn önce"
+                        elif ago < 3600:
+                            time_str = f"{int(ago/60)}dk önce"
+                        else:
+                            time_str = f"{int(ago/3600)}s önce"
                 except Exception:
-                    time_str = ""
+                    pass
                 lines.append(f"{i}. {status_icon} {title} — {agent} — {time_str}")
                 buttons.append(InlineKeyboardButton(
                     f"{i}", callback_data=f"m:debug:detail:{t['id']}"))
             btn_rows = [buttons[j:j+5] for j in range(0, len(buttons), 5)]
-            # Add skillstats button at bottom
             btn_rows.append([InlineKeyboardButton("📊 Skill Metrikleri", callback_data="m:debug:skillstats")])
             await update.message.reply_text(
                 "\n".join(lines), parse_mode="Markdown",
@@ -776,21 +819,22 @@ class TelegramInterface:
             )
             tasks = [dict(r) for r in await cursor.fetchall()]
             if not tasks:
-                await self._reply(update, "📭 *DLQ*\n\nBaşarısız görev yok.", parse_mode="Markdown")
+                await self._reply(update, "📭 DLQ\n\nBaşarısız görev yok.")
                 return
-            lines = ["📭 *Başarısız Görevler*\n"]
+            lines = ["📭 Başarısız Görevler\n"]
             buttons = []
             for i, t in enumerate(tasks, 1):
                 title = (t.get("title") or t.get("description", "?"))[:40]
                 error_short = (t.get("error") or "")[:30]
                 lines.append(f"{i}. ❌ {title}")
                 if error_short:
-                    lines.append(f"   _{error_short}_")
+                    lines.append(f"   {error_short}")
                 buttons.append(InlineKeyboardButton(
                     f"{i}", callback_data=f"m:dlq:detail:{t['id']}"))
             btn_rows = [buttons[j:j+5] for j in range(0, len(buttons), 5)]
+            # No Markdown parse_mode — error text may contain special chars
             await update.message.reply_text(
-                "\n".join(lines), parse_mode="Markdown",
+                "\n".join(lines),
                 reply_markup=InlineKeyboardMarkup(btn_rows) if btn_rows else None,
             )
         except Exception as e:
@@ -1205,6 +1249,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("result", self.cmd_result))
         self.app.add_handler(CommandHandler("skillstats", self.cmd_skillstats))
         self.app.add_handler(CommandHandler("trace", self.cmd_trace))
+        self.app.add_handler(CommandHandler("logs", self.cmd_logs))
         # Wrapper control commands
         self.app.add_handler(CommandHandler("kutai_restart", self.cmd_kutai_restart))
         self.app.add_handler(CommandHandler("restart", self.cmd_kutai_restart))
@@ -1940,6 +1985,35 @@ class TelegramInterface:
             lines.append(f"\n📄 Result: {result[:300]}...")
 
         await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+
+    async def cmd_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show recent orchestrator log entries."""
+        args = context.args
+        n = 20
+        if args:
+            try:
+                n = min(int(args[0]), 50)
+            except ValueError:
+                pass
+
+        log_path = os.path.join("logs", "orchestrator.jsonl")
+        if not os.path.exists(log_path):
+            await self._reply(update, "📋 No log file found.")
+            return
+
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 100_000))
+                chunk = f.read()
+                lines = chunk.strip().split("\n")
+        except Exception as e:
+            await self._reply(update, f"❌ Error reading logs: {e}")
+            return
+
+        text = _format_log_entries(lines, n=n)
+        await self._reply(update, text, parse_mode="Markdown")
 
     async def cmd_skillstats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show skill injection A/B metrics."""

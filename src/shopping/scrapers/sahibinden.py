@@ -1,9 +1,33 @@
 """Sahibinden scraper -- Turkey's largest classifieds platform.
 
-Focuses on electronics, furniture, and appliances categories.
+STATUS: DISABLED (2026-03-31)
 
-Rate limiting: **strict 15-second minimum** between requests.
-Sahibinden is known for aggressive bot detection and IP bans.
+Sahibinden uses aggressive multi-layer protection that blocks all
+automated access from datacenter IPs:
+
+Tested and failed (2026-03-31):
+  - curl_cffi TLS (chrome131): 302 → forced login redirect
+  - nodriver headless Chrome: Cloudflare challenge page (12K chars, no content)
+  - nodriver visible Chrome: CF challenge "Yükleniyor" (18K, no content)
+  - Scrapling StealthyFetcher (Camoufox): 403 "Olağan dışı erişim tespit ettik"
+  - Mobile API endpoints (api/m-api/gw/rest.sahibinden.com): all 404 or timeout
+  - RSS/Atom feeds: all blocked
+  - Session cookie accumulation (homepage → category): still redirected to login
+
+Protection stack:
+  - Cloudflare (TLS fingerprinting + Turnstile JS challenge)
+  - Custom session tokens (vid, cdid, csid — mandatory for browsing)
+  - IP reputation check (datacenter IPs auto-blocked regardless of fingerprint)
+  - Mandatory login redirect for listing/category pages
+
+Only known working approach: residential proxy + real browser with aged cookies.
+GitHub refs: 0Baris/sahibinden-scraper (uses nodriver + residential IP).
+
+Re-enable when: residential proxy available, or sahibinden relaxes protection.
+
+Original features (preserved for future use):
+  - Electronics, furniture, appliances categories
+  - Rate limiting: strict 15-second minimum between requests
 """
 
 from __future__ import annotations
@@ -59,7 +83,8 @@ _CATEGORY_KEYWORDS = {
 # ---------------------------------------------------------------------------
 
 
-@register_scraper("sahibinden")
+# DISABLED: sahibinden blocks all datacenter IPs (see docstring for details)
+# @register_scraper("sahibinden")
 class SahibindenScraper(BaseScraper):
     """Scrape classified listings from sahibinden.com.
 

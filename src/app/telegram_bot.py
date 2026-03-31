@@ -125,7 +125,7 @@ KB_WORKFLOW_SELECT = _make_keyboard([
 ])
 
 KB_SISTEM = _make_keyboard([
-    ["🖥 Yük Modu", "🐛 Debug", "📭 DLQ"],
+    ["🖥 Yük Modu", "🐛 Debug", "📭 DLQ", "📋 Loglar"],
     ["🖥️ Claude Code", "🔄 Yeniden Başlat", "⏹ Durdur"],
     ["🔙 Geri"],
 ])
@@ -197,6 +197,7 @@ _BUTTON_ACTIONS: dict[str, tuple[str, str]] = {
     "🖥 Yük Modu": ("category", "yuk_modu"),
     "🐛 Debug": ("special", "debug"),
     "📭 DLQ": ("special", "dlq"),
+    "📋 Loglar": ("cmd", "logs"),
     "🖥️ Claude Code": ("special", "claude_code"),
     "🔄 Yeniden Başlat": ("special", "restart"),
     "⏹ Durdur": ("special", "stop"),
@@ -697,9 +698,12 @@ class TelegramInterface:
         lines = ["📊 *KutAI Durum*\n━━━━━━━━━━━━━━━━━━━━"]
         try:
             # Model info
-            if self.orchestrator and hasattr(self.orchestrator, 'local_model_manager'):
-                lmm = self.orchestrator.local_model_manager
-                if lmm and hasattr(lmm, 'current_model') and lmm.current_model:
+            try:
+                from src.models.local_model_manager import get_local_manager
+                lmm = get_local_manager()
+            except Exception:
+                lmm = None
+            if lmm and lmm.current_model:
                     model_name = lmm.current_model
                     lines.append(f"🤖 Model: {model_name}")
                     if hasattr(lmm, 'runtime_state') and lmm.runtime_state:
@@ -716,10 +720,8 @@ class TelegramInterface:
                             parts.append(f"Thinking: {'ON' if thinking else 'OFF'}")
                         if parts:
                             lines.append(f"   {' | '.join(parts)}")
-                else:
-                    lines.append("🤖 Model: yüklü değil")
             else:
-                lines.append("🤖 Model: bilgi yok")
+                lines.append("🤖 Model: yüklü değil")
 
             # Load mode
             try:

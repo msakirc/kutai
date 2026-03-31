@@ -2,7 +2,7 @@
 """
 Phase 9.3 — Alerting
 
-Rule-based alerting checked every orchestrator cycle. Uses ntfy and Telegram
+Rule-based alerting checked every orchestrator cycle. Uses Telegram
 for notifications. Rules: task failure rate, daily cost, model success rate,
 queue depth.
 """
@@ -90,25 +90,17 @@ async def check_alerts() -> None:
 
 
 async def _send_alert(title: str, message: str, priority: int = 3) -> None:
-    """Send alert via available notification channels."""
+    """Send alert via Telegram."""
     logger.warning(f"ALERT: {title} — {message}")
-
-    # ntfy
-    try:
-        from .notifications import send_ntfy
-        from ..app.config import NTFY_TOPIC_ERRORS
-        send_ntfy(NTFY_TOPIC_ERRORS, title, message, priority=priority, tags=["alert"])
-    except Exception:
-        pass
-
-    # Telegram
     try:
         from ..infra.runtime_state import runtime_state
         if runtime_state.get("telegram_available"):
             from ..app.config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID
             import aiohttp
             if TELEGRAM_BOT_TOKEN and TELEGRAM_ADMIN_CHAT_ID:
-                text = f"🚨 *{title}*\n\n{message}"
+                icons = {5: "\U0001f534", 4: "\U0001f7e0", 3: "\U0001f7e1", 2: "\U0001f535", 1: "\u26aa"}
+                icon = icons.get(priority, "\U0001f7e1")
+                text = f"{icon} *{title}*\n\n{message}"
                 url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
                 async with aiohttp.ClientSession() as s:
                     await s.post(url, json={

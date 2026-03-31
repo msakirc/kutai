@@ -16,16 +16,6 @@ logger = get_logger("app.config")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_ADMIN_CHAT_ID = os.getenv("TELEGRAM_ADMIN_CHAT_ID")
 
-# ─── Notifications (ntfy) ────────────────────────────────────────────────────
-
-NTFY_URL = os.getenv("NTFY_URL", "")
-NTFY_USER = os.getenv("NTFY_USER", "")
-NTFY_PASS = os.getenv("NTFY_PASS", "")
-
-# Two topics: errors get phone alerts, logs are browsable
-NTFY_TOPIC_ERRORS = "kutai-errors"   # ERROR/CRITICAL only, phone ON
-NTFY_TOPIC_LOGS   = "kutai-logs"     # INFO/WARNING/ERROR, phone OFF
-
 # ─── Core Settings ───────────────────────────────────────────────────────────
 
 DB_PATH = os.getenv("DB_PATH", "orchestrator.db")

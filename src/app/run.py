@@ -141,14 +141,6 @@ async def startup_health_check() -> bool:
             _log.warning("Health check raised (non-critical)", check=name, error=str(exc))
             mark_degraded(name)
 
-    async def _ntfy():
-        from src.app import config as cfg
-        if not cfg.NTFY_URL:
-            return False, "NTFY_URL not set"
-        async with aiohttp.ClientSession() as s:
-            async with s.get(cfg.NTFY_URL, timeout=aiohttp.ClientTimeout(total=5)) as r:
-                return r.status < 500, f"HTTP {r.status}"
-
     async def _telegram():
         from src.app import config as cfg
         token = cfg.TELEGRAM_BOT_TOKEN
@@ -219,7 +211,6 @@ async def startup_health_check() -> bool:
         return True, "all dependencies available"
 
     await asyncio.gather(
-        _async_check("ntfy", _ntfy, "ntfy_available"),
         _async_check("telegram", _telegram, "telegram_available"),
         _async_check("perplexica", _perplexica, "web_search_available"),
         _async_check("frontail", _frontail, "frontail_available"),
@@ -291,32 +282,11 @@ async def main():
     docker_ok = start_docker_services()
     _log.info("Docker check done", docker_ok=docker_ok)
     if not docker_ok:
-        _log.warning("Docker services unavailable — ntfy, sandbox, monitoring will not work")
-        try:
-            from src.infra.notifications import send_ntfy
-            from src.app import config as cfg
-            send_ntfy(
-                cfg.NTFY_TOPIC_ERRORS,
-                "Docker services unavailable",
-                "Could not connect to Docker. ntfy, sandbox, frontail, "
-                "prometheus, and grafana will not work until Docker Desktop "
-                "is started and KutAI is restarted.",
-                priority=3, tags=["warning"],
-            )
-        except Exception:
-            pass  # ntfy itself is down, so this will fail too
+        _log.warning("Docker services unavailable — sandbox, monitoring will not work")
 
     critical_ok = await startup_health_check()
     if not critical_ok:
         _log.critical("Critical health checks failed — aborting")
-        # Attempt ntfy alert before exit
-        try:
-            from src.infra.notifications import send_ntfy
-            from src.app import config as cfg
-            send_ntfy(cfg.NTFY_TOPIC_ERRORS, "Orchestrator failed to start",
-                      "Critical health checks failed", priority=5, tags=["critical"])
-        except Exception:
-            pass
         sys.exit(1)
 
     # Seed routing skills (idempotent — only adds new ones)

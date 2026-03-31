@@ -5,8 +5,7 @@ Structured logging configuration.
 # Log sinks (after init_logging()):
 #   1. Console    — StreamHandler(stdout), DEBUG, colorized key=value
 #   2. File       — RotatingFileHandler("logs/orchestrator.jsonl"), DEBUG, JSON-lines
-#   3. ntfy batch — NtfyBatchHandler, INFO, flushed every 30s
-#   4. ntfy alert — NtfyAlertHandler, ERROR, immediate push
+#   3. Telegram   — TelegramAlertHandler, ERROR, immediate push to admin
 
 # Rotation policy: 5 files × 50 MB = 250 MB max disk usage
 # Encoding: utf-8
@@ -179,24 +178,14 @@ def init_logging() -> None:
     file_handler.setFormatter(_JsonFormatter())
     root.addHandler(file_handler)
 
-    # Sink 3: ntfy batch (INFO+)
+    # Sink 3: Telegram alert (ERROR+)
     try:
-        from src.infra.notifications import NtfyBatchHandler
-        batch = NtfyBatchHandler()
-        root.addHandler(batch)
-    except Exception as e:
-        logging.getLogger("infra.logging_config").warning(
-            "Could not attach NtfyBatchHandler: %s", e
-        )
-
-    # Sink 4: ntfy alert (ERROR+)
-    try:
-        from src.infra.notifications import NtfyAlertHandler
-        alert = NtfyAlertHandler()
+        from src.infra.notifications import TelegramAlertHandler
+        alert = TelegramAlertHandler()
         root.addHandler(alert)
     except Exception as e:
         logging.getLogger("infra.logging_config").warning(
-            "Could not attach NtfyAlertHandler: %s", e
+            "Could not attach TelegramAlertHandler: %s", e
         )
 
     logging.getLogger("infra.logging_config").info(

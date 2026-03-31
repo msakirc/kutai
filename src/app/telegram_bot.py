@@ -759,9 +759,11 @@ class TelegramInterface:
                 buttons.append(InlineKeyboardButton(
                     f"{i}", callback_data=f"m:debug:detail:{t['id']}"))
             btn_rows = [buttons[j:j+5] for j in range(0, len(buttons), 5)]
+            # Add skillstats button at bottom
+            btn_rows.append([InlineKeyboardButton("📊 Skill Metrikleri", callback_data="m:debug:skillstats")])
             await update.message.reply_text(
                 "\n".join(lines), parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(btn_rows) if btn_rows else None,
+                reply_markup=InlineKeyboardMarkup(btn_rows),
             )
         except Exception as e:
             logger.error("Debug tasks failed", error=str(e))
@@ -4193,7 +4195,36 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                         f"Süre: {duration}s")
                 if error:
                     text += f"\n\nHata:\n`{error[:500]}`"
-                await query.message.reply_text(text, parse_mode="Markdown")
+                trace_btn = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📍 Trace", callback_data=f"m:debug:trace:{task_id}"),
+                ]])
+                await query.message.reply_text(text, parse_mode="Markdown", reply_markup=trace_btn)
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
+            return
+
+        if data.startswith("m:debug:trace:"):
+            task_id = int(data.split(":")[-1])
+            try:
+                # Reuse cmd_trace logic
+                context.args = [str(task_id)]
+                class _CallbackUpdate:
+                    def __init__(self, message):
+                        self.message = message
+                        self.effective_chat = message.chat
+                await self.cmd_trace(_CallbackUpdate(query.message), context)
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
+            return
+
+        if data == "m:debug:skillstats":
+            try:
+                class _CallbackUpdate:
+                    def __init__(self, message):
+                        self.message = message
+                        self.effective_chat = message.chat
+                context.args = []
+                await self.cmd_skillstats(_CallbackUpdate(query.message), context)
             except Exception as e:
                 await query.message.reply_text(f"❌ {e}")
             return

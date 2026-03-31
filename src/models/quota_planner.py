@@ -108,8 +108,11 @@ class QuotaPlanner:
 
         # Signal backpressure queue to retry waiting calls
         try:
+            import asyncio
             from ..infra.backpressure import get_backpressure_queue
-            get_backpressure_queue().signal_capacity_available()
+            bp = get_backpressure_queue()
+            if bp._queue:
+                asyncio.ensure_future(bp.signal_capacity_available())
         except Exception:
             pass  # Queue may not be initialized yet
 

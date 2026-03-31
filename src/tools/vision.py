@@ -15,7 +15,6 @@ async def analyze_image(filepath: str, question: str = "Describe what you see in
         media_type = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
                       "gif": "image/gif", "webp": "image/webp"}.get(ext, "image/png")
 
-        import litellm
         from src.models.model_registry import get_registry
         # Pick first vision-capable model available
         registry = get_registry()
@@ -27,20 +26,31 @@ async def analyze_image(filepath: str, question: str = "Describe what you see in
             return "Error: no vision-capable model available"
 
         logger.info("analyzing image", filepath=filepath, model=vision_model.name)
-        kwargs = dict(
-            model=vision_model.litellm_name,
-            messages=[{"role": "user", "content": [
-                {"type": "text", "text": question},
-                {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{data}"}},
-            ]}],
-            max_tokens=1024,
+
+        # Route through dispatcher as MAIN_WORK — vision is real task work,
+        # not overhead. Using model_override to pin the vision-capable model.
+        from src.core.llm_dispatcher import get_dispatcher, CallCategory
+        from src.core.router import ModelRequirements
+
+        reqs = ModelRequirements(
+            task="vision",
+            difficulty=4,
+            priority=5,
+            estimated_input_tokens=1500,  # image tokens
+            estimated_output_tokens=500,
+            model_override=vision_model.litellm_name,
         )
-        if vision_model.is_local and vision_model.location != "ollama":
-            kwargs["api_key"] = "sk-no-key"
-        if vision_model.api_base:
-            kwargs["api_base"] = vision_model.api_base
-        response = await litellm.acompletion(**kwargs)
-        return response.choices[0].message.content
+        messages = [{"role": "user", "content": [
+            {"type": "text", "text": question},
+            {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{data}"}},
+        ]}]
+
+        result = await get_dispatcher().request(
+            category=CallCategory.MAIN_WORK,
+            reqs=reqs,
+            messages=messages,
+        )
+        return result.get("content", "")
     except Exception as e:
         logger.error("vision analysis failed", filepath=filepath, error=str(e))
         return f"Error analyzing image: {e}"

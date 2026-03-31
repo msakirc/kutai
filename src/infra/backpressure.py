@@ -114,13 +114,6 @@ class BackpressureQueue:
             call_func: the async function to retry
             *call_args, **call_kwargs: arguments to pass to call_func
         """
-        async with self._lock:
-            if len(self._queue) >= MAX_QUEUE_DEPTH:
-                raise RuntimeError(
-                    f"Backpressure queue full ({MAX_QUEUE_DEPTH} items). "
-                    f"System is overloaded. Last error: {last_error}"
-                )
-
         entry = QueuedCall(
             call_id=call_id,
             priority=priority,
@@ -133,7 +126,14 @@ class BackpressureQueue:
         entry._call_args = call_args
         entry._call_kwargs = call_kwargs
 
+        # Single lock acquisition: depth check + append are atomic to
+        # prevent exceeding MAX_QUEUE_DEPTH under concurrent enqueues.
         async with self._lock:
+            if len(self._queue) >= MAX_QUEUE_DEPTH:
+                raise RuntimeError(
+                    f"Backpressure queue full ({MAX_QUEUE_DEPTH} items). "
+                    f"System is overloaded. Last error: {last_error}"
+                )
             self._queue.append(entry)
             # Sort: higher priority first, then earlier enqueue time
             self._queue.sort(
@@ -281,14 +281,16 @@ class BackpressureQueue:
                 f"{e} — next retry in {entry.retry_interval:.0f}s"
             )
 
-    def signal_capacity_available(self) -> None:
+    async def signal_capacity_available(self) -> None:
         """Signal that capacity has been restored (rate limit reset or model swap).
 
         Advances next_retry_at to be sooner, but never below MIN_RETRY_GAP_SECONDS
         after the last attempt. This prevents the spam loop where capacity signals
         cause immediate retries that fail instantly and re-enter the queue.
         """
-        if self._queue:
+        async with self._lock:
+            if not self._queue:
+                return
             now = time.time()
             signaled = 0
             for entry in self._queue:
@@ -301,12 +303,12 @@ class BackpressureQueue:
                 if new_retry < entry.next_retry_at:
                     entry.next_retry_at = new_retry
                     signaled += 1
-            if signaled:
-                self._has_items.set()
-                logger.info(
-                    f"Backpressure: capacity signal — "
-                    f"{signaled}/{len(self._queue)} calls advanced"
-                )
+        if signaled:
+            self._has_items.set()
+            logger.info(
+                f"Backpressure: capacity signal — "
+                f"{signaled}/{len(self._queue)} calls advanced"
+            )
 
     def stop(self) -> None:
         self._running = False

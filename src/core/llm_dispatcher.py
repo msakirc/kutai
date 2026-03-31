@@ -367,10 +367,16 @@ class LLMDispatcher:
                         result = await call_model(reqs_copy, messages, tools,
                                                   timeout_override=timeout)
                         return result
-                    except Exception:
+                    except Exception as e:
                         # Loaded model failed — fall through to normal routing
                         # which may try cloud
-                        pass
+                        logger.debug(
+                            "main_work: pinned loaded model failed, "
+                            "falling through to full routing",
+                            loaded_model=loaded,
+                            error=str(e),
+                            task=reqs.effective_task or reqs.primary_capability,
+                        )
             # If no model loaded or loaded model failed, let normal routing
             # handle it (will likely pick cloud since budget is exhausted
             # and we can't swap)
@@ -478,11 +484,12 @@ class LLMDispatcher:
         task_desc = reqs.effective_task or reqs.primary_capability
         logger.info(f"overhead waiting for model load (cold start) | task={task_desc} timeout={_COLD_START_WAIT_TIMEOUT}")
 
-        deadline = time.monotonic() + _COLD_START_WAIT_TIMEOUT
+        start = time.monotonic()
+        deadline = start + _COLD_START_WAIT_TIMEOUT
         while time.monotonic() < deadline:
             await asyncio.sleep(_COLD_START_POLL_INTERVAL)
             if self._get_loaded_model_name():
-                elapsed = _COLD_START_WAIT_TIMEOUT - (deadline - time.monotonic())
+                elapsed = time.monotonic() - start
                 logger.info(f"model loaded, overhead proceeding | task={task_desc} waited={elapsed:.1f}s")
                 return
             # If swap is no longer in progress and still no model, stop waiting
@@ -691,7 +698,7 @@ class LLMDispatcher:
             from src.infra.backpressure import get_backpressure_queue
             bp = get_backpressure_queue()
             if bp._queue:
-                bp.signal_capacity_available()
+                await bp.signal_capacity_available()
                 logger.info(f"signaled backpressure after swap | new_model={new_model} bp_depth={len(bp._queue)}")
         except Exception:
             pass

@@ -1069,15 +1069,30 @@ class TelegramInterface:
     # ── Quick Service Implementations ─────────────────────────────────────
 
     async def _quick_pharmacy(self, update, context):
-        """Find pharmacies on duty using the pharmacy tool."""
+        """Find pharmacies on duty with Google Maps buttons."""
         from src.infra.db import get_user_pref
         district = await get_user_pref("location_district")
         city = await get_user_pref("location_city")
         await self._reply(update, "🏥 Nöbetçi eczaneler aranıyor...")
         try:
-            from src.tools.pharmacy import find_nearest_pharmacy
-            result = await find_nearest_pharmacy(city=city, district=district)
-            await self._reply(update, result or "Nöbetçi eczane bulunamadı.")
+            from src.tools.pharmacy import (
+                find_pharmacies_structured, format_pharmacy_message,
+                build_pharmacy_buttons,
+            )
+            pharmacies = await find_pharmacies_structured(city=city, include_route=True)
+            if pharmacies:
+                header = f"🏥 Nöbetçi Eczaneler — {city.title()}"
+                if district:
+                    header += f" / {district.title()}"
+                text = header + "\n\n" + format_pharmacy_message(pharmacies, show_all=False)
+                btn_rows = build_pharmacy_buttons(pharmacies[:3], len(pharmacies))
+                markup = InlineKeyboardMarkup(btn_rows) if btn_rows else None
+                await update.message.reply_text(text, reply_markup=markup)
+            else:
+                # Fallback to plain text
+                from src.tools.pharmacy import find_nearest_pharmacy
+                result = await find_nearest_pharmacy(city=city, district=district)
+                await self._reply(update, result or "Nöbetçi eczane bulunamadı.")
         except Exception as e:
             await self._reply(update, f"❌ Eczane araması başarısız: {_friendly_error(str(e))}")
 
@@ -4374,6 +4389,30 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 await query.edit_message_text("❌ İptal edildi.")
             except Exception:
                 pass
+            return
+
+        # ── Pharmacy Callbacks ─────────────────────────────────
+        if data == "pharm:all":
+            try:
+                from src.infra.db import get_user_pref
+                city = await get_user_pref("location_city")
+                from src.tools.pharmacy import (
+                    find_pharmacies_structured, format_pharmacy_message,
+                    build_pharmacy_buttons,
+                )
+                pharmacies = await find_pharmacies_structured(city=city, include_route=True)
+                if pharmacies:
+                    text = format_pharmacy_message(pharmacies, show_all=True)
+                    btn_rows = build_pharmacy_buttons(pharmacies, len(pharmacies))
+                    markup = InlineKeyboardMarkup(btn_rows) if btn_rows else None
+                    await query.message.reply_text(
+                        f"🏥 Tüm Nöbetçi Eczaneler\n\n{text}",
+                        reply_markup=markup,
+                    )
+                else:
+                    await query.message.reply_text("Eczane bulunamadı.")
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
             return
 
         # ── Todo Callbacks ─────────────────────────────────────

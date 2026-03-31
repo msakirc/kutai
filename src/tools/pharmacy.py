@@ -289,46 +289,36 @@ async def _fetch_duty_pharmacies_web(city: str, district: str = "") -> list[dict
     return [{"_raw_search": True, "text": result[:3000]}]
 
 
-async def find_nearest_pharmacy(
+async def find_pharmacies_structured(
     city: str = "",
-    district: str = "",
     include_route: bool = True,
-) -> str:
-    """Find nearest duty pharmacy. Returns formatted text.
+    tab: str = "bugun",
+) -> list[Pharmacy]:
+    """Find duty pharmacies and return as a sorted list of Pharmacy objects.
 
-    Uses location_lat/location_lon from DB for distance calculation.
-    If no location set, returns pharmacy list without distances.
+    Gets city from DB if not provided. Fetches from eczaneler.gen.tr, falls
+    back to web search. Calculates distances if user location is available.
+    Returns sorted by distance (closest first). Returns empty list on failure.
     """
-    import json
-
-    # Default city/district from DB prefs
-    if not city or not district:
-        pref_city, pref_district = await _get_user_city_district()
-        if not city:
-            city = pref_city
-        if not district:
-            district = pref_district
+    # Default city from DB prefs
+    if not city:
+        pref_city, _ = await _get_user_city_district()
+        city = pref_city
 
     if not city:
-        return ("Sehir belirtilmedi. Lutfen sehir parametresi girin.\n"
-                "Ornek: find_nearest_pharmacy(city='ankara') veya "
-                "find_nearest_pharmacy(city='istanbul', district='kadikoy')")
+        return []
 
     # Fetch duty pharmacies — eczaneler.gen.tr -> web search
-    pharmacies_raw = await _fetch_duty_pharmacies_eczaneler_gen_tr(city)
+    pharmacies_raw = await _fetch_duty_pharmacies_eczaneler_gen_tr(city, tab=tab)
     if not pharmacies_raw:
         pharmacies_raw = await _fetch_duty_pharmacies_web(city)
 
     if not pharmacies_raw:
-        return f"No duty pharmacies found for {city}" + (f"/{district}" if district else "") + "."
+        return []
 
-    # Handle web search fallback — return search results directly
+    # Web search fallback returns a special marker — cannot parse into Pharmacy objects
     if pharmacies_raw and pharmacies_raw[0].get("_raw_search"):
-        text = pharmacies_raw[0]["text"]
-        header = f"Nobetci Eczaneler -- {city.title()}"
-        if district:
-            header += f" / {district.title()}"
-        return header + "\n\n" + text + "\n\n(Kaynak: web aramasi)"
+        return []
 
     # Parse into Pharmacy objects
     pharmacies = []
@@ -336,7 +326,7 @@ async def find_nearest_pharmacy(
         pharmacy = Pharmacy(
             name=p.get("pharmacyName", p.get("name", "Unknown")),
             address=p.get("address", ""),
-            district=p.get("district", district),
+            district=p.get("district", ""),
             phone=p.get("phone", ""),
             lat=float(p.get("lat", 0) or 0),
             lon=float(p.get("lng", p.get("lon", 0)) or 0),
@@ -374,7 +364,7 @@ async def find_nearest_pharmacy(
                         user_lat, user_lon, pharmacy.lat, pharmacy.lon
                     ), 2)
 
-        # Get OSRM walking distance for top 3 closest
+        # Get OSRM walking/driving distance for top 3 closest
         pharmacies.sort(key=lambda p: p.distance_km if p.distance_km >= 0 else 999)
 
         if include_route:
@@ -395,13 +385,26 @@ async def find_nearest_pharmacy(
         # Re-sort after OSRM distances
         pharmacies.sort(key=lambda p: p.distance_km if p.distance_km >= 0 else 999)
 
-    # Format output
-    header = f"Nobetci Eczaneler -- {city.title()}"
-    if district:
-        header += f" / {district.title()}"
-    lines = [header + "\n"]
+    return pharmacies
 
-    for i, p in enumerate(pharmacies, 1):
+
+def format_pharmacy_message(pharmacies: list[Pharmacy], show_all: bool = False) -> str:
+    """Format a list of pharmacies for Telegram display.
+
+    Args:
+        pharmacies: Sorted list of Pharmacy objects.
+        show_all: If False, show top 3 and append total count. If True, show all.
+
+    Returns:
+        Formatted string ready for Telegram.
+    """
+    if not pharmacies:
+        return "Nobetci eczane bulunamadi."
+
+    shown = pharmacies if show_all else pharmacies[:3]
+    lines = []
+
+    for i, p in enumerate(shown, 1):
         lines.append(f"{i}. **{p.name}**")
         if p.address:
             lines.append(f"   Adres: {p.address}")
@@ -416,7 +419,105 @@ async def find_nearest_pharmacy(
             lines.append(dist_str)
         lines.append("")
 
-    if not user_loc:
-        lines.append("Not: Mesafe hesabi icin konumunuzu Telegram uzerinden kaydedin.")
+    if not show_all and len(pharmacies) > 3:
+        lines.append(f"Toplam {len(pharmacies)} eczane bulundu")
 
     return "\n".join(lines)
+
+
+def build_pharmacy_buttons(pharmacies: list[Pharmacy], total_count: int) -> list[list]:
+    """Build inline keyboard button rows for a list of pharmacies.
+
+    Each pharmacy with coords gets a Google Maps URL button.
+    Pharmacies without coords get a callback button.
+    If total_count > len(pharmacies), appends a "show all" button.
+
+    Args:
+        pharmacies: List of Pharmacy objects to build buttons for.
+        total_count: Total number of pharmacies found (may be > len(pharmacies)).
+
+    Returns:
+        List of button rows (each row is a list of InlineKeyboardButton).
+    """
+    from telegram import InlineKeyboardButton
+
+    rows = []
+    for i, p in enumerate(pharmacies, 1):
+        dist_str = f"{p.distance_km:.1f} km" if p.distance_km >= 0 else ""
+        label_parts = [f"🗺 {i}. {p.name}"]
+        if dist_str:
+            label_parts.append(f"({dist_str})")
+        label = " ".join(label_parts)
+
+        if p.lat and p.lon:
+            url = f"https://www.google.com/maps/search/?api=1&query={p.lat},{p.lon}"
+            button = InlineKeyboardButton(text=label, url=url)
+        else:
+            button = InlineKeyboardButton(text=label, callback_data=f"pharm:search:{i}")
+
+        rows.append([button])
+
+    if total_count > len(pharmacies):
+        rows.append([
+            InlineKeyboardButton(
+                text=f"📋 Tumunu Goster ({total_count})",
+                callback_data="pharm:all",
+            )
+        ])
+
+    return rows
+
+
+async def find_nearest_pharmacy(
+    city: str = "",
+    district: str = "",
+    include_route: bool = True,
+) -> str:
+    """Find nearest duty pharmacy. Returns formatted text.
+
+    Uses location_lat/location_lon from DB for distance calculation.
+    If no location set, returns pharmacy list without distances.
+    The district param is kept for backward compatibility but not used for filtering.
+    """
+    # Default city from DB prefs
+    if not city:
+        pref_city, pref_district = await _get_user_city_district()
+        city = pref_city
+        if not district:
+            district = pref_district
+
+    if not city:
+        return ("Sehir belirtilmedi. Lutfen sehir parametresi girin.\n"
+                "Ornek: find_nearest_pharmacy(city='ankara') veya "
+                "find_nearest_pharmacy(city='istanbul', district='kadikoy')")
+
+    # Try structured fetch first
+    pharmacies = await find_pharmacies_structured(city=city, include_route=include_route)
+
+    # Header
+    header = f"Nobetci Eczaneler -- {city.title()}"
+    if district:
+        header += f" / {district.title()}"
+
+    if pharmacies:
+        user_loc = await _get_user_coords()
+        body = format_pharmacy_message(pharmacies, show_all=True)
+        result = header + "\n\n" + body
+        if not user_loc:
+            result += "\nNot: Mesafe hesabi icin konumunuzu Telegram uzerinden kaydedin."
+        return result
+
+    # Structured fetch returned empty — try web search fallback directly
+    pharmacies_raw = await _fetch_duty_pharmacies_eczaneler_gen_tr(city)
+    if not pharmacies_raw:
+        pharmacies_raw = await _fetch_duty_pharmacies_web(city)
+
+    if not pharmacies_raw:
+        return f"No duty pharmacies found for {city}" + (f"/{district}" if district else "") + "."
+
+    # Handle web search fallback
+    if pharmacies_raw[0].get("_raw_search"):
+        text = pharmacies_raw[0]["text"]
+        return header + "\n\n" + text + "\n\n(Kaynak: web aramasi)"
+
+    return f"No duty pharmacies found for {city}" + (f"/{district}" if district else "") + "."

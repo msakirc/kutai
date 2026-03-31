@@ -15,6 +15,9 @@ from src.tools.pharmacy import (
     _fetch_duty_pharmacies_eczaneler_gen_tr,
     _fetch_pharmacy_coordinates,
     find_nearest_pharmacy,
+    find_pharmacies_structured,
+    format_pharmacy_message,
+    build_pharmacy_buttons,
 )
 
 
@@ -657,3 +660,271 @@ def test_find_nearest_pharmacy_detail_url_coordinate_fetch():
     mock_geocode.assert_not_called()
     assert "Test Eczanesi" in result
     assert "km" in result
+
+
+# ---------------------------------------------------------------------------
+# find_pharmacies_structured
+# ---------------------------------------------------------------------------
+
+def test_find_pharmacies_structured_returns_sorted_list():
+    """Should return Pharmacy list sorted by distance (closest first)."""
+    mock_pharmacies_raw = [
+        {
+            "pharmacyName": "Uzak Eczane",
+            "address": "Uzak Mah. No:5",
+            "district": "Kadikoy",
+            "phone": "0216 100-0000",
+            "lat": "41.0200",   # further from user
+            "lng": "29.0400",
+            "detail_url": "",
+        },
+        {
+            "pharmacyName": "Yakin Eczane",
+            "address": "Yakin Mah. No:1",
+            "district": "Besiktas",
+            "phone": "0212 200-0000",
+            "lat": "40.9840",   # closer to user
+            "lng": "29.0300",
+            "detail_url": "",
+        },
+    ]
+
+    async def mock_get_user_pref(key, default=""):
+        return {"location_lat": "40.9828", "location_lon": "29.0294",
+                "location_city": "istanbul", "location_district": ""}.get(key, default)
+
+    with patch(
+        "src.tools.pharmacy._fetch_duty_pharmacies_eczaneler_gen_tr",
+        new_callable=AsyncMock,
+        return_value=mock_pharmacies_raw,
+    ), patch(
+        "src.tools.pharmacy._get_osrm_distance",
+        new_callable=AsyncMock,
+        return_value=(-1.0, -1.0),  # disable OSRM so haversine distances hold
+    ), patch("src.infra.db.get_user_pref", side_effect=mock_get_user_pref):
+        result = _run(find_pharmacies_structured(city="istanbul"))
+
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert all(isinstance(p, Pharmacy) for p in result)
+    # Closest first
+    assert result[0].name == "Yakin Eczane"
+    assert result[1].name == "Uzak Eczane"
+    # Distances are calculated
+    assert result[0].distance_km >= 0
+    assert result[1].distance_km >= result[0].distance_km
+
+
+def test_find_pharmacies_structured_no_city_returns_empty():
+    """Should return empty list when city cannot be determined."""
+    async def mock_get_user_pref(key, default=""):
+        return default  # DB has nothing
+
+    with patch("src.infra.db.get_user_pref", side_effect=mock_get_user_pref):
+        result = _run(find_pharmacies_structured(city=""))
+
+    assert result == []
+
+
+def test_find_pharmacies_structured_scraper_failure_returns_empty():
+    """Should return empty list when scraper and web search both fail."""
+    with patch(
+        "src.tools.pharmacy._fetch_duty_pharmacies_eczaneler_gen_tr",
+        new_callable=AsyncMock,
+        return_value=[],
+    ), patch(
+        "src.tools.pharmacy._fetch_duty_pharmacies_web",
+        new_callable=AsyncMock,
+        return_value=[],
+    ):
+        result = _run(find_pharmacies_structured(city="istanbul"))
+
+    assert result == []
+
+
+def test_find_pharmacies_structured_web_fallback_returns_empty():
+    """Web search fallback (_raw_search) cannot produce Pharmacy objects — returns empty list."""
+    with patch(
+        "src.tools.pharmacy._fetch_duty_pharmacies_eczaneler_gen_tr",
+        new_callable=AsyncMock,
+        return_value=[],
+    ), patch(
+        "src.tools.pharmacy._fetch_duty_pharmacies_web",
+        new_callable=AsyncMock,
+        return_value=[{"_raw_search": True, "text": "Eczane X - Kizilay"}],
+    ):
+        result = _run(find_pharmacies_structured(city="ankara"))
+
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# format_pharmacy_message
+# ---------------------------------------------------------------------------
+
+def _make_pharmacies(n: int, with_distance: bool = False) -> list[Pharmacy]:
+    """Helper: build a list of n Pharmacy objects."""
+    pharmacies = []
+    for i in range(1, n + 1):
+        p = Pharmacy(
+            name=f"Eczane {i}",
+            address=f"Cadde {i} No:{i}",
+            district="Cankaya",
+            phone=f"0312 {i:03d}-0000",
+            lat=39.9 + i * 0.01,
+            lon=32.8 + i * 0.01,
+            distance_km=float(i) if with_distance else -1.0,
+            walking_min=float(i * 10) if with_distance else -1.0,
+            driving_min=float(i * 3) if with_distance else -1.0,
+        )
+        pharmacies.append(p)
+    return pharmacies
+
+
+def test_format_pharmacy_message_top3():
+    """Default (show_all=False) shows only top 3 and appends total count."""
+    pharmacies = _make_pharmacies(5, with_distance=True)
+    msg = format_pharmacy_message(pharmacies, show_all=False)
+
+    assert "Eczane 1" in msg
+    assert "Eczane 2" in msg
+    assert "Eczane 3" in msg
+    assert "Eczane 4" not in msg
+    assert "Eczane 5" not in msg
+    assert "Toplam 5 eczane bulundu" in msg
+
+
+def test_format_pharmacy_message_show_all():
+    """show_all=True shows all pharmacies and no 'Toplam' footer."""
+    pharmacies = _make_pharmacies(5, with_distance=True)
+    msg = format_pharmacy_message(pharmacies, show_all=True)
+
+    for i in range(1, 6):
+        assert f"Eczane {i}" in msg
+    # No "show all" footer when showing everything
+    assert "Toplam" not in msg
+
+
+def test_format_pharmacy_message_exactly_3():
+    """Exactly 3 pharmacies: no 'Toplam' footer even when show_all=False."""
+    pharmacies = _make_pharmacies(3, with_distance=True)
+    msg = format_pharmacy_message(pharmacies, show_all=False)
+
+    assert "Eczane 1" in msg
+    assert "Eczane 2" in msg
+    assert "Eczane 3" in msg
+    assert "Toplam" not in msg
+
+
+def test_format_pharmacy_message_distance_fields():
+    """When distance is set, includes km, walking min, and driving min."""
+    p = Pharmacy(
+        name="Test Eczane", address="Test Adres", district="Test",
+        distance_km=1.5, walking_min=18.0, driving_min=5.0,
+    )
+    msg = format_pharmacy_message([p], show_all=True)
+
+    assert "1.5 km" in msg
+    assert "18 dk" in msg
+    assert "5 dk" in msg
+
+
+def test_format_pharmacy_message_no_distance():
+    """When distance_km is -1, no distance line in output."""
+    p = Pharmacy(name="Test Eczane", address="Test Adres", district="Test")
+    msg = format_pharmacy_message([p], show_all=True)
+
+    assert "km" not in msg
+    assert "dk" not in msg
+
+
+def test_format_pharmacy_message_empty_list():
+    """Empty list returns a sensible fallback message."""
+    msg = format_pharmacy_message([], show_all=False)
+    assert msg  # not empty string
+    assert "bulunamadi" in msg.lower() or "eczane" in msg.lower()
+
+
+# ---------------------------------------------------------------------------
+# build_pharmacy_buttons
+# ---------------------------------------------------------------------------
+
+def test_build_pharmacy_buttons_map_links():
+    """Pharmacies with coordinates get Google Maps URL buttons."""
+    pharmacies = [
+        Pharmacy(name="A Eczane", address="Addr", district="D",
+                 lat=39.9255, lon=32.8660, distance_km=1.2),
+        Pharmacy(name="B Eczane", address="Addr2", district="D",
+                 lat=40.0000, lon=33.0000, distance_km=2.5),
+    ]
+
+    rows = build_pharmacy_buttons(pharmacies, total_count=2)
+
+    assert len(rows) == 2  # 2 pharmacies, no "show all" (total == shown)
+    btn_a = rows[0][0]
+    btn_b = rows[1][0]
+
+    # URL buttons for pharmacies with coords
+    assert btn_a.url is not None
+    assert "39.9255" in btn_a.url and "32.866" in btn_a.url
+    assert "maps.google.com" in btn_a.url or "google.com/maps" in btn_a.url
+
+    assert btn_b.url is not None
+    assert "40.0" in btn_b.url
+
+    # Labels include name and distance
+    assert "A Eczane" in btn_a.text
+    assert "1.2 km" in btn_a.text
+    assert "B Eczane" in btn_b.text
+
+
+def test_build_pharmacy_buttons_no_coords_callback():
+    """Pharmacies without coordinates get callback_data buttons."""
+    pharmacies = [
+        Pharmacy(name="No Coord Eczane", address="Addr", district="D",
+                 lat=0.0, lon=0.0, distance_km=-1.0),
+    ]
+
+    rows = build_pharmacy_buttons(pharmacies, total_count=1)
+
+    assert len(rows) == 1
+    btn = rows[0][0]
+    assert btn.url is None
+    assert btn.callback_data == "pharm:search:1"
+
+
+def test_build_pharmacy_buttons_show_all_button():
+    """When total_count > len(pharmacies), a 'show all' button is appended."""
+    pharmacies = _make_pharmacies(3, with_distance=True)
+    # Coordinates set to non-zero so they get URL buttons
+    for i, p in enumerate(pharmacies):
+        p.lat = 39.9 + i * 0.01
+        p.lon = 32.8 + i * 0.01
+
+    rows = build_pharmacy_buttons(pharmacies, total_count=10)
+
+    # 3 pharmacy rows + 1 "show all" row
+    assert len(rows) == 4
+    last_btn = rows[-1][0]
+    assert last_btn.callback_data == "pharm:all"
+    assert "10" in last_btn.text
+
+
+def test_build_pharmacy_buttons_no_show_all_when_few():
+    """No 'show all' button when total_count <= len(pharmacies)."""
+    pharmacies = _make_pharmacies(3, with_distance=True)
+    for i, p in enumerate(pharmacies):
+        p.lat = 39.9 + i * 0.01
+        p.lon = 32.8 + i * 0.01
+
+    rows = build_pharmacy_buttons(pharmacies, total_count=3)
+
+    assert len(rows) == 3  # exactly 3, no extra row
+    for row in rows:
+        assert row[0].callback_data != "pharm:all"
+
+
+def test_build_pharmacy_buttons_empty_list():
+    """Empty pharmacy list returns empty rows (no crash)."""
+    rows = build_pharmacy_buttons([], total_count=0)
+    assert rows == []

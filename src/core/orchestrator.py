@@ -161,7 +161,7 @@ def _reorder_by_model_affinity(tasks: list[dict]) -> list[dict]:
             return tasks
 
         def _sort_key(task: dict):
-            priority = task.get("priority", 5)
+            priority = task.get("_effective_priority", task.get("priority", 5))
             ctx = task.get("context", {})
             if isinstance(ctx, str):
                 try:
@@ -2498,6 +2498,22 @@ class Orchestrator:
 
                 # Get a generous batch, then compute how many to actually run
                 candidate_tasks = await get_ready_tasks(limit=8)
+
+                # ── Age-based priority boost (starvation prevention) ──
+                # +0.1 per hour waiting, max +1.0, so old tasks don't starve
+                for _t in candidate_tasks:
+                    _created = _t.get("created_at", "")
+                    if _created:
+                        try:
+                            _age_h = (datetime.now() - datetime.strptime(
+                                _created, "%Y-%m-%d %H:%M:%S"
+                            )).total_seconds() / 3600
+                            _age_boost = min(_age_h * 0.1, 1.0)
+                            _t["_effective_priority"] = _t.get("priority", 5) + _age_boost
+                        except Exception:
+                            _t["_effective_priority"] = _t.get("priority", 5)
+                    else:
+                        _t["_effective_priority"] = _t.get("priority", 5)
 
                 # ── Model-aware task reordering ──
                 # Boost tasks that match the currently loaded model to reduce swaps.

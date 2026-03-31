@@ -1112,7 +1112,7 @@ class BaseAgent:
             _now = time.time()
             if (self.progress_callback
                     and iteration > 0
-                    and _now - _progress_last_sent >= 30):
+                    and _now - _progress_last_sent >= 15):
                 try:
                     # Summarize last action with meaningful context
                     _last_action = ""

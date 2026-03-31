@@ -109,6 +109,17 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 | `src/memory/vector_store.py` | ChromaDB collections and queries |
 | `src/app/config.py` | Environment config constants |
 | `requirements.txt` | Python dependencies |
+| `src/tools/scraper.py` | Tiered web scraper (HTTP→TLS→Stealth→Browser) |
+| `src/tools/free_apis.py` | Free API registry with auto-growth discovery |
+| `src/tools/pharmacy.py` | Pharmacy on duty finder with distance calc |
+| `src/tools/play_store.py` | Google Play Store search/reviews/similar |
+| `src/tools/github_search.py` | GitHub repo/code search via REST API |
+| `src/tools/scaffolder.py` | Project scaffolding templates (fastapi/nextjs/expo/flask) |
+| `src/memory/skills.py` | Skill library with regex + vector matching |
+| `src/memory/seed_skills.py` | 23 curated routing skills seeded at startup |
+| `src/shopping/scrapers/` | 15 Turkish e-commerce scrapers |
+| `src/app/price_watch_checker.py` | Daily price watch re-scraper + alert system |
+| `mcp.yaml` | MCP server config (Fetch, Sequential Thinking, GitHub) |
 
 ## Strategic Context
 - **Competitive edge**: Local GPU management (swap budgets, affinity), Turkish shopping intelligence (15 scrapers), self-improving skills

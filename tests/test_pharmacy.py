@@ -13,7 +13,6 @@ from src.tools.pharmacy import (
     _get_user_location,
     _fetch_duty_pharmacies_eczaneler_gen_tr,
     _fetch_pharmacy_coordinates,
-    _normalize_turkish,
     find_nearest_pharmacy,
 )
 
@@ -75,19 +74,6 @@ def test_get_user_location_invalid(monkeypatch):
     monkeypatch.setenv("USER_LON", "29.0")
     result = _get_user_location()
     assert result is None
-
-
-# ---------------------------------------------------------------------------
-# _normalize_turkish
-# ---------------------------------------------------------------------------
-
-def test_normalize_turkish():
-    """Turkish special characters should be normalized."""
-    assert _normalize_turkish("çankaya") == "cankaya"
-    assert _normalize_turkish("şişli") == "sisli"
-    assert _normalize_turkish("beyoğlu") == "beyoglu"
-    assert _normalize_turkish("üsküdar") == "uskudar"
-    assert _normalize_turkish("gümüşhane") == "gumushane"
 
 
 # ---------------------------------------------------------------------------
@@ -231,23 +217,6 @@ def test_eczaneler_gen_tr_parses_pharmacies():
     assert results[1]["district"] == "Keçiören"
 
 
-def test_eczaneler_gen_tr_district_filter():
-    """Should filter pharmacies by district when specified."""
-    with patch(
-        "src.tools.scraper.scrape_url",
-        new_callable=AsyncMock,
-        return_value=_make_scrape_result(MOCK_ECZANELER_HTML),
-    ):
-        results = _run(_fetch_duty_pharmacies_eczaneler_gen_tr("ankara", "cankaya"))
-
-    # Only Çankaya pharmacies (Atakule + Lalem), not Keçiören (Yıldız)
-    assert len(results) == 2
-    names = [r["pharmacyName"] for r in results]
-    assert "Atakule Eczanesi" in names
-    assert "Lalem Eczanesi" in names
-    assert "Yıldız Eczanesi" not in names
-
-
 def test_eczaneler_gen_tr_skips_header_rows():
     """Header rows (without span.isim) should be skipped."""
     with patch(
@@ -290,6 +259,82 @@ def test_eczaneler_gen_tr_http_failure():
         results = _run(_fetch_duty_pharmacies_eczaneler_gen_tr("ankara"))
 
     assert results == []
+
+
+# HTML with three tab panes — each holding exactly one pharmacy
+MOCK_ECZANELER_TABBED_HTML = """
+<html><body>
+<div class="tab-content" id="nav-tabContent">
+  <div class="tab-pane" id="nav-dun">
+    <table class="table table-striped">
+      <tr><td colspan="3"><div class="row">
+        <div class="col-lg-3"><a href="/eczane/test-dun-eczanesi"><span class="isim">Dun Eczanesi</span></a></div>
+        <div class="col-lg-6">Dun Caddesi No:1
+          <div class="my-2"><span class="px-2 py-1 rounded bg-info text-white font-weight-bold">Kadikoy</span></div>
+        </div>
+        <div class="col-lg-3 py-lg-2">0216 111-0000</div>
+      </div></td></tr>
+    </table>
+  </div>
+  <div class="tab-pane show active" id="nav-bugun">
+    <table class="table table-striped">
+      <tr><td colspan="3"><div class="row">
+        <div class="col-lg-3"><a href="/eczane/test-bugun-eczanesi"><span class="isim">Bugun Eczanesi</span></a></div>
+        <div class="col-lg-6">Bugun Caddesi No:2
+          <div class="my-2"><span class="px-2 py-1 rounded bg-info text-white font-weight-bold">Besiktas</span></div>
+        </div>
+        <div class="col-lg-3 py-lg-2">0212 222-0000</div>
+      </div></td></tr>
+    </table>
+  </div>
+  <div class="tab-pane" id="nav-yarin">
+    <table class="table table-striped">
+      <tr><td colspan="3"><div class="row">
+        <div class="col-lg-3"><a href="/eczane/test-yarin-eczanesi"><span class="isim">Yarin Eczanesi</span></a></div>
+        <div class="col-lg-6">Yarin Caddesi No:3
+          <div class="my-2"><span class="px-2 py-1 rounded bg-info text-white font-weight-bold">Sisli</span></div>
+        </div>
+        <div class="col-lg-3 py-lg-2">0212 333-0000</div>
+      </div></td></tr>
+    </table>
+  </div>
+</div>
+</body></html>
+"""
+
+
+def test_eczaneler_scrapes_only_today_tab():
+    """When tab='bugun', should return only today's pharmacy, not yesterday's or tomorrow's."""
+    with patch(
+        "src.tools.scraper.scrape_url",
+        new_callable=AsyncMock,
+        return_value=_make_scrape_result(MOCK_ECZANELER_TABBED_HTML),
+    ):
+        results = _run(_fetch_duty_pharmacies_eczaneler_gen_tr("istanbul", tab="bugun"))
+
+    assert len(results) == 1
+    assert results[0]["pharmacyName"] == "Bugun Eczanesi"
+    assert results[0]["district"] == "Besiktas"
+    names = [r["pharmacyName"] for r in results]
+    assert "Dun Eczanesi" not in names
+    assert "Yarin Eczanesi" not in names
+
+
+def test_eczaneler_scrapes_tomorrow_tab():
+    """When tab='yarin', should return only tomorrow's pharmacy."""
+    with patch(
+        "src.tools.scraper.scrape_url",
+        new_callable=AsyncMock,
+        return_value=_make_scrape_result(MOCK_ECZANELER_TABBED_HTML),
+    ):
+        results = _run(_fetch_duty_pharmacies_eczaneler_gen_tr("istanbul", tab="yarin"))
+
+    assert len(results) == 1
+    assert results[0]["pharmacyName"] == "Yarin Eczanesi"
+    assert results[0]["district"] == "Sisli"
+    names = [r["pharmacyName"] for r in results]
+    assert "Dun Eczanesi" not in names
+    assert "Bugun Eczanesi" not in names
 
 
 # ---------------------------------------------------------------------------

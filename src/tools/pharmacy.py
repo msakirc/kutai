@@ -153,8 +153,16 @@ async def _fetch_duty_pharmacies_nosyapi(city: str, district: str) -> list[dict]
         return []
 
 
-async def _fetch_duty_pharmacies_eczaneler_gen_tr(city: str, district: str = "") -> list[dict]:
-    """Scrape duty pharmacies from eczaneler.gen.tr (no API key needed)."""
+async def _fetch_duty_pharmacies_eczaneler_gen_tr(
+    city: str, tab: str = "bugun"
+) -> list[dict]:
+    """Scrape duty pharmacies from eczaneler.gen.tr (no API key needed).
+
+    Args:
+        city: City name (e.g. "ankara", "istanbul").
+        tab: Which Bootstrap tab to read — "dun" (yesterday), "bugun" (today),
+             or "yarin" (tomorrow). Defaults to "bugun".
+    """
     from datetime import datetime
     try:
         from src.tools.scraper import scrape_url, ScrapeTier
@@ -170,13 +178,22 @@ async def _fetch_duty_pharmacies_eczaneler_gen_tr(city: str, district: str = "")
         soup = BeautifulSoup(result.html, "lxml")
 
         pharmacies = []
+        # Target only the requested tab pane (e.g. #nav-bugun) so we don't
+        # accidentally return yesterday's or tomorrow's on-duty pharmacies.
+        tab_id = f"nav-{tab}"
+        tab_pane = soup.find("div", id=tab_id)
+        tables = tab_pane.find_all("table") if tab_pane else []
+        if not tables:
+            # Fallback: try all tables (old page structure without tabs)
+            tables = soup.find_all("table")
+
         # Structure: Bootstrap table.table-striped tables
         # Each <tr> has one <td colspan=3> containing a div.row with:
         #   col-lg-3: <a href="/eczane/..."><span class="isim">Name</span></a>
         #   col-lg-6: address text, <span class="bg-info">District</span>
         #   col-lg-3: phone number
         # First row of each table is a header (contains "Eczane" / "Adres" icons)
-        for table in soup.find_all("table"):
+        for table in tables:
             for row in table.find_all("tr"):
                 # Skip header rows (no <span class="isim">)
                 name_span = row.find("span", class_="isim")
@@ -259,36 +276,15 @@ async def _fetch_duty_pharmacies_eczaneler_gen_tr(city: str, district: str = "")
                     "detail_url": detail_url,
                 }
 
-                # Filter by district if specified
-                if district:
-                    dist_lower = _normalize_turkish(district.lower())
-                    found_lower = _normalize_turkish(found_district.lower())
-                    addr_lower = _normalize_turkish(address.lower())
-                    if dist_lower not in found_lower and dist_lower not in addr_lower:
-                        continue
-
                 pharmacies.append(pharmacy)
 
         logger.debug(
-            f"eczaneler.gen.tr: found {len(pharmacies)} pharmacies for {city}"
-            + (f"/{district}" if district else "")
+            f"eczaneler.gen.tr: found {len(pharmacies)} pharmacies for {city} (tab={tab})"
         )
         return pharmacies
     except Exception as e:
         logger.debug(f"eczaneler.gen.tr scrape failed: {e}")
         return []
-
-
-def _normalize_turkish(text: str) -> str:
-    """Normalize Turkish characters for case-insensitive comparison."""
-    return (
-        text.replace("ı", "i")
-        .replace("ş", "s")
-        .replace("ç", "c")
-        .replace("ö", "o")
-        .replace("ü", "u")
-        .replace("ğ", "g")
-    )
 
 
 async def _fetch_pharmacy_coordinates(detail_url: str) -> tuple[float, float] | None:
@@ -362,7 +358,7 @@ async def find_nearest_pharmacy(
         # District specified: Nosyapi API -> eczaneler.gen.tr (filtered) -> web search
         pharmacies_raw = await _fetch_duty_pharmacies_nosyapi(city, district)
         if not pharmacies_raw:
-            pharmacies_raw = await _fetch_duty_pharmacies_eczaneler_gen_tr(city, district)
+            pharmacies_raw = await _fetch_duty_pharmacies_eczaneler_gen_tr(city)
             if not pharmacies_raw:
                 # Try city-wide if district filter yields nothing
                 all_city = await _fetch_duty_pharmacies_eczaneler_gen_tr(city)

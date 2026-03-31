@@ -97,9 +97,8 @@ REPLY_KEYBOARD = _make_keyboard([
 ])
 
 KB_HIZMET = _make_keyboard([
-    ["🏥 Eczane", "💰 Döviz", "🌤 Hava"],
-    ["⛽ Yakıt", "🕌 Namaz", "📰 Haber"],
-    ["🪙 Altın", "🌍 Deprem"],
+    ["🏥 Eczane", "💰 Döviz", "🌤 Hava", "⛽ Yakıt"],
+    ["🕌 Namaz", "📰 Haber", "🪙 Altın", "🌍 Deprem"],
     ["🔙 Geri"],
 ])
 
@@ -114,8 +113,7 @@ KB_LISTEM = _make_keyboard([
 ])
 
 KB_GOREVLER = _make_keyboard([
-    ["🎯 Yeni Görev", "📬 İş Kuyruğu"],
-    ["⏰ Zamanla"],
+    ["🎯 Yeni Görev", "📬 İş Kuyruğu", "⏰ Zamanla"],
     ["🔙 Geri"],
 ])
 
@@ -127,10 +125,8 @@ KB_WORKFLOW_SELECT = _make_keyboard([
 ])
 
 KB_SISTEM = _make_keyboard([
-    ["🖥 Yük Modu", "🐛 Debug"],
-    ["📭 DLQ"],
-    ["🔄 Yeniden Başlat", "⏹ Durdur"],
-    ["🔙 Geri"],
+    ["🖥 Yük Modu", "🐛 Debug", "📭 DLQ"],
+    ["🔄 Yeniden Başlat", "⏹ Durdur", "🔙 Geri"],
 ])
 
 KB_YUK_MODU = _make_keyboard([

@@ -451,16 +451,16 @@ class TestLLMDispatcherRouting(unittest.TestCase):
         mock_grade = AsyncMock(return_value=0.8)
 
         with patch("src.core.router.grade_response", mock_grade):
+            # record_swap is now called by the caller (_do_swap), not on_model_swap
+            dispatcher.swap_budget.record_swap()
             run_async(dispatcher.on_model_swap(
                 old_model="old-model",
                 new_model="new-model",
             ))
 
-        # The swap_budget should have recorded the swap
+        # The swap_budget should have the caller-recorded swap
         self.assertEqual(len(dispatcher.swap_budget._timestamps), 1)
-        # Grade should have been drained (during "before swap" drain with old_model available)
-        # When old_model="old-model" and generating_model="old-model", they match so NOT drained.
-        # After swap new_model="new-model" != "old-model" → drained.
+        # Grade drained: new_model="new-model" != generating_model="old-model" → drained.
         self.assertEqual(dispatcher.grade_queue.depth, 0)
 
     # 22. get_stats returns correct counters

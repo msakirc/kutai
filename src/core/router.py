@@ -1096,6 +1096,14 @@ async def call_model(
                 last_error = f"GPU queue timeout for {model.name}"
                 continue
 
+            # ── Mark inference IMMEDIATELY after GPU acquire ──────────
+            # This MUST happen before any other work. The inference count
+            # prevents model swaps from proceeding (_do_swap waits for
+            # inference drain). Without this, there's a race window where
+            # inference_count==0 after GPU grant, and another coroutine
+            # could trigger a swap that kills the server before we call it.
+            _inf_gen = local_manager.mark_inference_start()
+
         max_retries = 2 if model.is_local else 3
 
         try:
@@ -1115,21 +1123,10 @@ async def call_model(
                         vision=model.has_vision,
                     )
 
-                    # Track in-flight inference so model swaps can drain.
-                    # Capture the generation so mark_inference_end() knows
-                    # whether a force-swap happened while we were running
-                    # (in which case the counter was already reset).
-                    _inf_gen = None
-                    if local_manager:
-                        _inf_gen = local_manager.mark_inference_start()
-                    try:
-                        response = await asyncio.wait_for(
-                            litellm.acompletion(**completion_kwargs),
-                            timeout=timeout_val,
-                        )
-                    finally:
-                        if local_manager:
-                            local_manager.mark_inference_end(_inf_gen)
+                    response = await asyncio.wait_for(
+                        litellm.acompletion(**completion_kwargs),
+                        timeout=timeout_val,
+                    )
 
                     call_latency = time.time() - call_start
 
@@ -1338,6 +1335,10 @@ async def call_model(
 
         finally:
             if local_manager:
+                # End inference tracking BEFORE releasing GPU slot.
+                # This ensures the swap drain check sees our inference
+                # as complete before the next waiter gets the GPU.
+                local_manager.mark_inference_end(_inf_gen)
                 local_manager.release_inference_slot()
 
     # ── All candidates exhausted — try backpressure queue ──

@@ -86,8 +86,14 @@ async def get_product_with_fallback(
     """
     from src.shopping.resilience.cache_fallback import get_stale_product
 
+    # Default general-purpose scrapers tried when caller provides no sources.
+    # These cover the major Turkish e-commerce sites with broad product catalogues.
+    DEFAULT_GENERAL_SOURCES = ["akakce", "trendyol", "hepsiburada", "amazon_tr", "epey"]
+
     # Phase 1: Try each source's dedicated scraper
     effective_sources = [s for s in (sources or []) if s != "default"]
+    if not effective_sources:
+        effective_sources = DEFAULT_GENERAL_SOURCES
     for source in effective_sources:
         try:
             from src.shopping.scrapers import get_scraper

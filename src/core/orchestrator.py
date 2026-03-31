@@ -940,80 +940,120 @@ class Orchestrator:
             logger.error(f"[Scheduler] Error checking schedules: {e}")
 
     async def _start_todo_suggestions(self):
-        """Create one suggestion task per pending todo item."""
-        from src.infra.db import get_todos, add_task, get_db
+        """Generate AI suggestions for pending todo items via a single direct LLM call.
+
+        Previously this created one full agent task per todo item, which caused
+        timeout storms when no model was loaded (each task would wait for a model
+        swap, time out at 120s, fail, then be retried on the next cron tick).
+
+        New approach: one OVERHEAD LLM call with all todos in the prompt → fast,
+        no model swap triggered, no retry loop.  Falls back to sending the reminder
+        without suggestions if the LLM call fails or times out.
+        """
+        from src.infra.db import get_todos, get_db
+        from src.app.reminders import send_todo_reminder
+
         todos = await get_todos(status="pending")
         if not todos:
             return
 
-        # Skip todos that already had a failed/cancelled suggestion attempt
-        # in the last 4 hours — prevents infinite retry loops.
+        # Guard: if we already generated suggestions very recently (within 30 min)
+        # skip to prevent duplicate reminders when cron fires slightly off-schedule.
         db = await get_db()
-        recently_attempted: set[int] = set()
-        for todo in todos:
-            cursor = await db.execute(
-                """SELECT id FROM tasks
-                   WHERE title = ?
-                     AND status IN ('failed', 'cancelled')
-                     AND created_at > strftime('%Y-%m-%d %H:%M:%S',
-                                               datetime('now', '-4 hours'))
-                   LIMIT 1""",
-                (f"Suggest action for: {todo['title'][:50]}",),
-            )
-            if await cursor.fetchone():
-                recently_attempted.add(todo["id"])
-
-        eligible = [t for t in todos if t["id"] not in recently_attempted]
-        if not eligible and todos:
-            # All todos had recent failed attempts — just send reminder
-            logger.info(
-                f"[Todo] All {len(todos)} todos had recent failed suggestion "
-                f"attempts, sending reminder without suggestions"
-            )
-            from src.app.reminders import send_todo_reminder
-            if self.telegram:
-                await send_todo_reminder(self.telegram)
+        cursor = await db.execute(
+            """SELECT id FROM tasks
+               WHERE title LIKE 'Todo suggestions batch%'
+                 AND status = 'completed'
+                 AND created_at > strftime('%Y-%m-%d %H:%M:%S',
+                                           datetime('now', '-30 minutes'))
+               LIMIT 1"""
+        )
+        if await cursor.fetchone():
+            logger.info("[Todo] Recent suggestion batch completed within 30 min — skipping")
             return
 
-        batch_id = f"todo_suggest_{int(datetime.now(timezone.utc).timestamp())}"
-        task_ids = []
+        # Build a single prompt covering all todos
+        todo_lines = "\n".join(
+            f"{i+1}. {t['title']}" + (
+                f" (notes: {t['description'][:80]})" if t.get("description") else ""
+            )
+            for i, t in enumerate(todos[:10])  # cap at 10 to keep prompt small
+        )
+        prompt = (
+            f"The user has {len(todos)} pending todo item(s):\n\n"
+            f"{todo_lines}\n\n"
+            f"For each item, suggest ONE concrete, actionable way an AI assistant could help "
+            f"(e.g. search, compare prices, book, remind, draft a message). "
+            f"Be creative — even mundane tasks like 'buy milk' could mean price comparison or online ordering. "
+            f"If you genuinely cannot help with an item, write 'no suggestion'.\n\n"
+            f"Reply ONLY with a numbered list matching the items above. "
+            f"One sentence per item. No preamble, no extra commentary."
+        )
 
-        for todo in eligible:
-            task_id = await add_task(
-                title=f"Suggest action for: {todo['title'][:50]}",
-                description=(
-                    f"The user has this todo item: \"{todo['title']}\"\n"
-                    f"Description: {todo.get('description') or '(none)'}\n\n"
-                    f"Suggest ONE concrete, actionable way you (an AI assistant) could help. "
-                    f"Be creative — even mundane items like 'buy milk' could mean "
-                    f"price comparison or online ordering. "
-                    f"If you genuinely cannot help, just say 'no suggestion'. "
-                    f"Reply with ONLY the suggestion, one sentence, no preamble."
+        suggestions: dict[int, str] = {}
+        try:
+            from src.core.llm_dispatcher import get_dispatcher, CallCategory
+            from src.core.router import ModelRequirements
+
+            dispatcher = get_dispatcher()
+            reqs = ModelRequirements(
+                task="adhoc",
+                primary_capability="general",
+                difficulty=2,
+                estimated_input_tokens=400,
+                estimated_output_tokens=150,
+                local_only=True,
+                prefer_speed=True,
+                priority=2,
+            )
+            response = await asyncio.wait_for(
+                dispatcher.request(
+                    category=CallCategory.OVERHEAD,
+                    reqs=reqs,
+                    messages=[{"role": "user", "content": prompt}],
                 ),
+                timeout=25,  # hard cap — if the model isn't loaded, fail fast
+            )
+            raw = (response.get("content") or "").strip()
+            logger.info(f"[Todo] Suggestion LLM response ({len(raw)} chars)")
+
+            # Parse numbered list: "1. suggestion text"
+            import re as _re
+            for i, todo in enumerate(todos[:10]):
+                # Look for line starting with the item number
+                pattern = rf"^{i+1}[.)]\s*(.+)"
+                for line in raw.splitlines():
+                    m = _re.match(pattern, line.strip())
+                    if m:
+                        suggestion = m.group(1).strip()
+                        if suggestion.lower() != "no suggestion" and len(suggestion) > 5:
+                            suggestions[todo["id"]] = suggestion
+                        break
+
+        except asyncio.TimeoutError:
+            logger.warning("[Todo] Suggestion LLM call timed out — sending reminder without suggestions")
+        except Exception as exc:
+            logger.warning(f"[Todo] Suggestion LLM call failed: {exc} — sending reminder without suggestions")
+
+        # Record that we ran this batch (used for dedup guard above)
+        try:
+            from src.infra.db import add_task, update_task
+            sentinel_id = await add_task(
+                title=f"Todo suggestions batch ({len(todos)} items)",
+                description=f"Inline suggestion batch — {len(suggestions)} suggestions generated",
                 agent_type="assistant",
                 tier="auto",
-                priority=3,  # low — background work
-                context={
-                    "local_only": True,
-                    "prefer_quality": True,
-                    "silent": True,
-                    "todo_suggest_batch": batch_id,
-                    "todo_id": todo["id"],
-                    "todo_count": len(todos),
-                },
+                priority=1,
+                context={"silent": True, "todo_suggest_sentinel": True},
             )
-            if task_id:
-                task_ids.append(task_id)
+            if sentinel_id:
+                await update_task(sentinel_id, status="completed",
+                                  result=f"{len(suggestions)} suggestions")
+        except Exception:
+            pass  # sentinel is best-effort
 
-        if task_ids:
-            logger.info(
-                f"[Todo] Created {len(task_ids)} suggestion tasks, batch={batch_id}"
-            )
-        else:
-            # All deduped or failed — send reminder without suggestions
-            from src.app.reminders import send_todo_reminder
-            if self.telegram:
-                await send_todo_reminder(self.telegram)
+        if self.telegram:
+            await send_todo_reminder(self.telegram, suggestions=suggestions if suggestions else None)
 
     async def _check_todo_suggestions_complete(self, task_ctx):
         """Check if all suggestion tasks in this batch are done. If so, send reminder."""

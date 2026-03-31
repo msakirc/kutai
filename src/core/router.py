@@ -1110,6 +1110,25 @@ async def call_model(
             # could trigger a swap that kills the server before we call it.
             _inf_gen = local_manager.mark_inference_start()
 
+            # ── Verify model didn't change during GPU wait ──────────
+            # completion_kwargs were built BEFORE GPU acquire. If a swap
+            # happened during the wait, the server is now running a
+            # different model. Skip this candidate — the next one in the
+            # loop (likely cloud) will work, or the retry will pick the
+            # new loaded model.
+            if local_manager.current_model != model.name:
+                _actual = local_manager.current_model
+                logger.warning(
+                    "model changed during GPU wait — skipping stale candidate",
+                    expected=model.name,
+                    actual=_actual,
+                )
+                local_manager.mark_inference_end(_inf_gen)
+                local_manager.release_inference_slot()
+                local_manager = None  # prevent double-release in finally
+                last_error = f"Model swapped during GPU wait: {model.name} → {_actual}"
+                continue
+
         max_retries = 2 if model.is_local else 3
 
         try:

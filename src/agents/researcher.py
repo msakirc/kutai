@@ -18,6 +18,7 @@ class ResearcherAgent(BaseAgent):
     # immediately, so most tasks complete in 2 iterations.
     max_iterations = 4
     enable_self_reflection = True
+    min_confidence = 3
 
     allowed_tools = [
         "web_search",

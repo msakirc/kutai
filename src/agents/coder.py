@@ -18,6 +18,7 @@ class CoderAgent(BaseAgent):
     # final verification (8).  Matches MAX_AGENT_ITERATIONS default.
     max_iterations = 8
     enable_self_reflection = True
+    min_confidence = 3
 
     allowed_tools = [
         "shell",

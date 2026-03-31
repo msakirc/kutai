@@ -2380,3 +2380,14 @@ async def get_skill_metrics_summary() -> dict:
         })
 
     return {"overall": overall, "per_skill": per_skill}
+
+
+async def prune_old_conversations(max_age_days: int = 30) -> int:
+    """Delete conversations older than max_age_days. Returns count deleted."""
+    db = await get_db()
+    cursor = await db.execute(
+        "DELETE FROM conversations WHERE created_at < datetime('now', ? || ' days')",
+        (f"-{max_age_days}",),
+    )
+    await db.commit()
+    return cursor.rowcount

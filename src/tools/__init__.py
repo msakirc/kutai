@@ -1138,7 +1138,7 @@ for _name, _info in TOOL_REGISTRY.items():
 
 # Clean up module namespace
 del _name, _info, _sig
-logger.info(f"📦 Loaded tools: {sorted(TOOL_REGISTRY.keys())}")
+logger.info(f"Loaded tools: {sorted(TOOL_REGISTRY.keys())}")
 
 # ---------------------------------------------------------------------------
 # LiteLLM Tool Schemas (auto-generated from TOOL_REGISTRY)

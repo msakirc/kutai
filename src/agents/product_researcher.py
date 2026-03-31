@@ -18,6 +18,7 @@ class ProductResearcherAgent(BaseAgent):
     default_tier = "cheap"
     min_tier = "cheap"
     max_iterations = 6
+    enable_self_reflection = True
 
     allowed_tools = [
         "web_search",

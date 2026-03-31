@@ -166,7 +166,7 @@ class TestShutdownDBCleanup:
 
         async def _run():
             # Should complete without error even with no locked tasks
-            await release_task_locks()
+            await release_task_locks(task_id=0)
 
         run_async(_run())
 

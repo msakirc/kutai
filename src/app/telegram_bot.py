@@ -1239,24 +1239,14 @@ class TelegramInterface:
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show command reference."""
         help_text = (
-            "📖 *KutAI Komut Rehberi*\n\n"
-            "*Menü Butonları*\n"
-            "⚡ Hizmet — Eczane, döviz, hava, yakıt, namaz, haber, altın, deprem\n"
-            "🛒 Alışveriş — Hızlı ara, detaylı araştır\n"
-            "📋 Listem — Todo listesi\n"
-            "🎯 Görevler — Görev oluştur, kuyruk\n"
-            "⚙️ Sistem — Durum, yük modu, debug, DLQ\n\n"
-            "*Slash Komutları (hâlâ çalışır)*\n"
-            "/mission — Görev oluştur\n"
-            "/shop — Ürün ara\n"
-            "/todo — Todo ekle\n"
-            "/todos — Todoları listele\n"
-            "/status — Sistem durumu\n"
-            "/debug — Debug bilgisi\n"
-            "/load — GPU yük modu\n"
-            "/stop — KutAI durdur\n"
-            "/restart — KutAI yeniden başlat\n\n"
-            "_Tam liste için butonları kullan._"
+            "*KutAI Commands*\n\n"
+            "*Shopping:* /shop, /price, /compare, /watch, /deals, /mystuff\n"
+            "*Todo:* /todo, /todos, /cleartodos\n"
+            "*Missions:* /mission, /wfstatus, /queue, /cancel, /resume\n"
+            "*Memory:* /remember, /recall, /ingest\n"
+            "*Monitor:* /status, /trace, /skillstats, /metrics, /cost\n"
+            "*System:* /restart, /stop, /debug, /load, /autonomy\n"
+            "\nOr just type naturally — I understand Turkish and English."
         )
         await self._reply(update, help_text, parse_mode="Markdown")
 

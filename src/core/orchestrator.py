@@ -2716,6 +2716,16 @@ class Orchestrator:
                         logger.debug(f"Memory decay failed (non-critical): {e}")
                     self.last_decay_check = datetime.now()
 
+                # ── Prune old conversations (daily) ──
+                if self.cycle_count == 1 or self.cycle_count % 8640 == 0:
+                    try:
+                        from src.infra.db import prune_old_conversations
+                        pruned = await prune_old_conversations(30)
+                        if pruned:
+                            logger.info(f"Pruned {pruned} old conversations")
+                    except Exception:
+                        pass
+
                 # Phase 9.3: Check alerts periodically
                 try:
                     from src.infra.alerting import check_alerts

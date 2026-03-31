@@ -18,6 +18,7 @@ class DealAnalystAgent(BaseAgent):
     default_tier = "medium"
     min_tier = "cheap"
     max_iterations = 4
+    enable_self_reflection = True
 
     allowed_tools = [
         "web_search",

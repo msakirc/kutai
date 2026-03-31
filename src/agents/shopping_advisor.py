@@ -20,6 +20,8 @@ class ShoppingAdvisorAgent(BaseAgent):
     min_tier = "cheap"
     max_iterations = 8
     can_create_subtasks = True
+    enable_self_reflection = True
+    min_confidence = 3
 
     allowed_tools = [
         "web_search",

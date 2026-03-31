@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 runtime_state: dict = {
     "web_search_available":  False,
     "sandbox_available":     False,
-    "ntfy_available":        False,
     "telegram_available":    False,
     "frontail_available":    False,
     "llm_available":         False,

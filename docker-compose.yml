@@ -21,26 +21,6 @@ services:
           memory: 256M
     restart: unless-stopped
 
-  ntfy:
-    image: binwiederhier/ntfy
-    container_name: ntfy
-    restart: unless-stopped
-    ports:
-      - "8083:80"
-    volumes:
-      - ${NTFY_CACHE_DIR:-./docker/data/ntfy/cache}:/var/cache/ntfy
-      - ${NTFY_ETC_DIR:-./docker/data/ntfy/etc}:/etc/ntfy
-    env_file:
-      - .env
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - "NTFY_PASSWORD=$$NTFY_PASS ntfy user add --role=admin --ignore-exists $$NTFY_USER 2>/dev/null; ntfy serve"
-    deploy:
-      resources:
-        limits:
-          memory: 128M
-          cpus: "0.25"
-
   vane:
     image: itzcrazykns1337/vane:latest
     container_name: vane

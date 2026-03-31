@@ -54,6 +54,8 @@ except ImportError:
 _BASE_URL = "https://www.hepsiburada.com"
 _SEARCH_URL = "https://www.hepsiburada.com/ara"
 _REVIEW_API = "https://user-content-gw-hermes.hepsiburada.com/queryapi/v2/ApprovedUserContents"
+# Working parameter: sku= (not skuId=). Response nests items under
+# data.approvedUserContent.approvedUserContentList with 'review.content' and 'star'.
 
 # Flag: this scraper is high-risk for bot detection
 HIGH_RISK = True
@@ -450,8 +452,15 @@ class HepsiburadaScraper(BaseScraper):
     # get_reviews
     # ------------------------------------------------------------------
 
-    async def get_reviews(self, url: str, *, max_pages: int = 3) -> list[dict]:
-        """Fetch reviews via the Hepsiburada review API."""
+    async def get_reviews(self, url: str, *, max_pages: int = 5) -> list[dict]:
+        """Fetch reviews via the Hepsiburada review API.
+
+        API endpoint: ``/queryapi/v2/ApprovedUserContents?sku=<SKU>&page=N&pageSize=20``
+        Response nests items under ``data.approvedUserContent.approvedUserContentList``.
+        Each item has ``review.content`` (text) and ``star`` (rating).
+
+        Returns partial results if later pages time out (pages 1..N-1 kept).
+        """
         # Cache
         try:
             cached = await get_cached_reviews(url, "hepsiburada")
@@ -470,8 +479,9 @@ class HepsiburadaScraper(BaseScraper):
 
         for page in range(1, max_pages + 1):
             try:
+                # Note: working param is 'sku=' (not 'skuId=' which returns 400)
                 api_url = (
-                    f"{_REVIEW_API}?skuId={sku}"
+                    f"{_REVIEW_API}?sku={sku}"
                     f"&page={page}&pageSize=20&orderBy=MostRecent"
                 )
                 response = await self._fetch(api_url)
@@ -479,7 +489,7 @@ class HepsiburadaScraper(BaseScraper):
                 logger.error(
                     "review fetch failed", url=url, page=page, error=str(exc)
                 )
-                break
+                break  # Return partial results
 
             if response.status_code != 200:
                 logger.warning(
@@ -493,6 +503,10 @@ class HepsiburadaScraper(BaseScraper):
 
             all_reviews.extend(page_reviews)
 
+            if page < max_pages:
+                import asyncio as _asyncio
+                await _asyncio.sleep(2.0)
+
         # Cache
         if all_reviews:
             try:
@@ -504,7 +518,14 @@ class HepsiburadaScraper(BaseScraper):
         return all_reviews
 
     def _parse_reviews(self, response: httpx.Response) -> list[dict]:
-        """Parse a single page of reviews from the API response."""
+        """Parse a single page of reviews from the API response.
+
+        Handles two response shapes:
+        - New (v2): ``data.approvedUserContent.approvedUserContentList``
+          with item fields ``review.content``, ``star``, ``createdAt``,
+          ``customer.displayName``, ``reactions.likeCount``.
+        - Legacy: ``data.approvedUserContents`` with ``review``/``comment``, ``star``.
+        """
         reviews: list[dict] = []
         try:
             data = response.json()
@@ -512,32 +533,83 @@ class HepsiburadaScraper(BaseScraper):
             logger.debug("review JSON decode failed", error=str(exc))
             return []
 
-        items = data.get("data", {}).get("approvedUserContents", [])
+        # New response structure (v2 with sku= param)
+        items = (
+            data.get("data", {})
+            .get("approvedUserContent", {})
+            .get("approvedUserContentList", [])
+        )
+
+        # Legacy fallback paths
         if not items:
-            items = data.get("approvedUserContents", [])
+            items = (
+                data.get("data", {}).get("approvedUserContents", [])
+                or data.get("approvedUserContents", [])
+            )
 
         for item in items:
             try:
-                text = item.get("review") or item.get("comment", "")
+                # New structure: review is nested under 'review' dict
+                review_obj = item.get("review", {})
+                if isinstance(review_obj, dict):
+                    text = review_obj.get("content", "")
+                else:
+                    text = ""
+
+                # Legacy structure: review is a plain string field
+                if not text:
+                    text = item.get("review") or item.get("comment", "")
+
                 if not text:
                     continue
 
-                review: dict[str, Any] = {
+                # Star rating
+                rating = _safe_float(item.get("star") or item.get("rate"))
+
+                # Date
+                date = item.get("createdAt") or item.get("reviewDate") or item.get("contentUpdatedAt")
+
+                # Author: new structure has nested 'customer'
+                customer = item.get("customer", {})
+                if isinstance(customer, dict):
+                    author = (
+                        customer.get("displayName")
+                        or customer.get("name")
+                        or item.get("displayCustomerName")
+                    )
+                else:
+                    author = item.get("nickname") or item.get("userName") or item.get("displayCustomerName")
+
+                # Helpful count: nested 'reactions'
+                reactions = item.get("reactions", {})
+                helpful_count = 0
+                if isinstance(reactions, dict):
+                    helpful_count = _safe_int(reactions.get("likeCount")) or 0
+                else:
+                    helpful_count = _safe_int(item.get("likeCount")) or 0
+
+                # Seller name: nested 'order'
+                order = item.get("order", {})
+                seller = None
+                if isinstance(order, dict):
+                    seller = order.get("merchantName")
+                if not seller:
+                    seller = item.get("sellerName") or item.get("merchantName")
+
+                review_dict: dict[str, Any] = {
                     "text": text,
                     "source": "hepsiburada",
-                    "rating": _safe_float(item.get("star") or item.get("rate")),
-                    "date": item.get("createdAt") or item.get("reviewDate"),
-                    "author": item.get("nickname") or item.get("userName"),
-                    "helpful_count": _safe_int(item.get("likeCount")) or 0,
+                    "rating": rating,
+                    "date": date,
+                    "author": author,
+                    "helpful_count": helpful_count,
                     "verified_purchase": bool(item.get("isPurchaseVerified")),
                 }
 
-                # Seller info if available
-                seller = item.get("sellerName") or item.get("merchantName")
                 if seller:
-                    review["seller_name"] = seller
+                    review_dict["seller_name"] = seller
 
-                reviews.append(review)
+                reviews.append(review_dict)
             except Exception as exc:
                 logger.debug("review item parse error", error=str(exc))
                 continue

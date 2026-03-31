@@ -43,6 +43,8 @@ _SEARCH_API = (
 # Primary HTML search endpoint (requires TLS tier, returns 403 on plain HTTP)
 _SEARCH_HTML_URL = "https://www.trendyol.com/sr"
 _REVIEW_API = "https://public-mdc.trendyol.com/discovery-web-socialgw-service/api"
+# Fallback review source: product's /yorumlar HTML page (STEALTH tier required)
+_REVIEW_HTML_BASE = "https://www.trendyol.com"
 _PRODUCT_BASE = "https://www.trendyol.com"
 
 
@@ -658,8 +660,15 @@ class TrendyolScraper(BaseScraper):
     # get_reviews
     # ------------------------------------------------------------------
 
-    async def get_reviews(self, url: str, *, max_pages: int = 3) -> list[dict]:
-        """Fetch product reviews from the Trendyol public review API."""
+    async def get_reviews(self, url: str, *, max_pages: int = 5) -> list[dict]:
+        """Fetch product reviews from Trendyol.
+
+        Strategy 1: ``public-mdc.trendyol.com`` review API (fast, JSON).
+        Strategy 2: ``/yorumlar`` HTML page scrape (STEALTH tier, slower but
+          reliable when the API subdomain has DNS issues -- observed 2026-03).
+
+        Returns partial results if later pages time out (pages 1-N-1 kept).
+        """
         # Cache
         try:
             cached = await get_cached_reviews(url, "trendyol")
@@ -676,7 +685,9 @@ class TrendyolScraper(BaseScraper):
             return []
 
         all_reviews: list[dict] = []
+        api_failed = False
 
+        # --- Strategy 1: JSON API ---
         for page in range(1, max_pages + 1):
             try:
                 reviews_url = (
@@ -685,21 +696,19 @@ class TrendyolScraper(BaseScraper):
                 )
                 response = await self._fetch(reviews_url)
             except Exception as exc:
-                logger.error(
-                    "review fetch failed",
-                    url=url,
-                    page=page,
-                    error=str(exc),
+                logger.warning(
+                    "review API fetch failed, will fall back to HTML",
+                    url=url, page=page, error=str(exc),
                 )
+                api_failed = True
                 break
 
             if response.status_code != 200:
                 logger.warning(
-                    "review non-200",
-                    url=url,
-                    page=page,
-                    status=response.status_code,
+                    "review API non-200, will fall back to HTML",
+                    url=url, page=page, status=response.status_code,
                 )
+                api_failed = True
                 break
 
             page_reviews = self._parse_review_response(response)
@@ -707,6 +716,17 @@ class TrendyolScraper(BaseScraper):
                 break  # No more reviews
 
             all_reviews.extend(page_reviews)
+            import asyncio as _asyncio
+            await _asyncio.sleep(2.0)
+
+        # --- Strategy 2: HTML /yorumlar fallback ---
+        if api_failed or not all_reviews:
+            logger.info("falling back to /yorumlar HTML scraping", url=url)
+            html_reviews = await self._get_reviews_from_html(
+                url, content_id, max_pages=max_pages
+            )
+            if html_reviews:
+                all_reviews = html_reviews
 
         # Cache
         if all_reviews:
@@ -717,6 +737,116 @@ class TrendyolScraper(BaseScraper):
 
         logger.info("reviews fetched", url=url, count=len(all_reviews))
         return all_reviews
+
+    async def _get_reviews_from_html(
+        self, url: str, content_id: str, *, max_pages: int = 5
+    ) -> list[dict]:
+        """Scrape reviews from the ``/yorumlar`` HTML page (STEALTH tier).
+
+        The page embeds reviews in inline JS as JSON-like objects.
+        Returns partial results if a later page times out.
+        """
+        import asyncio as _asyncio
+
+        # Build the base /yorumlar URL from the product URL
+        base_url = url.split("?")[0].rstrip("/")
+        if not base_url.endswith("/yorumlar"):
+            base_url = f"{base_url}/yorumlar"
+
+        all_reviews: list[dict] = []
+
+        try:
+            from src.tools.scraper import scrape_url, ScrapeTier
+        except ImportError:
+            logger.warning("scrape_url not available for /yorumlar fallback")
+            return []
+
+        for page in range(1, max_pages + 1):
+            page_url = f"{base_url}?page={page}"
+            try:
+                result = await scrape_url(page_url, max_tier=ScrapeTier.STEALTH, timeout=25.0)
+            except Exception as exc:
+                logger.warning(
+                    "yorumlar page fetch failed",
+                    page=page, error=str(exc),
+                )
+                break  # Return what we have so far
+
+            if not result.ok:
+                logger.warning(
+                    "yorumlar page non-OK",
+                    page=page, status=result.status,
+                )
+                break
+
+            page_reviews = self._parse_yorumlar_html(result.html)
+            if not page_reviews:
+                break  # No more reviews
+
+            all_reviews.extend(page_reviews)
+            logger.debug("yorumlar page parsed", page=page, count=len(page_reviews))
+
+            if page < max_pages:
+                await _asyncio.sleep(2.5)
+
+        return all_reviews
+
+    @staticmethod
+    def _parse_yorumlar_html(html: str) -> list[dict]:
+        """Parse reviews from the Trendyol /yorumlar HTML page.
+
+        Reviews are embedded in inline JS as JSON fragments with fields:
+        ``comment``, ``rate``, ``userFullName``, ``createdDate``, ``appealCount``.
+        """
+        reviews: list[dict] = []
+
+        # Match review blocks: each starts with "comment":"..." and has rate/userFullName
+        # Pattern: {"comment":"...","rate":N,...,"userFullName":"...","createdDate":EPOCH,...}
+        block_pattern = re.compile(
+            r'"comment"\s*:\s*"(?P<comment>[^"]+)"'
+            r'.*?"rate"\s*:\s*(?P<rate>\d+)'
+            r'(?:.*?"userFullName"\s*:\s*"(?P<author>[^"]*)")?'
+            r'(?:.*?"createdDate"\s*:\s*(?P<ts>\d{13}))?'
+            r'(?:.*?"appealCount"\s*:\s*(?P<helpful>\d+))?',
+            re.DOTALL,
+        )
+
+        # Scan blocks in smaller windows to avoid massive backtracking
+        chunk_size = 4000
+        step = 3500
+        seen: set[str] = set()
+
+        for start in range(0, len(html), step):
+            chunk = html[start : start + chunk_size]
+            for m in block_pattern.finditer(chunk):
+                comment = m.group("comment")
+                if not comment or comment in seen:
+                    continue
+                seen.add(comment)
+
+                rate = _safe_float(m.group("rate"))
+                author = m.group("author") or None
+                ts = m.group("ts")
+                date_str: str | None = None
+                if ts:
+                    try:
+                        date_str = datetime.fromtimestamp(
+                            int(ts) / 1000, tz=timezone.utc
+                        ).isoformat()
+                    except Exception:
+                        pass
+                helpful = _safe_int(m.group("helpful"))
+
+                reviews.append({
+                    "text": comment,
+                    "source": "trendyol",
+                    "rating": rate,
+                    "date": date_str,
+                    "author": author,
+                    "helpful_count": helpful or 0,
+                })
+
+        return reviews
 
     @staticmethod
     def _extract_content_id(url: str) -> str | None:

@@ -142,10 +142,123 @@ def _check_all_tests_pass(artifact_value: str) -> Optional[bool]:
 
 # ── Main evaluation ──────────────────────────────────────────────────────────
 
+async def evaluate_json_gate(
+    mission_id: int,
+    gate_def: dict,
+    artifact_store: ArtifactStore,
+) -> tuple[bool, dict]:
+    """Evaluate a quality gate defined in workflow JSON.
+
+    gate_def format:
+    {
+        "criteria": [
+            {"name": "test_pass_rate", "artifact": "test_results", "check": "pass_rate >= 0.95", "message": "..."},
+        ],
+        "on_failure": "needs_clarification"
+    }
+    """
+    criteria = gate_def.get("criteria", [])
+    if not criteria:
+        return True, {}
+
+    details: dict[str, dict[str, Any]] = {}
+    all_passed = True
+
+    for criterion in criteria:
+        name = criterion.get("name", "unknown")
+        artifact_name = criterion.get("artifact", "")
+        check_expr = criterion.get("check", "")
+        message = criterion.get("message", name)
+
+        artifact_value = await artifact_store.retrieve(mission_id, artifact_name)
+        if artifact_value is None:
+            details[name] = {
+                "passed": False,
+                "value": None,
+                "message": f"Artifact '{artifact_name}' not found",
+            }
+            all_passed = False
+            continue
+
+        # Parse the check expression
+        passed = _evaluate_check_expression(check_expr, artifact_value)
+        details[name] = {
+            "passed": passed,
+            "value": artifact_value[:100] if isinstance(artifact_value, str) else artifact_value,
+            "message": message if passed else f"FAILED: {message}",
+        }
+        if not passed:
+            all_passed = False
+
+    return all_passed, details
+
+
+def _evaluate_check_expression(check_expr: str, artifact_value: str) -> bool:
+    """Evaluate a simple check expression against an artifact value.
+
+    Supports: 'field >= N', 'field == true/false', 'field == "value"'
+    """
+    if not check_expr:
+        return True
+
+    # Try to parse artifact as JSON
+    data = {}
+    try:
+        parsed = json.loads(artifact_value)
+        if isinstance(parsed, dict):
+            data = parsed
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Parse expression: "field >= value" or "field == value"
+    import re as _re
+    m = _re.match(r'(\w+)\s*(>=|<=|==|!=|>|<)\s*(.+)', check_expr.strip())
+    if not m:
+        return True  # Can't parse, assume passed
+
+    field, op, expected_str = m.group(1), m.group(2), m.group(3).strip()
+
+    # Get actual value
+    actual = data.get(field)
+    if actual is None:
+        # Try parsing from text using existing helpers
+        if 'pass_rate' in field:
+            actual = _parse_test_pass_rate(artifact_value)
+        elif 'coverage' in field:
+            actual = _parse_coverage(artifact_value)
+        elif 'clean' in field or 'scan' in field:
+            actual = _check_security_scan(artifact_value)
+
+    if actual is None:
+        return False
+
+    # Parse expected value
+    if expected_str.lower() in ('true', 'false'):
+        expected: Any = expected_str.lower() == 'true'
+        actual = bool(actual)
+    else:
+        try:
+            expected = float(expected_str.strip('"\''))
+            actual = float(actual)
+        except (ValueError, TypeError):
+            expected = expected_str.strip('"\'')
+            actual = str(actual)
+
+    # Compare
+    if op == '>=': return actual >= expected
+    if op == '<=': return actual <= expected
+    if op == '==': return actual == expected
+    if op == '!=': return actual != expected
+    if op == '>': return actual > expected
+    if op == '<': return actual < expected
+    return True
+
+
 async def evaluate_gate(
     mission_id: int,
     phase_id: str,
     artifact_store: ArtifactStore,
+    gate_def: Optional[dict] = None,
 ) -> tuple[bool, dict]:
     """Evaluate the quality gate for *phase_id*.
 
@@ -156,6 +269,11 @@ async def evaluate_gate(
         *details* maps each criterion name to a dict with ``passed``, ``value``,
         and ``message`` keys.
     """
+    # If a JSON gate definition is provided (v3), use it
+    if gate_def is not None:
+        return await evaluate_json_gate(mission_id, gate_def, artifact_store)
+
+    # Fall back to hardcoded gates (v1/v2 compatibility)
     gate = get_gate(phase_id)
     if gate is None:
         return True, {}

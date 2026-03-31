@@ -147,6 +147,34 @@ def load_workflow(workflow_name: str) -> WorkflowDefinition:
     )
 
 
+VALID_DIFFICULTIES = {"easy", "medium", "hard"}
+
+
+def validate_v3_fields(steps: list[dict]) -> list[str]:
+    """Validate v3-specific fields on workflow steps."""
+    errors = []
+    for step in steps:
+        sid = step.get("id", "?")
+
+        difficulty = step.get("difficulty")
+        if difficulty and difficulty not in VALID_DIFFICULTIES:
+            errors.append(f"Step '{sid}': invalid difficulty '{difficulty}' (must be easy/medium/hard)")
+
+        tools_hint = step.get("tools_hint")
+        if tools_hint is not None and not isinstance(tools_hint, list):
+            errors.append(f"Step '{sid}': tools_hint must be a list")
+
+        artifact_schema = step.get("artifact_schema")
+        if artifact_schema is not None and not isinstance(artifact_schema, dict):
+            errors.append(f"Step '{sid}': artifact_schema must be a dict")
+
+        skip_when = step.get("skip_when")
+        if skip_when is not None and not isinstance(skip_when, list):
+            errors.append(f"Step '{sid}': skip_when must be a list")
+
+    return errors
+
+
 def validate_dependencies(wf: WorkflowDefinition) -> list[str]:
     """Check that every ``depends_on`` reference in *wf* resolves,
     detect dependency cycles, and flag orphan steps.
@@ -219,6 +247,9 @@ def validate_dependencies(wf: WorkflowDefinition) -> list[str]:
     if cycle_participants:
         cycle_str = " → ".join(cycle_participants)
         errors.append(f"Dependency cycle detected: {cycle_str}")
+
+    # ── 2b. Validate v3-specific fields ──────────────────────────────────
+    errors.extend(validate_v3_fields(wf.steps))
 
     # ── 3. Orphan step detection ────────────────────────────────────────
     # Steps that have no dependencies AND no other step depends on them

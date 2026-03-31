@@ -16,6 +16,62 @@ from .quality_gates import evaluate_gate, format_gate_result
 
 logger = get_logger("workflows.engine.hooks")
 
+
+def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str]:
+    """Validate an artifact output against its schema definition.
+
+    Returns (is_valid, error_message). error_message is empty if valid.
+    """
+    if not schema:
+        return True, ""
+
+    for artifact_name, rules in schema.items():
+        schema_type = rules.get("type", "string")
+
+        if schema_type == "object":
+            try:
+                data = json.loads(output_value) if isinstance(output_value, str) else output_value
+                if not isinstance(data, dict):
+                    return False, f"Expected JSON object for '{artifact_name}', got {type(data).__name__}"
+                required = rules.get("required_fields", [])
+                missing = [f for f in required if f not in data]
+                if missing:
+                    return False, f"Missing required fields in '{artifact_name}': {missing}"
+            except (json.JSONDecodeError, TypeError):
+                return False, f"Could not parse '{artifact_name}' as JSON object"
+
+        elif schema_type == "array":
+            try:
+                data = json.loads(output_value) if isinstance(output_value, str) else output_value
+                if not isinstance(data, list):
+                    return False, f"Expected JSON array for '{artifact_name}', got {type(data).__name__}"
+                min_items = rules.get("min_items", 0)
+                if len(data) < min_items:
+                    return False, f"'{artifact_name}' has {len(data)} items, need >= {min_items}"
+                item_fields = rules.get("item_fields", [])
+                if item_fields and data:
+                    for i, item in enumerate(data):
+                        if isinstance(item, dict):
+                            missing = [f for f in item_fields if f not in item]
+                            if missing:
+                                return False, f"Item {i} in '{artifact_name}' missing fields: {missing}"
+            except (json.JSONDecodeError, TypeError):
+                return False, f"Could not parse '{artifact_name}' as JSON array"
+
+        elif schema_type == "string":
+            min_length = rules.get("min_length", 1)
+            if not output_value or len(str(output_value).strip()) < min_length:
+                return False, f"'{artifact_name}' is too short (min {min_length} chars)"
+
+        elif schema_type == "markdown":
+            required_sections = rules.get("required_sections", [])
+            text = str(output_value)
+            missing = [s for s in required_sections if s.lower() not in text.lower()]
+            if missing:
+                return False, f"'{artifact_name}' missing sections: {missing}"
+
+    return True, ""
+
 # ── Module-level singleton ─────────────────────────────────────────────────
 
 _artifact_store: Optional[ArtifactStore] = None
@@ -178,6 +234,38 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
             f"[Workflow Hook] Post-execute: stored artifact '{name}' "
             f"for mission {mission_id} ({len(output_value)} chars)"
         )
+
+    # ── Validate artifact schema ──
+    artifact_schema = ctx.get("artifact_schema")
+    if artifact_schema and output_value:
+        is_valid, error_msg = validate_artifact_schema(output_value, artifact_schema)
+        if not is_valid:
+            retry_count = ctx.get("_schema_retry_count", 0)
+            if retry_count < 2:
+                logger.warning(
+                    f"[Workflow Hook] Artifact schema validation failed for step "
+                    f"'{step_id}': {error_msg}. Retry {retry_count + 1}/2"
+                )
+                # Update retry count in context for next attempt
+                # The orchestrator will retry the task
+                try:
+                    from ...infra.db import update_task
+                    new_ctx = dict(ctx)
+                    new_ctx["_schema_retry_count"] = retry_count + 1
+                    new_ctx["_schema_error"] = error_msg
+                    await update_task(
+                        task.get("id"),
+                        status="pending",
+                        context=new_ctx,
+                        error=f"Schema validation: {error_msg}",
+                    )
+                except Exception as e:
+                    logger.debug(f"[Workflow Hook] Could not retry task: {e}")
+            else:
+                logger.warning(
+                    f"[Workflow Hook] Artifact schema validation failed after 2 retries "
+                    f"for step '{step_id}': {error_msg}. Accepting best attempt."
+                )
 
     # ── Check conditional group triggers ──
     await _check_conditional_triggers(mission_id, output_names, store)
@@ -364,7 +452,19 @@ async def _check_conditional_triggers(
     try:
         from .loader import load_workflow
 
-        wf = load_workflow("i2p_v2")
+        # Try loading the workflow used by this mission
+        workflow_name = "i2p_v2"  # fallback
+        try:
+            from ...infra.db import get_mission
+            mission = await get_mission(mission_id)
+            if mission:
+                m_ctx = mission.get("context", "{}")
+                if isinstance(m_ctx, str):
+                    m_ctx = json.loads(m_ctx)
+                workflow_name = m_ctx.get("workflow_name", "i2p_v2")
+        except Exception:
+            pass
+        wf = load_workflow(workflow_name)
     except Exception:
         logger.debug("[Workflow Hook] Could not load workflow for conditional eval")
         return

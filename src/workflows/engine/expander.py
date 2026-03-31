@@ -12,6 +12,12 @@ from src.infra.logging_config import get_logger
 
 logger = get_logger("workflows.engine.expander")
 
+DIFFICULTY_MAP: dict[str, int] = {
+    "easy": 3,
+    "medium": 6,
+    "hard": 8,
+}
+
 # Maps workflow agent names to system agent types.
 # Most map 1:1; only special case is router -> executor.
 AGENT_MAP: dict[str, str] = {
@@ -113,6 +119,26 @@ def expand_steps_to_tasks(
         if initial_context is not None:
             context["workflow_context"] = initial_context
 
+        # v3 fields — difficulty, tools_hint, artifact_schema, skip_when
+        difficulty = step.get("difficulty")
+        if difficulty and difficulty in DIFFICULTY_MAP:
+            context["difficulty"] = DIFFICULTY_MAP[difficulty]
+            if difficulty == "hard":
+                context["needs_thinking"] = True
+                context["prefer_quality"] = True
+
+        tools_hint = step.get("tools_hint")
+        if tools_hint and isinstance(tools_hint, list):
+            context["tools_hint"] = tools_hint
+
+        artifact_schema = step.get("artifact_schema")
+        if artifact_schema and isinstance(artifact_schema, dict):
+            context["artifact_schema"] = artifact_schema
+
+        skip_when = step.get("skip_when")
+        if skip_when and isinstance(skip_when, list):
+            context["skip_when"] = skip_when
+
         task = {
             "title": f"[{step_id}] {step['name']}",
             "description": step.get("instruction", ""),
@@ -191,6 +217,33 @@ def expand_template(
         if context_strategy is not None:
             step["context_strategy"] = dict(context_strategy)
 
+        # Propagate v3 fields from template steps if present
+        if "difficulty" in tpl_step:
+            step["difficulty"] = tpl_step["difficulty"]
+        if "tools_hint" in tpl_step:
+            step["tools_hint"] = list(tpl_step["tools_hint"])
+        if "artifact_schema" in tpl_step:
+            step["artifact_schema"] = dict(tpl_step["artifact_schema"])
+
         expanded.append(step)
 
     return expanded
+
+
+def filter_skipped_steps(
+    steps: list[dict],
+    active_skip_conditions: set[str],
+) -> tuple[list[dict], list[dict]]:
+    """Split steps into (active, skipped) based on skip_when conditions.
+
+    A step is skipped if ANY of its skip_when conditions are in active_skip_conditions.
+    """
+    active = []
+    skipped = []
+    for step in steps:
+        skip_when = step.get("skip_when", [])
+        if skip_when and active_skip_conditions.intersection(skip_when):
+            skipped.append(step)
+        else:
+            active.append(step)
+    return active, skipped

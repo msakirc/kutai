@@ -970,10 +970,30 @@ class BaseAgent:
         except Exception:
             pass
 
-        # ── Phase 5: execution pattern routing ──
-        if self.execution_pattern == "single_shot":
-            return await self.execute_single_shot(task)
-        return await self._execute_react_loop(task)
+        # ── Override allowed_tools from workflow tools_hint ──
+        _task_ctx = task.get("context")
+        if isinstance(_task_ctx, str):
+            try:
+                _task_ctx = json.loads(_task_ctx)
+            except (json.JSONDecodeError, TypeError):
+                _task_ctx = {}
+        if not isinstance(_task_ctx, dict):
+            _task_ctx = {}
+        tools_hint = _task_ctx.get("tools_hint")
+        if tools_hint and isinstance(tools_hint, list):
+            self._original_allowed_tools = self.allowed_tools
+            self.allowed_tools = tools_hint
+
+        try:
+            # ── Phase 5: execution pattern routing ──
+            if self.execution_pattern == "single_shot":
+                return await self.execute_single_shot(task)
+            return await self._execute_react_loop(task)
+        finally:
+            # Restore original allowed_tools if overridden by tools_hint
+            if hasattr(self, '_original_allowed_tools'):
+                self.allowed_tools = self._original_allowed_tools
+                del self._original_allowed_tools
 
     async def _execute_react_loop(self, task: dict) -> dict:
         """ReAct loop with requirements-based model selection."""
@@ -992,7 +1012,6 @@ class BaseAgent:
             _task_ctx = {}
         model_override = _task_ctx.get("model_override")
 
-        # ── Build initial ModelRequirements ──
         reqs = await self._build_model_requirements(task, _task_ctx)
         # Phase 9.2: Attach task_id for tracing in router
         reqs._task_id = int(task_id) if str(task_id).isdigit() else None
@@ -1975,6 +1994,11 @@ class BaseAgent:
         # ── Thinking needed? ──
         if task_ctx.get("needs_thinking"):
             reqs.needs_thinking = True
+
+        # ── Workflow difficulty override ──
+        wf_difficulty = task_ctx.get("difficulty")
+        if wf_difficulty and isinstance(wf_difficulty, int):
+            reqs.difficulty = max(reqs.difficulty, wf_difficulty)
 
         return reqs
 

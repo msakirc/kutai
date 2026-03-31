@@ -373,6 +373,22 @@ class WorkflowRunner:
         has_existing = existing_codebase_path is not None
         filtered_steps = filter_steps_for_context(wf.steps, has_existing_codebase=has_existing)
 
+        # 5b. Evaluate skip_when conditions
+        from .expander import filter_skipped_steps
+        active_conditions: set[str] = set()
+        if initial_input:
+            # User-provided skip conditions
+            active_conditions.update(initial_input.get("skip_conditions", []))
+
+        non_skipped, skipped_steps = filter_skipped_steps(filtered_steps, active_conditions)
+        if skipped_steps:
+            logger.info(
+                "Skipping %d steps due to conditions: %s",
+                len(skipped_steps),
+                active_conditions,
+            )
+            filtered_steps = non_skipped
+
         # 6. Separate recurring vs non-recurring steps
         recurring_steps = [s for s in filtered_steps if s.get("type") == "recurring"]
         non_recurring_steps = [s for s in filtered_steps if s.get("type") != "recurring"]
@@ -406,6 +422,15 @@ class WorkflowRunner:
             )
 
             step_to_task[step_id] = task_id
+
+        # 8b. Log skipped steps (add_task does not support status param)
+        if skipped_steps:
+            skipped_ids = [s.get("id", "?") for s in skipped_steps]
+            logger.info(
+                "Skipped %d steps due to skip_when conditions: %s",
+                len(skipped_steps),
+                skipped_ids,
+            )
 
         # 9. Register recurring steps as scheduled tasks
         if recurring_steps:

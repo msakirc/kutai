@@ -21,8 +21,8 @@ PHASE_1_BUDGET = 10  # immediate searches
 PHASE_2_BUDGET = MAX_SEARCHES_PER_SESSION - PHASE_1_BUDGET
 
 _SOURCES_BY_CATEGORY: dict[str, list[str]] = {
-    "electronics": ["akakce", "trendyol", "hepsiburada", "amazon_tr"],
-    "appliances": ["akakce", "trendyol", "hepsiburada"],
+    "electronics": ["epey", "akakce", "trendyol", "hepsiburada", "amazon_tr"],
+    "appliances": ["epey", "akakce", "trendyol", "hepsiburada"],
     "furniture": ["trendyol", "hepsiburada", "ikea", "koctas"],
     "grocery": ["trendyol", "migros", "getir"],
     "clothing": ["trendyol", "hepsiburada"],

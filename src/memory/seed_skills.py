@@ -181,6 +181,14 @@ SEED_SKILLS = [
         "tool_sequence": "1. api_call api_name=Kiwi Tequila (needs KIWI_API_KEY, free). 2. api_call api_name=Rome2rio for route planning. 3. web_search targeting enuygun.com or obilet.com as fallback.",
         "examples": "istanbul ankara uçak bileti; en ucuz otobüs bileti; YHT bilet fiyatı; tren sefer saatleri",
     },
+    # --- Epey Spec Comparison ---
+    {
+        "name": "epey_spec_comparison",
+        "description": "For detailed product specs and comparison in Turkey, use shopping_search with epey.com source. Epey has 85+ spec fields per product — best for 'find laptop with RTX 4070 and 32GB RAM' type queries.",
+        "trigger_pattern": "epey|ozellik|spec|teknik|karsilastir|karsilastirma|comparison|mhz|ghz|resolution|ekran",
+        "tool_sequence": "tool=shopping_search. Epey scraper handles category detection automatically. For detailed specs, use get_product_details(url) on individual products.",
+        "examples": "RTX 4070 laptop karşılaştır; en iyi telefon 2026 özellikleri; 32GB RAM laptop epey",
+    },
     # --- Turkish Holidays ---
     {
         "name": "turkish_holidays_routing",

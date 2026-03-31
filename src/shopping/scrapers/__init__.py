@@ -15,6 +15,7 @@ from .grocery import AktuelKatalogScraper, GetirScraper, MigrosScraper
 from .sahibinden import SahibindenScraper
 from .home_improvement import KoctasScraper, IKEAScraper
 from .google_cse import GoogleCSEScraper
+from .epey import EpeyScraper
 
 __all__ = [
     "BaseScraper",
@@ -36,4 +37,5 @@ __all__ = [
     "KoctasScraper",
     "IKEAScraper",
     "GoogleCSEScraper",
+    "EpeyScraper",
 ]

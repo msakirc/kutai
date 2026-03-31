@@ -83,12 +83,30 @@ async def add_skill(
     return skill_id
 
 
+def _skill_score(skill: dict) -> float:
+    """Score a skill for ranking: success rate weighted by usage count.
+
+    Skills with higher success rates AND more usage get priority.
+    New skills (< 3 uses) get a neutral score to avoid premature pruning.
+    """
+    success = skill.get("success_count", 0)
+    failure = skill.get("failure_count", 0)
+    total = success + failure
+    if total < 3:
+        return 0.5  # neutral — not enough data
+    rate = success / total
+    # Bayesian-ish: weight toward 0.5 for low-count skills
+    confidence = min(total / 10.0, 1.0)
+    return rate * confidence + 0.5 * (1 - confidence)
+
+
 async def find_relevant_skills(task_text: str, limit: int = 3) -> list[dict]:
     """
     Find skills matching the task text.
 
     Uses both regex trigger_pattern matching AND vector similarity search,
-    then merges and deduplicates results.
+    then merges, deduplicates, and ranks by effectiveness score.
+    Skills with success_rate < 30% (and 5+ uses) are excluded.
     """
     try:
         db = await get_db()
@@ -101,6 +119,13 @@ async def find_relevant_skills(task_text: str, limit: int = 3) -> list[dict]:
         rows = await cursor.fetchall()
         cols = [d[0] for d in cursor.description]
         all_skills = [dict(zip(cols, row)) for row in rows]
+
+        # Filter out proven-bad skills (< 30% success rate with 5+ uses)
+        all_skills = [
+            s for s in all_skills
+            if (s["success_count"] + s["failure_count"]) < 5
+            or s["success_count"] / max(s["success_count"] + s["failure_count"], 1) >= 0.30
+        ]
 
         task_lower = task_text.lower()
         regex_matches = []
@@ -143,6 +168,8 @@ async def find_relevant_skills(task_text: str, limit: int = 3) -> list[dict]:
 
         # Merge: regex matches first (stronger signal), then vector matches
         merged = regex_matches + vector_matches
+        # Rank by effectiveness score — best skills surface first
+        merged.sort(key=_skill_score, reverse=True)
         return merged[:limit]
 
     except Exception as exc:

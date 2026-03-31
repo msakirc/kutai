@@ -4297,7 +4297,7 @@
           "name": "backend_service",
           "agent": "implementer",
           "difficulty": "medium",
-          "tools_hint": ["shell", "write_file", "read_file", "edit_file", "lint"],
+          "tools_hint": ["shell", "write_file", "read_file", "edit_file", "lint", "query_codebase", "codebase_map", "get_function"],
           "instruction": "Implement backend for this feature: data model (fields, validation, types, relations), business logic service layer (enforce business rules, throw typed AppErrors), and any feature-specific middleware (file upload, rate limiting, feature flags). Follow patterns from implementation_context.",
           "output_artifacts": ["backend_service_files"],
           "artifact_schema": {
@@ -4312,7 +4312,7 @@
           "name": "backend_endpoints",
           "agent": "implementer",
           "difficulty": "medium",
-          "tools_hint": ["shell", "write_file", "read_file", "edit_file", "lint"],
+          "tools_hint": ["shell", "write_file", "read_file", "edit_file", "lint", "query_codebase", "get_function"],
           "instruction": "Implement API endpoints per openapi_spec: route handlers with middleware, request validation, response formatting, error handling. Each endpoint must check auth, validate input, call service, return proper response format.",
           "output_artifacts": ["route_files"],
           "artifact_schema": {
@@ -4327,7 +4327,7 @@
           "name": "backend_tests",
           "agent": "test_generator",
           "difficulty": "medium",
-          "tools_hint": ["shell", "write_file", "read_file", "coverage"],
+          "tools_hint": ["shell", "write_file", "read_file", "coverage", "query_codebase", "get_function"],
           "instruction": "Write unit tests for service layer: happy path, validation failures, auth failures, business rules, edge cases. Target >90% branch coverage. Write integration tests for API endpoints with real test database: success, auth, validation, not found, pagination, filtering. Run all tests and verify they pass.",
           "output_artifacts": ["backend_test_files"],
           "artifact_schema": {
@@ -4342,7 +4342,7 @@
           "name": "frontend_state",
           "agent": "implementer",
           "difficulty": "medium",
-          "tools_hint": ["shell", "write_file", "read_file", "edit_file", "lint"],
+          "tools_hint": ["shell", "write_file", "read_file", "edit_file", "lint", "query_codebase"],
           "instruction": "Set up frontend for this feature: TypeScript types (API response/request, form, state, component props), API client functions using base client, and state management (query hooks, mutation hooks with optimistic updates and cache invalidation). Follow patterns from implementation_context.",
           "output_artifacts": ["frontend_state_files"],
           "artifact_schema": {
@@ -4357,7 +4357,7 @@
           "name": "frontend_components",
           "agent": "implementer",
           "difficulty": "medium",
-          "tools_hint": ["shell", "write_file", "read_file", "edit_file", "lint"],
+          "tools_hint": ["shell", "write_file", "read_file", "edit_file", "lint", "query_codebase"],
           "instruction": "Implement feature-specific UI components per screen_specifications using design system components and tokens. Include responsive behavior per responsive_spec at all breakpoints. Implement accessibility per accessibility_spec: headings, ARIA, keyboard nav, focus order. Implement forms with validation, error display, submit handling if applicable. Implement loading (Skeleton), error (inline + toast), and empty states.",
           "output_artifacts": ["frontend_component_files"],
           "artifact_schema": {
@@ -4372,7 +4372,7 @@
           "name": "frontend_pages",
           "agent": "implementer",
           "difficulty": "medium",
-          "tools_hint": ["shell", "write_file", "read_file", "edit_file", "lint"],
+          "tools_hint": ["shell", "write_file", "read_file", "edit_file", "lint", "query_codebase"],
           "instruction": "Assemble pages: compose components, wire data bindings, action handlers, conditional rendering, route parameters. Implement all page states: loading, error, empty, success. Connect to routes per information_architecture.",
           "output_artifacts": ["frontend_page_files"],
           "artifact_schema": {
@@ -4417,7 +4417,7 @@
           "name": "code_review",
           "agent": "reviewer",
           "difficulty": "hard",
-          "tools_hint": ["read_file", "shell"],
+          "tools_hint": ["read_file", "shell", "query_codebase", "codebase_map", "get_function", "list_functions", "get_imports"],
           "instruction": "Review all code for this feature: architecture compliance (does it follow implementation_context patterns?), code quality, error handling, security (no injection, proper auth checks), performance (no N+1, proper indexing), test quality (coverage, edge cases), type safety, accessibility. Output code_review_result with status (approved/changes_requested) and issues list. If changes_requested, the fixer agent will apply fixes and re-submit.",
           "output_artifacts": ["code_review_result"],
           "artifact_schema": {

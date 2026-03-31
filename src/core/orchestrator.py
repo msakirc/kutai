@@ -1778,8 +1778,17 @@ class Orchestrator:
         if task_ctx.get("todo_suggest_batch"):
             await self._check_todo_suggestions_complete(task_ctx)
 
-        # Phase 13.2: Extract skill from successful multi-iteration tasks
-        if iterations >= 3 and cost > 0:
+        # Phase 13.2: Extract skill from successful tasks
+        # Capture from both local (cost=0) and cloud (cost>0) — any task
+        # with 2+ iterations that used tools is worth learning from.
+        tools_used = result.get("tools_used_names", [])
+        quality = result.get("quality_score")
+        worth_capturing = (
+            iterations >= 2
+            and tools_used
+            and (quality is None or quality >= 3.0)
+        )
+        if worth_capturing:
             try:
                 from ..memory.skills import add_skill, record_skill_outcome
                 agent_type = task.get("agent_type", "executor")
@@ -1797,28 +1806,34 @@ class Orchestrator:
                     trigger_parts.append(f"search:{search_depth}")
                 if sub_intent:
                     trigger_parts.append(f"shop:{sub_intent}")
-                # Also keep keyword extraction but handle non-alpha words
                 words = [w.lower().strip(".,!?") for w in title.split() if len(w) >= 3]
                 trigger_parts.extend(sorted(set(words))[:5])
                 trigger = "|".join(trigger_parts)
 
-                # Extract tool/approach info
-                try:
-                    tools_info = f"agent={agent_type}, search_depth={search_depth}"
-                    if sub_intent:
-                        tools_info += f", shopping_intent={sub_intent}"
-                except Exception:
-                    tools_info = f"agent={agent_type}"
+                # Extract actual tool sequence — this is the key improvement
+                # tools_used captures what the agent actually called
+                tool_sequence_parts = [f"agent={agent_type}"]
+                if tools_used:
+                    tool_sequence_parts.append(f"tools=[{', '.join(tools_used)}]")
+                if search_depth != "none":
+                    tool_sequence_parts.append(f"search_depth={search_depth}")
+                if sub_intent:
+                    tool_sequence_parts.append(f"shopping_intent={sub_intent}")
+                tool_sequence_parts.append(f"iterations={iterations}")
+                tool_sequence_parts.append(f"model={model}")
+                if cost > 0:
+                    tool_sequence_parts.append("source=cloud")
+                else:
+                    tool_sequence_parts.append("source=local")
 
                 skill_name = f"auto:{agent_type}:{title[:40]}"
                 await add_skill(
                     name=skill_name,
                     description=f"Learned from task #{task_id}: {title}",
                     trigger_pattern=trigger,
-                    tool_sequence=f"{tools_info}, iterations={iterations}, model={model}",
+                    tool_sequence=", ".join(tool_sequence_parts),
                     examples=desc,
                 )
-                # Record success so find_relevant_skills can discover it
                 await record_skill_outcome(skill_name, success=True)
             except Exception:
                 pass

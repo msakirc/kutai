@@ -1555,6 +1555,7 @@ class BaseAgent:
                     "difficulty":    reqs.difficulty,
                     "iterations":    iteration + 1,
                     "quality_score": quality_score,
+                    "tools_used_names": sorted(tools_used_names),
                 }
 
             # ── TOOL CALL ──
@@ -1890,6 +1891,7 @@ class BaseAgent:
             "cost": total_cost,
             "difficulty": reqs.difficulty,
             "iterations": self.max_iterations,
+            "tools_used_names": sorted(tools_used_names),
         }
 
     async def _build_model_requirements(

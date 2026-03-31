@@ -10,7 +10,8 @@ from src.tools.pharmacy import (
     _haversine,
     _geocode_address,
     _get_osrm_distance,
-    _get_user_location,
+    _get_user_coords,
+    _get_user_city_district,
     _fetch_duty_pharmacies_eczaneler_gen_tr,
     _fetch_pharmacy_coordinates,
     find_nearest_pharmacy,
@@ -49,31 +50,86 @@ def test_haversine_known_distance():
 
 
 # ---------------------------------------------------------------------------
-# _get_user_location
+# _get_user_coords — DB-only, no .env fallback
 # ---------------------------------------------------------------------------
 
-def test_get_user_location_with_env(monkeypatch):
-    """Returns (lat, lon) when env vars are set."""
-    monkeypatch.setenv("USER_LAT", "40.9828")
-    monkeypatch.setenv("USER_LON", "29.0294")
-    result = _get_user_location()
+def test_get_user_coords_reads_correct_db_keys():
+    """Returns (lat, lon) when DB has location_lat / location_lon."""
+    async def mock_get_user_pref(key, default=""):
+        return {"location_lat": "40.9828", "location_lon": "29.0294"}.get(key, default)
+
+    with patch("src.infra.db.get_user_pref", side_effect=mock_get_user_pref):
+        result = _run(_get_user_coords())
+
     assert result == (40.9828, 29.0294)
 
 
-def test_get_user_location_not_set(monkeypatch):
-    """Returns None when env vars are missing."""
-    monkeypatch.delenv("USER_LAT", raising=False)
-    monkeypatch.delenv("USER_LON", raising=False)
-    result = _get_user_location()
+def test_get_user_coords_no_env_fallback(monkeypatch):
+    """Returns None even when USER_LAT/USER_LON env vars are set — no .env fallback."""
+    monkeypatch.setenv("USER_LAT", "40.9828")
+    monkeypatch.setenv("USER_LON", "29.0294")
+
+    async def mock_get_user_pref(key, default=""):
+        return default  # DB has nothing
+
+    with patch("src.infra.db.get_user_pref", side_effect=mock_get_user_pref):
+        result = _run(_get_user_coords())
+
     assert result is None
 
 
-def test_get_user_location_invalid(monkeypatch):
-    """Returns None when env vars are invalid."""
-    monkeypatch.setenv("USER_LAT", "not_a_number")
-    monkeypatch.setenv("USER_LON", "29.0")
-    result = _get_user_location()
+def test_get_user_coords_returns_none_when_db_empty():
+    """Returns None when DB has no location keys."""
+    async def mock_get_user_pref(key, default=""):
+        return default
+
+    with patch("src.infra.db.get_user_pref", side_effect=mock_get_user_pref):
+        result = _run(_get_user_coords())
+
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _get_user_city_district — DB-only, no .env fallback
+# ---------------------------------------------------------------------------
+
+def test_get_user_city_district_reads_correct_db_keys():
+    """Returns (city, district) when DB has location_city / location_district."""
+    async def mock_get_user_pref(key, default=""):
+        return {"location_city": "ankara", "location_district": "cankaya"}.get(key, default)
+
+    with patch("src.infra.db.get_user_pref", side_effect=mock_get_user_pref):
+        city, district = _run(_get_user_city_district())
+
+    assert city == "ankara"
+    assert district == "cankaya"
+
+
+def test_get_user_city_district_no_env_fallback(monkeypatch):
+    """Returns ('', '') even when USER_CITY env var is set — no .env fallback."""
+    monkeypatch.setenv("USER_CITY", "istanbul")
+    monkeypatch.setenv("USER_DISTRICT", "kadikoy")
+
+    async def mock_get_user_pref(key, default=""):
+        return default  # DB has nothing
+
+    with patch("src.infra.db.get_user_pref", side_effect=mock_get_user_pref):
+        city, district = _run(_get_user_city_district())
+
+    assert city == ""
+    assert district == ""
+
+
+def test_get_user_city_district_city_only():
+    """Returns (city, '') when only city is in DB."""
+    async def mock_get_user_pref(key, default=""):
+        return {"location_city": "izmir"}.get(key, default)
+
+    with patch("src.infra.db.get_user_pref", side_effect=mock_get_user_pref):
+        city, district = _run(_get_user_city_district())
+
+    assert city == "izmir"
+    assert district == ""
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +489,7 @@ def test_pharmacy_dataclass_defaults():
 # find_nearest_pharmacy (mocked)
 # ---------------------------------------------------------------------------
 
-MOCK_NOSYAPI_RESPONSE = [
+MOCK_PHARMACY_LIST = [
     {
         "pharmacyName": "Sifa Eczanesi",
         "address": "Caferaga Mah. Moda Cad. No:12",
@@ -453,21 +509,20 @@ MOCK_NOSYAPI_RESPONSE = [
 ]
 
 
-def test_find_nearest_pharmacy_with_location(monkeypatch):
-    """Should return sorted pharmacies with distances when user location is set."""
-    monkeypatch.setenv("USER_LAT", "40.9828")
-    monkeypatch.setenv("USER_LON", "29.0294")
-    monkeypatch.setenv("NOSYAPI_KEY", "test_key")
+def test_find_nearest_pharmacy_with_location():
+    """Should return sorted pharmacies with distances when user location is in DB."""
+    async def mock_get_user_pref(key, default=""):
+        return {"location_lat": "40.9828", "location_lon": "29.0294"}.get(key, default)
 
     with patch(
-        "src.tools.pharmacy._fetch_duty_pharmacies_nosyapi",
+        "src.tools.pharmacy._fetch_duty_pharmacies_eczaneler_gen_tr",
         new_callable=AsyncMock,
-        return_value=MOCK_NOSYAPI_RESPONSE,
+        return_value=MOCK_PHARMACY_LIST,
     ), patch(
         "src.tools.pharmacy._get_osrm_distance",
         new_callable=AsyncMock,
         return_value=(1.5, 18.0),
-    ):
+    ), patch("src.infra.db.get_user_pref", side_effect=mock_get_user_pref):
         result = _run(find_nearest_pharmacy(city="istanbul", district="kadikoy"))
 
     assert "Nobetci Eczaneler" in result
@@ -476,32 +531,28 @@ def test_find_nearest_pharmacy_with_location(monkeypatch):
     assert "km" in result
 
 
-def test_find_nearest_pharmacy_without_location(monkeypatch):
-    """Should list pharmacies without distances when no user location."""
-    monkeypatch.delenv("USER_LAT", raising=False)
-    monkeypatch.delenv("USER_LON", raising=False)
-    monkeypatch.setenv("NOSYAPI_KEY", "test_key")
+def test_find_nearest_pharmacy_without_location():
+    """Should list pharmacies without distances when no user location in DB."""
+    async def mock_get_user_pref(key, default=""):
+        return default  # DB empty
 
     with patch(
-        "src.tools.pharmacy._fetch_duty_pharmacies_nosyapi",
+        "src.tools.pharmacy._fetch_duty_pharmacies_eczaneler_gen_tr",
         new_callable=AsyncMock,
-        return_value=MOCK_NOSYAPI_RESPONSE,
-    ):
+        return_value=MOCK_PHARMACY_LIST,
+    ), patch("src.infra.db.get_user_pref", side_effect=mock_get_user_pref):
         result = _run(find_nearest_pharmacy(city="istanbul", district="kadikoy"))
 
     assert "Sifa Eczanesi" in result
     assert "Hayat Eczanesi" in result
-    assert "USER_LAT" in result  # hint to set env vars
+    # Hint message — no env var reference
+    assert "konum" in result.lower() or "Telegram" in result
     # No distance info
     assert "Yuruyus" not in result
 
 
-def test_find_nearest_pharmacy_no_district_uses_eczaneler_gen_tr(monkeypatch):
+def test_find_nearest_pharmacy_no_district_uses_eczaneler_gen_tr():
     """City-wide query (no district) should try eczaneler.gen.tr scraper."""
-    monkeypatch.delenv("USER_DISTRICT", raising=False)
-    monkeypatch.delenv("USER_LAT", raising=False)
-    monkeypatch.delenv("USER_LON", raising=False)
-
     mock_pharmacies = [
         {"pharmacyName": "Merkez Eczanesi", "address": "Kizilay Mah.", "district": "Cankaya", "phone": ""},
         {"pharmacyName": "Yildiz Eczanesi", "address": "Ulus Mah.", "district": "Altindag", "phone": ""},
@@ -520,11 +571,8 @@ def test_find_nearest_pharmacy_no_district_uses_eczaneler_gen_tr(monkeypatch):
     assert "Yildiz Eczanesi" in result
 
 
-def test_find_nearest_pharmacy_no_city(monkeypatch):
+def test_find_nearest_pharmacy_no_city():
     """Should return helpful message when no city is given."""
-    monkeypatch.delenv("USER_CITY", raising=False)
-    monkeypatch.delenv("USER_DISTRICT", raising=False)
-
     with patch(
         "src.tools.pharmacy._get_user_city_district",
         new_callable=AsyncMock,
@@ -535,12 +583,8 @@ def test_find_nearest_pharmacy_no_city(monkeypatch):
     assert "Sehir" in result
 
 
-def test_find_nearest_pharmacy_web_fallback(monkeypatch):
+def test_find_nearest_pharmacy_web_fallback():
     """City-wide query with no scraper results should fall back to web search."""
-    monkeypatch.delenv("USER_DISTRICT", raising=False)
-    monkeypatch.delenv("USER_LAT", raising=False)
-    monkeypatch.delenv("USER_LON", raising=False)
-
     with patch(
         "src.tools.pharmacy._fetch_duty_pharmacies_eczaneler_gen_tr",
         new_callable=AsyncMock,
@@ -557,15 +601,9 @@ def test_find_nearest_pharmacy_web_fallback(monkeypatch):
     assert "Pharmacy X" in result
 
 
-def test_find_nearest_pharmacy_no_results(monkeypatch):
-    """Should return 'no pharmacies found' when API returns empty."""
-    monkeypatch.setenv("NOSYAPI_KEY", "test_key")
-
+def test_find_nearest_pharmacy_no_results():
+    """Should return 'no pharmacies found' when all sources return empty."""
     with patch(
-        "src.tools.pharmacy._fetch_duty_pharmacies_nosyapi",
-        new_callable=AsyncMock,
-        return_value=[],
-    ), patch(
         "src.tools.pharmacy._fetch_duty_pharmacies_eczaneler_gen_tr",
         new_callable=AsyncMock,
         return_value=[],
@@ -579,10 +617,10 @@ def test_find_nearest_pharmacy_no_results(monkeypatch):
     assert "No duty pharmacies found" in result
 
 
-def test_find_nearest_pharmacy_detail_url_coordinate_fetch(monkeypatch):
+def test_find_nearest_pharmacy_detail_url_coordinate_fetch():
     """Should try fetching coordinates from detail_url before geocoding."""
-    monkeypatch.setenv("USER_LAT", "39.925")
-    monkeypatch.setenv("USER_LON", "32.855")
+    async def mock_get_user_pref(key, default=""):
+        return {"location_lat": "39.925", "location_lon": "32.855"}.get(key, default)
 
     mock_pharmacies = [
         {
@@ -610,7 +648,7 @@ def test_find_nearest_pharmacy_detail_url_coordinate_fetch(monkeypatch):
         "src.tools.pharmacy._get_osrm_distance",
         new_callable=AsyncMock,
         return_value=(-1.0, -1.0),
-    ):
+    ), patch("src.infra.db.get_user_pref", side_effect=mock_get_user_pref):
         result = _run(find_nearest_pharmacy(city="ankara", district=""))
 
     # Should have called coordinate fetch

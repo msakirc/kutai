@@ -1,18 +1,12 @@
 """Pharmacy on duty (nöbetçi eczane) finder for Turkey.
 
 Finds duty pharmacies, calculates distance from user's location,
-returns sorted by proximity. Privacy-safe: user location from .env only.
-
-Required .env vars for distance features:
-    USER_LAT=         # latitude (e.g. 40.9876)
-    USER_LON=         # longitude (e.g. 29.0250)
-    USER_CITY=istanbul
-    USER_DISTRICT=
+returns sorted by proximity. User location comes exclusively from DB
+(keys: location_lat, location_lon, location_city, location_district).
 """
 
 import asyncio
 import math
-import os
 from dataclasses import dataclass
 
 import aiohttp
@@ -94,63 +88,30 @@ async def _get_osrm_distance(
     return -1.0, -1.0
 
 
-def _get_user_location() -> tuple[float, float] | None:
-    """Get user's home location from .env. Returns (lat, lon) or None."""
-    lat = os.getenv("USER_LAT", "")
-    lon = os.getenv("USER_LON", "")
-    if lat and lon:
-        try:
-            return float(lat), float(lon)
-        except ValueError:
-            pass
-    return None
-
-
 async def _get_user_city_district() -> tuple[str, str]:
-    """Get user's city and district. DB prefs > .env > empty."""
+    """Get user's city and district from DB. Returns ('', '') if not set."""
     try:
         from src.infra.db import get_user_pref
-        city = await get_user_pref("city", "")
-        district = await get_user_pref("district", "")
-        if city and district:
+        city = await get_user_pref("location_city", "")
+        district = await get_user_pref("location_district", "")
+        if city:
             return city, district
     except Exception:
         pass
-    return os.getenv("USER_CITY", "istanbul"), os.getenv("USER_DISTRICT", "")
+    return ("", "")
 
 
 async def _get_user_coords() -> tuple[float, float] | None:
-    """Get user's coordinates. DB prefs > .env > None."""
+    """Get user's coordinates from DB. Returns None if not set."""
     try:
         from src.infra.db import get_user_pref
-        lat = await get_user_pref("lat", "")
-        lon = await get_user_pref("lon", "")
+        lat = await get_user_pref("location_lat", "")
+        lon = await get_user_pref("location_lon", "")
         if lat and lon:
             return float(lat), float(lon)
     except Exception:
         pass
-    return _get_user_location()  # falls back to .env
-
-
-async def _fetch_duty_pharmacies_nosyapi(city: str, district: str) -> list[dict]:
-    """Fetch duty pharmacies from Nosyapi."""
-    key = os.getenv("NOSYAPI_KEY", "")
-    if not key:
-        return []
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://nosyapi.com/apiv2/pharmacyOnDuty",
-                params={"city": city, "district": district, "apikey": key},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status != 200:
-                    return []
-                data = await resp.json()
-                return data.get("data", [])
-    except Exception as e:
-        logger.debug(f"Nosyapi pharmacy fetch failed: {e}")
-        return []
+    return None
 
 
 async def _fetch_duty_pharmacies_eczaneler_gen_tr(
@@ -335,12 +296,12 @@ async def find_nearest_pharmacy(
 ) -> str:
     """Find nearest duty pharmacy. Returns formatted text.
 
-    Uses .env USER_LAT/USER_LON for distance calculation.
+    Uses location_lat/location_lon from DB for distance calculation.
     If no location set, returns pharmacy list without distances.
     """
     import json
 
-    # Default city/district from DB prefs, then env
+    # Default city/district from DB prefs
     if not city or not district:
         pref_city, pref_district = await _get_user_city_district()
         if not city:
@@ -353,24 +314,10 @@ async def find_nearest_pharmacy(
                 "Ornek: find_nearest_pharmacy(city='ankara') veya "
                 "find_nearest_pharmacy(city='istanbul', district='kadikoy')")
 
-    # Fetch duty pharmacies — different fallback chains for district vs city-wide
-    if district:
-        # District specified: Nosyapi API -> eczaneler.gen.tr (filtered) -> web search
-        pharmacies_raw = await _fetch_duty_pharmacies_nosyapi(city, district)
-        if not pharmacies_raw:
-            pharmacies_raw = await _fetch_duty_pharmacies_eczaneler_gen_tr(city)
-            if not pharmacies_raw:
-                # Try city-wide if district filter yields nothing
-                all_city = await _fetch_duty_pharmacies_eczaneler_gen_tr(city)
-                if all_city:
-                    pharmacies_raw = all_city
-        if not pharmacies_raw:
-            pharmacies_raw = await _fetch_duty_pharmacies_web(city, district)
-    else:
-        # City-wide (no district): eczaneler.gen.tr -> web search
-        pharmacies_raw = await _fetch_duty_pharmacies_eczaneler_gen_tr(city)
-        if not pharmacies_raw:
-            pharmacies_raw = await _fetch_duty_pharmacies_web(city)
+    # Fetch duty pharmacies — eczaneler.gen.tr -> web search
+    pharmacies_raw = await _fetch_duty_pharmacies_eczaneler_gen_tr(city)
+    if not pharmacies_raw:
+        pharmacies_raw = await _fetch_duty_pharmacies_web(city)
 
     if not pharmacies_raw:
         return f"No duty pharmacies found for {city}" + (f"/{district}" if district else "") + "."
@@ -470,6 +417,6 @@ async def find_nearest_pharmacy(
         lines.append("")
 
     if not user_loc:
-        lines.append("Not: Mesafe hesabi icin .env dosyasina USER_LAT ve USER_LON ekleyin.")
+        lines.append("Not: Mesafe hesabi icin konumunuzu Telegram uzerinden kaydedin.")
 
     return "\n".join(lines)

@@ -2444,12 +2444,12 @@
       "name": "sprint_0_review",
       "agent": "reviewer",
       "difficulty": "easy",
-      "tools_hint": ["read_file", "shell"],
+      "tools_hint": ["read_file", "shell", "index_workspace", "codebase_map"],
       "depends_on": ["7.14", "7.15"],
       "may_need_clarification": false,
       "input_artifacts": ["sprint_0_smoke_result", "developer_workflow_doc"],
       "output_artifacts": ["sprint_0_review_result"],
-      "instruction": "Review all Sprint 0 deliverables: repository structure, CI/CD pipelines, Docker setup, design system components, test infrastructure, staging environment, developer documentation. Verify everything works end-to-end.",
+      "instruction": "Review all Sprint 0 deliverables: repository structure, CI/CD pipelines, Docker setup, design system components, test infrastructure, staging environment, developer documentation. Verify everything works end-to-end. Run index_workspace to build the codebase index — this enables query_codebase for all subsequent implementation steps.",
       "done_when": "sprint_0_review_result exists.",
       "artifact_schema": {
         "sprint_0_review_result": {
@@ -2506,7 +2506,7 @@
       "name": "feasibility_spike",
       "agent": "coder",
       "difficulty": "hard",
-      "tools_hint": ["shell", "write_file", "read_file", "web_search", "http_request"],
+      "tools_hint": ["shell", "write_file", "read_file", "web_search", "http_request", "scaffold"],
       "depends_on": ["7.17"],
       "may_need_clarification": true,
       "input_artifacts": ["implementation_context", "risk_assessment", "third_party_selections"],

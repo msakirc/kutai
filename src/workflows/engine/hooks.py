@@ -144,6 +144,16 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
             if formatted:
                 parts.append(f"\n\n## Context Artifacts\n\n{formatted}")
 
+    # Append schema validation error from previous retry
+    schema_error = ctx.get("_schema_error")
+    if schema_error:
+        retry_count = ctx.get("_schema_retry_count", 0)
+        parts.append(
+            f"\n\n## IMPORTANT: Previous Output Was Invalid (retry {retry_count}/2)\n"
+            f"Your previous output failed validation: **{schema_error}**\n"
+            f"Fix your output to match the required format."
+        )
+
     # Append done_when section if present
     if done_when:
         parts.append(f"\n\n## Done When\n{done_when}")
@@ -253,6 +263,13 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
                     new_ctx = dict(ctx)
                     new_ctx["_schema_retry_count"] = retry_count + 1
                     new_ctx["_schema_error"] = error_msg
+                    # On second retry, escalate difficulty so router picks
+                    # a more capable model (often cloud)
+                    if retry_count >= 1:
+                        current_diff = new_ctx.get("difficulty", 6)
+                        new_ctx["difficulty"] = min(current_diff + 2, 10)
+                        new_ctx["prefer_quality"] = True
+                        new_ctx["needs_thinking"] = True
                     await update_task(
                         task.get("id"),
                         status="pending",

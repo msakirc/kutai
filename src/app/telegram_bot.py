@@ -877,7 +877,16 @@ class TelegramInterface:
                         city = addr.get("city") or addr.get("province") or addr.get("state", "")
         except Exception as e:
             logger.warning(f"Reverse geocode failed: {e}")
-        # Save location
+        # Save location and restore keyboard immediately
+        pending = self._pending_action.pop(chat_id, None)
+        original_service = None
+        if pending and pending.get("command") == "_location_setup":
+            original_service = pending.get("original_service")
+
+        # Restore keyboard state BEFORE sending any replies
+        self._kb_state[chat_id] = "hizmet" if original_service else "main"
+        restore_kb = KB_HIZMET if original_service else REPLY_KEYBOARD
+
         try:
             from src.infra.db import set_user_pref
             await set_user_pref("location_lat", str(lat))
@@ -885,24 +894,18 @@ class TelegramInterface:
             await set_user_pref("location_district", district)
             await set_user_pref("location_city", city)
             loc_desc = f"{district}, {city}" if district else f"{lat:.4f}, {lon:.4f}"
-            await self._reply(update, f"📍 Konum kaydedildi: {loc_desc}")
+            await update.message.reply_text(
+                f"📍 Konum kaydedildi: {loc_desc}",
+                reply_markup=restore_kb,
+            )
         except Exception as e:
             logger.error(f"Failed to save location: {e}")
-            await self._reply(update, "❌ Konum kaydedilemedi.")
+            await update.message.reply_text("❌ Konum kaydedilemedi.", reply_markup=restore_kb)
             return
+
         # Resume original service if there was one
-        pending = self._pending_action.pop(chat_id, None)
-        if pending and pending.get("command") == "_location_setup":
-            original = pending.get("original_service")
-            if original:
-                # Restore hizmet keyboard and run the service
-                self._kb_state[chat_id] = "hizmet"
-                await update.message.reply_text("⌨️", reply_markup=KB_HIZMET)
-                await self._handle_quick_service(update, context, original)
-        else:
-            # Just restore the main keyboard
-            self._kb_state[chat_id] = "main"
-            await update.message.reply_text("⌨️", reply_markup=REPLY_KEYBOARD)
+        if original_service:
+            await self._handle_quick_service(update, context, original_service)
 
     async def _geocode_district(self, update, context, district_text: str, original_service: str):
         """Geocode a district name and save location."""
@@ -1042,36 +1045,49 @@ class TelegramInterface:
         return await call_api(api, endpoint=endpoint, params=params)
 
     async def _quick_exchange(self, update, context):
-        """Get exchange rates."""
+        """Get exchange rates. Prefer TCMB if key available, else Frankfurter."""
         await self._reply(update, "💰 Döviz kurları alınıyor...")
         try:
-            # Frankfurter API — no key needed, TRY rates
-            result = await self._call_api_by_name(
-                "Frankfurter",
-                endpoint="https://api.frankfurter.dev/latest?from=USD&to=TRY,EUR,GBP"
-            )
+            import os
+            if os.getenv("TCMB_EVDS_API_KEY"):
+                result = await self._call_api_by_name("TCMB EVDS")
+            else:
+                result = await self._call_api_by_name(
+                    "Frankfurter",
+                    endpoint="https://api.frankfurter.dev/latest?from=USD&to=TRY,EUR,GBP"
+                )
             await self._reply(update, result or "Döviz kuru bilgisi alınamadı.")
         except Exception as e:
             await self._reply(update, f"❌ Döviz kuru alınamadı: {_friendly_error(str(e))}")
 
     async def _quick_weather(self, update, context):
-        """Get weather."""
+        """Get weather using Open-Meteo (lat/lon based, no key)."""
         from src.infra.db import get_user_pref
         lat = await get_user_pref("location_lat")
         lon = await get_user_pref("location_lon")
+        district = await get_user_pref("location_district")
         await self._reply(update, "🌤 Hava durumu alınıyor...")
         try:
             result = await self._call_api_by_name(
-                "wttr.in",
-                endpoint=f"https://wttr.in/?format=j1",
-                params={"latitude": lat, "longitude": lon},
+                "Open-Meteo",
+                endpoint=(f"https://api.open-meteo.com/v1/forecast"
+                          f"?latitude={lat}&longitude={lon}"
+                          f"&current_weather=true"
+                          f"&daily=temperature_2m_max,temperature_2m_min,precipitation_sum"
+                          f"&timezone=Europe/Istanbul&forecast_days=3"),
             )
+            if district:
+                result = f"📍 {district}\n\n{result}"
             await self._reply(update, result or "Hava durumu bilgisi alınamadı.")
         except Exception as e:
             await self._reply(update, f"❌ Hava durumu alınamadı: {_friendly_error(str(e))}")
 
     async def _quick_fuel(self, update, context):
-        """Get fuel prices."""
+        """Get fuel prices. Needs COLLECTAPI_KEY."""
+        import os
+        if not os.getenv("COLLECTAPI_KEY"):
+            await self._reply(update, "⛽ Yakıt fiyatları için COLLECTAPI_KEY gerekli.\n`/credential add collectapi` ile ekle.")
+            return
         await self._reply(update, "⛽ Yakıt fiyatları alınıyor...")
         try:
             result = await self._call_api_by_name("Turkey Fuel Prices")
@@ -1080,7 +1096,7 @@ class TelegramInterface:
             await self._reply(update, f"❌ Yakıt fiyatları alınamadı: {_friendly_error(str(e))}")
 
     async def _quick_prayer(self, update, context):
-        """Get prayer times."""
+        """Get prayer times from Diyanet (no key needed)."""
         await self._reply(update, "🕌 Namaz vakitleri alınıyor...")
         try:
             result = await self._call_api_by_name("Diyanet Prayer Times")
@@ -1089,7 +1105,11 @@ class TelegramInterface:
             await self._reply(update, f"❌ Namaz vakitleri alınamadı: {_friendly_error(str(e))}")
 
     async def _quick_news(self, update, context):
-        """Get news headlines."""
+        """Get news headlines. Needs GNEWS_API_KEY."""
+        import os
+        if not os.getenv("GNEWS_API_KEY"):
+            await self._reply(update, "📰 Haberler için GNEWS_API_KEY gerekli.\nhttps://gnews.io adresinden ücretsiz alınabilir.")
+            return
         await self._reply(update, "📰 Haberler alınıyor...")
         try:
             result = await self._call_api_by_name("GNews")
@@ -1098,7 +1118,11 @@ class TelegramInterface:
             await self._reply(update, f"❌ Haberler alınamadı: {_friendly_error(str(e))}")
 
     async def _quick_gold(self, update, context):
-        """Get gold prices."""
+        """Get gold prices. Needs COLLECTAPI_KEY."""
+        import os
+        if not os.getenv("COLLECTAPI_KEY"):
+            await self._reply(update, "🪙 Altın fiyatları için COLLECTAPI_KEY gerekli.\n`/credential add collectapi` ile ekle.")
+            return
         await self._reply(update, "🪙 Altın fiyatları alınıyor...")
         try:
             result = await self._call_api_by_name("Gold Price Turkey")
@@ -1107,7 +1131,7 @@ class TelegramInterface:
             await self._reply(update, f"❌ Altın fiyatları alınamadı: {_friendly_error(str(e))}")
 
     async def _quick_earthquake(self, update, context):
-        """Get recent earthquake info."""
+        """Get recent earthquake info from Kandilli (no key needed)."""
         await self._reply(update, "🌍 Deprem bilgileri alınıyor...")
         try:
             result = await self._call_api_by_name("Kandilli Observatory")

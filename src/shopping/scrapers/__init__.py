@@ -16,6 +16,11 @@ from .sahibinden import SahibindenScraper
 from .home_improvement import KoctasScraper, IKEAScraper
 from .google_cse import GoogleCSEScraper
 from .epey import EpeyScraper
+from .direnc_net import DirencNetScraper
+from .kitapyurdu import KitapyurduScraper
+from .dr_com_tr import DrComTrScraper
+from .decathlon_tr import DecathlonTrScraper
+from .arabam import ArabamScraper
 
 __all__ = [
     "BaseScraper",
@@ -38,4 +43,9 @@ __all__ = [
     "IKEAScraper",
     "GoogleCSEScraper",
     "EpeyScraper",
+    "DirencNetScraper",
+    "KitapyurduScraper",
+    "DrComTrScraper",
+    "DecathlonTrScraper",
+    "ArabamScraper",
 ]

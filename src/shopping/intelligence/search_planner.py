@@ -26,6 +26,14 @@ _SOURCES_BY_CATEGORY: dict[str, list[str]] = {
     "furniture": ["trendyol", "hepsiburada", "ikea", "koctas"],
     "grocery": ["trendyol", "migros", "getir"],
     "clothing": ["trendyol", "hepsiburada"],
+    # New categories
+    "components": ["direnc", "trendyol", "hepsiburada"],
+    "maker": ["direnc", "trendyol"],
+    "books": ["kitapyurdu", "dr", "trendyol"],
+    "sports": ["decathlon", "trendyol", "hepsiburada"],
+    "outdoor": ["decathlon", "trendyol"],
+    "cars": ["arabam", "sahibinden"],
+    "automotive": ["arabam", "sahibinden"],
 }
 _DEFAULT_SOURCES = ["akakce", "trendyol", "hepsiburada"]
 

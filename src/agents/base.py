@@ -1906,6 +1906,12 @@ class BaseAgent:
             if msg.get("role") == "assistant" and msg.get("content"):
                 last_assistant = msg["content"][:3000]
                 break
+        # Try to parse as JSON and extract "result" field — the LLM often
+        # wraps its answer in {"action": "final_answer", "result": "..."}
+        if last_assistant:
+            parsed_final = self._parse_agent_response(last_assistant)
+            if parsed_final and parsed_final.get("result"):
+                last_assistant = parsed_final["result"]
         return {
             "status": "completed",
             "result": last_assistant or "Task completed but could not produce a final answer.",

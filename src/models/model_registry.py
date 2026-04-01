@@ -67,6 +67,7 @@ class ModelInfo:
     supports_json_mode: bool = False
     thinking_model: bool = False
     has_vision: bool = False
+    mmproj_path: Optional[str] = None  # path to vision projector GGUF
 
     # Cloud-specific
     tier: str = "free"
@@ -510,15 +511,29 @@ def detect_vision_support(
             return True
 
     # 4. Check for companion mmproj file
-    model_dir = Path(file_path).parent
-    stem = Path(file_path).stem.lower()
-    for f in model_dir.iterdir():
-        if f.suffix == ".gguf" and "mmproj" in f.stem.lower():
-            # Check if it's plausibly for this model
-            if any(part in f.stem.lower() for part in stem.split("-")[:2]):
-                return True
+    mmproj = find_mmproj_path(file_path)
+    if mmproj:
+        return True
 
     return False
+
+
+def find_mmproj_path(file_path: str) -> str | None:
+    """Find a companion mmproj GGUF for the given model file.
+
+    Returns the full path to the mmproj file, or None.
+    Matches by checking that the mmproj filename shares the first two
+    stem segments with the model file (e.g. Qwen3.5-9B matches
+    Qwen3.5-9B-...-mmproj-F16.gguf).
+    """
+    model_dir = Path(file_path).parent
+    stem = Path(file_path).stem.lower()
+    stem_parts = stem.split("-")[:2]
+    for f in model_dir.iterdir():
+        if f.suffix == ".gguf" and "mmproj" in f.stem.lower():
+            if any(part in f.stem.lower() for part in stem_parts):
+                return str(f)
+    return None
 
 
 # ─── Function Calling Detection ──────────────────────────────────────────────
@@ -651,8 +666,9 @@ def scan_model_directory(model_dir: str | Path) -> list[dict]:
         detect_name = detect_name.replace("_", "-")
         family_key = detect_family(detect_name)
 
-        # Vision support
+        # Vision support + mmproj path
         has_vision = detect_vision_support(family_key, meta, str(fpath))
+        mmproj_path = find_mmproj_path(str(fpath)) if has_vision else None
 
         # Function calling
         func_calling = detect_function_calling(family_key, meta)
@@ -688,6 +704,7 @@ def scan_model_directory(model_dir: str | Path) -> list[dict]:
             "n_layers": n_layers,
             "native_ctx": native_ctx,
             "has_vision": has_vision,
+            "mmproj_path": mmproj_path,
             "function_calling": func_calling,
             "thinking": thinking,
             "specialty": specialty,
@@ -1112,6 +1129,7 @@ class ModelRegistry:
                 supports_json_mode=True,
                 thinking_model=raw["thinking"],
                 has_vision=raw["has_vision"],
+                mmproj_path=raw.get("mmproj_path"),
                 path=raw["path"],
                 model_type="moe" if raw["is_moe"] else "dense",
                 total_params_b=total_params,

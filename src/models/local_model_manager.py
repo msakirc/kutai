@@ -658,6 +658,10 @@ class LocalModelManager:
                 _json.dumps({"enable_thinking": enable_thinking}),
             ])
 
+        # Vision projector (mmproj) — enables image input via llama-server
+        if model.has_vision and getattr(model, 'mmproj_path', None):
+            cmd.extend(["--mmproj", model.mmproj_path])
+
         # Per-model server flags (MoE override-kv, Apriel --no-jinja, etc.)
         if hasattr(model, 'extra_server_flags') and model.extra_server_flags:
             cmd.extend(model.extra_server_flags)

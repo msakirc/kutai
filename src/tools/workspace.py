@@ -16,7 +16,7 @@ logger = get_logger("tools.workspace")
 # ---------------------------------------------------------------------------
 WORKSPACE_DIR: str = os.environ.get(
     "WORKSPACE_DIR",
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workspace")),
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "workspace")),
 )
 
 MAX_TREE_DEPTH = 5

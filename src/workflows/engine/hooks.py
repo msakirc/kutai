@@ -245,6 +245,21 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
             f"for mission {mission_id} ({len(output_value)} chars)"
         )
 
+    # ── Write artifacts to disk in mission directory ──
+    if output_value and mission_id:
+        try:
+            from ...tools.workspace import WORKSPACE_DIR
+            import os
+            artifact_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+            os.makedirs(artifact_dir, exist_ok=True)
+            for name in output_names:
+                file_path = os.path.join(artifact_dir, f"{name}.md")
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(output_value)
+                logger.debug(f"[Workflow Hook] Wrote artifact to {file_path}")
+        except Exception as e:
+            logger.debug(f"[Workflow Hook] Could not write artifact to disk: {e}")
+
     # ── Validate artifact schema ──
     artifact_schema = ctx.get("artifact_schema")
     if artifact_schema and output_value:

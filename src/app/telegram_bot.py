@@ -74,14 +74,16 @@ def _friendly_error(error: str) -> str:
         return "Network error. Check connectivity and try again."
     if any(kw in e for kw in ["typeerror", "keyerror", "valueerror",
                                "nameerror", "indexerror", "traceback"]):
-        return "Internal error. Check logs for details."
+        return "Internal error. Will retry on restart."
     if "json" in e or "parsing" in e or "decode" in e:
         return "Failed to process the response. Will retry."
+    if "cancelled" in e or "cancellederror" in e:
+        return "Interrupted by shutdown. Will retry on restart."
     # Generic — show first 100 chars, strip tracebacks and Python internals
     first_line = error.split("\n")[0][:100]
     if any(kw in first_line.lower() for kw in ["object has no", "expected", "got an"]):
-        return "Internal error. Check logs for details."
-    return f"Something went wrong. Check logs for details."
+        return "Internal error. Will retry on restart."
+    return "Interrupted. Will retry on restart."
 
 # ─── Product/App Detection ────────────────────────────────────────────────
 _PRODUCT_KEYWORDS = [
@@ -1889,15 +1891,34 @@ class TelegramInterface:
 
 
     async def cmd_view_queue(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        tasks = await get_ready_tasks(limit=15)
-        if not tasks:
-            await self._reply(update," No pending tasks. System is idle.")
+        from src.infra.db import get_db
+        db = await get_db()
+        # Fetch in-progress tasks
+        cursor = await db.execute(
+            """SELECT * FROM tasks WHERE status = 'processing'
+               ORDER BY priority DESC, started_at ASC LIMIT 10"""
+        )
+        processing = [dict(row) for row in await cursor.fetchall()]
+        # Fetch ready (pending with deps met)
+        ready = await get_ready_tasks(limit=15)
+
+        if not processing and not ready:
+            await self._reply(update, "No pending tasks. System is idle.")
             return
-        msg = " *Task Queue:*\n\n"
-        for t in tasks:
-            agent = t.get('agent_type', '?')
-            msg += f"#{t['id']} [{agent}|{t['tier']}] {t['title'][:50]}\n"
-        await self._reply(update,msg, parse_mode="Markdown")
+
+        msg = "📬 Task Queue:\n\n"
+        if processing:
+            msg += "⚙️ In Progress:\n"
+            for t in processing:
+                agent = t.get('agent_type', '?')
+                msg += f"  #{t['id']} [{agent}] {t['title'][:50]}\n"
+            msg += "\n"
+        if ready:
+            msg += "⏳ Ready:\n"
+            for t in ready:
+                agent = t.get('agent_type', '?')
+                msg += f"  #{t['id']} [{agent}|{t['tier']}] {t['title'][:50]}\n"
+        await self._reply(update, msg)
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats = await get_daily_stats()

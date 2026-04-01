@@ -924,6 +924,12 @@ async def call_model(
         logger.warning("relaxed fallback", original_task=reqs.effective_task,
                        agent_type=reqs.agent_type)
         candidates = select_model(fallback_reqs)
+        # Update reqs so ensure_model/thinking/vision checks below use
+        # the relaxed values, not the original strict requirements.
+        # Without this, ensure_model sees needs_vision=True from the
+        # original reqs and triggers an unnecessary vision swap.
+        if candidates:
+            reqs = fallback_reqs
 
     if not candidates:
         raise RuntimeError("No models available!")

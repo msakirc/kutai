@@ -1750,16 +1750,50 @@
       }
     },
     {
-      "id": "2.11",
+      "id": "2.11a",
       "phase": "phase_2",
-      "name": "prd_compilation_and_review",
+      "name": "prd_strategy_section",
       "agent": "writer",
-      "difficulty": "hard",
+      "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
         "2.1",
         "2.2",
-        "2.3",
+        "2.3"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "product_vision",
+        "product_mission",
+        "value_proposition_canvas",
+        "unique_selling_proposition",
+        "monetization_strategy"
+      ],
+      "output_artifacts": [
+        "prd_strategy_section"
+      ],
+      "instruction": "Compile the strategy sections of the Product Requirements Document: Vision & Mission, Value Proposition, Unique Selling Proposition, Monetization Strategy. Write as a cohesive document, not just a list of artifacts.",
+      "done_when": "prd_strategy_section exists as a cohesive strategy document.",
+      "artifact_schema": {
+        "prd_strategy_section": {
+          "type": "markdown",
+          "required_sections": [
+            "Vision",
+            "Value Proposition",
+            "Monetization"
+          ]
+        }
+      }
+    },
+    {
+      "id": "2.11b",
+      "phase": "phase_2",
+      "name": "prd_final",
+      "agent": "writer",
+      "difficulty": "medium",
+      "tools_hint": [],
+      "depends_on": [
+        "2.11a",
         "2.4",
         "2.7",
         "2.8",
@@ -1768,29 +1802,24 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "product_vision",
-        "product_mission",
-        "value_proposition_canvas",
-        "unique_selling_proposition",
+        "prd_strategy_section",
         "user_personas",
         "mvp_scope",
         "user_stories",
         "user_journey_map",
-        "success_metrics",
-        "monetization_strategy"
+        "success_metrics"
       ],
       "output_artifacts": [
         "prd_final"
       ],
-      "instruction": "Compile everything into a PRD with sections: 1) Vision & Mission, 2) Audience & Personas, 3) Value Proposition & USP, 4) MVP Feature Scope, 5) User Stories, 6) User Journey Map, 7) Success Metrics, 8) Monetization Strategy, 9) Out of Scope, 10) Open Questions & Risks. Add version number and table of contents. Self-review for: alignment with idea_brief_final, internal consistency, completeness, feasibility, conflicts, testability, scope creep. Fix any issues found. Output as prd_final.",
+      "instruction": "Merge prd_strategy_section with user personas, MVP scope, user stories, journey map, and success metrics into the final Product Requirements Document. Self-review for contradictions, vague requirements, and missing sections. Add executive summary.",
       "done_when": "prd_final exists as a comprehensive, self-reviewed, versioned PRD with all sections.",
       "artifact_schema": {
         "prd_final": {
           "type": "markdown",
           "required_sections": [
-            "Vision & Mission",
-            "Audience & Personas",
-            "MVP Feature Scope",
+            "Executive Summary",
+            "MVP Scope",
             "User Stories",
             "Success Metrics"
           ]
@@ -1805,7 +1834,7 @@
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
-        "2.11"
+        "2.11b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
@@ -1839,7 +1868,7 @@
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
-        "2.11"
+        "2.11b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
@@ -1880,7 +1909,7 @@
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
-        "2.11",
+        "2.11b",
         "1.11"
       ],
       "may_need_clarification": false,
@@ -1921,7 +1950,7 @@
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
-        "2.11"
+        "2.11b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
@@ -1955,7 +1984,7 @@
         "api_lookup"
       ],
       "depends_on": [
-        "2.11"
+        "2.11b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
@@ -1993,7 +2022,7 @@
         "web_search"
       ],
       "depends_on": [
-        "2.11",
+        "2.11b",
         "1.11"
       ],
       "may_need_clarification": true,
@@ -2041,7 +2070,7 @@
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
-        "2.11",
+        "2.11b",
         "2.10"
       ],
       "may_need_clarification": false,
@@ -2779,24 +2808,19 @@
       }
     },
     {
-      "id": "4.15",
+      "id": "4.15a",
       "phase": "phase_4",
-      "name": "technical_design_document",
+      "name": "backend_design_compilation",
       "agent": "writer",
-      "difficulty": "hard",
+      "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
         "4.3",
         "4.4",
         "4.5",
         "4.6",
-        "4.7",
         "4.9",
-        "4.10",
-        "4.11",
-        "4.12",
-        "4.13",
-        "4.14"
+        "4.10"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
@@ -2804,35 +2828,65 @@
         "database_schema",
         "openapi_spec",
         "auth_design",
-        "frontend_architecture",
-        "data_flow_diagrams",
         "caching_strategy",
         "file_storage_design",
-        "realtime_design",
-        "background_job_design",
         "email_system_design",
-        "search_system_design",
+        "search_system_design"
+      ],
+      "output_artifacts": [
+        "backend_design_compilation"
+      ],
+      "instruction": "Compile all backend architecture decisions into a single document. Sections: System Architecture Overview, Database Schema & Data Model, API Design & Endpoints, Auth & Authorization, Caching Strategy, File Storage, Email System, Search System. For each section, summarize the key decisions and patterns.",
+      "done_when": "backend_design_compilation exists as a comprehensive document covering all backend architecture sections.",
+      "artifact_schema": {
+        "backend_design_compilation": {
+          "type": "markdown",
+          "required_sections": [
+            "System Architecture",
+            "Database",
+            "API Design",
+            "Auth"
+          ]
+        }
+      }
+    },
+    {
+      "id": "4.15b",
+      "phase": "phase_4",
+      "name": "technical_design_document",
+      "agent": "writer",
+      "difficulty": "medium",
+      "tools_hint": [],
+      "depends_on": [
+        "4.15a",
+        "4.7",
+        "4.11",
+        "4.12",
+        "4.13",
+        "4.14"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "backend_design_compilation",
+        "frontend_architecture",
         "observability_strategy",
         "scalability_plan",
         "disaster_recovery_plan",
+        "data_flow_diagrams",
         "adrs"
       ],
       "output_artifacts": [
         "technical_design_document"
       ],
-      "instruction": "Compile all architecture artifacts into a single Technical Design Document (TDD) with ToC and version number.",
+      "instruction": "Merge backend_design_compilation with frontend architecture, infrastructure, and operational concerns into the final Technical Design Document. Add sections: Frontend Architecture, Observability & Monitoring, Scalability & Disaster Recovery, Data Flow Diagrams, Architecture Decision Records. Include table of contents and version number.",
       "done_when": "technical_design_document exists as a comprehensive versioned document.",
       "artifact_schema": {
         "technical_design_document": {
           "type": "markdown",
           "required_sections": [
-            "System Architecture",
-            "Database Schema",
-            "API Design",
-            "Auth Design",
             "Frontend Architecture",
-            "Infrastructure",
-            "Observability"
+            "Observability",
+            "Scalability"
           ]
         }
       }
@@ -2845,7 +2899,7 @@
       "difficulty": "hard",
       "tools_hint": [],
       "depends_on": [
-        "4.15"
+        "4.15b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
@@ -2877,7 +2931,7 @@
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
-        "2.11"
+        "2.11b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
@@ -5148,23 +5202,16 @@
       }
     },
     {
-      "id": "10.8",
+      "id": "10.8a",
       "phase": "phase_10",
-      "name": "security_fixes",
-      "agent": "fixer",
-      "difficulty": "hard",
-      "tools_hint": [
-        "shell",
-        "read_file",
-        "write_file",
-        "edit_file"
-      ],
+      "name": "security_triage",
+      "agent": "analyst",
+      "difficulty": "medium",
+      "tools_hint": [],
       "depends_on": [
         "10.2",
         "10.3",
-        "10.5",
-        "10.6",
-        "10.7"
+        "10.4"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
@@ -5173,7 +5220,45 @@
         "xss_test_result",
         "csrf_test_result",
         "auth_security_result",
-        "authz_test_result",
+        "authz_test_result"
+      ],
+      "output_artifacts": [
+        "security_triage"
+      ],
+      "instruction": "Compile all security test results into a prioritized triage list. For each finding: severity (critical/high/medium/low), description, affected component, suggested fix. Sort by severity. Output as structured JSON.",
+      "done_when": "security_triage exists with all findings prioritized by severity.",
+      "artifact_schema": {
+        "security_triage": {
+          "type": "object",
+          "required_fields": [
+            "findings",
+            "critical_count",
+            "high_count"
+          ]
+        }
+      }
+    },
+    {
+      "id": "10.8b",
+      "phase": "phase_10",
+      "name": "security_fixes",
+      "agent": "fixer",
+      "difficulty": "medium",
+      "tools_hint": [
+        "shell",
+        "read_file",
+        "edit_file",
+        "write_file"
+      ],
+      "depends_on": [
+        "10.8a",
+        "10.5",
+        "10.6",
+        "10.7"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "security_triage",
         "encryption_verification_result",
         "logging_security_result",
         "file_upload_security_result",
@@ -5182,16 +5267,14 @@
       "output_artifacts": [
         "security_fixes_applied"
       ],
-      "instruction": "Implement fixes for all security vulnerabilities discovered in steps 10.2 through 10.7. Prioritize by severity: critical first (injection, auth bypass, data exposure), then high (XSS, CSRF, IDOR), then medium. For each fix, document the vulnerability, remediation, and verification. Ensure fixes don't break existing functionality.",
-      "done_when": "security_fixes_applied exists.",
+      "instruction": "Apply fixes for all critical and high severity findings from security_triage. For each fix: describe what was changed, verify the fix doesn't break functionality. Also address any issues from encryption, logging, file upload, and secrets audits.",
+      "done_when": "security_fixes_applied exists with all critical and high fixes applied.",
       "artifact_schema": {
         "security_fixes_applied": {
-          "type": "array",
-          "min_items": 0,
-          "item_fields": [
-            "vulnerability",
-            "fix_applied",
-            "verified"
+          "type": "object",
+          "required_fields": [
+            "fixes_applied",
+            "remaining_issues"
           ]
         }
       }
@@ -5208,7 +5291,7 @@
         "write_file"
       ],
       "depends_on": [
-        "10.8"
+        "10.8b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [

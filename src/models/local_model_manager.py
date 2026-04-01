@@ -860,17 +860,21 @@ class LocalModelManager:
 
     async def _health_check(self) -> bool:
         """Quick health check — is the server responding?"""
+        return (await self._health_check_status()) == 200
+
+    async def _health_check_status(self) -> int:
+        """Health check returning HTTP status code. Returns 0 on connection failure."""
         if self.process is None or self.process.poll() is not None:
-            return False
+            return 0
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(
                     f"{self.api_base}/health",
                     timeout=3.0,
                 )
-                return resp.status_code == 200
+                return resp.status_code
         except Exception:
-            return False
+            return 0
 
     # ── Background Tasks ────────────────────────────────────────
 
@@ -956,8 +960,18 @@ class LocalModelManager:
 
             # ── Hang detection (process alive but /health unresponsive) ──
             if self.process and self.process.poll() is None:
-                healthy = await self._health_check()
-                if healthy:
+                # Skip if idle unloader or swap is in progress — server
+                # may be stopping or restarting, not hung.
+                if self._idle_unload_in_progress or self.swap_started_at > 0:
+                    consecutive_health_failures = 0
+                    continue
+
+                status = await self._health_check_status()
+                if status == 200:
+                    consecutive_health_failures = 0
+                elif status == 503:
+                    # 503 = server alive but busy loading model. NOT a hang.
+                    # Reset counter — the server is responsive, just occupied.
                     consecutive_health_failures = 0
                 else:
                     consecutive_health_failures += 1

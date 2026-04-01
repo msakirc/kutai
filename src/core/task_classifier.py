@@ -277,11 +277,19 @@ async def _classify_with_llm(title: str, description: str) -> TaskClassification
 
     search_depth = result.get("search_depth") or _classify_search_depth(title + " " + description)
 
+    agent_type = result.get("agent_type", "executor")
+
+    # Only visual_reviewer actually uses analyze_image. The LLM classifier
+    # often over-tags needs_vision for tasks mentioning "UI" or "design".
+    # A false needs_vision triggers a 60s server restart to load the 876MB
+    # mmproj projector — extremely wasteful for text-only work.
+    needs_vision = result.get("needs_vision", False) and agent_type == "visual_reviewer"
+
     cls = TaskClassification(
-        agent_type=result.get("agent_type", "executor"),
+        agent_type=agent_type,
         difficulty=max(1, min(10, int(result.get("difficulty", 5)))),
         needs_tools=result.get("needs_tools", False),
-        needs_vision=result.get("needs_vision", False),
+        needs_vision=needs_vision,
         needs_thinking=result.get("needs_thinking", False),
         local_only=result.get("local_only", False),
         priority=PRIORITY_MAP.get(result.get("priority", "normal"), 5),

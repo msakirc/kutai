@@ -949,6 +949,19 @@ async def call_model(
                 )
                 if not success:
                     last_error = f"Failed to load local model {model.name}"
+                    # Proactively trigger replacement load so the NEXT task
+                    # doesn't also hit "no models available" while waiting
+                    # for the main loop's ensure_gpu_utilized cycle.
+                    try:
+                        from src.core.llm_dispatcher import get_dispatcher
+                        import asyncio
+                        asyncio.ensure_future(
+                            get_dispatcher().ensure_gpu_utilized(
+                                [{"agent_type": reqs.agent_type, "context": "{}"}]
+                            )
+                        )
+                    except Exception:
+                        pass
                     continue
         if is_thinking:
             sampling_params = None   # thinking models control sampling internally

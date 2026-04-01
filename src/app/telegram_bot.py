@@ -5284,6 +5284,16 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
         # ── Reset Tasks confirm ──────────────────────────────────
         if data == "reset_tasks_confirm":
+            # Cancel any in-progress task futures first
+            cancelled = 0
+            if self.orchestrator:
+                for fut in list(getattr(self.orchestrator, "_running_futures", [])):
+                    if not fut.done():
+                        fut.cancel()
+                        cancelled += 1
+                self.orchestrator._running_futures = []
+                self.orchestrator._current_task_future = None
+
             db = await get_db()
             await db.execute("DELETE FROM tasks")
             await db.execute("DELETE FROM missions")
@@ -5291,6 +5301,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             await db.execute("DELETE FROM workflow_checkpoints")
             await db.execute("DELETE FROM blackboards")
             await db.execute("DELETE FROM approval_requests")
+            await db.execute("DELETE FROM scheduled_tasks")
             await db.commit()
             # Also wipe shopping cache (separate DB)
             try:
@@ -5306,7 +5317,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             except Exception as e:
                 logger.warning(f"Shopping cache reset failed: {e}")
                 shopping_note = " (alışveriş cache silinemedi)"
-            await query.edit_message_text(f"🗑 Görevler, misyonlar ve alışveriş cache silindi{shopping_note}.")
+            cancel_note = f", {cancelled} aktif görev iptal edildi" if cancelled else ""
+            await query.edit_message_text(f"🗑 Görevler, misyonlar ve alışveriş cache silindi{shopping_note}{cancel_note}.")
             return
         elif data == "reset_tasks_cancel":
             await query.edit_message_text("İptal edildi.")

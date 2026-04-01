@@ -1754,7 +1754,7 @@
       "phase": "phase_2",
       "name": "prd_compilation_and_review",
       "agent": "writer",
-      "difficulty": "medium",
+      "difficulty": "hard",
       "tools_hint": [],
       "depends_on": [
         "2.1",
@@ -2161,7 +2161,7 @@
       "phase": "phase_3",
       "name": "requirements_specification_document",
       "agent": "writer",
-      "difficulty": "easy",
+      "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
         "3.1",
@@ -2178,18 +2178,12 @@
       "input_artifacts": [
         "functional_requirements",
         "nfr_performance",
-        "nfr_scalability",
         "nfr_availability",
         "security_requirements",
         "data_requirements",
-        "integration_requirements",
-        "accessibility_requirements",
-        "platform_requirements",
-        "i18n_requirements",
         "business_rules",
         "user_stories_refined",
-        "traceability_matrix",
-        "conflict_resolutions"
+        "traceability_matrix"
       ],
       "output_artifacts": [
         "requirements_spec"
@@ -2746,7 +2740,7 @@
       "phase": "phase_4",
       "name": "architecture_decisions",
       "agent": "writer",
-      "difficulty": "easy",
+      "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
         "4.1",
@@ -2789,7 +2783,7 @@
       "phase": "phase_4",
       "name": "technical_design_document",
       "agent": "writer",
-      "difficulty": "medium",
+      "difficulty": "hard",
       "tools_hint": [],
       "depends_on": [
         "4.3",
@@ -3304,7 +3298,7 @@
       "phase": "phase_5",
       "name": "design_handoff_document",
       "agent": "writer",
-      "difficulty": "easy",
+      "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
         "5.6",

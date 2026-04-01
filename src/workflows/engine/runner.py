@@ -390,8 +390,23 @@ class WorkflowRunner:
             filtered_steps = non_skipped
 
         # 6. Separate recurring vs non-recurring steps
+        # Also defer Phase 15 (post-launch) entirely — these steps depend on
+        # Phase 14 completion and inserting them at start creates noise in the
+        # task queue.  They'll be registered when Phase 14 completes.
         recurring_steps = [s for s in filtered_steps if s.get("type") == "recurring"]
-        non_recurring_steps = [s for s in filtered_steps if s.get("type") != "recurring"]
+        non_recurring_steps = [
+            s for s in filtered_steps
+            if s.get("type") != "recurring" and s.get("phase") != "phase_15"
+        ]
+        deferred_phase15 = [
+            s for s in filtered_steps
+            if s.get("phase") == "phase_15" and s.get("type") != "recurring"
+        ]
+        if deferred_phase15:
+            logger.info(
+                "Deferred %d Phase 15 steps — will insert when Phase 14 completes",
+                len(deferred_phase15),
+            )
 
         # 7. Expand non-recurring steps to tasks
         task_dicts = expand_steps_to_tasks(

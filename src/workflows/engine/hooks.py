@@ -299,6 +299,18 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
                     f"for step '{step_id}': {error_msg}. Accepting best attempt."
                 )
 
+    # ── Force needs_clarification for human-gate steps ──
+    # Steps with triggers_clarification=true bypass LLM's clarify action.
+    # We override the result dict so the orchestrator's normal clarification
+    # path handles the Telegram notification and pending tracking.
+    if ctx.get("triggers_clarification") and output_value:
+        result["status"] = "needs_clarification"
+        result["clarification"] = output_value
+        logger.info(
+            f"[Workflow Hook] Step '{step_id}' triggers_clarification — "
+            f"overriding result status to needs_clarification"
+        )
+
     # ── Check conditional group triggers ──
     await _check_conditional_triggers(mission_id, output_names, store)
 

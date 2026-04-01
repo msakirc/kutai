@@ -139,6 +139,9 @@ def expand_steps_to_tasks(
         if skip_when and isinstance(skip_when, list):
             context["skip_when"] = skip_when
 
+        if step.get("triggers_clarification"):
+            context["triggers_clarification"] = True
+
         task = {
             "title": f"[{step_id}] {step['name']}",
             "description": step.get("instruction", ""),

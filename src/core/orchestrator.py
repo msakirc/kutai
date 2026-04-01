@@ -1507,6 +1507,10 @@ class Orchestrator:
                 # Workflow step post-hook: store output artifacts
                 if is_workflow_step(task_ctx):
                     await post_execute_workflow_step(task, result)
+                    # Post-hook may override status (e.g. triggers_clarification)
+                    if result.get("status") == "needs_clarification":
+                        await self._handle_clarification(task, result)
+                        continue
                 await self._handle_complete(task, result)
             elif status == "needs_subtasks":
                 await self._handle_subtasks(task, result)

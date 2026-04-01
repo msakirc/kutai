@@ -811,6 +811,7 @@
       "agent": "planner",
       "difficulty": "easy",
       "tools_hint": [],
+      "triggers_clarification": true,
       "depends_on": [
         "0.4"
       ],

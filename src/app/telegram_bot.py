@@ -1010,7 +1010,7 @@ class TelegramInterface:
             if not tasks:
                 await self._reply(update, "🐛 Son görev bulunamadı.")
                 return
-            lines = ["🐛 *Son Görevler*\n"]
+            lines = ["🐛 Son Görevler\n"]
             buttons = []
             for i, t in enumerate(tasks, 1):
                 title = (t.get("title") or t.get("description", "?"))[:40]
@@ -1040,7 +1040,7 @@ class TelegramInterface:
             btn_rows = [buttons[j:j+5] for j in range(0, len(buttons), 5)]
             btn_rows.append([InlineKeyboardButton("📊 Skill Metrikleri", callback_data="m:debug:skillstats")])
             await update.message.reply_text(
-                "\n".join(lines), parse_mode="Markdown",
+                "\n".join(lines),
                 reply_markup=InlineKeyboardMarkup(btn_rows),
             )
         except Exception as e:
@@ -4778,21 +4778,49 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     return
                 title = (task.get("title") or task.get("description", "?"))[:50]
                 agent = task.get("agent_type", "?")
-                model = task.get("model_used", "?")
                 status = task.get("status", "?")
                 error = task.get("error", "")
-                duration = task.get("duration_seconds", "?")
-                text = (f"🐛 *Görev #{task_id}: {title}*\n\n"
+
+                # Get model from conversations table
+                model = "?"
+                try:
+                    db = await get_db()
+                    cur = await db.execute(
+                        """SELECT model_used FROM conversations
+                           WHERE task_id = ? AND model_used IS NOT NULL
+                           ORDER BY id DESC LIMIT 1""",
+                        (task_id,),
+                    )
+                    row = await cur.fetchone()
+                    if row:
+                        model = row[0]
+                except Exception:
+                    pass
+
+                # Calculate duration from started_at / completed_at
+                duration = "?"
+                try:
+                    started = task.get("started_at")
+                    completed = task.get("completed_at")
+                    if started and completed:
+                        s = datetime.fromisoformat(str(started).replace(" ", "T"))
+                        c = datetime.fromisoformat(str(completed).replace(" ", "T"))
+                        dur = (c - s).total_seconds()
+                        duration = f"{dur:.0f}"
+                except Exception:
+                    pass
+
+                text = (f"🐛 Görev #{task_id}: {title}\n\n"
                         f"Agent: {agent}\n"
                         f"Model: {model}\n"
                         f"Durum: {status}\n"
                         f"Süre: {duration}s")
                 if error:
-                    text += f"\n\nHata:\n`{error[:500]}`"
+                    text += f"\n\nHata:\n{error[:500]}"
                 trace_btn = InlineKeyboardMarkup([[
                     InlineKeyboardButton("📍 Trace", callback_data=f"m:debug:trace:{task_id}"),
                 ]])
-                await query.message.reply_text(text, parse_mode="Markdown", reply_markup=trace_btn)
+                await query.message.reply_text(text, reply_markup=trace_btn)
             except Exception as e:
                 await query.message.reply_text(f"❌ {e}")
             return
@@ -4832,12 +4860,12 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     return
                 title = (task.get("title") or task.get("description", "?"))[:50]
                 error = task.get("error", "Hata bilgisi yok")
-                text = (f"📭 *DLQ #{task_id}: {title}*\n\n"
-                        f"Hata:\n`{error[:1000]}`")
+                text = (f"📭 DLQ #{task_id}: {title}\n\n"
+                        f"Hata:\n{error[:1000]}")
                 retry_btn = InlineKeyboardMarkup([[
                     InlineKeyboardButton("🔄 Tekrar Dene", callback_data=f"m:dlq:retry:{task_id}"),
                 ]])
-                await query.message.reply_text(text, parse_mode="Markdown", reply_markup=retry_btn)
+                await query.message.reply_text(text, reply_markup=retry_btn)
             except Exception as e:
                 await query.message.reply_text(f"❌ {e}")
             return
@@ -5461,10 +5489,15 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         # Handle long results (>3000 chars) by sending as file attachment
         if len(result) > 3000:
             # Use mission-specific directory if available
+            # Import WORKSPACE_DIR to match where write_file puts files
+            try:
+                from src.tools.workspace import WORKSPACE_DIR as _ws_dir
+            except ImportError:
+                _ws_dir = "workspace"
             if mission_id:
-                results_dir = Path(f"workspace/mission_{mission_id}/results")
+                results_dir = Path(_ws_dir) / f"mission_{mission_id}" / "results"
             else:
-                results_dir = Path("workspace/results")
+                results_dir = Path(_ws_dir) / "results"
             results_dir.mkdir(parents=True, exist_ok=True)
 
             # Save full result to file — use step ID from title if available

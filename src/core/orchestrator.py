@@ -2378,7 +2378,8 @@ class Orchestrator:
                         summary_lines.append(f"- **{phase_name}:** ${phase_cost:.4f}")
                 summary_content = "\n".join(summary_lines)
                 import os
-                results_dir = os.path.join("workspace", "results")
+                from src.tools.workspace import WORKSPACE_DIR as _ws_root
+                results_dir = os.path.join(_ws_root, "results")
                 os.makedirs(results_dir, exist_ok=True)
                 summary_path = os.path.join(results_dir, f"mission_{mission_id}_summary.md")
                 with open(summary_path, "w", encoding="utf-8") as f:

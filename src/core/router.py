@@ -919,6 +919,8 @@ async def call_model(
         fallback_reqs.min_score = 0.01  # accept anything above zero
         fallback_reqs.local_only = False
         fallback_reqs.needs_thinking = False
+        fallback_reqs.needs_vision = False
+        fallback_reqs.needs_function_calling = False
         logger.warning("relaxed fallback", original_task=reqs.effective_task,
                        agent_type=reqs.agent_type)
         candidates = select_model(fallback_reqs)

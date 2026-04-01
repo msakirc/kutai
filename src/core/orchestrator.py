@@ -1510,7 +1510,7 @@ class Orchestrator:
                     # Post-hook may override status (e.g. triggers_clarification)
                     if result.get("status") == "needs_clarification":
                         await self._handle_clarification(task, result)
-                        continue
+                        return
                 await self._handle_complete(task, result)
             elif status == "needs_subtasks":
                 await self._handle_subtasks(task, result)

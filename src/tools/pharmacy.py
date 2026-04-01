@@ -30,62 +30,19 @@ class Pharmacy:
     detail_url: str = ""
 
 
-def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Calculate straight-line distance in km between two points."""
-    R = 6371.0  # Earth radius in km
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (math.sin(dlat / 2) ** 2 +
-         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
-         math.sin(dlon / 2) ** 2)
-    return R * 2 * math.asin(math.sqrt(a))
+def _haversine(lat1, lon1, lat2, lon2):
+    from src.tools.distance import haversine
+    return haversine(lat1, lon1, lat2, lon2)
 
 
-async def _geocode_address(address: str) -> tuple[float, float] | None:
-    """Geocode an address using Nominatim (OpenStreetMap). Returns (lat, lon) or None."""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://nominatim.openstreetmap.org/search",
-                params={"q": address, "format": "json", "limit": 1, "countrycodes": "tr"},
-                headers={"User-Agent": "KutAI/1.0"},
-                timeout=aiohttp.ClientTimeout(total=5),
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                data = await resp.json()
-                if data:
-                    return float(data[0]["lat"]), float(data[0]["lon"])
-    except Exception as e:
-        logger.debug(f"Geocode failed for {address[:50]}: {e}")
-    return None
+async def _geocode_address(address):
+    from src.tools.distance import geocode_address
+    return await geocode_address(address)
 
 
-async def _get_osrm_distance(
-    from_lat: float, from_lon: float, to_lat: float, to_lon: float,
-    profile: str = "foot"
-) -> tuple[float, float]:
-    """Get distance (km) and duration (minutes) via OSRM. Returns (-1, -1) on failure."""
-    # OSRM uses lon,lat order (not lat,lon!)
-    url = f"https://router.project-osrm.org/route/v1/{profile}/{from_lon},{from_lat};{to_lon},{to_lat}"
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                url,
-                params={"overview": "false"},
-                timeout=aiohttp.ClientTimeout(total=5),
-            ) as resp:
-                if resp.status != 200:
-                    return -1.0, -1.0
-                data = await resp.json()
-                routes = data.get("routes", [])
-                if routes:
-                    dist_km = routes[0]["distance"] / 1000.0
-                    dur_min = routes[0]["duration"] / 60.0
-                    return round(dist_km, 2), round(dur_min, 1)
-    except Exception as e:
-        logger.debug(f"OSRM routing failed: {e}")
-    return -1.0, -1.0
+async def _get_osrm_distance(from_lat, from_lon, to_lat, to_lon, profile="foot"):
+    from src.tools.distance import osrm_distance
+    return await osrm_distance(from_lat, from_lon, to_lat, to_lon, profile)
 
 
 async def _get_user_city_district() -> tuple[str, str]:
@@ -129,7 +86,10 @@ async def _fetch_duty_pharmacies_eczaneler_gen_tr(
         from src.tools.scraper import scrape_url, ScrapeTier
 
         today = datetime.now().strftime("%Y-%m-%d")
-        url = f"https://www.eczaneler.gen.tr/nobetci-{city.lower()}?tarih={today}"
+        # Normalize Turkish chars for URL: İ→i, ş→s, ç→c, ğ→g, ö→o, ü→u
+        _TR_MAP = str.maketrans("İıŞşÇçĞğÖöÜü", "IiSsCcGgOoUu")
+        city_slug = city.translate(_TR_MAP).lower()
+        url = f"https://www.eczaneler.gen.tr/nobetci-{city_slug}?tarih={today}"
         result = await scrape_url(url, max_tier=ScrapeTier.TLS)
         if not result.ok:
             logger.debug(f"eczaneler.gen.tr: HTTP {result.status}")
@@ -293,13 +253,22 @@ async def find_pharmacies_structured(
     city: str = "",
     include_route: bool = True,
     tab: str = "bugun",
+    user_lat: float = 0.0,
+    user_lon: float = 0.0,
 ) -> list[Pharmacy]:
     """Find duty pharmacies and return as a sorted list of Pharmacy objects.
 
-    Gets city from DB if not provided. Fetches from eczaneler.gen.tr, falls
-    back to web search. Calculates distances if user location is available.
+    Args:
+        city: City name. Falls back to DB prefs if empty.
+        include_route: If True, fetch OSRM walking/driving for top 3.
+        tab: "bugun" (today), "dun" (yesterday), "yarin" (tomorrow).
+        user_lat, user_lon: User's coordinates for distance calculation.
+            If 0/0, falls back to DB prefs.
+
     Returns sorted by distance (closest first). Returns empty list on failure.
     """
+    from src.tools.distance import calculate_distance
+
     # Default city from DB prefs
     if not city:
         pref_city, _ = await _get_user_city_district()
@@ -307,6 +276,12 @@ async def find_pharmacies_structured(
 
     if not city:
         return []
+
+    # Default user coords from DB if not passed explicitly
+    if not (user_lat and user_lon):
+        user_loc = await _get_user_coords()
+        if user_loc:
+            user_lat, user_lon = user_loc
 
     # Fetch duty pharmacies — eczaneler.gen.tr -> web search
     pharmacies_raw = await _fetch_duty_pharmacies_eczaneler_gen_tr(city, tab=tab)
@@ -334,66 +309,73 @@ async def find_pharmacies_structured(
         )
         pharmacies.append(pharmacy)
 
-    # Calculate distances if user location is available
-    user_loc = await _get_user_coords()
-    if user_loc and pharmacies:
-        user_lat, user_lon = user_loc
-
-        # Limit detail page fetches to avoid hammering the server
-        detail_fetch_budget = 10
-        for pharmacy in pharmacies:
-            if pharmacy.lat and pharmacy.lon:
-                # Haversine for quick straight-line distance
-                pharmacy.distance_km = round(_haversine(
-                    user_lat, user_lon, pharmacy.lat, pharmacy.lon
-                ), 2)
-            else:
-                # Try detail page for coordinates (Google Maps embed)
-                if pharmacy.detail_url and detail_fetch_budget > 0:
-                    detail_fetch_budget -= 1
+    # Calculate distances for each pharmacy using explicit user coords
+    if user_lat and user_lon and pharmacies:
+        # Resolve missing pharmacy coords — batch geocode concurrently
+        missing_coords = [p for p in pharmacies if not (p.lat and p.lon)]
+        if missing_coords:
+            async def _resolve_one(pharmacy):
+                # Try detail page first
+                if pharmacy.detail_url:
                     coords = await _fetch_pharmacy_coordinates(pharmacy.detail_url)
                     if coords:
                         pharmacy.lat, pharmacy.lon = coords
-                # Fall back to geocoding
-                if not (pharmacy.lat and pharmacy.lon) and pharmacy.address:
-                    coords = await _geocode_address(f"{pharmacy.address}, {city}, Turkey")
-                    if coords:
-                        pharmacy.lat, pharmacy.lon = coords
-                if pharmacy.lat and pharmacy.lon:
-                    pharmacy.distance_km = round(_haversine(
-                        user_lat, user_lon, pharmacy.lat, pharmacy.lon
-                    ), 2)
+                        return
+                # Geocode using name + address (works best with Google Maps fallback)
+                search_q = f"{pharmacy.name} {pharmacy.address}" if pharmacy.address else f"{pharmacy.name}, {pharmacy.district}, {city}"
+                coords = await _geocode_address(search_q)
+                if coords:
+                    pharmacy.lat, pharmacy.lon = coords
 
-        # Get OSRM walking/driving distance for top 3 closest
+            # Geocode concurrently in batches of 10 (rate limit friendly)
+            for i in range(0, len(missing_coords), 10):
+                batch = missing_coords[i:i + 10]
+                await asyncio.gather(
+                    *[_resolve_one(p) for p in batch],
+                    return_exceptions=True,
+                )
+
+        # Calculate haversine distance for ALL pharmacies with coords
+        from src.tools.distance import haversine
+        for pharmacy in pharmacies:
+            if pharmacy.lat and pharmacy.lon:
+                pharmacy.distance_km = round(
+                    haversine(user_lat, user_lon, pharmacy.lat, pharmacy.lon), 2
+                )
+
+        # Sort by distance
         pharmacies.sort(key=lambda p: p.distance_km if p.distance_km >= 0 else 999)
 
+        # Get OSRM walking/driving for top 3 closest
         if include_route:
             for pharmacy in pharmacies[:3]:
                 if pharmacy.lat and pharmacy.lon:
-                    walk_km, walk_min = await _get_osrm_distance(
-                        user_lat, user_lon, pharmacy.lat, pharmacy.lon, "foot"
+                    dist = await calculate_distance(
+                        user_lat, user_lon,
+                        pharmacy.lat, pharmacy.lon,
+                        include_route=True,
                     )
-                    drive_km, drive_min = await _get_osrm_distance(
-                        user_lat, user_lon, pharmacy.lat, pharmacy.lon, "car"
-                    )
-                    if walk_km >= 0:
-                        pharmacy.distance_km = walk_km  # Replace haversine with actual
-                        pharmacy.walking_min = walk_min
-                    if drive_km >= 0:
-                        pharmacy.driving_min = drive_min
+                    if dist.walking_km >= 0:
+                        pharmacy.distance_km = dist.walking_km
+                        pharmacy.walking_min = dist.walking_min
+                    if dist.driving_km >= 0:
+                        pharmacy.driving_min = dist.driving_min
 
-        # Re-sort after OSRM distances
-        pharmacies.sort(key=lambda p: p.distance_km if p.distance_km >= 0 else 999)
+            # Re-sort after OSRM distances
+            pharmacies.sort(key=lambda p: p.distance_km if p.distance_km >= 0 else 999)
 
     return pharmacies
 
 
-def format_pharmacy_message(pharmacies: list[Pharmacy], show_all: bool = False) -> str:
+def format_pharmacy_message(
+    pharmacies: list[Pharmacy], show_all: bool = False, start_index: int = 1,
+) -> str:
     """Format a list of pharmacies for Telegram display.
 
     Args:
         pharmacies: Sorted list of Pharmacy objects.
         show_all: If False, show top 3 and append total count. If True, show all.
+        start_index: Starting number for the list (for pagination).
 
     Returns:
         Formatted string ready for Telegram.
@@ -404,7 +386,7 @@ def format_pharmacy_message(pharmacies: list[Pharmacy], show_all: bool = False) 
     shown = pharmacies if show_all else pharmacies[:3]
     lines = []
 
-    for i, p in enumerate(shown, 1):
+    for i, p in enumerate(shown, start_index):
         lines.append(f"{i}. **{p.name}**")
         if p.address:
             lines.append(f"   Adres: {p.address}")

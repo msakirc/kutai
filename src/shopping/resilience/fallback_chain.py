@@ -101,7 +101,7 @@ async def get_product_with_fallback(
             if scraper_cls is not None:
                 scraper = scraper_cls()
                 results = await scraper.search(product_query)
-                if results:
+                if results and isinstance(results, list):
                     return results
         except Exception as exc:
             logger.warning("Scraper %s failed for '%s': %s", source, product_query, exc)

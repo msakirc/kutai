@@ -714,10 +714,9 @@ class KutAIWrapper:
         appears in the user's claude.ai/code session list. The session URL
         is extracted from stdout and sent via Telegram.
         """
-        # Start a new session even if one is already running
         if self._claude_process and self._claude_process.returncode is None:
-            _wlog("Existing Claude session still running, starting additional session")
-            await self._send_telegram("🖥️ Yeni Claude Code oturumu açılıyor (eski oturum devam ediyor)...")
+            _wlog(f"Existing Claude session still running (PID {self._claude_process.pid}), starting another")
+        await self._send_telegram("🖥️ Claude Code oturumu başlatılıyor...")
 
         _wlog("Starting Claude Code remote-control server")
         try:

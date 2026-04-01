@@ -82,7 +82,7 @@ async def quarantine_task(
                 _classify_error(error, error_category),
                 original_agent,
                 retry_count,
-                datetime.now().isoformat(),
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             ),
         )
         await db.commit()
@@ -207,7 +207,7 @@ async def resolve_dlq_task(
         """UPDATE dead_letter_tasks
            SET resolved_at = ?, resolution = ?
            WHERE task_id = ? AND resolved_at IS NULL""",
-        (datetime.now().isoformat(), resolution, task_id),
+        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), resolution, task_id),
     )
     await db.commit()
     return cursor.rowcount > 0

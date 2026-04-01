@@ -4,7 +4,7 @@
 KutAI is an autonomous AI agent system controlled via Telegram. It manages missions, tasks, shopping, todos, and workflows using local LLMs (llama-server/Ollama) and a modular agent architecture.
 
 ## Architecture
-- **Entry point**: `kutai_wrapper.py` → `src/app/run.py` → `src/core/orchestrator.py`
+- **Entry point**: `kutai_wrapper.py` (Yaşar Usta) → `src/app/run.py` → `src/core/orchestrator.py`
 - **Telegram interface**: `src/app/telegram_bot.py` (TelegramInterface class, ~3000 lines)
 - **Agents**: `src/agents/` — base.py (ReAct loop), specialized agents (coder, researcher, planner, etc.)
 - **LLM routing**: `src/core/router.py` — routes tasks to best available local model
@@ -30,9 +30,10 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 
 ### Process Management
 - **NEVER use taskkill on llama-server** — it corrupts model state and VRAM
-- **NEVER force-kill KutAI** when Telegram is responsive — use `/restart` or `/stop` via Telegram, or exit code 42. However, if the bot is hung and `/restart` doesn't work, killing the **orchestrator process** (NOT llama-server) is acceptable — the wrapper will auto-restart it.
-- The wrapper (`kutai_wrapper.py`) manages the orchestrator lifecycle
-- The wrapper has a file lock (`logs/wrapper.lock`) to prevent duplicates. After power failures, the lock can become stale — the lock mechanism uses zero-padded PIDs and stale-lock recovery (checks if PID is alive before refusing to start).
+- **NEVER force-kill KutAI** when Telegram is responsive — use `/restart` or `/stop` via Telegram, or exit code 42. However, if the bot is hung and `/restart` doesn't work, killing the **orchestrator process** (NOT llama-server) is acceptable — Yaşar Usta will auto-restart it.
+- **Yaşar Usta** (`kutai_wrapper.py`) is the process manager. It manages the orchestrator lifecycle, auto-restarts on crashes with escalating backoff (5→15→60→300s), detects hung orchestrators via heartbeat, and provides Telegram commands when KutAI is down.
+- Yaşar Usta uses a two-file lock: `logs/wrapper.lock` (PID, always readable) + `logs/wrapper.lk` (msvcrt exclusive lock sentinel). After power failures, the lock can become stale — the lock mechanism reads the PID and checks if it's alive before refusing to start.
+- **Interface naming**: The bot is displayed as "Kutay" in Telegram (user-facing name). The codebase uses "KutAI" internally. Never change internal module/class names, only Telegram-facing strings.
 
 ### Testing
 - **ALWAYS test changes before committing** — run `python -c "from src.module import X"` at minimum
@@ -53,7 +54,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 - `python-telegram-bot` library (v20+, async)
 - Command handlers registered in `_setup_handlers()`
 - Inline menus use callback queries handled in `handle_callback()`
-- **The wrapper polls Telegram when KutAI is down** using non-destructive mode (never advances offset past non-wrapper updates, preserving them for the orchestrator)
+- **Yaşar Usta polls Telegram when KutAI is down** using non-destructive mode (never advances offset past non-wrapper updates, preserving them for the orchestrator)
 
 ### LLM Dispatch & Model Routing
 - **All LLM calls go through `LLMDispatcher`** (`src/core/llm_dispatcher.py`) — NEVER call `call_model()` directly from agents, classifiers, or graders
@@ -95,7 +96,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 ## Key Files
 | File | Purpose |
 |------|---------|
-| `kutai_wrapper.py` | Process manager, auto-restart, Telegram polling when down |
+| `kutai_wrapper.py` | **Yaşar Usta** — process manager, auto-restart, heartbeat watchdog, Telegram polling when down |
 | `src/app/run.py` | Orchestrator startup, health checks |
 | `src/app/telegram_bot.py` | All Telegram UI — commands, buttons, callbacks |
 | `src/core/orchestrator.py` | Main loop, task processing, agent dispatch |

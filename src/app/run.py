@@ -47,17 +47,30 @@ def check_env():
                  "GEMINI_API_KEY", "CEREBRAS_API_KEY", "SAMBANOVA_API_KEY"]
     has_cloud = any(os.getenv(p) for p in providers)
 
+    # Check for llama-server models (started lazily by local_model_manager)
+    model_dir = os.getenv("MODEL_DIR", "")
+    has_llama = False
+    if model_dir and os.path.isdir(model_dir):
+        import glob
+        has_llama = bool(glob.glob(os.path.join(model_dir, "**", "*.gguf"), recursive=True))
+
+    # Check for Ollama
+    has_ollama = False
     try:
         result = subprocess.run(["ollama", "list"], capture_output=True, timeout=3)
-        has_local = result.returncode == 0
+        has_ollama = result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        has_local = False
+        pass
+
+    has_local = has_llama or has_ollama
 
     if not has_cloud and not has_local:
-        _log.critical("No model providers available — set at least one API key or install Ollama")
+        _log.critical("No model providers available — set at least one API key, "
+                      "configure MODEL_DIR with GGUF files, or install Ollama")
         sys.exit(1)
 
-    _log.info("Environment check passed", cloud_providers=has_cloud, local_models=has_local)
+    _log.info("Environment check passed", cloud_providers=has_cloud,
+              local_models=has_local, llama_models=has_llama, ollama=has_ollama)
 
 
 # ─── Startup Health Check ────────────────────────────────────────────────────

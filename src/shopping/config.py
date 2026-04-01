@@ -19,11 +19,17 @@ _DEFAULTS = {
         "donanimhaber": {"delay_seconds": 5, "daily_budget": 100},
         "sikayetvar": {"delay_seconds": 5, "daily_budget": 100},
         "sahibinden": {"delay_seconds": 15, "daily_budget": 30},
+        "epey": {"delay_seconds": 5, "daily_budget": 100},
         "google_cse": {"delay_seconds": 1, "daily_budget": 100},
         "getir": {"delay_seconds": 5, "daily_budget": 100},
         "migros": {"delay_seconds": 5, "daily_budget": 100},
         "koctas": {"delay_seconds": 5, "daily_budget": 50},
         "ikea": {"delay_seconds": 5, "daily_budget": 50},
+        "direnc": {"delay_seconds": 5, "daily_budget": 100},
+        "kitapyurdu": {"delay_seconds": 5, "daily_budget": 100},
+        "dr": {"delay_seconds": 5, "daily_budget": 100},
+        "decathlon": {"delay_seconds": 5, "daily_budget": 100},
+        "arabam": {"delay_seconds": 10, "daily_budget": 50},
     },
     "cache_ttl": {
         "specs": 2592000,      # 30 days

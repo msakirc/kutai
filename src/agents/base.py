@@ -918,10 +918,12 @@ class BaseAgent:
         Validate a final_answer result.  Returns an error string if
         the response is invalid, or None if it passes.
         """
-        if not result or not result.strip():
+        if isinstance(result, dict):
+            result = result.get("result", "") or str(result)
+        if not result or not str(result).strip():
             return "Your response was empty. Please provide a substantive answer."
 
-        stripped = result.strip()
+        stripped = str(result).strip()
 
         # For non-trivial tasks, require > 20 chars
         title = task.get("title", "").lower()

@@ -1121,7 +1121,7 @@ class ModelRegistry:
                 _gpu_layers_from_override=_gpu_layers_from_override,
                 total_layers=raw["n_layers"],
                 file_size_mb=raw["file_size_mb"],
-                load_time_seconds=max(10, raw["file_size_mb"] / 500),
+                load_time_seconds=max(10, raw["file_size_mb"] / 250),  # ~250 MB/s cold-start load speed
                 priority_class=priority_class,
                 specialty=specialty,
                 family=raw["family_key"] or "unknown",
@@ -1214,7 +1214,7 @@ class ModelRegistry:
             _gpu_layers_from_override=_gpu_layers_from_override,
             total_layers=n_layers,
             file_size_mb=meta.get("file_size_mb", 0),
-            load_time_seconds=max(10, meta.get("file_size_mb", 0) / 500),
+            load_time_seconds=max(10, meta.get("file_size_mb", 0) / 250),  # ~250 MB/s cold-start
             specialty=specialty,
             family=family_key or "unknown",
         )

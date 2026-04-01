@@ -954,7 +954,6 @@ async def call_model(
                     # for the main loop's ensure_gpu_utilized cycle.
                     try:
                         from src.core.llm_dispatcher import get_dispatcher
-                        import asyncio
                         asyncio.ensure_future(
                             get_dispatcher().ensure_gpu_utilized(
                                 [{"agent_type": reqs.agent_type, "context": "{}"}]

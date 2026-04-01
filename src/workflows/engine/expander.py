@@ -198,15 +198,33 @@ def expand_template(
         for param_name, param_value in params.items():
             instruction = instruction.replace(f"{{{param_name}}}", str(param_value))
 
+        # Prefix artifact names with feature_id to avoid collisions
+        # across features.  e.g. "backend_service_files" becomes
+        # "auth__backend_service_files" for feature_id="auth".
+        feature_id = params.get("feature_id", "")
+        art_prefix = f"{feature_id}__" if feature_id else ""
+
+        output_arts = [
+            f"{art_prefix}{a}" for a in tpl_step.get("output_artifacts", [])
+        ]
+        # Input artifacts: prefix template-local refs, keep global refs as-is
+        template_output_names = set()
+        for ts in template.get("steps", []):
+            template_output_names.update(ts.get("output_artifacts", []))
+
+        raw_inputs = tpl_step.get("input_artifacts", context_artifacts)
+        input_arts = [
+            f"{art_prefix}{a}" if a in template_output_names else a
+            for a in raw_inputs
+        ]
+
         step: dict = {
             "id": step_id,
             "name": tpl_step.get("name", ""),
             "agent": tpl_step.get("agent", "executor"),
             "instruction": instruction,
-            "output_artifacts": list(tpl_step.get("output_artifacts", [])),
-            "input_artifacts": list(
-                tpl_step.get("input_artifacts", context_artifacts)
-            ),
+            "output_artifacts": output_arts,
+            "input_artifacts": input_arts,
         }
 
         # Propagate condition if present

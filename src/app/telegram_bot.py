@@ -156,7 +156,8 @@ KB_WORKFLOW_SELECT = _make_keyboard([
 
 KB_SISTEM = _make_keyboard([
     ["🖥 Yük Modu", "🐛 Debug", "📭 DLQ", "📋 Loglar"],
-    ["🖥️ Claude Code", "🔧 Yaşar Usta", "🔄 Yeniden Başlat", "⏹ Durdur"],
+    ["🖥️ Claude Code", "🔧 Yaşar Usta", "☢️ Reset All"],
+    ["🔄 Yeniden Başlat", "⏹ Durdur"],
     ["🔙 Geri"],
 ], resize_keyboard=False)
 
@@ -231,6 +232,7 @@ _BUTTON_ACTIONS: dict[str, tuple[str, str]] = {
     "📋 Loglar": ("cmd", "logs"),
     "🖥️ Claude Code": ("special", "claude_code"),
     "🔧 Yaşar Usta": ("special", "processes"),
+    "☢️ Reset All": ("cmd", "reset_all"),
     "🔄 Yeniden Başlat": ("special", "restart"),
     "⏹ Durdur": ("special", "stop"),
     # ── Yük Modu sub-buttons ──

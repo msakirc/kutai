@@ -1614,6 +1614,30 @@ class ModelRegistry:
                 self.models[name].is_loaded = False
                 self.models[name].api_base = None
 
+    def demote_model(self, name: str, duration: int = 300) -> None:
+        """Temporarily demote a model after a load failure.
+
+        Sets a penalty expiry timestamp so the router skips this model
+        until the duration elapses.
+        """
+        import time
+        with self._lock:
+            if name in self.models:
+                self.models[name]._demoted_until = time.time() + duration
+                logger.info(f"Model {name} demoted for {duration}s")
+
+    def is_demoted(self, name: str) -> bool:
+        """Check if a model is currently demoted."""
+        import time
+        with self._lock:
+            if name in self.models:
+                until = getattr(self.models[name], "_demoted_until", 0)
+                if until and time.time() < until:
+                    return True
+                elif until:
+                    self.models[name]._demoted_until = 0
+            return False
+
     def currently_loaded(self) -> ModelInfo | None:
         for m in self.models.values():
             if m.location == "local" and m.is_loaded:

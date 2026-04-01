@@ -497,9 +497,11 @@ class TestParseReminderTime:
         return TelegramInterface._parse_reminder_time(text)
 
     def test_10dk(self):
-        before = datetime.now()
+        # _parse_reminder_time returns UTC naive datetime for DB storage.
+        from datetime import timezone
+        before = datetime.utcnow()
         result = self._parse("10dk")
-        after = datetime.now()
+        after = datetime.utcnow()
         assert result is not None
         diff = (result - before).total_seconds()
         assert 590 <= diff <= 610, f"Expected ~600s, got {diff}"
@@ -507,52 +509,68 @@ class TestParseReminderTime:
     def test_10_dakika(self):
         result = self._parse("10 dakika")
         assert result is not None
-        diff = (result - datetime.now()).total_seconds()
+        diff = (result - datetime.utcnow()).total_seconds()
         assert 590 <= diff <= 610
 
     def test_1_saat(self):
         result = self._parse("1 saat")
         assert result is not None
-        diff = (result - datetime.now()).total_seconds()
+        diff = (result - datetime.utcnow()).total_seconds()
         assert 3590 <= diff <= 3610
 
     def test_2s(self):
         result = self._parse("2s")
         assert result is not None
-        diff = (result - datetime.now()).total_seconds()
+        diff = (result - datetime.utcnow()).total_seconds()
         assert 7190 <= diff <= 7210
 
     def test_hhmm_future(self):
-        future = datetime.now() + timedelta(hours=1)
-        text = future.strftime("%H:%M")
+        # HH:MM is parsed as Turkey local time; result is UTC naive.
+        # Build a Turkey-local future time and check the UTC result is ~1h ahead of UTC now.
+        try:
+            from zoneinfo import ZoneInfo
+            from datetime import timezone
+            tz_tr = ZoneInfo("Europe/Istanbul")
+            now_local = datetime.now(tz_tr)
+        except Exception:
+            from datetime import timezone
+            now_local = datetime.now(timezone.utc)
+        future_local = now_local + timedelta(hours=1)
+        text = future_local.strftime("%H:%M")
         result = self._parse(text)
         assert result is not None
-        # Should be approximately 1 hour from now
-        diff = abs((result - datetime.now()).total_seconds() - 3600)
-        assert diff < 120, f"Expected ~3600s, got diff {diff}"
+        # result is UTC naive; compare against UTC now
+        diff = abs((result - datetime.utcnow()).total_seconds() - 3600)
+        assert diff < 120, f"Expected ~3600s UTC offset, got diff {diff}"
 
     def test_hhmm_past_becomes_tomorrow(self):
-        past = datetime.now() - timedelta(hours=1)
-        text = past.strftime("%H:%M")
+        # Build a Turkey-local time 1h in the past; result should be ~23h ahead in UTC.
+        try:
+            from zoneinfo import ZoneInfo
+            tz_tr = ZoneInfo("Europe/Istanbul")
+            past_local = datetime.now(tz_tr) - timedelta(hours=1)
+        except Exception:
+            past_local = datetime.utcnow() - timedelta(hours=1)
+        text = past_local.strftime("%H:%M")
         result = self._parse(text)
         assert result is not None
-        # Should be tomorrow (about 23h from now)
-        diff = (result - datetime.now()).total_seconds()
-        assert diff > 0, "Past time should roll over to tomorrow"
+        # result is UTC naive; must be in the future from UTC now
+        diff = (result - datetime.utcnow()).total_seconds()
+        assert diff > 0, "Past Turkey time should roll over to tomorrow in UTC"
         assert diff < 86400 + 60
 
     def test_yarin_hhmm(self):
+        # yarın 09:00 = tomorrow at 09:00 Turkey = tomorrow at 06:00 UTC
         result = self._parse("yarın 09:00")
         assert result is not None
-        tomorrow = (datetime.now() + timedelta(days=1)).date()
-        assert result.date() == tomorrow
-        assert result.hour == 9
+        # Result is UTC naive: 09:00 TR = 06:00 UTC
+        assert result.hour == 6
         assert result.minute == 0
 
     def test_bare_integer_is_minutes(self):
         result = self._parse("30")
         assert result is not None
-        diff = (result - datetime.now()).total_seconds()
+        diff = (result - datetime.utcnow()).total_seconds()
         assert 1790 <= diff <= 1810
 
     def test_invalid_returns_none(self):
@@ -574,49 +592,52 @@ class TestParseCronInput:
         from src.app.telegram_bot import TelegramInterface
         return TelegramInterface._parse_cron_input(text)
 
+    # Cron hours are UTC (Turkey local - 3h).  Turkey has no DST, always UTC+3.
+    # Examples: 09:00 TR = 06:00 UTC, 14:30 TR = 11:30 UTC, 10:30 TR = 07:30 UTC.
+
     def test_her_gun_09_00(self):
         result = self._parse("her gün 09:00")
-        assert result == "0 9 * * *"
+        assert result == "0 6 * * *"  # 09:00 TR = 06:00 UTC
 
     def test_her_gun_14_30(self):
         result = self._parse("her gün 14:30")
-        assert result == "30 14 * * *"
+        assert result == "30 11 * * *"  # 14:30 TR = 11:30 UTC
 
     def test_her_gun_no_time_default_09(self):
         result = self._parse("her gün")
-        assert result == "0 9 * * *"
+        assert result == "0 6 * * *"  # default 09:00 TR = 06:00 UTC
 
     def test_her_2_saatte(self):
         result = self._parse("her 2 saatte")
-        assert result == "0 */2 * * *"
+        assert result == "0 */2 * * *"  # relative — no UTC conversion
 
     def test_her_4_saatte(self):
         result = self._parse("her 4 saatte")
-        assert result == "0 */4 * * *"
+        assert result == "0 */4 * * *"  # relative — no UTC conversion
 
     def test_her_saat(self):
         result = self._parse("her saat")
-        assert result == "0 * * * *"
+        assert result == "0 * * * *"  # every hour — no conversion
 
     def test_her_pazartesi(self):
         result = self._parse("her pazartesi")
-        assert result == "0 9 * * 1"
+        assert result == "0 6 * * 1"  # default 09:00 TR = 06:00 UTC
 
     def test_her_cuma(self):
         result = self._parse("her cuma")
-        assert result == "0 9 * * 5"
+        assert result == "0 6 * * 5"  # default 09:00 TR = 06:00 UTC
 
     def test_her_pazar(self):
         result = self._parse("her pazar")
-        assert result == "0 9 * * 0"
+        assert result == "0 6 * * 0"  # default 09:00 TR = 06:00 UTC
 
     def test_her_pazartesi_with_time(self):
         result = self._parse("her pazartesi 14:00")
-        assert result == "0 14 * * 1"
+        assert result == "0 11 * * 1"  # 14:00 TR = 11:00 UTC
 
     def test_her_sali_10_30(self):
         result = self._parse("her salı 10:30")
-        assert result == "30 10 * * 2"
+        assert result == "30 7 * * 2"  # 10:30 TR = 07:30 UTC
 
     def test_invalid_returns_none(self):
         assert self._parse("bazen") is None

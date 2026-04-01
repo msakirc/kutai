@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-KutAI Wrapper — always-running process manager for the orchestrator.
+Yaşar Usta — KutAI'nin süreç yöneticisi (process manager).
 
 Launches src/app/run.py as a subprocess and monitors it.
 Provides Telegram commands when KutAI is down (/kutai_start, /kutai_status).
 When KutAI is running, it handles /kutai_restart and /kutai_stop via exit codes.
 
 Exit code protocol:
-  0  = clean shutdown (wrapper waits for /kutai_start)
-  42 = restart requested (wrapper restarts immediately)
-  *  = crash (wrapper auto-restarts with backoff)
+  0  = clean shutdown (Yaşar Usta waits for /kutai_start)
+  42 = restart requested (Yaşar Usta restarts immediately)
+  *  = crash (Yaşar Usta auto-restarts with backoff)
 
 Usage:
   python kutai_wrapper.py [--no-auto-restart]
@@ -75,10 +75,12 @@ def _check_single_instance():
     global _lock_handle
     _LOCK_FILE.parent.mkdir(exist_ok=True)
 
-    # Fixed width for PID string — ensures the file always has enough bytes
-    # for the lock range.  PIDs on Windows fit in 6 digits; we use 10 for safety.
+    # Lock strategy: PID in wrapper.lock (plain text, no OS lock on it).
+    # Exclusive lock on a SEPARATE file (wrapper.lk) — a zero-byte sentinel.
+    # This avoids the msvcrt.locking + buffered I/O interaction where
+    # LockFile's mandatory byte-range lock blocks Python's buffered reads
+    # of the PID even when locking a byte past the read range.
     _PID_WIDTH = 10
-    _LOCK_BYTES = _PID_WIDTH  # lock exactly as many bytes as we write
 
     try:
         import msvcrt
@@ -86,85 +88,80 @@ def _check_single_instance():
         msvcrt = None
 
     if msvcrt is not None:
-        _acquire_lock_msvcrt(msvcrt, _LOCK_BYTES, _PID_WIDTH)
+        _acquire_lock_msvcrt(msvcrt, _PID_WIDTH)
     else:
         _acquire_lock_unix(_PID_WIDTH)
 
 
-def _acquire_lock_msvcrt(msvcrt, lock_bytes: int, pid_width: int):
-    """Windows lock acquisition with stale-lock recovery."""
+_SENTINEL_FILE = Path("logs/wrapper.lk")
+
+
+def _acquire_lock_msvcrt(msvcrt, pid_width: int):
+    """Windows lock using a separate sentinel file.
+
+    wrapper.lock  — stores PID as plain text (never locked, always readable)
+    wrapper.lk    — locked with msvcrt; content irrelevant
+    """
     global _lock_handle
 
-    def _open_lock_file():
-        """Open (or create) the lock file and ensure it has enough bytes."""
-        if _LOCK_FILE.exists():
-            fh = open(_LOCK_FILE, "r+")
-        else:
-            fh = open(_LOCK_FILE, "w")
-        # Ensure file has at least lock_bytes of content so locking
-        # doesn't fail on short / empty files.
-        fh.seek(0, 2)  # seek to end
-        size = fh.tell()
-        if size < lock_bytes:
-            fh.write(" " * (lock_bytes - size))
-            fh.flush()
-        fh.seek(0)
-        return fh
-
     def _try_lock(fh):
-        """Attempt non-blocking exclusive lock. Returns True on success."""
+        """Attempt non-blocking exclusive lock on sentinel file."""
         try:
-            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, lock_bytes)
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
             return True
         except (OSError, IOError):
             return False
 
-    _lock_handle = _open_lock_file()
+    def _write_pid():
+        """Write our PID to the (unlocked) PID file."""
+        with open(_LOCK_FILE, "w") as f:
+            f.write(str(os.getpid()).zfill(pid_width))
+
+    def _read_pid():
+        """Read PID from the (unlocked) PID file."""
+        try:
+            raw = _LOCK_FILE.read_text().strip()
+            return int(raw) if raw else None
+        except (ValueError, OSError):
+            return None
+
+    # Ensure sentinel file exists with at least 1 byte
+    _SENTINEL_FILE.parent.mkdir(exist_ok=True)
+    if not _SENTINEL_FILE.exists():
+        _SENTINEL_FILE.write_text("L")
+
+    _lock_handle = open(_SENTINEL_FILE, "r+")
 
     if _try_lock(_lock_handle):
-        # Lock acquired — write our PID (fixed width, zero-padded)
-        _lock_handle.seek(0)
-        _lock_handle.truncate()
-        _lock_handle.write(str(os.getpid()).zfill(pid_width))
-        _lock_handle.flush()
+        _write_pid()
         return
 
-    # Lock failed — another process might hold it, or it could be stale.
-    # Read the PID and check if it's alive.
-    try:
-        _lock_handle.seek(0)
-        existing_pid_str = _lock_handle.read().strip()
-        existing_pid = int(existing_pid_str)
-    except (ValueError, OSError):
-        existing_pid = None
+    # Lock failed — read PID from the separate (unlocked) file
+    existing_pid = _read_pid()
 
     if existing_pid is not None and _is_pid_alive(existing_pid):
-        # Another wrapper is genuinely running
         _lock_handle.close()
         _lock_handle = None
-        print(f"ERROR: Another wrapper is already running (PID {existing_pid}).")
+        print(f"ERROR: Yasar Usta already running (PID {existing_pid}).")
         print("Use /kutai_stop in Telegram or delete logs/wrapper.lock")
         sys.exit(1)
 
     # PID is dead or unreadable — stale lock (e.g. after power failure).
-    # Close and delete, then re-create and lock.
-    print(f"[Wrapper] Stale lock detected (PID {existing_pid or '?'} is dead). Cleaning up.")
+    print(f"[Yasar Usta] Stale lock detected (PID {existing_pid or '?'} is dead). Cleaning up.")
     _lock_handle.close()
     _lock_handle = None
     try:
-        _LOCK_FILE.unlink(missing_ok=True)
+        _SENTINEL_FILE.unlink(missing_ok=True)
     except Exception:
         pass
 
-    _lock_handle = _open_lock_file()
+    _SENTINEL_FILE.write_text("L")
+    _lock_handle = open(_SENTINEL_FILE, "r+")
     if _try_lock(_lock_handle):
-        _lock_handle.seek(0)
-        _lock_handle.truncate()
-        _lock_handle.write(str(os.getpid()).zfill(pid_width))
-        _lock_handle.flush()
+        _write_pid()
         return
 
-    # Still can't lock after cleanup — something unexpected
     _lock_handle.close()
     _lock_handle = None
     print("ERROR: Could not acquire wrapper lock even after stale-lock cleanup.")
@@ -181,7 +178,7 @@ def _acquire_lock_unix(pid_width: int):
         _lock_handle.write(str(os.getpid()).zfill(pid_width))
         _lock_handle.flush()
     except (OSError, IOError):
-        print("ERROR: Another wrapper is already running.")
+        print("ERROR: Yasar Usta already running.")
         sys.exit(1)
     except ImportError:
         # No OS-level locking available — fall back to PID check
@@ -189,7 +186,7 @@ def _acquire_lock_unix(pid_width: int):
             try:
                 old_pid = int(_LOCK_FILE.read_text().strip())
                 if _is_pid_alive(old_pid):
-                    print(f"ERROR: Another wrapper is already running (PID {old_pid}).")
+                    print(f"ERROR: Yasar Usta already running (PID {old_pid}).")
                     sys.exit(1)
                 else:
                     print(f"[Wrapper] Stale lock (PID {old_pid} is dead). Cleaning up.")
@@ -254,7 +251,11 @@ def _wlog(msg: str):
     """Append a timestamped line to the wrapper's own meta-log (not piped output)."""
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
-    print(line)
+    try:
+        print(line)
+    except UnicodeEncodeError:
+        # cp1252 console can't handle Turkish chars — print ASCII-safe version
+        print(line.encode("ascii", errors="replace").decode())
     try:
         with open(WRAPPER_LOG, "a", encoding="utf-8") as f:
             f.write(line + "\n")
@@ -332,6 +333,15 @@ class KutAIWrapper:
 
         self.running = True
         self.start_time = time.time()
+
+        # Reset heartbeat so the hung-detector doesn't see a stale timestamp
+        # from the previous run and immediately kill the new orchestrator.
+        hb_path = os.path.join("logs", "orchestrator.heartbeat")
+        try:
+            with open(hb_path, "w") as f:
+                f.write(str(time.time()))
+        except Exception:
+            pass
 
         # Pipe output to console and log file
         asyncio.create_task(self._pipe_output(self.process.stdout, "stdout"))
@@ -479,7 +489,7 @@ class KutAIWrapper:
 
     async def _send_baslat_prompt(self, reason: str = ""):
         """Send the [▶️ Başlat] keyboard with an optional reason prefix."""
-        msg = "⚠️ KutAI durdu. Başlatmak için butona bas."
+        msg = "⚠️ Kutay durdu. Başlatmak için butona bas."
         if reason:
             msg = f"{reason}\n{msg}"
         await self._send_telegram(msg, reply_markup=self._KB_BASLAT)
@@ -491,7 +501,7 @@ class KutAIWrapper:
             last_lines = last_lines[-1500:]
         backoff = self._get_backoff()
         msg = (
-            f"🔴 *KutAI Crashed*\n"
+            f"🔴 *Kutay Crashed*\n"
             f"Exit code: `{exit_code}`\n"
             f"Crash #{self.total_crashes}\n"
             f"Restarting in {backoff}s\n\n"
@@ -501,13 +511,13 @@ class KutAIWrapper:
 
     async def _notify_stopped(self):
         await self._send_telegram(
-            "⏹ *KutAI Stopped*\n"
+            "⏹ *Kutay Stopped*\n"
             "Send /kutai\\_start to restart.",
             reply_markup=self._KB_BASLAT,
         )
 
     async def _notify_started(self):
-        await self._send_telegram("✅ *KutAI Started*")
+        await self._send_telegram("✅ *Kutay Started*")
 
     # ── Mini Telegram Bot (active only when KutAI is down) ────────────────
 
@@ -583,10 +593,16 @@ class KutAIWrapper:
                         chat_id == str(TELEGRAM_ADMIN_CHAT_ID)
                         and text == "▶️ Başlat"
                     )
+                    _unhealthy = not self._is_orchestrator_healthy()
                     is_sistem_unhealthy = (
                         chat_id == str(TELEGRAM_ADMIN_CHAT_ID)
                         and text == "⚙️ Sistem"
-                        and not self._is_orchestrator_healthy()
+                        and _unhealthy
+                    )
+                    is_usta_unhealthy = (
+                        chat_id == str(TELEGRAM_ADMIN_CHAT_ID)
+                        and text == "🔧 Yaşar Usta"
+                        and _unhealthy
                     )
                     is_logs_cmd = (
                         chat_id == str(TELEGRAM_ADMIN_CHAT_ID)
@@ -598,6 +614,7 @@ class KutAIWrapper:
                             text.startswith(("/kutai_start", "/kutai_status"))
                             or is_baslat
                             or is_sistem_unhealthy
+                            or is_usta_unhealthy
                             or is_logs_cmd
                         )
                     )
@@ -607,12 +624,15 @@ class KutAIWrapper:
                             handled_wrapper_ids.add(uid)
 
                             if text.startswith("/kutai_start") or is_baslat:
-                                await self._send_telegram("🚀 Starting KutAI...")
+                                await self._send_telegram("🚀 Kutay başlatılıyor...")
                                 await self.start_kutai(_from_poller=True)
                                 return  # Exit poll loop — KutAI takes over
 
                             elif text.startswith("/kutai_status"):
                                 await self._send_status()
+
+                            elif is_usta_unhealthy:
+                                await self._send_processes()
 
                             elif is_logs_cmd:
                                 await self._send_logs(text)
@@ -628,7 +648,7 @@ class KutAIWrapper:
                                         _wlog(f"Failed to kill hung orchestrator: {e}")
                                     self.process = None
                                     self.running = False
-                                await self._send_baslat_prompt("🔴 KutAI yanıt vermiyor.")
+                                await self._send_baslat_prompt("🔴 Kutay yanıt vermiyor.")
 
                         if max_wrapper_id is None or uid > max_wrapper_id:
                             max_wrapper_id = uid
@@ -688,46 +708,178 @@ class KutAIWrapper:
                 await asyncio.sleep(10)
 
     async def _start_claude_remote(self):
-        """Spawn a Claude Code remote-control session."""
-        # Kill existing session if any
-        if self._claude_process and self._claude_process.returncode is None:
-            _wlog("Claude remote-control session already running, skipping")
-            await self._send_telegram("🖥️ Claude Code session already running.")
-            return
+        """Spawn a Claude Code remote-control server session.
 
-        _wlog("Starting Claude Code remote-control session")
+        Starts `claude remote-control` which creates a persistent server that
+        appears in the user's claude.ai/code session list. The session URL
+        is extracted from stdout and sent via Telegram.
+        """
+        # Start a new session even if one is already running
+        if self._claude_process and self._claude_process.returncode is None:
+            _wlog("Existing Claude session still running, starting additional session")
+            await self._send_telegram("🖥️ Yeni Claude Code oturumu açılıyor (eski oturum devam ediyor)...")
+
+        _wlog("Starting Claude Code remote-control server")
         try:
             claude_bin = str(CLAUDE_CMD) if CLAUDE_CMD.exists() else "claude"
-            self._claude_process = await asyncio.create_subprocess_shell(
-                f'"{claude_bin}" --remote-control --dangerously-skip-permissions',
+            self._claude_process = await asyncio.create_subprocess_exec(
+                claude_bin, "remote-control",
+                "--name", "Kutay",
+                "--permission-mode", "bypassPermissions",
                 cwd=str(PROJECT_ROOT),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            await self._send_telegram(
-                "🖥️ *Claude Code remote-control started*\n"
-                f"PID: `{self._claude_process.pid}`"
-            )
+            _wlog(f"Claude remote-control server started (PID {self._claude_process.pid})")
+
+            # Read stdout to capture session URL (first few lines)
+            session_url = None
+            try:
+                for _ in range(20):  # read up to 20 lines looking for URL
+                    line_bytes = await asyncio.wait_for(
+                        self._claude_process.stdout.readline(), timeout=10,
+                    )
+                    if not line_bytes:
+                        break
+                    line = line_bytes.decode("utf-8", errors="replace").strip()
+                    _wlog(f"[claude-rc] {line}")
+                    if "claude.ai" in line or "http" in line.lower():
+                        # Extract URL from line
+                        import re
+                        url_match = re.search(r"https?://\S+", line)
+                        if url_match:
+                            session_url = url_match.group(0)
+                            break
+            except asyncio.TimeoutError:
+                pass
+
+            if session_url:
+                await self._send_telegram(
+                    "🖥️ *Claude Code Remote Control*\n\n"
+                    f"🔗 [Session'a bağlan]({session_url})\n\n"
+                    f"PID: `{self._claude_process.pid}`",
+                )
+            else:
+                await self._send_telegram(
+                    "🖥️ *Claude Code Remote Control started*\n"
+                    f"PID: `{self._claude_process.pid}`\n\n"
+                    "claude.ai/code adresinden bağlanabilirsin."
+                )
+
+            # Continue reading output in background
+            asyncio.create_task(self._pipe_output(
+                self._claude_process.stdout, "claude-rc"))
+
         except FileNotFoundError:
             _wlog("'claude' command not found — is Claude Code installed?")
-            await self._send_telegram("❌ `claude` command not found. Is Claude Code installed?")
+            await self._send_telegram("❌ `claude` command not found. Claude Code kurulu mu?")
         except Exception as e:
             _wlog(f"Failed to start Claude remote-control: {e!r}")
-            await self._send_telegram(f"❌ Failed to start Claude Code: `{e!r}`")
+            await self._send_telegram(f"❌ Claude Code başlatılamadı: `{e!r}`")
 
     async def _send_status(self):
         uptime_w = int(time.time() - self._wrapper_start_time)
         uptime_k = int(time.time() - self.start_time) if self.start_time and self.running else 0
         state = "🟢 Running" if self.running else "🔴 Stopped"
         msg = (
-            f"*KutAI Wrapper Status*\n"
-            f"State: {state}\n"
-            f"Wrapper uptime: {uptime_w // 3600}h {(uptime_w % 3600) // 60}m\n"
-            f"KutAI uptime: {uptime_k // 3600}h {(uptime_k % 3600) // 60}m\n"
-            f"Total crashes: {self.total_crashes}\n"
-            f"Last exit code: `{self.last_exit_code}`"
+            f"*Yaşar Usta - Durum*\n"
+            f"Durum: {state}\n"
+            f"Yaşar Usta çalışma: {uptime_w // 3600}s {(uptime_w % 3600) // 60}dk\n"
+            f"Kutay çalışma: {uptime_k // 3600}s {(uptime_k % 3600) // 60}dk\n"
+            f"Toplam çökme: {self.total_crashes}\n"
+            f"Son çıkış kodu: `{self.last_exit_code}`"
         )
         await self._send_telegram(msg)
+
+    async def _send_processes(self):
+        """Show process list + health, with KB_BASLAT for restart (wrapper-side Yaşar Usta panel)."""
+        import subprocess as _sp
+        lines = []
+        wrappers = []
+        orchestrators = []
+        llama_pids = []
+
+        # Python processes
+        try:
+            raw = _sp.check_output(
+                ['wmic', 'process', 'where', "name='python.exe'",
+                 'get', 'ProcessId,CommandLine'],
+                text=True, timeout=5,
+            )
+            for line in raw.strip().splitlines():
+                line = line.strip()
+                if not line or line.startswith("CommandLine"):
+                    continue
+                pid = line.split()[-1] if line.split() else ""
+                if "wrapper" in line.lower():
+                    wrappers.append(pid)
+                    lines.append(f"🔵 Yaşar Usta PID {pid}")
+                elif "run.py" in line:
+                    orchestrators.append(pid)
+                    lines.append(f"🟢 Kutay PID {pid}")
+        except Exception as e:
+            lines.append(f"⚠️ Süreç listesi alınamadı: {e}")
+
+        # llama-server
+        try:
+            llama_raw = _sp.check_output(
+                ['tasklist', '/FI', 'IMAGENAME eq llama-server.exe'],
+                text=True, timeout=5,
+            )
+            for ll in llama_raw.splitlines():
+                if 'llama-server' in ll.lower():
+                    parts = ll.split()
+                    if len(parts) >= 2:
+                        llama_pids.append(parts[1])
+                        lines.append(f"🟡 llama-server PID {parts[1]}")
+        except Exception:
+            pass
+
+        if not lines:
+            lines.append("Çalışan süreç bulunamadı.")
+
+        n_wrappers = (len(wrappers) + 1) // 2
+        n_orchestrators = (len(orchestrators) + 1) // 2
+
+        # Heartbeat check
+        kutay_healthy = False
+        heartbeat_age = None
+        for hb_path in ["logs/orchestrator.heartbeat", "logs/heartbeat"]:
+            try:
+                with open(hb_path, "r") as f:
+                    last_beat = float(f.read().strip())
+                heartbeat_age = time.time() - last_beat
+                kutay_healthy = heartbeat_age < 60
+                break
+            except (FileNotFoundError, ValueError):
+                continue
+
+        if n_orchestrators == 0:
+            health_line = "💀 Kutay: çalışmıyor"
+        elif kutay_healthy:
+            age_str = f"{int(heartbeat_age)}sn önce" if heartbeat_age else ""
+            health_line = f"💚 Kutay: sağlıklı (heartbeat {age_str})"
+        elif heartbeat_age is not None:
+            health_line = f"🔴 Kutay: YANIT VERMİYOR ({int(heartbeat_age)}sn sessiz)"
+        else:
+            health_line = "⚪ Kutay: heartbeat dosyası yok"
+
+        uptime_w = int(time.time() - self._wrapper_start_time)
+        summary = (
+            f"\n📊 Yaşar Usta: {n_wrappers} | Kutay: {n_orchestrators} | llama: {len(llama_pids)}"
+            f"\n⏱ Çalışma: {uptime_w // 3600}s {(uptime_w % 3600) // 60}dk"
+            f" | Çökmeler: {self.total_crashes}"
+        )
+        if n_wrappers > 1 or n_orchestrators > 1:
+            summary += "\n⚠️ Duplicate süreçler var!"
+
+        text = (
+            f"🔧 *Yaşar Usta - Süreç Yönetimi*\n\n"
+            + "\n".join(lines)
+            + f"\n\n{health_line}"
+            + summary
+        )
+        await self._send_telegram(text, reply_markup=self._KB_BASLAT)
 
     async def _send_logs(self, text: str):
         """Read and send last N lines of orchestrator.jsonl."""
@@ -854,11 +1006,18 @@ class KutAIWrapper:
 
     async def run(self):
         """Main wrapper loop."""
-        _wlog(f"KutAI Wrapper started (auto_restart={self.auto_restart})")
+        _wlog(f"Yasar Usta started (auto_restart={self.auto_restart})")
 
         # Clean up stale signal files from previous runs
         if CLAUDE_REMOTE_SIGNAL.exists():
             CLAUDE_REMOTE_SIGNAL.unlink()
+
+        # Announce ourselves
+        await self._send_telegram(
+            "🔧 *Bennn... Yaşar Usta!*\n\n"
+            "Kutay'ı başlatıyorum...",
+            reply_markup=self._KB_BASLAT,
+        )
 
         # Start KutAI immediately
         await self.start_kutai()
@@ -877,14 +1036,35 @@ class KutAIWrapper:
                 self._maybe_reset_backoff()
 
                 if exit_code == -1:
-                    # No process was running (spawn failed) — wait for user
-                    _wlog("No process to wait on — entering Telegram poll mode")
+                    if self.last_crash_time and (time.time() - self.last_crash_time) < 10:
+                        # Hung kill right after a crash — treat as spawn failure,
+                        # wait for user to avoid rapid restart loops
+                        _wlog("No process to wait on — entering Telegram poll mode")
+                        await self._start_telegram_poller()
+                        while not self._shutdown and not self.running:
+                            await asyncio.sleep(1)
+                        if self.running:
+                            await self._notify_started()
+                            await self._start_signal_watcher()
+                        continue
+                    # Orchestrator was killed for being hung — auto-restart
+                    _wlog("KutAI hung — Yasar Usta auto-restarting after 5s")
+                    self.crash_count += 1
+                    self.total_crashes += 1
+                    self.last_crash_time = time.time()
+                    await self._send_telegram(
+                        "🔴 Kutay dondu — Yaşar Usta 5sn içinde yeniden başlatıyor"
+                    )
                     await self._start_telegram_poller()
-                    while not self._shutdown and not self.running:
+                    for i in range(5):
+                        if self._shutdown or self.running:
+                            break
                         await asyncio.sleep(1)
-                    if self.running:
-                        await self._notify_started()
-                        await self._start_signal_watcher()
+                    if not self.running and not self._shutdown:
+                        await self.start_kutai()
+                        if self.running:
+                            await self._notify_started()
+                            await self._start_signal_watcher()
                     continue
 
                 _wlog(f"KutAI exited with code {exit_code}")
@@ -892,7 +1072,7 @@ class KutAIWrapper:
                 if exit_code == RESTART_EXIT_CODE:
                     # Restart requested via /kutai_restart
                     # Do NOT start Telegram poller during restart — it steals updates
-                    await self._send_telegram("♻️ *KutAI Restarting...*")
+                    await self._send_telegram("♻️ *Kutay yeniden başlatılıyor...*")
                     await asyncio.sleep(3)
                     await self.start_kutai()
                     if self.running:

@@ -50,6 +50,10 @@ AVAILABLE_KEYS: dict[str, bool] = {
     "sambanova": bool(os.getenv("SAMBANOVA_API_KEY", "")),
 }
 
+# ─── Geocoding API Keys ─────────────────────────────────────────────────────
+HERE_API_KEY = os.getenv("HERE_API_KEY", "")
+LOCATIONIQ_API_KEY = os.getenv("LOCATIONIQ_API_KEY", "")
+
 # ─── Task Priority Levels ────────────────────────────────────────────────────
 
 TASK_PRIORITY = {

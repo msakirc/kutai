@@ -341,6 +341,10 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
                          task=effective_task)
             return True
 
+        if registry.is_demoted(name):
+            _skip("demoted (recent load failure)")
+            continue
+
         if model.litellm_name in reqs.exclude_models:
             _skip("excluded"); continue
         if model.demoted:

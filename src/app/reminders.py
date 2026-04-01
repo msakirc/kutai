@@ -1,7 +1,7 @@
 # reminders.py
 """Todo reminder notifications sent via Telegram."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..infra.db import get_todos
 from ..infra.logging_config import get_logger
@@ -16,11 +16,21 @@ _PRIORITY_ICONS = {
 
 
 def _format_age(created_at, now=None):
-    """Return compact relative time: '2m ago', '3h ago', '5d ago', '2w ago'."""
+    """Return compact relative time: '2m ago', '3h ago', '5d ago', '2w ago'.
+
+    ``created_at`` comes from SQLite's CURRENT_TIMESTAMP which is UTC.
+    We compare against UTC now to avoid the 3-hour Turkey (UTC+3) offset.
+    """
     if isinstance(created_at, str):
-        created_at = datetime.fromisoformat(created_at)
+        # SQLite CURRENT_TIMESTAMP format: "2026-03-28 10:00:00" (no tz info, UTC)
+        created_at = datetime.fromisoformat(created_at.replace(" ", "T"))
+    # Ensure both sides are naive UTC (strip tzinfo if present so subtraction works)
+    if created_at.tzinfo is not None:
+        created_at = created_at.astimezone(timezone.utc).replace(tzinfo=None)
     if now is None:
-        now = datetime.now()
+        now = datetime.utcnow()
+    elif now.tzinfo is not None:
+        now = now.astimezone(timezone.utc).replace(tzinfo=None)
     diff = now - created_at
     minutes = int(diff.total_seconds() / 60)
     if minutes < 1:
@@ -63,7 +73,12 @@ async def build_todo_list_message(suggestions=None):
 
         lines.append(f"  {p_icon} *#{tid}* — {title} ({age})")
 
-        suggestion = suggestions.get(tid)
+        raw_suggestion = suggestions.get(tid)
+        # Support both old format (str) and new format (text, agent_type) tuple
+        if isinstance(raw_suggestion, tuple):
+            suggestion, _agent = raw_suggestion
+        else:
+            suggestion = raw_suggestion
         if suggestion:
             lines.append(f"   💡 {suggestion}")
 
@@ -71,8 +86,13 @@ async def build_todo_list_message(suggestions=None):
             InlineKeyboardButton(f"✅ #{tid}", callback_data=f"todo_toggle:{tid}")
         )
         if suggestion:
+            # Encode agent type in callback data for the help handler
+            if isinstance(raw_suggestion, tuple):
+                agent_type = raw_suggestion[1]
+            else:
+                agent_type = "researcher"
             help_buttons.append(
-                InlineKeyboardButton(f"🤖 #{tid}", callback_data=f"todo_help:{tid}")
+                InlineKeyboardButton(f"🤖 #{tid}", callback_data=f"todo_help:{tid}:{agent_type}")
             )
 
     text = "\n".join(lines)

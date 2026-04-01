@@ -29,6 +29,36 @@ from ..tools.workspace import list_mission_workspaces
 
 pending_clarifications = {}  # task_id -> asyncio.Event + response
 
+
+async def _reverse_geocode_photon(lat: float, lon: float) -> tuple[str, str]:
+    """Reverse geocode coordinates via Photon (privacy-first, no logging, no API key).
+
+    Returns (district, city). Logs warnings on failure, never silences errors.
+    """
+    import aiohttp
+    district, city = "", ""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://photon.komoot.io/reverse",
+                params={"lat": str(lat), "lon": str(lon), "limit": "1", "lang": "default"},
+                headers={"User-Agent": "KutAI/1.0"},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(f"Photon reverse geocode HTTP {resp.status}")
+                    return district, city
+                data = await resp.json()
+                features = data.get("features", [])
+                if features:
+                    props = features[0].get("properties", {})
+                    district = (props.get("district") or props.get("locality")
+                                or props.get("suburb") or props.get("county") or "")
+                    city = (props.get("city") or props.get("state") or "")
+    except Exception as e:
+        logger.warning(f"Photon reverse geocode failed: {e}")
+    return district, city
+
 def _friendly_error(error: str) -> str:
     """Convert raw error strings into user-friendly messages."""
     e = error.lower()
@@ -79,11 +109,11 @@ def _looks_like_product_idea(description: str) -> bool:
 
 import time as _time
 
-def _make_keyboard(rows: list[list[str]], **kwargs) -> ReplyKeyboardMarkup:
+def _make_keyboard(rows: list[list[str]], resize_keyboard: bool = True, **kwargs) -> ReplyKeyboardMarkup:
     """Build a ReplyKeyboardMarkup from a list of string rows."""
     return ReplyKeyboardMarkup(
         [[KeyboardButton(btn) for btn in row] for row in rows],
-        resize_keyboard=True,
+        resize_keyboard=resize_keyboard,
         one_time_keyboard=False,
         is_persistent=True,
         **kwargs,
@@ -99,7 +129,7 @@ REPLY_KEYBOARD = _make_keyboard([
 KB_HIZMET = _make_keyboard([
     ["🏥 Eczane", "💰 Döviz", "🌤 Hava", "⛽ Yakıt"],
     ["🕌 Namaz", "📰 Haber", "🪙 Altın", "🌍 Deprem"],
-    ["🔙 Geri"],
+    ["📍 Konum", "🔙 Geri"],
 ])
 
 KB_ALISVERIS = _make_keyboard([
@@ -126,9 +156,9 @@ KB_WORKFLOW_SELECT = _make_keyboard([
 
 KB_SISTEM = _make_keyboard([
     ["🖥 Yük Modu", "🐛 Debug", "📭 DLQ", "📋 Loglar"],
-    ["🖥️ Claude Code", "🔄 Yeniden Başlat", "⏹ Durdur"],
+    ["🖥️ Claude Code", "🔧 Yaşar Usta", "🔄 Yeniden Başlat", "⏹ Durdur"],
     ["🔙 Geri"],
-])
+], resize_keyboard=False)
 
 KB_YUK_MODU = _make_keyboard([
     ["⚡ Full", "🔋 Heavy", "⚖️ Shared"],
@@ -194,11 +224,13 @@ _BUTTON_ACTIONS: dict[str, tuple[str, str]] = {
     "🤖 Otomatik": ("special", "wf_auto"),
     "💻 Kod / Diğer": ("special", "wf_other"),
     # ── Sistem sub-buttons ──
+    "📍 Konum": ("special", "location"),
     "🖥 Yük Modu": ("category", "yuk_modu"),
     "🐛 Debug": ("special", "debug"),
     "📭 DLQ": ("special", "dlq"),
     "📋 Loglar": ("cmd", "logs"),
     "🖥️ Claude Code": ("special", "claude_code"),
+    "🔧 Yaşar Usta": ("special", "processes"),
     "🔄 Yeniden Başlat": ("special", "restart"),
     "⏹ Durdur": ("special", "stop"),
     # ── Yük Modu sub-buttons ──
@@ -259,6 +291,8 @@ def _format_log_entries(lines: list[str], n: int = 20) -> str:
             comp = entry.get("component", "?").split(".")[-1]
             msg = entry.get("message", "")[:120]
             icon = {"ERRO": "🔴", "CRIT": "🔴", "WARN": "🟡", "INFO": "⚪", "DEBU": "⚫"}.get(level, "⚪")
+            # Escape Markdown special chars in log message to prevent parse errors
+            msg = msg.replace("*", "\\*").replace("_", "\\_").replace("`", "\\`").replace("[", "\\[")
             formatted.append(f"{icon} `{ts}` *{comp}*: {msg}")
         except (ValueError, KeyError):
             formatted.append(f"⚫ {line[:120]}")
@@ -481,6 +515,41 @@ class TelegramInterface:
             await self._show_dlq_tasks(update, context)
             return
 
+        # ── Location ──
+        if action == "location":
+            from src.infra.db import get_user_pref
+            lat = await get_user_pref("location_lat")
+            district = await get_user_pref("location_district") or ""
+            city = await get_user_pref("location_city") or ""
+            if lat:
+                loc_desc = f"{district}, {city}" if district else f"{lat}"
+                await update.message.reply_text(
+                    f"📍 Kayıtlı konum: *{loc_desc}*\n\n"
+                    f"Değiştirmek için aşağıdan seç veya\n"
+                    f"Google Maps linki / koordinat gönder:",
+                    parse_mode="Markdown",
+                    reply_markup=ReplyKeyboardMarkup(
+                        [[KeyboardButton("📍 Konumumu Paylaş", request_location=True)],
+                         [KeyboardButton("✏️ İlçe Adı Yaz")],
+                         [KeyboardButton("❌ İptal")]],
+                        resize_keyboard=True,
+                        one_time_keyboard=True,
+                    ),
+                )
+                self._pending_action[chat_id] = {
+                    "command": "_location_setup",
+                    "original_service": None,
+                    "ts": _time.time(),
+                }
+            else:
+                await self._start_location_setup(update, None)
+            return
+
+        # ── Processes ──
+        if action == "processes":
+            await self._show_processes(update, context)
+            return
+
         # ── GPU Load Modes ──
         if action.startswith("load_"):
             mode = action.replace("load_", "")
@@ -494,7 +563,7 @@ class TelegramInterface:
         # ── Restart / Stop ──
         if action == "restart":
             await update.message.reply_text(
-                "⚠️ KutAI yeniden başlatılsın mı?",
+                "⚠️ Kutay yeniden başlatılsın mı?",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Evet", callback_data="m:confirm:restart"),
                      InlineKeyboardButton("❌ Hayır", callback_data="m:confirm:cancel")],
@@ -504,7 +573,7 @@ class TelegramInterface:
 
         if action == "stop":
             await update.message.reply_text(
-                "⚠️ KutAI durdurulsun mu?",
+                "⚠️ Kutay durdurulsun mu?",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Evet", callback_data="m:confirm:stop"),
                      InlineKeyboardButton("❌ Hayır", callback_data="m:confirm:cancel")],
@@ -590,6 +659,94 @@ class TelegramInterface:
     # ── Reminder / Schedule helpers ────────────────────────────────────────
 
     @staticmethod
+    def _parse_maps_url(text: str) -> tuple[float, float] | None:
+        """Extract lat/lon from a Google Maps URL or coordinate pair (sync).
+
+        Supports:
+        - https://maps.google.com/?q=39.95,32.84
+        - https://www.google.com/maps/@39.95,32.84,15z
+        - https://www.google.com/maps/place/.../@39.95,32.84,15z
+        - Plain "39.95, 32.84" coordinate pair
+        """
+        import re
+        text = text.strip()
+
+        # Direct coordinate pair: "39.95, 32.84" or "39.95,32.84"
+        m = re.match(r"^(-?\d+\.?\d*)\s*[,\s]\s*(-?\d+\.?\d*)$", text)
+        if m:
+            lat, lon = float(m.group(1)), float(m.group(2))
+            if -90 <= lat <= 90 and -180 <= lon <= 180:
+                return lat, lon
+
+        # Google Maps @lat,lon pattern
+        m = re.search(r"@(-?\d+\.?\d+),(-?\d+\.?\d+)", text)
+        if m:
+            return float(m.group(1)), float(m.group(2))
+
+        # Google Maps ?q=lat,lon or query=lat,lon
+        m = re.search(r"[?&]q(?:uery)?=(-?\d+\.?\d+),(-?\d+\.?\d+)", text)
+        if m:
+            return float(m.group(1)), float(m.group(2))
+
+        # Google Maps /dir/ or place with coords in path
+        m = re.search(r"/(-?\d+\.?\d+),(-?\d+\.?\d+)", text)
+        if m:
+            lat, lon = float(m.group(1)), float(m.group(2))
+            if -90 <= lat <= 90 and -180 <= lon <= 180:
+                return lat, lon
+
+        return None
+
+    @staticmethod
+    async def _resolve_maps_url(text: str) -> tuple[float, float] | None:
+        """Extract lat/lon, resolving short URLs (goo.gl, maps.app.goo.gl) if needed."""
+        import re
+
+        # Extract URL from text (user might send "address\nhttps://...")
+        url_match = re.search(r"https?://\S+", text)
+        url = url_match.group(0) if url_match else text.strip()
+
+        # Try direct parsing first
+        result = TelegramInterface._parse_maps_url(url)
+        if result:
+            return result
+
+        # Short URL or maps link without coords? Resolve and extract from page
+        if re.match(r"https?://(goo\.gl|maps\.app\.goo\.gl|bit\.ly|maps\.google|www\.google\.com/maps)/", url):
+            try:
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        url, allow_redirects=True,
+                        headers={"User-Agent": "Mozilla/5.0"},
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        # Try the resolved URL first
+                        resolved = str(resp.url)
+                        result = TelegramInterface._parse_maps_url(resolved)
+                        if result:
+                            return result
+                        # Extract coords from page content (center=lat%2Clon)
+                        body = await resp.text()
+                        m = re.search(r"center=(-?\d+\.\d+)%2C(-?\d+\.\d+)", body)
+                        if m:
+                            return float(m.group(1)), float(m.group(2))
+                        # Fallback: [null,null,lat,lon] pattern
+                        m = re.search(r"\[null,null,(-?\d+\.\d{4,}),(-?\d+\.\d{4,})\]", body)
+                        if m:
+                            return float(m.group(1)), float(m.group(2))
+            except Exception:
+                pass
+
+        # Try the full text (might be "addr\nhttps://full-url")
+        if url != text.strip():
+            result = TelegramInterface._parse_maps_url(text.strip())
+            if result:
+                return result
+
+        return None
+
+    @staticmethod
     def _parse_reminder_time(text: str):
         """Parse a Turkish time expression into a datetime.
 
@@ -602,42 +759,85 @@ class TelegramInterface:
 
         Returns a datetime or None if parsing fails.
         """
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
+        try:
+            from zoneinfo import ZoneInfo
+            _TZ_TR = ZoneInfo("Europe/Istanbul")
+        except Exception:
+            _TZ_TR = None
         import re
 
         text = text.strip().lower()
-        now = datetime.now()
+        # Work in Turkey local time for user-facing absolute times (HH:MM, yarın).
+        # For relative offsets (N dk, N saat) we use UTC directly.
+        now_utc = datetime.now(timezone.utc)
+        now_local = now_utc.astimezone(_TZ_TR) if _TZ_TR else now_utc
+
+        def _to_utc_naive(dt):
+            """Convert a local (Turkey) datetime to a UTC naive datetime for DB storage."""
+            if dt.tzinfo is not None:
+                return dt.astimezone(timezone.utc).replace(tzinfo=None)
+            # dt is naive local Turkey time — attach tz then convert
+            if _TZ_TR:
+                return dt.replace(tzinfo=_TZ_TR).astimezone(timezone.utc).replace(tzinfo=None)
+            # Fallback: subtract 3h manually (Turkey is always UTC+3, no DST)
+            return dt - timedelta(hours=3)
+
+        # Turkish number words → digits
+        _TR_NUMS = {
+            "bir": 1, "iki": 2, "üç": 3, "uc": 3, "dört": 4, "dort": 4,
+            "beş": 5, "bes": 5, "altı": 6, "alti": 6, "yedi": 7,
+            "sekiz": 8, "dokuz": 9, "on": 10, "yarım": 0.5, "yarim": 0.5,
+            "çeyrek": 0.25, "ceyrek": 0.25,
+        }
+
+        # "yarım saat" / "bir saat" / "iki dakika" etc.
+        # Relative offsets: add to UTC now, return UTC naive
+        m = re.match(r"^(\w+)\s+(?:saat|s)$", text)
+        if m and m.group(1) in _TR_NUMS:
+            val = _TR_NUMS[m.group(1)]
+            return (now_utc + timedelta(hours=val)).replace(tzinfo=None)
+
+        m = re.match(r"^(\w+)\s+(?:dk|dakika)$", text)
+        if m and m.group(1) in _TR_NUMS:
+            val = _TR_NUMS[m.group(1)]
+            return (now_utc + timedelta(minutes=val)).replace(tzinfo=None)
 
         # N dakika / Ndk / Nd
         m = re.match(r"^(\d+)\s*(?:dk|dakika|d(?:akika)?)$", text)
         if m:
-            return now + timedelta(minutes=int(m.group(1)))
+            return (now_utc + timedelta(minutes=int(m.group(1)))).replace(tzinfo=None)
 
         # N saat / Ns
         m = re.match(r"^(\d+)\s*(?:saat|s(?:aat)?)$", text)
         if m:
-            return now + timedelta(hours=int(m.group(1)))
+            return (now_utc + timedelta(hours=int(m.group(1)))).replace(tzinfo=None)
 
-        # yarın HH:MM
+        # yarın HH:MM — user gives Turkey local time; convert to UTC for storage
         m = re.match(r"^yarın\s+(\d{1,2}):(\d{2})$", text)
         if m:
-            tomorrow = now.date() + timedelta(days=1)
-            return datetime(tomorrow.year, tomorrow.month, tomorrow.day,
-                            int(m.group(1)), int(m.group(2)))
+            tomorrow_local = now_local.date() + timedelta(days=1)
+            local_dt = datetime(tomorrow_local.year, tomorrow_local.month, tomorrow_local.day,
+                                int(m.group(1)), int(m.group(2)))
+            return _to_utc_naive(local_dt)
 
-        # HH:MM (today, or tomorrow if past)
+        # HH:MM (today local, or tomorrow if past) — convert to UTC for storage
         m = re.match(r"^(\d{1,2}):(\d{2})$", text)
         if m:
-            candidate = now.replace(hour=int(m.group(1)), minute=int(m.group(2)),
-                                    second=0, microsecond=0)
-            if candidate <= now:
-                candidate += timedelta(days=1)
-            return candidate
+            candidate_local = now_local.replace(
+                hour=int(m.group(1)), minute=int(m.group(2)),
+                second=0, microsecond=0,
+            )
+            if _TZ_TR and hasattr(candidate_local, 'tzinfo') and candidate_local.tzinfo is None:
+                candidate_local = candidate_local.replace(tzinfo=_TZ_TR)
+            if candidate_local <= now_local:
+                candidate_local += timedelta(days=1)
+            return _to_utc_naive(candidate_local)
 
-        # bare integer → minutes
+        # bare integer → minutes (relative, UTC)
         m = re.match(r"^(\d+)$", text)
         if m:
-            return now + timedelta(minutes=int(m.group(1)))
+            return (now_utc + timedelta(minutes=int(m.group(1)))).replace(tzinfo=None)
 
         return None
 
@@ -645,18 +845,28 @@ class TelegramInterface:
     def _parse_cron_input(text: str):
         """Parse a Turkish schedule description into a cron expression.
 
+        All hour values the user provides are in Turkey local time (UTC+3).
+        The cron is stored and evaluated in UTC by the scheduler, so we convert
+        Turkey hours to UTC by subtracting 3.  Turkey has no DST (always UTC+3).
+
         Supported patterns:
-        - "her gün 09:00"        → "0 9 * * *"
-        - "her gün 14:30"        → "30 14 * * *"
-        - "her 2 saatte"         → "0 */2 * * *"
+        - "her gün 09:00"        → "0 6 * * *"   (09:00 TR = 06:00 UTC)
+        - "her gün 14:30"        → "30 11 * * *"  (14:30 TR = 11:30 UTC)
+        - "her 2 saatte"         → "0 */2 * * *"  (relative — no offset needed)
         - "her saat"             → "0 * * * *"
-        - "her pazartesi"        → "0 9 * * 1"
-        - "her pazartesi 14:00"  → "0 14 * * 1"
-        - "her salı 10:30"       → "30 10 * * 2"
+        - "her pazartesi"        → "0 6 * * 1"   (09:00 TR = 06:00 UTC)
+        - "her pazartesi 14:00"  → "0 11 * * 1"
+        - "her salı 10:30"       → "30 7 * * 2"
 
         Returns a cron string or None if parsing fails.
         """
         import re
+
+        _TR_UTC_OFFSET = 3  # Turkey is always UTC+3, no DST
+
+        def _tr_to_utc_hour(h: int) -> int:
+            """Convert Turkey local hour to UTC hour (0-23)."""
+            return (h - _TR_UTC_OFFSET) % 24
 
         text = text.strip().lower()
 
@@ -665,37 +875,39 @@ class TelegramInterface:
             "perşembe": "4", "cuma": "5", "cumartesi": "6", "pazar": "0",
         }
 
-        # her N saatte
+        # her N saatte — relative interval, no timezone conversion needed
         m = re.match(r"^her\s+(\d+)\s*saatte?$", text)
         if m:
             return f"0 */{m.group(1)} * * *"
 
-        # her saat
+        # her saat — every hour, no timezone conversion needed
         if re.match(r"^her\s*saat$", text):
             return "0 * * * *"
 
-        # her gün HH:MM
+        # her gün HH:MM — daily at Turkey-local time, convert to UTC
         m = re.match(r"^her\s+gün\s+(\d{1,2}):(\d{2})$", text)
         if m:
-            return f"{int(m.group(2))} {int(m.group(1))} * * *"
+            utc_h = _tr_to_utc_hour(int(m.group(1)))
+            return f"{int(m.group(2))} {utc_h} * * *"
 
-        # her gün (default 09:00)
+        # her gün (default 09:00 TR = 06:00 UTC)
         if re.match(r"^her\s+gün$", text):
-            return "0 9 * * *"
+            return f"0 {_tr_to_utc_hour(9)} * * *"
 
-        # her <weekday> HH:MM
+        # her <weekday> HH:MM — convert Turkey hour to UTC
         for day_name, day_num in day_map.items():
             m = re.match(rf"^her\s+{re.escape(day_name)}\s+(\d{{1,2}}):(\d{{2}})$", text)
             if m:
-                return f"{int(m.group(2))} {int(m.group(1))} * * {day_num}"
+                utc_h = _tr_to_utc_hour(int(m.group(1)))
+                return f"{int(m.group(2))} {utc_h} * * {day_num}"
             if re.match(rf"^her\s+{re.escape(day_name)}$", text):
-                return f"0 9 * * {day_num}"
+                return f"0 {_tr_to_utc_hour(9)} * * {day_num}"
 
         return None
 
     async def _build_system_dashboard(self) -> str:
         """Build the system status dashboard text."""
-        lines = ["📊 *KutAI Durum*\n━━━━━━━━━━━━━━━━━━━━"]
+        lines = ["📊 *Kutay Durum*\n━━━━━━━━━━━━━━━━━━━━"]
         try:
             # Model info
             try:
@@ -771,9 +983,10 @@ class TelegramInterface:
         try:
             db = await get_db()
             cursor = await db.execute(
-                """SELECT id, title, description, agent_type, status, updated_at
+                """SELECT id, title, description, agent_type, status,
+                          COALESCE(completed_at, started_at, created_at) AS last_ts
                    FROM tasks
-                   ORDER BY updated_at DESC
+                   ORDER BY COALESCE(completed_at, started_at, created_at) DESC
                    LIMIT 10"""
             )
             tasks = [dict(r) for r in await cursor.fetchall()]
@@ -792,7 +1005,7 @@ class TelegramInterface:
                 # Time ago
                 time_str = ""
                 try:
-                    updated = t.get("updated_at", "")
+                    updated = t.get("last_ts", "")
                     if updated:
                         updated_dt = datetime.fromisoformat(str(updated).replace(" ", "T"))
                         ago = (datetime.now() - updated_dt).total_seconds()
@@ -818,36 +1031,143 @@ class TelegramInterface:
             await self._reply(update, f"❌ {_friendly_error(str(e))}")
 
     async def _show_dlq_tasks(self, update, context):
-        """Show failed/stuck tasks (dead letter queue)."""
+        """Show quarantined tasks from the dead-letter queue."""
         try:
-            db = await get_db()
-            cursor = await db.execute(
-                "SELECT id, title, description, status, error, agent_type, updated_at "
-                "FROM tasks WHERE status IN ('failed', 'stuck', 'blocked') "
-                "ORDER BY updated_at DESC LIMIT 10"
-            )
-            tasks = [dict(r) for r in await cursor.fetchall()]
-            if not tasks:
+            from ..infra.dead_letter import get_dlq_tasks
+            dlq_entries = await get_dlq_tasks(unresolved_only=True)
+            if not dlq_entries:
                 await self._reply(update, "📭 DLQ\n\nBaşarısız görev yok.")
                 return
-            lines = ["📭 Başarısız Görevler\n"]
+            lines = ["📭 Dead-Letter Queue\n"]
             buttons = []
-            for i, t in enumerate(tasks, 1):
-                title = (t.get("title") or t.get("description", "?"))[:40]
-                error_short = (t.get("error") or "")[:30]
-                lines.append(f"{i}. ❌ {title}")
+            for i, entry in enumerate(dlq_entries[:10], 1):
+                task_id = entry["task_id"]
+                task = await get_task(task_id)
+                title = (task.get("title") or "?")[:40] if task else f"Task #{task_id}"
+                cat = entry.get("error_category", "unknown")
+                error_short = (entry.get("error") or "")[:30]
+                lines.append(f"{i}. ❌ {title} [{cat}]")
                 if error_short:
                     lines.append(f"   {error_short}")
                 buttons.append(InlineKeyboardButton(
-                    f"{i}", callback_data=f"m:dlq:detail:{t['id']}"))
+                    f"{i}", callback_data=f"m:dlq:detail:{task_id}"))
             btn_rows = [buttons[j:j+5] for j in range(0, len(buttons), 5)]
-            # No Markdown parse_mode — error text may contain special chars
             await update.message.reply_text(
                 "\n".join(lines),
                 reply_markup=InlineKeyboardMarkup(btn_rows) if btn_rows else None,
             )
         except Exception as e:
             logger.error("DLQ listing failed", error=str(e))
+            await self._reply(update, f"❌ {_friendly_error(str(e))}")
+
+    async def _show_processes(self, update, context):
+        """Show running processes, Kutay health, and management buttons."""
+        import subprocess as _sp
+        import time as _time
+        try:
+            raw = _sp.check_output(
+                ['wmic', 'process', 'where', "name='python.exe'",
+                 'get', 'ProcessId,CommandLine'],
+                text=True, timeout=5,
+            )
+            lines = []
+            wrappers = []
+            orchestrators = []
+            for line in raw.strip().splitlines():
+                line = line.strip()
+                if not line or line.startswith("CommandLine"):
+                    continue
+                pid = line.split()[-1] if line.split() else ""
+                if "wrapper" in line.lower():
+                    wrappers.append(pid)
+                    lines.append(f"🔵 Yaşar Usta PID {pid}")
+                elif "run.py" in line:
+                    orchestrators.append(pid)
+                    lines.append(f"🟢 Kutay PID {pid}")
+
+            # Check llama-server
+            llama_pids = []
+            try:
+                llama_raw = _sp.check_output(
+                    ['tasklist', '/FI', 'IMAGENAME eq llama-server.exe'],
+                    text=True, timeout=5,
+                )
+                for ll in llama_raw.splitlines():
+                    if 'llama-server' in ll.lower():
+                        parts = ll.split()
+                        if len(parts) >= 2:
+                            llama_pids.append(parts[1])
+                            lines.append(f"🟡 llama-server PID {parts[1]}")
+            except Exception:
+                pass
+
+            if not lines:
+                lines.append("Çalışan süreç bulunamadı.")
+
+            # Dedup: Windows venv stub + real Python show as 2 PIDs per process
+            n_wrappers = (len(wrappers) + 1) // 2
+            n_orchestrators = (len(orchestrators) + 1) // 2
+
+            # ── Kutay health check via heartbeat ──
+            kutay_healthy = False
+            heartbeat_age = None
+            for hb_path in ["logs/orchestrator.heartbeat", "logs/heartbeat"]:
+                try:
+                    with open(hb_path, "r") as f:
+                        last_beat = float(f.read().strip())
+                    heartbeat_age = _time.time() - last_beat
+                    kutay_healthy = heartbeat_age < 60
+                    break
+                except (FileNotFoundError, ValueError):
+                    continue
+
+            if n_orchestrators == 0:
+                health_line = "💀 Kutay: çalışmıyor"
+            elif kutay_healthy:
+                age_str = f"{int(heartbeat_age)}sn önce" if heartbeat_age else ""
+                health_line = f"💚 Kutay: sağlıklı (heartbeat {age_str})"
+            elif heartbeat_age is not None:
+                age_str = f"{int(heartbeat_age)}sn"
+                health_line = f"🔴 Kutay: YANIT VERMİYOR ({age_str} sessiz)"
+            else:
+                health_line = "⚪ Kutay: heartbeat dosyası yok"
+
+            summary = (
+                f"\n\n📊 Yaşar Usta: {n_wrappers} | Kutay: {n_orchestrators} | "
+                f"llama: {len(llama_pids)}"
+            )
+            if n_wrappers > 1 or n_orchestrators > 1:
+                summary += "\n⚠️ Duplicate süreçler var!"
+
+            text = (
+                f"🔧 *Yaşar Usta - Süreç Yönetimi*\n\n"
+                + "\n".join(lines)
+                + f"\n\n{health_line}"
+                + summary
+            )
+
+            btn_rows = []
+            # If Kutay is unresponsive, show prominent kill button
+            if n_orchestrators > 0 and not kutay_healthy and heartbeat_age and heartbeat_age > 30:
+                btn_rows.append([InlineKeyboardButton(
+                    f"☠️ Kutay'ı öldür ({int(heartbeat_age)}sn yanıtsız)",
+                    callback_data="m:proc:kill_kutai_only")])
+            btn_rows.append([InlineKeyboardButton(
+                "💀 Hepsini Kapat + Yaşar Usta Başlat",
+                callback_data="m:proc:kill_wrapper")])
+            btn_rows.append([InlineKeyboardButton(
+                "🔄 Hepsini Kapat + Kutay Başlat",
+                callback_data="m:proc:kill_kutai")])
+            btn_rows.append([InlineKeyboardButton(
+                "🔃 Yenile", callback_data="m:proc:refresh")])
+            btn_rows.append([InlineKeyboardButton(
+                "🔙 Geri", callback_data="m:proc:back")])
+
+            await update.message.reply_text(
+                text, parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(btn_rows))
+        except Exception as e:
+            logger.error("Process check failed", error=str(e))
             await self._reply(update, f"❌ {_friendly_error(str(e))}")
 
     async def _handle_quick_service(self, update, context, service: str):
@@ -901,7 +1221,8 @@ class TelegramInterface:
         )
         await update.message.reply_text(
             "📍 Konum bilgin henüz kayıtlı değil.\n"
-            "En doğru sonuç için konumunu paylaş:",
+            "Konumunu paylaş, ilçe adı yaz veya\n"
+            "Google Maps linki gönder:",
             reply_markup=location_kb,
         )
 
@@ -912,22 +1233,9 @@ class TelegramInterface:
         if not loc:
             return
         lat, lon = loc.latitude, loc.longitude
-        # Reverse geocode to get district/city
-        district, city = "", ""
-        try:
-            import aiohttp
-            async with aiohttp.ClientSession() as session:
-                url = (f"https://nominatim.openstreetmap.org/reverse"
-                       f"?lat={lat}&lon={lon}&format=json&accept-language=tr")
-                async with session.get(url, headers={"User-Agent": "KutAI/1.0"},
-                                       timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        addr = data.get("address", {})
-                        district = addr.get("suburb") or addr.get("town") or addr.get("county", "")
-                        city = addr.get("city") or addr.get("province") or addr.get("state", "")
-        except Exception as e:
-            logger.warning(f"Reverse geocode failed: {e}")
+        # Reverse geocode to get district/city via Photon (privacy-first, no logging)
+        district, city = await _reverse_geocode_photon(lat, lon)
+
         # Save location and restore keyboard immediately
         pending = self._pending_action.pop(chat_id, None)
         original_service = None
@@ -958,51 +1266,77 @@ class TelegramInterface:
         if original_service:
             await self._handle_quick_service(update, context, original_service)
 
+    async def _save_location_from_coords(self, update, context,
+                                           lat: float, lon: float,
+                                           original_service: str | None):
+        """Reverse geocode coordinates, save to DB, and resume service if needed."""
+        chat_id = update.effective_chat.id
+        district, city = await _reverse_geocode_photon(lat, lon)
+
+        from src.infra.db import set_user_pref
+        await set_user_pref("location_lat", str(lat))
+        await set_user_pref("location_lon", str(lon))
+        await set_user_pref("location_district", district)
+        await set_user_pref("location_city", city)
+        loc_desc = f"{district}, {city}" if district else f"{lat:.4f}, {lon:.4f}"
+
+        self._kb_state[chat_id] = "hizmet" if original_service else "main"
+        restore_kb = KB_HIZMET if original_service else REPLY_KEYBOARD
+        await update.message.reply_text(
+            f"📍 Konum kaydedildi: {loc_desc}",
+            reply_markup=restore_kb,
+        )
+        if original_service:
+            await self._handle_quick_service(update, context, original_service)
+
     async def _geocode_district(self, update, context, district_text: str, original_service: str):
-        """Geocode a district name and save location."""
+        """Geocode a district name via Photon (privacy-first) and save location."""
         chat_id = update.effective_chat.id
         try:
             import aiohttp
             query = f"{district_text}, Turkey"
             async with aiohttp.ClientSession() as session:
-                url = (f"https://nominatim.openstreetmap.org/search"
-                       f"?q={query}&format=json&limit=1&accept-language=tr")
-                async with session.get(url, headers={"User-Agent": "KutAI/1.0"},
-                                       timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    if resp.status == 200:
-                        results = await resp.json()
-                        if results:
-                            r = results[0]
-                            lat = float(r["lat"])
-                            lon = float(r["lon"])
-                            display = r.get("display_name", district_text)
-                            # Extract district/city from display name
-                            parts = display.split(",")
-                            district = parts[0].strip() if parts else district_text
-                            city = parts[1].strip() if len(parts) > 1 else ""
-                            from src.infra.db import set_user_pref
-                            await set_user_pref("location_lat", str(lat))
-                            await set_user_pref("location_lon", str(lon))
-                            await set_user_pref("location_district", district)
-                            await set_user_pref("location_city", city)
-                            await self._reply(update,
-                                f"📍 Konum kaydedildi: {district}, {city}\n"
-                                f"({lat:.4f}, {lon:.4f})")
-                            # Resume original service
-                            if original_service:
-                                self._kb_state[chat_id] = "hizmet"
-                                await update.message.reply_text("⌨️", reply_markup=KB_HIZMET)
-                                await self._handle_quick_service(update, context, original_service)
-                            return
-                        else:
-                            await self._reply(update,
-                                f"❌ '{district_text}' bulunamadı. Tekrar dene:")
-                            self._pending_action[chat_id] = {
-                                "command": "_location_district",
-                                "original_service": original_service,
-                                "ts": _time.time(),
-                            }
-                            return
+                async with session.get(
+                    "https://photon.komoot.io/api",
+                    params={"q": query, "limit": "1", "lang": "default",
+                            "osm_tag": "place"},
+                    headers={"User-Agent": "KutAI/1.0"},
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"Photon geocode HTTP {resp.status}")
+                        raise RuntimeError(f"Photon geocode HTTP {resp.status}")
+                    data = await resp.json()
+                    features = data.get("features", [])
+                    if features:
+                        feat = features[0]
+                        coords = feat["geometry"]["coordinates"]  # [lon, lat]
+                        lat, lon = coords[1], coords[0]
+                        props = feat.get("properties", {})
+                        district = props.get("name", district_text)
+                        city = props.get("city") or props.get("state") or ""
+                        from src.infra.db import set_user_pref
+                        await set_user_pref("location_lat", str(lat))
+                        await set_user_pref("location_lon", str(lon))
+                        await set_user_pref("location_district", district)
+                        await set_user_pref("location_city", city)
+                        await self._reply(update,
+                            f"📍 Konum kaydedildi: {district}, {city}\n"
+                            f"({lat:.4f}, {lon:.4f})")
+                        if original_service:
+                            self._kb_state[chat_id] = "hizmet"
+                            await update.message.reply_text("⌨️", reply_markup=KB_HIZMET)
+                            await self._handle_quick_service(update, context, original_service)
+                        return
+                    else:
+                        await self._reply(update,
+                            f"❌ '{district_text}' bulunamadı. Tekrar dene:")
+                        self._pending_action[chat_id] = {
+                            "command": "_location_district",
+                            "original_service": original_service,
+                            "ts": _time.time(),
+                        }
+                        return
         except Exception as e:
             logger.error(f"Geocode failed: {e}")
             await self._reply(update, f"❌ Konum araması başarısız: {_friendly_error(str(e))}")
@@ -1044,18 +1378,34 @@ class TelegramInterface:
                 # Use existing mission creation with LLM classification
                 context.args = description.split()
                 await self.cmd_mission(update, context)
+            elif workflow == "i2p_v3":
+                # i2p workflow — must go through WorkflowRunner, not plain task
+                from src.workflows.engine.runner import WorkflowRunner
+                runner = WorkflowRunner()
+                mission_id = await runner.start(
+                    workflow_name="i2p_v3",
+                    initial_input={"idea": description, "product_name": description[:50]},
+                    title=description[:80],
+                )
+                await self._reply(update,
+                    f"🔄 Workflow mission #{mission_id} oluşturuldu!\n"
+                    f"_{description[:60]}_\n\n"
+                    f"`/wfstatus {mission_id}` ile takip edebilirsin.",
+                    parse_mode="Markdown")
             elif workflow:
-                mission_id = await add_mission(description)
-                await add_task(description, mission_id=mission_id, priority=TASK_PRIORITY,
-                              metadata={"workflow": workflow})
+                # Other workflows (research, etc.) — plain task with workflow context
+                mission_id = await add_mission(title=description[:80], description=description)
+                await add_task(description[:80], description, mission_id=mission_id,
+                              priority=5,
+                              context={"workflow": workflow})
                 await self._reply(update,
                     f"✅ Görev oluşturuldu (#{mission_id})\n"
                     f"İş akışı: {workflow}\n"
                     f"📋 {description[:100]}")
             else:
                 # Quick single task
-                mission_id = await add_mission(description)
-                await add_task(description, mission_id=mission_id, priority=TASK_PRIORITY)
+                mission_id = await add_mission(title=description[:80], description=description)
+                await add_task(description[:80], description, mission_id=mission_id, priority=5)
                 await self._reply(update,
                     f"✅ Görev oluşturuldu (#{mission_id})\n"
                     f"📋 {description[:100]}")
@@ -1070,16 +1420,43 @@ class TelegramInterface:
 
     async def _quick_pharmacy(self, update, context):
         """Find pharmacies on duty with Google Maps buttons."""
-        from src.infra.db import get_user_pref
+        from src.infra.db import get_user_pref, set_user_pref
         district = await get_user_pref("location_district")
         city = await get_user_pref("location_city")
-        await self._reply(update, "🏥 Nöbetçi eczaneler aranıyor...")
+        lat = float(await get_user_pref("location_lat") or 0)
+        lon = float(await get_user_pref("location_lon") or 0)
+        # If coords exist but city is missing, reverse geocode now
+        if lat and lon and not city:
+            try:
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    url = (f"https://api.bigdatacloud.net/data/reverse-geocode-client"
+                           f"?latitude={lat}&longitude={lon}&localityLanguage=tr")
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            city = data.get("city", "") or data.get("principalSubdivision", "")
+                            district = data.get("locality", "") or district
+                            if city:
+                                await set_user_pref("location_city", city)
+                            if district:
+                                await set_user_pref("location_district", district)
+            except Exception:
+                pass
+        loc_str = f"{district}, {city}" if district else city
+        if not city:
+            await self._reply(update, "❌ Konum bilgisi eksik. 📍 Konum butonundan güncelle.")
+            return
+        await self._reply(update, f"🏥 Nöbetçi eczaneler aranıyor... (📍 {loc_str})")
         try:
             from src.tools.pharmacy import (
                 find_pharmacies_structured, format_pharmacy_message,
                 build_pharmacy_buttons,
             )
-            pharmacies = await find_pharmacies_structured(city=city, include_route=True)
+            pharmacies = await find_pharmacies_structured(
+                city=city, include_route=True,
+                user_lat=lat, user_lon=lon,
+            )
             if pharmacies:
                 header = f"🏥 Nöbetçi Eczaneler — {city.title()}"
                 if district:
@@ -1126,19 +1503,64 @@ class TelegramInterface:
         lat = await get_user_pref("location_lat")
         lon = await get_user_pref("location_lon")
         district = await get_user_pref("location_district")
+        city = await get_user_pref("location_city")
         await self._reply(update, "🌤 Hava durumu alınıyor...")
         try:
-            result = await self._call_api_by_name(
-                "Open-Meteo",
-                endpoint=(f"https://api.open-meteo.com/v1/forecast"
-                          f"?latitude={lat}&longitude={lon}"
-                          f"&current_weather=true"
-                          f"&daily=temperature_2m_max,temperature_2m_min,precipitation_sum"
-                          f"&timezone=Europe/Istanbul&forecast_days=3"),
-            )
-            if district:
-                result = f"📍 {district}\n\n{result}"
-            await self._reply(update, result or "Hava durumu bilgisi alınamadı.")
+            import aiohttp, json as _json
+            url = (f"https://api.open-meteo.com/v1/forecast"
+                   f"?latitude={lat}&longitude={lon}"
+                   f"&current_weather=true"
+                   f"&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode"
+                   f"&timezone=Europe/Istanbul&forecast_days=3")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    data = await resp.json()
+
+            # Format current weather
+            cw = data.get("current_weather", {})
+            _WMO = {0: "☀️ Açık", 1: "🌤 Az bulutlu", 2: "⛅ Parçalı bulutlu",
+                    3: "☁️ Bulutlu", 45: "🌫 Sisli", 48: "🌫 Kırağılı sis",
+                    51: "🌧 Hafif çiseleme", 53: "🌧 Çiseleme", 55: "🌧 Yoğun çiseleme",
+                    61: "🌧 Hafif yağmur", 63: "🌧 Yağmur", 65: "🌧 Şiddetli yağmur",
+                    71: "🌨 Hafif kar", 73: "🌨 Kar", 75: "🌨 Yoğun kar",
+                    80: "🌦 Sağanak", 81: "🌦 Kuvvetli sağanak", 82: "⛈ Şiddetli sağanak",
+                    95: "⛈ Gök gürültülü fırtına", 96: "⛈ Dolu", 99: "⛈ Şiddetli dolu"}
+            wcode = cw.get("weathercode", 0)
+            condition = _WMO.get(wcode, f"Kod {wcode}")
+            loc_name = f"{district}, {city}" if district else city or f"{lat}, {lon}"
+
+            lines = [
+                f"🌤 *Hava Durumu — {loc_name}*\n",
+                f"🌡 Şu an: *{cw.get('temperature', '?')}°C* {condition}",
+                f"💨 Rüzgar: {cw.get('windspeed', '?')} km/h",
+            ]
+
+            # Format daily forecast
+            daily = data.get("daily", {})
+            dates = daily.get("time", [])
+            maxs = daily.get("temperature_2m_max", [])
+            mins = daily.get("temperature_2m_min", [])
+            precip = daily.get("precipitation_sum", [])
+            codes = daily.get("weathercode", [])
+            _DAYS_TR = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"]
+
+            if dates:
+                lines.append("\n📅 *3 Günlük Tahmin*")
+                for i, d in enumerate(dates[:3]):
+                    from datetime import datetime as _dt
+                    try:
+                        day_name = _DAYS_TR[_dt.strptime(d, "%Y-%m-%d").weekday()]
+                    except Exception:
+                        day_name = d
+                    hi = maxs[i] if i < len(maxs) else "?"
+                    lo = mins[i] if i < len(mins) else "?"
+                    rain = precip[i] if i < len(precip) else 0
+                    dcode = codes[i] if i < len(codes) else 0
+                    dcond = _WMO.get(dcode, "")
+                    rain_str = f" 🌧{rain}mm" if rain and rain > 0 else ""
+                    lines.append(f"  {day_name}: {lo}°/{hi}° {dcond}{rain_str}")
+
+            await self._reply(update, "\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             await self._reply(update, f"❌ Hava durumu alınamadı: {_friendly_error(str(e))}")
 
@@ -1203,16 +1625,8 @@ class TelegramInterface:
         """Register the / command list with Telegram so autocomplete is up to date."""
         commands = [
             BotCommand("start", "Ana menü"),
-            BotCommand("help", "Komut rehberi"),
-            BotCommand("mission", "Görev oluştur"),
-            BotCommand("shop", "Ürün ara"),
-            BotCommand("todo", "Todo ekle"),
-            BotCommand("todos", "Todoları listele"),
-            BotCommand("status", "Sistem durumu"),
-            BotCommand("debug", "Debug bilgisi"),
-            BotCommand("load", "GPU yük modu"),
-            BotCommand("stop", "KutAI durdur"),
-            BotCommand("restart", "KutAI yeniden başlat"),
+            BotCommand("usta", "Yaşar Usta süreç yönetimi"),
+            BotCommand("restart", "Kutay yeniden başlat"),
         ]
         try:
             await self.app.bot.set_my_commands(commands)
@@ -1276,6 +1690,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("logs", self.cmd_logs))
         # Wrapper control commands
         self.app.add_handler(CommandHandler("kutai_restart", self.cmd_kutai_restart))
+        self.app.add_handler(CommandHandler("usta", self.cmd_usta))
         self.app.add_handler(CommandHandler("restart", self.cmd_kutai_restart))
         self.app.add_handler(CommandHandler("kutai_stop", self.cmd_kutai_stop))
         self.app.add_handler(CommandHandler("stop", self.cmd_kutai_stop))
@@ -1297,7 +1712,7 @@ class TelegramInterface:
         self._pending_action.pop(chat_id, None)
         self._kb_state[chat_id] = "main"
         await self._reply(update,
-            "🤖 *KutAI Online*\n\n"
+            "🤖 *Kutay Online*\n\n"
             "Aşağıdaki butonları kullan veya mesaj yaz.",
             parse_mode="Markdown",
             reply_markup=REPLY_KEYBOARD,
@@ -1306,7 +1721,7 @@ class TelegramInterface:
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show command reference."""
         help_text = (
-            "*KutAI Commands*\n\n"
+            "*Kutay Commands*\n\n"
             "*Shopping:* /shop, /price, /compare, /watch, /deals, /mystuff\n"
             "*Todo:* /todo, /todos, /cleartodos\n"
             "*Missions:* /mission, /wfstatus, /queue, /cancel, /resume\n"
@@ -1622,13 +2037,17 @@ class TelegramInterface:
 
     # ─── Wrapper Control Commands ─────────────────────────────────────
 
+    async def cmd_usta(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show Yaşar Usta process management panel via /usta command."""
+        await self._show_processes(update, context)
+
     async def cmd_kutai_restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Restart KutAI via the wrapper (exit code 42).
 
         Uses a hard exit after a short delay as a fallback in case the
         graceful shutdown path is blocked (e.g. stuck LLM call).
         """
-        await self._reply(update,"🔄 Restarting KutAI...")
+        await self._reply(update,"🔄 Kutay yeniden başlatılıyor...")
         if self.orchestrator:
             self.orchestrator.requested_exit_code = 42
             self.orchestrator.shutdown_event.set()
@@ -1640,11 +2059,11 @@ class TelegramInterface:
     async def cmd_kutai_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Stop KutAI via the wrapper (exit code 0). Requires confirmation."""
         keyboard = [[
-            InlineKeyboardButton("⏹ Yes, stop KutAI", callback_data="stop_confirm"),
+            InlineKeyboardButton("⏹ Evet, durdur", callback_data="stop_confirm"),
             InlineKeyboardButton("Cancel", callback_data="stop_cancel"),
         ]]
         await self._reply(update,
-            "⚠️ *Stop KutAI?*\nYou will need to manually restart the process.",
+            "⚠️ *Kutay durdurulsun mu?*\nManuel olarak yeniden başlatmanız gerekecek.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -1663,7 +2082,7 @@ class TelegramInterface:
         """Request the wrapper to start a Claude Code remote-control session."""
         signal_file = Path("logs/claude_remote.signal")
         signal_file.write_text(datetime.now().isoformat(), encoding="utf-8")
-        await self._reply(update, "🖥️ Claude Code remote-control session requested.\nWrapper will start it shortly.")
+        await self._reply(update, "🖥️ Claude Code remote-control session requested.\nYaşar Usta will start it shortly.")
 
     # ─── Result Command ─────────────────────────────────────────────────
 
@@ -2037,7 +2456,11 @@ class TelegramInterface:
             return
 
         text = _format_log_entries(lines, n=n)
-        await self._reply(update, text, parse_mode="Markdown")
+        try:
+            await self._reply(update, text, parse_mode="Markdown")
+        except Exception:
+            # Markdown parse error from special chars in log messages — send as plain text
+            await self._reply(update, text)
 
     async def cmd_skillstats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show skill injection A/B metrics."""
@@ -2822,34 +3245,35 @@ class TelegramInterface:
                     return
 
                 # ── Location setup flow ──
-                if cmd == "_location_setup":
+                if cmd in ("_location_setup", "_location_district"):
                     original_service = pending_action.get("original_service", "")
-                    if text.strip() == "✏️ İlçe Adı Yaz":
-                        # Switch to text input mode
+                    stripped = text.strip()
+                    if stripped == "✏️ İlçe Adı Yaz":
                         self._pending_action[chat_id] = {
                             "command": "_location_district",
                             "original_service": original_service,
                             "ts": _time.time(),
                         }
-                        await self._reply(update, "📍 İlçe adını yaz (örnek: Kadıköy):")
+                        await self._reply(update,
+                            "📍 İlçe adı, koordinat veya Google Maps linki gönder:\n"
+                            "• Kadıköy\n"
+                            "• 39.95, 32.84\n"
+                            "• https://maps.google.com/...")
                         return
-                    if text.strip() == "❌ İptal":
-                        self._kb_state[chat_id] = "hizmet"
-                        await update.message.reply_text("❌ İptal edildi.", reply_markup=KB_HIZMET)
+                    if stripped == "❌ İptal":
+                        self._kb_state[chat_id] = "hizmet" if original_service else "main"
+                        restore_kb = KB_HIZMET if original_service else REPLY_KEYBOARD
+                        await update.message.reply_text("❌ İptal edildi.", reply_markup=restore_kb)
                         return
-                    # Any other text during location setup — treat as district name
-                    self._pending_action[chat_id] = {
-                        "command": "_location_district",
-                        "original_service": original_service,
-                        "ts": _time.time(),
-                    }
-                    # Re-process as district input (fall through below won't work, so handle inline)
-                    await self._geocode_district(update, context, text.strip(), original_service)
-                    return
-
-                if cmd == "_location_district":
-                    original_service = pending_action.get("original_service", "")
-                    await self._geocode_district(update, context, text.strip(), original_service)
+                    # Try parsing as maps URL or coordinate pair (resolve short URLs)
+                    coords = await self._resolve_maps_url(stripped)
+                    if coords:
+                        lat, lon = coords
+                        await self._save_location_from_coords(
+                            update, context, lat, lon, original_service)
+                        return
+                    # Fall back to district name geocoding
+                    await self._geocode_district(update, context, stripped, original_service)
                     return
 
                 # ── Reminder flow ──
@@ -2871,7 +3295,15 @@ class TelegramInterface:
                         "reminder_time": parsed_dt,
                         "ts": _time.time(),
                     }
-                    time_str = parsed_dt.strftime("%d.%m.%Y %H:%M")
+                    # parsed_dt is UTC naive — show Turkey local time to user
+                    try:
+                        from zoneinfo import ZoneInfo as _ZI
+                        from datetime import timezone as _tz
+                        _display_dt = parsed_dt.replace(tzinfo=_tz.utc).astimezone(_ZI("Europe/Istanbul"))
+                    except Exception:
+                        from datetime import timedelta as _td
+                        _display_dt = parsed_dt + _td(hours=3)
+                    time_str = _display_dt.strftime("%d.%m.%Y %H:%M")
                     await self._reply(update, f"📝 Ne hatırlatılsın? _(Saat: {time_str})_")
                     return
 
@@ -4345,10 +4777,132 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         if data.startswith("m:dlq:retry:"):
             task_id = int(data.split(":")[-1])
             try:
-                await update_task(task_id, status="pending", error=None)
+                from ..infra.dead_letter import retry_dlq_task
+                await retry_dlq_task(task_id)
                 await query.message.reply_text(f"🔄 Görev #{task_id} kuyruğa geri eklendi.")
             except Exception as e:
                 await query.message.reply_text(f"❌ {e}")
+            return
+
+        # ── Process Management Callbacks ──────────────────────────
+        if data.startswith("m:proc:"):
+            action = data.split(":")[-1]
+            if action == "back":
+                try:
+                    await query.delete_message()
+                except Exception:
+                    pass
+                return
+
+            # Confirmation prompts (same pattern as restart/stop)
+            if action == "kill_wrapper":
+                await query.edit_message_text(
+                    "💀 Tüm süreçleri kapatıp Yaşar Usta'yı yeniden başlatmak istediğinden emin misin?",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("✅ Evet", callback_data="m:confirm:proc_kill_wrapper"),
+                         InlineKeyboardButton("❌ Hayır", callback_data="m:confirm:cancel")],
+                    ]))
+                return
+            if action == "kill_kutai":
+                await query.edit_message_text(
+                    "🔄 Tüm süreçleri kapatmak istediğinden emin misin?\n"
+                    "Yaşar Usta otomatik yeniden başlatacak.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("✅ Evet", callback_data="m:confirm:proc_kill_kutai"),
+                         InlineKeyboardButton("❌ Hayır", callback_data="m:confirm:cancel")],
+                    ]))
+                return
+            if action == "kill_kutai_only":
+                await query.edit_message_text(
+                    "☠️ Kutay'ı öldürmek istediğinden emin misin?\n"
+                    "Yaşar Usta otomatik yeniden başlatacak.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("✅ Evet", callback_data="m:confirm:proc_kill_kutai_only"),
+                         InlineKeyboardButton("❌ Hayır", callback_data="m:confirm:cancel")],
+                    ]))
+                return
+
+            if action == "refresh":
+                # Re-run the process check inline (edit the existing message)
+                import subprocess as _sp
+                import time as _time
+                try:
+                    raw = _sp.check_output(
+                        ['wmic', 'process', 'where', "name='python.exe'",
+                         'get', 'ProcessId,CommandLine'],
+                        text=True, timeout=5,
+                    )
+                    r_lines = []
+                    r_wrappers = []
+                    r_orchestrators = []
+                    for line in raw.strip().splitlines():
+                        line = line.strip()
+                        if not line or line.startswith("CommandLine"):
+                            continue
+                        pid = line.split()[-1] if line.split() else ""
+                        if "wrapper" in line.lower():
+                            r_wrappers.append(pid)
+                            r_lines.append(f"🔵 Yaşar Usta PID {pid}")
+                        elif "run.py" in line:
+                            r_orchestrators.append(pid)
+                            r_lines.append(f"🟢 Kutay PID {pid}")
+                    try:
+                        llama_raw = _sp.check_output(
+                            ['tasklist', '/FI', 'IMAGENAME eq llama-server.exe'],
+                            text=True, timeout=5)
+                        for ll in llama_raw.splitlines():
+                            if 'llama-server' in ll.lower():
+                                parts = ll.split()
+                                if len(parts) >= 2:
+                                    r_lines.append(f"🟡 llama-server PID {parts[1]}")
+                    except Exception:
+                        pass
+                    if not r_lines:
+                        r_lines.append("Çalışan süreç bulunamadı.")
+                    n_w = (len(r_wrappers) + 1) // 2
+                    n_o = (len(r_orchestrators) + 1) // 2
+                    # Health check
+                    hb_age = None
+                    for hb_path in ["logs/orchestrator.heartbeat", "logs/heartbeat"]:
+                        try:
+                            with open(hb_path) as f:
+                                hb_age = _time.time() - float(f.read().strip())
+                            break
+                        except Exception:
+                            continue
+                    if n_o == 0:
+                        health = "💀 Kutay: çalışmıyor"
+                    elif hb_age is not None and hb_age < 60:
+                        health = f"💚 Kutay: sağlıklı ({int(hb_age)}sn önce)"
+                    elif hb_age is not None:
+                        health = f"🔴 Kutay: YANIT VERMİYOR ({int(hb_age)}sn sessiz)"
+                    else:
+                        health = "⚪ Kutay: heartbeat yok"
+                    text = (
+                        f"🔧 *Yaşar Usta - Süreç Yönetimi*\n\n"
+                        + "\n".join(r_lines)
+                        + f"\n\n{health}"
+                        + f"\n\n📊 Yaşar Usta: {n_w} | Kutay: {n_o}"
+                    )
+                    btn_rows = []
+                    if n_o > 0 and (hb_age is None or hb_age > 30):
+                        btn_rows.append([InlineKeyboardButton(
+                            f"☠️ Kutay'ı öldür ({int(hb_age or 0)}sn yanıtsız)",
+                            callback_data="m:proc:kill_kutai_only")])
+                    btn_rows.append([InlineKeyboardButton(
+                        "💀 Hepsini Kapat + Yaşar Usta Başlat",
+                        callback_data="m:proc:kill_wrapper")])
+                    btn_rows.append([InlineKeyboardButton(
+                        "🔃 Yenile", callback_data="m:proc:refresh")])
+                    btn_rows.append([InlineKeyboardButton(
+                        "🔙 Geri", callback_data="m:proc:back")])
+                    await query.edit_message_text(
+                        text, parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup(btn_rows))
+                except Exception as e:
+                    await query.answer(f"Refresh failed: {e}")
+                return
+
             return
 
         # ── Lifecycle Confirmation Callbacks ──────────────────────
@@ -4384,6 +4938,116 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 await query.message.reply_text(f"❌ {e}")
             return
 
+        if data == "m:confirm:proc_kill_kutai_only":
+            import subprocess as _sp
+            try:
+                raw = _sp.check_output(
+                    ['wmic', 'process', 'where', "name='python.exe'",
+                     'get', 'ProcessId,CommandLine'],
+                    text=True, timeout=5,
+                )
+                killed = []
+                for line in raw.strip().splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("CommandLine"):
+                        continue
+                    pid = line.split()[-1]
+                    if "run.py" in line:
+                        try:
+                            _sp.run(['taskkill', '/F', '/PID', pid],
+                                    capture_output=True, timeout=5)
+                            killed.append(pid)
+                        except Exception:
+                            pass
+                msg = (f"☠️ Kutay killed: PID {', '.join(killed) if killed else 'none'}\n"
+                       f"⏳ Yaşar Usta otomatik yeniden başlatacak...")
+            except Exception as e:
+                msg = f"❌ Kill failed: {e}"
+            try:
+                await query.edit_message_text(msg)
+            except Exception:
+                await query.message.reply_text(msg)
+            return
+
+        if data in ("m:confirm:proc_kill_wrapper", "m:confirm:proc_kill_kutai"):
+            import subprocess as _sp
+            start_wrapper = data.endswith("kill_wrapper")
+            try:
+                raw = _sp.check_output(
+                    ['wmic', 'process', 'where', "name='python.exe'",
+                     'get', 'ProcessId,CommandLine'],
+                    text=True, timeout=5,
+                )
+                # Collect PIDs to kill — wrappers first, then orchestrators
+                wrapper_pids = []
+                orch_pids = []
+                my_pid = os.getpid()
+                for line in raw.strip().splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("CommandLine"):
+                        continue
+                    pid = line.split()[-1]
+                    try:
+                        pid_int = int(pid)
+                    except ValueError:
+                        continue
+                    if pid_int == my_pid:
+                        continue
+                    if "wrapper" in line.lower():
+                        wrapper_pids.append(pid)
+                    elif "run.py" in line:
+                        orch_pids.append(pid)
+
+                # Spawn new wrapper BEFORE killing (it will wait on lock until old one dies)
+                if start_wrapper:
+                    import sys
+                    _sp.Popen(
+                        [sys.executable, "kutai_wrapper.py"],
+                        cwd=os.path.dirname(os.path.dirname(os.path.dirname(
+                            os.path.abspath(__file__)))),
+                        creationflags=0x00000008,  # DETACHED_PROCESS
+                    )
+
+                # Kill wrappers first (releases lock for the new one)
+                killed = []
+                for pid in wrapper_pids:
+                    try:
+                        _sp.run(['taskkill', '/F', '/PID', pid],
+                                capture_output=True, timeout=5)
+                        killed.append(pid)
+                    except Exception:
+                        pass
+                # Clean lock files so new wrapper can start
+                for lf in ["logs/wrapper.lock", "logs/wrapper.lk"]:
+                    try:
+                        os.remove(lf)
+                    except Exception:
+                        pass
+                # Kill orchestrators (including self — do this LAST)
+                for pid in orch_pids:
+                    try:
+                        _sp.run(['taskkill', '/F', '/PID', pid],
+                                capture_output=True, timeout=5)
+                        killed.append(pid)
+                    except Exception:
+                        pass
+
+                if start_wrapper:
+                    msg = (f"💀 Killed: PID {', '.join(killed) if killed else 'none'}\n"
+                           f"✅ Yaşar Usta başlatıldı.")
+                else:
+                    msg = (f"💀 Killed: PID {', '.join(killed) if killed else 'none'}\n"
+                           f"⏳ /kutai\\_start gönderin.")
+            except Exception as e:
+                msg = f"❌ Kill failed: {e}"
+            # This message may not arrive if we kill ourselves first,
+            # but the new wrapper's "Bennn Yaşar Usta" will confirm success
+            try:
+                await query.edit_message_text(msg, parse_mode="Markdown")
+            except Exception:
+                pass
+            return
+
         if data == "m:confirm:cancel":
             try:
                 await query.edit_message_text("❌ İptal edildi.")
@@ -4393,22 +5057,32 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
         # ── Pharmacy Callbacks ─────────────────────────────────
         if data == "pharm:all":
+            await query.answer("Yükleniyor...")
             try:
                 from src.infra.db import get_user_pref
                 city = await get_user_pref("location_city")
+                lat = float(await get_user_pref("location_lat") or 0)
+                lon = float(await get_user_pref("location_lon") or 0)
                 from src.tools.pharmacy import (
                     find_pharmacies_structured, format_pharmacy_message,
-                    build_pharmacy_buttons,
                 )
-                pharmacies = await find_pharmacies_structured(city=city, include_route=True)
+                # Skip OSRM for full list — haversine sorting is enough
+                pharmacies = await find_pharmacies_structured(
+                    city=city, include_route=False,
+                    user_lat=lat, user_lon=lon,
+                )
                 if pharmacies:
-                    text = format_pharmacy_message(pharmacies, show_all=True)
-                    btn_rows = build_pharmacy_buttons(pharmacies, len(pharmacies))
-                    markup = InlineKeyboardMarkup(btn_rows) if btn_rows else None
-                    await query.message.reply_text(
-                        f"🏥 Tüm Nöbetçi Eczaneler\n\n{text}",
-                        reply_markup=markup,
-                    )
+                    # Paginate: send in chunks of 10 to avoid message too long
+                    header = f"🏥 Tüm Nöbetçi Eczaneler — {city} ({len(pharmacies)})\n\n"
+                    chunk_size = 10
+                    for i in range(0, len(pharmacies), chunk_size):
+                        chunk = pharmacies[i:i + chunk_size]
+                        text = format_pharmacy_message(chunk, show_all=True, start_index=i + 1)
+                        msg = header + text if i == 0 else text
+                        # Truncate if still too long
+                        if len(msg) > 4000:
+                            msg = msg[:3990] + "\n..."
+                        await query.message.reply_text(msg)
                 else:
                     await query.message.reply_text("Eczane bulunamadı.")
             except Exception as e:
@@ -4450,11 +5124,14 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             return
 
         if data.startswith("todo_help:"):
+            parts = data.split(":")
             try:
-                todo_id = int(data.split(":")[1])
+                todo_id = int(parts[1])
             except (ValueError, IndexError):
                 await query.answer("Invalid todo ID")
                 return
+            # Agent type encoded as third segment: todo_help:ID:agent_type
+            agent_type = parts[2] if len(parts) > 2 else "researcher"
             todo = await get_todo(todo_id)
             if not todo:
                 await query.answer("Todo not found")
@@ -4469,6 +5146,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 "todo_id": todo_id,
                 "todo_title": todo["title"],
                 "suggestion": suggestion,
+                "agent_type": agent_type,
             }
             buttons = []
             if suggestion:
@@ -4522,12 +5200,14 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 return
             suggestion = pending.get("suggestion") or f"Help with: {pending['todo_title']}"
             todo_title = pending["todo_title"]
+            agent_type = pending.get("agent_type", "researcher")
             task_id = await add_task(
                 title=f"Help with: {todo_title[:40]}",
                 description=suggestion,
+                agent_type=agent_type,
                 tier="auto",
                 priority=6,
-                context={"todo_id": todo_id, "local_only": True},
+                context={"todo_id": todo_id},
             )
             try:
                 await query.edit_message_text(
@@ -4602,11 +5282,11 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             return
 
         if data == "stop_confirm":
-            await query.edit_message_text("⏹ Stopping KutAI...")
+            await query.edit_message_text("⏹ Kutay durduruluyor...")
             await self._do_kutai_stop()
             return
         elif data == "stop_cancel":
-            await query.edit_message_text("Cancelled. KutAI continues running.")
+            await query.edit_message_text("İptal edildi. Kutay çalışmaya devam ediyor.")
             return
 
         # Approval/rejection buttons (approve_<id>, reject_<id>)
@@ -4818,6 +5498,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         todo_id = todo_info["todo_id"]
         todo_title = todo_info["todo_title"]
         suggestion = todo_info.get("suggestion", "")
+        agent_type = todo_info.get("agent_type", "researcher")
         # Handle prefilled keyboard taps and text responses
         stripped = text.strip()
         if stripped == "❌ Cancel":
@@ -4830,11 +5511,14 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             description = suggestion
         elif suggestion:
             description = f"User request: {text}\nOriginal suggestion: {suggestion}"
+        else:
+            description = text or f"Help with: {todo_title}"
         task_id = await add_task(
             title=f"Help with: {todo_title[:40]}",
             description=description,
+            agent_type=agent_type,
             tier="auto",
             priority=6,
-            context={"todo_id": todo_id, "local_only": True},
+            context={"todo_id": todo_id},
         )
         await self._reply(update, f"✅ Task #{task_id} created!")

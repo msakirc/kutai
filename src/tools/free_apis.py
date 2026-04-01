@@ -101,14 +101,34 @@ API_REGISTRY: list[FreeAPI] = [
 
     # --- Geocoding / Location ---
     FreeAPI(
-        name="Nominatim (OpenStreetMap)",
+        name="HERE Geocoding",
         category="geo",
-        base_url="https://nominatim.openstreetmap.org",
+        base_url="https://geocode.search.hereapi.com/v1",
+        auth_type="apikey_param",
+        env_var="HERE_API_KEY",
+        rate_limit="5/second, 250k/month",
+        description="Forward geocoding. Best Turkish address accuracy (proprietary data).",
+        example_endpoint="https://geocode.search.hereapi.com/v1/geocode?q=Istanbul&apiKey={key}",
+    ),
+    FreeAPI(
+        name="LocationIQ",
+        category="geo",
+        base_url="https://us1.locationiq.com/v1",
+        auth_type="apikey_param",
+        env_var="LOCATIONIQ_API_KEY",
+        rate_limit="2/second, 5k/day",
+        description="Forward geocoding fallback (OSM-based). 5k requests/day free.",
+        example_endpoint="https://us1.locationiq.com/v1/search?q=Istanbul&format=json&key={key}",
+    ),
+    FreeAPI(
+        name="Photon (Komoot)",
+        category="geo",
+        base_url="https://photon.komoot.io",
         auth_type="none",
         env_var=None,
         rate_limit="1/second",
-        description="Geocoding and reverse geocoding. No API key. 1 req/sec.",
-        example_endpoint="https://nominatim.openstreetmap.org/search?q=Istanbul&format=json",
+        description="Reverse geocoding (privacy-first, no logging, open source). OSM data.",
+        example_endpoint="https://photon.komoot.io/reverse?lat=41.0082&lon=28.9784",
     ),
 
     # --- Time ---

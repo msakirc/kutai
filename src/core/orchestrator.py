@@ -101,8 +101,13 @@ def _compute_max_concurrent(tasks: list[dict]) -> int:
         if isinstance(ctx, str):
             try:
                 ctx = json.loads(ctx)
+                # Handle double-encoded JSON strings
+                if isinstance(ctx, str):
+                    ctx = json.loads(ctx)
             except (json.JSONDecodeError, TypeError):
                 ctx = {}
+        if not isinstance(ctx, dict):
+            ctx = {}
         mid = ctx.get("mission_id") or t.get("mission_id")
         if mid is not None:
             mission_ids.add(mid)
@@ -890,6 +895,34 @@ class Orchestrator:
                     )
                     continue
 
+                # Special handling: one-shot reminders — send directly, then disable
+                if sched_ctx.get("one_shot"):
+                    reminder_text = sched_ctx.get("reminder_text", title)
+                    try:
+                        if self.telegram:
+                            chat_id = sched_ctx.get("chat_id")
+                            if chat_id:
+                                await self.telegram.app.bot.send_message(
+                                    chat_id=int(chat_id),
+                                    text=f"⏰ *Hatırlatma*\n\n{reminder_text}",
+                                    parse_mode="Markdown",
+                                )
+                            else:
+                                await self.telegram.send_notification(
+                                    f"⏰ *Hatırlatma*\n\n{reminder_text}"
+                                )
+                        logger.info(f"[Scheduler] One-shot reminder sent: {title}")
+                    except Exception as e:
+                        logger.error(f"[Scheduler] Reminder send failed: {e}")
+                    # Disable — no next_run for one-shot
+                    await update_scheduled_task(
+                        sched_id,
+                        last_run=datetime.now(timezone.utc).strftime(_DB_DT_FMT),
+                        next_run=None,
+                        enabled=False,
+                    )
+                    continue
+
                 # Special handling: price watch checker
                 if sched_ctx.get("type") == "price_watch_check":
                     try:
@@ -986,11 +1019,18 @@ class Orchestrator:
             f"(e.g. search, compare prices, book, remind, draft a message). "
             f"Be creative — even mundane tasks like 'buy milk' could mean price comparison or online ordering. "
             f"If you genuinely cannot help with an item, write 'no suggestion'.\n\n"
-            f"Reply ONLY with a numbered list matching the items above. "
-            f"One sentence per item. No preamble, no extra commentary."
+            f"Also pick the best agent type for each suggestion:\n"
+            f"  researcher — web search, information gathering, fact-checking\n"
+            f"  shopping_advisor — product search, price comparison, deal finding\n"
+            f"  assistant — drafting messages, reminders, general help\n"
+            f"  coder — writing code, scripts, technical tasks\n\n"
+            f"Reply ONLY with a numbered list. Format: NUMBER. [agent_type] suggestion text\n"
+            f"Example: 1. [researcher] Search for nearby tire shops and compare prices.\n"
+            f"No preamble, no extra commentary."
         )
 
-        suggestions: dict[int, str] = {}
+        # suggestions now stores (suggestion_text, agent_type) tuples
+        suggestions: dict[int, tuple[str, str]] = {}
         try:
             from src.core.llm_dispatcher import get_dispatcher, CallCategory
             from src.core.router import ModelRequirements
@@ -1017,17 +1057,26 @@ class Orchestrator:
             raw = (response.get("content") or "").strip()
             logger.info(f"[Todo] Suggestion LLM response ({len(raw)} chars)")
 
-            # Parse numbered list: "1. suggestion text"
+            # Parse numbered list: "1. [agent_type] suggestion text"
             import re as _re
+            _VALID_AGENTS = {"researcher", "shopping_advisor", "assistant", "coder"}
             for i, todo in enumerate(todos[:10]):
-                # Look for line starting with the item number
                 pattern = rf"^{i+1}[.)]\s*(.+)"
                 for line in raw.splitlines():
                     m = _re.match(pattern, line.strip())
                     if m:
-                        suggestion = m.group(1).strip()
-                        if suggestion.lower() != "no suggestion" and len(suggestion) > 5:
-                            suggestions[todo["id"]] = suggestion
+                        text = m.group(1).strip()
+                        if text.lower() == "no suggestion" or len(text) < 6:
+                            break
+                        # Extract [agent_type] prefix if present
+                        agent_m = _re.match(r"\[(\w+)\]\s*(.+)", text)
+                        if agent_m and agent_m.group(1) in _VALID_AGENTS:
+                            agent_type = agent_m.group(1)
+                            suggestion = agent_m.group(2).strip()
+                        else:
+                            agent_type = "researcher"  # safe default
+                            suggestion = text
+                        suggestions[todo["id"]] = (suggestion, agent_type)
                         break
 
         except asyncio.TimeoutError:
@@ -1035,7 +1084,7 @@ class Orchestrator:
         except Exception as exc:
             logger.warning(f"[Todo] Suggestion LLM call failed: {exc} — sending reminder without suggestions")
 
-        # Record that we ran this batch (used for dedup guard above)
+        # Record sentinel BEFORE sending reminder (dedup guard for crash recovery)
         try:
             from src.infra.db import add_task, update_task
             sentinel_id = await add_task(
@@ -1054,95 +1103,6 @@ class Orchestrator:
 
         if self.telegram:
             await send_todo_reminder(self.telegram, suggestions=suggestions if suggestions else None)
-
-    async def _check_todo_suggestions_complete(self, task_ctx):
-        """Check if all suggestion tasks in this batch are done. If so, send reminder."""
-        batch_id = task_ctx["todo_suggest_batch"]
-        todo_count = task_ctx.get("todo_count", 0)
-
-        # Query all tasks in this batch
-        db = await get_db()
-        cursor = await db.execute(
-            """SELECT id, status, result, context FROM tasks
-               WHERE context LIKE ?""",
-            (f'%"{batch_id}"%',),
-        )
-        rows = [dict(r) for r in await cursor.fetchall()]
-
-        # Check if all are terminal (completed or failed)
-        terminal = [r for r in rows if r["status"] in ("completed", "failed")]
-        if len(terminal) < len(rows):
-            return  # Still waiting
-
-        # Collect suggestions
-        suggestions = {}
-        for row in rows:
-            ctx = row.get("context", "{}")
-            if isinstance(ctx, str):
-                ctx = json.loads(ctx)
-            todo_id = ctx.get("todo_id")
-            result = row.get("result", "")
-            if todo_id and result and "no suggestion" not in result.lower():
-                # Clean up the suggestion text
-                suggestion = result.strip().strip('"').strip("'")
-                if len(suggestion) > 5:  # Skip empty/trivial
-                    suggestions[todo_id] = suggestion
-
-        # Send reminder with suggestions
-        from src.app.reminders import send_todo_reminder
-        if self.telegram:
-            await send_todo_reminder(self.telegram, suggestions=suggestions)
-
-        logger.info(
-            f"[Todo] Reminder sent with {len(suggestions)}/{len(rows)} suggestions, "
-            f"batch={batch_id}"
-        )
-
-    async def _check_stale_todo_batches(self):
-        """Watchdog: if a suggestion batch has been pending > 5 min, send reminder without it."""
-        try:
-            db = await get_db()
-            cursor = await db.execute(
-                """SELECT id, context FROM tasks
-                   WHERE status NOT IN ('completed', 'failed', 'cancelled')
-                     AND context LIKE '%todo_suggest_batch%'"""
-            )
-            rows = [dict(r) for r in await cursor.fetchall()]
-            if not rows:
-                return
-
-            # Group by batch_id and check staleness
-            batches: dict[str, list[dict]] = {}
-            for row in rows:
-                ctx = row.get("context", "{}")
-                if isinstance(ctx, str):
-                    ctx = json.loads(ctx)
-                bid = ctx.get("todo_suggest_batch", "")
-                if bid:
-                    batches.setdefault(bid, []).append(row)
-
-            now_ts = datetime.now(timezone.utc).timestamp()
-            for bid, tasks in batches.items():
-                # Extract timestamp from batch_id: "todo_suggest_<unix_ts>"
-                try:
-                    batch_ts = int(bid.split("_")[-1])
-                except (ValueError, IndexError):
-                    continue
-                age_seconds = now_ts - batch_ts
-                if age_seconds > 300:  # 5 minutes
-                    logger.warning(
-                        f"[Todo] Stale suggestion batch {bid} ({age_seconds:.0f}s old), "
-                        f"cancelling {len(tasks)} stuck tasks and sending reminder"
-                    )
-                    # Cancel stuck tasks
-                    for t in tasks:
-                        await cancel_task(t["id"])
-                    # Send reminder without suggestions
-                    from src.app.reminders import send_todo_reminder
-                    if self.telegram:
-                        await send_todo_reminder(self.telegram)
-        except Exception as e:
-            logger.error(f"[Todo] Stale batch check failed: {e}")
 
     @staticmethod
     def _compute_next_run(
@@ -1627,20 +1587,23 @@ class Orchestrator:
                     pass
 
                 # ── Spawn error recovery agent ──
-                await self._spawn_error_recovery(task, error_str)
+                recovery_spawned = await self._spawn_error_recovery(task, error_str)
 
-                # ── Dead-letter queue: quarantine permanently failed tasks ──
-                try:
-                    from ..infra.dead_letter import quarantine_task
-                    await quarantine_task(
-                        task_id=task_id,
-                        mission_id=task.get("mission_id"),
-                        error=error_str,
-                        original_agent=task.get("agent_type", "executor"),
-                        retry_count=max_retries,
-                    )
-                except Exception as dlq_err:
-                    logger.error("dlq quarantine failed", task_id=task_id, error=str(dlq_err))
+                # ── Dead-letter queue: quarantine only if no recovery was spawned.
+                # If recovery was spawned, it will handle the task — quarantine
+                # would falsely inflate the unresolved count and trigger mission pauses.
+                if not recovery_spawned:
+                    try:
+                        from ..infra.dead_letter import quarantine_task
+                        await quarantine_task(
+                            task_id=task_id,
+                            mission_id=task.get("mission_id"),
+                            error=error_str,
+                            original_agent=task.get("agent_type", "executor"),
+                            retry_count=max_retries,
+                        )
+                    except Exception as dlq_err:
+                        logger.error("dlq quarantine failed", task_id=task_id, error=str(dlq_err))
 
                 # Record failure for model health monitoring
                 try:
@@ -1846,13 +1809,7 @@ class Orchestrator:
             except Exception:
                 pass
 
-        # Check if this is a todo suggestion task — trigger reminder when all done
-        task_ctx = task.get("context", {})
-        if isinstance(task_ctx, str):
-            import json as _json_ctx
-            task_ctx = _json_ctx.loads(task_ctx)
-        if task_ctx.get("todo_suggest_batch"):
-            await self._check_todo_suggestions_complete(task_ctx)
+        # (Legacy batch suggestion code removed — suggestions now use direct LLM call)
 
         # Phase 13.2: Extract skill from successful tasks
         # Capture from both local (cost=0) and cloud (cost>0) — any task
@@ -2127,8 +2084,10 @@ class Orchestrator:
 
     # ─── Error Recovery ─────────────────────────────────────────────────
 
-    async def _spawn_error_recovery(self, failed_task: dict, error_str: str):
+    async def _spawn_error_recovery(self, failed_task: dict, error_str: str) -> bool:
         """Spawn an error_recovery agent to diagnose and learn from a failed task.
+
+        Returns True if a recovery task was spawned, False otherwise.
 
         Skips if:
           - The failed task is itself an error_recovery task (prevent loops)
@@ -2140,12 +2099,12 @@ class Orchestrator:
         # Never spawn recovery for recovery tasks — prevent infinite loops
         if agent_type == "error_recovery":
             logger.debug(f"[Task #{task_id}] Skipping error recovery for error_recovery task")
-            return
+            return False
 
         # Skip for very low priority tasks (background noise)
         if failed_task.get("priority", 5) <= 1:
             logger.debug(f"[Task #{task_id}] Skipping error recovery for low-priority task")
-            return
+            return False
 
         title = failed_task.get("title", "Unknown")
         description = failed_task.get("description", "")
@@ -2226,10 +2185,13 @@ class Orchestrator:
                 logger.info(
                     f"[Task #{task_id}] Spawned error recovery → Task #{recovery_task_id}"
                 )
+                return True
             else:
                 logger.info(f"[Task #{task_id}] Error recovery task deduped, skipping")
+                return False
         except Exception as e:
             logger.warning(f"[Task #{task_id}] Failed to spawn error recovery: {e}")
+            return False
 
     async def _process_recovery_result(self, task: dict, result_text: str):
         """Extract diagnosis from error recovery result and store in episodic memory."""
@@ -2533,7 +2495,6 @@ class Orchestrator:
                 ).total_seconds()
                 if sched_elapsed >= 60:
                     await self.check_scheduled_tasks()
-                    await self._check_stale_todo_batches()
                     self.last_scheduler_check = datetime.now()
 
                 # Get a generous batch, then compute how many to actually run
@@ -2819,21 +2780,32 @@ class Orchestrator:
                 except Exception as e:
                     logger.debug(f"Self-improvement check failed: {e}")
 
-                # Write heartbeat for wrapper liveness detection
-                try:
-                    import time as _hb_time
-                    _hb_ts = str(_hb_time.time())
-                    with open("logs/orchestrator.heartbeat", "w") as _hb:
-                        _hb.write(_hb_ts)
-                    # Also write to logs/heartbeat (checked by wrapper health check)
-                    with open("logs/heartbeat", "w") as _hb2:
-                        _hb2.write(_hb_ts)
-                except Exception:
-                    pass
+                # Heartbeat is now written by _heartbeat_loop() background task
+                # so it stays alive even when the main loop blocks on LLM calls.
 
             except Exception as e:
                 logger.error(f"Loop error: {e}", exc_info=True)
                 await asyncio.sleep(30)
+
+    async def _heartbeat_loop(self):
+        """Write heartbeat every 15s in a separate task.
+
+        This runs independently of the main loop so the wrapper can detect
+        when the orchestrator is truly hung (vs. just blocked on a long LLM call
+        in the main loop).  If the event loop itself is blocked (e.g. sync I/O),
+        this task also stops — which is the correct signal for 'hung'.
+        """
+        import time as _hb_time
+        while True:
+            try:
+                ts = str(_hb_time.time())
+                with open("logs/orchestrator.heartbeat", "w") as f:
+                    f.write(ts)
+                with open("logs/heartbeat", "w") as f:
+                    f.write(ts)
+            except Exception:
+                pass
+            await asyncio.sleep(15)
 
     async def start(self):
         await init_db()
@@ -2849,6 +2821,7 @@ class Orchestrator:
             asyncio.create_task(manager.run_idle_unloader()),
             asyncio.create_task(manager.run_health_watchdog()),
             asyncio.create_task(bp_queue.run_processor()),
+            asyncio.create_task(self._heartbeat_loop()),
         ]
 
         # Phase 13.1: Seed prompt versions from hardcoded prompts on first run
@@ -2889,7 +2862,7 @@ class Orchestrator:
                 if TELEGRAM_ADMIN_CHAT_ID:
                     await self.telegram.app.bot.send_message(
                         chat_id=TELEGRAM_ADMIN_CHAT_ID,
-                        text="✅ KutAI online. Buttons ready.",
+                        text="✅ Kutay online. Buttons ready.",
                         reply_markup=REPLY_KEYBOARD,
                     )
             except Exception as e:

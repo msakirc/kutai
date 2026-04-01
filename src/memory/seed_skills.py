@@ -160,9 +160,9 @@ SEED_SKILLS = [
     # --- Map/Directions ---
     {
         "name": "map_directions_routing",
-        "description": "For directions, distance, and routing between locations, use api_call with OSRM or Nominatim for geocoding. Privacy-safe (no Google).",
+        "description": "For directions, distance, and routing between locations, use api_call with OSRM for routing. Geocoding uses HERE (business addresses) or Photon (user locations). Privacy-safe.",
         "trigger_pattern": "yol.tarifi|directions|route|distance|mesafe|nasıl.gidilir|how.to.get|harita|map",
-        "tool_sequence": "1. Geocode addresses with api_call api_name=Nominatim. 2. Get route with api_call api_name=OSRM. Both are free, no API key, privacy-safe.",
+        "tool_sequence": "1. Geocode addresses with api_call api_name=HERE Geocoding (or Photon for user locations). 2. Get route with api_call api_name=OSRM. OSRM and Photon are free, no API key.",
         "examples": "Kadıköy'den Taksim'e nasıl gidilir; distance from Ankara to Istanbul; walking route to nearest pharmacy",
     },
     # --- Prayer Times ---

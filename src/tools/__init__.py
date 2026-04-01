@@ -22,7 +22,7 @@ logger = get_logger("tools")
 import time as _time_mod
 
 _tool_failures: dict[str, list[float]] = {}  # tool_name -> list of failure timestamps
-_TOOL_FAILURE_THRESHOLD = 3
+_TOOL_FAILURE_THRESHOLD = 8  # was 3 — too aggressive for workflow setup phases
 _TOOL_FAILURE_WINDOW = 600  # 10 minutes
 
 

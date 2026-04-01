@@ -2992,9 +2992,9 @@
       }
     },
     {
-      "id": "5.4",
+      "id": "5.4a",
       "phase": "phase_5",
-      "name": "wireframes",
+      "name": "layout_and_wireframes",
       "agent": "writer",
       "difficulty": "medium",
       "tools_hint": [],
@@ -3005,21 +3005,15 @@
       "may_need_clarification": false,
       "input_artifacts": [
         "navigation_design",
-        "user_flow_auth",
-        "user_flow_onboarding",
         "user_flow_core_features",
-        "user_flow_settings",
-        "business_rules",
         "functional_requirements"
       ],
       "output_artifacts": [
         "layout_system_spec",
-        "wireframe_specs",
-        "form_specs",
-        "empty_error_state_specs"
+        "wireframe_specs"
       ],
-      "instruction": "Define page layout system: app shell, layout templates, grid system, spacing scale, responsive breakpoints, per-breakpoint changes. Create wireframe specifications for every unique screen in the MVP: content zones, element hierarchy, interactive elements, conditional elements. Define every form: fields with validation rules, grouping, multi-step config, submit/cancel behavior, auto-save, keyboard behavior. Define all empty states (first-time, search no results, filtered no results, list empty, offline) and error states (404, 403, 500, maintenance, session expired, rate limited).",
-      "done_when": "layout_system_spec, wireframe_specs, form_specs, and empty_error_state_specs all exist.",
+      "instruction": "Define page layout system: app shell, layout templates, grid system, spacing scale, responsive breakpoints, per-breakpoint changes. Then create wireframe specifications for every unique screen in the MVP: content zones, element hierarchy, interactive elements, conditional elements.",
+      "done_when": "layout_system_spec and wireframe_specs exist.",
       "artifact_schema": {
         "layout_system_spec": {
           "type": "object",
@@ -3034,7 +3028,32 @@
           "required_fields": [
             "screens"
           ]
-        },
+        }
+      }
+    },
+    {
+      "id": "5.4b",
+      "phase": "phase_5",
+      "name": "forms_and_states",
+      "agent": "writer",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "5.4a"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "wireframe_specs",
+        "functional_requirements",
+        "business_rules"
+      ],
+      "output_artifacts": [
+        "form_specs",
+        "empty_error_state_specs"
+      ],
+      "instruction": "Based on wireframe_specs, define every form in the app: fields with validation rules, field grouping, multi-step config if applicable, submit/cancel behavior, auto-save, keyboard behavior. Then define all empty states (first-time, search no results, filtered no results, list empty, offline) and error states (404, 403, 500, maintenance, session expired, rate limited).",
+      "done_when": "form_specs and empty_error_state_specs exist.",
+      "artifact_schema": {
         "form_specs": {
           "type": "object",
           "required_fields": [
@@ -3058,7 +3077,7 @@
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
-        "5.4"
+        "5.4b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
@@ -3171,7 +3190,7 @@
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
-        "5.4",
+        "5.4b",
         "5.7"
       ],
       "may_need_clarification": false,

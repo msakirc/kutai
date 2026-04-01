@@ -1352,13 +1352,10 @@ class Orchestrator:
                     return
 
             # ── Determine timeout ──
-            # Workflow steps get the longer workflow timeout (900s) since
-            # they often have large context and multiple output artifacts.
-            if task_ctx.get("is_workflow_step"):
-                default_timeout = AGENT_TIMEOUTS.get("workflow", 900)
-            else:
-                default_timeout = AGENT_TIMEOUTS.get(agent_type, 240)
-            timeout_seconds = task.get("timeout_seconds") or default_timeout
+            timeout_seconds = (
+                task.get("timeout_seconds")
+                or AGENT_TIMEOUTS.get(agent_type, 240)
+            )
 
             if agent_type == "pipeline":
                 from ..workflows.pipeline import CodingPipeline

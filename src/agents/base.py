@@ -1643,6 +1643,7 @@ class BaseAgent:
                                 "agent_type": self.name,
                                 "search_depth": self._get_search_depth(task),
                                 "shopping_sub_intent": task.get("shopping_sub_intent"),
+                                "workspace_path": _ctx.get("workspace_path", ""),
                             }
 
                             tool_output = await asyncio.wait_for(

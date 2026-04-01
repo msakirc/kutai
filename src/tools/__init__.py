@@ -474,6 +474,8 @@ try:
             except _asyncio.TimeoutError:
                 products = []
 
+            if not isinstance(products, list):
+                products = []
             products_dicts = [_dataclasses.asdict(p) if _dataclasses.is_dataclass(p) else p for p in products]
             return _json_shopping.dumps({
                 "analysis": analyzed,
@@ -1358,6 +1360,19 @@ async def execute_tool(tool_name: str, agent_type: str | None = None, task_hints
     # Inject task_hints for web_search (before kwargs filtering so it passes through)
     if tool_name == "web_search" and task_hints:
         kwargs["_task_hints"] = task_hints
+
+    # ── Workspace isolation: prepend mission workspace to file paths ──
+    # When a task has workspace_path (set by orchestrator for mission tasks),
+    # file operations resolve relative to that subdirectory instead of
+    # workspace root — prevents mission files from colliding.
+    if task_hints and task_hints.get("workspace_path"):
+        ws_prefix = task_hints["workspace_path"]
+        _FILE_TOOLS = {"write_file", "read_file", "edit_file", "patch_file", "apply_diff"}
+        if tool_name in _FILE_TOOLS and "filepath" in kwargs:
+            fp = kwargs["filepath"]
+            # Only prefix if not already inside a mission directory
+            if not fp.startswith(("mission_", ws_prefix)):
+                kwargs["filepath"] = f"{ws_prefix}/{fp}"
 
     # ── Filter kwargs to accepted parameters ──
     valid_params = _TOOL_PARAMS.get(tool_name)

@@ -462,7 +462,7 @@
       "may_need_clarification": false,
       "input_artifacts": ["raw_idea", "project_conventions", "strategic_context"],
       "output_artifacts": ["raw_idea_document"],
-      "instruction": "Take the raw idea input provided by the human. Document it exactly as stated, preserving all details, aspirations, mentioned features, and constraints. Do not interpret, filter, or add anything. Structure the output as a document with sections: Original Statement, Mentioned Features, Mentioned Constraints, Mentioned Audience, Mentioned Goals. If any section has no content from the raw idea, mark it as 'Not specified'.",
+      "instruction": "The user's raw idea is provided in the Context Artifacts section below. Take it exactly as stated, preserving all details, aspirations, mentioned features, and constraints. Do not interpret, filter, or add anything. Structure the output as a document with sections: Original Statement, Mentioned Features, Mentioned Constraints, Mentioned Audience, Mentioned Goals. If any section has no content from the raw idea, mark it as 'Not specified'.\n\nOutput the complete document as your final answer in markdown format. Do NOT just write a file — your response text IS the artifact.",
       "done_when": "A structured raw_idea_document exists that faithfully represents the original idea with zero interpretation added.",
       "artifact_schema": {
         "raw_idea_document": {
@@ -516,7 +516,7 @@
       "id": "0.4",
       "phase": "phase_0",
       "name": "scope_ambiguity_detection",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": ["read_file", "write_file"],
       "depends_on": ["0.1", "0.2", "0.3"],
@@ -543,13 +543,13 @@
       "depends_on": ["0.4"],
       "may_need_clarification": true,
       "input_artifacts": ["open_questions_list", "assumption_list"],
-      "output_artifacts": ["clarification_answers"],
-      "instruction": "Review the open_questions_list and assumption_list. Prioritize the questions by impact (which answers most change the direction of the project). Format the top questions (max 10) into a clear, numbered message for the human. For each question, provide brief context on why it matters and suggest 2-3 possible answers if applicable. Trigger needs_clarification to send this to the human. When the response arrives, parse the answers and map each back to the original question ID.",
-      "done_when": "clarification_answers document exists mapping each asked question to a clear answer from the human.",
+      "output_artifacts": ["clarification_request"],
+      "instruction": "Review the open_questions_list and assumption_list. Prioritize the questions by impact (which answers most change the direction of the project). Format the top questions (max 10) into a clear, numbered message for the human. For each question, provide brief context on why it matters and suggest 2-3 possible answers if applicable. You MUST use the clarify action to send these questions to the human. Do NOT produce a final_answer — instead, ask the human to answer the top questions.",
+      "done_when": "clarification_request has been sent to the human via the clarify action.",
       "artifact_schema": {
-        "clarification_answers": {
-          "type": "object",
-          "required_fields": ["answers"]
+        "clarification_request": {
+          "type": "string",
+          "min_length": 50
         }
       }
     },
@@ -562,7 +562,7 @@
       "tools_hint": ["read_file", "write_file"],
       "depends_on": ["0.1", "0.2", "0.3", "0.5"],
       "may_need_clarification": false,
-      "input_artifacts": ["raw_idea_document", "problem_statement", "assumption_list", "clarification_answers"],
+      "input_artifacts": ["raw_idea_document", "problem_statement", "assumption_list", "clarification_request", "clarification_answers"],
       "output_artifacts": ["idea_brief_final"],
       "instruction": "Compile all inputs into a clean Idea Brief document with these sections: 1) Vision (one paragraph describing the aspiration), 2) Problem Statement (from problem_statement, updated with clarifications), 3) Target Audience (specific, from clarifications), 4) Proposed Solution (high-level, what the product does), 5) Key Constraints (budget, timeline, tech, from clarifications), 6) Initial Scope Boundaries (what's in for v1, what's explicitly out), 7) Assumptions (updated list, marking which were validated by clarifications), 8) Open Risks (remaining unknowns). Write in clear, professional prose. Then self-review: check for internal contradictions between sections, anything from clarification_answers not reflected, anything from raw idea lost or misrepresented, vague language that should be specific, and missing information. Fix any issues found. Output the final versioned document as idea_brief_final with a version number and date.",
       "done_when": "idea_brief_final exists as a clean, self-reviewed, internally consistent document with all 8 sections.",
@@ -585,7 +585,7 @@
       "may_need_clarification": false,
       "input_artifacts": ["idea_brief_final"],
       "output_artifacts": ["market_existence_data"],
-      "instruction": "Using the idea_brief_final, research whether a market exists for this problem. Search for: market size estimates (TAM, SAM, SOM if available), market growth rate, industry reports or analyst coverage, investment activity in this space (recent funding rounds), Google Trends data for related keywords, job postings in this space (indicates industry activity). Use web search tools. Check industry-specific sources. Output structured findings: market_size (with source), growth_trend (with source), investment_signals (list of recent fundings), search_interest_trend (direction), industry_reports (list with links), confidence_level (high/medium/low with justification).",
+      "instruction": "Using the idea_brief_final, research whether a market exists for this problem. Search for: market size estimates (TAM, SAM, SOM if available), market growth rate, industry reports or analyst coverage, investment activity in this space (recent funding rounds), Google Trends data for related keywords, job postings in this space (indicates industry activity). Use web search tools. Check industry-specific sources. Output structured findings: market_size (with source), growth_trend (with source), investment_signals (list of recent fundings), search_interest_trend (direction), industry_reports (list with links), confidence_level (high/medium/low with justification).\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
       "done_when": "market_existence_data exists with sourced data points covering market size, growth, and investment activity.",
       "artifact_schema": {
         "market_existence_data": {
@@ -605,7 +605,7 @@
       "may_need_clarification": false,
       "input_artifacts": ["idea_brief_final"],
       "output_artifacts": ["audience_research_data"],
-      "instruction": "Research the target audience defined in idea_brief_final. Find: demographics (age, location, occupation, income level), psychographics (values, attitudes, lifestyle), online behavior (which platforms, subreddits, forums, communities they use), pain points (what they complain about related to this problem), current tools/solutions they use, willingness to pay signals (do they pay for similar tools?), technology adoption level. Search Reddit, Twitter/X, forums, Quora, Stack Overflow, Product Hunt discussions, industry surveys. Output structured findings per category with source links.",
+      "instruction": "Research the target audience defined in idea_brief_final. Find: demographics (age, location, occupation, income level), psychographics (values, attitudes, lifestyle), online behavior (which platforms, subreddits, forums, communities they use), pain points (what they complain about related to this problem), current tools/solutions they use, willingness to pay signals (do they pay for similar tools?), technology adoption level. Search Reddit, Twitter/X, forums, Quora, Stack Overflow, Product Hunt discussions, industry surveys. Output structured findings per category with source links.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
       "done_when": "audience_research_data exists with demographic, psychographic, behavioral, and pain point data with sources.",
       "artifact_schema": {
         "audience_research_data": {
@@ -625,7 +625,7 @@
       "may_need_clarification": false,
       "input_artifacts": ["idea_brief_final"],
       "output_artifacts": ["direct_competitors_list"],
-      "instruction": "Identify all direct competitors: products solving the same problem for the same audience. For each competitor, collect: name, website_url, one_line_description, founding_year, funding_total (if known), team_size_estimate, platforms (web/ios/android/desktop), primary_market (geography), status (active/acquired/dead). Search: web search, Product Hunt, G2, Capterra, AlternativeTo, Crunchbase, App Store, Play Store. Find at least 5 competitors if they exist. If fewer than 3 exist, note this as a market signal (either blue ocean or no market).",
+      "instruction": "Identify all direct competitors: products solving the same problem for the same audience. For each competitor, collect: name, website_url, one_line_description, founding_year, funding_total (if known), team_size_estimate, platforms (web/ios/android/desktop), primary_market (geography), status (active/acquired/dead). Search: web search, Product Hunt, G2, Capterra, AlternativeTo, Crunchbase, App Store, Play Store. Find at least 5 competitors if they exist. If fewer than 3 exist, note this as a market signal (either blue ocean or no market).\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
       "done_when": "direct_competitors_list exists as a structured list with all fields populated per competitor.",
       "artifact_schema": {
         "direct_competitors_list": {
@@ -646,7 +646,7 @@
       "may_need_clarification": false,
       "input_artifacts": ["idea_brief_final"],
       "output_artifacts": ["indirect_competitors_list"],
-      "instruction": "Identify indirect competitors: products that solve the same problem differently, or solve an adjacent problem for the same audience. For each, collect: name, website_url, how_they_relate, threat_level (high/medium/low). Also identify potential future competitors: large companies that could enter this space easily.",
+      "instruction": "Identify indirect competitors: products that solve the same problem differently, or solve an adjacent problem for the same audience. For each, collect: name, website_url, how_they_relate, threat_level (high/medium/low). Also identify potential future competitors: large companies that could enter this space easily.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
       "done_when": "indirect_competitors_list exists with categorized indirect competitors and future threat assessment.",
       "artifact_schema": {
         "indirect_competitors_list": {
@@ -667,7 +667,7 @@
       "may_need_clarification": false,
       "input_artifacts": ["direct_competitors_list"],
       "output_artifacts": ["competitor_features_raw", "competitor_feature_matrix"],
-      "instruction": "For each direct competitor in direct_competitors_list, catalog every feature visible from their: marketing website (features page, pricing page), documentation, free tier exploration, App Store/Play Store listing, Product Hunt page, demo videos. For each feature, record: feature_name, feature_description, which_competitor, tier_available (free/paid/enterprise), and category (core, secondary, integration, admin). Be exhaustive. Then build a feature comparison matrix. Rows: every unique feature (deduplicated and normalized across competitors). Columns: each competitor. Cell values: 'full', 'partial', 'none', 'unknown'. Group rows by feature category. Add a 'feature_frequency' column. Sort within each category by frequency descending.",
+      "instruction": "For each direct competitor in direct_competitors_list, catalog every feature visible from their: marketing website (features page, pricing page), documentation, free tier exploration, App Store/Play Store listing, Product Hunt page, demo videos. For each feature, record: feature_name, feature_description, which_competitor, tier_available (free/paid/enterprise), and category (core, secondary, integration, admin). Be exhaustive. Then build a feature comparison matrix. Rows: every unique feature (deduplicated and normalized across competitors). Columns: each competitor. Cell values: 'full', 'partial', 'none', 'unknown'. Group rows by feature category. Add a 'feature_frequency' column. Sort within each category by frequency descending.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
       "done_when": "competitor_features_raw and competitor_feature_matrix exist with comprehensive feature data and comparison table.",
       "artifact_schema": {
         "competitor_features_raw": {
@@ -692,7 +692,7 @@
       "may_need_clarification": false,
       "input_artifacts": ["direct_competitors_list"],
       "output_artifacts": ["competitor_pricing_analysis"],
-      "instruction": "For each direct competitor, document their pricing model completely: pricing_model_type, tiers (each with name, monthly_price, annual_price, key_limits), free_tier_scope, upgrade_triggers, enterprise_offering, pricing_page_url. Then analyze: market standard pricing range, most common model, pricing gaps, free-to-paid feature gates.",
+      "instruction": "For each direct competitor, document their pricing model completely: pricing_model_type, tiers (each with name, monthly_price, annual_price, key_limits), free_tier_scope, upgrade_triggers, enterprise_offering, pricing_page_url. Then analyze: market standard pricing range, most common model, pricing gaps, free-to-paid feature gates.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
       "done_when": "competitor_pricing_analysis exists with per-competitor pricing details and cross-market pricing insights.",
       "artifact_schema": {
         "competitor_pricing_analysis": {
@@ -712,7 +712,7 @@
       "may_need_clarification": false,
       "input_artifacts": ["direct_competitors_list"],
       "output_artifacts": ["competitor_reviews_raw", "competitor_sentiment_analysis"],
-      "instruction": "For each major competitor (top 5), collect user reviews and sentiment from: App Store, Play Store, G2, Capterra, TrustRadius, Product Hunt comments, Reddit mentions, Twitter/X mentions, Hacker News discussions. For each source: source_name, review_count_sampled, average_rating, positive_themes, negative_themes, notable_quotes (3-5 per competitor). Focus on recent reviews (last 12 months). Then synthesize sentiment. Per competitor: top_5_praised_aspects, top_5_pain_points, overall_sentiment, net_promoter_signal. Cross-competitor: universal_praises (table stakes), universal_complaints (opportunities), differentiation_signals.",
+      "instruction": "For each major competitor (top 5), collect user reviews and sentiment from: App Store, Play Store, G2, Capterra, TrustRadius, Product Hunt comments, Reddit mentions, Twitter/X mentions, Hacker News discussions. For each source: source_name, review_count_sampled, average_rating, positive_themes, negative_themes, notable_quotes (3-5 per competitor). Focus on recent reviews (last 12 months). Then synthesize sentiment. Per competitor: top_5_praised_aspects, top_5_pain_points, overall_sentiment, net_promoter_signal. Cross-competitor: universal_praises (table stakes), universal_complaints (opportunities), differentiation_signals.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
       "done_when": "competitor_reviews_raw and competitor_sentiment_analysis exist with per-competitor and cross-competitor sentiment synthesis.",
       "artifact_schema": {
         "competitor_reviews_raw": {
@@ -732,12 +732,12 @@
       "name": "competitor_ux_analysis",
       "agent": "researcher",
       "difficulty": "medium",
-      "tools_hint": ["web_search", "extract_url", "analyze_image"],
+      "tools_hint": ["web_search", "extract_url"],
       "depends_on": ["1.3"],
       "may_need_clarification": false,
       "input_artifacts": ["direct_competitors_list"],
       "output_artifacts": ["competitor_ux_evaluation"],
-      "instruction": "For each major competitor (top 5), collect screenshots or visual descriptions of key screens: landing_page, signup_flow, onboarding, main_dashboard, core_feature_screen, settings_page, pricing_page, mobile_view. Then evaluate each competitor for: design_quality (1-10), visual_consistency, information_density, navigation_clarity, onboarding_quality, accessibility_signals, mobile_quality, unique_ux_patterns, ux_weaknesses. Output per competitor with overall_ux_rank.",
+      "instruction": "For each major competitor (top 5), evaluate their UX based on publicly available information: website structure, app store screenshots descriptions, user reviews mentioning UX, documentation quality. Do NOT try to analyze images directly — instead, assess UX from text descriptions, review comments about UI/UX, app store listing descriptions, and website copy. Evaluate each competitor for: design_quality (1-10), visual_consistency, information_density, navigation_clarity, onboarding_quality, accessibility_signals, mobile_quality, unique_ux_patterns, ux_weaknesses. Output per competitor with overall_ux_rank.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
       "done_when": "competitor_ux_evaluation exists with per-competitor UX assessment and comparative ranking.",
       "artifact_schema": {
         "competitor_ux_evaluation": {
@@ -758,7 +758,7 @@
       "may_need_clarification": false,
       "input_artifacts": ["competitor_feature_matrix", "competitor_sentiment_analysis", "indirect_competitors_list"],
       "output_artifacts": ["market_gap_analysis"],
-      "instruction": "Cross-reference features users request but no competitor provides, features where all competitors are 'partial', sentiment weaknesses common across competitors, pricing gaps. Also produce a SWOT analysis for each major competitor (top 3-5) with specific, evidence-based statements. Output a ranked list of market opportunities: opportunity_id, description, evidence, estimated_impact, difficulty_to_address, our_ability_to_exploit. Rank by impact x feasibility. Wire indirect_competitors_list into analysis to catch substitute threats.",
+      "instruction": "Cross-reference features users request but no competitor provides, features where all competitors are 'partial', sentiment weaknesses common across competitors, pricing gaps. Also produce a SWOT analysis for each major competitor (top 3-5) with specific, evidence-based statements. Output a ranked list of market opportunities: opportunity_id, description, evidence, estimated_impact, difficulty_to_address, our_ability_to_exploit. Rank by impact x feasibility. Wire indirect_competitors_list into analysis to catch substitute threats.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
       "done_when": "market_gap_analysis exists with a ranked, evidence-based list of market opportunities and per-competitor SWOT.",
       "artifact_schema": {
         "market_gap_analysis": {
@@ -778,7 +778,7 @@
       "may_need_clarification": false,
       "input_artifacts": ["idea_brief_final"],
       "output_artifacts": ["technology_trends"],
-      "instruction": "Research technology trends relevant to the product domain. Find: new APIs or services, AI/ML capabilities, emerging platforms, open-source tools that reduce build cost. For each: name, description, relevance_to_our_product, maturity_level (experimental/emerging/mature), adoption_risk.",
+      "instruction": "Research technology trends relevant to the product domain. Find: new APIs or services, AI/ML capabilities, emerging platforms, open-source tools that reduce build cost. For each: name, description, relevance_to_our_product, maturity_level (experimental/emerging/mature), adoption_risk.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
       "done_when": "technology_trends document exists with relevant tech trends and their applicability assessed.",
       "artifact_schema": {
         "technology_trends": {
@@ -799,7 +799,7 @@
       "may_need_clarification": false,
       "input_artifacts": ["idea_brief_final"],
       "output_artifacts": ["regulatory_requirements"],
-      "instruction": "Identify legal, regulatory, and compliance requirements for this product. Check: data privacy (GDPR, CCPA), industry-specific regulation (HIPAA, PCI-DSS, COPPA, FINRA), platform policies, accessibility law, intellectual property concerns, open-source license obligations. For each: requirement_name, applies_if, summary_of_obligations, compliance_effort, consequence_of_non_compliance.",
+      "instruction": "Identify legal, regulatory, and compliance requirements for this product. Check: data privacy (GDPR, CCPA), industry-specific regulation (HIPAA, PCI-DSS, COPPA, FINRA), platform policies, accessibility law, intellectual property concerns, open-source license obligations. For each: requirement_name, applies_if, summary_of_obligations, compliance_effort, consequence_of_non_compliance.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
       "done_when": "regulatory_requirements exists with all applicable regulations identified and obligations summarized.",
       "artifact_schema": {
         "regulatory_requirements": {
@@ -814,13 +814,13 @@
       "phase": "phase_1",
       "name": "research_synthesis_and_report",
       "agent": "writer",
-      "difficulty": "medium",
+      "difficulty": "hard",
       "tools_hint": ["read_file", "write_file"],
       "depends_on": ["1.1", "1.2", "1.6", "1.7", "1.9", "1.10", "1.11"],
       "may_need_clarification": false,
       "input_artifacts": ["market_existence_data", "audience_research_data", "competitor_pricing_analysis", "competitor_sentiment_analysis", "market_gap_analysis", "technology_trends", "regulatory_requirements", "indirect_competitors_list"],
       "output_artifacts": ["research_summary", "market_research_report"],
-      "instruction": "First, compress all research findings into a structured Research Summary under 500 words with sections: Market Viability, Target Audience Profile, Competitive Landscape, Top 3 Market Opportunities, Technology Enablers, Key Risks, Go/No-Go Signal. Then compile all research into a comprehensive Market Research Report with structure: Executive Summary, Market Overview, Target Audience Analysis, Competitive Landscape (with feature matrix, pricing comparison, UX comparison, SWOT analyses), Market Gap Analysis, Technology Landscape, Regulatory Environment, Recommendations.",
+      "instruction": "First, compress all research findings into a structured Research Summary under 500 words with sections: Market Viability, Target Audience Profile, Competitive Landscape, Top 3 Market Opportunities, Technology Enablers, Key Risks, Go/No-Go Signal. Then compile all research into a comprehensive Market Research Report with structure: Executive Summary, Market Overview, Target Audience Analysis, Competitive Landscape (with feature matrix, pricing comparison, UX comparison, SWOT analyses), Market Gap Analysis, Technology Landscape, Regulatory Environment, Recommendations.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
       "done_when": "research_summary and market_research_report exist as comprehensive, well-structured documents.",
       "artifact_schema": {
         "research_summary": {
@@ -844,7 +844,7 @@
       "may_need_clarification": false,
       "input_artifacts": ["market_research_report"],
       "output_artifacts": ["research_review_result"],
-      "instruction": "Review market_research_report for: 1) Claims without evidence, 2) Logical gaps, 3) Missing data, 4) Bias, 5) Internal contradictions, 6) Feature matrix and pricing completeness, 7) Gap analysis quality. Output: status (approved/needs_revision), issues list.",
+      "instruction": "Review market_research_report for: 1) Claims without evidence, 2) Logical gaps, 3) Missing data, 4) Bias, 5) Internal contradictions, 6) Feature matrix and pricing completeness, 7) Gap analysis quality. Output: status (approved/needs_revision), issues list.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
       "done_when": "research_review_result exists with clear quality assessment.",
       "artifact_schema": {
         "research_review_result": {
@@ -864,7 +864,7 @@
       "may_need_clarification": true,
       "input_artifacts": ["market_research_report", "research_review_result", "research_summary", "indirect_competitors_list"],
       "output_artifacts": ["go_no_go_decision"],
-      "instruction": "Evaluate all research to produce a Go/No-Go recommendation. Score 1-10: market_attractiveness, competitive_feasibility, technical_feasibility, differentiation_potential, regulatory_risk. Compute weighted_score. Wire indirect_competitors_list into the feasibility assessment. If score > 6: Go. If 4-6: Conditional — trigger needs_clarification. If < 4: No-Go.",
+      "instruction": "Evaluate all research to produce a Go/No-Go recommendation. Score 1-10: market_attractiveness, competitive_feasibility, technical_feasibility, differentiation_potential, regulatory_risk. Compute weighted_score. Wire indirect_competitors_list into the feasibility assessment. If score > 6: Go. If 4-6: Conditional — trigger needs_clarification. If < 4: No-Go.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
       "done_when": "go_no_go_decision exists with scored assessment and clear recommendation.",
       "artifact_schema": {
         "go_no_go_decision": {
@@ -1207,7 +1207,7 @@
       "may_need_clarification": false,
       "input_artifacts": ["prd_final", "functional_requirements"],
       "output_artifacts": ["integration_requirements"],
-      "instruction": "Identify all third-party integrations needed. For each: integration_id, service_name, purpose, api_type, authentication_method, rate_limits, pricing, data_exchanged, latency_expectation, failure_mode, alternatives.",
+      "instruction": "Identify all third-party integrations needed. For each: integration_id, service_name, purpose, api_type, authentication_method, rate_limits, pricing, data_exchanged, latency_expectation, failure_mode, alternatives.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.",
       "done_when": "integration_requirements exists with every third-party service identified, evaluated, and failure modes documented.",
       "artifact_schema": {
         "integration_requirements": {
@@ -1228,7 +1228,7 @@
       "may_need_clarification": true,
       "input_artifacts": ["prd_final", "audience_research_data", "regulatory_requirements"],
       "output_artifacts": ["platform_requirements", "accessibility_requirements", "i18n_requirements"],
-      "instruction": "Define platform support: primary_platform, browser_support, mobile_support, screen_sizes, os_versions, device_types. If multiple platforms equally important, trigger needs_clarification. Define accessibility requirements: target WCAG 2.1 AA minimum. Organized by WCAG principle: perceivable, operable, understandable, robust. Each with req_id, WCAG criterion reference, implementation guidance, testing method. Define i18n requirements: initial_languages, future_languages, rtl_support, date/number/currency/timezone handling, text_expansion_budget, string_extraction_strategy.",
+      "instruction": "Define platform support: primary_platform, browser_support, mobile_support, screen_sizes, os_versions, device_types. If multiple platforms equally important, trigger needs_clarification. Define accessibility requirements: target WCAG 2.1 AA minimum. Organized by WCAG principle: perceivable, operable, understandable, robust. Each with req_id, WCAG criterion reference, implementation guidance, testing method. Define i18n requirements: initial_languages, future_languages, rtl_support, date/number/currency/timezone handling, text_expansion_budget, string_extraction_strategy.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.",
       "done_when": "platform_requirements, accessibility_requirements, and i18n_requirements exist.",
       "artifact_schema": {
         "platform_requirements": {
@@ -1364,7 +1364,7 @@
       "may_need_clarification": true,
       "input_artifacts": ["requirements_spec", "nfr_scalability", "nfr_performance"],
       "output_artifacts": ["architecture_pattern_decision"],
-      "instruction": "Evaluate architecture patterns: monolith, modular_monolith, microservices, serverless, event_driven, hybrid. For each: pros/cons for our requirements, scale fit, team size fit, implementation/operational complexity, migration path. Recommend top 2. If top 2 have significantly different trade-offs, trigger needs_clarification. Output: selected_pattern, justification, constraints, migration_path.",
+      "instruction": "Evaluate architecture patterns: monolith, modular_monolith, microservices, serverless, event_driven, hybrid. For each: pros/cons for our requirements, scale fit, team size fit, implementation/operational complexity, migration path. Recommend top 2. If top 2 have significantly different trade-offs, trigger needs_clarification. Output: selected_pattern, justification, constraints, migration_path.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.",
       "done_when": "architecture_pattern_decision exists with pattern evaluation and selection.",
       "artifact_schema": {
         "architecture_pattern_decision": {
@@ -1384,7 +1384,7 @@
       "may_need_clarification": true,
       "input_artifacts": ["architecture_pattern_decision", "requirements_spec", "platform_requirements", "nfr_performance", "nfr_scalability", "data_requirements"],
       "output_artifacts": ["tech_stack_decision"],
-      "instruction": "Research and select complete tech stack. For frontend: evaluate React/Next.js, Vue/Nuxt, Svelte/SvelteKit, Angular, Solid. For backend: evaluate Node.js (Express/Fastify/NestJS/Hono), Python (FastAPI/Django), Go, Rust. For database: evaluate PostgreSQL, MySQL, MongoDB, SQLite, PlanetScale, Supabase. For infra: evaluate AWS, GCP, Azure, Vercel, Railway, Render, Fly.io. Use recommend_stack tool if available. Weight AI-code-generation quality heavily. Include cost estimates. Trigger needs_clarification for human approval. Output complete tech_stack_decision.",
+      "instruction": "Research and select complete tech stack. For frontend: evaluate React/Next.js, Vue/Nuxt, Svelte/SvelteKit, Angular, Solid. For backend: evaluate Node.js (Express/Fastify/NestJS/Hono), Python (FastAPI/Django), Go, Rust. For database: evaluate PostgreSQL, MySQL, MongoDB, SQLite, PlanetScale, Supabase. For infra: evaluate AWS, GCP, Azure, Vercel, Railway, Render, Fly.io. Use recommend_stack tool if available. Weight AI-code-generation quality heavily. Include cost estimates. Trigger needs_clarification for human approval. Output complete tech_stack_decision.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.",
       "done_when": "tech_stack_decision exists with all stack choices, justifications, and cost estimates.",
       "artifact_schema": {
         "tech_stack_decision": {
@@ -1464,7 +1464,7 @@
       "may_need_clarification": false,
       "input_artifacts": ["system_architecture", "security_requirements", "integration_requirements", "functional_requirements", "business_rules"],
       "output_artifacts": ["auth_design"],
-      "instruction": "Design complete auth system combining authentication and authorization. Authentication: registration, oauth, login, session/JWT strategy, refresh mechanism, logout, password reset, password hashing, MFA if required. Authorization: RBAC roles/permissions, resource ownership, enforcement points, super admin, permission checking logic. Output a unified auth_design document.",
+      "instruction": "Design complete auth system combining authentication and authorization. Authentication: registration, oauth, login, session/JWT strategy, refresh mechanism, logout, password reset, password hashing, MFA if required. Authorization: RBAC roles/permissions, resource ownership, enforcement points, super admin, permission checking logic. Output a unified auth_design document.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.",
       "done_when": "auth_design exists with both authentication and authorization design.",
       "artifact_schema": {
         "auth_design": {
@@ -1504,7 +1504,7 @@
       "may_need_clarification": true,
       "input_artifacts": ["integration_requirements", "tech_stack_decision"],
       "output_artifacts": ["third_party_selections"],
-      "instruction": "For each integration, recommend a vendor with pricing, setup complexity, SDK quality, lock-in risk. Calculate total monthly cost. Trigger needs_clarification if cost exceeds expectations.",
+      "instruction": "For each integration, recommend a vendor with pricing, setup complexity, SDK quality, lock-in risk. Calculate total monthly cost. Trigger needs_clarification if cost exceeds expectations.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.",
       "done_when": "third_party_selections exists with vendor recommendations and total cost.",
       "artifact_schema": {
         "third_party_selections": {

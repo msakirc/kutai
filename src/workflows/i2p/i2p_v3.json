@@ -822,7 +822,7 @@
       "output_artifacts": [
         "clarification_request"
       ],
-      "instruction": "Review the open_questions_list and assumption_list. Prioritize the questions by impact (which answers most change the direction of the project). Format the top questions (max 10) into a clear, numbered message for the human. For each question, provide brief context on why it matters and suggest 2-3 possible answers if applicable. You MUST use the clarify action to send these questions to the human. Do NOT produce a final_answer — instead, ask the human to answer the top questions.",
+      "instruction": "Review the open_questions_list and assumption_list. Pick only the TOP 5 most impactful questions — the ones whose answers most change the project direction. Keep each question short (1-2 sentences max). For each, suggest 2-3 concrete answer options the human can pick from (e.g. 'A) Families B) Roommates C) Both'). Do NOT ask more than 5 questions — if in doubt, cut the less important ones. You MUST use the clarify action to send these questions to the human.",
       "done_when": "clarification_request has been sent to the human via the clarify action.",
       "artifact_schema": {
         "clarification_request": {

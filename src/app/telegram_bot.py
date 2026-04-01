@@ -5414,8 +5414,17 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 results_dir = Path("workspace/results")
             results_dir.mkdir(parents=True, exist_ok=True)
 
-            # Save full result to file
-            result_file = results_dir / f"task_{task_id}.md"
+            # Save full result to file — use step ID from title if available
+            # Title format: "[0.3] assumption_identification" → "0.3_assumption_identification"
+            safe_name = f"task_{task_id}"
+            if title and title.startswith("["):
+                try:
+                    step_part = title.split("]", 1)[0].strip("[")
+                    name_part = title.split("]", 1)[1].strip().replace(" ", "_")[:40]
+                    safe_name = f"{step_part}_{name_part}"
+                except (IndexError, ValueError):
+                    pass
+            result_file = results_dir / f"{safe_name}.md"
             try:
                 result_file.write_text(result, encoding='utf-8')
             except Exception as e:

@@ -1361,18 +1361,43 @@ async def execute_tool(tool_name: str, agent_type: str | None = None, task_hints
     if tool_name == "web_search" and task_hints:
         kwargs["_task_hints"] = task_hints
 
-    # ── Workspace isolation: prepend mission workspace to file paths ──
+    # ── Workspace isolation: resolve tools to mission directory ──
     # When a task has workspace_path (set by orchestrator for mission tasks),
-    # file operations resolve relative to that subdirectory instead of
-    # workspace root — prevents mission files from colliding.
+    # file and shell operations resolve relative to that subdirectory instead
+    # of workspace root — each project gets its own isolated directory.
     if task_hints and task_hints.get("workspace_path"):
         ws_prefix = task_hints["workspace_path"]
+
+        # File tools: prepend mission path to filepath
         _FILE_TOOLS = {"write_file", "read_file", "edit_file", "patch_file", "apply_diff"}
         if tool_name in _FILE_TOOLS and "filepath" in kwargs:
             fp = kwargs["filepath"]
-            # Only prefix if not already inside a mission directory
             if not fp.startswith(("mission_", ws_prefix)):
                 kwargs["filepath"] = f"{ws_prefix}/{fp}"
+
+        # Shell tools: set workdir to mission directory
+        _SHELL_TOOLS = {"shell", "shell_stdin", "shell_sequential"}
+        if tool_name in _SHELL_TOOLS and not kwargs.get("workdir"):
+            kwargs["workdir"] = ws_prefix
+
+        # Git tools: set path to mission directory
+        _GIT_TOOLS = {"git_init", "git_commit", "git_branch", "git_log",
+                       "git_diff", "git_rollback", "git_status"}
+        if tool_name in _GIT_TOOLS and not kwargs.get("path"):
+            kwargs["path"] = ws_prefix
+
+        # File tree: set path to mission directory
+        if tool_name == "file_tree" and not kwargs.get("path"):
+            kwargs["path"] = ws_prefix
+
+        # Scaffold: set path to mission directory
+        if tool_name == "scaffold" and not kwargs.get("path"):
+            kwargs["path"] = ws_prefix
+
+        # Codebase tools: set path to mission directory
+        _CODEBASE_TOOLS = {"index_workspace", "query_codebase", "codebase_map"}
+        if tool_name in _CODEBASE_TOOLS and not kwargs.get("path"):
+            kwargs["path"] = ws_prefix
 
     # ── Filter kwargs to accepted parameters ──
     valid_params = _TOOL_PARAMS.get(tool_name)

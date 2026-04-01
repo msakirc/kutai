@@ -41,24 +41,26 @@ _DB_DT_FMT = "%Y-%m-%d %H:%M:%S"
 
     # Default timeouts per agent type (seconds).  Override via
     # tasks.timeout_seconds column for per-task control.
+    # Timeouts include model load time (up to 60s for first swap).
+    # Don't set below 180s for any agent that triggers LLM calls.
 AGENT_TIMEOUTS: dict[str, int] = {
     "planner":        300,
-    "architect":      180,
+    "architect":      300,  # was 180 — too tight when model swap needed
     "coder":          300,
     "implementer":    300,
-    "fixer":          240,
-    "test_generator": 180,
-    "reviewer":       120,
-    "visual_reviewer":120,
+    "fixer":          300,  # was 240
+    "test_generator": 240,  # was 180
+    "reviewer":       180,  # was 120 — model swap alone takes 60s
+    "visual_reviewer":180,  # was 120
     "researcher":     300,
-    "analyst":        240,
-    "writer":         180,
-    "summarizer":     120,
-    "assistant":      120,
-    "executor":       180,
-    "error_recovery": 240,
+    "analyst":        300,  # was 240
+    "writer":         240,  # was 180
+    "summarizer":     180,  # was 120
+    "assistant":      180,  # was 120
+    "executor":       240,  # was 180
+    "error_recovery": 300,  # was 240
     "pipeline":       600,
-    "workflow":       900,  # 15 min — workflow steps can be lengthy
+    "workflow":       900,
     "shopping_advisor":    600,
     "product_researcher":  300,
     "deal_analyst":        240,
@@ -1342,7 +1344,7 @@ class Orchestrator:
             # ── Determine timeout ──
             timeout_seconds = (
                 task.get("timeout_seconds")
-                or AGENT_TIMEOUTS.get(agent_type, 180)
+                or AGENT_TIMEOUTS.get(agent_type, 240)  # default accounts for model swap
             )
 
             if agent_type == "pipeline":

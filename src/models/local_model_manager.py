@@ -688,10 +688,14 @@ class LocalModelManager:
             logger.error(f"Failed to start llama-server: {e}")
             return False
 
-        # Wait for health endpoint — poll with backoff
-        max_wait = model.load_time_seconds * 2  # double the estimated time
-        max_wait = max(max_wait, 30)             # at least 30s
-        max_wait = min(max_wait, 120)            # at most 120s
+        # Wait for health endpoint — poll with backoff.
+        # Large models (>20GB) can take 90s+ to load on first start after
+        # reboot when VRAM needs initial allocation. The 2x multiplier on
+        # estimated load time handles most cases, but the ceiling must be
+        # high enough for worst-case cold starts.
+        max_wait = model.load_time_seconds * 2.5  # 2.5x estimated time
+        max_wait = max(max_wait, 30)               # at least 30s
+        max_wait = min(max_wait, 180)              # at most 180s
 
         healthy = await self._wait_for_healthy(timeout=max_wait)
 

@@ -1445,7 +1445,8 @@ class Orchestrator:
                                 result=result_text,
                                 context=json.dumps(task_ctx),
                             )
-                            await self.telegram.send_result(task_id, title, result_text, "timeout-recovery", 0)
+                            await self.telegram.send_result(task_id, title, result_text, "timeout-recovery", 0,
+                                                            mission_id=task.get("mission_id"))
                             return
                 except Exception as recovery_err:
                     logger.debug(f"[Task #{task_id}] Checkpoint recovery failed: {recovery_err}")
@@ -1791,7 +1792,8 @@ class Orchestrator:
             logger.info("task completed (silent)", task_id=task_id, model=model, cost=cost)
         elif is_interactive or not is_mission_subtask:
             await self.telegram.send_result(task_id, task["title"],
-                                            result_text, model, cost)
+                                            result_text, model, cost,
+                                            mission_id=task.get("mission_id"))
         elif iterations > 3:
             await self.telegram.send_notification(
                 f"🔧 Task #{task_id} completed after {iterations} iterations\n"

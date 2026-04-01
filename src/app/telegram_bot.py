@@ -5403,11 +5403,15 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                         continue
                     logger.error("Failed to send Telegram notification", error=str(e))
 
-    async def send_result(self, task_id, title, result, model, cost):
+    async def send_result(self, task_id, title, result, model, cost,
+                          mission_id=None):
         # Handle long results (>3000 chars) by sending as file attachment
         if len(result) > 3000:
-            # Create results directory if needed
-            results_dir = Path("workspace/results")
+            # Use mission-specific directory if available
+            if mission_id:
+                results_dir = Path(f"workspace/mission_{mission_id}/results")
+            else:
+                results_dir = Path("workspace/results")
             results_dir.mkdir(parents=True, exist_ok=True)
 
             # Save full result to file

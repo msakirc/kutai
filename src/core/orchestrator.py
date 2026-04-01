@@ -167,6 +167,11 @@ def _reorder_by_model_affinity(tasks: list[dict]) -> list[dict]:
         if not model_info:
             return tasks
 
+        # Vision batching: when vision is loaded (expensive — 876MB mmproj),
+        # boost all vision tasks so they run together before the model
+        # unloads and frees VRAM. Avoids repeated vision swap toggles.
+        vision_loaded = manager._vision_enabled
+
         def _sort_key(task: dict):
             priority = task.get("_effective_priority", task.get("priority", 5))
             ctx = task.get("context", {})
@@ -207,6 +212,11 @@ def _reorder_by_model_affinity(tasks: list[dict]) -> list[dict]:
 
             # Boost by fit * 0.9, so max boost < 1 priority level
             effective_priority = priority + (fit * 0.9)
+
+            # Vision batching: boost vision tasks when mmproj is loaded
+            task_needs_vision = cls.get("needs_vision", False)
+            if vision_loaded and task_needs_vision:
+                effective_priority += 0.8  # strong boost to batch with other vision tasks
             # Sort descending by effective priority, then FIFO by created_at
             return (-effective_priority, task.get("created_at", ""))
 

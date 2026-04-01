@@ -103,6 +103,7 @@ class LocalModelManager:
         self._started_at: float = 0.0
         self._total_swaps: int = 0
         self._thinking_enabled: bool = False  # tracks server-side thinking state
+        self._vision_enabled: bool = False    # tracks whether --mmproj is loaded
 
         # Tracks how many inference requests are currently in-flight.
         # Model swaps wait for this to reach zero before killing the server.
@@ -332,12 +333,17 @@ class LocalModelManager:
         model_name: str,
         reason: str = "",
         enable_thinking: bool = False,
+        enable_vision: bool = False,
     ) -> bool:
         """
         Ensure the specified model is loaded and healthy.
         If already loaded with the same thinking state, returns immediately.
         If different model or thinking state differs, swaps (blocks until ready).
         Returns False if the circuit breaker is blocking this model.
+
+        enable_vision: if True AND the model has an mmproj file, restart
+            the server with --mmproj. Vision is off by default to save
+            ~876MB VRAM. Only toggled on for actual vision tasks.
         """
         # ── Circuit breaker: refuse loads of a model that keeps failing ──
         if self._is_restart_blocked(model_name):
@@ -349,23 +355,33 @@ class LocalModelManager:
 
         if self.current_model == model_name:
             if await self._health_check():
-                # Model is loaded and healthy — skip restart even if thinking
-                # state differs.  Restarting the server just to toggle thinking
-                # causes swap storms that freeze the entire system.  Thinking
-                # is controlled via chat_template_kwargs at the server level,
-                # but the cost of a full restart far outweighs the benefit.
-                if self._thinking_enabled != enable_thinking:
-                    logger.debug(
-                        f"Ignoring thinking state change "
-                        f"{self._thinking_enabled} -> {enable_thinking} "
-                        f"for {model_name} (avoiding swap storm)"
+                # Vision toggle: restart needed if vision requested but not loaded
+                if enable_vision and not self._vision_enabled:
+                    logger.info(
+                        f"Restarting {model_name} with vision projector "
+                        f"(mmproj) for vision task"
                     )
-                return True
+                    # Fall through to _swap_model which will restart with mmproj
+                else:
+                    # Model is loaded and healthy — skip restart even if thinking
+                    # state differs.  Restarting the server just to toggle thinking
+                    # causes swap storms that freeze the entire system.
+                    if self._thinking_enabled != enable_thinking:
+                        logger.debug(
+                            f"Ignoring thinking state change "
+                            f"{self._thinking_enabled} -> {enable_thinking} "
+                            f"for {model_name} (avoiding swap storm)"
+                        )
+                    return True
             else:
                 # Loaded but unhealthy — restart
                 logger.warning(f"Model {model_name} unhealthy, restarting")
 
-        return await self._swap_model(model_name, reason, enable_thinking=enable_thinking)
+        return await self._swap_model(
+            model_name, reason,
+            enable_thinking=enable_thinking,
+            enable_vision=enable_vision,
+        )
 
     async def acquire_inference_slot(
         self,
@@ -435,7 +451,8 @@ class LocalModelManager:
 
     # ── Model Swapping ─────────────────────────────────────────
 
-    async def _swap_model(self, model_name: str, reason: str = "", enable_thinking: bool = False) -> bool:
+    async def _swap_model(self, model_name: str, reason: str = "",
+                          enable_thinking: bool = False, enable_vision: bool = False) -> bool:
         """
         Stop current model, start new one. Protected by lock.
         Returns True if the new model is healthy.
@@ -444,16 +461,20 @@ class LocalModelManager:
             # Re-check after acquiring lock — another task may have already
             # loaded the model while we were waiting.
             if self.current_model == model_name and await self._health_check():
-                logger.debug(f"Model {model_name} already healthy (resolved under lock)")
-                return True
+                # Still need to check vision state — we may have been called
+                # specifically to add mmproj
+                if not (enable_vision and not self._vision_enabled):
+                    logger.debug(f"Model {model_name} already healthy (resolved under lock)")
+                    return True
 
             self.swap_started_at = time.monotonic()
             try:
-                return await self._do_swap(model_name, reason, enable_thinking)
+                return await self._do_swap(model_name, reason, enable_thinking, enable_vision)
             finally:
                 self.swap_started_at = 0.0
 
-    async def _do_swap(self, model_name: str, reason: str = "", enable_thinking: bool = False) -> bool:
+    async def _do_swap(self, model_name: str, reason: str = "",
+                       enable_thinking: bool = False, enable_vision: bool = False) -> bool:
         """Inner swap logic, called under _swap_lock with swap_started_at set."""
         # ── Wait for in-flight inference to finish before killing server ──
         # This prevents killing llama-server while an HTTP request is mid-stream,
@@ -547,7 +568,8 @@ class LocalModelManager:
             model_info._gpu_layers_from_override = False
 
         # Start new server
-        success = await self._start_server(model_info, enable_thinking=enable_thinking)
+        success = await self._start_server(model_info, enable_thinking=enable_thinking,
+                                           enable_vision=enable_vision)
 
         swap_duration = time.time() - swap_start
         self._total_swaps += 1
@@ -556,6 +578,7 @@ class LocalModelManager:
             self._record_restart_success(model_name)
             self.current_model = model_name
             self._thinking_enabled = enable_thinking
+            self._vision_enabled = enable_vision
             self._started_at = time.time()
             self.runtime_state = ModelRuntimeState(
                 model_name=model_name,
@@ -620,7 +643,8 @@ class LocalModelManager:
             # Fallback: logical cores / 2 as rough estimate of physical
             return max(2, (os.cpu_count() or 4) // 2 - 1)
 
-    async def _start_server(self, model: ModelInfo, enable_thinking: bool = False) -> bool:
+    async def _start_server(self, model: ModelInfo, enable_thinking: bool = False,
+                            enable_vision: bool = False) -> bool:
         """
         Launch llama-server process and wait for it to become healthy.
         """
@@ -658,8 +682,9 @@ class LocalModelManager:
                 _json.dumps({"enable_thinking": enable_thinking}),
             ])
 
-        # Vision projector (mmproj) — enables image input via llama-server
-        if model.has_vision and getattr(model, 'mmproj_path', None):
+        # Vision projector (mmproj) — only loaded when a vision task needs it.
+        # Saves ~876MB VRAM for the 99% of requests that are text-only.
+        if enable_vision and model.has_vision and getattr(model, 'mmproj_path', None):
             cmd.extend(["--mmproj", model.mmproj_path])
 
         # Per-model server flags (MoE override-kv, Apriel --no-jinja, etc.)

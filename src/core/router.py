@@ -939,15 +939,22 @@ async def call_model(
         # tags, turning 70 tok/s into 1.4 tok/s effective speed.
         is_thinking = model.thinking_model and reqs.needs_thinking
 
-        # ── Local model: ensure loaded with correct thinking state ──
+        # ── Local model: ensure loaded with correct state ──
         if model.is_local and model.location != "ollama":
             from ..models.local_model_manager import get_local_manager
             manager = get_local_manager()
-            if not model.is_loaded or (model.thinking_model and manager._thinking_enabled != is_thinking):
+            needs_vision = reqs.needs_vision and model.has_vision
+            needs_reload = (
+                not model.is_loaded
+                or (model.thinking_model and manager._thinking_enabled != is_thinking)
+                or (needs_vision and not manager._vision_enabled)
+            )
+            if needs_reload:
                 success = await manager.ensure_model(
                     model.name,
                     reason=f"{reqs.agent_type}:{reqs.effective_task or reqs.primary_capability}",
                     enable_thinking=is_thinking,
+                    enable_vision=needs_vision,
                 )
                 if not success:
                     last_error = f"Failed to load local model {model.name}"

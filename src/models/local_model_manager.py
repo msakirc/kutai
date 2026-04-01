@@ -69,6 +69,11 @@ class ModelRuntimeState:
     loaded_at: float = field(default_factory=time.time)
 
 
+# Restart circuit breaker thresholds
+_RESTART_FAIL_THRESHOLD: int = 2   # failures before cooldown
+_RESTART_COOLDOWN_S: float = 300.0  # 5 minutes
+
+
 class LocalModelManager:
     """
     Manages a single llama-server process.
@@ -78,6 +83,7 @@ class LocalModelManager:
     - Swap requests are queued and deduplicated
     - Health checks run periodically
     - If the process dies, auto-restart with the same model
+    - Circuit breaker prevents restart loops on persistent failures
     """
 
     def __init__(self):
@@ -108,6 +114,14 @@ class LocalModelManager:
         self._inference_generation: int = 0
 
         self.runtime_state: ModelRuntimeState | None = None  # populated after successful swap
+
+        # ── Restart circuit breaker ──────────────────────────────
+        # Prevents restart loops when a model consistently fails to load.
+        # After _RESTART_FAIL_THRESHOLD consecutive failures for the SAME
+        # model, further load attempts are refused for _RESTART_COOLDOWN_S.
+        self._restart_fail_count: int = 0
+        self._restart_fail_model: str | None = None
+        self._restart_cooldown_until: float = 0.0
 
         # Set by idle unloader before stopping, cleared after.
         # Prevents the health watchdog from misinterpreting a deliberate
@@ -275,6 +289,42 @@ class LocalModelManager:
         if self._active_inference_count == 0:
             self._inference_idle.set()
 
+    # ── Restart circuit breaker ─────────────────────────────────
+
+    def _record_restart_failure(self, model_name: str) -> None:
+        """Record a failed load attempt. Triggers cooldown after threshold."""
+        if self._restart_fail_model != model_name:
+            # Different model — reset counter
+            self._restart_fail_model = model_name
+            self._restart_fail_count = 0
+        self._restart_fail_count += 1
+        if self._restart_fail_count >= _RESTART_FAIL_THRESHOLD:
+            self._restart_cooldown_until = time.time() + _RESTART_COOLDOWN_S
+            logger.error(
+                f"Circuit breaker: {model_name} failed {self._restart_fail_count} "
+                f"times — refusing loads for {_RESTART_COOLDOWN_S:.0f}s"
+            )
+
+    def _record_restart_success(self, model_name: str) -> None:
+        """Record a successful load. Resets the circuit breaker."""
+        self._restart_fail_count = 0
+        self._restart_fail_model = None
+        self._restart_cooldown_until = 0.0
+
+    def _is_restart_blocked(self, model_name: str) -> bool:
+        """Check if the circuit breaker blocks loading this model."""
+        if self._restart_cooldown_until <= 0:
+            return False
+        if time.time() >= self._restart_cooldown_until:
+            # Cooldown expired — reset
+            self._restart_fail_count = 0
+            self._restart_cooldown_until = 0.0
+            return False
+        if self._restart_fail_model == model_name:
+            return True
+        # Different model — not blocked
+        return False
+
     # ── Public API ──────────────────────────────────────────────
 
     async def ensure_model(
@@ -287,7 +337,16 @@ class LocalModelManager:
         Ensure the specified model is loaded and healthy.
         If already loaded with the same thinking state, returns immediately.
         If different model or thinking state differs, swaps (blocks until ready).
+        Returns False if the circuit breaker is blocking this model.
         """
+        # ── Circuit breaker: refuse loads of a model that keeps failing ──
+        if self._is_restart_blocked(model_name):
+            logger.warning(
+                f"Circuit breaker active — refusing to load {model_name} "
+                f"(cooldown until {self._restart_cooldown_until - time.time():.0f}s)"
+            )
+            return False
+
         if self.current_model == model_name:
             if await self._health_check():
                 # Model is loaded and healthy — skip restart even if thinking
@@ -494,6 +553,7 @@ class LocalModelManager:
         self._total_swaps += 1
 
         if success:
+            self._record_restart_success(model_name)
             self.current_model = model_name
             self._thinking_enabled = enable_thinking
             self._started_at = time.time()
@@ -534,13 +594,15 @@ class LocalModelManager:
                 logger.debug(f"Dispatcher swap notification failed: {_e}")
             return True
         else:
+            self._record_restart_failure(model_name)
             self.current_model = None
             registry.mark_unloaded(model_name)
             # Demote failed model so the router skips it on retry
             registry.demote_model(model_name, duration=300)
             logger.error(
                 f"❌ Failed to load {model_name} after {swap_duration:.1f}s "
-                f"(demoted for 5 min)"
+                f"(demoted for 5 min, circuit_breaker={self._restart_fail_count}/"
+                f"{_RESTART_FAIL_THRESHOLD})"
             )
             return False
 
@@ -871,14 +933,20 @@ class LocalModelManager:
                     consecutive_health_failures = 0
                     continue
 
-                logger.error(
-                    f"llama-server crashed! Restarting {self.current_model}..."
-                )
                 model_name = self.current_model
+                logger.error(
+                    f"llama-server crashed! Restarting {model_name}..."
+                )
                 # Close pipes before discarding the process reference
                 self.process = None
                 self.current_model = None
                 consecutive_health_failures = 0
+                if self._is_restart_blocked(model_name):
+                    logger.warning(
+                        f"Watchdog: circuit breaker active for {model_name} "
+                        f"— skipping crash recovery"
+                    )
+                    continue
                 await self._swap_model(model_name, reason="crash recovery")
                 continue
 
@@ -894,15 +962,21 @@ class LocalModelManager:
                         f"({consecutive_health_failures}/{HEALTH_FAIL_THRESHOLD})"
                     )
                     if consecutive_health_failures >= HEALTH_FAIL_THRESHOLD:
+                        model_name = self.current_model
                         logger.error(
                             f"llama-server hung ({HEALTH_FAIL_THRESHOLD} "
                             f"consecutive /health failures). Restarting "
-                            f"{self.current_model}..."
+                            f"{model_name}..."
                         )
-                        model_name = self.current_model
                         consecutive_health_failures = 0
-                        await self._stop_server()
-                        await self._swap_model(model_name, reason="hang recovery")
+                        if self._is_restart_blocked(model_name):
+                            logger.warning(
+                                f"Watchdog: circuit breaker active for "
+                                f"{model_name} — skipping hang recovery"
+                            )
+                        else:
+                            await self._stop_server()
+                            await self._swap_model(model_name, reason="hang recovery")
 
 
 # ─── Singleton ───────────────────────────────────────────────

@@ -984,7 +984,7 @@ class BaseAgent:
         if not isinstance(_task_ctx, dict):
             _task_ctx = {}
         tools_hint = _task_ctx.get("tools_hint")
-        if tools_hint and isinstance(tools_hint, list):
+        if tools_hint is not None and isinstance(tools_hint, list):
             self._original_allowed_tools = self.allowed_tools
             self.allowed_tools = tools_hint
 

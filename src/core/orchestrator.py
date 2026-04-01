@@ -1276,13 +1276,17 @@ class Orchestrator:
                     logger.error("human gate error", task_id=task_id, error=str(e))
 
             # ── Phase 14.2: Risk assessment gate ──
+            # Skip for workflow steps — they are pre-defined in the workflow
+            # JSON and approval would block the automated pipeline.  Workflow
+            # human gates are handled separately via needs_clarification.
+            is_workflow = task_ctx.get("is_workflow_step", False)
             try:
                 from ..security.risk_assessor import assess_risk, format_risk_assessment
                 risk = assess_risk(
                     task_title=task.get("title", ""),
                     task_description=task.get("description", ""),
                 )
-                if risk["needs_approval"] and not task_ctx.get("human_gate"):
+                if risk["needs_approval"] and not task_ctx.get("human_gate") and not is_workflow:
                     logger.info(
                         "risk gate triggered",
                         task_id=task_id,

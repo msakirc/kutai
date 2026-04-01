@@ -156,7 +156,7 @@ KB_WORKFLOW_SELECT = _make_keyboard([
 
 KB_SISTEM = _make_keyboard([
     ["🖥 Yük Modu", "🐛 Debug", "📭 DLQ", "📋 Loglar"],
-    ["🖥️ Claude Code", "🔧 Yaşar Usta", "☢️ Reset All"],
+    ["🖥️ Claude Code", "🔧 Yaşar Usta", "🗑 Reset Tasks", "☢️ Reset All"],
     ["🔄 Yeniden Başlat", "⏹ Durdur"],
     ["🔙 Geri"],
 ], resize_keyboard=False)
@@ -232,6 +232,7 @@ _BUTTON_ACTIONS: dict[str, tuple[str, str]] = {
     "📋 Loglar": ("cmd", "logs"),
     "🖥️ Claude Code": ("special", "claude_code"),
     "🔧 Yaşar Usta": ("special", "processes"),
+    "🗑 Reset Tasks": ("special", "reset_tasks"),
     "☢️ Reset All": ("cmd", "reset_all"),
     "🔄 Yeniden Başlat": ("special", "restart"),
     "⏹ Durdur": ("special", "stop"),
@@ -550,6 +551,18 @@ class TelegramInterface:
         # ── Processes ──
         if action == "processes":
             await self._show_processes(update, context)
+            return
+
+        # ── Reset Tasks ──
+        if action == "reset_tasks":
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑 Evet, sil", callback_data="reset_tasks_confirm"),
+                InlineKeyboardButton("İptal", callback_data="reset_tasks_cancel"),
+            ]])
+            await update.message.reply_text(
+                "🗑 Tüm görevler ve misyonlar silinecek. Emin misin?",
+                reply_markup=keyboard,
+            )
             return
 
         # ── GPU Load Modes ──
@@ -1386,7 +1399,7 @@ class TelegramInterface:
                 runner = WorkflowRunner()
                 mission_id = await runner.start(
                     workflow_name="i2p_v3",
-                    initial_input={"idea": description, "product_name": description[:50]},
+                    initial_input={"raw_idea": description, "product_name": description[:50]},
                     title=description[:80],
                 )
                 await self._reply(update,
@@ -3598,7 +3611,7 @@ class TelegramInterface:
                     runner = WorkflowRunner()
                     mission_id = await runner.start(
                         workflow_name="i2p_v3",
-                        initial_input={"idea": text, "product_name": text[:50]},
+                        initial_input={"raw_idea": text, "product_name": text[:50]},
                         title=text[:80],
                     )
                     await self._reply(update,
@@ -5267,6 +5280,36 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 await query.edit_message_text(f"🗑 Mission #{mission_id} has been cancelled.")
             except Exception as e:
                 await query.edit_message_text(f"❌ {_friendly_error(str(e))}")
+            return
+
+        # ── Reset Tasks confirm ──────────────────────────────────
+        if data == "reset_tasks_confirm":
+            db = await get_db()
+            await db.execute("DELETE FROM tasks")
+            await db.execute("DELETE FROM missions")
+            await db.execute("DELETE FROM dead_letter_tasks")
+            await db.execute("DELETE FROM workflow_checkpoints")
+            await db.execute("DELETE FROM blackboards")
+            await db.execute("DELETE FROM approval_requests")
+            await db.commit()
+            # Also wipe shopping cache (separate DB)
+            try:
+                import aiosqlite as _aiosqlite
+                from ..shopping.cache import CACHE_DB_PATH as _CACHE_DB_PATH
+                async with _aiosqlite.connect(_CACHE_DB_PATH) as sdb:
+                    await sdb.execute("DELETE FROM products")
+                    await sdb.execute("DELETE FROM reviews")
+                    await sdb.execute("DELETE FROM price_history")
+                    await sdb.execute("DELETE FROM search_cache")
+                    await sdb.commit()
+                shopping_note = " + alışveriş cache"
+            except Exception as e:
+                logger.warning(f"Shopping cache reset failed: {e}")
+                shopping_note = " (alışveriş cache silinemedi)"
+            await query.edit_message_text(f"🗑 Görevler, misyonlar ve alışveriş cache silindi{shopping_note}.")
+            return
+        elif data == "reset_tasks_cancel":
+            await query.edit_message_text("İptal edildi.")
             return
 
         # ── Legacy Callbacks (approval, resetall confirm) ──────

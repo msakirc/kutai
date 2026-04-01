@@ -432,10 +432,14 @@ class WorkflowRunner:
                 skipped_ids,
             )
 
-        # 9. Register recurring steps as scheduled tasks
+        # 9. Recurring steps (Phase 15) are NOT registered at start.
+        # They should only be activated when Phase 14 (launch) completes.
+        # Registering them now causes them to fire during Phase 0-7,
+        # wasting resources on post-launch tasks before anything is built.
         if recurring_steps:
-            await self._register_recurring_steps(
-                recurring_steps, mission_id, wf.plan_id, step_to_task
+            logger.info(
+                "Deferred %d recurring steps — will register when Phase 14 completes",
+                len(recurring_steps),
             )
 
         # 10. Store workflow metadata artifact

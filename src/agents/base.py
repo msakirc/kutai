@@ -1169,7 +1169,24 @@ class BaseAgent:
             )
 
             # ── Tools ──
-            litellm_tools = self._build_litellm_tools()
+            # Hard guardrail: on the LAST iteration, strip all tools so the
+            # LLM is forced to produce a text response (final_answer).
+            # Small models ignore "LAST ITERATION" text warnings — this makes
+            # it physically impossible to call tools on the final turn.
+            is_last_iteration = (iteration + 1 >= self.max_iterations)
+            if is_last_iteration:
+                litellm_tools = None
+                # Inject a system reminder that tools are gone
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "FINAL ITERATION — no tools available. You MUST produce your "
+                        "final answer NOW as plain text or JSON. Summarize everything "
+                        "you have gathered so far."
+                    ),
+                })
+            else:
+                litellm_tools = self._build_litellm_tools()
             if litellm_tools:
                 reqs.needs_function_calling = True
 

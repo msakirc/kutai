@@ -1938,7 +1938,12 @@ class BaseAgent:
         import copy
 
         classification = task_ctx.get("classification", {})
-        agent_type = classification.get("agent_type", self.name)
+        # Workflow steps declare their agent explicitly — don't let the
+        # classifier override it (e.g. "writer" step misclassified as "coder")
+        if task_ctx.get("is_workflow_step"):
+            agent_type = self.name
+        else:
+            agent_type = classification.get("agent_type", self.name)
 
         template = AGENT_REQUIREMENTS.get(agent_type) or AGENT_REQUIREMENTS.get(
             self.name, ModelRequirements(task=agent_type, difficulty=5)
@@ -2013,13 +2018,16 @@ class BaseAgent:
             reqs.needs_function_calling = True
 
         # ── Vision needed? (keyword override) ──
+        # Skip keyword heuristic for workflow steps — they declare vision
+        # need explicitly via tools_hint containing analyze_image.
         if task_ctx.get("needs_vision"):
             reqs.needs_vision = True
-        if any(kw in f"{title} {description}" for kw in [
-            "screenshot", "image", "visual", "ui review", "layout",
-            "diagram", "photo", "picture",
-        ]):
-            reqs.needs_vision = True
+        elif not task_ctx.get("is_workflow_step"):
+            if any(kw in f"{title} {description}" for kw in [
+                "screenshot", "image", "visual", "ui review", "layout",
+                "diagram", "photo", "picture",
+            ]):
+                reqs.needs_vision = True
 
         # ── Thinking needed? ──
         if task_ctx.get("needs_thinking"):

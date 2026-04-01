@@ -3878,7 +3878,38 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         self, chat_id: int, task_id: int, answer: str,
         task_info: dict, update: Update
     ):
-        """Resume a task that was waiting for clarification."""
+        """Resume a task that was waiting for clarification.
+
+        If a sequential question queue is active, collect the answer and
+        send the next question.  Only resume the task when all questions
+        are answered.
+        """
+        q = getattr(self, "_pending_clarification_queue", None)
+
+        # Sequential Q&A mode — collect answer and advance
+        if q and q.get("task_id") == task_id and q["current"] < len(q["questions"]):
+            q["answers"].append(answer)
+            q["current"] += 1
+
+            if q["current"] < len(q["questions"]):
+                # More questions — send next one
+                await self._reply(update,
+                    f"\u2705 Got it ({q['current']}/{len(q['questions'])})"
+                )
+                await self._send_next_clarification_question()
+                return  # Don't resume task yet
+            else:
+                # All answered — merge answers and resume
+                merged = "\n\n".join(
+                    f"Q{i+1}: {q['questions'][i]}\nA: {a}"
+                    for i, a in enumerate(q["answers"])
+                )
+                answer = merged  # Use merged as the full clarification
+                self._pending_clarification_queue = None
+                await self._reply(update,
+                    f"\u2705 All {len(q['answers'])} questions answered. Resuming..."
+                )
+
         # Update the task: inject answer into context, reset to pending
         try:
             import json as _json
@@ -3906,9 +3937,10 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             # Clean up tracking
             self._pending_clarifications.pop(chat_id, None)
 
-            await self._reply(update,
-                f"\u21a9\ufe0f Got it. Resuming task #{task_id} with your input."
-            )
+            if not q or q.get("task_id") != task_id:
+                await self._reply(update,
+                    f"\u21a9\ufe0f Got it. Resuming task #{task_id} with your input."
+                )
             logger.info("clarification received, task resumed",
                         task_id=task_id, answer_preview=answer[:50])
 
@@ -5497,19 +5529,68 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         )
 
     async def request_clarification(self, task_id, title, question):
-        # Track this as a pending clarification so handle_message can catch it
-        chat_id = TELEGRAM_ADMIN_CHAT_ID
-        if chat_id:
-            try:
-                self._pending_clarifications[int(chat_id)] = task_id
-            except (ValueError, TypeError):
-                pass
+        """Send clarification request.
 
+        If the question contains numbered items (1. ... 2. ... etc.),
+        split into individual messages sent one at a time.  Each answer
+        is collected sequentially; the merged set is stored when done.
+        """
+        chat_id = TELEGRAM_ADMIN_CHAT_ID
+        if not chat_id:
+            return
+
+        int_chat = int(chat_id)
+
+        # Try to split numbered questions
+        import re as _re
+        parts = _re.split(r'\n(?=\d+[\.\)]\s)', question.strip())
+        # Filter to actual numbered questions (at least "1. something")
+        numbered = [p.strip() for p in parts if _re.match(r'^\d+[\.\)]\s', p.strip())]
+
+        if len(numbered) >= 2:
+            # Sequential Q&A mode
+            self._pending_clarification_queue = {
+                "task_id": task_id,
+                "title": title,
+                "questions": numbered,
+                "current": 0,
+                "answers": [],
+            }
+            self._pending_clarifications[int_chat] = task_id
+
+            header = (
+                f"\u2753 *Clarification needed \u2014 Task #{task_id}*\n"
+                f"**{title}**\n\n"
+                f"I have {len(numbered)} questions. Answering one at a time:\n"
+            )
+            await self.send_notification(header)
+            # Send first question
+            await self._send_next_clarification_question()
+        else:
+            # Single question or free-form — original behavior
+            self._pending_clarifications[int_chat] = task_id
+            await self.send_notification(
+                f"\u2753 *Clarification needed \u2014 Task #{task_id}*\n"
+                f"**{title}**\n\n"
+                f"{question}\n\n"
+                f"_Reply to this message or just type your answer._"
+            )
+
+    async def _send_next_clarification_question(self):
+        """Send the next question from the sequential clarification queue."""
+        q = getattr(self, "_pending_clarification_queue", None)
+        if not q:
+            return
+        idx = q["current"]
+        questions = q["questions"]
+        if idx >= len(questions):
+            return
+        total = len(questions)
+        question_text = questions[idx]
         await self.send_notification(
-            f"\u2753 *Clarification needed \u2014 Task #{task_id}*\n"
-            f"**{title}**\n\n"
-            f"{question}\n\n"
-            f"_Reply to this message or just type your answer._"
+            f"*Question {idx + 1}/{total}:*\n\n"
+            f"{question_text}\n\n"
+            f"_Type your answer:_"
         )
 
     async def request_approval(self, task_id, title, plan, tier,

@@ -5499,8 +5499,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     await self.app.bot.send_document(
                         chat_id=TELEGRAM_ADMIN_CHAT_ID,
                         document=doc,
-                        filename=f"task_{task_id}.md",
-                        caption=f"📎 Full result for task #{task_id}"
+                        filename=f"{safe_name}.md",
+                        caption=f"📎 Full result for task #{task_id} ({safe_name}.md)"
                     )
             except Exception as e:
                 logger.error(f"Failed to send result document: {e}")

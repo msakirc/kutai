@@ -1527,6 +1527,16 @@ class Orchestrator:
                     logger.info(f"[Task #{task_id}] Suppressed clarification (silent task)")
                     await update_task(task_id, status="failed",
                                       error="Insufficient info (silent task, no clarification)")
+                elif task_ctx.get("clarification_history"):
+                    # Agent tried to clarify again despite having answers —
+                    # treat as completed (answers are already in context).
+                    logger.info(f"[Task #{task_id}] Suppressed repeat clarification "
+                                f"(clarification_history already exists)")
+                    result["status"] = "completed"
+                    # Run post-hook if this is a workflow step
+                    if is_workflow_step(task_ctx):
+                        await post_execute_workflow_step(task, result)
+                    await self._handle_complete(task, result)
                 else:
                     await self._handle_clarification(task, result)
             elif status == "needs_review":

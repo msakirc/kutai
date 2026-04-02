@@ -5629,7 +5629,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             except ImportError:
                 _ws_dir = "workspace"
             if mission_id:
-                results_dir = Path(_ws_dir) / f"mission_{mission_id}" / "results"
+                results_dir = Path(_ws_dir) / f"mission_{mission_id}"
             else:
                 results_dir = Path(_ws_dir) / "results"
             results_dir.mkdir(parents=True, exist_ok=True)

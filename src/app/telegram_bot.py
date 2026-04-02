@@ -327,6 +327,91 @@ class TelegramInterface:
         # Store mission description during workflow selection
         self._pending_mission: dict[int, str] = {}
 
+    async def restore_clarification_state(self):
+        """Rebuild _pending_clarifications and Q&A queues from DB after restart.
+
+        Called once after Telegram polling starts. For any task in
+        needs_clarification, restore the in-memory tracking and re-send
+        the pending question so the user sees it again.
+        """
+        try:
+            db = await get_db()
+            cursor = await db.execute(
+                """SELECT id, title, context FROM tasks
+                   WHERE status = 'needs_clarification'
+                   ORDER BY created_at DESC"""
+            )
+            rows = await cursor.fetchall()
+            if not rows:
+                return
+
+            import json as _json
+            chat_id = int(TELEGRAM_ADMIN_CHAT_ID) if TELEGRAM_ADMIN_CHAT_ID else None
+            if not chat_id:
+                return
+
+            for row in rows:
+                task = dict(row)
+                task_id = task["id"]
+                title = task.get("title", "")
+                self._pending_clarifications[chat_id] = task_id
+
+                # Check for persisted Q&A queue
+                ctx = task.get("context", "{}")
+                if isinstance(ctx, str):
+                    try:
+                        ctx = _json.loads(ctx)
+                    except (ValueError, TypeError):
+                        ctx = {}
+
+                qa_state = ctx.get("_clarification_queue")
+                if qa_state and isinstance(qa_state, dict):
+                    questions = qa_state.get("questions", [])
+                    current = qa_state.get("current", 0)
+                    answers = qa_state.get("answers", [])
+                    if current < len(questions):
+                        # Restore sequential Q&A — re-send current question
+                        self._pending_clarification_queue = {
+                            "task_id": task_id,
+                            "title": title,
+                            "questions": questions,
+                            "current": current,
+                            "answers": answers,
+                        }
+                        progress = f" ({current}/{len(questions)} answered)" if current else ""
+                        await self.send_notification(
+                            f"\u2753 *Clarification pending — Task #{task_id}*\n"
+                            f"**{title}**{progress}\n\n"
+                            f"_(Restored after restart)_"
+                        )
+                        await self._send_next_clarification_question()
+                        logger.info("Restored sequential Q&A state",
+                                    task_id=task_id, current=current,
+                                    total=len(questions))
+                        break  # Only one Q&A queue at a time
+                else:
+                    # Single question — re-send the original question
+                    clarification_q = ctx.get("_clarification_question", "")
+                    if clarification_q:
+                        msg = await self.send_notification(
+                            f"\u2753 *Clarification pending — Task #{task_id}*\n"
+                            f"**{title}**\n\n"
+                            f"{clarification_q}\n\n"
+                            f"_Reply to this message or just type your answer._"
+                        )
+                        if msg:
+                            self._clarification_msg_ids[msg.message_id] = task_id
+                        logger.info("Restored clarification state",
+                                    task_id=task_id)
+                    else:
+                        # No saved question text — just note it's pending
+                        logger.info("Found needs_clarification task without "
+                                    "saved question", task_id=task_id)
+                break  # One clarification at a time
+
+        except Exception as e:
+            logger.error("Failed to restore clarification state", error=str(e))
+
     async def _reply(self, update_or_msg, text: str, **kwargs):
         """Send a reply with the current keyboard state.
 
@@ -3915,7 +4000,11 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             q["current"] += 1
 
             if q["current"] < len(q["questions"]):
-                # More questions — send next one
+                # More questions — persist progress and send next one
+                await self._persist_clarification_state(
+                    task_id, numbered=q["questions"],
+                    current=q["current"], answers=q["answers"],
+                )
                 await self._reply(update,
                     f"\u2705 Got it ({q['current']}/{len(q['questions'])})"
                 )
@@ -3950,6 +4039,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             clarifications = ctx.get("clarification_history", [])
             clarifications.append(answer)
             ctx["clarification_history"] = clarifications
+            # Clean up persisted clarification state
+            ctx.pop("_clarification_queue", None)
+            ctx.pop("_clarification_question", None)
 
             await update_task(
                 task_id,
@@ -5656,6 +5748,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             }
             self._pending_clarifications[int_chat] = task_id
 
+            # Persist Q&A state to task context (survives restart)
+            await self._persist_clarification_state(task_id, numbered=numbered)
+
             header = (
                 f"\u2753 *Clarification needed \u2014 Task #{task_id}*\n"
                 f"**{title}**\n\n"
@@ -5669,6 +5764,10 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         else:
             # Single question or free-form — original behavior
             self._pending_clarifications[int_chat] = task_id
+
+            # Persist question text to task context (survives restart)
+            await self._persist_clarification_state(task_id, question=question)
+
             msg = await self.send_notification(
                 f"\u2753 *Clarification needed \u2014 Task #{task_id}*\n"
                 f"**{title}**\n\n"
@@ -5696,6 +5795,48 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         )
         if msg:
             self._clarification_msg_ids[msg.message_id] = q["task_id"]
+
+    async def _persist_clarification_state(
+        self, task_id: int, *,
+        question: str = "",
+        numbered: list[str] | None = None,
+        current: int = 0,
+        answers: list[str] | None = None,
+    ):
+        """Save clarification state into the task's context so it survives restart.
+
+        For single questions: stores _clarification_question.
+        For sequential Q&A: stores _clarification_queue with questions/current/answers.
+        """
+        import json as _json
+        try:
+            task_info = await get_task(task_id)
+            if not task_info:
+                return
+            existing_ctx = task_info.get("context", "{}")
+            if isinstance(existing_ctx, str):
+                try:
+                    ctx = _json.loads(existing_ctx)
+                except (ValueError, TypeError):
+                    ctx = {}
+            else:
+                ctx = existing_ctx or {}
+
+            if numbered:
+                ctx["_clarification_queue"] = {
+                    "questions": numbered,
+                    "current": current,
+                    "answers": answers or [],
+                }
+                ctx.pop("_clarification_question", None)
+            elif question:
+                ctx["_clarification_question"] = question
+                ctx.pop("_clarification_queue", None)
+
+            await update_task(task_id, context=_json.dumps(ctx))
+        except Exception as e:
+            logger.debug("Failed to persist clarification state",
+                         task_id=task_id, error=str(e))
 
     async def request_approval(self, task_id, title, plan, tier,
                                mission_id=None):

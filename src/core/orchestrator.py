@@ -2891,6 +2891,12 @@ class Orchestrator:
             except Exception as e:
                 logger.debug(f"Startup keyboard send failed: {e}")
 
+            # Restore pending clarification state from DB (re-ask pending questions)
+            try:
+                await self.telegram.restore_clarification_state()
+            except Exception as e:
+                logger.debug(f"Clarification state restore failed: {e}")
+
             try:
                 await self.run_loop()
             finally:

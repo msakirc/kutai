@@ -106,15 +106,13 @@ class QuotaPlanner:
         )
         self.recalculate()
 
-        # Signal backpressure queue to retry waiting calls
+        # Wake sleeping tasks — quota restored means cloud capacity available
         try:
             import asyncio
-            from ..infra.backpressure import get_backpressure_queue
-            bp = get_backpressure_queue()
-            if bp.depth > 0:
-                asyncio.ensure_future(bp.signal_capacity_available())
+            from src.infra.db import wake_sleeping_tasks
+            asyncio.ensure_future(wake_sleeping_tasks("quota_restored"))
         except Exception:
-            pass  # Queue may not be initialized yet
+            pass
 
     def _recent_429_rate(self) -> int:
         """Count of 429s in the last decay window."""

@@ -305,6 +305,21 @@ class LocalModelManager:
                 f"Circuit breaker: {model_name} failed {self._restart_fail_count} "
                 f"times — refusing loads for {_RESTART_COOLDOWN_S:.0f}s"
             )
+            # Schedule sleeping queue wake when cooldown expires
+            try:
+                import asyncio as _aio
+
+                async def _wake_on_cooldown():
+                    await _aio.sleep(_RESTART_COOLDOWN_S)
+                    try:
+                        from src.infra.db import wake_sleeping_tasks
+                        await wake_sleeping_tasks("circuit_breaker_reset")
+                    except Exception:
+                        pass
+
+                _aio.ensure_future(_wake_on_cooldown())
+            except RuntimeError:
+                pass  # no running loop
 
     def _record_restart_success(self, model_name: str) -> None:
         """Record a successful load. Resets the circuit breaker."""

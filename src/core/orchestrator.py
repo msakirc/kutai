@@ -258,6 +258,7 @@ class Orchestrator:
         self._current_task_future = None
         self._running_futures: list[asyncio.Task] = []
         self._model_manager_tasks: list[asyncio.Task] = []
+        self._restart_wake_done: bool = False  # one-time sleeping queue wake on startup
 
 
     # ─── NEW: Context Chaining ───────────────────────────────────────────
@@ -440,6 +441,86 @@ class Orchestrator:
                 (task["id"],)
             )
         if paused:
+            await db.commit()
+
+        # 1b. Sleeping queue — restart wake + timer expiry scan
+        if not self._restart_wake_done:
+            sleeping = await get_sleeping_tasks()
+            if sleeping:
+                for stask in sleeping:
+                    state = {}
+                    try:
+                        state = json.loads(stask.get("sleep_state") or "{}")
+                    except (ValueError, TypeError):
+                        pass
+                    # Reset timer_tier on restart (fresh start, maybe new code)
+                    # but preserve signal_failures (structural issues persist)
+                    state["timer_tier"] = 0
+                    state["next_timer_wake"] = compute_next_timer_wake(0)
+                    await update_task(
+                        stask["id"], status="pending",
+                        sleep_state=json.dumps(state),
+                    )
+                await db.commit()
+                logger.info(f"[Watchdog] Restart wake: {len(sleeping)} sleeping tasks → pending")
+            self._restart_wake_done = True
+
+        # Sleeping timer scan: check if any sleeping task's timer has expired
+        sleeping_tasks = await get_sleeping_tasks()
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        for stask in sleeping_tasks:
+            state = {}
+            try:
+                state = json.loads(stask.get("sleep_state") or "{}")
+            except (ValueError, TypeError):
+                pass
+            next_wake = state.get("next_timer_wake", "")
+            if not next_wake or next_wake > now_str:
+                continue  # not yet
+
+            tier = state.get("timer_tier", 0)
+            if tier >= len(_SLEEP_TIER_INTERVALS) - 1:
+                # Tier 3 (2h cap) expired — escalate to DLQ
+                try:
+                    from ..infra.dead_letter import quarantine_task
+                    await quarantine_task(
+                        task_id=stask["id"],
+                        mission_id=stask.get("mission_id"),
+                        error=stask.get("error", "Sleeping queue exhausted"),
+                        error_category=state.get("last_error_category", "unknown"),
+                        original_agent=stask.get("agent_type", "executor"),
+                        retry_count=stask.get("retry_count", 0),
+                    )
+                except Exception as dlq_err:
+                    logger.error(f"DLQ quarantine failed for sleeping task #{stask['id']}: {dlq_err}")
+                await update_task(
+                    stask["id"], status="failed",
+                    error=f"Sleeping queue tier {tier} exhausted → DLQ",
+                )
+                logger.warning(f"[Watchdog] Sleeping task #{stask['id']} → DLQ (tier {tier} exhausted)")
+                if self.telegram:
+                    try:
+                        await self.telegram.send_notification(
+                            f"⚰️ Task #{stask['id']} exhausted all retries → DLQ\n"
+                            f"**{stask.get('title', '')[:60]}**"
+                        )
+                    except Exception:
+                        pass
+            else:
+                # Advance tier and set to pending for retry
+                new_tier = tier + 1
+                state["timer_tier"] = new_tier
+                state["next_timer_wake"] = compute_next_timer_wake(new_tier)
+                await update_task(
+                    stask["id"], status="pending",
+                    sleep_state=json.dumps(state),
+                )
+                logger.info(
+                    f"[Watchdog] Sleeping task #{stask['id']} timer wake "
+                    f"(tier {tier}→{new_tier})"
+                )
+
+        if sleeping_tasks:
             await db.commit()
 
         # 2. Tasks blocked by FAILED dependencies

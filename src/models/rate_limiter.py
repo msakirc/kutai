@@ -24,6 +24,33 @@ from .model_registry import get_registry
 
 logger = get_logger("models.rate_limiter")
 
+# ── Sleeping queue wake scheduling ────────────────────────────────────────
+_rate_limit_wake_task: asyncio.Task | None = None
+
+
+def _schedule_rate_limit_wake(delay: float) -> None:
+    """Schedule a sleeping queue wake after a rate limit reset.
+
+    Cancel-and-replace: if a wake is already scheduled, cancel it
+    and schedule a new one (the new reset timestamp is more accurate).
+    """
+    global _rate_limit_wake_task
+
+    async def _wake_after_delay():
+        await asyncio.sleep(delay)
+        try:
+            from src.infra.db import wake_sleeping_tasks
+            await wake_sleeping_tasks("rate_limit_reset")
+        except Exception:
+            pass
+
+    try:
+        if _rate_limit_wake_task and not _rate_limit_wake_task.done():
+            _rate_limit_wake_task.cancel()
+        _rate_limit_wake_task = asyncio.ensure_future(_wake_after_delay())
+    except RuntimeError:
+        pass  # no running loop
+
 
 @dataclass
 class RateLimitState:
@@ -280,11 +307,21 @@ class RateLimitState:
         if snap.tpm_remaining is not None:
             self._header_tpm_remaining = snap.tpm_remaining
 
-        # Store reset timestamps
+        # Store reset timestamps + schedule sleeping queue wake
+        _schedule_wake = False
+        _earliest_reset = None
+
         if snap.rpm_reset_at is not None:
             self._header_rpm_reset_at = snap.rpm_reset_at
+            if snap.rpm_remaining is not None and snap.rpm_remaining <= 1:
+                _schedule_wake = True
+                _earliest_reset = snap.rpm_reset_at
         if snap.tpm_reset_at is not None:
             self._header_tpm_reset_at = snap.tpm_reset_at
+            if snap.tpm_remaining is not None and snap.tpm_remaining <= 100:
+                _schedule_wake = True
+                if _earliest_reset is None or snap.tpm_reset_at < _earliest_reset:
+                    _earliest_reset = snap.tpm_reset_at
 
         # Daily limits
         if snap.rpd_limit is not None:
@@ -293,6 +330,15 @@ class RateLimitState:
             self.rpd_remaining = snap.rpd_remaining
         if snap.rpd_reset_at is not None:
             self.rpd_reset_at = snap.rpd_reset_at
+            if snap.rpd_remaining is not None and snap.rpd_remaining <= 0:
+                _schedule_wake = True
+                if _earliest_reset is None or snap.rpd_reset_at < _earliest_reset:
+                    _earliest_reset = snap.rpd_reset_at
+
+        # Schedule a sleeping queue wake at the earliest reset timestamp
+        if _schedule_wake and _earliest_reset is not None:
+            delay = max(0, _earliest_reset - time.time())
+            _schedule_rate_limit_wake(delay)
 
 
 class RateLimitManager:

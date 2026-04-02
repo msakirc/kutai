@@ -679,15 +679,12 @@ class LLMDispatcher:
             if drained:
                 logger.info(f"drained grades after swap | new_model={new_model} drained={drained}")
 
-        # Signal backpressure queue — a model swap means new local capacity
-        # is available. Queued MAIN_WORK calls that failed because the old
-        # model couldn't handle them may succeed with the new one.
+        # Wake sleeping tasks — a model swap means new capacity.
+        # Tasks that failed because the old model couldn't handle them
+        # might succeed with the new one.
         try:
-            from src.infra.backpressure import get_backpressure_queue
-            bp = get_backpressure_queue()
-            if bp.depth > 0:
-                await bp.signal_capacity_available()
-                logger.info(f"signaled backpressure after swap | new_model={new_model} bp_depth={bp.depth}")
+            from src.infra.db import wake_sleeping_tasks
+            await wake_sleeping_tasks("model_swap")
         except Exception:
             pass
 

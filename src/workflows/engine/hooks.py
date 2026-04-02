@@ -92,26 +92,67 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
 
 # Phrases that indicate the agent failed but wrapped it in final_answer
 _FAILURE_PHRASES = [
+    # Direct failure statements
     "cannot be completed",
+    "cannot be performed",
     "cannot proceed",
     "could not be performed",
     "could not be completed",
+    "could not produce a final answer",
     "unable to complete",
-    "execution blocked",
-    "shell tool is blocked",
-    "shell tool is completely",
-    "tool is temporarily disabled",
-    "cannot proceed until",
-    "blocked - cannot",
-    "task failed",
-    "verification status: failed",
-    "status: blocked",
+    "cannot complete",
     "cannot execute",
     "cannot run",
+    # Tool/environment failures
+    "shell tool is blocked",
+    "shell tool is disabled",
+    "shell tool is completely",
+    "shell tool was blocked",
+    "shell tool has failed",
+    "shell is blocked",
+    "tool is temporarily disabled",
+    "tool is blocked",
+    "tool is disabled",
+    "tool block",
+    "tool failed",
+    "tool is completely",
+    "tool is non-functional",
+    "tools are available",  # "no alternative tools are available"
+    # Status keywords
+    "execution blocked",
+    "status: blocked",
+    "status: failed",
+    "cannot proceed until",
+    "blocked - cannot",
+    "critical blocker",
     "no test execution possible",
     "cannot be generated without",
-    "not run - shell tool blocked",
-    "tool block",
+    "not run - shell",
+    "not run -",
+    "workspace appears empty",
+    "workspace is inaccessible",
+    "inaccessible due to",
+    # Verification failures
+    "verification status: failed",
+    "verification failed",
+    "task failed",
+    "failed / incomplete",
+    "creation failed",
+    "suite creation failed",
+    # Missing/incomplete outputs
+    "documentation is incomplete",
+    "no artifact",
+    "artifact cannot be generated",
+    "not yet created",
+    "placeholder text",
+]
+
+# Output starts with raw JSON tool_call — agent never produced final_answer
+_RAW_TOOL_CALL_PREFIXES = [
+    '{"action":"tool_call"',
+    '{"action": "tool_call"',
+    '{"action":"toolcall"',
+    '{"action": "toolcall"',
 ]
 
 # Phrases that look like failure but are legitimate analysis
@@ -121,23 +162,41 @@ _FALSE_POSITIVE_PHRASES = [
     "failure mode",     # design docs discussing failure modes
     "error handling",   # architecture discussing error handling
     "error states",     # UX discussing error states
+    "empty states",     # UX design for empty states
+]
+
+# Hard failure indicators — these override false positives
+_HARD_FAILURE_PHRASES = [
+    "shell tool",
+    "tool is blocked",
+    "tool is disabled",
+    "cannot proceed until",
+    "execution blocked",
+    "_ctx is not defined",
+    "not in allowlist",
 ]
 
 
 def _is_disguised_failure(output: str) -> bool:
     """Detect if a 'completed' result is actually a failure report."""
-    if not output or len(output) < 50:
+    if not output or len(output) < 10:
         return False
+
+    stripped = output.strip()
+
+    # Raw tool_call JSON as the result — agent never produced an answer
+    for prefix in _RAW_TOOL_CALL_PREFIXES:
+        if prefix in stripped[:100]:
+            return True
 
     lower = output.lower()
 
-    # Check for false positives first — legitimate analysis about failures
-    for fp in _FALSE_POSITIVE_PHRASES:
-        if fp in lower and not any(fail in lower for fail in [
-            "shell tool", "tool is blocked", "cannot proceed until",
-            "execution blocked",
-        ]):
-            return False
+    # Hard failure indicators — always a failure regardless of context
+    if any(phrase in lower for phrase in _HARD_FAILURE_PHRASES):
+        return True
+
+    # Check for false positives — legitimate analysis about failures
+    has_false_positive = any(fp in lower for fp in _FALSE_POSITIVE_PHRASES)
 
     # Count failure indicators
     hits = sum(1 for phrase in _FAILURE_PHRASES if phrase in lower)
@@ -146,8 +205,8 @@ def _is_disguised_failure(output: str) -> bool:
     if hits >= 2:
         return True
 
-    # 1 failure phrase + short output (< 500 chars) = likely failure
-    if hits >= 1 and len(output) < 500:
+    # 1 failure phrase without false positive context
+    if hits >= 1 and not has_false_positive:
         return True
 
     return False

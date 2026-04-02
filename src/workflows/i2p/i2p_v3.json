@@ -3816,7 +3816,7 @@
       "id": "7.2",
       "phase": "phase_7",
       "name": "linting_and_formatting",
-      "agent": "coder",
+      "agent": "executor",
       "difficulty": "easy",
       "tools_hint": [
         "shell",
@@ -3865,7 +3865,7 @@
       "id": "7.3",
       "phase": "phase_7",
       "name": "backend_scaffold",
-      "agent": "coder",
+      "agent": "executor",
       "difficulty": "medium",
       "tools_hint": [
         "shell",
@@ -3904,7 +3904,7 @@
       "id": "7.4",
       "phase": "phase_7",
       "name": "database_setup",
-      "agent": "coder",
+      "agent": "executor",
       "difficulty": "medium",
       "tools_hint": [
         "shell",
@@ -3954,7 +3954,7 @@
       "id": "7.5",
       "phase": "phase_7",
       "name": "frontend_scaffold",
-      "agent": "coder",
+      "agent": "executor",
       "difficulty": "medium",
       "tools_hint": [
         "shell",
@@ -3992,7 +3992,7 @@
       "id": "7.6",
       "phase": "phase_7",
       "name": "test_infrastructure",
-      "agent": "coder",
+      "agent": "executor",
       "difficulty": "medium",
       "tools_hint": [
         "shell",
@@ -4037,7 +4037,7 @@
       "id": "7.7",
       "phase": "phase_7",
       "name": "docker_setup",
-      "agent": "coder",
+      "agent": "executor",
       "difficulty": "easy",
       "tools_hint": [
         "shell",
@@ -4075,7 +4075,7 @@
       "id": "7.8",
       "phase": "phase_7",
       "name": "ci_cd_pipeline",
-      "agent": "coder",
+      "agent": "executor",
       "difficulty": "medium",
       "tools_hint": [
         "shell",
@@ -4248,7 +4248,7 @@
       "id": "7.12",
       "phase": "phase_7",
       "name": "component_playground",
-      "agent": "coder",
+      "agent": "executor",
       "difficulty": "easy",
       "tools_hint": [
         "shell",

@@ -1333,7 +1333,10 @@ async def execute_tool(tool_name: str, agent_type: str | None = None, task_hints
         return f"❌ Unknown tool: '{tool_name}'. Available: {available}"
 
     # ── Circuit breaker: skip tools that keep failing ──
-    if _is_tool_circuit_open(tool_name):
+    # Skip for workflow steps — they have their own retry/error recovery.
+    # The global circuit breaker causes cascading failures across tasks.
+    is_workflow = bool(task_hints and task_hints.get("workspace_path"))
+    if _is_tool_circuit_open(tool_name) and not is_workflow:
         return (
             f"⚠️ Tool '{tool_name}' temporarily disabled "
             f"(failed {_TOOL_FAILURE_THRESHOLD} times in "

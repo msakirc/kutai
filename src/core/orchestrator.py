@@ -421,6 +421,25 @@ class Orchestrator:
                     (task["id"],)
                 )
 
+        # 1b. Paused workflow tasks — retry every 10 minutes
+        cursor_paused = await db.execute(
+            """SELECT id, title FROM tasks
+               WHERE status = 'paused'
+               AND started_at < datetime('now', '-10 minutes')"""
+        )
+        paused = [dict(row) for row in await cursor_paused.fetchall()]
+        for task in paused:
+            logger.info(
+                f"[Watchdog] Resuming paused task #{task['id']} for retry"
+            )
+            await db.execute(
+                "UPDATE tasks SET status = 'pending', retry_count = 0 "
+                "WHERE id = ?",
+                (task["id"],)
+            )
+        if paused:
+            await db.commit()
+
         # 2. Tasks blocked by FAILED dependencies
         cursor2 = await db.execute(
             "SELECT id, title, depends_on FROM tasks "
@@ -1512,38 +1531,39 @@ class Orchestrator:
                         await self._handle_clarification(task, result)
                         continue
                     if result.get("status") == "failed":
-                        # Disguised failure detected — retry or skip
+                        # Disguised failure detected — retry then backpressure
                         error_msg = result.get("error", "Disguised failure detected")
                         retry_count = task.get("retry_count", 0) or 0
                         max_retries = task.get("max_retries", 3) or 3
 
                         if retry_count < max_retries:
-                            # Retry — reset to pending
                             await update_task(
                                 task_id, status="pending",
                                 retry_count=retry_count + 1,
                                 error=error_msg,
                             )
                             logger.warning(
-                                f"disguised failure, retrying",
+                                f"disguised failure, retrying "
+                                f"{retry_count + 1}/{max_retries}",
                                 task_id=task_id,
-                                retry=f"{retry_count + 1}/{max_retries}",
                             )
                         else:
-                            # Exhausted retries — skip step so pipeline continues
-                            # Downstream steps will run with missing artifact
+                            # Backpressure: pause and let watchdog retry later
+                            # when conditions improve (shell restored, model
+                            # available, etc). Don't skip — holds quality.
                             await update_task(
-                                task_id, status="skipped",
-                                error=f"Skipped after {max_retries} disguised failures: {error_msg}",
+                                task_id, status="paused",
+                                error=f"Paused after {max_retries} failures: {error_msg}",
                             )
                             logger.warning(
-                                f"disguised failure, skipping after {max_retries} retries",
+                                f"disguised failure, pausing for backpressure "
+                                f"after {max_retries} retries",
                                 task_id=task_id,
                             )
                             await self.telegram.send_notification(
-                                f"⏭ Task #{task_id} skipped after {max_retries} failures\n"
+                                f"⏸ Task #{task_id} paused — will auto-retry\n"
                                 f"**{task.get('title', '')}**\n"
-                                f"Pipeline continues without this artifact."
+                                f"Reason: {error_msg[:100]}"
                             )
                         continue
                 await self._handle_complete(task, result)
@@ -1582,25 +1602,23 @@ class Orchestrator:
                 max_retries = task.get("max_retries", 3) or 3
 
                 if retry_count < max_retries:
-                    # Retry
                     await update_task(task_id, status="pending",
                                       retry_count=retry_count + 1,
                                       error=error_str[:500])
                     logger.warning(f"agent failed, retrying {retry_count + 1}/{max_retries}",
                                    task_id=task_id, error=error_str[:200])
                 elif task_ctx.get("is_workflow_step"):
-                    # Workflow step: skip so pipeline continues
-                    await update_task(task_id, status="skipped",
-                                      error=f"Skipped after {max_retries} failures: {error_str[:300]}")
-                    logger.warning(f"workflow step failed {max_retries} times, skipping",
+                    # Workflow step: backpressure — pause for auto-retry
+                    await update_task(task_id, status="paused",
+                                      error=f"Paused after {max_retries} failures: {error_str[:300]}")
+                    logger.warning(f"workflow step paused for backpressure",
                                    task_id=task_id)
                     await self.telegram.send_notification(
-                        f"⏭ Task #{task_id} skipped after {max_retries} failures\n"
+                        f"⏸ Task #{task_id} paused — will auto-retry\n"
                         f"**{title}**\n"
-                        f"Pipeline continues."
+                        f"Reason: {error_str[:100]}"
                     )
                 else:
-                    # Non-workflow: permanent failure
                     await update_task(task_id, status="failed",
                                       error=error_str[:500])
                     logger.error("agent returned failure", task_id=task_id,

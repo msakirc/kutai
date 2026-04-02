@@ -1512,18 +1512,39 @@ class Orchestrator:
                         await self._handle_clarification(task, result)
                         continue
                     if result.get("status") == "failed":
-                        # Disguised failure detected — route to failure handler
+                        # Disguised failure detected — retry or skip
                         error_msg = result.get("error", "Disguised failure detected")
-                        logger.warning(
-                            "disguised failure detected",
-                            task_id=task_id,
-                            error=error_msg,
-                        )
-                        await update_task(
-                            task_id, status="failed",
-                            error=error_msg,
-                        )
-                        await self.telegram.send_error(task_id, task.get("title", ""), error_msg)
+                        retry_count = task.get("retry_count", 0) or 0
+                        max_retries = task.get("max_retries", 3) or 3
+
+                        if retry_count < max_retries:
+                            # Retry — reset to pending
+                            await update_task(
+                                task_id, status="pending",
+                                retry_count=retry_count + 1,
+                                error=error_msg,
+                            )
+                            logger.warning(
+                                f"disguised failure, retrying",
+                                task_id=task_id,
+                                retry=f"{retry_count + 1}/{max_retries}",
+                            )
+                        else:
+                            # Exhausted retries — skip step so pipeline continues
+                            # Downstream steps will run with missing artifact
+                            await update_task(
+                                task_id, status="skipped",
+                                error=f"Skipped after {max_retries} disguised failures: {error_msg}",
+                            )
+                            logger.warning(
+                                f"disguised failure, skipping after {max_retries} retries",
+                                task_id=task_id,
+                            )
+                            await self.telegram.send_notification(
+                                f"⏭ Task #{task_id} skipped after {max_retries} failures\n"
+                                f"**{task.get('title', '')}**\n"
+                                f"Pipeline continues without this artifact."
+                            )
                         continue
                 await self._handle_complete(task, result)
             elif status == "needs_subtasks":
@@ -1557,11 +1578,34 @@ class Orchestrator:
                 await self._handle_review(task, result)
             elif status == "failed":
                 error_str = result.get("error", result.get("result", "Unknown error"))
-                logger.error("agent returned failure", task_id=task_id,
-                             error=error_str[:200])
-                await update_task(task_id, status="failed",
-                                  error=error_str[:500])
-                await self.telegram.send_error(task_id, title, error_str)
+                retry_count = task.get("retry_count", 0) or 0
+                max_retries = task.get("max_retries", 3) or 3
+
+                if retry_count < max_retries:
+                    # Retry
+                    await update_task(task_id, status="pending",
+                                      retry_count=retry_count + 1,
+                                      error=error_str[:500])
+                    logger.warning(f"agent failed, retrying {retry_count + 1}/{max_retries}",
+                                   task_id=task_id, error=error_str[:200])
+                elif task_ctx.get("is_workflow_step"):
+                    # Workflow step: skip so pipeline continues
+                    await update_task(task_id, status="skipped",
+                                      error=f"Skipped after {max_retries} failures: {error_str[:300]}")
+                    logger.warning(f"workflow step failed {max_retries} times, skipping",
+                                   task_id=task_id)
+                    await self.telegram.send_notification(
+                        f"⏭ Task #{task_id} skipped after {max_retries} failures\n"
+                        f"**{title}**\n"
+                        f"Pipeline continues."
+                    )
+                else:
+                    # Non-workflow: permanent failure
+                    await update_task(task_id, status="failed",
+                                      error=error_str[:500])
+                    logger.error("agent returned failure", task_id=task_id,
+                                 error=error_str[:200])
+                    await self.telegram.send_error(task_id, title, error_str)
             else:
                 logger.warning("unknown task status", task_id=task_id, status=status)
                 await self._handle_complete(task, result)

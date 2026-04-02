@@ -301,9 +301,11 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
 
     # ── Force needs_clarification for human-gate steps ──
     # Steps with triggers_clarification=true bypass LLM's clarify action.
-    # We override the result dict so the orchestrator's normal clarification
-    # path handles the Telegram notification and pending tracking.
-    if ctx.get("triggers_clarification") and output_value:
+    # Only fires ONCE — if clarification_history already has answers,
+    # the human already responded and the step should complete normally.
+    if (ctx.get("triggers_clarification")
+            and output_value
+            and not ctx.get("clarification_history")):
         result["status"] = "needs_clarification"
         result["clarification"] = output_value
         logger.info(

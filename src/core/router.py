@@ -12,6 +12,22 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
+from typing import Optional
+
+
+class ModelCallFailed(RuntimeError):
+    """All model candidates exhausted — no backpressure, no retry.
+
+    Raised by call_model() when every candidate fails. The caller
+    (process_task) catches this and puts the task to sleep, waiting
+    for a signal that capacity has changed.
+    """
+
+    def __init__(self, call_id: str, last_error: str, error_category: str):
+        super().__init__(f"All models failed for '{call_id}': {last_error}")
+        self.call_id = call_id
+        self.last_error = last_error
+        self.error_category = error_category
 
 import litellm
 
@@ -1397,46 +1413,39 @@ async def call_model(
                 local_manager.mark_inference_end(_inf_gen)
                 local_manager.release_inference_slot()
 
-    # ── All candidates exhausted — try backpressure queue ──
+    # ── All candidates exhausted — raise for sleeping queue ──
     call_id = f"{reqs.agent_type}:{reqs.primary_capability}"
+    error_cat = _classify_error_category(last_error or "Unknown")
 
-    # Skip backpressure when model_override is set: if we pinned a specific
-    # model and it failed, retrying the same model won't help.  Let the caller
-    # (dispatcher) handle fallback (e.g. OVERHEAD → try cloud).
-    # Also skip backpressure on retries (prevent infinite recursion).
-    if reqs.model_override or getattr(reqs, '_is_retry', False):
-        raise RuntimeError(
-            f"All models failed for '{call_id}'. "
-            f"Last error: {last_error}"
-        )
-
-    from ..infra.backpressure import get_backpressure_queue
-    bp_queue = get_backpressure_queue()
-
-    logger.warning(
-        "all models failed fallback to backpressure",
+    raise ModelCallFailed(
         call_id=call_id,
-        last_error=last_error,
+        last_error=last_error or "Unknown",
+        error_category=error_cat,
     )
 
-    # Create a retry callable that re-runs selection + call
-    async def _retry_call():
-        # On retry, refresh perf cache and try again
-        await refresh_perf_cache()
-        # Recursive call — but with a flag to prevent infinite backpressure
-        reqs._is_retry = True
-        return await call_model(reqs, messages, tools)
 
-    try:
-        return await bp_queue.enqueue(
-            call_id=call_id,
-            priority=reqs.priority,
-            last_error=last_error or "Unknown",
-            call_func=_retry_call,
-        )
-    except RuntimeError:
-        # Queue full or expired — propagate
-        raise
+# ─── Error Category Classification ────────────────────────────────────────────
+
+def _classify_error_category(error: str) -> str:
+    """Classify an error string into a sleeping queue category."""
+    e = error.lower()
+    if "gpu queue timeout" in e or "gpu access denied" in e:
+        return "gpu_busy"
+    if any(k in e for k in ("rate limit", "rate_limit", "429", "too many requests")):
+        return "rate_limited"
+    if "daily limit exhausted" in e:
+        return "daily_exhausted"
+    if "circuit breaker" in e or "failed to load local model" in e:
+        return "circuit_breaker"
+    if "no models available" in e or "no models matched" in e:
+        return "no_model"
+    if any(k in e for k in ("api key", "authentication", "unauthorized", "billing")):
+        return "auth_failure"
+    if any(k in e for k in ("timeout", "timed out")):
+        return "timeout"
+    if any(k in e for k in ("connection", "network", "dns", "refused")):
+        return "connection_error"
+    return "unknown"
 
 
 # ─── Thinking Helpers ────────────────────────────────────────────────────────

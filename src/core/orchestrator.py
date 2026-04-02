@@ -15,9 +15,11 @@ from ..infra.db import (
     get_due_scheduled_tasks, update_scheduled_task,
     cancel_task, get_task, get_mission,
     save_workspace_snapshot, release_task_locks, release_mission_locks,
+    get_sleeping_tasks, wake_sleeping_tasks, make_sleep_state,
+    compute_next_timer_wake, _SLEEP_TIER_INTERVALS,
 )
 from src.infra.logging_config import get_logger
-from .router import _circuit_breakers
+from .router import _circuit_breakers, ModelCallFailed
 from ..agents import get_agent
 from ..tools import execute_tool
 from ..tools.workspace import (
@@ -1633,6 +1635,55 @@ class Orchestrator:
                 await release_task_locks(task_id)
             except Exception:
                 pass
+
+        except ModelCallFailed as mcf:
+            # ── Sleeping queue: all models exhausted ──
+            # Don't retry immediately — put the task to sleep until a
+            # signal (GPU freed, rate limit reset, model swap, etc.)
+            # indicates that capacity has changed.
+            try:
+                await release_task_locks(task_id)
+            except Exception:
+                pass
+
+            # Classifier failure: task was never dispatched to an agent.
+            # Don't burn retry_count — the task hasn't been attempted yet.
+            is_classifier_failure = "classification" not in task_ctx
+
+            # Build or update sleep_state
+            existing_state = {}
+            try:
+                existing_state = json.loads(task.get("sleep_state") or "{}")
+            except (ValueError, TypeError):
+                pass
+
+            timer_tier = existing_state.get("timer_tier", 0)
+            signal_failures = existing_state.get("signal_failures", 0)
+
+            sleep_state = make_sleep_state(
+                timer_tier=timer_tier,
+                signal_failures=signal_failures,
+                error_category=mcf.error_category,
+            )
+
+            update_kwargs = dict(
+                status="sleeping",
+                sleep_state=sleep_state,
+                error=str(mcf)[:500],
+                error_category=mcf.error_category,
+            )
+            if not is_classifier_failure:
+                update_kwargs["retry_count"] = task.get("retry_count", 0) + 1
+
+            await update_task(task_id, **update_kwargs)
+
+            logger.warning(
+                "task sleeping — waiting for capacity signal",
+                task_id=task_id,
+                error_category=mcf.error_category,
+                timer_tier=timer_tier,
+                is_classifier_failure=is_classifier_failure,
+            )
 
         except Exception as e:
             logger.exception("task failed", task_id=task_id, error_type=type(e).__name__, error=str(e))

@@ -2,7 +2,7 @@
 import aiosqlite
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from src.app.config import DB_PATH
 from src.infra.logging_config import get_logger
@@ -499,6 +499,17 @@ async def init_db():
         except Exception as e:
             logger.debug(f"cost column migration skipped: {e}")
 
+    # Migration: add sleep_state column for signal-based sleeping queue (S11)
+    if "sleep_state" not in columns:
+        try:
+            await db.execute(
+                "ALTER TABLE tasks ADD COLUMN sleep_state TEXT"
+            )
+            await db.commit()
+            logger.info("Added sleep_state column to tasks table")
+        except Exception as e:
+            logger.debug(f"sleep_state column migration skipped: {e}")
+
     # ── Performance indexes on common query patterns ──
     _indexes = [
         ("idx_tasks_status", "tasks", "status"),
@@ -569,7 +580,7 @@ _TASK_COLUMNS = frozenset({
     "title", "description", "agent_type", "status", "tier", "priority",
     "requires_approval", "depends_on", "result", "error", "error_category",
     "context", "retry_count", "max_retries", "started_at", "completed_at",
-    "task_hash", "max_cost", "cost", "quality_score",
+    "task_hash", "max_cost", "cost", "quality_score", "sleep_state",
 })
 
 
@@ -839,6 +850,92 @@ async def update_task(task_id, **kwargs):
     values = list(kwargs.values()) + [task_id]
     await db.execute(f"UPDATE tasks SET {sets} WHERE id = ?", values)
     await db.commit()
+
+
+# ─── Sleeping Queue (S11) ──────────────────────────────────────────────────
+
+# Timer tiers: 10 min → 30 min → 1 hour → 2 hours (cap)
+_SLEEP_TIER_INTERVALS = [600, 1800, 3600, 7200]
+
+# Max signal-wake failures before signals are ignored for a task
+_MAX_SIGNAL_FAILURES = 3
+
+
+async def get_sleeping_tasks() -> list[dict]:
+    """Fetch all tasks in 'sleeping' status."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM tasks WHERE status = 'sleeping'"
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+async def wake_sleeping_tasks(reason: str) -> int:
+    """Wake eligible sleeping tasks by setting them to 'pending'.
+
+    A task is eligible if signal_failures < _MAX_SIGNAL_FAILURES.
+    Each wake increments signal_failures (timer_tier unchanged).
+
+    Returns the number of tasks woken.
+    """
+    import json as _json
+
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT id, sleep_state FROM tasks WHERE status = 'sleeping'"
+    )
+    rows = await cursor.fetchall()
+
+    woken = 0
+    for row in rows:
+        task_id = row["id"]
+        try:
+            state = _json.loads(row["sleep_state"] or "{}")
+        except (ValueError, TypeError):
+            state = {}
+
+        signal_failures = state.get("signal_failures", 0)
+        if signal_failures >= _MAX_SIGNAL_FAILURES:
+            continue  # this task only wakes on timer now
+
+        state["signal_failures"] = signal_failures + 1
+        await db.execute(
+            "UPDATE tasks SET status = 'pending', sleep_state = ? WHERE id = ?",
+            (_json.dumps(state), task_id),
+        )
+        woken += 1
+
+    if woken:
+        await db.commit()
+        logger.info(f"Woke {woken} sleeping task(s) | reason={reason}")
+
+    return woken
+
+
+def compute_next_timer_wake(tier: int) -> str:
+    """Compute the next timer wake timestamp for a given tier.
+
+    Returns a datetime string in the DB format (space-separated, no T).
+    """
+    interval = _SLEEP_TIER_INTERVALS[min(tier, len(_SLEEP_TIER_INTERVALS) - 1)]
+    wake_at = datetime.now(timezone.utc) + timedelta(seconds=interval)
+    return wake_at.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def make_sleep_state(
+    timer_tier: int = 0,
+    signal_failures: int = 0,
+    error_category: str = "unknown",
+) -> str:
+    """Create a sleep_state JSON string for a task entering the sleeping queue."""
+    import json as _json
+    return _json.dumps({
+        "timer_tier": timer_tier,
+        "signal_failures": signal_failures,
+        "last_error_category": error_category,
+        "sleeping_since": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        "next_timer_wake": compute_next_timer_wake(timer_tier),
+    })
 
 
 # ─── Task Locking (atomic claim) ────────────────────────────────────────────

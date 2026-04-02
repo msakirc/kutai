@@ -299,6 +299,32 @@ async def main():
         cwd=os.getcwd(),
     )
 
+    # Write heartbeat immediately and keep it alive during startup.
+    # The old heartbeat file may be >120s stale from a previous hung
+    # instance.  Startup (docker, health checks, model load) can take
+    # 60-120s — without periodic heartbeats the wrapper kills us.
+    def _write_heartbeat():
+        try:
+            os.makedirs("logs", exist_ok=True)
+            _ts = str(time.time())
+            with open("logs/orchestrator.heartbeat", "w") as _f:
+                _f.write(_ts)
+            with open("logs/heartbeat", "w") as _f:
+                _f.write(_ts)
+        except Exception:
+            pass
+
+    _write_heartbeat()
+
+    # Background task that writes heartbeat every 15s during startup,
+    # mirroring the orchestrator's own _heartbeat_loop.
+    async def _startup_heartbeat():
+        while True:
+            await asyncio.sleep(15)
+            _write_heartbeat()
+
+    _hb_task = asyncio.create_task(_startup_heartbeat())
+
     _log.info("Running check_env...")
     check_env()
     _log.info("check_env done, running print_config...")
@@ -392,6 +418,10 @@ async def main():
         _log.info("GPU auto-detect loop started")
     except Exception as exc:
         _log.debug("GPU auto-detect loop not started", reason=str(exc))
+
+    # Cancel startup heartbeat — the orchestrator's own _heartbeat_loop
+    # takes over once start() creates its background tasks.
+    _hb_task.cancel()
 
     orch = Orchestrator(shutdown_event=shutdown_event)
     await orch.start()

@@ -1189,8 +1189,8 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "competitor_feature_matrix",
-        "competitor_sentiment_analysis",
+        "competitor_feature_matrix_summary",
+        "competitor_sentiment_analysis_summary",
         "indirect_competitors_list"
       ],
       "output_artifacts": [
@@ -1299,8 +1299,8 @@
       "input_artifacts": [
         "market_existence_data",
         "audience_research_data",
-        "competitor_pricing_analysis",
-        "competitor_sentiment_analysis"
+        "competitor_pricing_analysis_summary",
+        "competitor_sentiment_analysis_summary"
       ],
       "output_artifacts": [
         "research_summary"
@@ -1471,7 +1471,7 @@
       "may_need_clarification": false,
       "input_artifacts": [
         "audience_research_data",
-        "market_gap_analysis",
+        "market_gap_analysis_summary",
         "competitor_sentiment_analysis",
         "product_vision"
       ],

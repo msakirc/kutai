@@ -72,6 +72,110 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
 
     return True, ""
 
+# ── Auto-summarize helper ──────────────────────────────────────────────────
+
+
+def _auto_summarize(text: str, target_chars: int = 1500) -> str:
+    """Produce a compact summary of a large artifact WITHOUT using an LLM.
+
+    Strategy:
+    1. If JSON: extract top-level keys and first-level values (truncated)
+    2. If markdown: keep headings + first sentence of each section
+    3. Fallback: keep first and last portions
+    """
+    text = text.strip()
+    if not text:
+        return ""
+
+    # Try JSON summarization
+    try:
+        data = json.loads(text)
+        return _summarize_json(data, target_chars)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Markdown summarization — keep headings + first line of each section
+    if any(text.startswith(h) for h in ("#", "##", "###")) or "\n#" in text:
+        return _summarize_markdown(text, target_chars)
+
+    # Fallback — first portion + last portion
+    if len(text) <= target_chars:
+        return text
+    half = target_chars // 2
+    return text[:half] + "\n\n[...truncated...]\n\n" + text[-half:]
+
+
+def _summarize_json(data, target_chars: int) -> str:
+    """Summarize a JSON structure by showing keys and condensed values."""
+    lines: list[str] = []
+
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if isinstance(value, str):
+                lines.append(f"**{key}**: {value[:200]}")
+            elif isinstance(value, list):
+                items_preview = []
+                for item in value[:5]:
+                    if isinstance(item, dict):
+                        # Show first 2-3 key fields
+                        preview_fields = list(item.items())[:3]
+                        preview = ", ".join(f"{k}: {str(v)[:60]}" for k, v in preview_fields)
+                        items_preview.append(f"  - {preview}")
+                    else:
+                        items_preview.append(f"  - {str(item)[:100]}")
+                lines.append(f"**{key}** ({len(value)} items):")
+                lines.extend(items_preview[:5])
+                if len(value) > 5:
+                    lines.append(f"  - ...and {len(value) - 5} more")
+            elif isinstance(value, dict):
+                sub_keys = ", ".join(list(value.keys())[:5])
+                lines.append(f"**{key}**: {{{sub_keys}}}")
+            else:
+                lines.append(f"**{key}**: {value}")
+
+    elif isinstance(data, list):
+        lines.append(f"Array with {len(data)} items:")
+        for item in data[:5]:
+            if isinstance(item, dict):
+                preview_fields = list(item.items())[:3]
+                preview = ", ".join(f"{k}: {str(v)[:60]}" for k, v in preview_fields)
+                lines.append(f"- {preview}")
+            else:
+                lines.append(f"- {str(item)[:100]}")
+        if len(data) > 5:
+            lines.append(f"...and {len(data) - 5} more")
+
+    result = "\n".join(lines)
+    return result[:target_chars] if len(result) > target_chars else result
+
+
+def _summarize_markdown(text: str, target_chars: int) -> str:
+    """Summarize markdown by keeping headings + first sentence of each section."""
+    lines = text.split("\n")
+    summary_lines: list[str] = []
+    total = 0
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            # Always keep headings
+            summary_lines.append(stripped)
+            total += len(stripped) + 1
+        elif stripped and summary_lines and not summary_lines[-1].startswith("#"):
+            # Skip non-first content lines
+            continue
+        elif stripped:
+            # First content line after heading — keep it
+            truncated = stripped[:200]
+            summary_lines.append(truncated)
+            total += len(truncated) + 1
+
+        if total >= target_chars:
+            break
+
+    return "\n".join(summary_lines)
+
+
 # ── Module-level singleton ─────────────────────────────────────────────────
 
 _artifact_store: Optional[ArtifactStore] = None
@@ -266,6 +370,22 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
             f"[Workflow Hook] Post-execute: stored artifact '{name}' "
             f"for mission {mission_id} ({len(output_value)} chars)"
         )
+
+    # ── Auto-summarize large artifacts ──
+    # If an artifact exceeds the context budget, produce a compact summary
+    # version ({name}_summary) that downstream steps can consume instead.
+    # This avoids lossy truncation — the summary is a coherent condensation.
+    _SUMMARY_THRESHOLD = 3000  # chars — above this, create a summary
+    _SUMMARY_TARGET = 1500     # chars — target length for summaries
+    if output_value and len(output_value) > _SUMMARY_THRESHOLD:
+        for name in output_names:
+            summary = _auto_summarize(output_value, _SUMMARY_TARGET)
+            summary_name = f"{name}_summary"
+            await store.store(mission_id, summary_name, summary)
+            logger.info(
+                f"[Workflow Hook] Auto-summarized '{name}' -> '{summary_name}' "
+                f"({len(output_value)} -> {len(summary)} chars)"
+            )
 
     # ── Write artifacts to disk in mission directory ──
     if output_value and mission_id:

@@ -135,16 +135,17 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
     parts: list[str] = [instruction]
 
     # Append formatted artifacts if any are available
-    # Scale budget to model context: easy/medium steps get local LLMs with
-    # 4-8k context, so cap artifact injection to leave room for system
-    # prompt (~1k tokens) and generation (~1k tokens).
+    # Budget must fit the WORST-CASE model (8k context local LLM).
+    # Reserve: ~1500 tokens system prompt, ~500 tokens instruction,
+    # ~1500 tokens for generation = 3500 reserved, ~4500 for artifacts.
+    # Even "hard" steps may fall back to local if cloud is unavailable.
     difficulty = ctx.get("difficulty", 6)
-    if difficulty <= 3:      # easy → ~4k context model
-        max_artifact_chars = 6000   # ~1500 tokens
-    elif difficulty <= 6:    # medium → ~8k context model
-        max_artifact_chars = 16000  # ~4000 tokens
-    else:                    # hard → cloud with large context
-        max_artifact_chars = 48000  # ~12000 tokens
+    if difficulty <= 3:      # easy — minimal context needed
+        max_artifact_chars = 4000   # ~1000 tokens
+    elif difficulty <= 6:    # medium — standard local model
+        max_artifact_chars = 12000  # ~3000 tokens
+    else:                    # hard — may get cloud but must fit local too
+        max_artifact_chars = 18000  # ~4500 tokens (fits 8k with headroom)
 
     if artifact_contents:
         filtered = {k: v for k, v in artifact_contents.items() if v is not None}

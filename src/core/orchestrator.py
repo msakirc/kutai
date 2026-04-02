@@ -428,12 +428,33 @@ class Orchestrator:
                AND started_at < datetime('now', '-10 minutes')"""
         )
         paused = [dict(row) for row in await cursor_paused.fetchall()]
+        MAX_PAUSE_RESUMES = 3  # max times watchdog will resume a paused task
         for task in paused:
+            # Track how many times this task has been resumed from paused.
+            # The error field contains "Paused after N failures:" — count
+            # how many times we've already resumed it.
+            error_msg = task.get("error", "") or ""
+            resume_count = error_msg.count("[resumed]")
+            if resume_count >= MAX_PAUSE_RESUMES:
+                logger.warning(
+                    f"[Watchdog] Task #{task['id']} exhausted {MAX_PAUSE_RESUMES} "
+                    f"pause-resume cycles — marking permanently failed"
+                )
+                await db.execute(
+                    "UPDATE tasks SET status = 'failed', "
+                    "error = error || ' [permanently failed after "
+                    f"{MAX_PAUSE_RESUMES} resume cycles]' "
+                    "WHERE id = ?",
+                    (task["id"],)
+                )
+                continue
             logger.info(
-                f"[Watchdog] Resuming paused task #{task['id']} for retry"
+                f"[Watchdog] Resuming paused task #{task['id']} "
+                f"(resume {resume_count + 1}/{MAX_PAUSE_RESUMES})"
             )
             await db.execute(
-                "UPDATE tasks SET status = 'pending', retry_count = 0 "
+                "UPDATE tasks SET status = 'pending', retry_count = 0, "
+                "error = error || ' [resumed]' "
                 "WHERE id = ?",
                 (task["id"],)
             )
@@ -1529,7 +1550,7 @@ class Orchestrator:
                     # Post-hook may override status
                     if result.get("status") == "needs_clarification":
                         await self._handle_clarification(task, result)
-                        continue
+                        return
                     if result.get("status") == "failed":
                         # Disguised failure detected — retry then backpressure
                         error_msg = result.get("error", "Disguised failure detected")
@@ -1565,7 +1586,7 @@ class Orchestrator:
                                 f"**{task.get('title', '')}**\n"
                                 f"Reason: {error_msg[:100]}"
                             )
-                        continue
+                        return
                 await self._handle_complete(task, result)
             elif status == "needs_subtasks":
                 await self._handle_subtasks(task, result)

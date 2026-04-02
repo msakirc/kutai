@@ -66,9 +66,17 @@ AGENT_COMMAND_ALLOWLIST: dict[str, set[str] | None] = {
     "coder": {
         "python", "python3", "pip", "pip3", "npm", "node", "npx",
         "go", "cargo", "rustc", "git", "cat", "ls", "mkdir", "cp",
-        "mv", "grep", "find", "head", "tail", "wc", "sort", "curl",
+        "mv", "rm", "grep", "find", "head", "tail", "wc", "sort", "curl",
         "echo", "touch", "chmod", "pytest", "jest", "ruff", "mypy",
         "black", "flake8", "eslint", "tsc", "make",
+        # Setup/scaffolding commands
+        "cd", "pwd", "env", "export", "which", "whoami",
+        "tar", "unzip", "sed", "awk", "tee", "xargs",
+        "yarn", "pnpm", "bunx", "bun", "deno",
+        "uvicorn", "gunicorn", "flask", "django-admin",
+        "prisma", "drizzle-kit", "sequelize", "typeorm",
+        "vite", "next", "create-react-app", "create-next-app",
+        "docker-compose",
     },
     "reviewer": {
         "pytest", "python", "python3", "npm", "node", "npx",

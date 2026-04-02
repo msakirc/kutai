@@ -428,12 +428,21 @@ class KutAIWrapper:
     # ── Output Piping ─────────────────────────────────────────────────────
 
     async def _pipe_output(self, stream, name: str):
-        """Read subprocess output line by line, print to console and save."""
+        """Read subprocess output line by line, print to console and save.
+
+        CRITICAL: This loop must NEVER die.  If it stops reading, the pipe
+        buffer fills up (64 KB on Windows) and the child process blocks on
+        stdout, freezing the event loop and killing the heartbeat.
+        """
         log_file = LOG_DIR / "wrapper.log"
         try:
             async for line_bytes in stream:
                 line = line_bytes.decode("utf-8", errors="replace").rstrip()
-                print(line)
+                try:
+                    print(line)
+                except UnicodeEncodeError:
+                    # Console can't handle emoji/unicode — print ASCII-safe version
+                    print(line.encode("ascii", errors="replace").decode())
                 if name == "stderr":
                     self.stderr_tail.append(line)
                 try:

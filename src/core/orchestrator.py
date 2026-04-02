@@ -854,26 +854,18 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"[Watchdog] GPU scheduler check failed: {e}")
 
-        # 7. Check backpressure queue
+        # 7. Check sleeping queue depth
         try:
-            from ..infra.backpressure import get_backpressure_queue
-
-            bp = get_backpressure_queue()
-            bp_status = bp.get_status()
-
-            if bp_status["queue_depth"] > 10:
+            sleeping_count = len(await get_sleeping_tasks())
+            if sleeping_count > 10:
                 resource_issues.append(
-                    f"Backpressure queue overloaded: "
-                    f"{bp_status['queue_depth']} calls waiting"
+                    f"Sleeping queue high: {sleeping_count} tasks waiting"
                 )
                 logger.warning(
-                    f"[Watchdog] Backpressure queue: "
-                    f"{bp_status['queue_depth']} calls, "
-                    f"{bp_status['total_expired']} expired"
+                    f"[Watchdog] Sleeping queue: {sleeping_count} tasks"
                 )
-
         except Exception as e:
-            logger.warning(f"[Watchdog] Backpressure check failed: {e}")
+            logger.warning(f"[Watchdog] Sleeping queue check failed: {e}")
 
         # 8. Check circuit breakers — are ALL cloud providers down?
         try:
@@ -3053,15 +3045,12 @@ class Orchestrator:
 
         # ── Start background infrastructure ──
         from ..models.local_model_manager import get_local_manager
-        from ..infra.backpressure import get_backpressure_queue
 
         manager = get_local_manager()
-        bp_queue = get_backpressure_queue()
 
         self._background_tasks: list[asyncio.Task] = [
             asyncio.create_task(manager.run_idle_unloader()),
             asyncio.create_task(manager.run_health_watchdog()),
-            asyncio.create_task(bp_queue.run_processor()),
             asyncio.create_task(self._heartbeat_loop()),
         ]
 
@@ -3093,7 +3082,7 @@ class Orchestrator:
 
             logger.info(
                 "✅ System online — Telegram + Orchestrator + "
-                "GPU Scheduler + Backpressure Queue running"
+                "GPU Scheduler + Sleeping Queue running"
             )
 
             # Send persistent keyboard on startup so buttons are always visible

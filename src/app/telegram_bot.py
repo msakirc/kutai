@@ -1731,6 +1731,7 @@ class TelegramInterface:
             BotCommand("start", "Ana menü"),
             BotCommand("usta", "Yaşar Usta süreç yönetimi"),
             BotCommand("restart", "Kutay yeniden başlat"),
+            BotCommand("retry", "Retry a task"),
         ]
         try:
             await self.app.bot.set_my_commands(commands)
@@ -1770,6 +1771,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("credential", self.cmd_credential))
         self.app.add_handler(CommandHandler("cost", self.cmd_cost))
         self.app.add_handler(CommandHandler("dlq", self.cmd_dlq))
+        self.app.add_handler(CommandHandler("retry", self.cmd_retry))
         self.app.add_handler(CommandHandler("load", self.cmd_load))
         self.app.add_handler(CommandHandler("tune", self.cmd_tune))
         self.app.add_handler(CommandHandler("feedback", self.cmd_feedback))
@@ -3066,6 +3068,45 @@ class TelegramInterface:
             )
         except Exception as e:
             await self._reply(update,f"❌ {_friendly_error(str(e))}")
+
+    async def cmd_retry(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Retry a sleeping, failed, or paused task: /retry <task_id>."""
+        if not context.args:
+            await self._reply(update, "Usage: /retry <task\\_id>", parse_mode="Markdown")
+            return
+
+        try:
+            task_id = int(context.args[0])
+        except ValueError:
+            await self._reply(update, "❌ Invalid task ID — must be a number.")
+            return
+
+        try:
+            from ..infra.db import get_task, update_task
+            task = await get_task(task_id)
+            if task is None:
+                await self._reply(update, f"❌ Task #{task_id} not found.")
+                return
+
+            status = task.get("status", "")
+
+            if status == "sleeping":
+                await update_task(task_id, status="pending", sleep_state=None, retry_count=0, error=None)
+                await self._reply(update, f"▶️ Task #{task_id} woken from sleeping queue.")
+            elif status == "failed":
+                from ..infra.dead_letter import retry_dlq_task
+                await retry_dlq_task(task_id)
+                await self._reply(update, f"🔄 Task #{task_id} re-queued from DLQ.")
+            elif status == "paused":
+                await update_task(task_id, status="pending", retry_count=0, error=None)
+                await self._reply(update, f"▶️ Task #{task_id} resumed.")
+            else:
+                await self._reply(
+                    update,
+                    f"⚠️ Task #{task_id} has status '{status}' — only sleeping, failed, or paused tasks can be retried."
+                )
+        except Exception as e:
+            await self._reply(update, f"❌ {_friendly_error(str(e))}")
 
     async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Resume a failed or paused workflow."""

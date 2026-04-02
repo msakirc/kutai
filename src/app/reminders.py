@@ -51,12 +51,15 @@ async def build_todo_list_message(suggestions=None):
     """Build the todo list text and inline keyboard markup.
 
     Returns:
-        (text, markup) tuple, or (None, None) if no pending todos.
+        (text, markup) tuple, or (None, None) if no pending todos AND no DLQ tasks.
     """
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    from ..infra.dead_letter import get_dlq_tasks
 
     todos = await get_todos(status="pending")
-    if not todos:
+    dlq_tasks = await get_dlq_tasks(unresolved_only=True)
+
+    if not todos and not dlq_tasks:
         return None, None
 
     suggestions = suggestions or {}
@@ -103,6 +106,21 @@ async def build_todo_list_message(suggestions=None):
     if help_buttons:
         for i in range(0, len(help_buttons), 4):
             rows.append(help_buttons[i:i + 4])
+
+    # DLQ section — up to 5 most recent unresolved tasks
+    if dlq_tasks:
+        text += "\n\n⚠️ *Görev Hataları (DLQ)*"
+        for dlq in dlq_tasks[:5]:
+            task_id = dlq["task_id"]
+            error = dlq.get("error") or ""
+            quarantined_at = dlq.get("quarantined_at", "")
+            age = _format_age(quarantined_at) if quarantined_at else "?"
+            text += f"\n❌ #{task_id} — {error[:60]} ({age})"
+            rows.append([
+                InlineKeyboardButton("🔁 Retry", callback_data=f"m:dlq:retry:{task_id}"),
+                InlineKeyboardButton("⏭ Skip", callback_data=f"m:dlq:discard:{task_id}"),
+            ])
+
     rows.append([InlineKeyboardButton("🔙 Close", callback_data="todo_close")])
 
     markup = InlineKeyboardMarkup(rows)

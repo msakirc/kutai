@@ -393,7 +393,7 @@ class LLMDispatcher:
             1. Tries loaded model first (ranked highest: free + loaded)
             2. GPU scheduler queues request — up to 60s waiting room
             3. If GPU times out, falls through to cloud candidates
-            4. If cloud also fails, backpressure retries (swap-aware)
+            4. If cloud also fails, ModelCallFailed → sleeping queue
 
           Swap-awareness:
             When a model swap is in progress, local model is unavailable.
@@ -664,7 +664,7 @@ class LLMDispatcher:
 
     async def on_model_swap(self, old_model: str | None, new_model: str | None):
         """Called when a model swap occurs. Drains deferred grades and
-        signals backpressure that new capacity is available.
+        wakes sleeping tasks that may now have capacity.
 
         Called by ensure_model() via asyncio.ensure_future after a successful swap.
         Note: by the time this runs, the old model's server is already stopped

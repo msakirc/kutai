@@ -608,7 +608,7 @@ class LocalModelManager:
             )
             # Record swap in budget SYNCHRONOUSLY — this must never be
             # lost even if the async notification below fails to schedule.
-            # Grade draining and backpressure signaling happen asynchronously
+            # Grade draining and sleeping queue signaling happen asynchronously
             # via on_model_swap, but the budget record is critical.
             try:
                 from src.core.llm_dispatcher import get_dispatcher
@@ -616,7 +616,7 @@ class LocalModelManager:
             except Exception as _e:
                 logger.warning(f"Failed to record swap in budget: {_e}")
 
-            # Notify dispatcher for deferred grade draining & backpressure
+            # Notify dispatcher for deferred grade draining & sleeping queue wake
             try:
                 old_litellm = None
                 new_litellm = None

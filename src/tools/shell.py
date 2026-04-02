@@ -92,8 +92,9 @@ AGENT_COMMAND_ALLOWLIST: dict[str, set[str] | None] = {
     "fixer": {
         "python", "python3", "pip", "pip3", "npm", "node", "npx",
         "go", "cargo", "rustc", "git", "cat", "ls", "mkdir", "cp",
-        "mv", "grep", "find", "head", "tail", "wc", "sort", "curl",
-        "echo", "touch", "pytest", "jest", "ruff", "mypy",
+        "mv", "rm", "grep", "find", "head", "tail", "wc", "sort", "curl",
+        "echo", "touch", "chmod", "pytest", "jest", "ruff", "mypy",
+        "cd", "pwd", "sed", "awk", "tee",
     },
 }
 

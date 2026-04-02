@@ -29,34 +29,50 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
         schema_type = rules.get("type", "string")
 
         if schema_type == "object":
+            required = rules.get("required_fields", [])
+            # Try JSON first
             try:
                 data = json.loads(output_value) if isinstance(output_value, str) else output_value
-                if not isinstance(data, dict):
-                    return False, f"Expected JSON object for '{artifact_name}', got {type(data).__name__}"
-                required = rules.get("required_fields", [])
-                missing = [f for f in required if f not in data]
-                if missing:
-                    return False, f"Missing required fields in '{artifact_name}': {missing}"
+                if isinstance(data, dict):
+                    missing = [f for f in required if f not in data]
+                    if missing:
+                        return False, f"Missing required fields in '{artifact_name}': {missing}"
+                    continue  # this artifact passed
             except (json.JSONDecodeError, TypeError):
-                return False, f"Could not parse '{artifact_name}' as JSON object"
+                pass
+            # Fallback: accept text/markdown if required fields appear as keywords
+            # Small LLMs often produce structured text, not JSON
+            if required:
+                text_lower = str(output_value).lower().replace("_", " ").replace("-", " ")
+                missing = [f for f in required if f.lower().replace("_", " ") not in text_lower]
+                if missing:
+                    return False, f"'{artifact_name}' missing content about: {missing}"
 
         elif schema_type == "array":
+            # Try JSON first
             try:
                 data = json.loads(output_value) if isinstance(output_value, str) else output_value
-                if not isinstance(data, list):
-                    return False, f"Expected JSON array for '{artifact_name}', got {type(data).__name__}"
-                min_items = rules.get("min_items", 0)
-                if len(data) < min_items:
-                    return False, f"'{artifact_name}' has {len(data)} items, need >= {min_items}"
-                item_fields = rules.get("item_fields", [])
-                if item_fields and data:
-                    for i, item in enumerate(data):
-                        if isinstance(item, dict):
-                            missing = [f for f in item_fields if f not in item]
-                            if missing:
-                                return False, f"Item {i} in '{artifact_name}' missing fields: {missing}"
+                if isinstance(data, list):
+                    min_items = rules.get("min_items", 0)
+                    if len(data) < min_items:
+                        return False, f"'{artifact_name}' has {len(data)} items, need >= {min_items}"
+                    item_fields = rules.get("item_fields", [])
+                    if item_fields and data:
+                        for i, item in enumerate(data):
+                            if isinstance(item, dict):
+                                missing = [f for f in item_fields if f not in item]
+                                if missing:
+                                    return False, f"Item {i} in '{artifact_name}' missing fields: {missing}"
+                    continue  # passed
             except (json.JSONDecodeError, TypeError):
-                return False, f"Could not parse '{artifact_name}' as JSON array"
+                pass
+            # Fallback: accept text if it has numbered/bulleted items
+            min_items = rules.get("min_items", 0)
+            if min_items > 0:
+                import re as _re
+                items = _re.findall(r'(?:^|\n)\s*(?:\d+[\.\)]|\-|\*)\s+\S', str(output_value))
+                if len(items) < min_items:
+                    return False, f"'{artifact_name}' has ~{len(items)} list items, need >= {min_items}"
 
         elif schema_type == "string":
             min_length = rules.get("min_length", 1)

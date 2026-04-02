@@ -123,16 +123,28 @@ async def startup_health_check() -> bool:
     if not _check("logs_writable", _logs_writable, critical=True):
         critical_ok = False
 
-    # 3. DB writable
+    # 3. DB writable (retry — old process may still hold the lock during restart)
     async def _db_writable():
         await _db.init_db()
         return True, "DB accessible"
 
-    try:
-        ok, detail = await _db_writable()
-        _log.info("Health check passed", check="db_writable", detail=detail)
-    except Exception as exc:
-        _log.critical("Health check raised (critical)", check="db_writable", error=str(exc))
+    db_ok = False
+    for attempt in range(3):
+        try:
+            ok, detail = await _db_writable()
+            _log.info("Health check passed", check="db_writable", detail=detail)
+            db_ok = True
+            break
+        except Exception as exc:
+            if attempt < 2:
+                _log.warning("DB locked, retrying in 2s...",
+                             check="db_writable", attempt=attempt + 1)
+                await _db.close_db()  # release partial connection
+                await asyncio.sleep(2)
+            else:
+                _log.critical("Health check raised (critical)",
+                              check="db_writable", error=str(exc))
+    if not db_ok:
         critical_ok = False
 
     # ── Non-critical checks: run concurrently (saves ~20s vs sequential) ──

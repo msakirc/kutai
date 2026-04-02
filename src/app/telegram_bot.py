@@ -5638,10 +5638,12 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         int_chat = int(chat_id)
 
         # Try to split numbered questions
+        # Matches: "1. ", "1) ", "### 1. ", "### 1) ", "**1.**", "**1)**"
         import re as _re
-        parts = _re.split(r'\n(?=\d+[\.\)]\s)', question.strip())
-        # Filter to actual numbered questions (at least "1. something")
-        numbered = [p.strip() for p in parts if _re.match(r'^\d+[\.\)]\s', p.strip())]
+        parts = _re.split(r'\n(?=(?:#{1,4}\s*)?\*{0,2}\d+[\.\)]\s)', question.strip())
+        # Filter to actual numbered questions
+        numbered = [p.strip() for p in parts
+                    if _re.match(r'^(?:#{1,4}\s*)?\*{0,2}\d+[\.\)]\s', p.strip())]
 
         if len(numbered) >= 2:
             # Sequential Q&A mode

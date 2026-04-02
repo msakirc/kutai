@@ -1191,7 +1191,7 @@
       "input_artifacts": [
         "competitor_feature_matrix_summary",
         "competitor_sentiment_analysis_summary",
-        "indirect_competitors_list"
+        "indirect_competitors_list_summary"
       ],
       "output_artifacts": [
         "market_gap_analysis"
@@ -1298,7 +1298,7 @@
       "may_need_clarification": false,
       "input_artifacts": [
         "market_existence_data",
-        "audience_research_data",
+        "audience_research_data_summary",
         "competitor_pricing_analysis_summary",
         "competitor_sentiment_analysis_summary"
       ],
@@ -1335,10 +1335,10 @@
       "may_need_clarification": false,
       "input_artifacts": [
         "research_summary",
-        "market_gap_analysis",
-        "technology_trends",
-        "regulatory_requirements",
-        "indirect_competitors_list"
+        "market_gap_analysis_summary",
+        "technology_trends_summary",
+        "regulatory_requirements_summary",
+        "indirect_competitors_list_summary"
       ],
       "output_artifacts": [
         "market_research_report"
@@ -1401,7 +1401,7 @@
         "market_research_report",
         "research_review_result",
         "research_summary",
-        "indirect_competitors_list"
+        "indirect_competitors_list_summary"
       ],
       "output_artifacts": [
         "go_no_go_decision"
@@ -1470,7 +1470,7 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "audience_research_data",
+        "audience_research_data_summary",
         "market_gap_analysis_summary",
         "competitor_sentiment_analysis",
         "product_vision"
@@ -1504,7 +1504,7 @@
       "may_need_clarification": true,
       "input_artifacts": [
         "value_proposition_canvas",
-        "market_gap_analysis"
+        "market_gap_analysis_summary"
       ],
       "output_artifacts": [
         "unique_selling_proposition"
@@ -1536,7 +1536,7 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "audience_research_data",
+        "audience_research_data_summary",
         "value_proposition_canvas"
       ],
       "output_artifacts": [
@@ -1585,7 +1585,7 @@
         "value_proposition_canvas",
         "user_personas",
         "competitor_feature_matrix",
-        "technology_trends"
+        "technology_trends_summary"
       ],
       "output_artifacts": [
         "feature_brainstorm_list"
@@ -1861,7 +1861,7 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "prd_final"
+        "prd_final_summary"
       ],
       "output_artifacts": [
         "functional_requirements"
@@ -1895,7 +1895,7 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "prd_final",
+        "prd_final_summary",
         "market_research_report",
         "success_metrics"
       ],
@@ -1937,8 +1937,8 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "prd_final",
-        "regulatory_requirements"
+        "prd_final_summary",
+        "regulatory_requirements_summary"
       ],
       "output_artifacts": [
         "nfr_availability",
@@ -1977,8 +1977,8 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "prd_final",
-        "functional_requirements"
+        "prd_final_summary",
+        "functional_requirements_summary"
       ],
       "output_artifacts": [
         "data_requirements"
@@ -2011,8 +2011,8 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "prd_final",
-        "functional_requirements"
+        "prd_final_summary",
+        "functional_requirements_summary"
       ],
       "output_artifacts": [
         "integration_requirements"
@@ -2050,9 +2050,9 @@
       ],
       "may_need_clarification": true,
       "input_artifacts": [
-        "prd_final",
-        "audience_research_data",
-        "regulatory_requirements"
+        "prd_final_summary",
+        "audience_research_data_summary",
+        "regulatory_requirements_summary"
       ],
       "output_artifacts": [
         "platform_requirements",
@@ -2098,7 +2098,7 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "prd_final",
+        "prd_final_summary",
         "monetization_strategy"
       ],
       "output_artifacts": [
@@ -2317,8 +2317,8 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "requirements_spec",
-        "prd_final"
+        "requirements_spec_summary",
+        "prd_final_summary"
       ],
       "output_artifacts": [
         "requirements_review_result"
@@ -2351,7 +2351,7 @@
       ],
       "may_need_clarification": true,
       "input_artifacts": [
-        "requirements_spec",
+        "requirements_spec_summary",
         "nfr_scalability",
         "nfr_performance"
       ],
@@ -2390,7 +2390,7 @@
       "may_need_clarification": true,
       "input_artifacts": [
         "architecture_pattern_decision",
-        "requirements_spec",
+        "requirements_spec_summary",
         "platform_requirements",
         "nfr_performance",
         "nfr_scalability",
@@ -2973,7 +2973,7 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "backend_design_compilation",
+        "backend_design_compilation_summary",
         "frontend_architecture",
         "observability_strategy",
         "scalability_plan",
@@ -3009,8 +3009,8 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "technical_design_document",
-        "requirements_spec",
+        "technical_design_document_summary",
+        "requirements_spec_summary",
         "security_requirements"
       ],
       "output_artifacts": [
@@ -3041,8 +3041,8 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "prd_final",
-        "user_stories_refined"
+        "prd_final_summary",
+        "user_stories_refined_summary"
       ],
       "output_artifacts": [
         "information_architecture"
@@ -3106,7 +3106,7 @@
       "input_artifacts": [
         "information_architecture",
         "user_journey_map",
-        "user_stories_refined",
+        "user_stories_refined_summary",
         "auth_design"
       ],
       "output_artifacts": [
@@ -3238,7 +3238,7 @@
         "wireframe_specs",
         "form_specs",
         "empty_error_state_specs",
-        "user_stories_refined",
+        "user_stories_refined_summary",
         "user_flow_core_features"
       ],
       "output_artifacts": [
@@ -3271,7 +3271,7 @@
       "input_artifacts": [
         "product_vision",
         "user_personas",
-        "competitor_ux_evaluation"
+        "competitor_ux_evaluation_summary"
       ],
       "output_artifacts": [
         "brand_identity",
@@ -3434,9 +3434,9 @@
         "interaction_spec",
         "responsive_spec",
         "accessibility_spec",
-        "prd_final",
+        "prd_final_summary",
         "design_tokens",
-        "competitor_ux_evaluation"
+        "competitor_ux_evaluation_summary"
       ],
       "output_artifacts": [
         "design_review_result"
@@ -3540,10 +3540,10 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "prd_final",
-        "user_stories_refined",
-        "technical_design_document",
-        "design_handoff"
+        "prd_final_summary",
+        "user_stories_refined_summary",
+        "technical_design_document_summary",
+        "design_handoff_summary"
       ],
       "output_artifacts": [
         "epics",
@@ -3584,7 +3584,7 @@
       "may_need_clarification": false,
       "input_artifacts": [
         "work_breakdown",
-        "technical_design_document"
+        "technical_design_document_summary"
       ],
       "output_artifacts": [
         "dependency_graph",
@@ -3623,7 +3623,7 @@
       "may_need_clarification": false,
       "input_artifacts": [
         "effort_estimates",
-        "technical_design_document",
+        "technical_design_document_summary",
         "third_party_selections",
         "dependency_graph"
       ],
@@ -4756,7 +4756,7 @@
       "may_need_clarification": false,
       "input_artifacts": [
         "coverage_report",
-        "user_stories_refined"
+        "user_stories_refined_summary"
       ],
       "output_artifacts": [
         "e2e_test_suite"
@@ -5473,7 +5473,7 @@
       "input_artifacts": [
         "openapi_spec",
         "developer_workflow_doc",
-        "technical_design_document"
+        "technical_design_document_summary"
       ],
       "output_artifacts": [
         "api_docs",
@@ -5711,7 +5711,7 @@
         "no_legal"
       ],
       "input_artifacts": [
-        "prd_final",
+        "prd_final_summary",
         "data_requirements",
         "integration_requirements"
       ],
@@ -7338,7 +7338,7 @@
       ],
       "input_artifacts": [
         "feature_request_backlog",
-        "design_handoff",
+        "design_handoff_summary",
         "implementation_context"
       ],
       "output_artifacts": [

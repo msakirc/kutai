@@ -346,9 +346,10 @@ class BaseAgent:
         """
         parts: list[str] = []
 
-        # ── Task description ──
+        # ── Task description (primary instruction — overrides any retrieved context) ──
         parts.append(
-            f"## Task\n**{task.get('title', 'Untitled')}**\n"
+            f"## Task (PRIMARY — this is what you must do)\n"
+            f"**{task.get('title', 'Untitled')}**\n"
             f"{task.get('description', '')}"
         )
 

@@ -2932,7 +2932,7 @@ class Orchestrator:
                     if active_futures:
                         logger.info(
                             f"Waiting for {len(active_futures)} running "
-                            f"task(s) to complete (30s timeout)..."
+                            f"task(s) to complete (10s timeout)..."
                         )
                         try:
                             await asyncio.wait_for(
@@ -2940,12 +2940,12 @@ class Orchestrator:
                                     *[asyncio.shield(f) for f in active_futures],
                                     return_exceptions=True,
                                 ),
-                                timeout=30,
+                                timeout=10,
                             )
                             logger.info("All running tasks completed cleanly")
                         except asyncio.TimeoutError:
                             logger.warning(
-                                "Shutdown timeout (30s) — "
+                                "Shutdown timeout (10s) — "
                                 f"{sum(1 for f in active_futures if not f.done())} "
                                 "task(s) abandoned"
                             )

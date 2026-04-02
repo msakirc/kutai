@@ -161,7 +161,7 @@ KB_SISTEM = _make_keyboard([
     ["🖥️ Claude Code", "🔧 Yaşar Usta", "🗑 Reset Tasks", "☢️ Reset All"],
     ["🔄 Yeniden Başlat", "⏹ Durdur"],
     ["🔙 Geri"],
-], resize_keyboard=False)
+])
 
 KB_YUK_MODU = _make_keyboard([
     ["⚡ Full", "🔋 Heavy", "⚖️ Shared"],
@@ -2174,10 +2174,10 @@ class TelegramInterface:
         if self.orchestrator:
             self.orchestrator.requested_exit_code = 42
             self.orchestrator.shutdown_event.set()
-        # Hard exit fallback on a real thread — if graceful shutdown is
-        # blocked (stuck LLM call, deadlocked event loop), this fires anyway.
+        # Hard exit fallback — fires only if graceful shutdown is truly stuck.
+        # 45s allows: task drain (30s) + DB close + Telegram stop + llama stop.
         import threading
-        threading.Timer(5.0, lambda: os._exit(42)).start()
+        threading.Timer(45.0, lambda: os._exit(42)).start()
 
     async def cmd_kutai_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Stop KutAI via the wrapper (exit code 0). Requires confirmation."""
@@ -2197,7 +2197,7 @@ class TelegramInterface:
             self.orchestrator.requested_exit_code = 0
             self.orchestrator.shutdown_event.set()
         import threading
-        threading.Timer(5.0, lambda: os._exit(0)).start()
+        threading.Timer(45.0, lambda: os._exit(0)).start()
 
     # ─── Claude Code Remote Control ─────────────────────────────────────
 

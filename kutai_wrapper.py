@@ -322,6 +322,7 @@ class KutAIWrapper:
                 venv_python, run_script,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=1024 * 1024,  # 1 MB line buffer (default 64 KB too small for long log lines)
                 cwd=str(Path(__file__).parent),
                 **_kwargs,
             )
@@ -435,23 +436,43 @@ class KutAIWrapper:
         stdout, freezing the event loop and killing the heartbeat.
         """
         log_file = LOG_DIR / "wrapper.log"
-        try:
-            async for line_bytes in stream:
+        while True:
+            try:
+                line_bytes = await stream.readline()
+                if not line_bytes:
+                    break  # EOF — subprocess exited
                 line = line_bytes.decode("utf-8", errors="replace").rstrip()
+            except ValueError:
+                # "Separator is found, but chunk is longer than limit"
+                # A single log line exceeded the 64KB StreamReader buffer.
+                # Drain the oversized chunk and continue.
                 try:
-                    print(line)
-                except UnicodeEncodeError:
-                    # Console can't handle emoji/unicode — print ASCII-safe version
-                    print(line.encode("ascii", errors="replace").decode())
-                if name == "stderr":
-                    self.stderr_tail.append(line)
-                try:
-                    with open(log_file, "a", encoding="utf-8") as f:
-                        f.write(f"[{name}] {line}\n")
+                    await stream.readuntil(b"\n")
                 except Exception:
-                    pass
-        except Exception as e:
-            _wlog(f"_pipe_output({name}) error: {e!r}")
+                    try:
+                        # Last resort: read whatever is available
+                        stream._buffer.clear()
+                    except Exception:
+                        pass
+                continue
+            except Exception:
+                # Stream broken (process died, pipe closed, etc.)
+                break
+
+            try:
+                print(line)
+            except UnicodeEncodeError:
+                print(line.encode("ascii", errors="replace").decode())
+            except Exception:
+                pass
+
+            if name == "stderr":
+                self.stderr_tail.append(line)
+            try:
+                with open(log_file, "a", encoding="utf-8") as f:
+                    f.write(f"[{name}] {line}\n")
+            except Exception:
+                pass
 
     # ── Backoff Logic ─────────────────────────────────────────────────────
 

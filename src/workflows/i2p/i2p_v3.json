@@ -1000,7 +1000,7 @@
       "output_artifacts": [
         "indirect_competitors_list"
       ],
-      "instruction": "Identify indirect competitors: products that solve the same problem differently, or solve an adjacent problem for the same audience. For each, collect: name, website_url, how_they_relate, threat_level (high/medium/low). Also identify potential future competitors: large companies that could enter this space easily.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
+      "instruction": "Identify indirect competitors: products that solve the same problem differently, or solve an adjacent problem for the same audience. For each, collect: name, website_url, how_they_relate, threat_level (high/medium/low). Also identify potential future competitors: large companies that could enter this space easily.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.\n\nOUTPUT SIZE: Keep each competitor entry under 200 words. Focus on name, URL, relation, and threat level.",
       "done_when": "indirect_competitors_list exists with categorized indirect competitors and future threat assessment.",
       "artifact_schema": {
         "indirect_competitors_list": {
@@ -1037,7 +1037,7 @@
         "competitor_features_raw",
         "competitor_feature_matrix"
       ],
-      "instruction": "For each direct competitor in direct_competitors_list, catalog every feature visible from their: marketing website (features page, pricing page), documentation, free tier exploration, App Store/Play Store listing, Product Hunt page, demo videos. For each feature, record: feature_name, feature_description, which_competitor, tier_available (free/paid/enterprise), and category (core, secondary, integration, admin). Be exhaustive. Then build a feature comparison matrix. Rows: every unique feature (deduplicated and normalized across competitors). Columns: each competitor. Cell values: 'full', 'partial', 'none', 'unknown'. Group rows by feature category. Add a 'feature_frequency' column. Sort within each category by frequency descending.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
+      "instruction": "For each direct competitor in direct_competitors_list, catalog every feature visible from their: marketing website (features page, pricing page), documentation, free tier exploration, App Store/Play Store listing, Product Hunt page, demo videos. For each feature, record: feature_name, feature_description, which_competitor, tier_available (free/paid/enterprise), and category (core, secondary, integration, admin). Be exhaustive. Then build a feature comparison matrix. Rows: every unique feature (deduplicated and normalized across competitors). Columns: each competitor. Cell values: 'full', 'partial', 'none', 'unknown'. Group rows by feature category. Add a 'feature_frequency' column. Sort within each category by frequency descending.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.\n\nOUTPUT SIZE: Keep the feature matrix concise  -  max 10 features per competitor, one line each. Total output under 2000 words.",
       "done_when": "competitor_features_raw and competitor_feature_matrix exist with comprehensive feature data and comparison table.",
       "artifact_schema": {
         "competitor_features_raw": {
@@ -1081,7 +1081,7 @@
       "output_artifacts": [
         "competitor_pricing_analysis"
       ],
-      "instruction": "For each direct competitor, document their pricing model completely: pricing_model_type, tiers (each with name, monthly_price, annual_price, key_limits), free_tier_scope, upgrade_triggers, enterprise_offering, pricing_page_url. Then analyze: market standard pricing range, most common model, pricing gaps, free-to-paid feature gates.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
+      "instruction": "For each direct competitor, document their pricing model completely: pricing_model_type, tiers (each with name, monthly_price, annual_price, key_limits), free_tier_scope, upgrade_triggers, enterprise_offering, pricing_page_url. Then analyze: market standard pricing range, most common model, pricing gaps, free-to-paid feature gates.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.\n\nOUTPUT SIZE: Keep pricing analysis concise  -  one paragraph per competitor. Total under 1000 words.",
       "done_when": "competitor_pricing_analysis exists with per-competitor pricing details and cross-market pricing insights.",
       "artifact_schema": {
         "competitor_pricing_analysis": {
@@ -1116,7 +1116,7 @@
         "competitor_reviews_raw",
         "competitor_sentiment_analysis"
       ],
-      "instruction": "For each major competitor (top 5), collect user reviews and sentiment from: App Store, Play Store, G2, Capterra, TrustRadius, Product Hunt comments, Reddit mentions, Twitter/X mentions, Hacker News discussions. For each source: source_name, review_count_sampled, average_rating, positive_themes, negative_themes, notable_quotes (3-5 per competitor). Focus on recent reviews (last 12 months). Then synthesize sentiment. Per competitor: top_5_praised_aspects, top_5_pain_points, overall_sentiment, net_promoter_signal. Cross-competitor: universal_praises (table stakes), universal_complaints (opportunities), differentiation_signals.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
+      "instruction": "For each major competitor (top 5), collect user reviews and sentiment from: App Store, Play Store, G2, Capterra, TrustRadius, Product Hunt comments, Reddit mentions, Twitter/X mentions, Hacker News discussions. For each source: source_name, review_count_sampled, average_rating, positive_themes, negative_themes, notable_quotes (3-5 per competitor). Focus on recent reviews (last 12 months). Then synthesize sentiment. Per competitor: top_5_praised_aspects, top_5_pain_points, overall_sentiment, net_promoter_signal. Cross-competitor: universal_praises (table stakes), universal_complaints (opportunities), differentiation_signals.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.\n\nOUTPUT SIZE: Keep sentiment concise  -  max 5 bullet points per competitor for positives and negatives. Total under 1500 words.",
       "done_when": "competitor_reviews_raw and competitor_sentiment_analysis exist with per-competitor and cross-competitor sentiment synthesis.",
       "artifact_schema": {
         "competitor_reviews_raw": {
@@ -1161,7 +1161,7 @@
       "output_artifacts": [
         "competitor_ux_evaluation"
       ],
-      "instruction": "For each major competitor (top 5), evaluate their UX based on publicly available information: website structure, app store screenshots descriptions, user reviews mentioning UX, documentation quality. Do NOT try to analyze images directly — instead, assess UX from text descriptions, review comments about UI/UX, app store listing descriptions, and website copy. Evaluate each competitor for: design_quality (1-10), visual_consistency, information_density, navigation_clarity, onboarding_quality, accessibility_signals, mobile_quality, unique_ux_patterns, ux_weaknesses. Output per competitor with overall_ux_rank.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
+      "instruction": "For each major competitor (top 5), evaluate their UX based on publicly available information: website structure, app store screenshots descriptions, user reviews mentioning UX, documentation quality. Do NOT try to analyze images directly — instead, assess UX from text descriptions, review comments about UI/UX, app store listing descriptions, and website copy. Evaluate each competitor for: design_quality (1-10), visual_consistency, information_density, navigation_clarity, onboarding_quality, accessibility_signals, mobile_quality, unique_ux_patterns, ux_weaknesses. Output per competitor with overall_ux_rank.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.\n\nOUTPUT SIZE: Keep UX evaluation concise  -  max 3 strengths and 3 weaknesses per competitor. Total under 1000 words.",
       "done_when": "competitor_ux_evaluation exists with per-competitor UX assessment and comparative ranking.",
       "artifact_schema": {
         "competitor_ux_evaluation": {
@@ -1543,7 +1543,7 @@
         "user_personas",
         "user_journey_map"
       ],
-      "instruction": "Create 2-4 distinct user personas with: name, age, occupation, location, tech_savviness, goals, frustrations, current_tools, behavioral_patterns, quote, primary_pain. One persona should be the 'primary' persona. For each persona write 2-3 usage scenarios covering first-time use, regular use, and edge case/advanced use. Then map end-to-end user journey for primary persona through: awareness, consideration, signup, onboarding, first_value, engagement, mastery, expansion, advocacy. For each stage: user_actions, touchpoints, emotions, drop_off_reasons, metrics. Identify the 'aha moment'.",
+      "instruction": "Create 2-4 distinct user personas with: name, age, occupation, location, tech_savviness, goals, frustrations, current_tools, behavioral_patterns, quote, primary_pain. One persona should be the 'primary' persona. For each persona write 2-3 usage scenarios covering first-time use, regular use, and edge case/advanced use. Then map end-to-end user journey for primary persona through: awareness, consideration, signup, onboarding, first_value, engagement, mastery, expansion, advocacy. For each stage: user_actions, touchpoints, emotions, drop_off_reasons, metrics. Identify the 'aha moment'.\n\nOUTPUT SIZE: Keep each persona under 300 words. Max 3 personas. Total under 1500 words.",
       "done_when": "user_personas and user_journey_map exist with detailed personas, scenarios, and journey stages.",
       "artifact_schema": {
         "user_personas": {
@@ -1690,7 +1690,7 @@
       "output_artifacts": [
         "user_stories"
       ],
-      "instruction": "For every feature in mvp_scope, write formal use cases and user stories. Each use case: use_case_id, feature_id, title, primary_actor, preconditions, trigger, main_flow, alternate_flows, exception_flows, postconditions, business_rules. Then convert each use case into user stories: story_id, use_case_id, epic, title, story ('As a [persona], I want [action], so that [benefit]'), acceptance_criteria (Given/When/Then), priority, estimated_complexity. Every acceptance criterion must be testable.",
+      "instruction": "For every feature in mvp_scope, write formal use cases and user stories. Each use case: use_case_id, feature_id, title, primary_actor, preconditions, trigger, main_flow, alternate_flows, exception_flows, postconditions, business_rules. Then convert each use case into user stories: story_id, use_case_id, epic, title, story ('As a [persona], I want [action], so that [benefit]'), acceptance_criteria (Given/When/Then), priority, estimated_complexity. Every acceptance criterion must be testable.\n\nOUTPUT SIZE: Max 15 user stories. Each story under 100 words including acceptance criteria.",
       "done_when": "user_stories exists with testable user stories covering all MVP features, each with Given/When/Then acceptance criteria.",
       "artifact_schema": {
         "user_stories": {
@@ -1866,7 +1866,7 @@
       "output_artifacts": [
         "functional_requirements"
       ],
-      "instruction": "Extract every functional requirement from prd_final. For each: req_id (FR-001...), title, description, source_story_ids, priority, category (auth, data, ui, api, integration, notification, search, admin, billing). Every user story must map to at least one FR and vice versa.",
+      "instruction": "Extract every functional requirement from prd_final. For each: req_id (FR-001...), title, description, source_story_ids, priority, category (auth, data, ui, api, integration, notification, search, admin, billing). Every user story must map to at least one FR and vice versa.\n\nOUTPUT SIZE: Max 20 functional requirements. Each under 100 words.",
       "done_when": "functional_requirements exists as a numbered list where every requirement traces to user stories.",
       "artifact_schema": {
         "functional_requirements": {
@@ -2433,7 +2433,7 @@
       "output_artifacts": [
         "system_architecture"
       ],
-      "instruction": "Design high-level system architecture: components, databases, external_services, communication_patterns, data_flow, network_topology, environments.",
+      "instruction": "Design high-level system architecture: components, databases, external_services, communication_patterns, data_flow, network_topology, environments.\n\nOUTPUT SIZE: Keep system architecture under 2000 words. Focus on components and interactions.",
       "done_when": "system_architecture exists with complete system design.",
       "artifact_schema": {
         "system_architecture": {
@@ -2469,7 +2469,7 @@
       "output_artifacts": [
         "database_schema"
       ],
-      "instruction": "Design complete database schema: tables, columns, types, constraints, indexes, foreign_keys, enums. Normalized to 3NF minimum. Then self-review for: normalization, missing indexes, N+1 risks, missing constraints, scalability, naming consistency, audit columns, soft delete, business rule enforcement at DB level.",
+      "instruction": "Design complete database schema: tables, columns, types, constraints, indexes, foreign_keys, enums. Normalized to 3NF minimum. Then self-review for: normalization, missing indexes, N+1 risks, missing constraints, scalability, naming consistency, audit columns, soft delete, business rule enforcement at DB level.\n\nOUTPUT SIZE: Keep database schema under 1500 words. List tables, key columns, relationships.",
       "done_when": "database_schema exists with comprehensive, self-reviewed schema design.",
       "artifact_schema": {
         "database_schema": {
@@ -2503,7 +2503,7 @@
       "output_artifacts": [
         "openapi_spec"
       ],
-      "instruction": "Define API resource model: resources, base URLs, sub-resources, relationships, filterable/sortable/searchable fields, versioning strategy, pagination strategy, response envelope format, id format. Then design every API endpoint with: method, path, auth, roles, parameters, request/response schemas, error responses, rate limits, side effects. Convert into formal OpenAPI 3.1 specification with paths, schemas, security schemes, tags, and examples.",
+      "instruction": "Define API resource model: resources, base URLs, sub-resources, relationships, filterable/sortable/searchable fields, versioning strategy, pagination strategy, response envelope format, id format. Then design every API endpoint with: method, path, auth, roles, parameters, request/response schemas, error responses, rate limits, side effects. Convert into formal OpenAPI 3.1 specification with paths, schemas, security schemes, tags, and examples.\n\nOUTPUT SIZE: Keep API design under 2000 words. List endpoints with method, path, description.",
       "done_when": "openapi_spec exists as a complete OpenAPI 3.1 specification.",
       "artifact_schema": {
         "openapi_spec": {

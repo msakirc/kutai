@@ -322,6 +322,31 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
             f"overriding result status to needs_clarification"
         )
 
+    # ── Store clarification_answers artifact when human-gate step completes ──
+    # Second run (after user answered): clarification_history exists, step completes.
+    # Store user_clarification as the clarification_answers artifact so downstream
+    # steps (e.g. idea_brief_compilation) can consume it.
+    if (ctx.get("triggers_clarification")
+            and ctx.get("clarification_history")):
+        user_clarification = ctx.get("user_clarification", "")
+        if user_clarification and mission_id:
+            await store.store(mission_id, "clarification_answers", user_clarification)
+            # Also write to disk
+            try:
+                from ...tools.workspace import WORKSPACE_DIR
+                import os
+                artifact_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+                os.makedirs(artifact_dir, exist_ok=True)
+                file_path = os.path.join(artifact_dir, "clarification_answers.md")
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(user_clarification)
+            except Exception:
+                pass
+            logger.info(
+                f"[Workflow Hook] Step '{step_id}' completed with clarification — "
+                f"stored 'clarification_answers' artifact ({len(user_clarification)} chars)"
+            )
+
     # ── Check conditional group triggers ──
     await _check_conditional_triggers(mission_id, output_names, store)
 

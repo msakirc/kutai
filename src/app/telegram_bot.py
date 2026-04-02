@@ -318,6 +318,8 @@ class TelegramInterface:
         self.user_last_task_id = {}
         # Explicit clarification tracking: chat_id → task_id
         self._pending_clarifications: dict[int, int] = {}
+        # Reverse lookup: message_id → task_id for reply-to detection
+        self._clarification_msg_ids: dict[int, int] = {}
         # Conversation flow: chat_id → {"command": str, "ts": float} for button-initiated arg prompts
         self._pending_action: dict[int, dict] = {}
         # Track current keyboard state per chat: chat_id → state name
@@ -3957,6 +3959,11 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
             # Clean up tracking
             self._pending_clarifications.pop(chat_id, None)
+            # Remove all message-ID entries for this task
+            self._clarification_msg_ids = {
+                mid: tid for mid, tid in self._clarification_msg_ids.items()
+                if tid != task_id
+            }
 
             if not q or q.get("task_id") != task_id:
                 await self._reply(update,
@@ -4658,8 +4665,18 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         answer = update.message.text
         chat_id = update.message.chat_id
 
-        # Check if this is a reply to a clarification request
-        if "Clarification needed" in text:
+        # ── Primary: message-ID lookup (works for ALL clarification messages) ──
+        task_id = self._clarification_msg_ids.get(replied_to.message_id)
+        if task_id:
+            task_info = await get_task(task_id)
+            if task_info and task_info.get("status") == "needs_clarification":
+                await self._resume_with_clarification(
+                    chat_id, task_id, answer, task_info, update
+                )
+                return
+
+        # ── Fallback: text-based detection (survives restart — IDs are lost) ──
+        if "Clarification needed" in text or "Question " in text:
             import re
             match = re.search(r"Task #(\d+)", text)
             if match:
@@ -4668,6 +4685,29 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 if task_info and task_info.get("status") == "needs_clarification":
                     await self._resume_with_clarification(
                         chat_id, task_id, answer, task_info, update
+                    )
+                    return
+            # Sequential questions don't have Task # — check pending_clarifications
+            pending_task_id = self._pending_clarifications.get(chat_id)
+            if not pending_task_id:
+                # DB fallback: any task in needs_clarification
+                try:
+                    db = await get_db()
+                    cursor = await db.execute(
+                        """SELECT id FROM tasks
+                           WHERE status = 'needs_clarification'
+                           ORDER BY created_at DESC LIMIT 1"""
+                    )
+                    row = await cursor.fetchone()
+                    if row:
+                        pending_task_id = row[0]
+                except Exception:
+                    pass
+            if pending_task_id:
+                task_info = await get_task(pending_task_id)
+                if task_info and task_info.get("status") == "needs_clarification":
+                    await self._resume_with_clarification(
+                        chat_id, pending_task_id, answer, task_info, update
                     )
                     return
 
@@ -5452,6 +5492,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
     # --- Outbound notifications ---
 
     async def send_notification(self, text: str, retries: int = 2):
+        """Send a notification message. Returns the sent Message or None."""
         import asyncio as _asyncio
 
         # Phase 8.3: Redact secrets from outgoing messages
@@ -5463,26 +5504,27 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
         for attempt in range(retries + 1):
             try:
-                await self.app.bot.send_message(
+                msg = await self.app.bot.send_message(
                     chat_id=TELEGRAM_ADMIN_CHAT_ID,
                     text=text,
                     parse_mode="Markdown",
                     reply_markup=REPLY_KEYBOARD,
                 )
-                return
+                return msg
             except Exception as e:
                 # First fallback: retry without markdown
                 try:
-                    await self.app.bot.send_message(
+                    msg = await self.app.bot.send_message(
                         chat_id=TELEGRAM_ADMIN_CHAT_ID, text=text,
                         reply_markup=REPLY_KEYBOARD,
                     )
-                    return
+                    return msg
                 except Exception:
                     if attempt < retries:
                         await _asyncio.sleep(1 * (attempt + 1))
                         continue
                     logger.error("Failed to send Telegram notification", error=str(e))
+        return None
 
     async def send_result(self, task_id, title, result, model, cost,
                           mission_id=None):
@@ -5617,18 +5659,22 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 f"**{title}**\n\n"
                 f"I have {len(numbered)} questions. Answering one at a time:\n"
             )
-            await self.send_notification(header)
+            msg = await self.send_notification(header)
+            if msg:
+                self._clarification_msg_ids[msg.message_id] = task_id
             # Send first question
             await self._send_next_clarification_question()
         else:
             # Single question or free-form — original behavior
             self._pending_clarifications[int_chat] = task_id
-            await self.send_notification(
+            msg = await self.send_notification(
                 f"\u2753 *Clarification needed \u2014 Task #{task_id}*\n"
                 f"**{title}**\n\n"
                 f"{question}\n\n"
                 f"_Reply to this message or just type your answer._"
             )
+            if msg:
+                self._clarification_msg_ids[msg.message_id] = task_id
 
     async def _send_next_clarification_question(self):
         """Send the next question from the sequential clarification queue."""
@@ -5641,11 +5687,13 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             return
         total = len(questions)
         question_text = questions[idx]
-        await self.send_notification(
+        msg = await self.send_notification(
             f"*Question {idx + 1}/{total}:*\n\n"
             f"{question_text}\n\n"
             f"_Type your answer:_"
         )
+        if msg:
+            self._clarification_msg_ids[msg.message_id] = q["task_id"]
 
     async def request_approval(self, task_id, title, plan, tier,
                                mission_id=None):

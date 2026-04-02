@@ -29,9 +29,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Awaitable, Optional
 
-import logging
+from src.infra.logging_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("core.llm_dispatcher")
 
 # Cold-start wait parameters (patchable in tests)
 _COLD_START_WAIT_TIMEOUT = 15.0   # max seconds to wait for model load

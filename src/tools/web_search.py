@@ -722,12 +722,41 @@ async def web_search(query: str, max_results: int = 5, search_type: str = "web",
                 collection="web_knowledge",
                 top_k=3,
             )
-            # Use cached results if they are recent (< 12 hours) and relevant
-            fresh_results = [
-                r for r in cached
-                if r.get("distance", 1.0) < 0.5
-                and (_t.time() - r.get("metadata", {}).get("timestamp", 0)) < 43200
-            ]
+            # Use cached results if recent (< 12h), close in embedding
+            # space, AND topically related.  Embedding distance alone is
+            # unreliable: "coffee machine price" matched "GDPR compliance"
+            # at dist 0.4.  We strip stopwords, then require ≥30% of the
+            # query's content words to appear in the cached query.  This
+            # kills cross-topic pollution while still allowing paraphrase
+            # matches like "KVKK uyum" ↔ "KVKK compliance requirements".
+            _STOP = {
+                "a","an","the","and","or","but","in","on","at","to","for",
+                "of","with","by","from","is","are","was","were","be","been",
+                "has","been","have","had","do","does","did","will","would",
+                "can","could","may","might","shall","should","not","no",
+                "this","that","these","those","it","its","i","we","you",
+                "he","she","they","my","your","our","his","her","their",
+                "what","which","who","whom","how","when","where","why",
+                "bir","ve","ile","için","de","da","den","dan","bu","şu",
+                "ne","nasıl","nerede","kim","mi","mı","mu","mü",
+            }
+            def _content_words(text):
+                return {w for w in text.lower().split() if w not in _STOP and len(w) > 1}
+
+            q_words = _content_words(query)
+            fresh_results = []
+            for r in cached:
+                if r.get("distance", 1.0) >= 0.5:
+                    continue
+                if (_t.time() - r.get("metadata", {}).get("timestamp", 0)) >= 43200:
+                    continue
+                cached_query = r.get("metadata", {}).get("query", "")
+                c_words = _content_words(cached_query)
+                overlap = len(q_words & c_words)
+                # Need ≥30% of query content words in cached query
+                if not q_words or overlap / len(q_words) < 0.3:
+                    continue
+                fresh_results.append(r)
             if fresh_results:
                 lines = [f"**Cached web knowledge for '{query}':**\n"]
                 for r in fresh_results:

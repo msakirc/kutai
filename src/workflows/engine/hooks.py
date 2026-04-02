@@ -144,6 +144,15 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
             if formatted:
                 parts.append(f"\n\n## Context Artifacts\n\n{formatted}")
 
+    # Append human clarification answers if available
+    user_clarification = ctx.get("user_clarification")
+    if user_clarification:
+        parts.append(
+            f"\n\n## Human Clarification Answers\n"
+            f"The human has answered your questions. Use these answers to complete the task:\n\n"
+            f"{user_clarification}"
+        )
+
     # Append schema validation error from previous retry
     schema_error = ctx.get("_schema_error")
     if schema_error:

@@ -1507,10 +1507,24 @@ class Orchestrator:
                 # Workflow step post-hook: store output artifacts
                 if is_workflow_step(task_ctx):
                     await post_execute_workflow_step(task, result)
-                    # Post-hook may override status (e.g. triggers_clarification)
+                    # Post-hook may override status
                     if result.get("status") == "needs_clarification":
                         await self._handle_clarification(task, result)
-                        return
+                        continue
+                    if result.get("status") == "failed":
+                        # Disguised failure detected — route to failure handler
+                        error_msg = result.get("error", "Disguised failure detected")
+                        logger.warning(
+                            "disguised failure detected",
+                            task_id=task_id,
+                            error=error_msg,
+                        )
+                        await update_task(
+                            task_id, status="failed",
+                            error=error_msg,
+                        )
+                        await self.telegram.send_error(task_id, task.get("title", ""), error_msg)
+                        continue
                 await self._handle_complete(task, result)
             elif status == "needs_subtasks":
                 await self._handle_subtasks(task, result)

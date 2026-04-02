@@ -88,6 +88,71 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
 
     return True, ""
 
+# ── Disguised failure detection ────────────────────────────────────────────
+
+# Phrases that indicate the agent failed but wrapped it in final_answer
+_FAILURE_PHRASES = [
+    "cannot be completed",
+    "cannot proceed",
+    "could not be performed",
+    "could not be completed",
+    "unable to complete",
+    "execution blocked",
+    "shell tool is blocked",
+    "shell tool is completely",
+    "tool is temporarily disabled",
+    "cannot proceed until",
+    "blocked - cannot",
+    "task failed",
+    "verification status: failed",
+    "status: blocked",
+    "cannot execute",
+    "cannot run",
+    "no test execution possible",
+    "cannot be generated without",
+    "not run - shell tool blocked",
+    "tool block",
+]
+
+# Phrases that look like failure but are legitimate analysis
+_FALSE_POSITIVE_PHRASES = [
+    "competitor",       # "competitor failed to..." is analysis, not failure
+    "risk if wrong",    # risk assessment
+    "failure mode",     # design docs discussing failure modes
+    "error handling",   # architecture discussing error handling
+    "error states",     # UX discussing error states
+]
+
+
+def _is_disguised_failure(output: str) -> bool:
+    """Detect if a 'completed' result is actually a failure report."""
+    if not output or len(output) < 50:
+        return False
+
+    lower = output.lower()
+
+    # Check for false positives first — legitimate analysis about failures
+    for fp in _FALSE_POSITIVE_PHRASES:
+        if fp in lower and not any(fail in lower for fail in [
+            "shell tool", "tool is blocked", "cannot proceed until",
+            "execution blocked",
+        ]):
+            return False
+
+    # Count failure indicators
+    hits = sum(1 for phrase in _FAILURE_PHRASES if phrase in lower)
+
+    # 2+ failure phrases = almost certainly a disguised failure
+    if hits >= 2:
+        return True
+
+    # 1 failure phrase + short output (< 500 chars) = likely failure
+    if hits >= 1 and len(output) < 500:
+        return True
+
+    return False
+
+
 # ── LLM-based artifact summarization ──────────────────────────────────────
 
 
@@ -354,6 +419,17 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
 
     store = get_artifact_store()
     output_value = result.get("result", "")
+
+    # ── Detect fake completions ──
+    # Small LLMs wrap failure reports in final_answer. Detect and reject.
+    if output_value and _is_disguised_failure(output_value):
+        result["status"] = "failed"
+        result["error"] = "Agent reported completion but output indicates failure"
+        logger.warning(
+            f"[Workflow Hook] Step '{step_id}' detected as disguised failure — "
+            f"overriding to failed for retry"
+        )
+        return  # Don't store garbage artifacts
 
     for name in output_names:
         await store.store(mission_id, name, output_value)

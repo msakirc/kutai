@@ -244,7 +244,7 @@ _AGENT_TYPE_CATEGORY: dict[str, str] = {
 }
 
 
-def validate_task_output(agent_type: str, result: str) -> list[str]:
+def validate_task_output(agent_type: str, result) -> list[str]:
     """Validate a final_answer result against task-type-specific rules.
 
     Returns a list of human-readable validation errors (empty on pass).
@@ -254,6 +254,11 @@ def validate_task_output(agent_type: str, result: str) -> list[str]:
       - **research**: result must contain at least one URL or source reference
       - **planner**: result must contain subtasks / step references
     """
+    if isinstance(result, dict):
+        result = result.get("result", "") or str(result)
+    if not isinstance(result, str):
+        result = str(result) if result else ""
+
     category = _AGENT_TYPE_CATEGORY.get(agent_type)
     if category is None:
         return []  # unknown agent type — skip validation

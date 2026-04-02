@@ -72,108 +72,83 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
 
     return True, ""
 
-# ── Auto-summarize helper ──────────────────────────────────────────────────
+# ── LLM-based artifact summarization ──────────────────────────────────────
 
 
-def _auto_summarize(text: str, target_chars: int = 1500) -> str:
-    """Produce a compact summary of a large artifact WITHOUT using an LLM.
+async def _llm_summarize(text: str, artifact_name: str) -> Optional[str]:
+    """Summarize a large artifact using the LLM (OVERHEAD call).
 
-    Strategy:
-    1. If JSON: extract top-level keys and first-level values (truncated)
-    2. If markdown: keep headings + first sentence of each section
-    3. Fallback: keep first and last portions
+    Uses whatever model is loaded — no swaps. Falls back to structural
+    extraction if LLM is unavailable.
     """
-    text = text.strip()
-    if not text:
-        return ""
-
-    # Try JSON summarization
     try:
-        data = json.loads(text)
-        return _summarize_json(data, target_chars)
-    except (json.JSONDecodeError, TypeError):
-        pass
+        from ...core.llm_dispatcher import get_dispatcher, CallCategory
+        from ...core.router import ModelRequirements
 
-    # Markdown summarization — keep headings + first line of each section
-    if any(text.startswith(h) for h in ("#", "##", "###")) or "\n#" in text:
-        return _summarize_markdown(text, target_chars)
+        reqs = ModelRequirements(
+            task="summarizer",
+            difficulty=2,
+            prefer_speed=True,
+            prefer_local=True,
+            estimated_input_tokens=min(len(text) // 4, 4000),
+            estimated_output_tokens=500,
+        )
 
-    # Fallback — first portion + last portion
-    if len(text) <= target_chars:
+        # Truncate input to 4k tokens max to fit any model
+        max_input = 16000  # ~4k tokens
+        truncated_text = text[:max_input]
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a concise summarizer. Produce a summary that "
+                    "preserves ALL key facts, decisions, and data points. "
+                    "Target: under 400 words. No filler."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Summarize this '{artifact_name}' artifact. Keep every "
+                    f"important fact, number, name, and decision:\n\n"
+                    f"{truncated_text}"
+                ),
+            },
+        ]
+
+        response = await get_dispatcher().request(
+            CallCategory.OVERHEAD, reqs, messages, tools=None
+        )
+        summary = response.get("content", "").strip()
+        if summary and len(summary) > 50:
+            return summary
+
+    except Exception as e:
+        logger.debug(f"[Workflow Hook] LLM summarization failed: {e}")
+
+    # Fallback: structural extraction if LLM unavailable
+    return _structural_summary(text)
+
+
+def _structural_summary(text: str, target: int = 1500) -> str:
+    """Fallback summary without LLM — keep headings + first lines."""
+    if len(text) <= target:
         return text
-    half = target_chars // 2
-    return text[:half] + "\n\n[...truncated...]\n\n" + text[-half:]
-
-
-def _summarize_json(data, target_chars: int) -> str:
-    """Summarize a JSON structure by showing keys and condensed values."""
-    lines: list[str] = []
-
-    if isinstance(data, dict):
-        for key, value in data.items():
-            if isinstance(value, str):
-                lines.append(f"**{key}**: {value[:200]}")
-            elif isinstance(value, list):
-                items_preview = []
-                for item in value[:5]:
-                    if isinstance(item, dict):
-                        # Show first 2-3 key fields
-                        preview_fields = list(item.items())[:3]
-                        preview = ", ".join(f"{k}: {str(v)[:60]}" for k, v in preview_fields)
-                        items_preview.append(f"  - {preview}")
-                    else:
-                        items_preview.append(f"  - {str(item)[:100]}")
-                lines.append(f"**{key}** ({len(value)} items):")
-                lines.extend(items_preview[:5])
-                if len(value) > 5:
-                    lines.append(f"  - ...and {len(value) - 5} more")
-            elif isinstance(value, dict):
-                sub_keys = ", ".join(list(value.keys())[:5])
-                lines.append(f"**{key}**: {{{sub_keys}}}")
-            else:
-                lines.append(f"**{key}**: {value}")
-
-    elif isinstance(data, list):
-        lines.append(f"Array with {len(data)} items:")
-        for item in data[:5]:
-            if isinstance(item, dict):
-                preview_fields = list(item.items())[:3]
-                preview = ", ".join(f"{k}: {str(v)[:60]}" for k, v in preview_fields)
-                lines.append(f"- {preview}")
-            else:
-                lines.append(f"- {str(item)[:100]}")
-        if len(data) > 5:
-            lines.append(f"...and {len(data) - 5} more")
-
-    result = "\n".join(lines)
-    return result[:target_chars] if len(result) > target_chars else result
-
-
-def _summarize_markdown(text: str, target_chars: int) -> str:
-    """Summarize markdown by keeping headings + first sentence of each section."""
     lines = text.split("\n")
-    summary_lines: list[str] = []
+    out: list[str] = []
     total = 0
-
     for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            # Always keep headings
-            summary_lines.append(stripped)
-            total += len(stripped) + 1
-        elif stripped and summary_lines and not summary_lines[-1].startswith("#"):
-            # Skip non-first content lines
-            continue
-        elif stripped:
-            # First content line after heading — keep it
-            truncated = stripped[:200]
-            summary_lines.append(truncated)
-            total += len(truncated) + 1
-
-        if total >= target_chars:
+        s = line.strip()
+        if s.startswith("#") or (out and not out[-1].startswith("#") and not s):
+            out.append(s)
+            total += len(s) + 1
+        elif s and (not out or out[-1].startswith("#")):
+            out.append(s[:200])
+            total += min(len(s), 200) + 1
+        if total >= target:
             break
-
-    return "\n".join(summary_lines)
+    return "\n".join(out) if out else text[:target]
 
 
 # ── Module-level singleton ─────────────────────────────────────────────────
@@ -372,20 +347,20 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
         )
 
     # ── Auto-summarize large artifacts ──
-    # If an artifact exceeds the context budget, produce a compact summary
-    # version ({name}_summary) that downstream steps can consume instead.
-    # This avoids lossy truncation — the summary is a coherent condensation.
+    # If an artifact exceeds the context budget, use the LLM to produce a
+    # compact summary ({name}_summary) that downstream steps consume.
+    # Uses OVERHEAD category — cheap call, no model swaps.
     _SUMMARY_THRESHOLD = 3000  # chars — above this, create a summary
-    _SUMMARY_TARGET = 1500     # chars — target length for summaries
     if output_value and len(output_value) > _SUMMARY_THRESHOLD:
         for name in output_names:
-            summary = _auto_summarize(output_value, _SUMMARY_TARGET)
-            summary_name = f"{name}_summary"
-            await store.store(mission_id, summary_name, summary)
-            logger.info(
-                f"[Workflow Hook] Auto-summarized '{name}' -> '{summary_name}' "
-                f"({len(output_value)} -> {len(summary)} chars)"
-            )
+            summary = await _llm_summarize(output_value, name)
+            if summary:
+                summary_name = f"{name}_summary"
+                await store.store(mission_id, summary_name, summary)
+                logger.info(
+                    f"[Workflow Hook] LLM-summarized '{name}' -> '{summary_name}' "
+                    f"({len(output_value)} -> {len(summary)} chars)"
+                )
 
     # ── Write artifacts to disk in mission directory ──
     if output_value and mission_id:

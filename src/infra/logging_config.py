@@ -64,23 +64,35 @@ class _ContextLogger:
         """Inject context fields as LogRecord extras for JSON formatter."""
         return ctx
 
+    # Reserved LogRecord attributes — cannot be used as extra keys
+    _RESERVED = frozenset({
+        "name", "msg", "args", "levelname", "levelno", "pathname",
+        "filename", "module", "exc_info", "exc_text", "stack_info",
+        "lineno", "funcName", "created", "msecs", "relativeCreated",
+        "thread", "threadName", "process", "processName", "message",
+    })
+
+    def _safe_extra(self, ctx: dict) -> dict:
+        """Strip reserved LogRecord keys to avoid 'Attempt to overwrite' errors."""
+        return {k: v for k, v in ctx.items() if k not in self._RESERVED}
+
     def debug(self, msg: str, *args, **ctx):
-        self._log.debug(self._fmt(msg, **ctx), *args, extra=ctx)
+        self._log.debug(self._fmt(msg, **ctx), *args, extra=self._safe_extra(ctx))
 
     def info(self, msg: str, *args, **ctx):
-        self._log.info(self._fmt(msg, **ctx), *args, extra=ctx)
+        self._log.info(self._fmt(msg, **ctx), *args, extra=self._safe_extra(ctx))
 
     def warning(self, msg: str, *args, **ctx):
-        self._log.warning(self._fmt(msg, **ctx), *args, extra=ctx)
+        self._log.warning(self._fmt(msg, **ctx), *args, extra=self._safe_extra(ctx))
 
     def error(self, msg: str, *args, **ctx):
-        self._log.error(self._fmt(msg, **ctx), *args, extra=ctx)
+        self._log.error(self._fmt(msg, **ctx), *args, extra=self._safe_extra(ctx))
 
     def critical(self, msg: str, *args, **ctx):
-        self._log.critical(self._fmt(msg, **ctx), *args, extra=ctx)
+        self._log.critical(self._fmt(msg, **ctx), *args, extra=self._safe_extra(ctx))
 
     def exception(self, msg: str, *args, **ctx):
-        self._log.exception(self._fmt(msg, **ctx), *args, extra=ctx)
+        self._log.exception(self._fmt(msg, **ctx), *args, extra=self._safe_extra(ctx))
 
     def bind(self, **ctx) -> "_BoundLogger":
         return _BoundLogger(self, ctx)

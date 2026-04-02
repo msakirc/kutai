@@ -1280,11 +1280,11 @@
       }
     },
     {
-      "id": "1.12",
+      "id": "1.12a",
       "phase": "phase_1",
-      "name": "research_synthesis_and_report",
+      "name": "market_research_synthesis",
       "agent": "writer",
-      "difficulty": "hard",
+      "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
         "1.1",
@@ -1300,18 +1300,13 @@
         "market_existence_data",
         "audience_research_data",
         "competitor_pricing_analysis",
-        "competitor_sentiment_analysis",
-        "market_gap_analysis",
-        "technology_trends",
-        "regulatory_requirements",
-        "indirect_competitors_list"
+        "competitor_sentiment_analysis"
       ],
       "output_artifacts": [
-        "research_summary",
-        "market_research_report"
+        "research_summary"
       ],
-      "instruction": "First, compress all research findings into a structured Research Summary under 500 words with sections: Market Viability, Target Audience Profile, Competitive Landscape, Top 3 Market Opportunities, Technology Enablers, Key Risks, Go/No-Go Signal. Then compile all research into a comprehensive Market Research Report with structure: Executive Summary, Market Overview, Target Audience Analysis, Competitive Landscape (with feature matrix, pricing comparison, UX comparison, SWOT analyses), Market Gap Analysis, Technology Landscape, Regulatory Environment, Recommendations.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
-      "done_when": "research_summary and market_research_report exist as comprehensive, well-structured documents.",
+      "instruction": "Synthesize market and competitor research into a Research Summary under 500 words. Sections: Market Viability, Target Audience Profile, Competitive Landscape, Key Risks.",
+      "done_when": "research_summary exists as a well-structured summary document.",
       "artifact_schema": {
         "research_summary": {
           "type": "markdown",
@@ -1319,17 +1314,44 @@
             "Market Viability",
             "Target Audience Profile",
             "Competitive Landscape",
-            "Top 3 Market Opportunities",
             "Key Risks"
           ]
-        },
+        }
+      }
+    },
+    {
+      "id": "1.12b",
+      "phase": "phase_1",
+      "name": "market_research_report",
+      "agent": "writer",
+      "difficulty": "medium",
+      "tools_hint": [],
+      "depends_on": [
+        "1.12a",
+        "1.9",
+        "1.10",
+        "1.11"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "research_summary",
+        "market_gap_analysis",
+        "technology_trends",
+        "regulatory_requirements",
+        "indirect_competitors_list"
+      ],
+      "output_artifacts": [
+        "market_research_report"
+      ],
+      "instruction": "Using research_summary plus gap analysis, technology trends, regulatory data, and indirect competitors, compile the full Market Research Report. Sections: Executive Summary, Market Overview, Competitive Landscape, Market Gap Analysis, Recommendations.",
+      "done_when": "market_research_report exists as a comprehensive, well-structured document.",
+      "artifact_schema": {
         "market_research_report": {
           "type": "markdown",
           "required_sections": [
             "Executive Summary",
             "Market Overview",
             "Competitive Landscape",
-            "Market Gap Analysis",
             "Recommendations"
           ]
         }
@@ -1343,7 +1365,7 @@
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
-        "1.12"
+        "1.12b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
@@ -2135,9 +2157,9 @@
       }
     },
     {
-      "id": "3.9",
+      "id": "3.9a",
       "phase": "phase_3",
-      "name": "requirements_traceability_and_conflicts",
+      "name": "requirements_traceability",
       "agent": "planner",
       "difficulty": "medium",
       "tools_hint": [],
@@ -2145,27 +2167,20 @@
         "3.1",
         "3.2",
         "3.3",
-        "3.4",
-        "3.7",
-        "3.8"
+        "3.4"
       ],
-      "may_need_clarification": true,
+      "may_need_clarification": false,
       "input_artifacts": [
         "functional_requirements",
         "user_stories_refined",
         "business_rules",
-        "nfr_performance",
-        "nfr_scalability",
-        "nfr_availability",
-        "security_requirements",
         "data_requirements"
       ],
       "output_artifacts": [
-        "traceability_matrix",
-        "conflict_resolutions"
+        "traceability_matrix"
       ],
-      "instruction": "Create requirements traceability matrix: FR -> user_story_ids -> BR_ids -> test_case_ids (TBD). Every FR maps to stories, every BR maps to stories. Flag orphans. Then scan all requirements for conflicts: FR vs FR, FR vs NFR, NFR vs NFR, BR vs BR, security vs usability, scale vs cost. For each conflict: minor — choose reasonable resolution. Significant — choose resolution best serving product vision, document trade-off. Blocking — trigger needs_clarification presenting options to human.",
-      "done_when": "traceability_matrix and conflict_resolutions exist with all requirements cross-referenced and conflicts resolved.",
+      "instruction": "Build traceability matrix: map every functional requirement to user stories and business rules. Identify any requirement without a user story or business rule.",
+      "done_when": "traceability_matrix exists with all requirements cross-referenced and orphans flagged.",
       "artifact_schema": {
         "traceability_matrix": {
           "type": "object",
@@ -2173,7 +2188,35 @@
             "mappings",
             "orphans"
           ]
-        },
+        }
+      }
+    },
+    {
+      "id": "3.9b",
+      "phase": "phase_3",
+      "name": "requirements_conflict_check",
+      "agent": "planner",
+      "difficulty": "medium",
+      "tools_hint": [],
+      "depends_on": [
+        "3.9a",
+        "3.7",
+        "3.8"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "traceability_matrix",
+        "nfr_performance",
+        "nfr_scalability",
+        "nfr_availability",
+        "security_requirements"
+      ],
+      "output_artifacts": [
+        "conflict_resolutions"
+      ],
+      "instruction": "Check for conflicts between functional requirements and NFRs. Identify where performance targets conflict with feature scope, where security constraints limit features, where scalability needs affect architecture. Document each conflict with resolution.",
+      "done_when": "conflict_resolutions exists with all conflicts identified and resolved.",
+      "artifact_schema": {
         "conflict_resolutions": {
           "type": "array",
           "min_items": 0,
@@ -2187,38 +2230,67 @@
       }
     },
     {
-      "id": "3.10",
+      "id": "3.10a",
       "phase": "phase_3",
-      "name": "requirements_specification_document",
+      "name": "requirements_spec_functional",
       "agent": "writer",
-      "difficulty": "medium",
+      "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
         "3.1",
         "3.2",
         "3.3",
-        "3.4",
-        "3.5",
-        "3.6",
-        "3.7",
-        "3.8",
-        "3.9"
+        "3.4"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
         "functional_requirements",
+        "user_stories_refined",
+        "business_rules",
+        "data_requirements"
+      ],
+      "output_artifacts": [
+        "requirements_spec_part1"
+      ],
+      "instruction": "Compile Part 1 of Requirements Specification: Functional Requirements, User Stories, Business Rules, Data Requirements. Format as structured document.",
+      "done_when": "requirements_spec_part1 exists as a structured document covering functional requirements.",
+      "artifact_schema": {
+        "requirements_spec_part1": {
+          "type": "markdown",
+          "required_sections": [
+            "Functional Requirements",
+            "User Stories",
+            "Business Rules",
+            "Data Requirements"
+          ]
+        }
+      }
+    },
+    {
+      "id": "3.10b",
+      "phase": "phase_3",
+      "name": "requirements_spec_nonfunctional",
+      "agent": "writer",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "3.10a",
+        "3.7",
+        "3.8",
+        "3.9b"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "requirements_spec_part1",
         "nfr_performance",
         "nfr_availability",
         "security_requirements",
-        "data_requirements",
-        "business_rules",
-        "user_stories_refined",
         "traceability_matrix"
       ],
       "output_artifacts": [
         "requirements_spec"
       ],
-      "instruction": "Compile all requirements into a structured Requirements Specification with sections for each requirement category, plus User Stories, Traceability Matrix, and Resolved Conflicts. Add version number, ToC, and glossary.",
+      "instruction": "Merge requirements_spec_part1 with non-functional requirements (performance, availability, security) and traceability matrix into the final Requirements Specification Document.",
       "done_when": "requirements_spec exists as a comprehensive versioned document incorporating all requirement categories.",
       "artifact_schema": {
         "requirements_spec": {
@@ -2241,7 +2313,7 @@
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
-        "3.10"
+        "3.10b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
@@ -2809,9 +2881,9 @@
       }
     },
     {
-      "id": "4.15a",
+      "id": "4.15a1",
       "phase": "phase_4",
-      "name": "backend_design_compilation",
+      "name": "backend_core_design",
       "agent": "writer",
       "difficulty": "medium",
       "tools_hint": [],
@@ -2819,16 +2891,47 @@
         "4.3",
         "4.4",
         "4.5",
-        "4.6",
-        "4.9",
-        "4.10"
+        "4.6"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
         "system_architecture",
         "database_schema",
         "openapi_spec",
-        "auth_design",
+        "auth_design"
+      ],
+      "output_artifacts": [
+        "backend_core_compilation"
+      ],
+      "instruction": "Compile core backend architecture: System Architecture Overview, Database Schema & Data Model, API Design & Endpoints, Auth & Authorization. Summarize key decisions and patterns for each.",
+      "done_when": "backend_core_compilation exists covering core backend architecture sections.",
+      "artifact_schema": {
+        "backend_core_compilation": {
+          "type": "markdown",
+          "required_sections": [
+            "System Architecture",
+            "Database",
+            "API Design",
+            "Auth"
+          ]
+        }
+      }
+    },
+    {
+      "id": "4.15a2",
+      "phase": "phase_4",
+      "name": "backend_services_design",
+      "agent": "writer",
+      "difficulty": "medium",
+      "tools_hint": [],
+      "depends_on": [
+        "4.15a1",
+        "4.9",
+        "4.10"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "backend_core_compilation",
         "caching_strategy",
         "file_storage_design",
         "email_system_design",
@@ -2837,7 +2940,7 @@
       "output_artifacts": [
         "backend_design_compilation"
       ],
-      "instruction": "Compile all backend architecture decisions into a single document. Sections: System Architecture Overview, Database Schema & Data Model, API Design & Endpoints, Auth & Authorization, Caching Strategy, File Storage, Email System, Search System. For each section, summarize the key decisions and patterns.",
+      "instruction": "Merge backend_core_compilation with service designs: Caching Strategy, File Storage, Email System, Search System. Produce complete backend design compilation.",
       "done_when": "backend_design_compilation exists as a comprehensive document covering all backend architecture sections.",
       "artifact_schema": {
         "backend_design_compilation": {
@@ -2846,7 +2949,9 @@
             "System Architecture",
             "Database",
             "API Design",
-            "Auth"
+            "Auth",
+            "Caching Strategy",
+            "File Storage"
           ]
         }
       }
@@ -2859,7 +2964,7 @@
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
-        "4.15a",
+        "4.15a2",
         "4.7",
         "4.11",
         "4.12",
@@ -3349,17 +3454,15 @@
       }
     },
     {
-      "id": "5.11",
+      "id": "5.11a",
       "phase": "phase_5",
-      "name": "design_handoff_document",
+      "name": "design_system_handoff",
       "agent": "writer",
-      "difficulty": "medium",
+      "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
         "5.6",
         "5.7",
-        "5.8",
-        "5.9",
         "5.10"
       ],
       "may_need_clarification": false,
@@ -3367,17 +3470,49 @@
         "design_tokens",
         "component_spec_primitives",
         "component_spec_composite",
+        "design_review_result"
+      ],
+      "output_artifacts": [
+        "design_system_compilation"
+      ],
+      "instruction": "Compile design system for handoff: Design Tokens (colors, typography, spacing), Primitive Components (Button, Input, etc.), Composite Components (Card, Modal, etc.), and review notes.",
+      "done_when": "design_system_compilation exists covering tokens, primitives, and composites.",
+      "artifact_schema": {
+        "design_system_compilation": {
+          "type": "markdown",
+          "required_sections": [
+            "Design Tokens",
+            "Primitive Components",
+            "Composite Components"
+          ]
+        }
+      }
+    },
+    {
+      "id": "5.11b",
+      "phase": "phase_5",
+      "name": "design_handoff_document",
+      "agent": "writer",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "5.11a",
+        "5.8",
+        "5.9"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "design_system_compilation",
         "screen_specifications",
         "interaction_spec",
         "responsive_spec",
-        "accessibility_spec",
-        "design_review_result"
+        "accessibility_spec"
       ],
       "output_artifacts": [
         "design_handoff"
       ],
-      "instruction": "Compile all design artifacts into Design Handoff document: tokens, component library, screen specs, interaction guide, responsive guide, accessibility guide. Quick-reference cheat sheet at top.",
-      "done_when": "design_handoff exists.",
+      "instruction": "Merge design_system_compilation with screen specs, interaction patterns, responsive rules, and accessibility requirements into the final Design Handoff Document.",
+      "done_when": "design_handoff exists as a comprehensive document.",
       "artifact_schema": {
         "design_handoff": {
           "type": "markdown",
@@ -3401,7 +3536,7 @@
       "tools_hint": [],
       "depends_on": [
         "4.16",
-        "5.11"
+        "5.11b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [

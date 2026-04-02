@@ -365,11 +365,9 @@ class LLMDispatcher:
                         # Loaded model failed — fall through to normal routing
                         # which may try cloud
                         logger.debug(
-                            "main_work: pinned loaded model failed, "
-                            "falling through to full routing",
-                            loaded_model=loaded,
-                            error=str(e),
-                            task=reqs.effective_task or reqs.primary_capability,
+                            f"main_work: pinned loaded model failed ({loaded}), "
+                            f"falling through to full routing. "
+                            f"error={str(e)[:100]} task={reqs.effective_task or reqs.primary_capability}"
                         )
             # If no model loaded or loaded model failed, let normal routing
             # handle it (will likely pick cloud since budget is exhausted

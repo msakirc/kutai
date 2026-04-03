@@ -2821,6 +2821,18 @@ class Orchestrator:
                     await self.check_scheduled_tasks()
                     self.last_scheduler_check = datetime.now()
 
+                    # Proactive GPU load for overhead (todo suggestions, grading)
+                    # Only when no main work tasks are queued — checked on the
+                    # 60s scheduler interval to avoid hammering the DB every cycle.
+                    try:
+                        from src.core.llm_dispatcher import get_dispatcher
+                        _disp = get_dispatcher()
+                        _ready = await get_ready_tasks(limit=1)
+                        if not _ready:
+                            await _disp.ensure_gpu_utilized([])
+                    except Exception:
+                        pass
+
                 # Get a generous batch, then compute how many to actually run
                 candidate_tasks = await get_ready_tasks(limit=8)
 
@@ -2905,14 +2917,14 @@ class Orchestrator:
                     pass
 
                 # ── Proactive GPU loading ──
-                # If GPU is idle, load best-fit model for main work tasks.
-                # If no main work, load for overhead needs (todo suggestions, grading).
-                # Local inference is free — don't waste GPU.
-                try:
-                    from src.core.llm_dispatcher import get_dispatcher
-                    await get_dispatcher().ensure_gpu_utilized(candidate_tasks)
-                except Exception as _gpu_err:
-                    logger.debug(f"Proactive GPU load failed: {_gpu_err}")
+                # If GPU is idle and queue has work, load the best-fit model
+                # BEFORE tasks start. Local inference is free — don't waste GPU.
+                if candidate_tasks:
+                    try:
+                        from src.core.llm_dispatcher import get_dispatcher
+                        await get_dispatcher().ensure_gpu_utilized(candidate_tasks)
+                    except Exception as _gpu_err:
+                        logger.debug(f"Proactive GPU load failed: {_gpu_err}")
 
                 if tasks:
                     task_names = [

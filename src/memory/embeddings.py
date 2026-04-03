@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
-EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
-EMBEDDING_DIMENSION = 384
-EMBEDDING_MAX_TOKENS = 512  # model token limit
+EMBEDDING_MODEL = "google/embeddinggemma-300m"
+EMBEDDING_DIMENSION = 768
+EMBEDDING_MAX_TOKENS = 2048  # model token limit (4x improvement over e5-small)
 EMBEDDING_BATCH_SIZE = 32
 
 
@@ -82,12 +82,6 @@ _st_load_attempted = False
 _st_model_name: str | None = None
 
 
-def _preprocess_e5(text: str, is_query: bool = True) -> str:
-    """Add e5 prefix. E5 models need 'query: ' or 'passage: ' prefix."""
-    prefix = "query: " if is_query else "passage: "
-    return prefix + text
-
-
 def _get_st_embedding(
     text: str, is_query: bool = True
 ) -> Optional[list[float]]:
@@ -109,8 +103,14 @@ def _get_st_embedding(
             return None
 
     try:
-        processed = _preprocess_e5(text, is_query=is_query)
-        vec = _st_model.encode(processed, show_progress_bar=False)
+        if is_query:
+            vec = _st_model.encode_query(text, show_progress_bar=False)
+        else:
+            vec = _st_model.encode_document(text, show_progress_bar=False)
+        return vec.tolist()
+    except AttributeError:
+        # Fallback for models without encode_query/encode_document
+        vec = _st_model.encode(text, show_progress_bar=False)
         return vec.tolist()
     except Exception as e:
         logger.debug(f"sentence-transformers encode failed: {e}")
@@ -138,9 +138,22 @@ def _get_st_embeddings_batch(
             return [None] * len(texts)
 
     try:
-        processed = [_preprocess_e5(t, is_query=is_query) for t in texts]
+        if is_query:
+            vecs = _st_model.encode_query(
+                texts,
+                show_progress_bar=False,
+                batch_size=EMBEDDING_BATCH_SIZE,
+            )
+        else:
+            vecs = _st_model.encode_document(
+                texts,
+                show_progress_bar=False,
+                batch_size=EMBEDDING_BATCH_SIZE,
+            )
+        return [v.tolist() for v in vecs]
+    except AttributeError:
         vecs = _st_model.encode(
-            processed,
+            texts,
             show_progress_bar=False,
             batch_size=EMBEDDING_BATCH_SIZE,
         )
@@ -249,8 +262,8 @@ async def get_embedding(
     if not text or not text.strip():
         return None
 
-    # Truncate to model limit (~2048 chars ≈ 512 tokens)
-    text = text[:2048]
+    # Truncate to model limit (~8192 chars ≈ 2048 tokens)
+    text = text[:8192]
 
     ck = _cache_key(text)
     cached = _embedding_cache.get(ck)
@@ -292,7 +305,7 @@ async def get_embeddings(
     for i, text in enumerate(texts):
         if not text or not text.strip():
             continue
-        text = text[:2048]
+        text = text[:8192]
         ck = _cache_key(text)
         cached = _embedding_cache.get(ck)
         if cached is not None:

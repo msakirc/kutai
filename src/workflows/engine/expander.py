@@ -131,6 +131,10 @@ def expand_steps_to_tasks(
         if tools_hint and isinstance(tools_hint, list):
             context["tools_hint"] = tools_hint
 
+        api_hints = step.get("api_hints")
+        if api_hints and isinstance(api_hints, list):
+            context["api_hints"] = api_hints
+
         artifact_schema = step.get("artifact_schema")
         if artifact_schema and isinstance(artifact_schema, dict):
             context["artifact_schema"] = artifact_schema

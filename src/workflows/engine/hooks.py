@@ -453,6 +453,34 @@ async def pre_execute_workflow_step(task: dict) -> dict:
         f"artifact(s) into task description"
     )
 
+    # ── Enrich from api_hints ──
+    task_ctx = task.get("context", "{}")
+    if isinstance(task_ctx, str):
+        try:
+            task_ctx = json.loads(task_ctx)
+        except (json.JSONDecodeError, TypeError):
+            task_ctx = {}
+
+    api_hints = task_ctx.get("api_hints", [])
+    if api_hints:
+        try:
+            from src.tools.free_apis import find_apis, call_api
+            enrichment_parts = []
+            for hint in api_hints[:3]:
+                apis = find_apis(category=hint)
+                if apis:
+                    try:
+                        data = await call_api(apis[0])
+                        if data:
+                            enrichment_parts.append(f"**{hint}** ({apis[0].name}): {str(data)[:500]}")
+                    except Exception:
+                        pass
+            if enrichment_parts:
+                task_ctx["api_enrichment"] = "### Available Data\n" + "\n\n".join(enrichment_parts)
+                task["context"] = json.dumps(task_ctx)
+        except Exception:
+            pass
+
     return task
 
 

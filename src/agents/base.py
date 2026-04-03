@@ -495,6 +495,19 @@ class BaseAgent:
         except Exception as exc:
             logger.debug(f"Skill library injection failed (non-critical): {exc}")
 
+        # ── Smart Resource Integration: Layer 1 API enrichment ──
+        try:
+            _task_ctx_raw = task.get("context", "{}")
+            if isinstance(_task_ctx_raw, str):
+                _task_ctx_parsed = json.loads(_task_ctx_raw)
+            else:
+                _task_ctx_parsed = _task_ctx_raw or {}
+            api_enrichment = _task_ctx_parsed.get("api_enrichment")
+            if api_enrichment:
+                parts.append(api_enrichment)
+        except Exception as exc:
+            logger.debug("API enrichment injection failed (non-critical): %s", exc)
+
         # ── Phase 11.3: RAG context injection ──
         try:
             rag_block = await retrieve_context(

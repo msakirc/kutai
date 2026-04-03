@@ -1636,7 +1636,9 @@ async def toggle_todo(todo_id: int) -> str:
     if current == "done":
         new_status = "pending"
         await db.execute(
-            "UPDATE todo_items SET status = 'pending', completed_at = NULL WHERE id = ?",
+            """UPDATE todo_items SET status = 'pending', completed_at = NULL,
+               suggestion = NULL, suggestion_agent = NULL, suggestion_at = NULL
+               WHERE id = ?""",
             (todo_id,),
         )
     else:

@@ -424,6 +424,8 @@ class Orchestrator:
                     "retry_count = retry_count + 1 WHERE id = ?",
                     (task["id"],)
                 )
+        if stuck:
+            await db.commit()
 
         # 1b. Paused workflow tasks — retry every 10 minutes
         cursor_paused = await db.execute(
@@ -556,6 +558,8 @@ class Orchestrator:
                     "UPDATE tasks SET depends_on = '[]' WHERE id = ?",
                     (task["id"],),
                 )
+        if blocked:
+            await db.commit()
 
         # 3. Missions with all children done but parent still waiting
         cursor3 = await db.execute(
@@ -583,6 +587,8 @@ class Orchestrator:
                     "completed_at = ? WHERE id = ?",
                     (datetime.now().isoformat(), task["id"]),
                 )
+        if waiting:
+            await db.commit()
 
         # 4. Escalation tiers for tasks stuck in needs_clarification
         #    Uses started_at as the baseline timestamp (set when task

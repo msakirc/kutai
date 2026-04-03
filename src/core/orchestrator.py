@@ -1086,20 +1086,32 @@ class Orchestrator:
 
     async def _check_api_discovery(self):
         """Run API discovery daily at 8:30am, with catch-up if missed."""
-        from datetime import datetime, timedelta
+        from datetime import datetime
 
         now = datetime.now()
 
-        if not hasattr(self, "_last_api_discovery"):
-            self._last_api_discovery = None
+        # Check DB for last discovery time (persists across restarts)
+        last_discovery = None
+        try:
+            from src.infra.db import get_db
+            db = await get_db()
+            cur = await db.execute(
+                "SELECT MAX(timestamp) FROM smart_search_log WHERE source = 'discovery'"
+            )
+            row = await cur.fetchone()
+            if row and row[0]:
+                last_discovery = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
 
-        if self._last_api_discovery and (now - self._last_api_discovery).total_seconds() < 86400:
+        # Already ran today? Skip.
+        if last_discovery and (now - last_discovery).total_seconds() < 86400:
             return
 
         in_window = now.hour == 8 and 25 <= now.minute <= 35
         overdue = (
-            self._last_api_discovery is None
-            or (now - self._last_api_discovery).total_seconds() > 36 * 3600
+            last_discovery is None
+            or (now - last_discovery).total_seconds() > 36 * 3600
         )
 
         if not in_window and not overdue:
@@ -1108,11 +1120,14 @@ class Orchestrator:
         logger.info("Starting API discovery run")
         try:
             from src.tools.free_apis import discover_new_apis, build_keyword_index, seed_category_patterns
+            from src.infra.db import log_smart_search
 
             new_count = await discover_new_apis("all")
             await build_keyword_index()
             await seed_category_patterns()
-            self._last_api_discovery = now
+
+            # Record discovery run in DB so we don't re-run on restart
+            await log_smart_search("discovery", layer=0, source="discovery", success=True, response_ms=0)
 
             if new_count > 0:
                 logger.info("API discovery complete: %d new APIs", new_count)
@@ -1199,7 +1214,6 @@ class Orchestrator:
                 difficulty=2,
                 estimated_input_tokens=400,
                 estimated_output_tokens=150,
-                local_only=True,
                 prefer_speed=True,
                 priority=2,
             )
@@ -1209,7 +1223,7 @@ class Orchestrator:
                     reqs=reqs,
                     messages=[{"role": "user", "content": prompt}],
                 ),
-                timeout=25,  # hard cap — if the model isn't loaded, fail fast
+                timeout=45,  # allow time for proactive model load if idle
             )
             raw = (response.get("content") or "").strip()
             logger.info(f"[Todo] Suggestion LLM response ({len(raw)} chars)")
@@ -2891,14 +2905,14 @@ class Orchestrator:
                     pass
 
                 # ── Proactive GPU loading ──
-                # If GPU is idle and queue has work, load the best-fit model
-                # BEFORE tasks start. Local inference is free — don't waste GPU.
-                if candidate_tasks:
-                    try:
-                        from src.core.llm_dispatcher import get_dispatcher
-                        await get_dispatcher().ensure_gpu_utilized(candidate_tasks)
-                    except Exception as _gpu_err:
-                        logger.debug(f"Proactive GPU load failed: {_gpu_err}")
+                # If GPU is idle, load best-fit model for main work tasks.
+                # If no main work, load for overhead needs (todo suggestions, grading).
+                # Local inference is free — don't waste GPU.
+                try:
+                    from src.core.llm_dispatcher import get_dispatcher
+                    await get_dispatcher().ensure_gpu_utilized(candidate_tasks)
+                except Exception as _gpu_err:
+                    logger.debug(f"Proactive GPU load failed: {_gpu_err}")
 
                 if tasks:
                     task_names = [

@@ -851,6 +851,21 @@ try:
 except Exception as e:
     logger.warning(f"scaffold tool not available — {type(e).__name__}: {e}")
 
+try:
+    from . import smart_search as _smart_search_mod
+    _optional_tools["smart_search"] = {
+        "function": _smart_search_mod.smart_search,
+        "description": (
+            "Search for information using the best available source. "
+            "Checks free API registry first (weather, currency, pharmacy, etc.), "
+            "then MCP tools, then falls back to web search. "
+            "Use this instead of web_search for general queries."
+        ),
+        "example": '{"tool": "smart_search", "args": {"query": "Istanbul hava durumu"}}',
+    }
+except Exception as e:
+    logger.warning("smart_search not available: %s", e)
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------

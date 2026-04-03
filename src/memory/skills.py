@@ -114,7 +114,7 @@ async def find_relevant_skills(task_text: str, limit: int = 3) -> list[dict]:
 
         # 1. Regex-based matching (original approach)
         cursor = await db.execute(
-            "SELECT * FROM skills WHERE success_count > 0 ORDER BY success_count DESC"
+            "SELECT * FROM skills ORDER BY success_count DESC"
         )
         rows = await cursor.fetchall()
         cols = [d[0] for d in cursor.description]
@@ -170,10 +170,12 @@ async def find_relevant_skills(task_text: str, limit: int = 3) -> list[dict]:
         merged = regex_matches + vector_matches
         # Rank by effectiveness score — best skills surface first
         merged.sort(key=_skill_score, reverse=True)
+        if not merged:
+            logger.info("No skills matched for task: %s", task_text[:80])
         return merged[:limit]
 
     except Exception as exc:
-        logger.debug(f"find_relevant_skills failed: {exc}")
+        logger.warning("find_relevant_skills failed: %s", exc)
         return []
 
 

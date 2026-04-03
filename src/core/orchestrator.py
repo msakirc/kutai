@@ -3,6 +3,7 @@ import asyncio
 import dataclasses
 import json
 import os
+import re
 import signal
 import time
 from ..app.config import DB_PATH, MAX_CONTEXT_CHAIN_LENGTH, TASK_PRIORITY
@@ -2071,7 +2072,9 @@ class Orchestrator:
                     trigger_parts.append(f"search:{search_depth}")
                 if sub_intent:
                     trigger_parts.append(f"shop:{sub_intent}")
-                words = [w.lower().strip(".,!?") for w in title.split() if len(w) >= 3]
+                # Strip i2p step prefixes like [0.1], [15.11] before extracting keywords
+                clean_title = re.sub(r"\[\d+\.?\d*[a-z]?\]\s*", "", title)
+                words = [re.escape(w.lower().strip(".,!?")) for w in clean_title.split() if len(w) >= 3]
                 trigger_parts.extend(sorted(set(words))[:5])
                 trigger = "|".join(trigger_parts)
 

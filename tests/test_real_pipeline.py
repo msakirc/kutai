@@ -347,9 +347,19 @@ class TestTodoDB(unittest.IsolatedAsyncioTestCase):
     """Test todo CRUD against real SQLite (in-memory)."""
 
     async def asyncSetUp(self):
-        from src.infra.db import init_db
-        os.environ["DB_PATH"] = ":memory:"
-        await init_db()
+        import src.infra.db as db_mod
+        # Close any existing connection so we don't write to the real DB
+        await db_mod.close_db()
+        self._orig_db_path = db_mod.DB_PATH
+        db_mod.DB_PATH = ":memory:"
+        db_mod._db_connection = None
+        await db_mod.init_db()
+
+    async def asyncTearDown(self):
+        import src.infra.db as db_mod
+        await db_mod.close_db()
+        db_mod.DB_PATH = self._orig_db_path
+        db_mod._db_connection = None
 
     async def test_add_and_get_todo(self):
         from src.infra.db import add_todo, get_todo

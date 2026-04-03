@@ -1792,6 +1792,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("compare", self.cmd_compare))
         self.app.add_handler(CommandHandler("result", self.cmd_result))
         self.app.add_handler(CommandHandler("skillstats", self.cmd_skillstats))
+        self.app.add_handler(CommandHandler("smartsearch", self.cmd_smartsearch))
         self.app.add_handler(CommandHandler("trace", self.cmd_trace))
         self.app.add_handler(CommandHandler("logs", self.cmd_logs))
         # Wrapper control commands
@@ -2634,6 +2635,78 @@ class TelegramInterface:
                 lines.append(f"  {s['name']}: {s['success_rate']}% ({s['successes']}/{s['total']})")
 
         await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+
+    async def cmd_smartsearch(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show smart search stats and API/MCP observability."""
+        try:
+            from src.infra.db import get_smart_search_stats, get_api_reliability_all
+
+            stats = await get_smart_search_stats(days=7)
+            reliability = await get_api_reliability_all()
+
+            today = stats.get("today", 0)
+            layers = stats.get("layers", {})
+            total_7d = sum(l["count"] for l in layers.values())
+
+            lines = ["Smart Search Stats", "-" * 25]
+            lines.append(f"Queries today: {today}")
+
+            layer_names = {0: "Layer 0 (fast-path)", 1: "Layer 1 (enriched)", 2: "Layer 2 (smart_search)", 3: "Fell through to web"}
+            for layer_num in sorted(layers.keys()):
+                info = layers[layer_num]
+                pct = int(info["count"] / max(total_7d, 1) * 100)
+                name = layer_names.get(layer_num, f"Layer {layer_num}")
+                lines.append(f"  {name}: {info['count']}  ({pct}%)")
+
+            top = [r for r in reliability if r["status"] == "active" and (r["success_count"] + r["failure_count"]) > 0]
+            top.sort(key=lambda r: r["success_count"], reverse=True)
+            if top[:5]:
+                lines.append("")
+                lines.append("Top APIs (7d)")
+                for r in top[:5]:
+                    total = r["success_count"] + r["failure_count"]
+                    rate = int(r["success_count"] / max(total, 1) * 100)
+                    lines.append(f"  {r['api_name']:<20} {total} calls, {rate}% success")
+
+            worst = [r for r in reliability if r["status"] in ("warning", "demoted", "suspended")]
+            if worst:
+                lines.append("")
+                lines.append("Worst Performers (7d)")
+                for r in worst[:5]:
+                    total = r["success_count"] + r["failure_count"]
+                    rate = int(r["success_count"] / max(total, 1) * 100)
+                    status_label = {"warning": "!", "demoted": "demoted", "suspended": "suspended"}
+                    lines.append(f"  {r['api_name']:<20} {r['success_count']}/{total} ({rate}%) {status_label.get(r['status'], '')}")
+
+            top_sources = stats.get("top_sources", [])
+            if top_sources:
+                lines.append("")
+                lines.append("Top Sources (7d)")
+                for s in top_sources[:5]:
+                    lines.append(f"  {s['source']:<20} {s['count']} calls")
+
+            from src.tools.free_apis import API_REGISTRY, _db_api_cache
+            total_apis = len(API_REGISTRY) + len(_db_api_cache)
+            lines.append("")
+            lines.append(f"Registry: {total_apis} APIs")
+
+            text = "\n".join(lines)
+
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("Refresh Now", callback_data="ss:refresh"),
+                    InlineKeyboardButton("Top Failures", callback_data="ss:failures"),
+                ],
+                [
+                    InlineKeyboardButton("Unsuspend All", callback_data="ss:unsuspend"),
+                ],
+            ])
+
+            await self._reply(update, text, reply_markup=keyboard)
+
+        except Exception as e:
+            await self._reply(update, f"Error loading stats: {e}")
 
     async def cmd_workspace(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show active mission workspaces."""
@@ -5536,6 +5609,10 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 await query.edit_message_text(f"❌ {_friendly_error(str(e))}")
             return
 
+        if data.startswith("ss:"):
+            await self._handle_smartsearch_callback(query, data)
+            return
+
         # ── Reset Tasks confirm ──────────────────────────────────
         if data == "reset_tasks_confirm":
             # Cancel any in-progress task futures first
@@ -5959,3 +6036,45 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             context={"todo_id": todo_id},
         )
         await self._reply(update, f"✅ Task #{task_id} created!")
+
+    async def _handle_smartsearch_callback(self, query, data: str):
+        """Handle /smartsearch inline button callbacks."""
+        action = data.split(":", 1)[1] if ":" in data else ""
+
+        if action == "refresh":
+            try:
+                from src.tools.free_apis import discover_new_apis, build_keyword_index
+                new_count = await discover_new_apis("all")
+                await build_keyword_index()
+                await query.edit_message_text(f"Discovery complete: {new_count} new APIs found.")
+            except Exception as e:
+                await query.edit_message_text(f"Discovery failed: {e}")
+
+        elif action == "failures":
+            try:
+                from src.infra.db import get_api_reliability_all
+                all_rel = await get_api_reliability_all()
+                failures = [r for r in all_rel if r["failure_count"] > 0]
+                failures.sort(key=lambda r: r["failure_count"], reverse=True)
+                if not failures:
+                    await query.edit_message_text("No failures recorded.")
+                    return
+                lines = ["API Failures (all time)", "-" * 25]
+                for r in failures[:15]:
+                    total = r["success_count"] + r["failure_count"]
+                    rate = int(r["success_count"] / max(total, 1) * 100)
+                    lines.append(f"{r['api_name']}: {r['failure_count']} failures ({rate}% success) [{r['status']}]")
+                await query.edit_message_text("\n".join(lines))
+            except Exception as e:
+                await query.edit_message_text(f"Error: {e}")
+
+        elif action == "unsuspend":
+            try:
+                from src.infra.db import get_api_reliability_all, unsuspend_api
+                all_rel = await get_api_reliability_all()
+                suspended = [r for r in all_rel if r["status"] in ("suspended", "demoted")]
+                for r in suspended:
+                    await unsuspend_api(r["api_name"])
+                await query.edit_message_text(f"Unsuspended {len(suspended)} APIs. Counters reset.")
+            except Exception as e:
+                await query.edit_message_text(f"Error: {e}")

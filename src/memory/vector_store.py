@@ -108,6 +108,7 @@ async def init_store(persist_dir: str | None = None, embed_fn=None, dimension_fn
         )
 
         expected_dim = _get_dimension_fn()()
+        from src.memory.embeddings import EMBEDDING_MODEL
 
         # Create or get collections with dimension tracking
         for name in COLLECTIONS:
@@ -115,7 +116,7 @@ async def init_store(persist_dir: str | None = None, embed_fn=None, dimension_fn
                 name=name,
                 metadata={
                     "hnsw:space": "cosine",
-                    "embedding_model": "intfloat/multilingual-e5-small",
+                    "embedding_model": EMBEDDING_MODEL,
                     "embedding_dimension": expected_dim,
                 },
             )

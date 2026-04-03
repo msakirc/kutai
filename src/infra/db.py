@@ -374,6 +374,50 @@ async def init_db():
         )
     """)
 
+    # ── Smart Resource Integration tables ──
+
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS api_keywords (
+            api_name TEXT NOT NULL,
+            keyword TEXT NOT NULL,
+            source TEXT DEFAULT 'description',
+            UNIQUE(api_name, keyword)
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_api_keywords_kw ON api_keywords(keyword)"
+    )
+
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS api_category_patterns (
+            category TEXT PRIMARY KEY,
+            pattern TEXT NOT NULL
+        )
+    """)
+
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS smart_search_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')),
+            query TEXT NOT NULL,
+            layer INTEGER NOT NULL,
+            source TEXT,
+            success INTEGER DEFAULT 1,
+            response_ms INTEGER
+        )
+    """)
+
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS api_reliability (
+            api_name TEXT PRIMARY KEY,
+            success_count INTEGER DEFAULT 0,
+            failure_count INTEGER DEFAULT 0,
+            last_success TEXT,
+            last_failure TEXT,
+            status TEXT DEFAULT 'active'
+        )
+    """)
+
     await db.commit()
 
     # Seed todo reminder (every 2h during Turkey daytime: 9,11,13,15,17,19,21 TR = 6,8,10,12,14,16,18 UTC)
@@ -2488,3 +2532,177 @@ async def prune_old_conversations(max_age_days: int = 30) -> int:
     )
     await db.commit()
     return cursor.rowcount
+
+
+# ── Smart Resource Integration queries ──
+
+async def upsert_api_keyword(api_name: str, keyword: str, source: str = "description"):
+    db = await get_db()
+    await db.execute(
+        "INSERT OR IGNORE INTO api_keywords (api_name, keyword, source) VALUES (?, ?, ?)",
+        (api_name, keyword, source),
+    )
+    await db.commit()
+
+
+async def bulk_upsert_api_keywords(rows: list[tuple[str, str, str]]):
+    """rows = [(api_name, keyword, source), ...]"""
+    db = await get_db()
+    await db.executemany(
+        "INSERT OR IGNORE INTO api_keywords (api_name, keyword, source) VALUES (?, ?, ?)",
+        rows,
+    )
+    await db.commit()
+
+
+async def find_apis_by_keywords(keywords: list[str], limit: int = 5) -> list[dict]:
+    """Find APIs with the most keyword overlap. Returns [{api_name, match_count}, ...]."""
+    if not keywords:
+        return []
+    db = await get_db()
+    placeholders = ",".join("?" for _ in keywords)
+    cur = await db.execute(
+        f"""SELECT api_name, COUNT(*) as match_count
+            FROM api_keywords
+            WHERE keyword IN ({placeholders})
+            GROUP BY api_name
+            ORDER BY match_count DESC
+            LIMIT ?""",
+        (*keywords, limit),
+    )
+    rows = await cur.fetchall()
+    return [{"api_name": r[0], "match_count": r[1]} for r in rows]
+
+
+async def get_api_category_patterns() -> dict[str, str]:
+    """Return {category: pattern} for Turkish localization patterns."""
+    db = await get_db()
+    cur = await db.execute("SELECT category, pattern FROM api_category_patterns")
+    rows = await cur.fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+async def upsert_category_pattern(category: str, pattern: str):
+    db = await get_db()
+    await db.execute(
+        "INSERT OR REPLACE INTO api_category_patterns (category, pattern) VALUES (?, ?)",
+        (category, pattern),
+    )
+    await db.commit()
+
+
+async def log_smart_search(query: str, layer: int, source: str | None, success: bool, response_ms: int):
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO smart_search_log (query, layer, source, success, response_ms)
+           VALUES (?, ?, ?, ?, ?)""",
+        (query, layer, source, 1 if success else 0, response_ms),
+    )
+    await db.commit()
+
+
+async def record_api_call(api_name: str, success: bool):
+    """Update api_reliability counters and auto-demote if needed."""
+    db = await get_db()
+    now = "strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')"
+    if success:
+        await db.execute(
+            f"""INSERT INTO api_reliability (api_name, success_count, last_success)
+                VALUES (?, 1, {now})
+                ON CONFLICT(api_name) DO UPDATE SET
+                    success_count = success_count + 1,
+                    last_success = {now}""",
+            (api_name,),
+        )
+    else:
+        await db.execute(
+            f"""INSERT INTO api_reliability (api_name, failure_count, last_failure)
+                VALUES (?, 1, {now})
+                ON CONFLICT(api_name) DO UPDATE SET
+                    failure_count = failure_count + 1,
+                    last_failure = {now}""",
+            (api_name,),
+        )
+    # Auto-demote check
+    cur = await db.execute(
+        "SELECT success_count, failure_count FROM api_reliability WHERE api_name = ?",
+        (api_name,),
+    )
+    row = await cur.fetchone()
+    if row:
+        total = row[0] + row[1]
+        rate = row[0] / max(total, 1)
+        if total >= 10 and rate < 0.10:
+            status = "suspended"
+        elif total >= 5 and rate < 0.25:
+            status = "demoted"
+        elif total >= 5 and rate < 0.50:
+            status = "warning"
+        else:
+            status = "active"
+        await db.execute(
+            "UPDATE api_reliability SET status = ? WHERE api_name = ?",
+            (status, api_name),
+        )
+    await db.commit()
+
+
+async def get_api_reliability(api_name: str) -> dict | None:
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT api_name, success_count, failure_count, status FROM api_reliability WHERE api_name = ?",
+        (api_name,),
+    )
+    row = await cur.fetchone()
+    if not row:
+        return None
+    return {"api_name": row[0], "success_count": row[1], "failure_count": row[2], "status": row[3]}
+
+
+async def get_api_reliability_all() -> list[dict]:
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT api_name, success_count, failure_count, status, last_success, last_failure FROM api_reliability ORDER BY (success_count + failure_count) DESC"
+    )
+    rows = await cur.fetchall()
+    return [
+        {"api_name": r[0], "success_count": r[1], "failure_count": r[2], "status": r[3], "last_success": r[4], "last_failure": r[5]}
+        for r in rows
+    ]
+
+
+async def get_smart_search_stats(days: int = 7) -> dict:
+    """Aggregate smart_search_log for observability menu."""
+    db = await get_db()
+    cutoff = f"datetime('now', 'localtime', '-{days} days')"
+
+    # Layer breakdown
+    cur = await db.execute(
+        f"SELECT layer, COUNT(*), SUM(success) FROM smart_search_log WHERE timestamp > {cutoff} GROUP BY layer"
+    )
+    layers = {r[0]: {"count": r[1], "success": r[2]} for r in await cur.fetchall()}
+
+    # Top sources
+    cur = await db.execute(
+        f"""SELECT source, COUNT(*), SUM(success) FROM smart_search_log
+            WHERE timestamp > {cutoff} AND source IS NOT NULL
+            GROUP BY source ORDER BY COUNT(*) DESC LIMIT 10"""
+    )
+    top_sources = [{"source": r[0], "count": r[1], "success": r[2]} for r in await cur.fetchall()]
+
+    # Today count
+    cur = await db.execute(
+        "SELECT COUNT(*) FROM smart_search_log WHERE date(timestamp) = date('now', 'localtime')"
+    )
+    today = (await cur.fetchone())[0]
+
+    return {"layers": layers, "top_sources": top_sources, "today": today}
+
+
+async def unsuspend_api(api_name: str):
+    db = await get_db()
+    await db.execute(
+        "UPDATE api_reliability SET status = 'active', success_count = 0, failure_count = 0 WHERE api_name = ?",
+        (api_name,),
+    )
+    await db.commit()

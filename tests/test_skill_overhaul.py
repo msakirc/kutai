@@ -343,5 +343,260 @@ class TestSkillsMigration(unittest.TestCase):
         run_async(_test())
 
 
+class TestSkillsV2Core(unittest.TestCase):
+    """Tests for the rewritten skills.py core module."""
+
+    def setUp(self):
+        os.environ["DB_PATH"] = ":memory:"
+        import src.infra.db as _db_mod
+        _db_mod._db_connection = None
+
+    def test_add_skill_creates_new(self):
+        """add_skill creates a new skill when no duplicate exists."""
+        from src.infra.db import init_db, get_skill_by_name
+        from unittest.mock import AsyncMock, patch
+
+        async def _test():
+            await init_db()
+            with patch("src.memory.skills._find_duplicate_skill", new_callable=AsyncMock, return_value=None), \
+                 patch("src.memory.skills._embed_skill", new_callable=AsyncMock):
+                from src.memory.skills import add_skill
+                result = await add_skill(
+                    name="test_new_skill",
+                    description="A brand new skill",
+                    strategy_summary="Do X then Y",
+                    tools_used=["web_search"],
+                )
+                self.assertEqual(result, "test_new_skill")
+
+            skill = await get_skill_by_name("test_new_skill")
+            self.assertIsNotNone(skill)
+            strategies = json.loads(skill["strategies"])
+            self.assertEqual(len(strategies), 1)
+            self.assertEqual(strategies[0]["summary"], "Do X then Y")
+            self.assertEqual(strategies[0]["tools_used"], ["web_search"])
+
+        run_async(_test())
+
+    def test_add_skill_merges_duplicate(self):
+        """add_skill merges strategy into existing skill when duplicate found."""
+        from src.infra.db import init_db, upsert_skill, get_skill_by_name
+        from unittest.mock import AsyncMock, patch
+
+        async def _test():
+            await init_db()
+            # Pre-create existing skill
+            await upsert_skill(
+                "existing_skill", "Does something", "auto",
+                [{"summary": "Original approach", "tools_used": ["tool_a"],
+                  "tool_template": "", "injection_count": 0, "injection_success": 0}],
+            )
+            existing = await get_skill_by_name("existing_skill")
+
+            with patch("src.memory.skills._find_duplicate_skill", new_callable=AsyncMock, return_value=existing):
+                from src.memory.skills import add_skill
+                result = await add_skill(
+                    name="new_name_ignored",
+                    description="Does something similar",
+                    strategy_summary="New approach",
+                    tools_used=["tool_b"],
+                )
+                self.assertEqual(result, "existing_skill")
+
+            skill = await get_skill_by_name("existing_skill")
+            strategies = json.loads(skill["strategies"])
+            self.assertEqual(len(strategies), 2)
+            self.assertEqual(strategies[1]["summary"], "New approach")
+
+        run_async(_test())
+
+    def test_format_skill_verbose(self):
+        """format_skill_verbose includes key markdown elements."""
+        from src.memory.skills import format_skill_verbose
+
+        skill = {
+            "name": "weather_lookup",
+            "description": "Look up weather for a city",
+            "strategies": json.dumps([{
+                "summary": "Use weather API",
+                "tool_template": "web_search({city} weather)",
+                "tools_used": ["web_search"],
+                "injection_count": 10,
+                "injection_success": 8,
+            }]),
+            "injection_count": 10,
+            "injection_success": 8,
+        }
+        output = format_skill_verbose(skill)
+        self.assertIn("## Skill: weather_lookup", output)
+        self.assertIn("**Situation:**", output)
+        self.assertIn("**Strategy:** Use weather API", output)
+        self.assertIn("**Track record:**", output)
+        self.assertIn("80%", output)
+
+    def test_format_skill_compact(self):
+        """format_skill_compact returns a single line with expected format."""
+        from src.memory.skills import format_skill_compact
+
+        skill = {
+            "name": "price_check",
+            "description": "Check product prices",
+            "strategies": json.dumps([{
+                "summary": "Scrape price sites",
+                "tools_used": ["web_search", "scraper"],
+                "injection_count": 0,
+                "injection_success": 0,
+            }]),
+            "injection_count": 5,
+            "injection_success": 4,
+        }
+        output = format_skill_compact(skill)
+        self.assertTrue(output.startswith("- price_check:"))
+        self.assertIn("web_search", output)
+        self.assertIn("scraper", output)
+        self.assertIn("80%", output)
+
+    def test_select_injection_depth_trusted(self):
+        """High-confidence skill gets verbose depth with 1 skill."""
+        from src.memory.skills import select_injection_depth
+
+        skills = [{
+            "name": "trusted_skill",
+            "injection_count": 10,
+            "injection_success": 9,
+            "strategies": "[]",
+        }]
+        depth, selected = select_injection_depth(skills, context_budget=4096)
+        self.assertEqual(depth, "verbose")
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["name"], "trusted_skill")
+
+    def test_select_injection_depth_uncertain(self):
+        """Low-confidence skill gets compact depth with multiple skills."""
+        from src.memory.skills import select_injection_depth
+
+        skills = [
+            {"name": "s1", "injection_count": 2, "injection_success": 1, "strategies": "[]"},
+            {"name": "s2", "injection_count": 3, "injection_success": 1, "strategies": "[]"},
+            {"name": "s3", "injection_count": 1, "injection_success": 0, "strategies": "[]"},
+            {"name": "s4", "injection_count": 0, "injection_success": 0, "strategies": "[]"},
+        ]
+        depth, selected = select_injection_depth(skills, context_budget=8192)
+        self.assertEqual(depth, "compact")
+        self.assertEqual(len(selected), 3)  # max 3 for budget >= 4096
+
+    def test_select_injection_depth_small_context(self):
+        """Small context budget limits to 1 skill in compact mode."""
+        from src.memory.skills import select_injection_depth
+
+        skills = [
+            {"name": "s1", "injection_count": 2, "injection_success": 1, "strategies": "[]"},
+            {"name": "s2", "injection_count": 3, "injection_success": 1, "strategies": "[]"},
+        ]
+        depth, selected = select_injection_depth(skills, context_budget=1024)
+        self.assertEqual(depth, "compact")
+        self.assertEqual(len(selected), 1)
+
+    def test_get_tools_to_inject_high_confidence(self):
+        """Tools returned for high-confidence skills."""
+        from src.memory.skills import get_tools_to_inject
+
+        skills = [{
+            "name": "confident_skill",
+            "injection_count": 10,
+            "injection_success": 8,
+            "strategies": json.dumps([{
+                "summary": "Do stuff",
+                "tools_used": ["web_search", "calculator"],
+                "injection_count": 10,
+                "injection_success": 8,
+            }]),
+        }]
+        tools = get_tools_to_inject(skills)
+        self.assertIn("web_search", tools)
+        self.assertIn("calculator", tools)
+
+    def test_get_tools_to_inject_low_confidence(self):
+        """No tools returned for low-confidence skills."""
+        from src.memory.skills import get_tools_to_inject
+
+        skills = [{
+            "name": "new_skill",
+            "injection_count": 2,
+            "injection_success": 1,
+            "strategies": json.dumps([{
+                "summary": "Do stuff",
+                "tools_used": ["web_search"],
+                "injection_count": 0,
+                "injection_success": 0,
+            }]),
+        }]
+        tools = get_tools_to_inject(skills)
+        self.assertEqual(tools, [])
+
+
+class TestSkillsV2Helpers(unittest.TestCase):
+    """Tests for pure helper functions."""
+
+    def test_injection_success_rate_no_injections(self):
+        """Zero injections returns 0.5."""
+        from src.memory.skills import _injection_success_rate
+        self.assertEqual(_injection_success_rate({"injection_count": 0, "injection_success": 0}), 0.5)
+
+    def test_injection_success_rate_capped(self):
+        """Below MIN_INJECTIONS_FOR_CONFIDENCE, rate capped at 0.5."""
+        from src.memory.skills import _injection_success_rate
+        # 3 out of 4 = 0.75, but capped to 0.5
+        rate = _injection_success_rate({"injection_count": 4, "injection_success": 3})
+        self.assertEqual(rate, 0.5)
+
+    def test_injection_success_rate_uncapped(self):
+        """At or above MIN_INJECTIONS_FOR_CONFIDENCE, real rate returned."""
+        from src.memory.skills import _injection_success_rate
+        rate = _injection_success_rate({"injection_count": 10, "injection_success": 8})
+        self.assertAlmostEqual(rate, 0.8)
+
+    def test_best_strategy_proven(self):
+        """Proven strategy with best rate is returned."""
+        from src.memory.skills import _best_strategy
+        skill = {
+            "strategies": json.dumps([
+                {"summary": "A", "injection_count": 10, "injection_success": 5},
+                {"summary": "B", "injection_count": 10, "injection_success": 9},
+            ])
+        }
+        best = _best_strategy(skill)
+        self.assertEqual(best["summary"], "B")
+
+    def test_best_strategy_unproven_newest(self):
+        """Unproven strategies: newest (last) is returned."""
+        from src.memory.skills import _best_strategy
+        skill = {
+            "strategies": json.dumps([
+                {"summary": "Old", "injection_count": 0, "injection_success": 0},
+                {"summary": "New", "injection_count": 2, "injection_success": 1},
+            ])
+        }
+        best = _best_strategy(skill)
+        self.assertEqual(best["summary"], "New")
+
+    def test_prune_strategies_keeps_unproven(self):
+        """Pruning never drops unproven strategies."""
+        from src.memory.skills import _prune_strategies
+
+        strategies = [
+            {"summary": f"proven_{i}", "injection_count": 10, "injection_success": i}
+            for i in range(4)
+        ] + [
+            {"summary": "unproven_a", "injection_count": 0, "injection_success": 0},
+            {"summary": "unproven_b", "injection_count": 3, "injection_success": 2},
+        ]
+        pruned = _prune_strategies(strategies)
+        self.assertLessEqual(len(pruned), 5)
+        summaries = [s["summary"] for s in pruned]
+        self.assertIn("unproven_a", summaries)
+        self.assertIn("unproven_b", summaries)
+
+
 if __name__ == "__main__":
     unittest.main()

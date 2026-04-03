@@ -206,11 +206,8 @@ async def seed_skills():
     Only adds skills that don't already exist (by name).
     Returns the number of new skills added.
     """
-    from .skills import add_skill, list_skills, _ensure_table
-    from ..infra.db import get_db
-
-    db = await get_db()
-    await _ensure_table(db)
+    from .skills import list_skills
+    from ..infra.db import upsert_skill
 
     existing = await list_skills()
     existing_names = {s["name"] for s in existing}
@@ -219,7 +216,23 @@ async def seed_skills():
     for skill in SEED_SKILLS:
         if skill["name"] in existing_names:
             continue
-        await add_skill(**skill)
+        # Convert old seed format to new schema
+        tool_sequence = skill.get("tool_sequence", "")
+        examples = skill.get("examples", "")
+        strategy = {
+            "summary": tool_sequence or skill["description"],
+            "tool_template": tool_sequence,
+            "tools_used": [],
+            "examples": examples,
+            "injection_count": 0,
+            "injection_success": 0,
+        }
+        await upsert_skill(
+            name=skill["name"],
+            description=skill["description"],
+            skill_type="seed",
+            strategies=[strategy],
+        )
         added += 1
 
     if added:

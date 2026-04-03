@@ -32,7 +32,7 @@ async def test_build_keyword_index_populates_db(tmp_path):
     import src.infra.db as db_mod
     original = db_mod.DB_PATH
     db_mod.DB_PATH = str(tmp_path / "test.db")
-    db_mod._db = None
+    db_mod._db_connection = None
     try:
         await db_mod.init_db()
         from src.tools.free_apis import build_keyword_index, seed_registry
@@ -45,4 +45,4 @@ async def test_build_keyword_index_populates_db(tmp_path):
         assert results[0]["api_name"] in ("wttr.in", "Open-Meteo")
     finally:
         db_mod.DB_PATH = original
-        db_mod._db = None
+        db_mod._db_connection = None

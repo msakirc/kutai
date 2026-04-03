@@ -80,12 +80,13 @@ async def _try_mcp(query: str) -> str | None:
         return None
 
     try:
-        from src.tools import TOOL_REGISTRY
+        from src.tools import TOOL_REGISTRY, execute_tool
         fetch_tool = TOOL_REGISTRY.get("mcp_fetch_fetch")
-        if not fetch_tool or not fetch_tool.get("function"):
+        if not fetch_tool:
             return None
 
-        result = await fetch_tool["function"](url=url_match.group())
+        # Use execute_tool to trigger lazy MCP connection for stubs
+        result = await execute_tool("mcp_fetch_fetch", url=url_match.group())
         if result:
             return f"{str(result)[:2000]}\n(Source: MCP Fetch)"
     except Exception as exc:

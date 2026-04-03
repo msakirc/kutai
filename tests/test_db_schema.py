@@ -12,7 +12,7 @@ async def test_smart_search_tables_exist(tmp_path):
 
     original = db_mod.DB_PATH
     db_mod.DB_PATH = db_path
-    db_mod._db = None
+    db_mod._db_connection = None
     try:
         await db_mod.init_db()
         async with aiosqlite.connect(db_path) as db:
@@ -30,4 +30,4 @@ async def test_smart_search_tables_exist(tmp_path):
                 assert row is not None, f"Table {table} not created"
     finally:
         db_mod.DB_PATH = original
-        db_mod._db = None
+        db_mod._db_connection = None

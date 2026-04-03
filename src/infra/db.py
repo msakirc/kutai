@@ -362,6 +362,66 @@ async def init_db():
         )
     """)
 
+    # Skills v2 — new schema with strategies and injection tracking
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS skills_v2 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            description TEXT NOT NULL,
+            skill_type TEXT DEFAULT 'auto',
+            strategies TEXT DEFAULT '[]',
+            injection_count INTEGER DEFAULT 0,
+            injection_success INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')),
+            updated_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime'))
+        )
+    """)
+
+    # Migration: promote skills_v2 → skills (rename old table, rename new table)
+    try:
+        cursor = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='skills'"
+        )
+        old_skills_exists = await cursor.fetchone() is not None
+
+        cursor2 = await db.execute("SELECT COUNT(*) FROM skills_v2")
+        skills_v2_empty = (await cursor2.fetchone())[0] == 0
+
+        if old_skills_exists and skills_v2_empty:
+            # Migrate seed skills (not auto-captured ones) converting tool_sequence to strategy JSON
+            cursor3 = await db.execute(
+                "SELECT name, description, tool_sequence FROM skills WHERE name NOT LIKE 'auto:%'"
+            )
+            seed_rows = await cursor3.fetchall()
+            for row in seed_rows:
+                strategy = json.dumps([{
+                    "summary": row[2] if row[2] else "",
+                    "tool_template": row[2] if row[2] else "",
+                    "tools_used": [],
+                }])
+                await db.execute(
+                    """INSERT OR IGNORE INTO skills_v2 (name, description, skill_type, strategies)
+                       VALUES (?, ?, 'seed', ?)""",
+                    (row[0], row[1], strategy),
+                )
+            await db.commit()
+            logger.info(f"Migrated {len(seed_rows)} seed skills to skills_v2")
+
+            # Rename old table, promote skills_v2
+            await db.execute("ALTER TABLE skills RENAME TO skills_old_backup")
+            await db.execute("ALTER TABLE skills_v2 RENAME TO skills")
+            await db.commit()
+            logger.info("Skills migration complete: skills → skills_old_backup, skills_v2 → skills")
+
+        elif not old_skills_exists and skills_v2_empty:
+            # Fresh install — just rename skills_v2 to skills
+            await db.execute("ALTER TABLE skills_v2 RENAME TO skills")
+            await db.commit()
+            logger.info("Fresh install: skills_v2 renamed to skills")
+
+    except Exception as e:
+        logger.debug(f"Skills migration skipped: {e}")
+
     # Skill injection A/B metrics
     await db.execute("""
         CREATE TABLE IF NOT EXISTS skill_metrics (
@@ -2540,6 +2600,72 @@ async def get_skill_metrics_summary() -> dict:
         })
 
     return {"overall": overall, "per_skill": per_skill}
+
+
+# ── Skills v2 helpers ──
+
+async def upsert_skill(
+    name: str,
+    description: str,
+    skill_type: str = "auto",
+    strategies: list | None = None,
+) -> int:
+    """Insert or update a skill. Returns the skill row id."""
+    db = await get_db()
+    strategies_json = json.dumps(strategies or [])
+    cursor = await db.execute(
+        """INSERT INTO skills (name, description, skill_type, strategies)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(name) DO UPDATE SET
+               description = excluded.description,
+               skill_type = excluded.skill_type,
+               strategies = excluded.strategies,
+               updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')""",
+        (name, description, skill_type, strategies_json),
+    )
+    await db.commit()
+    return cursor.lastrowid
+
+
+async def get_all_skills() -> list[dict]:
+    """Return all skills as a list of dicts."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT id, name, description, skill_type, strategies, injection_count, injection_success, created_at, updated_at FROM skills"
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def get_skill_by_name(name: str) -> dict | None:
+    """Return a single skill by name, or None if not found."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT id, name, description, skill_type, strategies, injection_count, injection_success, created_at, updated_at FROM skills WHERE name = ?",
+        (name,),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def increment_skill_injection(name: str) -> None:
+    """Increment injection_count for a skill."""
+    db = await get_db()
+    await db.execute(
+        "UPDATE skills SET injection_count = injection_count + 1, updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime') WHERE name = ?",
+        (name,),
+    )
+    await db.commit()
+
+
+async def increment_skill_success(name: str) -> None:
+    """Increment injection_success for a skill."""
+    db = await get_db()
+    await db.execute(
+        "UPDATE skills SET injection_success = injection_success + 1, updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime') WHERE name = ?",
+        (name,),
+    )
+    await db.commit()
 
 
 async def prune_old_conversations(max_age_days: int = 30) -> int:

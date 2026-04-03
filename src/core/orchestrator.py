@@ -960,6 +960,12 @@ class Orchestrator:
         Runs every 60s alongside the main loop.
         """
         try:
+            # ── API discovery (8:30am daily, catch-up if missed) ──
+            try:
+                await self._check_api_discovery()
+            except Exception as exc:
+                logger.debug("API discovery check failed: %s", exc)
+
             due = await get_due_scheduled_tasks()
             if not due:
                 return
@@ -1078,6 +1084,51 @@ class Orchestrator:
 
         except Exception as e:
             logger.error(f"[Scheduler] Error checking schedules: {e}")
+
+    async def _check_api_discovery(self):
+        """Run API discovery daily at 8:30am, with catch-up if missed."""
+        from datetime import datetime, timedelta
+
+        now = datetime.now()
+
+        if not hasattr(self, "_last_api_discovery"):
+            self._last_api_discovery = None
+
+        if self._last_api_discovery and (now - self._last_api_discovery).total_seconds() < 86400:
+            return
+
+        in_window = now.hour == 8 and 25 <= now.minute <= 35
+        overdue = (
+            self._last_api_discovery is None
+            or (now - self._last_api_discovery).total_seconds() > 36 * 3600
+        )
+
+        if not in_window and not overdue:
+            return
+
+        logger.info("Starting API discovery run")
+        try:
+            from src.tools.free_apis import discover_new_apis, build_keyword_index, seed_category_patterns
+
+            new_count = await discover_new_apis("all")
+            await build_keyword_index()
+            await seed_category_patterns()
+            self._last_api_discovery = now
+
+            if new_count > 0:
+                logger.info("API discovery complete: %d new APIs", new_count)
+                if hasattr(self, "_morning_brief_extras"):
+                    self._morning_brief_extras.append(
+                        f"Discovered {new_count} new APIs/MCP tools."
+                    )
+                if new_count >= 5 and self.telegram:
+                    await self.telegram.send_notification(
+                        f"API discovery: {new_count} new APIs added to registry."
+                    )
+            else:
+                logger.info("API discovery complete: no new APIs found")
+        except Exception as exc:
+            logger.warning("API discovery failed: %s", exc)
 
     async def _start_todo_suggestions(self):
         """Generate AI suggestions for pending todo items via a single direct LLM call.
@@ -1326,6 +1377,19 @@ class Orchestrator:
                     task_ctx["shopping_workflow"] = classification.shopping_sub_intent
                 task["context"] = json.dumps(task_ctx)
 
+            # ── Layer 0: Fast-path resolution via API registry ──
+            try:
+                from ..core.fast_resolver import try_resolve
+                fast_result = await try_resolve(task)
+                if fast_result:
+                    logger.info("task resolved via fast-path", task_id=task_id)
+                    await update_task(task_id, status="done", result=fast_result)
+                    if self.telegram and task.get("chat_id"):
+                        await self.telegram.send_notification(fast_result)
+                    return
+            except Exception as exc:
+                logger.debug("fast-path check failed (continuing to agent): %s", exc)
+
             # ── Shopping intent detection fallback ──
             # If the LLM classifier didn't confidently pick shopping_advisor,
             # use regex-based detection from dispatch as a fallback.
@@ -1362,6 +1426,17 @@ class Orchestrator:
                     agent_type = "pipeline"
                     task["agent_type"] = "pipeline"
                     logger.info("workflow step delegated to pipeline", task_id=task_id)
+
+            # ── Layer 1: Enrich context with pre-fetched API data ──
+            try:
+                from ..core.fast_resolver import enrich_context
+                enrichment = await enrich_context(task)
+                if enrichment:
+                    task_ctx["api_enrichment"] = enrichment
+                    task["context"] = json.dumps(task_ctx)
+                    logger.info("task enriched with API data", task_id=task_id)
+            except Exception as exc:
+                logger.debug("context enrichment failed (non-critical): %s", exc)
 
             # ── Human approval gate ──
             if task_ctx.get("human_gate"):

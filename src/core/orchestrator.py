@@ -910,7 +910,6 @@ class Orchestrator:
         # 10. Check for expiring credentials (warn 24h before expiry)
         try:
             from ..security.credential_store import list_credentials, get_credential
-            from datetime import timezone
 
             services = await list_credentials()
             for svc in services:

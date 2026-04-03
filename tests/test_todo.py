@@ -343,6 +343,59 @@ class TestTodoTitleExtraction(unittest.TestCase):
         )
 
 
+class TestSuggestionParser(unittest.TestCase):
+    """Test the LLM response parser for todo suggestions."""
+
+    @staticmethod
+    def _parse(raw: str, todo_count: int) -> list[dict]:
+        """Import and call the parser."""
+        from src.core.orchestrator import _parse_todo_suggestions
+        return _parse_todo_suggestions(raw, todo_count)
+
+    def test_standard_format(self):
+        raw = "1. [researcher] Search for nearby shops\n2. [shopping_advisor] Compare prices"
+        result = self._parse(raw, 2)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["suggestion"], "Search for nearby shops")
+        self.assertEqual(result[0]["agent"], "researcher")
+        self.assertEqual(result[1]["agent"], "shopping_advisor")
+
+    def test_parenthesis_format(self):
+        raw = "1) [researcher] Search online\n2) [assistant] Draft a message"
+        result = self._parse(raw, 2)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["suggestion"], "Search online")
+
+    def test_no_agent_tag(self):
+        raw = "1. Search for nearby shops\n2. Compare prices online"
+        result = self._parse(raw, 2)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["agent"], "researcher")  # default
+
+    def test_no_suggestion(self):
+        raw = "1. [researcher] Search shops\n2. No suggestion\n3. [assistant] Help"
+        result = self._parse(raw, 3)
+        self.assertEqual(len(result), 3)
+        self.assertIsNotNone(result[0]["suggestion"])
+        self.assertIsNone(result[1]["suggestion"])
+        self.assertIsNotNone(result[2]["suggestion"])
+
+    def test_extra_whitespace_and_markdown(self):
+        raw = "  1.  **[researcher]** Search for shops  \n  2. [assistant] Help out  "
+        result = self._parse(raw, 2)
+        self.assertEqual(len(result), 2)
+        self.assertIn("Search", result[0]["suggestion"])
+
+    def test_missing_items(self):
+        """LLM only returned 2 of 3 items."""
+        raw = "1. [researcher] Search\n3. [assistant] Help"
+        result = self._parse(raw, 3)
+        self.assertEqual(len(result), 3)
+        self.assertIsNotNone(result[0]["suggestion"])
+        self.assertIsNone(result[1]["suggestion"])  # missing #2
+        self.assertIsNotNone(result[2]["suggestion"])
+
+
 from datetime import datetime, timedelta
 
 

@@ -245,6 +245,60 @@ def _parse_task_difficulty(task: dict) -> int:
     return max(1, min(10, int(cls.get("difficulty", 5))))
 
 
+_VALID_SUGGESTION_AGENTS = {"researcher", "shopping_advisor", "assistant", "coder"}
+
+def _parse_todo_suggestions(raw: str, todo_count: int) -> list[dict]:
+    """Parse LLM response into per-todo suggestions.
+
+    Returns a list of length todo_count. Each element is:
+      {"suggestion": str | None, "agent": str}
+
+    Lenient parser: handles N. or N) prefixes, optional [agent] tags,
+    markdown bold around tags, extra whitespace.
+    """
+    results = [{"suggestion": None, "agent": "researcher"} for _ in range(todo_count)]
+    if not raw or not raw.strip():
+        return results
+
+    # Build a map: line_number → parsed content
+    parsed_lines: dict[int, tuple[str, str]] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Match: optional whitespace, number, . or ), rest
+        m = re.match(r"(\d+)\s*[.)]\s*(.+)", line)
+        if not m:
+            continue
+        idx = int(m.group(1)) - 1  # 0-based
+        text = m.group(2).strip()
+
+        # Skip "no suggestion" variants
+        if re.match(r"(?i)no\s+suggestion|n/a|none|-$", text):
+            continue
+        if len(text) < 6:
+            continue
+
+        # Extract [agent_type] — handle optional markdown bold: **[agent]**
+        text = re.sub(r"^\*{1,2}\[", "[", text)
+        text = re.sub(r"\]\*{1,2}", "]", text)
+        agent_m = re.match(r"\[(\w+)\]\s*(.+)", text)
+        if agent_m and agent_m.group(1).lower() in _VALID_SUGGESTION_AGENTS:
+            agent = agent_m.group(1).lower()
+            suggestion = agent_m.group(2).strip()
+        else:
+            agent = "researcher"
+            suggestion = text
+
+        if 0 <= idx < todo_count:
+            parsed_lines[idx] = (suggestion, agent)
+
+    for idx, (suggestion, agent) in parsed_lines.items():
+        results[idx] = {"suggestion": suggestion, "agent": agent}
+
+    return results
+
+
 class Orchestrator:
     def __init__(self, shutdown_event=None):
         self.telegram = TelegramInterface(self)
@@ -1151,44 +1205,41 @@ class Orchestrator:
             logger.warning("API discovery failed: %s", exc)
 
     async def _start_todo_suggestions(self):
-        """Generate AI suggestions for pending todo items via a single direct LLM call.
+        """Generate AI suggestions for pending todos that don't have one yet.
 
-        Previously this created one full agent task per todo item, which caused
-        timeout storms when no model was loaded (each task would wait for a model
-        swap, time out at 120s, fail, then be retried on the next cron tick).
-
-        New approach: one OVERHEAD LLM call with all todos in the prompt → fast,
-        no model swap triggered, no retry loop.  Falls back to sending the reminder
-        without suggestions if the LLM call fails or times out.
+        Only queries LLM for todos where suggestion IS NULL and suggestion_at IS NULL
+        (never attempted). Todos with suggestion_at set but suggestion NULL were
+        previously attempted and failed — skip them.
         """
-        from src.infra.db import get_todos, get_db
+        from src.infra.db import get_todos, update_todo
         from src.app.reminders import send_todo_reminder
 
         todos = await get_todos(status="pending")
         if not todos:
             return
 
-        # Guard: if we already generated suggestions very recently (within 30 min)
-        # skip to prevent duplicate reminders when cron fires slightly off-schedule.
-        db = await get_db()
-        cursor = await db.execute(
-            """SELECT id FROM tasks
-               WHERE title LIKE 'Todo suggestions batch%'
-                 AND status = 'completed'
-                 AND created_at > strftime('%Y-%m-%d %H:%M:%S',
-                                           datetime('now', '-30 minutes'))
-               LIMIT 1"""
-        )
-        if await cursor.fetchone():
-            logger.info("[Todo] Recent suggestion batch completed within 30 min — skipping")
-            return
+        # Filter to todos that need suggestions (never attempted)
+        need_suggestions = [
+            t for t in todos
+            if t.get("suggestion") is None and t.get("suggestion_at") is None
+        ]
 
-        # Build a single prompt covering all todos
+        if need_suggestions:
+            await self._generate_suggestions(need_suggestions)
+
+        # Always send the reminder (suggestions are read from DB by reminders.py)
+        if self.telegram:
+            await send_todo_reminder(self.telegram)
+
+    async def _generate_suggestions(self, todos: list[dict]):
+        """Call LLM to generate suggestions for given todos, persist results."""
+        from src.infra.db import update_todo
+
         todo_lines = "\n".join(
-            f"{i+1}. {t['title']}" + (
-                f" (notes: {t['description'][:80]})" if t.get("description") else ""
-            )
-            for i, t in enumerate(todos[:10])  # cap at 10 to keep prompt small
+            f"{i+1}. {t['title']}"
+            + (f" (priority: {t.get('priority', 'normal')})" if t.get("priority") != "normal" else "")
+            + (f" (notes: {t['description'][:80]})" if t.get("description") else "")
+            for i, t in enumerate(todos[:10])
         )
         prompt = (
             f"The user has {len(todos)} pending todo item(s):\n\n"
@@ -1207,8 +1258,8 @@ class Orchestrator:
             f"No preamble, no extra commentary."
         )
 
-        # suggestions now stores (suggestion_text, agent_type) tuples
-        suggestions: dict[int, tuple[str, str]] = {}
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
         try:
             from src.core.llm_dispatcher import get_dispatcher, CallCategory
             from src.core.router import ModelRequirements
@@ -1229,57 +1280,37 @@ class Orchestrator:
                     reqs=reqs,
                     messages=[{"role": "user", "content": prompt}],
                 ),
-                timeout=45,  # allow time for proactive model load if idle
+                timeout=45,
             )
             raw = (response.get("content") or "").strip()
             logger.info(f"[Todo] Suggestion LLM response ({len(raw)} chars)")
 
-            # Parse numbered list: "1. [agent_type] suggestion text"
-            import re as _re
-            _VALID_AGENTS = {"researcher", "shopping_advisor", "assistant", "coder"}
+            parsed = _parse_todo_suggestions(raw, len(todos[:10]))
+
             for i, todo in enumerate(todos[:10]):
-                pattern = rf"^{i+1}[.)]\s*(.+)"
-                for line in raw.splitlines():
-                    m = _re.match(pattern, line.strip())
-                    if m:
-                        text = m.group(1).strip()
-                        if text.lower() == "no suggestion" or len(text) < 6:
-                            break
-                        # Extract [agent_type] prefix if present
-                        agent_m = _re.match(r"\[(\w+)\]\s*(.+)", text)
-                        if agent_m and agent_m.group(1) in _VALID_AGENTS:
-                            agent_type = agent_m.group(1)
-                            suggestion = agent_m.group(2).strip()
-                        else:
-                            agent_type = "researcher"  # safe default
-                            suggestion = text
-                        suggestions[todo["id"]] = (suggestion, agent_type)
-                        break
+                entry = parsed[i]
+                if entry["suggestion"]:
+                    await update_todo(
+                        todo["id"],
+                        suggestion=entry["suggestion"],
+                        suggestion_agent=entry["agent"],
+                        suggestion_at=now_str,
+                    )
+                else:
+                    # Mark as attempted-but-failed so we don't retry
+                    await update_todo(todo["id"], suggestion_at=now_str)
+
+            generated = sum(1 for p in parsed if p["suggestion"])
+            logger.info(f"[Todo] Generated {generated}/{len(todos[:10])} suggestions")
 
         except asyncio.TimeoutError:
-            logger.warning("[Todo] Suggestion LLM call timed out — sending reminder without suggestions")
+            logger.warning("[Todo] Suggestion LLM call timed out — marking todos as attempted")
+            for todo in todos[:10]:
+                await update_todo(todo["id"], suggestion_at=now_str)
         except Exception as exc:
-            logger.warning(f"[Todo] Suggestion LLM call failed: {exc} — sending reminder without suggestions")
-
-        # Record sentinel BEFORE sending reminder (dedup guard for crash recovery)
-        try:
-            from src.infra.db import add_task, update_task
-            sentinel_id = await add_task(
-                title=f"Todo suggestions batch ({len(todos)} items)",
-                description=f"Inline suggestion batch — {len(suggestions)} suggestions generated",
-                agent_type="assistant",
-                tier="auto",
-                priority=1,
-                context={"silent": True, "todo_suggest_sentinel": True},
-            )
-            if sentinel_id:
-                await update_task(sentinel_id, status="completed",
-                                  result=f"{len(suggestions)} suggestions")
-        except Exception:
-            pass  # sentinel is best-effort
-
-        if self.telegram:
-            await send_todo_reminder(self.telegram, suggestions=suggestions if suggestions else None)
+            logger.warning(f"[Todo] Suggestion LLM call failed: {exc} — marking todos as attempted")
+            for todo in todos[:10]:
+                await update_todo(todo["id"], suggestion_at=now_str)
 
     @staticmethod
     def _compute_next_run(

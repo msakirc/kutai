@@ -349,6 +349,15 @@ async def main():
     except Exception as e:
         _log.warning(f"Skill seeding failed (non-critical): {e}")
 
+    # Seed API keyword index + Turkish patterns (fast, idempotent)
+    try:
+        from src.tools.free_apis import seed_registry, build_keyword_index, seed_category_patterns
+        await seed_registry()
+        await build_keyword_index()
+        await seed_category_patterns()
+    except Exception as exc:
+        _log.warning("API keyword index seeding failed (non-critical): %s", exc)
+
     _log.info("Starting orchestrator")
 
     import signal

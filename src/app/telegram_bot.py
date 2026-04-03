@@ -19,7 +19,8 @@ from ..infra.db import (add_task, add_mission, get_active_missions,
                 get_task, get_mission, get_budget, set_budget, get_model_stats,
                 get_mission_locks, get_tasks_for_mission, update_mission,
                 insert_approval_request, update_approval_status,
-                add_todo, get_todos, get_todo, toggle_todo, delete_todo)
+                add_todo, get_todos, get_todo, toggle_todo, delete_todo,
+                update_todo)
 from ..memory.conversations import format_recent_context, find_followup_context, \
     store_exchange
 from ..memory.ingest import ingest_document
@@ -3494,6 +3495,10 @@ class TelegramInterface:
                     await self.cmd__todo_help(update, context)
                     return
 
+                if cmd == "_todo_edit":
+                    await self._handle_todo_edit(update, context, pending_action)
+                    return
+
                 # ── Workflow selection flow ──
                 if cmd == "_workflow_select":
                     # User typed mission description, now show workflow picker
@@ -4444,31 +4449,12 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
     async def cmd_todos(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """List all todos. /todos"""
-        todos = await get_todos()
-        if not todos:
-            await self._reply(update,"📋 No todo items yet. Use /todo to add one.")
+        from src.app.reminders import build_todo_list_message
+        text, markup = await build_todo_list_message()
+        if not text:
+            await self._reply(update, "📋 No todo items yet. Use /todo to add one.")
             return
-
-        lines = ["📋 *Your Todos*\n"]
-        buttons = []
-        for todo in todos:
-            tid = todo["id"]
-            title = todo["title"]
-            status = todo.get("status", "pending")
-            icon = "✅" if status == "done" else "⬜"
-            priority = todo.get("priority", "normal")
-            p_icon = {"high": "🔴", "normal": "🟡", "low": "⚪"}.get(priority, "🟡")
-
-            lines.append(f"  {icon} {p_icon} *#{tid}* — {title}")
-            if status != "done":
-                buttons.append([InlineKeyboardButton(
-                    f"✅ Done: {title[:25]}",
-                    callback_data=f"todo_toggle:{tid}",
-                )])
-
-        text = "\n".join(lines)
-        markup = InlineKeyboardMarkup(buttons) if buttons else None
-        await self._reply(update,text, parse_mode="Markdown", reply_markup=markup)
+        await self._reply(update, text, parse_mode="Markdown", reply_markup=markup)
 
     async def cmd_cleartodos(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Delete all completed todos. /cleartodos"""
@@ -5456,6 +5442,28 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             return
 
         # ── Todo Callbacks ─────────────────────────────────────
+        if data.startswith("todo_detail:"):
+            try:
+                todo_id = int(data.split(":")[1])
+            except (ValueError, IndexError):
+                await query.answer("Invalid todo ID")
+                return
+            todo = await get_todo(todo_id)
+            if not todo:
+                await query.answer("Todo not found")
+                return
+            from src.app.reminders import build_todo_detail_message
+            text, markup = build_todo_detail_message(todo)
+            try:
+                await query.edit_message_text(
+                    text, parse_mode="Markdown", reply_markup=markup,
+                )
+            except Exception:
+                await query.message.reply_text(
+                    text, parse_mode="Markdown", reply_markup=markup,
+                )
+            return
+
         if data.startswith("todo_toggle:"):
             try:
                 todo_id = int(data.split(":")[1])
@@ -5465,21 +5473,32 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             new_status = await toggle_todo(todo_id)
             icon = "✅" if new_status == "done" else "⬜"
             await query.answer(f"{icon} {'Done!' if new_status == 'done' else 'Reopened'}")
-            # Rebuild the full todo list so all buttons remain accessible
-            try:
-                from src.app.reminders import build_todo_list_message
-                text, markup = await build_todo_list_message()
-                if text:
+            # Return to list view
+            from src.app.reminders import build_todo_list_message
+            text, markup = await build_todo_list_message()
+            if text:
+                try:
                     await query.edit_message_text(
                         text, parse_mode="Markdown", reply_markup=markup,
                     )
-                else:
-                    # All todos done — replace with success message
+                except Exception:
+                    pass
+            else:
+                await query.edit_message_text("🎉 All todos done!")
+            return
+
+        if data == "todo_list":
+            from src.app.reminders import build_todo_list_message
+            text, markup = await build_todo_list_message()
+            if text:
+                try:
                     await query.edit_message_text(
-                        "🎉 All todos done!", parse_mode="Markdown",
+                        text, parse_mode="Markdown", reply_markup=markup,
                     )
-            except Exception:
-                pass
+                except Exception:
+                    pass
+            else:
+                await query.edit_message_text("🎉 All todos done!")
             return
 
         if data == "todo_close":
@@ -5489,6 +5508,57 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 await query.edit_message_text("(closed)")
             return
 
+        if data.startswith("todo_edit:"):
+            try:
+                todo_id = int(data.split(":")[1])
+            except (ValueError, IndexError):
+                await query.answer("Invalid todo ID")
+                return
+            todo = await get_todo(todo_id)
+            if not todo:
+                await query.answer("Todo not found")
+                return
+            chat_id = query.message.chat_id
+            self._pending_action[chat_id] = {
+                "command": "_todo_edit",
+                "todo_id": todo_id,
+                "ts": _time.time(),
+            }
+            # Prefill keyboard with current title for easy editing
+            prefill_kb = ReplyKeyboardMarkup(
+                [[KeyboardButton(todo["title"])]],
+                resize_keyboard=True,
+                one_time_keyboard=True,
+            )
+            await query.message.reply_text(
+                f"✏️ Edit todo *#{todo_id}*\nType the new title (keyboard prefilled):",
+                parse_mode="Markdown",
+                reply_markup=prefill_kb,
+            )
+            return
+
+        if data.startswith("todo_delete:"):
+            try:
+                todo_id = int(data.split(":")[1])
+            except (ValueError, IndexError):
+                await query.answer("Invalid todo ID")
+                return
+            await delete_todo(todo_id)
+            await query.answer("❌ Deleted")
+            # Return to list
+            from src.app.reminders import build_todo_list_message
+            text, markup = await build_todo_list_message()
+            if text:
+                try:
+                    await query.edit_message_text(
+                        text, parse_mode="Markdown", reply_markup=markup,
+                    )
+                except Exception:
+                    pass
+            else:
+                await query.edit_message_text("🎉 All todos done!")
+            return
+
         if data.startswith("todo_help:"):
             parts = data.split(":")
             try:
@@ -5496,16 +5566,12 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             except (ValueError, IndexError):
                 await query.answer("Invalid todo ID")
                 return
-            # Agent type encoded as third segment: todo_help:ID:agent_type
             agent_type = parts[2] if len(parts) > 2 else "researcher"
             todo = await get_todo(todo_id)
             if not todo:
                 await query.answer("Todo not found")
                 return
-            suggestion = self._extract_suggestion_from_message(
-                query.message.text, todo_id
-            )
-            prompt_text = suggestion or f"Help me with: {todo['title']}"
+            suggestion = todo.get("suggestion") or f"Help me with: {todo['title']}"
             chat_id = query.message.chat_id
             self._pending_action[chat_id] = {
                 "command": "_todo_help",
@@ -5513,75 +5579,21 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 "todo_title": todo["title"],
                 "suggestion": suggestion,
                 "agent_type": agent_type,
+                "ts": _time.time(),
             }
-            buttons = []
-            if suggestion:
-                buttons.append(
-                    InlineKeyboardButton("✅ Accept", callback_data=f"todo_help_accept:{todo_id}")
-                )
-            buttons.append(
-                InlineKeyboardButton("❌ Cancel", callback_data="todo_help_cancel")
+            # Prefill keyboard with suggestion
+            prefill_kb = ReplyKeyboardMarkup(
+                [[KeyboardButton(suggestion[:60] if len(suggestion) > 60 else suggestion)]],
+                resize_keyboard=True,
+                one_time_keyboard=True,
             )
             await query.message.reply_text(
                 f"🤖 *Help with: {todo['title']}*\n\n"
-                f"💡 _{prompt_text}_\n\n"
-                f"Tap *Accept* to run this suggestion, type a custom request, or Cancel.",
+                f"💡 _{suggestion}_\n\n"
+                f"Tap the suggestion, type a custom request, or /cancel.",
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([buttons]),
+                reply_markup=prefill_kb,
             )
-            # Send prefilled reply keyboard so user can tap suggestion to accept
-            if suggestion:
-                truncated = suggestion[:60] if len(suggestion) > 60 else suggestion
-                prefill_kb = ReplyKeyboardMarkup(
-                    [[KeyboardButton(f"✅ {truncated}")],
-                     [KeyboardButton("❌ Cancel")]],
-                    resize_keyboard=True,
-                    one_time_keyboard=True,
-                )
-                await query.message.reply_text(
-                    "Or tap a button below:",
-                    reply_markup=prefill_kb,
-                )
-            return
-
-        if data == "todo_help_cancel":
-            chat_id = query.message.chat_id
-            self._pending_action.pop(chat_id, None)
-            try:
-                await query.delete_message()
-            except Exception:
-                await query.edit_message_text("(cancelled)")
-            return
-
-        if data.startswith("todo_help_accept:"):
-            try:
-                todo_id = int(data.split(":")[1])
-            except (ValueError, IndexError):
-                await query.answer("Invalid todo ID")
-                return
-            chat_id = query.message.chat_id
-            pending = self._pending_action.pop(chat_id, None)
-            if not pending or pending.get("todo_id") != todo_id:
-                await query.answer("Help session expired")
-                return
-            suggestion = pending.get("suggestion") or f"Help with: {pending['todo_title']}"
-            todo_title = pending["todo_title"]
-            agent_type = pending.get("agent_type", "researcher")
-            task_id = await add_task(
-                title=f"Help with: {todo_title[:40]}",
-                description=suggestion,
-                agent_type=agent_type,
-                tier="auto",
-                priority=6,
-                context={"todo_id": todo_id},
-            )
-            try:
-                await query.edit_message_text(
-                    f"✅ Task #{task_id} created: _{suggestion[:80]}_",
-                    parse_mode="Markdown",
-                )
-            except Exception:
-                await query.answer(f"Task #{task_id} created!")
             return
 
         # ── Workflow Status Callbacks ────────────────────────────
@@ -6011,19 +6023,19 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         finally:
             self._approval_events.pop(task_id, None)
 
-    @staticmethod
-    def _extract_suggestion_from_message(message_text, todo_id):
-        """Extract the 💡 suggestion line for a given todo from the reminder message."""
-        if not message_text:
-            return None
-        marker = f"#{todo_id}"
-        lines = message_text.split("\n")
-        for i, line in enumerate(lines):
-            if marker in line and i + 1 < len(lines):
-                next_line = lines[i + 1].strip()
-                if next_line.startswith("💡"):
-                    return next_line[2:].strip()
-        return None
+    async def _handle_todo_edit(self, update, context, pending):
+        """Handle the user's reply with a new todo title."""
+        todo_id = pending["todo_id"]
+        new_title = (update.message.text or "").strip()
+        if not new_title:
+            await self._reply(update, "Title can't be empty.")
+            return
+        # Reset suggestion so it gets regenerated next cycle
+        await update_todo(
+            todo_id, title=new_title,
+            suggestion=None, suggestion_agent=None, suggestion_at=None,
+        )
+        await self._reply(update, f"✏️ Updated *#{todo_id}*: {new_title}", parse_mode="Markdown")
 
     async def cmd__todo_help(self, update, context):
         """Handle the user's reply to a todo help suggestion."""

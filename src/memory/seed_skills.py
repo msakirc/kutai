@@ -1,213 +1,164 @@
-"""Seed the skills database with curated routing skills."""
+"""Seed the skills database with curated execution recipe skills."""
 
 from src.infra.logging_config import get_logger
 
 logger = get_logger("memory.seed_skills")
 
 SEED_SKILLS = [
-    # --- Currency / Exchange Rates ---
     {
-        "name": "currency_api_routing",
-        "description": "For currency and exchange rate queries, use api_call with TCMB or Frankfurter instead of web_search. Much faster and more accurate.",
-        "trigger_pattern": "dolar|euro|kur|currency|exchange.rate|döviz|sterling|pound|yen|altın.fiyat",
-        "tool_sequence": "tool=api_call, api_name=TCMB EVDS (Turkish rates) or Frankfurter (international). Do NOT use web_search for simple rate lookups.",
-        "examples": "dolar kuru ne; EUR/TRY rate; current gold price in TL; 100 USD to TRY",
+        "name": "currency_lookup",
+        "description": "Looking up currency exchange rates, conversion between currencies, checking current dollar/euro/gold prices in Turkish Lira",
+        "strategy_summary": "Use api_call with TCMB for Turkish rates or Frankfurter for international. Faster and more accurate than web search for simple rate lookups.",
+        "tools_used": ["smart_search", "api_call"],
     },
-    # --- Weather ---
     {
-        "name": "weather_api_routing",
-        "description": "For weather queries, use api_call with wttr.in or Open-Meteo instead of web_search.",
-        "trigger_pattern": "weather|hava.durumu|sıcaklık|temperature|yağmur|rain|forecast|tahmin",
-        "tool_sequence": "tool=api_call, api_name=wttr.in (simple) or Open-Meteo (detailed). Format: wttr.in/{city}?format=j1",
-        "examples": "istanbul hava durumu; weather in ankara tomorrow; will it rain today",
+        "name": "weather_check",
+        "description": "Checking weather forecasts, current temperature, rain predictions for a specific city or location",
+        "strategy_summary": "Use api_call with wttr.in (simple format) or Open-Meteo (detailed forecast). Format: wttr.in/{city}?format=j1. Avoid web_search for basic weather.",
+        "tools_used": ["smart_search", "api_call"],
     },
-    # --- Time ---
     {
-        "name": "time_api_routing",
-        "description": "For time/timezone queries, use api_call with WorldTimeAPI.",
-        "trigger_pattern": "what.time|saat.kaç|timezone|time.in|saat.farkı",
-        "tool_sequence": "tool=api_call, api_name=WorldTimeAPI. Endpoint: worldtimeapi.org/api/timezone/{Area}/{City}",
-        "examples": "what time is it in Tokyo; saat kaç; time difference between Istanbul and New York",
+        "name": "timezone_lookup",
+        "description": "Finding current time in a city, timezone differences, time conversion between locations",
+        "strategy_summary": "Use api_call with WorldTimeAPI. Endpoint: worldtimeapi.org/api/timezone/{Area}/{City}.",
+        "tools_used": ["smart_search", "api_call"],
     },
-    # --- Wikipedia / Quick Facts ---
     {
-        "name": "wikipedia_routing",
-        "description": "For encyclopedia-style factual queries about people, places, concepts, use api_call with Wikipedia API before web_search.",
-        "trigger_pattern": "who.is|kim|nedir|what.is|wikipedia|vikipedi|tarih|history.of|biography",
-        "tool_sequence": "tool=api_call, api_name=Wikipedia API or Wikipedia TR. Try TR first for Turkish topics.",
-        "examples": "Atatürk kim; what is quantum computing; history of Istanbul",
+        "name": "encyclopedia_lookup",
+        "description": "Looking up factual information about people, places, historical events, scientific concepts from encyclopedia sources",
+        "strategy_summary": "Use api_call with Wikipedia API. Try Turkish Wikipedia first for Turkish topics, then English. Structured data beats web_search for factual lookups.",
+        "tools_used": ["smart_search", "api_call"],
     },
-    # --- Play Store / App Research ---
     {
-        "name": "play_store_routing",
-        "description": "For mobile app research, competitor analysis, app reviews, use the play_store tool instead of web_search.",
-        "trigger_pattern": "play.store|app.store|mobile.app|uygulama|android|ios|app.review|rakip.uygulama|competitor.app",
-        "tool_sequence": "tool=play_store. Actions: search (find apps), app (details), reviews (user reviews), similar (competitors).",
-        "examples": "find review apps on Play Store; competitor apps for todo list; Trendyol app reviews",
+        "name": "app_store_research",
+        "description": "Researching mobile apps, finding app alternatives, reading app reviews, comparing app features and ratings across stores",
+        "strategy_summary": "Use play_store tool: search (find apps), app (details), reviews (user reviews), similar (competitors). For competitor analysis, combine play_store with github for open-source alternatives.",
+        "tools_used": ["play_store", "smart_search"],
     },
-    # --- GitHub / Open Source ---
     {
-        "name": "github_routing",
-        "description": "For open source project research, code examples, repo analysis, use the github tool instead of web_search.",
-        "trigger_pattern": "github|repo|repository|açık.kaynak|open.source|source.code|kaynak.kod|stars|fork",
-        "tool_sequence": "tool=github. Actions: repos (search), code (search code), readme (fetch README). Use GITHUB_TOKEN for higher rate limits.",
-        "examples": "find Python web scraping libraries on GitHub; llama.cpp repo README; trending AI repos",
+        "name": "github_code_research",
+        "description": "Searching for open source projects, code examples, library comparison, repository analysis on GitHub",
+        "strategy_summary": "Use github tool: repos (search projects), code (search code), readme (fetch README). Combine with web_search for ecosystem context. Use GITHUB_TOKEN for higher rate limits.",
+        "tools_used": ["github", "smart_search"],
     },
-    # --- Shopping: Turkish E-commerce ---
     {
-        "name": "shopping_turkish_sources",
-        "description": "For Turkish product shopping, use shopping_search which queries Trendyol, Hepsiburada, Akakçe, Amazon TR scrapers. For price comparison specifically, Akakçe is best.",
-        "trigger_pattern": "fiyat|ücret|price|trendyol|hepsiburada|akakçe|amazon.tr|n11|satın.al|buy",
-        "tool_sequence": "tool=shopping_search for product discovery. For price comparison: Akakçe aggregates all retailers. For reviews: Trendyol has the best review API.",
-        "examples": "iPhone 15 fiyat; en ucuz RTX 4070; kahve makinesi karşılaştır",
+        "name": "turkish_product_shopping",
+        "description": "Shopping for products in Turkey, finding prices on Turkish e-commerce sites, comparing prices across Trendyol, Hepsiburada, Akakce, Amazon TR",
+        "strategy_summary": "Use shopping_search for product discovery across Turkish retailers. For price comparison, Akakce aggregates all retailers. For reviews, Trendyol has the best review data. Search multiple sources then compare.",
+        "tools_used": ["shopping_search", "smart_search"],
     },
-    # --- Shopping: Reviews & Complaints ---
     {
-        "name": "shopping_review_sources",
-        "description": "For product reviews, user complaints, brand reputation in Turkey, use shopping_fetch_reviews with specific scrapers.",
-        "trigger_pattern": "review|yorum|şikayet|complaint|sikayetvar|technopat|donanimhaber|kullanıcı.yorumu",
-        "tool_sequence": "tool=shopping_fetch_reviews. For complaints: use source=sikayetvar. For tech reviews: use source=technopat or source=donanimhaber. For e-commerce reviews: use source=trendyol or source=hepsiburada.",
-        "examples": "Bosch çamaşır makinesi yorumları; Samsung şikayetleri; laptop forum reviews",
+        "name": "product_review_research",
+        "description": "Finding product reviews, user complaints, brand reputation analysis in Turkish sources including Sikayetvar, Technopat, DonanımHaber",
+        "strategy_summary": "Use shopping_fetch_reviews with specific sources: sikayetvar for complaints, technopat/donanimhaber for tech reviews, trendyol/hepsiburada for e-commerce reviews. Aggregate multiple sources for balanced view.",
+        "tools_used": ["shopping_fetch_reviews", "smart_search"],
     },
-    # --- Football / Sports ---
     {
-        "name": "sports_web_search",
-        "description": "For live sports data (scores, lineups, match predictions), always use web_search with search_depth=standard. API alternatives are limited for Turkish football.",
-        "trigger_pattern": "maç|kadro|skor|score|lineup|predicted.xi|süper.lig|champions.league|football|futbol",
-        "tool_sequence": "tool=web_search. These queries are time-sensitive — the classifier should set search_depth=standard automatically. Always search, never answer from memory.",
-        "examples": "turkey predicted xi; Galatasaray maç skoru; Champions League results tonight",
+        "name": "sports_live_data",
+        "description": "Getting live sports scores, match lineups, football predictions, league standings, especially Turkish Super Lig and Champions League",
+        "strategy_summary": "Use web_search with search_depth=standard. Sports data is time-sensitive — always search, never answer from memory. No reliable free API for Turkish football.",
+        "tools_used": ["web_search", "smart_search"],
     },
-    # --- PDF / Document Processing ---
     {
-        "name": "pdf_processing",
-        "description": "For reading PDF files, extracting text, analyzing documents, use read_pdf or read_pdf_advanced tool.",
-        "trigger_pattern": "pdf|document|döküman|belge|rapor|report|extract.text|oku",
-        "tool_sequence": "tool=read_pdf_advanced (multi-backend: PyMuPDF > pdfplumber > PyPDF2). Pass file_path and optional max_pages.",
-        "examples": "read this PDF; extract text from report.pdf; analyze the document at /path/to/file.pdf",
+        "name": "pdf_document_processing",
+        "description": "Reading PDF files, extracting text from documents, analyzing report contents",
+        "strategy_summary": "Use read_pdf_advanced (multi-backend: PyMuPDF > pdfplumber > PyPDF2). Pass file_path and optional max_pages parameter.",
+        "tools_used": ["read_pdf_advanced"],
     },
-    # --- Coding: Error Lookup ---
     {
-        "name": "coding_error_search",
-        "description": "For programming error messages, stack traces, use web_search targeting Stack Overflow and GitHub issues.",
-        "trigger_pattern": "error|hata|traceback|exception|TypeError|ImportError|ModuleNotFoundError|stack.overflow",
-        "tool_sequence": "tool=web_search with query=error message. Add 'site:stackoverflow.com' or 'site:github.com/issues' to query for better results.",
-        "examples": "TypeError: 'bool' object is not iterable; ModuleNotFoundError: No module named 'trafilatura'",
+        "name": "programming_error_diagnosis",
+        "description": "Diagnosing programming errors, looking up stack traces, finding solutions for exception messages and error codes",
+        "strategy_summary": "Use web_search targeting Stack Overflow and GitHub issues. Add 'site:stackoverflow.com' or 'site:github.com/issues' to query for focused results.",
+        "tools_used": ["web_search", "smart_search"],
     },
-    # --- Translation ---
     {
-        "name": "translation_routing",
-        "description": "For translation requests, try api_call with LibreTranslate. Falls back to web_search if API unavailable.",
-        "trigger_pattern": "translate|çevir|tercüme|translation|İngilizce|Türkçe|English|Turkish",
-        "tool_sequence": "tool=api_call, api_name=LibreTranslate. POST to /translate with q, source, target params. If unavailable, use web_search.",
-        "examples": "translate 'hello world' to Turkish; bu cümleyi İngilizceye çevir",
+        "name": "text_translation",
+        "description": "Translating text between languages, especially Turkish-English translation",
+        "strategy_summary": "Try api_call with LibreTranslate first (POST /translate with q, source, target). Falls back to web_search if API unavailable.",
+        "tools_used": ["smart_search", "api_call"],
     },
-    # --- News ---
     {
-        "name": "news_routing",
-        "description": "For current news queries, use web_search with search_depth=quick. For structured news, use api_call with GNews (if GNEWS_API_KEY is set).",
-        "trigger_pattern": "news|haber|son.dakika|breaking|gündem|headline|güncel",
-        "tool_sequence": "Check api_lookup for GNews first. If GNEWS_API_KEY is set, use api_call. Otherwise, web_search with search_depth=quick.",
-        "examples": "son dakika haberleri; Turkey news today; tech news this week",
+        "name": "current_news_lookup",
+        "description": "Finding current news, breaking news headlines, today's news in Turkey or worldwide",
+        "strategy_summary": "Check api_lookup for GNews first (needs GNEWS_API_KEY). Otherwise web_search with search_depth=quick. News queries are time-sensitive.",
+        "tools_used": ["smart_search", "web_search"],
     },
-    # --- IP / Network ---
     {
-        "name": "network_tools_routing",
-        "description": "For IP lookup, geolocation, network diagnostics, use api_call with ipapi or shell commands.",
-        "trigger_pattern": "ip.address|my.ip|geolocation|ping|dns|network|bağlantı",
-        "tool_sequence": "tool=api_call, api_name=ipapi for IP geolocation. tool=shell for ping, traceroute, nslookup.",
-        "examples": "what is my IP; geolocate this IP; ping google.com",
+        "name": "network_diagnostics",
+        "description": "Looking up IP addresses, geolocation, running network diagnostics like ping and DNS queries",
+        "strategy_summary": "Use api_call with ipapi for IP geolocation. Use shell for ping, traceroute, nslookup commands.",
+        "tools_used": ["smart_search", "api_call", "shell"],
     },
-    # --- i2p Workflow: Competitor Research ---
     {
-        "name": "i2p_competitor_research",
-        "description": "For idea-to-product competitor research phases, combine play_store (app competitors) + github (open source alternatives) + web_search (market analysis).",
-        "trigger_pattern": "competitor|rakip|alternative|alternatif|market.analysis|pazar.analizi|similar.apps|benzer",
-        "tool_sequence": "1. play_store action=search to find competing apps. 2. play_store action=similar for direct competitors. 3. github action=repos for open source alternatives. 4. web_search for market size and trends.",
-        "examples": "find competitors for a review platform app; analyze the todo app market; open source alternatives to Notion",
+        "name": "competitor_analysis_research",
+        "description": "Researching competitors for a product idea, market analysis, finding similar apps and open-source alternatives",
+        "strategy_summary": "1. play_store search for competing apps. 2. play_store similar for direct competitors. 3. github repos for open-source alternatives. 4. web_search for market size and trends. Combine all sources.",
+        "tools_used": ["play_store", "github", "smart_search", "web_search"],
     },
-    # --- Pharmacy on Duty ---
     {
-        "name": "pharmacy_on_duty",
-        "description": "For finding pharmacies on duty (nöbetçi eczane) in Turkey, use the pharmacy tool which calculates distance from your location.",
-        "trigger_pattern": "eczane|pharmacy|nöbetçi|nobetci|on.duty|ilaç|medicine|eczaneler",
-        "tool_sequence": "tool=pharmacy. Pass city='ankara' for all districts, or city='ankara' district='cankaya' for specific district. Falls back to eczaneler.gen.tr web scraping if no API key.",
-        "examples": "nöbetçi eczane kadıköy; pharmacy on duty istanbul; en yakın açık eczane; ankara nöbetçi eczaneler; nöbetçi eczane istanbul",
+        "name": "pharmacy_finder",
+        "description": "Finding pharmacies on duty (nobetci eczane) in Turkey, nearest open pharmacy with distance calculation",
+        "strategy_summary": "Use pharmacy tool. Pass city for all districts, or city+district for specific area. Falls back to eczaneler.gen.tr web scraping if no API key.",
+        "tools_used": ["pharmacy"],
     },
-    # --- Earthquake ---
     {
-        "name": "earthquake_data",
-        "description": "For earthquake data in Turkey, use api_call with Kandilli Observatory. Real-time seismic data.",
-        "trigger_pattern": "deprem|earthquake|sarsıntı|kandilli|seismic|zelzele",
-        "tool_sequence": "tool=api_call, api_name=Kandilli Observatory. Returns live earthquake list with magnitude, location, depth.",
-        "examples": "son depremler; earthquake in Turkey today; was there an earthquake",
+        "name": "earthquake_data_lookup",
+        "description": "Checking recent earthquakes in Turkey, seismic activity data from Kandilli Observatory",
+        "strategy_summary": "Use api_call with Kandilli Observatory. Returns live earthquake list with magnitude, location, depth. Real-time data.",
+        "tools_used": ["smart_search", "api_call"],
     },
-    # --- Gas Prices ---
     {
-        "name": "fuel_price_routing",
-        "description": "For fuel/gas prices in Turkey, use api_call with Turkey Fuel Prices.",
-        "trigger_pattern": "benzin|mazot|diesel|lpg|yakıt|fuel|gas.price|akaryakıt|petrol",
-        "tool_sequence": "tool=api_call, api_name=Turkey Fuel Prices. Requires COLLECTAPI_KEY.",
-        "examples": "benzin fiyatı; mazot ne kadar; LPG fiyat istanbul",
+        "name": "fuel_price_lookup",
+        "description": "Checking current fuel prices in Turkey: gasoline, diesel, LPG prices by city",
+        "strategy_summary": "Use api_call with Turkey Fuel Prices. Requires COLLECTAPI_KEY in .env.",
+        "tools_used": ["smart_search", "api_call"],
     },
-    # --- Gold Prices ---
     {
-        "name": "gold_price_routing",
-        "description": "For gold prices in Turkey (gram altın, çeyrek, yarım, tam), use api_call with Gold Price Turkey.",
-        "trigger_pattern": "altın|gold|çeyrek|gram.altın|yarım.altın|tam.altın|cumhuriyet.altını",
-        "tool_sequence": "tool=api_call, api_name=Gold Price Turkey. Requires COLLECTAPI_KEY.",
-        "examples": "altın fiyatı; gram altın ne kadar; çeyrek altın fiyat",
+        "name": "gold_price_lookup",
+        "description": "Checking gold prices in Turkey: gram altin, ceyrek, yarim, tam, cumhuriyet altini",
+        "strategy_summary": "Use api_call with Gold Price Turkey. Requires COLLECTAPI_KEY in .env.",
+        "tools_used": ["smart_search", "api_call"],
     },
-    # --- Map/Directions ---
     {
-        "name": "map_directions_routing",
-        "description": "For directions, distance, and routing between locations, use api_call with OSRM for routing. Geocoding uses HERE (business addresses) or Photon (user locations). Privacy-safe.",
-        "trigger_pattern": "yol.tarifi|directions|route|distance|mesafe|nasıl.gidilir|how.to.get|harita|map",
-        "tool_sequence": "1. Geocode addresses with api_call api_name=HERE Geocoding (or Photon for user locations). 2. Get route with api_call api_name=OSRM. OSRM and Photon are free, no API key.",
-        "examples": "Kadıköy'den Taksim'e nasıl gidilir; distance from Ankara to Istanbul; walking route to nearest pharmacy",
+        "name": "directions_and_routing",
+        "description": "Getting directions between locations, calculating distance, finding routes for driving or walking",
+        "strategy_summary": "1. Geocode addresses with api_call HERE Geocoding (or Photon for privacy). 2. Get route with api_call OSRM. OSRM and Photon are free, no API key needed.",
+        "tools_used": ["smart_search", "api_call"],
     },
-    # --- Prayer Times ---
     {
-        "name": "prayer_times_routing",
-        "description": "For prayer/namaz times in Turkey, use api_call with Diyanet Prayer Times.",
-        "trigger_pattern": "namaz|ezan|prayer|imsak|iftar|sahur|akşam.ezanı|öğle.namazı",
-        "tool_sequence": "tool=api_call, api_name=Diyanet Prayer Times. Query by district code.",
-        "examples": "namaz vakitleri istanbul; ezan ne zaman; iftar saati",
+        "name": "prayer_times_lookup",
+        "description": "Looking up prayer times (namaz vakitleri), ezan times, iftar/sahur times in Turkey",
+        "strategy_summary": "Use api_call with Diyanet Prayer Times. Query by district code.",
+        "tools_used": ["smart_search", "api_call"],
     },
-    # --- Travel/Tickets ---
     {
-        "name": "travel_ticket_routing",
-        "description": "For flight, bus, train ticket prices: use api_call with Kiwi Tequila (multi-modal, 750+ carriers) or Rome2rio (route planning). For Turkish trains (YHT), TCDD has a reverse-engineered API.",
-        "trigger_pattern": "uçak|flight|bilet|ticket|otobüs|bus|tren|train|yht|tcdd|enuygun|obilet|seyahat|travel|sefer",
-        "tool_sequence": "1. api_call api_name=Kiwi Tequila (needs KIWI_API_KEY, free). 2. api_call api_name=Rome2rio for route planning. 3. web_search targeting enuygun.com or obilet.com as fallback.",
-        "examples": "istanbul ankara uçak bileti; en ucuz otobüs bileti; YHT bilet fiyatı; tren sefer saatleri",
+        "name": "travel_ticket_search",
+        "description": "Searching for flight, bus, train tickets and prices in Turkey, especially YHT and domestic flights",
+        "strategy_summary": "1. api_call Kiwi Tequila (needs KIWI_API_KEY, free, 750+ carriers). 2. api_call Rome2rio for route planning. 3. web_search targeting enuygun.com or obilet.com as fallback.",
+        "tools_used": ["smart_search", "api_call", "web_search"],
     },
-    # --- Epey Spec Comparison ---
     {
-        "name": "epey_spec_comparison",
-        "description": "For detailed product specs and comparison in Turkey, use shopping_search with epey.com source. Epey has 85+ spec fields per product — best for 'find laptop with RTX 4070 and 32GB RAM' type queries.",
-        "trigger_pattern": "epey|ozellik|spec|teknik|karsilastir|karsilastirma|comparison|mhz|ghz|resolution|ekran",
-        "tool_sequence": "tool=shopping_search. Epey scraper handles category detection automatically. For detailed specs, use get_product_details(url) on individual products.",
-        "examples": "RTX 4070 laptop karşılaştır; en iyi telefon 2026 özellikleri; 32GB RAM laptop epey",
+        "name": "product_spec_comparison",
+        "description": "Detailed product specification comparison using Epey.com, finding products by specific technical requirements like RAM, GPU, screen size",
+        "strategy_summary": "Use shopping_search with epey.com source. Epey has 85+ spec fields per product. For detailed specs, use get_product_details(url) on individual products. Best for 'find laptop with X and Y' queries.",
+        "tools_used": ["shopping_search"],
     },
-    # --- Turkish Holidays ---
     {
-        "name": "turkish_holidays_routing",
-        "description": "For Turkish public holidays and calendar, use api_call with Turkey Holidays.",
-        "trigger_pattern": "tatil|holiday|resmi.tatil|bayram|arife|ramazan|kurban",
-        "tool_sequence": "tool=api_call, api_name=Turkey Holidays. Returns official public holidays for any year.",
-        "examples": "2026 resmi tatiller; next public holiday in Turkey; bayram ne zaman",
+        "name": "turkish_holiday_lookup",
+        "description": "Looking up Turkish public holidays, bayram dates, official holiday calendar for any year",
+        "strategy_summary": "Use api_call with Turkey Holidays. Returns official public holidays for any year.",
+        "tools_used": ["smart_search", "api_call"],
     },
 ]
 
 
 async def seed_skills():
-    """Seed the skills database with curated routing skills.
+    """Seed the skills database with curated execution recipe skills.
 
     Only adds skills that don't already exist (by name).
     Returns the number of new skills added.
     """
-    from .skills import list_skills
-    from ..infra.db import upsert_skill
+    from .skills import list_skills, add_skill
 
     existing = await list_skills()
     existing_names = {s["name"] for s in existing}
@@ -216,25 +167,15 @@ async def seed_skills():
     for skill in SEED_SKILLS:
         if skill["name"] in existing_names:
             continue
-        # Convert old seed format to new schema
-        tool_sequence = skill.get("tool_sequence", "")
-        examples = skill.get("examples", "")
-        strategy = {
-            "summary": tool_sequence or skill["description"],
-            "tool_template": tool_sequence,
-            "tools_used": [],
-            "examples": examples,
-            "injection_count": 0,
-            "injection_success": 0,
-        }
-        await upsert_skill(
+        await add_skill(
             name=skill["name"],
             description=skill["description"],
-            skill_type="seed",
-            strategies=[strategy],
+            strategy_summary=skill["strategy_summary"],
+            tools_used=skill.get("tools_used", []),
+            source_grade="seed",
         )
         added += 1
 
     if added:
-        logger.info(f"Seeded {added} routing skills")
+        logger.info("Seeded %d execution recipe skills", added)
     return added

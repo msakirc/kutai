@@ -598,5 +598,51 @@ class TestSkillsV2Helpers(unittest.TestCase):
         self.assertIn("unproven_b", summaries)
 
 
+class TestSeedSkillsNewFormat(unittest.TestCase):
+    """Tests that SEED_SKILLS uses the new execution recipe format."""
+
+    def test_seed_skills_have_new_format(self):
+        from src.memory.seed_skills import SEED_SKILLS
+        for skill in SEED_SKILLS:
+            self.assertIn("name", skill)
+            self.assertIn("description", skill)
+            self.assertIn("strategy_summary", skill,
+                          f"{skill['name']} missing strategy_summary")
+            self.assertNotIn("trigger_pattern", skill,
+                             f"{skill['name']} still has trigger_pattern")
+            self.assertNotIn("tool_sequence", skill,
+                             f"{skill['name']} still has tool_sequence")
+            self.assertNotIn("examples", skill,
+                             f"{skill['name']} still has examples")
+
+    def test_seed_skills_count(self):
+        from src.memory.seed_skills import SEED_SKILLS
+        self.assertEqual(len(SEED_SKILLS), 24, "Expected 24 seed skills")
+
+    def test_seed_skills_names_are_clean(self):
+        from src.memory.seed_skills import SEED_SKILLS
+        old_names = {
+            "currency_api_routing", "weather_api_routing", "time_api_routing",
+            "wikipedia_routing", "play_store_routing", "github_routing",
+            "shopping_turkish_sources", "shopping_review_sources",
+            "sports_web_search", "pdf_processing", "coding_error_search",
+            "translation_routing", "news_routing", "network_tools_routing",
+            "i2p_competitor_research", "pharmacy_on_duty", "earthquake_data",
+            "fuel_price_routing", "gold_price_routing", "map_directions_routing",
+            "prayer_times_routing", "travel_ticket_routing",
+            "epey_spec_comparison", "turkish_holidays_routing",
+        }
+        names = {s["name"] for s in SEED_SKILLS}
+        overlap = names & old_names
+        self.assertEqual(overlap, set(), f"Old-format names still present: {overlap}")
+
+    def test_seed_skills_tools_used_is_list(self):
+        from src.memory.seed_skills import SEED_SKILLS
+        for skill in SEED_SKILLS:
+            tools = skill.get("tools_used", [])
+            self.assertIsInstance(tools, list,
+                                  f"{skill['name']} tools_used is not a list")
+
+
 if __name__ == "__main__":
     unittest.main()

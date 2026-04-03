@@ -2169,65 +2169,61 @@ class Orchestrator:
 
         # (Legacy batch suggestion code removed — suggestions now use direct LLM call)
 
-        # Phase 13.2: Extract skill from successful tasks
-        # Capture from both local (cost=0) and cloud (cost>0) — any task
-        # with 2+ iterations that used tools is worth learning from.
+        # Phase 13.2 v2: Extract execution recipe from high-quality tasks
         tools_used = result.get("tools_used_names", [])
         quality = result.get("quality_score")
         worth_capturing = (
             iterations >= 2
             and tools_used
-            and (quality is None or quality >= 3.0)
+            and quality is not None
+            and quality >= 4.0
         )
         if worth_capturing:
             try:
-                from ..memory.skills import add_skill, record_skill_outcome
+                from ..memory.skills import add_skill
+                grader_data = result.get("grader_data", {})
+                situation = grader_data.get("situation_summary", "")
+                strategy = grader_data.get("strategy_summary", "")
+                tool_template = grader_data.get("tool_template", [])
                 agent_type = task.get("agent_type", "executor")
                 title = task.get("title", "")
-                desc = task.get("description", "")[:200]
+                task_id_val = task.get("id", 0)
 
-                # Better trigger: use classifier metadata
-                classification = task_ctx.get("classification", {}) if isinstance(task_ctx, dict) else {}
-                search_depth = classification.get("search_depth", "none")
-                sub_intent = classification.get("shopping_sub_intent", "")
-
-                # Build structured trigger
-                trigger_parts = [agent_type]
-                if search_depth != "none":
-                    trigger_parts.append(f"search:{search_depth}")
-                if sub_intent:
-                    trigger_parts.append(f"shop:{sub_intent}")
-                # Strip i2p step prefixes like [0.1], [15.11] before extracting keywords
-                clean_title = re.sub(r"\[\d+\.?\d*[a-z]?\]\s*", "", title)
-                words = [re.escape(w.lower().strip(".,!?")) for w in clean_title.split() if len(w) >= 3]
-                trigger_parts.extend(sorted(set(words))[:5])
-                trigger = "|".join(trigger_parts)
-
-                # Extract actual tool sequence — this is the key improvement
-                # tools_used captures what the agent actually called
-                tool_sequence_parts = [f"agent={agent_type}"]
-                if tools_used:
-                    tool_sequence_parts.append(f"tools=[{', '.join(tools_used)}]")
-                if search_depth != "none":
-                    tool_sequence_parts.append(f"search_depth={search_depth}")
-                if sub_intent:
-                    tool_sequence_parts.append(f"shopping_intent={sub_intent}")
-                tool_sequence_parts.append(f"iterations={iterations}")
-                tool_sequence_parts.append(f"model={model}")
-                if cost > 0:
-                    tool_sequence_parts.append("source=cloud")
+                if situation and strategy:
+                    skill_name = f"auto:{agent_type}:{title[:40]}"
+                    await add_skill(
+                        name=skill_name,
+                        description=situation,
+                        strategy_summary=strategy,
+                        tool_template=tool_template,
+                        tools_used=tools_used,
+                        avg_iterations=iterations,
+                        source_grade="great",
+                        source_task_id=task_id_val,
+                    )
                 else:
-                    tool_sequence_parts.append("source=local")
+                    skill_name = f"auto:{agent_type}:{title[:40]}"
+                    auto_desc = f"Task: {title[:100]}. Agent: {agent_type}."
+                    auto_strategy = f"Used {', '.join(tools_used[:5])} in {iterations} iterations"
+                    await add_skill(
+                        name=skill_name,
+                        description=auto_desc,
+                        strategy_summary=auto_strategy,
+                        tools_used=tools_used,
+                        avg_iterations=iterations,
+                        source_grade="great",
+                        source_task_id=task_id_val,
+                    )
+            except Exception:
+                pass
 
-                skill_name = f"auto:{agent_type}:{title[:40]}"
-                await add_skill(
-                    name=skill_name,
-                    description=f"Learned from task #{task_id}: {title}",
-                    trigger_pattern=trigger,
-                    tool_sequence=", ".join(tool_sequence_parts),
-                    examples=desc,
-                )
-                await record_skill_outcome(skill_name, success=True)
+        # Track injection success
+        if quality is not None and quality >= 4.0:
+            try:
+                injected = task_ctx_parsed.get("injected_skills", [])
+                if injected:
+                    from ..memory.skills import record_injection_success
+                    await record_injection_success(injected)
             except Exception:
                 pass
 

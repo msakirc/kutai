@@ -1546,11 +1546,12 @@ class BaseAgent:
 
                 # Grading (skip trivial tasks) — uses dispatcher for deferred grading
                 quality_score = None
+                grader_data = {}
                 if reqs.difficulty >= 4:
                     try:
                         from src.core.llm_dispatcher import get_dispatcher
 
-                        async def _apply_grade(score: float):
+                        async def _apply_grade(score: float, gdata: dict = {}):
                             """Callback to apply deferred grade."""
                             if task_id != "?":
                                 await update_task(task_id, quality_score=score)
@@ -1561,7 +1562,7 @@ class BaseAgent:
                                     grade=score,
                                 )
 
-                        quality_score = await get_dispatcher().request_grade(
+                        quality_score, grader_data = await get_dispatcher().request_grade(
                             task_id=str(task_id),
                             task_title=task.get("title", ""),
                             task_description=task.get("description", ""),
@@ -1592,6 +1593,7 @@ class BaseAgent:
                     "difficulty":    reqs.difficulty,
                     "iterations":    iteration + 1,
                     "quality_score": quality_score,
+                    "grader_data":   grader_data,
                     "tools_used_names": sorted(tools_used_names),
                 }
 

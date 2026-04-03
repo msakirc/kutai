@@ -174,7 +174,7 @@ class TestGradeQueue(unittest.TestCase):
         grade = self._make_grade(task_id="t1", generating_model="model-a")
         run_async(q.enqueue(grade))
 
-        with patch("src.core.router.grade_response", new=AsyncMock(return_value=0.8)):
+        with patch("src.core.router.grade_response", new=AsyncMock(return_value=(0.8, {"score": 4, "reason": "ok"}))):
             count = run_async(q.drain(available_model="model-b"))
 
         self.assertEqual(count, 1)
@@ -186,7 +186,7 @@ class TestGradeQueue(unittest.TestCase):
         grade = self._make_grade(task_id="t1", generating_model="model-a")
         run_async(q.enqueue(grade))
 
-        with patch("src.core.router.grade_response", new=AsyncMock(return_value=0.8)):
+        with patch("src.core.router.grade_response", new=AsyncMock(return_value=(0.8, {"score": 4, "reason": "ok"}))):
             count = run_async(q.drain(available_model="model-a"))
 
         self.assertEqual(count, 0)
@@ -198,7 +198,7 @@ class TestGradeQueue(unittest.TestCase):
         run_async(q.enqueue(self._make_grade("t1", generating_model="model-a")))
         run_async(q.enqueue(self._make_grade("t2", generating_model="model-b")))
 
-        with patch("src.core.router.grade_response", new=AsyncMock(return_value=0.7)):
+        with patch("src.core.router.grade_response", new=AsyncMock(return_value=(0.7, {"score": 3.5, "reason": "ok"}))):
             count = run_async(q.drain(available_model="model-a", use_cloud=True))
 
         self.assertEqual(count, 2)
@@ -366,13 +366,13 @@ class TestLLMDispatcherRouting(unittest.TestCase):
     # 18. priority>=8 grades immediately
     def test_dispatcher_request_grade_immediate_for_urgent(self):
         dispatcher = self._make_dispatcher()
-        mock_grade = AsyncMock(return_value=0.9)
+        mock_grade = AsyncMock(return_value=(0.9, {"score": 4.5, "reason": "great"}))
 
         with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_litellm_name",
                    return_value="openai/model-a"), \
              patch("src.core.router.grade_response", mock_grade):
 
-            score = run_async(dispatcher.request_grade(
+            score, grader_data = run_async(dispatcher.request_grade(
                 task_id="t1",
                 task_title="Test",
                 task_description="Do X",
@@ -383,18 +383,19 @@ class TestLLMDispatcherRouting(unittest.TestCase):
 
         mock_grade.assert_called_once()
         self.assertEqual(score, 0.9)
+        self.assertEqual(grader_data["score"], 4.5)
         self.assertEqual(dispatcher.grade_queue.depth, 0)  # not deferred
 
     # 19. loaded != generator → immediate grade
     def test_dispatcher_request_grade_immediate_when_different_model(self):
         dispatcher = self._make_dispatcher()
-        mock_grade = AsyncMock(return_value=0.75)
+        mock_grade = AsyncMock(return_value=(0.75, {"score": 3.75, "reason": "decent"}))
 
         with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_litellm_name",
                    return_value="openai/model-a"), \
              patch("src.core.router.grade_response", mock_grade):
 
-            score = run_async(dispatcher.request_grade(
+            score, grader_data = run_async(dispatcher.request_grade(
                 task_id="t1",
                 task_title="Test",
                 task_description="Do X",
@@ -410,13 +411,13 @@ class TestLLMDispatcherRouting(unittest.TestCase):
     # 20. loaded == generator → deferred
     def test_dispatcher_request_grade_defers_when_same_model(self):
         dispatcher = self._make_dispatcher()
-        mock_grade = AsyncMock(return_value=0.8)
+        mock_grade = AsyncMock(return_value=(0.8, {"score": 4, "reason": "ok"}))
 
         with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_litellm_name",
                    return_value="openai/model-a"), \
              patch("src.core.router.grade_response", mock_grade):
 
-            score = run_async(dispatcher.request_grade(
+            score, grader_data = run_async(dispatcher.request_grade(
                 task_id="t1",
                 task_title="Test",
                 task_description="Do X",
@@ -448,7 +449,7 @@ class TestLLMDispatcherRouting(unittest.TestCase):
         run_async(dispatcher.grade_queue.enqueue(grade))
         self.assertEqual(dispatcher.grade_queue.depth, 1)
 
-        mock_grade = AsyncMock(return_value=0.8)
+        mock_grade = AsyncMock(return_value=(0.8, {"score": 4, "reason": "ok"}))
 
         with patch("src.core.router.grade_response", mock_grade):
             # record_swap is now called by the caller (_do_swap), not on_model_swap
@@ -560,7 +561,7 @@ class TestLLMDispatcherIntegration(unittest.TestCase):
 
         callback_results = []
 
-        async def on_graded(score: float):
+        async def on_graded(score: float, grader_data: dict = {}):
             callback_results.append(score)
 
         from src.core.llm_dispatcher import PendingGrade
@@ -576,7 +577,7 @@ class TestLLMDispatcherIntegration(unittest.TestCase):
         )
         run_async(dispatcher.grade_queue.enqueue(grade))
 
-        mock_grade_fn = AsyncMock(return_value=0.88)
+        mock_grade_fn = AsyncMock(return_value=(0.88, {"score": 4.4, "reason": "good"}))
 
         with patch("src.core.router.grade_response", mock_grade_fn):
             # Drain with a different model so it can grade model-a's output
@@ -669,7 +670,7 @@ class TestLLMDispatcherIntegration(unittest.TestCase):
 
         self.assertEqual(dispatcher.grade_queue.depth, 10)
 
-        mock_grade_fn = AsyncMock(return_value=0.7)
+        mock_grade_fn = AsyncMock(return_value=(0.7, {"score": 3.5, "reason": "ok"}))
 
         with patch("src.core.router.grade_response", mock_grade_fn):
             count = run_async(dispatcher.grade_queue.drain(
@@ -694,7 +695,7 @@ class TestLLMDispatcherIntegration(unittest.TestCase):
              patch.object(dispatcher, "request",
                           side_effect=_fake_request):
             from src.core.router import grade_response
-            score = run_async(grade_response(
+            score, grader_data = run_async(grade_response(
                 task_title="Test",
                 task_description="Test desc",
                 response_text="Some response text that is long enough",

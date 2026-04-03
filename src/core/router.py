@@ -1473,7 +1473,10 @@ Task: {task_title}
 Response to grade:
 {response}
 
-Respond with ONLY JSON: {{"score": N, "reason": "brief"}}"""
+Respond with ONLY JSON. If score >= 4, also include situation_summary, strategy_summary, and tool_template fields describing what approach worked:
+{{"score": N, "reason": "brief", "situation_summary": "one line describing the type of problem solved", "strategy_summary": "one line describing the approach that worked", "tool_template": ["step1", "step2"]}}
+
+For scores < 4, just: {{"score": N, "reason": "brief"}}"""
 
 
 async def grade_response(
@@ -1482,10 +1485,16 @@ async def grade_response(
     response_text: str,
     generating_model: str = "",
     task_name: str = "",
-) -> float | None:
-    """Grade a response using a DIFFERENT model."""
+) -> tuple[float | None, dict]:
+    """Grade a response using a DIFFERENT model.
+
+    Returns:
+        (score, grader_data) where grader_data is the full parsed JSON dict
+        from the grading LLM (may include situation_summary, strategy_summary,
+        tool_template for high-quality responses).
+    """
     if not response_text or len(response_text.strip()) < 10:
-        return None
+        return (None, {})
 
     try:
         grading_reqs = ModelRequirements(
@@ -1544,11 +1553,11 @@ async def grade_response(
                     model_name, cap_key, grade * 2.0, call_count=call_count,
                 )
 
-        return grade
+        return (grade, parsed)
 
     except Exception as e:
         logger.debug("response grading failed", error=str(e))
-        return None
+        return (None, {})
 
 
 # ─── Cost Budget ─────────────────────────────────────────────────────────────

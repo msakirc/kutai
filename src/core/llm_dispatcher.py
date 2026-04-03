@@ -104,7 +104,7 @@ class PendingGrade:
     priority: int
     queued_at: float = field(default_factory=time.time)
     # Callback to apply grade result back to the task
-    on_graded: Optional[Callable[[float], Awaitable[None]]] = None
+    on_graded: Optional[Callable[[float, dict], Awaitable[None]]] = None
 
 
 class GradeQueue:
@@ -182,9 +182,9 @@ class GradeQueue:
         completed = 0
         for grade in to_process:
             try:
-                score = await self._execute_grade(grade)
+                score, grader_data = await self._execute_grade(grade)
                 if score is not None and grade.on_graded:
-                    await grade.on_graded(score)
+                    await grade.on_graded(score, grader_data)
                 completed += 1
             except Exception as e:
                 logger.warning(f"deferred grade failed | task_id={grade.task_id} error={e}")
@@ -199,7 +199,7 @@ class GradeQueue:
     async def _execute_grade(
         self,
         grade: PendingGrade,
-    ) -> float | None:
+    ) -> tuple[float | None, dict]:
         """Execute a single grade via dispatcher's OVERHEAD routing."""
         from src.core.router import grade_response
         return await grade_response(
@@ -607,8 +607,8 @@ class LLMDispatcher:
         generating_model: str,
         task_name: str = "",
         priority: int = 5,
-        on_graded: Optional[Callable[[float], Awaitable[None]]] = None,
-    ) -> float | None:
+        on_graded: Optional[Callable[[float, dict], Awaitable[None]]] = None,
+    ) -> tuple[float | None, dict]:
         """Request grading — may execute immediately or defer.
 
         Immediate grading when:
@@ -660,7 +660,7 @@ class LLMDispatcher:
             priority=priority,
             on_graded=on_graded,
         ))
-        return None  # grade will be applied retroactively
+        return (None, {})  # grade will be applied retroactively
 
     async def on_model_swap(self, old_model: str | None, new_model: str | None):
         """Called when a model swap occurs. Drains deferred grades and

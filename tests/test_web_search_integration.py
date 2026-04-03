@@ -336,7 +336,7 @@ class TestResearcherAgentFlow(unittest.TestCase):
     @patch("src.agents.base.select_model")
     @patch("src.agents.base.call_model", new_callable=AsyncMock)
     @patch("src.agents.base.execute_tool", new_callable=AsyncMock)
-    @patch("src.agents.base.grade_response", new_callable=AsyncMock, return_value=5)
+    @patch("src.agents.base.grade_response", new_callable=AsyncMock, return_value=(5, {"score": 5, "reason": "excellent"}))
     def test_researcher_calls_web_search(
         self,
         mock_grade,

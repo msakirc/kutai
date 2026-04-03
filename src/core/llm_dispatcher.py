@@ -713,6 +713,10 @@ class LLMDispatcher:
         there are tasks in the queue that ANY local model can handle,
         load the best-fit model. Local inference is free — don't waste the GPU.
 
+        When no main work tasks exist, checks for pending overhead needs
+        (e.g. todo suggestions) and loads a fast general-purpose model so
+        OVERHEAD calls don't fail with "no models available".
+
         Args:
             upcoming_tasks: List of task dicts from get_ready_tasks()
         """
@@ -723,16 +727,26 @@ class LLMDispatcher:
             if manager.current_model:
                 return  # already loaded, nothing to do
 
-            if not upcoming_tasks:
-                return  # no work, stay idle (save power)
+            if upcoming_tasks:
+                best_model = self._find_best_local_for_batch(upcoming_tasks)
+                if best_model:
+                    logger.info(f"proactive GPU load | model={best_model} queue_depth={len(upcoming_tasks)}")
+                    await manager.ensure_model(
+                        best_model,
+                        reason="proactive_load",
+                    )
+                return
 
-            best_model = self._find_best_local_for_batch(upcoming_tasks)
-            if best_model:
-                logger.info(f"proactive GPU load | model={best_model} queue_depth={len(upcoming_tasks)}")
-                await manager.ensure_model(
-                    best_model,
-                    reason="proactive_load",
-                )
+            # No main work — check if overhead needs a model
+            # (e.g. todo suggestions, deferred grading)
+            if await self._has_pending_overhead_needs():
+                best_model = self._find_fastest_general_model()
+                if best_model:
+                    logger.info(f"proactive GPU load for overhead | model={best_model}")
+                    await manager.ensure_model(
+                        best_model,
+                        reason="overhead_idle_load",
+                    )
         except Exception as e:
             logger.debug(f"Proactive GPU load failed: {e}")
 
@@ -838,6 +852,57 @@ class LLMDispatcher:
 
         except Exception as e:
             logger.debug(f"_find_best_local_for_batch failed: {e}")
+            return None
+
+    async def _has_pending_overhead_needs(self) -> bool:
+        """Check if there's pending work that OVERHEAD calls would serve.
+
+        Currently checks: pending todo items (suggestions need LLM).
+        Also checks deferred grade queue depth.
+        """
+        # Deferred grades waiting
+        if self.grade_queue.depth > 0:
+            return True
+
+        # Pending todos → upcoming todo suggestion call
+        try:
+            from src.infra.db import get_todos
+            todos = await get_todos(status="pending")
+            return len(todos) > 0
+        except Exception:
+            return False
+
+    def _find_fastest_general_model(self) -> str | None:
+        """Find the fastest general-purpose local model for overhead work.
+
+        Picks a model that supports function calling (not code-only),
+        prioritizing speed over capability since overhead tasks are simple.
+        """
+        try:
+            from src.models.model_registry import get_registry
+            registry = get_registry()
+            local_models = [
+                m for m in registry.all_models()
+                if m.is_local
+                and not m.demoted
+                and m.supports_function_calling
+                and m.specialty not in ("code", "coding")
+            ]
+
+            if not local_models:
+                return None
+
+            def _speed_key(m):
+                if m.tokens_per_second > 0:
+                    return m.tokens_per_second
+                if m.model_type == "moe":
+                    return 30.0
+                return max(1.0, 50.0 - m.file_size_mb / 500)
+
+            return max(local_models, key=_speed_key).name
+
+        except Exception as e:
+            logger.debug(f"_find_fastest_general_model failed: {e}")
             return None
 
     # ─── Metrics ─────────────────────────────────────────────────────────

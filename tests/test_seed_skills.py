@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, patch
 
 # Ensure project root is on path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -52,92 +53,105 @@ class TestSeedSkills(unittest.TestCase):
     def test_01_seed_adds_all_skills(self):
         """First seed should add all skills."""
         from src.memory.seed_skills import seed_skills, SEED_SKILLS
-        added = run_async(seed_skills())
+        # Patch out ChromaDB dedup and embedding so tests run in isolation
+        with patch("src.memory.skills._find_duplicate_skill", new_callable=AsyncMock, return_value=None), \
+             patch("src.memory.skills._embed_skill", new_callable=AsyncMock):
+            added = run_async(seed_skills())
         self.assertEqual(added, len(SEED_SKILLS))
-        self.assertEqual(added, 23)
+        self.assertEqual(added, 24)
 
     def test_02_seed_is_idempotent(self):
         """Second seed should add 0 new skills."""
         from src.memory.seed_skills import seed_skills
-        added = run_async(seed_skills())
+        with patch("src.memory.skills._find_duplicate_skill", new_callable=AsyncMock, return_value=None), \
+             patch("src.memory.skills._embed_skill", new_callable=AsyncMock):
+            added = run_async(seed_skills())
         self.assertEqual(added, 0)
 
     def test_03_list_skills_returns_all(self):
-        """list_skills should return all 23 seeded skills."""
+        """list_skills should return all 24 seeded skills."""
         from src.memory.skills import list_skills
         skills = run_async(list_skills())
-        self.assertEqual(len(skills), 23)
+        self.assertEqual(len(skills), 24)
 
-    def test_currency_query_matches_currency_skill(self):
-        """'dolar kuru' should match currency_api_routing via regex."""
-        import re
+    def test_seed_skills_have_description(self):
+        """All seed skills should have a non-empty description field."""
         from src.memory.seed_skills import SEED_SKILLS
-        currency_skill = next(s for s in SEED_SKILLS if s["name"] == "currency_api_routing")
-        pattern = currency_skill["trigger_pattern"]
-        self.assertTrue(re.search(pattern, "dolar kuru", re.IGNORECASE))
-        self.assertTrue(re.search(pattern, "EUR/TRY exchange rate", re.IGNORECASE))
-
-    def test_weather_query_matches_weather_skill(self):
-        """'weather istanbul' should match weather_api_routing."""
-        import re
-        from src.memory.seed_skills import SEED_SKILLS
-        skill = next(s for s in SEED_SKILLS if s["name"] == "weather_api_routing")
-        pattern = skill["trigger_pattern"]
-        self.assertTrue(re.search(pattern, "weather istanbul", re.IGNORECASE))
-        self.assertTrue(re.search(pattern, "hava durumu ankara", re.IGNORECASE))
-
-    def test_github_query_matches_github_skill(self):
-        """'llama.cpp github' should match github_routing."""
-        import re
-        from src.memory.seed_skills import SEED_SKILLS
-        skill = next(s for s in SEED_SKILLS if s["name"] == "github_routing")
-        pattern = skill["trigger_pattern"]
-        self.assertTrue(re.search(pattern, "llama.cpp github repo", re.IGNORECASE))
-
-    def test_shopping_query_matches_shopping_skill(self):
-        """'iPhone fiyat' should match shopping_turkish_sources."""
-        import re
-        from src.memory.seed_skills import SEED_SKILLS
-        skill = next(s for s in SEED_SKILLS if s["name"] == "shopping_turkish_sources")
-        pattern = skill["trigger_pattern"]
-        self.assertTrue(re.search(pattern, "iPhone 15 fiyat", re.IGNORECASE))
-
-    def test_unrelated_query_does_not_match(self):
-        """A generic greeting should NOT match any skill trigger pattern."""
-        import re
-        from src.memory.seed_skills import SEED_SKILLS
-        query = "merhaba nasilsin"
         for skill in SEED_SKILLS:
-            pattern = skill["trigger_pattern"]
-            self.assertIsNone(
-                re.search(pattern, query, re.IGNORECASE),
-                f"'{query}' should not match skill '{skill['name']}' pattern '{pattern}'",
+            self.assertTrue(
+                skill.get("description"),
+                f"Skill '{skill['name']}' missing description"
             )
 
-    def test_unrelated_recipe_query_does_not_match(self):
-        """A cooking recipe query should NOT match any skill trigger pattern."""
-        import re
+    def test_seed_skills_have_strategy_summary(self):
+        """All seed skills should have a non-empty strategy_summary field."""
         from src.memory.seed_skills import SEED_SKILLS
-        query = "how to make baklava"
         for skill in SEED_SKILLS:
-            pattern = skill["trigger_pattern"]
-            self.assertIsNone(
-                re.search(pattern, query, re.IGNORECASE),
-                f"'{query}' should not match skill '{skill['name']}' pattern '{pattern}'",
+            self.assertTrue(
+                skill.get("strategy_summary"),
+                f"Skill '{skill['name']}' missing strategy_summary"
             )
+
+    def test_seed_skills_have_tools_used_list(self):
+        """All seed skills should have tools_used as a list."""
+        from src.memory.seed_skills import SEED_SKILLS
+        for skill in SEED_SKILLS:
+            tools = skill.get("tools_used", [])
+            self.assertIsInstance(
+                tools, list,
+                f"Skill '{skill['name']}' tools_used is not a list"
+            )
+
+    def test_seed_skills_no_old_fields(self):
+        """Seed skills must not contain old-schema fields."""
+        from src.memory.seed_skills import SEED_SKILLS
+        old_fields = {"trigger_pattern", "tool_sequence", "examples",
+                      "success_count", "failure_count"}
+        for skill in SEED_SKILLS:
+            for field in old_fields:
+                self.assertNotIn(
+                    field, skill,
+                    f"Skill '{skill['name']}' still has old field '{field}'"
+                )
+
+    def test_currency_skill_exists(self):
+        """currency_lookup skill should be present."""
+        from src.memory.seed_skills import SEED_SKILLS
+        names = {s["name"] for s in SEED_SKILLS}
+        self.assertIn("currency_lookup", names)
+
+    def test_weather_skill_exists(self):
+        """weather_check skill should be present."""
+        from src.memory.seed_skills import SEED_SKILLS
+        names = {s["name"] for s in SEED_SKILLS}
+        self.assertIn("weather_check", names)
+
+    def test_github_skill_exists(self):
+        """github_code_research skill should be present."""
+        from src.memory.seed_skills import SEED_SKILLS
+        names = {s["name"] for s in SEED_SKILLS}
+        self.assertIn("github_code_research", names)
+
+    def test_shopping_skill_exists(self):
+        """turkish_product_shopping skill should be present."""
+        from src.memory.seed_skills import SEED_SKILLS
+        names = {s["name"] for s in SEED_SKILLS}
+        self.assertIn("turkish_product_shopping", names)
 
     def test_04_record_skill_outcome(self):
-        """record_skill_outcome should increment success/failure counts."""
+        """record_skill_outcome should increment injection counts on the correct columns."""
         from src.memory.skills import record_skill_outcome, list_skills
-        # Record a success for currency skill
-        run_async(record_skill_outcome("currency_api_routing", success=True))
-        run_async(record_skill_outcome("currency_api_routing", success=True))
-        run_async(record_skill_outcome("currency_api_routing", success=False))
+        # success=True -> record_injection_success -> increments injection_success only
+        # success=False -> record_injection -> increments injection_count only
+        run_async(record_skill_outcome("currency_lookup", success=True))
+        run_async(record_skill_outcome("currency_lookup", success=True))
+        run_async(record_skill_outcome("currency_lookup", success=False))
 
         skills = run_async(list_skills())
-        currency = next(s for s in skills if s["name"] == "currency_api_routing")
-        self.assertEqual(currency["success_count"], 2)
-        self.assertEqual(currency["failure_count"], 1)
+        currency = next(s for s in skills if s["name"] == "currency_lookup")
+        # 1 failure -> injection_count=1; 2 successes -> injection_success=2
+        self.assertEqual(currency["injection_count"], 1)
+        self.assertEqual(currency["injection_success"], 2)
 
 
 if __name__ == "__main__":

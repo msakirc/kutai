@@ -376,6 +376,97 @@ async def seed_registry() -> int:
     return count
 
 
+# ── Keyword Index ──
+
+_STOP_WORDS = frozenset({
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "it", "no", "not", "this", "that",
+    "are", "was", "were", "be", "been", "has", "have", "had", "do", "does",
+    "can", "could", "will", "would", "shall", "should", "may", "might",
+    "its", "via", "etc", "also", "just", "only", "all", "any", "each",
+    "than", "as", "up", "out", "about", "into", "over", "after", "before",
+    "between", "under", "above", "such", "very", "more", "most", "other",
+    "some", "need", "needed", "based", "using", "free", "api", "key",
+    "data", "get", "set", "use", "used", "available", "provides", "returns",
+    "access", "service", "simple", "easy", "http", "https", "json", "xml",
+    "rest", "endpoint",
+})
+
+
+def tokenize_api_description(description: "str | None", tags: "str | None" = None) -> list:
+    """Extract meaningful keywords from API description and tags."""
+    if not description:
+        return []
+    text = description.lower()
+    if tags:
+        text += " " + tags.lower()
+    words = re.findall(r"[a-z0-9\u00e0-\u024f]{3,}", text)
+    seen = set()
+    result = []
+    for w in words:
+        if w not in _STOP_WORDS and w not in seen:
+            seen.add(w)
+            result.append(w)
+    return result
+
+
+TURKISH_CATEGORY_PATTERNS: dict = {
+    "weather": r"hava\s*durumu|s[ıi]cakl[ıi]k|ya[gğ]mur|kar\s+ya[gğ][ıi]|r[üu]zg[aâ]r|tahmin|forecast",
+    "currency": r"d[öo]viz|kur|dolar|euro|sterlin|pound|alt[ıi]n\s*fiyat|para\s*birimi",
+    "pharmacy": r"n[öo]bet[çc]i\s*eczane|eczane|nobetci|ila[çc]|pharmacy",
+    "earthquake": r"deprem|sars[ıi]nt[ıi]|kandilli|zelzele|earthquake",
+    "fuel": r"benzin|mazot|diesel|lpg|yak[ıi]t|akaryak[ıi]t|petrol\s*fiyat",
+    "gold": r"alt[ıi]n\s*fiyat|[çc]eyrek|gram\s*alt[ıi]n|yar[ıi]m\s*alt[ıi]n|tam\s*alt[ıi]n|cumhuriyet\s*alt[ıi]n[ıi]",
+    "prayer_times": r"namaz\s*vakt|ezan|imsak|iftar|sahur|ak[şs]am\s*ezan|[öo][gğ]le\s*namaz",
+    "time": r"saat\s*ka[çc]|saat\s*fark|timezone",
+    "news": r"haber|son\s*dakika|g[üu]ndem|headline|g[üu]ncel",
+    "translation": r"[çc]evir|terc[üu]me|[İi]ngilizce|T[üu]rk[çc]e",
+    "map": r"yol\s*tarifi|mesafe|nas[ıi]l\s*gid|harita|rota",
+    "travel": r"u[çc]ak|bilet|otob[üu]s|seyahat|enuygun|obilet",
+    "holiday": r"tatil|resmi\s*tatil|bayram|arife|ramazan|kurban",
+    "sports": r"ma[çc]|kadro|skor|s[üu]per\s*lig|futbol|basketbol",
+}
+
+
+async def build_keyword_index() -> int:
+    """Build/rebuild the keyword index from all APIs in registry + DB cache."""
+    from src.infra.db import bulk_upsert_api_keywords
+
+    rows = []
+    seen_names = set()
+
+    for api in API_REGISTRY:
+        if api.name in seen_names:
+            continue
+        seen_names.add(api.name)
+        keywords = tokenize_api_description(api.description)
+        for kw in keywords:
+            rows.append((api.name, kw, "description"))
+        rows.append((api.name, api.category.lower(), "category"))
+
+    for api in _db_api_cache:
+        if api.name in seen_names:
+            continue
+        seen_names.add(api.name)
+        keywords = tokenize_api_description(api.description)
+        for kw in keywords:
+            rows.append((api.name, kw, "description"))
+        rows.append((api.name, api.category.lower(), "category"))
+
+    if rows:
+        await bulk_upsert_api_keywords(rows)
+    logger.info("Keyword index built: %d entries for %d APIs", len(rows), len(seen_names))
+    return len(rows)
+
+
+async def seed_category_patterns():
+    """Seed Turkish category patterns into DB."""
+    from src.infra.db import upsert_category_pattern
+    for category, pattern in TURKISH_CATEGORY_PATTERNS.items():
+        await upsert_category_pattern(category, pattern)
+    logger.info("Seeded %d Turkish category patterns", len(TURKISH_CATEGORY_PATTERNS))
+
+
 def find_apis(category: str | None = None, query: str | None = None) -> list[FreeAPI]:
     """Find APIs matching a category or keyword query.
 

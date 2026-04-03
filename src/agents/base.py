@@ -476,24 +476,53 @@ class BaseAgent:
             except Exception as exc:
                 logger.debug(f"Blackboard injection failed (non-critical): {exc}")
 
-        # ── Phase 13.2: Skill library injection ──
+        # ── Skill library injection (v2 — execution recipes) ──
         try:
-            from ..memory.skills import find_relevant_skills, format_skills_for_prompt
+            from ..memory.skills import (
+                find_relevant_skills, format_skills_for_prompt,
+                get_tools_to_inject, record_injection,
+            )
             task_text = f"{task.get('title', '')} {task.get('description', '')}"
-            relevant_skills = await find_relevant_skills(task_text, limit=3)
-            skills_block = format_skills_for_prompt(relevant_skills)
-            if skills_block:
-                parts.append(skills_block)
-            # Store injected skill names for feedback tracking
+            relevant_skills = await find_relevant_skills(task_text, limit=5)
             if relevant_skills:
+                # Estimate context budget from model info
+                model_ctx = task.get("context", "{}")
+                if isinstance(model_ctx, str):
+                    try:
+                        model_ctx = json.loads(model_ctx)
+                    except (json.JSONDecodeError, TypeError):
+                        model_ctx = {}
+                if not isinstance(model_ctx, dict):
+                    model_ctx = {}
+                context_budget = model_ctx.get("model_context_length", 4096)
+
+                skills_block = format_skills_for_prompt(relevant_skills, context_budget)
+                if skills_block:
+                    parts.append(skills_block)
+
+                # Tool injection for high-confidence skills
+                extra_tools = get_tools_to_inject(relevant_skills)
+                if extra_tools and self.allowed_tools is not None:
+                    for tool in extra_tools:
+                        if tool not in self.allowed_tools:
+                            self.allowed_tools.append(tool)
+                            logger.info("Skill-injected tool: %s", tool)
+
+                # Track injections
+                skill_names = [s["name"] for s in relevant_skills]
+                await record_injection(skill_names)
+
+                # Store for success tracking after task completes
                 try:
                     _ctx = json.loads(task.get("context", "{}"))
-                    _ctx["injected_skills"] = [s["name"] for s in relevant_skills]
+                    _ctx["injected_skills"] = skill_names
                     task["context"] = json.dumps(_ctx)
                 except Exception:
                     pass
+
+                logger.info("Skills injected: %s", skill_names)
         except Exception as exc:
-            logger.debug(f"Skill library injection failed (non-critical): {exc}")
+            logger.debug("Skill injection failed (non-critical): %s", exc)
 
         # ── Smart Resource Integration: Layer 1 API enrichment ──
         try:

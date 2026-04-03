@@ -150,6 +150,43 @@ class TestTodoDB(unittest.TestCase):
         self.assertEqual(sched["title"], "Todo Reminder")
         self.assertIn("todo_reminder", sched["context"])
 
+    def test_suggestion_columns_exist(self):
+        """Todo items should have suggestion and suggestion_at columns."""
+        todo_id = run_async(self.db_mod.add_todo("Test suggestion"))
+        todo = run_async(self.db_mod.get_todo(todo_id))
+        self.assertIsNone(todo["suggestion"])
+        self.assertIsNone(todo["suggestion_at"])
+
+    def test_update_todo_suggestion(self):
+        """update_todo should accept suggestion and suggestion_at."""
+        todo_id = run_async(self.db_mod.add_todo("Suggest me"))
+        run_async(self.db_mod.update_todo(
+            todo_id,
+            suggestion="Compare prices online",
+            suggestion_agent="shopping_advisor",
+            suggestion_at="2026-04-03 10:00:00",
+        ))
+        todo = run_async(self.db_mod.get_todo(todo_id))
+        self.assertEqual(todo["suggestion"], "Compare prices online")
+        self.assertEqual(todo["suggestion_agent"], "shopping_advisor")
+        self.assertEqual(todo["suggestion_at"], "2026-04-03 10:00:00")
+
+    def test_clear_todo_suggestion(self):
+        """Clearing suggestion resets both fields to NULL."""
+        todo_id = run_async(self.db_mod.add_todo("Clear me"))
+        run_async(self.db_mod.update_todo(
+            todo_id,
+            suggestion="Old suggestion",
+            suggestion_agent="researcher",
+            suggestion_at="2026-04-03 10:00:00",
+        ))
+        run_async(self.db_mod.update_todo(
+            todo_id, suggestion=None, suggestion_agent=None, suggestion_at=None,
+        ))
+        todo = run_async(self.db_mod.get_todo(todo_id))
+        self.assertIsNone(todo["suggestion"])
+        self.assertIsNone(todo["suggestion_at"])
+
 
 # ─── NL Classification Tests ──────────────────────────────────────────────
 

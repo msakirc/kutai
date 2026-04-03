@@ -313,7 +313,10 @@ async def init_db():
             status TEXT DEFAULT 'pending',
             source TEXT DEFAULT 'explicit',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            completed_at TIMESTAMP
+            completed_at TIMESTAMP,
+            suggestion TEXT,
+            suggestion_agent TEXT,
+            suggestion_at TIMESTAMP
         )
     """)
 
@@ -553,6 +556,13 @@ async def init_db():
             logger.info("Added sleep_state column to tasks table")
         except Exception as e:
             logger.debug(f"sleep_state column migration skipped: {e}")
+
+    # Migration: add suggestion columns to todo_items
+    for col in ["suggestion", "suggestion_agent", "suggestion_at"]:
+        try:
+            await db.execute(f"ALTER TABLE todo_items ADD COLUMN {col} TEXT")
+        except Exception:
+            pass  # already exists
 
     # ── Performance indexes on common query patterns ──
     _indexes = [
@@ -1557,6 +1567,7 @@ async def get_scheduled_tasks() -> list[dict]:
 _TODO_COLUMNS = frozenset({
     "title", "description", "priority", "due_date",
     "status", "source", "completed_at",
+    "suggestion", "suggestion_agent", "suggestion_at",
 })
 
 

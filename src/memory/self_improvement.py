@@ -165,18 +165,20 @@ async def analyze_and_propose() -> list[dict]:
     # ── 6. Underutilized skills ──
     try:
         cursor = await db.execute("""
-            SELECT name, success_count, failure_count
+            SELECT name, injection_success, injection_count
             FROM skills
-            WHERE failure_count > success_count AND (success_count + failure_count) >= 5
+            WHERE injection_count >= 5
+            AND CAST(injection_success AS REAL) / injection_count < 0.5
         """)
         rows = await cursor.fetchall()
         for row in rows:
-            name, success, failure = row
+            name, success, count = row
+            rate = (success / count * 100) if count > 0 else 0
             proposals.append({
                 "category": "skills",
-                "title": f"Skill '{name}' failing more than succeeding",
+                "title": f"Skill '{name}' has low success rate ({rate:.0f}%)",
                 "detail": (
-                    f"Skill '{name}' has {failure} failures vs {success} successes. "
+                    f"Skill '{name}' succeeded {success}/{count} injections ({rate:.0f}%). "
                     f"Review or remove to avoid misleading agents."
                 ),
                 "priority": 2,

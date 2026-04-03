@@ -362,9 +362,9 @@ async def init_db():
         )
     """)
 
-    # Skills v2 — new schema with strategies and injection tracking
+    # Skills — strategies and injection tracking
     await db.execute("""
-        CREATE TABLE IF NOT EXISTS skills_v2 (
+        CREATE TABLE IF NOT EXISTS skills (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE NOT NULL,
             description TEXT NOT NULL,
@@ -376,51 +376,6 @@ async def init_db():
             updated_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime'))
         )
     """)
-
-    # Migration: promote skills_v2 → skills (rename old table, rename new table)
-    try:
-        cursor = await db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='skills'"
-        )
-        old_skills_exists = await cursor.fetchone() is not None
-
-        cursor2 = await db.execute("SELECT COUNT(*) FROM skills_v2")
-        skills_v2_empty = (await cursor2.fetchone())[0] == 0
-
-        if old_skills_exists and skills_v2_empty:
-            # Migrate seed skills (not auto-captured ones) converting tool_sequence to strategy JSON
-            cursor3 = await db.execute(
-                "SELECT name, description, tool_sequence FROM skills WHERE name NOT LIKE 'auto:%'"
-            )
-            seed_rows = await cursor3.fetchall()
-            for row in seed_rows:
-                strategy = json.dumps([{
-                    "summary": row[2] if row[2] else "",
-                    "tool_template": row[2] if row[2] else "",
-                    "tools_used": [],
-                }])
-                await db.execute(
-                    """INSERT OR IGNORE INTO skills_v2 (name, description, skill_type, strategies)
-                       VALUES (?, ?, 'seed', ?)""",
-                    (row[0], row[1], strategy),
-                )
-            await db.commit()
-            logger.info(f"Migrated {len(seed_rows)} seed skills to skills_v2")
-
-            # Rename old table, promote skills_v2
-            await db.execute("ALTER TABLE skills RENAME TO skills_old_backup")
-            await db.execute("ALTER TABLE skills_v2 RENAME TO skills")
-            await db.commit()
-            logger.info("Skills migration complete: skills → skills_old_backup, skills_v2 → skills")
-
-        elif not old_skills_exists and skills_v2_empty:
-            # Fresh install — just rename skills_v2 to skills
-            await db.execute("ALTER TABLE skills_v2 RENAME TO skills")
-            await db.commit()
-            logger.info("Fresh install: skills_v2 renamed to skills")
-
-    except Exception as e:
-        logger.debug(f"Skills migration skipped: {e}")
 
     # Skill injection A/B metrics
     await db.execute("""

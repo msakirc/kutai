@@ -1911,14 +1911,6 @@ class Orchestrator:
                     task_id, status="failed", error=error_str,
                     error_category=error_cat,
                 )
-                # Track skill failure outcomes
-                try:
-                    from src.memory.skills import record_skill_outcome
-                    injected_skills = task_ctx.get("injected_skills", [])
-                    for skill_name in injected_skills:
-                        await record_skill_outcome(skill_name, success=False)
-                except Exception:
-                    pass  # Non-critical
                 await self.telegram.send_error(task_id, title, error_str)
 
                 # ── Fix #9: Workflow step failure notification ──
@@ -2050,15 +2042,6 @@ class Orchestrator:
             completed_at=datetime.now().isoformat(),
             cost=cost,
         )
-
-        # Track skill outcomes for feedback loop
-        try:
-            from src.memory.skills import record_skill_outcome
-            injected_skills = task_ctx.get("injected_skills", [])
-            for skill_name in injected_skills:
-                await record_skill_outcome(skill_name, success=True)
-        except Exception:
-            pass  # Non-critical
 
         # Track skill A/B metrics
         try:

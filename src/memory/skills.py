@@ -120,7 +120,7 @@ async def _embed_skill(name: str, description: str) -> None:
     """Embed skill into ChromaDB semantic collection."""
     try:
         from src.memory.vector_store import embed_and_store
-        embed_text = f"{name}: {description}"
+        embed_text = description
         await embed_and_store(
             text=embed_text,
             metadata={"type": "skill", "skill_name": name},
@@ -334,7 +334,12 @@ def format_skill_verbose(skill: dict) -> str:
         f"**Strategy:** {summary}",
     ]
     if tool_template:
-        lines.append(f"**Steps:** `{tool_template}`")
+        if isinstance(tool_template, list):
+            lines.append("**Steps:**")
+            for i, step in enumerate(tool_template, 1):
+                lines.append(f"  {i}. {step}")
+        else:
+            lines.append(f"**Steps:** `{tool_template}`")
     if tools:
         lines.append(f"**Tools:** {', '.join(tools)}")
     lines.append(f"**Track record:** {rate:.0f}% success ({success}/{count} injections)")
@@ -399,18 +404,17 @@ async def record_injection(skill_names: list[str]) -> None:
     for name in skill_names:
         try:
             await increment_skill_injection(name)
-            # Also increment on best strategy
+            # Also increment on best strategy (must mutate inside parsed list, then write back)
             skill = await get_skill_by_name(name)
             if skill:
-                best = _best_strategy(skill)
+                strategies_raw = skill.get("strategies", "[]")
+                if isinstance(strategies_raw, str):
+                    strategies = json.loads(strategies_raw)
+                else:
+                    strategies = strategies_raw or []
+                best = _best_strategy({"strategies": strategies})
                 if best:
                     best["injection_count"] = best.get("injection_count", 0) + 1
-                    # Save updated strategies back
-                    strategies_raw = skill.get("strategies", "[]")
-                    if isinstance(strategies_raw, str):
-                        strategies = json.loads(strategies_raw)
-                    else:
-                        strategies = strategies_raw or []
                     await upsert_skill(
                         name=name,
                         description=skill["description"],
@@ -426,17 +430,17 @@ async def record_injection_success(skill_names: list[str]) -> None:
     for name in skill_names:
         try:
             await increment_skill_success(name)
-            # Also increment on best strategy
+            # Also increment on best strategy (must mutate inside parsed list, then write back)
             skill = await get_skill_by_name(name)
             if skill:
-                best = _best_strategy(skill)
+                strategies_raw = skill.get("strategies", "[]")
+                if isinstance(strategies_raw, str):
+                    strategies = json.loads(strategies_raw)
+                else:
+                    strategies = strategies_raw or []
+                best = _best_strategy({"strategies": strategies})
                 if best:
                     best["injection_success"] = best.get("injection_success", 0) + 1
-                    strategies_raw = skill.get("strategies", "[]")
-                    if isinstance(strategies_raw, str):
-                        strategies = json.loads(strategies_raw)
-                    else:
-                        strategies = strategies_raw or []
                     await upsert_skill(
                         name=name,
                         description=skill["description"],
@@ -453,17 +457,3 @@ async def list_skills() -> list[dict]:
     """List all skills. Delegates to get_all_skills() from db.py."""
     return await get_all_skills()
 
-
-# ─── Backward Compatibility ──────────────────────────────────────────────────
-
-async def record_skill_outcome(name: str, success: bool) -> None:
-    """DEPRECATED: backward-compatible stub. Use record_injection/record_injection_success."""
-    if success:
-        await record_injection_success([name])
-    else:
-        await record_injection([name])
-
-
-async def _ensure_table(db=None) -> None:
-    """DEPRECATED: no-op stub for backward compatibility. Schema is managed by init_db()."""
-    pass

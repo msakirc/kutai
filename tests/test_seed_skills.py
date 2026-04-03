@@ -138,21 +138,6 @@ class TestSeedSkills(unittest.TestCase):
         names = {s["name"] for s in SEED_SKILLS}
         self.assertIn("turkish_product_shopping", names)
 
-    def test_04_record_skill_outcome(self):
-        """record_skill_outcome should increment injection counts on the correct columns."""
-        from src.memory.skills import record_skill_outcome, list_skills
-        # success=True -> record_injection_success -> increments injection_success only
-        # success=False -> record_injection -> increments injection_count only
-        run_async(record_skill_outcome("currency_lookup", success=True))
-        run_async(record_skill_outcome("currency_lookup", success=True))
-        run_async(record_skill_outcome("currency_lookup", success=False))
-
-        skills = run_async(list_skills())
-        currency = next(s for s in skills if s["name"] == "currency_lookup")
-        # 1 failure -> injection_count=1; 2 successes -> injection_success=2
-        self.assertEqual(currency["injection_count"], 1)
-        self.assertEqual(currency["injection_success"], 2)
-
 
 if __name__ == "__main__":
     unittest.main()

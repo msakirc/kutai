@@ -47,8 +47,8 @@ def _format_age(created_at, now=None):
     return f"{weeks}w ago"
 
 
-async def build_todo_list_message(suggestions=None):
-    """Build the todo list text and inline keyboard markup.
+async def build_todo_list_message():
+    """Build the numbered todo list overview with suggestion hints.
 
     Returns:
         (text, markup) tuple, or (None, None) if no pending todos AND no DLQ tasks.
@@ -62,50 +62,31 @@ async def build_todo_list_message(suggestions=None):
     if not todos and not dlq_tasks:
         return None, None
 
-    suggestions = suggestions or {}
     lines = ["📝 *Pending Todos*\n"]
-    done_buttons = []
-    help_buttons = []
-
-    for todo in todos:
-        tid = todo["id"]
+    for i, todo in enumerate(todos):
+        num = i + 1
         title = todo["title"]
-        priority = todo.get("priority", "normal")
-        p_icon = _PRIORITY_ICONS.get(priority, "🟡")
-        age = _format_age(todo["created_at"])
-
-        lines.append(f"  {p_icon} *#{tid}* — {title} ({age})")
-
-        raw_suggestion = suggestions.get(tid)
-        # Support both old format (str) and new format (text, agent_type) tuple
-        if isinstance(raw_suggestion, tuple):
-            suggestion, _agent = raw_suggestion
+        suggestion = todo.get("suggestion")
+        if suggestion:
+            hint = suggestion[:40] + ("..." if len(suggestion) > 40 else "")
+            lines.append(f"{num}. {title} — 💡 _{hint}_")
         else:
-            suggestion = raw_suggestion
-        if suggestion:
-            lines.append(f"   💡 {suggestion}")
-
-        done_buttons.append(
-            InlineKeyboardButton(f"✅ #{tid}", callback_data=f"todo_toggle:{tid}")
-        )
-        if suggestion:
-            # Encode agent type in callback data for the help handler
-            if isinstance(raw_suggestion, tuple):
-                agent_type = raw_suggestion[1]
-            else:
-                agent_type = "researcher"
-            help_buttons.append(
-                InlineKeyboardButton(f"🤖 #{tid}", callback_data=f"todo_help:{tid}:{agent_type}")
-            )
+            lines.append(f"{num}. {title}")
 
     text = "\n".join(lines)
-    rows = []
-    # Pack done buttons, max 4 per row
-    for i in range(0, len(done_buttons), 4):
-        rows.append(done_buttons[i:i + 4])
-    if help_buttons:
-        for i in range(0, len(help_buttons), 4):
-            rows.append(help_buttons[i:i + 4])
+
+    # Numbered buttons, max 5 per row
+    buttons = []
+    row = []
+    for i, todo in enumerate(todos):
+        row.append(InlineKeyboardButton(
+            str(i + 1), callback_data=f"todo_detail:{todo['id']}",
+        ))
+        if len(row) >= 5:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
 
     # DLQ section — up to 5 most recent unresolved tasks
     if dlq_tasks:
@@ -116,26 +97,67 @@ async def build_todo_list_message(suggestions=None):
             quarantined_at = dlq.get("quarantined_at", "")
             age = _format_age(quarantined_at) if quarantined_at else "?"
             text += f"\n❌ #{task_id} — {error[:60]} ({age})"
-            rows.append([
+            buttons.append([
                 InlineKeyboardButton("🔁 Retry", callback_data=f"m:dlq:retry:{task_id}"),
                 InlineKeyboardButton("⏭ Skip", callback_data=f"m:dlq:discard:{task_id}"),
             ])
 
-    rows.append([InlineKeyboardButton("🔙 Close", callback_data="todo_close")])
-
-    markup = InlineKeyboardMarkup(rows)
+    buttons.append([InlineKeyboardButton("🔙 Close", callback_data="todo_close")])
+    markup = InlineKeyboardMarkup(buttons)
     return text, markup
 
 
-async def send_todo_reminder(telegram, suggestions=None):
-    """Fetch pending todos, format with inline buttons, send to Telegram.
+def build_todo_detail_message(todo: dict):
+    """Build the detail view for a single todo item.
 
-    Args:
-        telegram: TelegramBot instance.
-        suggestions: Optional dict {todo_id: suggestion_str} from suggestion tasks.
+    Returns:
+        (text, markup) tuple.
     """
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    tid = todo["id"]
+    title = todo["title"]
+    priority = todo.get("priority", "normal")
+    p_icon = _PRIORITY_ICONS.get(priority, "🟡")
+    age = _format_age(todo["created_at"])
+    suggestion = todo.get("suggestion")
+    agent_type = todo.get("suggestion_agent", "researcher")
+
+    lines = [f"📝 *#{tid}* — {title}"]
+    lines.append(f"Priority: {p_icon} {priority} | Added: {age}")
+
+    if todo.get("description"):
+        lines.append(f"\n_{todo['description']}_")
+
+    if suggestion:
+        lines.append(f"\n💡 {suggestion}")
+
+    text = "\n".join(lines)
+
+    # Action buttons
+    action_row = [
+        InlineKeyboardButton("✅ Done", callback_data=f"todo_toggle:{tid}"),
+        InlineKeyboardButton("✏️ Edit", callback_data=f"todo_edit:{tid}"),
+    ]
+    if suggestion:
+        action_row.append(
+            InlineKeyboardButton("🤖 Help", callback_data=f"todo_help:{tid}:{agent_type}")
+        )
+    action_row.append(
+        InlineKeyboardButton("❌ Cancel", callback_data=f"todo_delete:{tid}")
+    )
+
+    buttons = [action_row]
+    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="todo_list")])
+
+    markup = InlineKeyboardMarkup(buttons)
+    return text, markup
+
+
+async def send_todo_reminder(telegram):
+    """Fetch pending todos and send the overview list to Telegram."""
     try:
-        text, markup = await build_todo_list_message(suggestions)
+        text, markup = await build_todo_list_message()
         if not text:
             return
 
@@ -145,7 +167,7 @@ async def send_todo_reminder(telegram, suggestions=None):
             parse_mode="Markdown",
             reply_markup=markup,
         )
-        logger.info("todo reminder sent", count=text.count("*#"), suggestions=len(suggestions or {}))
+        logger.info("todo reminder sent")
 
     except Exception as e:
         logger.error("failed to send todo reminder", error=str(e))

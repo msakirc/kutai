@@ -866,6 +866,56 @@ try:
 except Exception as e:
     logger.warning("smart_search not available: %s", e)
 
+
+def _register_mcp_stubs():
+    """Parse mcp.yaml and register stub entries so agents can see MCP tools exist."""
+    import yaml
+    import os
+
+    mcp_path = os.path.join(os.path.dirname(__file__), "..", "..", "mcp.yaml")
+    if not os.path.exists(mcp_path):
+        return
+
+    try:
+        with open(mcp_path, "r") as f:
+            config = yaml.safe_load(f)
+    except Exception:
+        return
+
+    servers = config.get("mcp_servers", {})
+
+    _mcp_tool_descriptions = {
+        "fetch": {
+            "mcp_fetch_fetch": "Fetch content from a URL and extract text. Use for reading web pages, APIs, or any HTTP endpoint.",
+        },
+        "sequential_thinking": {
+            "mcp_sequential_thinking_think": "Use structured sequential thinking to break down complex problems step by step.",
+        },
+        "github": {
+            "mcp_github_search_repositories": "Search GitHub repositories by query.",
+            "mcp_github_get_file_contents": "Get file contents from a GitHub repository.",
+            "mcp_github_search_code": "Search code across GitHub repositories.",
+        },
+    }
+
+    for server_name in servers:
+        descs = _mcp_tool_descriptions.get(server_name, {})
+        for tool_name, description in descs.items():
+            if tool_name not in _optional_tools:
+                _optional_tools[tool_name] = {
+                    "function": None,
+                    "description": f"[MCP: {server_name}] {description}",
+                    "example": f'{{"tool": "{tool_name}", "args": {{}}}}',
+                    "_mcp_stub": True,
+                    "_mcp_server": server_name,
+                }
+
+
+try:
+    _register_mcp_stubs()
+except Exception as e:
+    logger.debug("MCP stub registration failed: %s", e)
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -1321,7 +1371,9 @@ async def execute_tool(tool_name: str, agent_type: str | None = None, task_hints
         The tool's string output, or a descriptive error message.
     """
     # ── Lazy MCP connection: connect on first use ──
-    if tool_name not in TOOL_REGISTRY and tool_name.startswith("mcp_"):
+    tool_entry = TOOL_REGISTRY.get(tool_name)
+    if (tool_name.startswith("mcp_") and
+            (tool_name not in TOOL_REGISTRY or (tool_entry and tool_entry.get("_mcp_stub")))):
         try:
             from .mcp_client import mcp_client as _mcp, load_mcp_config
             parts = tool_name.split("_", 2)
@@ -1334,12 +1386,14 @@ async def execute_tool(tool_name: str, agent_type: str | None = None, task_hints
                         if "url" in cfg:
                             await _mcp.connect_sse(server_name, cfg["url"])
                         elif "command" in cfg:
-                            await _mcp.connect_stdio(
+                            await _mcp.connect(
                                 server_name, cfg["command"],
                                 env=cfg.get("env"),
                             )
                         _mcp.register_all_tools()
                         logger.info("MCP server connected on-demand", server=server_name)
+                        if tool_name in TOOL_REGISTRY:
+                            TOOL_REGISTRY[tool_name].pop("_mcp_stub", None)
         except Exception as e:
             logger.warning("MCP lazy connect failed", server=server_name, error=str(e)[:100])
 

@@ -850,9 +850,9 @@ async def discover_new_apis(source: str = "all") -> int:
                         md_text = await resp.text()
                         apis = _parse_public_apis_md(md_text)
                         for api_data in apis:
-                            await upsert_free_api(api_data)
-                            discovered += 1
-                        logger.info("Discovered %d APIs from public-apis", len(apis))
+                            if await upsert_free_api(api_data):
+                                discovered += 1
+                        logger.info("Fetched %d APIs from public-apis (%d new)", len(apis), discovered)
                     else:
                         logger.warning("public-apis fetch failed: HTTP %d", resp.status)
             except Exception as e:
@@ -867,10 +867,11 @@ async def discover_new_apis(source: str = "all") -> int:
                         data = await resp.json(content_type=None)
                         if isinstance(data, list):
                             apis = _parse_free_apis_json(data)
+                            before = discovered
                             for api_data in apis:
-                                await upsert_free_api(api_data)
-                                discovered += 1
-                            logger.info("Discovered %d APIs from free-apis.github.io", len(apis))
+                                if await upsert_free_api(api_data):
+                                    discovered += 1
+                            logger.info("Fetched %d APIs from free-apis.github.io (%d new)", len(apis), discovered - before)
                     else:
                         logger.debug("free-apis.github.io fetch returned HTTP %d", resp.status)
             except Exception as e:

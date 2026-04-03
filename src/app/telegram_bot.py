@@ -2685,10 +2685,33 @@ class TelegramInterface:
                 for s in top_sources[:5]:
                     lines.append(f"  {s['source']:<20} {s['count']} calls")
 
+            # Registry summary
             from src.tools.free_apis import API_REGISTRY, _db_api_cache
-            total_apis = len(API_REGISTRY) + len(_db_api_cache)
+            static_count = len(API_REGISTRY)
+            discovered_count = len(_db_api_cache)
             lines.append("")
-            lines.append(f"Registry: {total_apis} APIs")
+            lines.append(f"Registry: {static_count} static + {discovered_count} discovered APIs")
+
+            # Show loaded API categories
+            categories = {}
+            for api in API_REGISTRY:
+                categories[api.category] = categories.get(api.category, 0) + 1
+            for api in _db_api_cache:
+                categories[api.category] = categories.get(api.category, 0) + 1
+            if categories:
+                sorted_cats = sorted(categories.items(), key=lambda x: -x[1])[:10]
+                lines.append("Categories: " + ", ".join(f"{c}({n})" for c, n in sorted_cats))
+
+            # MCP tools
+            from src.tools import TOOL_REGISTRY
+            mcp_tools = [k for k in TOOL_REGISTRY if k.startswith("mcp_")]
+            if mcp_tools:
+                lines.append("")
+                lines.append(f"MCP Tools: {len(mcp_tools)}")
+                for t in mcp_tools:
+                    entry = TOOL_REGISTRY[t]
+                    stub = " (stub)" if entry.get("_mcp_stub") else " (connected)"
+                    lines.append(f"  {t}{stub}")
 
             text = "\n".join(lines)
 
@@ -2700,6 +2723,7 @@ class TelegramInterface:
                 ],
                 [
                     InlineKeyboardButton("Unsuspend All", callback_data="ss:unsuspend"),
+                    InlineKeyboardButton("List APIs", callback_data="ss:list_apis"),
                 ],
             ])
 
@@ -6076,5 +6100,33 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 for r in suspended:
                     await unsuspend_api(r["api_name"])
                 await query.edit_message_text(f"Unsuspended {len(suspended)} APIs. Counters reset.")
+            except Exception as e:
+                await query.edit_message_text(f"Error: {e}")
+
+        elif action == "list_apis":
+            try:
+                from src.tools.free_apis import API_REGISTRY, _db_api_cache
+                lines = ["📦 API Registry", "=" * 25]
+
+                # Static APIs — show all (small list)
+                lines.append(f"\nStatic ({len(API_REGISTRY)}):")
+                for api in API_REGISTRY:
+                    lines.append(f"  [{api.category}] {api.name}")
+
+                # Discovered APIs — summary by category only
+                if _db_api_cache:
+                    cats = {}
+                    for api in _db_api_cache:
+                        cats.setdefault(api.category, []).append(api.name)
+                    lines.append(f"\nDiscovered ({len(_db_api_cache)}) by category:")
+                    for cat, names in sorted(cats.items(), key=lambda x: -len(x[1])):
+                        lines.append(f"  {cat}: {len(names)} APIs")
+                else:
+                    lines.append("\nNo discovered APIs (run Refresh)")
+
+                text = "\n".join(lines)
+                if len(text) > 4000:
+                    text = text[:4000] + "\n... (truncated)"
+                await query.edit_message_text(text)
             except Exception as e:
                 await query.edit_message_text(f"Error: {e}")

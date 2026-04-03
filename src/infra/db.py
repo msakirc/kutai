@@ -2338,10 +2338,14 @@ async def get_source_quality(domains: list[str]) -> dict[str, dict]:
 
 # --- Free API Registry Operations ---
 
-async def upsert_free_api(api_data: dict) -> None:
-    """Insert or update a free API in the registry."""
+async def upsert_free_api(api_data: dict) -> bool:
+    """Insert or update a free API in the registry. Returns True if newly inserted."""
     try:
         db = await get_db()
+        cur = await db.execute(
+            "SELECT 1 FROM free_api_registry WHERE name = ?", (api_data["name"],)
+        )
+        is_new = (await cur.fetchone()) is None
         await db.execute(
             """INSERT INTO free_api_registry
                (name, category, base_url, auth_type, env_var, rate_limit,
@@ -2374,8 +2378,10 @@ async def upsert_free_api(api_data: dict) -> None:
             ),
         )
         await db.commit()
+        return is_new
     except Exception as e:
         logger.debug("upsert_free_api failed: %s", e)
+        return False
 
 
 async def get_all_free_apis() -> list[dict]:

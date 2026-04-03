@@ -7,7 +7,7 @@ task classifier.
 
 Priority order:
   1. In-memory LRU cache
-  2. sentence-transformers on CPU (multilingual-e5-small, always available)
+  2. sentence-transformers on CPU (EmbeddingGemma-300M, always available)
   3. Ollama embedding on GPU (when llama-server is idle)
 
 Also exposes a batch helper: get_embeddings(texts).
@@ -248,7 +248,7 @@ async def get_embedding(
 
     Tries in order:
       1. In-memory LRU cache
-      2. sentence-transformers on CPU (multilingual-e5-small)
+      2. sentence-transformers on CPU (EmbeddingGemma-300M)
       3. Ollama embedding models (GPU)
       4. Returns None if nothing available
 

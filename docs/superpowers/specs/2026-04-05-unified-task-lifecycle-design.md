@@ -59,12 +59,15 @@ Additionally, the retry/failure system has grown into 5 independent mechanisms w
 ### New columns on `tasks`
 
 ```sql
-attempts INTEGER DEFAULT 0,           -- worker phase total attempts, NEVER resets
-max_attempts INTEGER DEFAULT 6,       -- worker hard cap
-grade_attempts INTEGER DEFAULT 0,     -- grading phase attempts, resets on worker retry
-max_grade_attempts INTEGER DEFAULT 3, -- grading hard cap (waive on exhaust)
+attempts INTEGER DEFAULT 0,           -- worker quality failures, NEVER resets
+max_attempts INTEGER DEFAULT 6,       -- worker hard cap → DLQ
+grade_attempts INTEGER DEFAULT 0,     -- grading quality failures, resets on worker retry
+max_grade_attempts INTEGER DEFAULT 3, -- grading hard cap → waive grading
+avail_retries INTEGER DEFAULT 0,      -- availability failures (shared, both phases)
+max_avail_retries INTEGER DEFAULT 5,  -- availability hard cap → DLQ
 next_retry_at TIMESTAMP,              -- NULL = immediately eligible, future = delayed
-retry_reason TEXT,                     -- last failure classification (for diagnostics)
+retry_reason TEXT,                     -- "quality" or "availability" (last failure)
+failed_in_phase TEXT,                  -- "worker" or "grading" — which phase hit DLQ
 ```
 
 ### Deprecated columns (keep for backward compat, stop writing)
@@ -143,14 +146,27 @@ Couldn't execute at all. The model, GPU, network, or API was unavailable.
 - GPU scheduler timeout (waited 60s, never got access)
 - Rate limit hit
 - Grade call timeout/OOM (grading-specific availability)
+- All eligible models excluded by quality failures (exclusion list exhausted the pool)
 
 **Retry behavior:**
+- **Does NOT increment `attempts` or `grade_attempts`** — availability is not the task's fault
+- Increments `avail_retries` (shared counter for backoff progression)
 - Signal-aware delay with exponential backoff
 - Delays: 1 min → 5 min → 15 min → 1 hour → 2 hours
-- At `max_attempts`: terminal → `failed` → DLQ
+- At `max_avail_retries` (5): terminal → `failed` → DLQ
 - Signal wake (`accelerate_retries`) can pull `next_retry_at` to now
 
+**Phase-preserving:** Availability failures return the task to its current phase, not the beginning:
+- Worker phase availability → task stays/returns to `pending` (not re-graded)
+- Grading phase availability → task stays/returns to `ungraded` (not re-executed)
+
+**DLQ re-enable:** When a task in DLQ due to availability is retried via `/dlq retry`, it returns to the phase it was in when it failed:
+- Worker-phase DLQ → `pending`
+- Grading-phase DLQ → `ungraded`
+
 **No model change needed** — the model is fine, it was just unavailable.
+
+**Excluded models → availability escalation:** When quality failures accumulate `excluded_models` that cover ALL available models, the next retry attempt becomes an availability failure (no eligible model). This enters the availability backoff path. New models becoming available (added to registry, or DLQ retry clears exclusions) resolves this.
 
 ---
 
@@ -158,25 +174,31 @@ Couldn't execute at all. The model, GPU, network, or API was unavailable.
 
 ```python
 def compute_retry_timing(
-    attempts: int,
-    max_attempts: int,
     failure_type: str,  # "quality" or "availability"
+    attempts: int = 0,        # quality failure count (worker or grading)
+    max_attempts: int = 6,    # quality hard cap
+    avail_retries: int = 0,   # availability failure count
+    max_avail_retries: int = 5,  # availability hard cap
 ) -> RetryDecision:
     """
     Returns: IMMEDIATE, DELAYED(seconds), or TERMINAL
-    """
-    if attempts >= max_attempts:
-        return TERMINAL
 
+    Quality failures increment attempts/grade_attempts (caller's responsibility).
+    Availability failures increment avail_retries (caller's responsibility).
+    """
     if failure_type == "quality":
+        if attempts >= max_attempts:
+            return TERMINAL
         if attempts < 3:
             return IMMEDIATE
         else:
             return DELAYED(600)  # 10 min
 
     elif failure_type == "availability":
+        if avail_retries >= max_avail_retries:
+            return TERMINAL
         delays = [60, 300, 900, 3600, 7200]
-        idx = min(attempts, len(delays) - 1)
+        idx = min(avail_retries, len(delays) - 1)
         return DELAYED(delays[idx])
 ```
 
@@ -303,14 +325,20 @@ async def drain_ungraded_tasks(new_model: str):
             verdict = await grade_task(task, new_model)
             await apply_grade_result(task, verdict)
         except AvailabilityError:
-            # Grading availability failure — backoff
-            g_attempts = task.get("grade_attempts", 0) + 1
-            decision = compute_retry_timing(g_attempts, max_grade_attempts, "availability")
-            await update_task(task["id"],
-                              grade_attempts=g_attempts,
-                              next_retry_at=decision.timestamp if decision != TERMINAL else None,
-                              status="completed" if decision == TERMINAL else "ungraded",
-                              quality_score=None if decision == TERMINAL else undefined)
+            # Grading availability failure — backoff, stay in grading phase
+            avail = task.get("avail_retries", 0) + 1
+            decision = compute_retry_timing("availability", avail_retries=avail)
+            if decision == TERMINAL:
+                await update_task(task["id"],
+                                  status="failed", failed_in_phase="grading",
+                                  avail_retries=avail)
+                await quarantine_task(task["id"], ...)
+            else:
+                await update_task(task["id"],
+                                  avail_retries=avail,
+                                  next_retry_at=decision.timestamp,
+                                  retry_reason="availability")
+                # stays ungraded — will be retried on next drain
         except QualityError:
             # Grader parse error — grader quality failure
             g_attempts = task.get("grade_attempts", 0) + 1
@@ -445,8 +473,10 @@ Everything is in the DB. On restart:
 | `pending` with `next_retry_at` in future | Waits until time passes, or signal accelerates |
 | `processing` | Watchdog detects stuck > 5 min, retries |
 | `ungraded` | Next model swap triggers grading drain. Watchdog safety net at 30 min. |
+| `ungraded` with `next_retry_at` in future | Availability backoff for grading — waits, then eligible for next drain |
 | `waiting_subtasks` | Watchdog checks children completion |
 | `waiting_human` | Escalation timers continue |
+| `failed` with `failed_in_phase` | DLQ retry restores to correct phase (`pending` or `ungraded`) |
 
 No in-memory queues to rebuild. No lost state.
 
@@ -488,9 +518,9 @@ TRANSITIONS = {
     PENDING:          {PROCESSING, CANCELLED, SKIPPED},
     PROCESSING:       {UNGRADED, COMPLETED, PENDING, FAILED,
                        WAITING_SUBTASKS, WAITING_HUMAN, CANCELLED},
-    UNGRADED:         {COMPLETED, PENDING},  # grade pass, grade fail (worker retry)
+    UNGRADED:         {COMPLETED, PENDING, FAILED},  # grade pass, grade fail (worker retry), availability DLQ
     COMPLETED:        set(),  # terminal
-    FAILED:           {PENDING},  # DLQ retry
+    FAILED:           {PENDING, UNGRADED},  # DLQ retry (worker-phase → pending, grading-phase → ungraded)
     WAITING_SUBTASKS: {COMPLETED, FAILED, CANCELLED},
     WAITING_HUMAN:    {PENDING, CANCELLED},
     CANCELLED:        set(),  # terminal
@@ -502,13 +532,23 @@ All status changes go through `transition_task()`. No more raw `update_task(stat
 
 ---
 
-## DLQ (Unchanged)
+## DLQ
 
-Entry: `attempts >= max_attempts` → `failed` → `quarantine_task()`.
-Exit: manual only (`/dlq retry`, `/dlq discard`, inline button).
-Mission health: auto-pause mission if >= 3 DLQ tasks.
+**Entry** — three paths, all lead to `failed` → `quarantine_task()`:
+- Worker quality exhausted: `attempts >= max_attempts`
+- Grading quality exhausted: `grade_attempts >= max_grade_attempts` → waive grading (promote to `completed` with `quality_score=NULL`). This does NOT go to DLQ — grading waiver is graceful degradation.
+- Availability exhausted: `avail_retries >= max_avail_retries` → `failed` → DLQ. `failed_in_phase` records whether the task was in worker or grading phase.
 
-No changes to DLQ behavior. The unified retry model means tasks arrive at DLQ through one path instead of three.
+**Exit** — manual only (`/dlq retry`, `/dlq discard`, inline button).
+
+**Phase-aware re-enable:** `/dlq retry` reads `failed_in_phase` to determine where the task resumes:
+- `failed_in_phase = "worker"` → `pending` (re-execute from scratch)
+- `failed_in_phase = "grading"` → `ungraded` (worker output preserved, retry grading only)
+- `failed_in_phase = NULL` (legacy) → `pending` (backward compat)
+
+Re-enable resets `avail_retries = 0` but preserves `attempts` and `grade_attempts` (quality budget is lifetime).
+
+**Mission health:** auto-pause mission if >= 3 DLQ tasks (unchanged).
 
 ---
 

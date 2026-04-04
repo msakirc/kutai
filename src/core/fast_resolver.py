@@ -70,8 +70,6 @@ async def enrich_context(task: dict) -> str | None:
         match = await _find_best_match(task_text)
         if not match or match["score"] < _LAYER1_THRESHOLD:
             return None
-        if match["score"] >= _LAYER0_THRESHOLD:
-            return None  # Layer 0 would have caught this
 
         api = match["api"]
         params = _extract_params(task_text, match["category"])

@@ -8,7 +8,6 @@ task classifier.
 Priority order:
   1. In-memory LRU cache
   2. sentence-transformers on CPU (EmbeddingGemma-300M, always available)
-  3. Ollama embedding on GPU (when llama-server is idle)
 
 Also exposes a batch helper: get_embeddings(texts).
 """
@@ -75,18 +74,17 @@ def clear_cache() -> None:
     _embedding_cache.clear()
 
 
-# ─── sentence-transformers (CPU, primary) ────────────────────────────────────
+# ─── sentence-transformers (CPU) ────────────────────────────────────────────
 
 _st_model = None
 _st_load_attempted = False
-_st_model_name: str | None = None
 
 
 def _get_st_embedding(
     text: str, is_query: bool = True
 ) -> Optional[list[float]]:
     """Get embedding from sentence-transformers (CPU, synchronous)."""
-    global _st_model, _st_load_attempted, _st_model_name
+    global _st_model, _st_load_attempted
     if _st_load_attempted and _st_model is None:
         return None
 
@@ -96,7 +94,6 @@ def _get_st_embedding(
             from sentence_transformers import SentenceTransformer
 
             _st_model = SentenceTransformer(EMBEDDING_MODEL)
-            _st_model_name = EMBEDDING_MODEL
             logger.info(f"Loaded sentence-transformers {EMBEDDING_MODEL}")
         except Exception as e:
             logger.debug(f"sentence-transformers not available: {e}")
@@ -121,7 +118,7 @@ def _get_st_embeddings_batch(
     texts: list[str], is_query: bool = True
 ) -> list[Optional[list[float]]]:
     """Batch embedding via sentence-transformers."""
-    global _st_model, _st_load_attempted, _st_model_name
+    global _st_model, _st_load_attempted
     if _st_load_attempted and _st_model is None:
         return [None] * len(texts)
 
@@ -131,7 +128,6 @@ def _get_st_embeddings_batch(
             from sentence_transformers import SentenceTransformer
 
             _st_model = SentenceTransformer(EMBEDDING_MODEL)
-            _st_model_name = EMBEDDING_MODEL
             logger.info(f"Loaded sentence-transformers {EMBEDDING_MODEL}")
         except Exception as e:
             logger.debug(f"sentence-transformers not available: {e}")
@@ -161,49 +157,6 @@ def _get_st_embeddings_batch(
     except Exception as e:
         logger.debug(f"sentence-transformers batch encode failed: {e}")
         return [None] * len(texts)
-
-
-# ─── Ollama Embedding (GPU, secondary) ──────────────────────────────────────
-
-_OLLAMA_MODELS = ["nomic-embed-text"]  # 768d, matches EmbeddingGemma-300M
-_ollama_working_model: str | None = None
-
-
-async def _get_ollama_embedding(text: str) -> Optional[list[float]]:
-    """Get embedding from Ollama (tries multiple models)."""
-    global _ollama_working_model
-    try:
-        import httpx
-    except ImportError:
-        return None
-
-    # If we already found a working model, try it first
-    models = (
-        [_ollama_working_model] if _ollama_working_model else _OLLAMA_MODELS
-    )
-
-    for model_name in models:
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(
-                    "http://localhost:11434/api/embeddings",
-                    json={"model": model_name, "prompt": text},
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    embedding = data.get("embedding")
-                    if embedding:
-                        _ollama_working_model = model_name
-                        return embedding
-        except Exception:
-            continue
-
-    # If cached model failed, retry all
-    if _ollama_working_model:
-        _ollama_working_model = None
-        return await _get_ollama_embedding(text)
-
-    return None
 
 
 # ─── Dimension Validation ────────────────────────────────────────────────────
@@ -249,8 +202,7 @@ async def get_embedding(
     Tries in order:
       1. In-memory LRU cache
       2. sentence-transformers on CPU (EmbeddingGemma-300M)
-      3. Ollama embedding models (GPU)
-      4. Returns None if nothing available
+      3. Returns None if not available
 
     Args:
         text:     Text to embed.
@@ -262,7 +214,6 @@ async def get_embedding(
     if not text or not text.strip():
         return None
 
-    # Truncate to model limit (~8192 chars ≈ 2048 tokens)
     text = text[:6144]  # conservative limit for 2048 tokens (Turkish is ~3 chars/token)
 
     ck = _cache_key(text)
@@ -270,12 +221,7 @@ async def get_embedding(
     if cached is not None:
         return cached
 
-    # Try sentence-transformers first (CPU, always available, multilingual)
     emb = _get_st_embedding(text, is_query=is_query)
-
-    # Fallback: Ollama (GPU)
-    if emb is None:
-        emb = await _get_ollama_embedding(text)
 
     if emb is not None:
         if not _validate_dimension(emb):
@@ -291,8 +237,7 @@ async def get_embeddings(
     """
     Batch version of get_embedding.
 
-    Uses sentence-transformers batch encoding for uncached texts,
-    falls back to serial Ollama for any remaining.
+    Uses sentence-transformers batch encoding for uncached texts.
     """
     if not texts:
         return []
@@ -317,7 +262,7 @@ async def get_embeddings(
     if not uncached_texts:
         return results
 
-    # Try batch sentence-transformers
+    # Batch sentence-transformers
     batch_results = _get_st_embeddings_batch(uncached_texts, is_query=is_query)
 
     for idx, emb in zip(uncached_indices, batch_results):
@@ -326,33 +271,13 @@ async def get_embeddings(
             _embedding_cache.put(_cache_key(text), emb)
             results[idx] = emb
 
-    # Fallback: Ollama for any still-missing
-    for i, idx in enumerate(uncached_indices):
-        if results[idx] is None:
-            emb = await _get_ollama_embedding(uncached_texts[i])
-            if emb is not None and _validate_dimension(emb):
-                _embedding_cache.put(_cache_key(uncached_texts[i]), emb)
-                results[idx] = emb
-
     return results
 
 
 def embedding_available() -> bool:
-    """Quick check: is any embedding backend likely available?"""
-    # Check sentence-transformers first (preferred)
+    """Quick check: is sentence-transformers available?"""
     try:
         import sentence_transformers  # noqa: F401
         return True
     except ImportError:
-        pass
-
-    # Check Ollama
-    try:
-        import httpx
-        r = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
-        if r.status_code == 200:
-            return True
-    except Exception:
-        pass
-
-    return False
+        return False

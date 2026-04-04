@@ -89,7 +89,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 ## Environment
 - Windows 11, Python 3.10 (venv at `.venv/`)
 - GPU: NVIDIA (shared between llama-server and optional Ollama)
-- Embedding: sentence-transformers on CPU (primary), Ollama on GPU (fallback)
+- Embedding: sentence-transformers on CPU (EmbeddingGemma-300M, 768d)
 - DB path: configured in `.env` via `DB_PATH`
 - Logs: `logs/` directory (wrapper_meta.log, wrapper.log, orchestrator.jsonl)
 

@@ -96,7 +96,7 @@ The classifier, fast resolver, and router already handle routing. Adding a fourt
 
 The old system split task titles into words to create regex patterns. "coffee machine" became `coffee|machine` — matching nothing useful. Tag-based matching was considered but requires reliable tag extraction at query time, which small LLMs can't do consistently.
 
-Vector matching on rich descriptions works because: the grader writes descriptions at capture time (after seeing the full execution), and the task text at query time (title + description) is usually 10-30 words — enough for meaningful embeddings with EmbeddingGemma-300M.
+Vector matching on rich descriptions works because: the grader writes descriptions at capture time (after seeing the full execution), and the task text at query time (title + description) is usually 10-30 words — enough for meaningful embeddings with multilingual-e5-base.
 
 ### Cross-cutting skills with no agent_type filter
 
@@ -200,7 +200,7 @@ These are starting values. Tune based on observed behavior — especially `MATCH
 
 1. **Deferred grading loses skill metadata**: Most tasks use deferred grading, so `grader_data` is empty at capture time. The fallback produces lower-quality skill descriptions. Full grader-driven capture only works for immediately-graded tasks.
 
-2. **Embedding model dependency**: Vector matching requires ChromaDB + EmbeddingGemma-300M. If ChromaDB is unavailable, all skill matching silently returns empty. Skills are still captured to SQLite (they just won't match until ChromaDB is back).
+2. **Embedding model dependency**: Vector matching requires ChromaDB + multilingual-e5-base. If ChromaDB is unavailable, all skill matching silently returns empty. Skills are still captured to SQLite (they just won't match until ChromaDB is back).
 
 3. **Cold start**: New skills have `injection_count = 0`, so their success rate is capped at 0.5 (neutral). They need 5+ injections before the real rate is trusted. Until then, they compete on vector similarity alone.
 

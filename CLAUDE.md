@@ -70,7 +70,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 - Missing `import asyncio` in `base.py` — agents use asyncio.wait_for extensively
 - `BLOCKED_PATTERNS` must be defined before `LOCAL_BLOCKED_PATTERNS` in `shell.py`
 - ChromaDB is a required dependency — don't make it optional
-- Embedding model is `google/embeddinggemma-300m` (768 dims) — don't mix with other models
+- Embedding model is `intfloat/multilingual-e5-base` (768 dims) — don't mix with other models
 - The `memory` table uses exact key lookup — use `semantic_recall()` for fuzzy search
 - Shopping after `/shop` must route to `shopping_advisor` agent, NOT `i2p` workflow
 - **Datetime format for scheduled_tasks**: NEVER use `datetime.isoformat()` when storing to `scheduled_tasks.next_run` or `last_run` — use `strftime("%Y-%m-%d %H:%M:%S")` because SQLite's `datetime('now')` returns space-separated format. ISO format (with `T`) causes string comparison failures.
@@ -89,7 +89,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 ## Environment
 - Windows 11, Python 3.10 (venv at `.venv/`)
 - GPU: NVIDIA (shared between llama-server and optional Ollama)
-- Embedding: sentence-transformers on CPU (EmbeddingGemma-300M, 768d)
+- Embedding: sentence-transformers on CPU (multilingual-e5-base, 768d)
 - DB path: configured in `.env` via `DB_PATH`
 - Logs: `logs/` directory (wrapper_meta.log, wrapper.log, orchestrator.jsonl)
 
@@ -106,7 +106,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 | `src/agents/base.py` | ReAct agent loop, tool execution, context building |
 | `src/infra/db.py` | Database schema, queries, memory storage |
 | `src/memory/rag.py` | RAG pipeline for agent context injection |
-| `src/memory/embeddings.py` | Embedding generation (EmbeddingGemma-300M) |
+| `src/memory/embeddings.py` | Embedding generation (multilingual-e5-base) |
 | `src/memory/vector_store.py` | ChromaDB collections and queries |
 | `src/app/config.py` | Environment config constants |
 | `requirements.txt` | Python dependencies |

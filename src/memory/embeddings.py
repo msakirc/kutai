@@ -7,7 +7,7 @@ task classifier.
 
 Priority order:
   1. In-memory LRU cache
-  2. sentence-transformers on CPU (EmbeddingGemma-300M, always available)
+  2. sentence-transformers on CPU (multilingual-e5-base, always available)
 
 Also exposes a batch helper: get_embeddings(texts).
 """
@@ -22,9 +22,9 @@ logger = logging.getLogger(__name__)
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
-EMBEDDING_MODEL = "google/embeddinggemma-300m"
+EMBEDDING_MODEL = "intfloat/multilingual-e5-base"
 EMBEDDING_DIMENSION = 768
-EMBEDDING_MAX_TOKENS = 2048  # model token limit (4x improvement over e5-small)
+EMBEDDING_MAX_TOKENS = 512  # model token limit
 EMBEDDING_BATCH_SIZE = 32
 
 
@@ -80,6 +80,12 @@ _st_model = None
 _st_load_attempted = False
 
 
+def _preprocess_e5(text: str, is_query: bool = True) -> str:
+    """Add e5 prefix. E5 models need 'query: ' or 'passage: ' prefix."""
+    prefix = "query: " if is_query else "passage: "
+    return prefix + text
+
+
 def _get_st_embedding(
     text: str, is_query: bool = True
 ) -> Optional[list[float]]:
@@ -100,14 +106,8 @@ def _get_st_embedding(
             return None
 
     try:
-        if is_query:
-            vec = _st_model.encode_query(text, show_progress_bar=False)
-        else:
-            vec = _st_model.encode_document(text, show_progress_bar=False)
-        return vec.tolist()
-    except (AttributeError, TypeError):
-        # Fallback for models without encode_query/encode_document
-        vec = _st_model.encode(text, show_progress_bar=False)
+        processed = _preprocess_e5(text, is_query=is_query)
+        vec = _st_model.encode(processed, show_progress_bar=False)
         return vec.tolist()
     except Exception as e:
         logger.debug(f"sentence-transformers encode failed: {e}")
@@ -134,22 +134,9 @@ def _get_st_embeddings_batch(
             return [None] * len(texts)
 
     try:
-        if is_query:
-            vecs = _st_model.encode_query(
-                texts,
-                show_progress_bar=False,
-                batch_size=EMBEDDING_BATCH_SIZE,
-            )
-        else:
-            vecs = _st_model.encode_document(
-                texts,
-                show_progress_bar=False,
-                batch_size=EMBEDDING_BATCH_SIZE,
-            )
-        return [v.tolist() for v in vecs]
-    except (AttributeError, TypeError):
+        processed = [_preprocess_e5(t, is_query=is_query) for t in texts]
         vecs = _st_model.encode(
-            texts,
+            processed,
             show_progress_bar=False,
             batch_size=EMBEDDING_BATCH_SIZE,
         )
@@ -201,7 +188,7 @@ async def get_embedding(
 
     Tries in order:
       1. In-memory LRU cache
-      2. sentence-transformers on CPU (EmbeddingGemma-300M)
+      2. sentence-transformers on CPU (multilingual-e5-base)
       3. Returns None if not available
 
     Args:
@@ -214,7 +201,7 @@ async def get_embedding(
     if not text or not text.strip():
         return None
 
-    text = text[:6144]  # conservative limit for 2048 tokens (Turkish is ~3 chars/token)
+    text = text[:2048]  # ~512 tokens
 
     ck = _cache_key(text)
     cached = _embedding_cache.get(ck)
@@ -250,7 +237,7 @@ async def get_embeddings(
     for i, text in enumerate(texts):
         if not text or not text.strip():
             continue
-        text = text[:6144]
+        text = text[:2048]
         ck = _cache_key(text)
         cached = _embedding_cache.get(ck)
         if cached is not None:

@@ -254,7 +254,7 @@ async def _call_best_api(api, params: dict) -> dict | str | None:
     return result
 
 
-def _format_weather(raw: dict) -> "str | None":
+def _format_weather(raw: dict) -> str | None:
     try:
         cc = raw["current_condition"][0]
         area = raw.get("nearest_area", [{}])[0]
@@ -277,7 +277,7 @@ def _format_weather(raw: dict) -> "str | None":
         return None
 
 
-def _format_currency(raw: dict) -> "str | None":
+def _format_currency(raw: dict) -> str | None:
     try:
         base = raw.get("base", "?")
         rates = raw.get("rates", {})
@@ -291,7 +291,7 @@ def _format_currency(raw: dict) -> "str | None":
         return None
 
 
-def _format_earthquake(raw: dict) -> "str | None":
+def _format_earthquake(raw: dict) -> str | None:
     try:
         quakes = raw.get("result", raw.get("earthquakes", []))
         if not quakes:
@@ -307,7 +307,7 @@ def _format_earthquake(raw: dict) -> "str | None":
         return None
 
 
-def _format_pharmacy(raw: dict) -> "str | None":
+def _format_pharmacy(raw: dict) -> str | None:
     try:
         pharmacies = raw if isinstance(raw, list) else raw.get("pharmacies", raw.get("result", []))
         if not pharmacies or not isinstance(pharmacies, list):
@@ -328,7 +328,7 @@ def _format_pharmacy(raw: dict) -> "str | None":
         return None
 
 
-def _format_fuel(raw: dict) -> "str | None":
+def _format_fuel(raw: dict) -> str | None:
     try:
         prices = raw if isinstance(raw, list) else raw.get("prices", raw.get("result", []))
         if isinstance(prices, dict):
@@ -348,7 +348,7 @@ def _format_fuel(raw: dict) -> "str | None":
         return None
 
 
-def _format_prayer_times(raw: dict) -> "str | None":
+def _format_prayer_times(raw: dict) -> str | None:
     try:
         times = raw.get("times", raw.get("result", raw))
         if not isinstance(times, dict):

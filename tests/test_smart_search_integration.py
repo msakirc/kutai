@@ -101,9 +101,9 @@ async def test_auto_demotion(tmp_path):
     try:
         await db_mod.init_db()
 
-        # 1 success, 10 failures = ~9% success rate with 11 calls -> suspended
+        # 1 success, 19 failures = 5% success rate with 20 calls -> suspended
         await db_mod.record_api_call("bad_api", success=True)
-        for _ in range(10):
+        for _ in range(19):
             await db_mod.record_api_call("bad_api", success=False)
 
         rel = await db_mod.get_api_reliability("bad_api")

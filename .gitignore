@@ -31,6 +31,10 @@ Thumbs.db
 *.db-shm
 *.db-wal
 
+# Vector store
+data/chroma/
+src/chroma_data/
+
 # Runtime
 workspace/
 .benchmark_cache/

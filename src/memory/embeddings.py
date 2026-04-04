@@ -108,7 +108,7 @@ def _get_st_embedding(
         else:
             vec = _st_model.encode_document(text, show_progress_bar=False)
         return vec.tolist()
-    except AttributeError:
+    except (AttributeError, TypeError):
         # Fallback for models without encode_query/encode_document
         vec = _st_model.encode(text, show_progress_bar=False)
         return vec.tolist()
@@ -151,7 +151,7 @@ def _get_st_embeddings_batch(
                 batch_size=EMBEDDING_BATCH_SIZE,
             )
         return [v.tolist() for v in vecs]
-    except AttributeError:
+    except (AttributeError, TypeError):
         vecs = _st_model.encode(
             texts,
             show_progress_bar=False,
@@ -165,7 +165,7 @@ def _get_st_embeddings_batch(
 
 # ─── Ollama Embedding (GPU, secondary) ──────────────────────────────────────
 
-_OLLAMA_MODELS = ["nomic-embed-text", "all-minilm", "mxbai-embed-large"]
+_OLLAMA_MODELS = ["nomic-embed-text"]  # 768d, matches EmbeddingGemma-300M
 _ollama_working_model: str | None = None
 
 
@@ -263,7 +263,7 @@ async def get_embedding(
         return None
 
     # Truncate to model limit (~8192 chars ≈ 2048 tokens)
-    text = text[:8192]
+    text = text[:6144]  # conservative limit for 2048 tokens (Turkish is ~3 chars/token)
 
     ck = _cache_key(text)
     cached = _embedding_cache.get(ck)
@@ -305,7 +305,7 @@ async def get_embeddings(
     for i, text in enumerate(texts):
         if not text or not text.strip():
             continue
-        text = text[:8192]
+        text = text[:6144]
         ck = _cache_key(text)
         cached = _embedding_cache.get(ck)
         if cached is not None:

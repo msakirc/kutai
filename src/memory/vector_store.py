@@ -62,8 +62,8 @@ COLLECTIONS = [
 ]
 
 _DB_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "chroma_data",
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", "chroma",
 )
 
 

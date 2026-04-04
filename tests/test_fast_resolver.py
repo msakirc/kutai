@@ -96,3 +96,56 @@ async def test_enrich_context_works_when_score_above_layer0_threshold():
 
     assert result is not None
     assert "22C" in result
+
+
+def test_format_weather_response():
+    from src.core.fast_resolver import _format_response
+
+    raw = {
+        "current_condition": [{"temp_C": "22", "weatherDesc": [{"value": "Sunny"}], "humidity": "45", "windspeedKmph": "12"}],
+        "nearest_area": [{"areaName": [{"value": "Istanbul"}]}]
+    }
+    result = _format_response(raw, "weather", "wttr.in")
+    assert "22" in result
+    assert "Istanbul" in result
+
+
+def test_format_currency_response():
+    from src.core.fast_resolver import _format_response
+
+    raw = {"rates": {"TRY": 38.45}, "base": "USD"}
+    result = _format_response(raw, "currency", "exchangerate-api")
+    assert "38.45" in result
+    assert "USD" in result
+
+
+def test_format_earthquake_response():
+    from src.core.fast_resolver import _format_response
+
+    raw = {"result": [{"mag": "4.2", "location": "Muğla", "date": "2026-04-05 10:30"}]}
+    result = _format_response(raw, "earthquake", "kandilli")
+    assert "4.2" in result
+    assert "Muğla" in result
+
+
+def test_format_unknown_category_falls_back_to_json():
+    from src.core.fast_resolver import _format_response
+
+    raw = {"foo": "bar"}
+    result = _format_response(raw, "unknown_category", "some_api")
+    assert '"foo"' in result  # JSON formatted
+
+
+def test_format_string_passthrough():
+    from src.core.fast_resolver import _format_response
+
+    result = _format_response("plain text result", "weather", "wttr.in")
+    assert result == "plain text result"
+
+
+def test_format_truncates_long_output():
+    from src.core.fast_resolver import _format_response
+
+    raw = "x" * 3000
+    result = _format_response(raw, "weather", "wttr.in")
+    assert len(result) <= 2003  # 2000 + "..."

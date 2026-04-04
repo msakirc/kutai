@@ -254,15 +254,139 @@ async def _call_best_api(api, params: dict) -> dict | str | None:
     return result
 
 
+def _format_weather(raw: dict) -> "str | None":
+    try:
+        cc = raw["current_condition"][0]
+        area = raw.get("nearest_area", [{}])[0]
+        city = area.get("areaName", [{}])[0].get("value", "")
+        desc = cc.get("weatherDesc", [{}])[0].get("value", "")
+        temp = cc.get("temp_C", "?")
+        humidity = cc.get("humidity", "?")
+        wind = cc.get("windspeedKmph", "?")
+        lines = [f"🌡 {city}: {temp}°C, {desc}"]
+        lines.append(f"💧 Nem: %{humidity} | 💨 Rüzgar: {wind} km/s")
+        forecast = raw.get("weather", [])
+        for day in forecast[:3]:
+            date = day.get("date", "")
+            hi = day.get("maxtempC", "?")
+            lo = day.get("mintempC", "?")
+            fdesc = day.get("hourly", [{}])[0].get("weatherDesc", [{}])[0].get("value", "")
+            lines.append(f"  {date}: {lo}–{hi}°C {fdesc}")
+        return "\n".join(lines)
+    except (KeyError, IndexError):
+        return None
+
+
+def _format_currency(raw: dict) -> "str | None":
+    try:
+        base = raw.get("base", "?")
+        rates = raw.get("rates", {})
+        if not rates:
+            return None
+        lines = [f"💱 {base} kuru:"]
+        for currency, value in list(rates.items())[:10]:
+            lines.append(f"  {base} → {currency}: {value}")
+        return "\n".join(lines)
+    except (KeyError, TypeError):
+        return None
+
+
+def _format_earthquake(raw: dict) -> "str | None":
+    try:
+        quakes = raw.get("result", raw.get("earthquakes", []))
+        if not quakes:
+            return None
+        lines = ["🌍 Son depremler:"]
+        for q in quakes[:5]:
+            mag = q.get("mag", q.get("magnitude", "?"))
+            loc = q.get("location", q.get("title", "?"))
+            date = q.get("date", q.get("time", ""))
+            lines.append(f"  {mag} büyüklük — {loc} ({date})")
+        return "\n".join(lines)
+    except (KeyError, TypeError):
+        return None
+
+
+def _format_pharmacy(raw: dict) -> "str | None":
+    try:
+        pharmacies = raw if isinstance(raw, list) else raw.get("pharmacies", raw.get("result", []))
+        if not pharmacies or not isinstance(pharmacies, list):
+            return None
+        lines = ["💊 Nöbetçi eczaneler:"]
+        for p in pharmacies[:5]:
+            name = p.get("name", p.get("eczane", "?"))
+            addr = p.get("address", p.get("adres", ""))
+            phone = p.get("phone", p.get("telefon", ""))
+            line = f"  {name}"
+            if addr:
+                line += f" — {addr}"
+            if phone:
+                line += f" (📞 {phone})"
+            lines.append(line)
+        return "\n".join(lines)
+    except (KeyError, TypeError):
+        return None
+
+
+def _format_fuel(raw: dict) -> "str | None":
+    try:
+        prices = raw if isinstance(raw, list) else raw.get("prices", raw.get("result", []))
+        if isinstance(prices, dict):
+            lines = ["⛽ Güncel yakıt fiyatları:"]
+            for fuel_type, price in prices.items():
+                lines.append(f"  {fuel_type}: {price} TL")
+            return "\n".join(lines)
+        if not prices or not isinstance(prices, list):
+            return None
+        lines = ["⛽ Güncel yakıt fiyatları:"]
+        for p in prices[:6]:
+            name = p.get("type", p.get("name", "?"))
+            price = p.get("price", "?")
+            lines.append(f"  {name}: {price} TL")
+        return "\n".join(lines)
+    except (KeyError, TypeError):
+        return None
+
+
+def _format_prayer_times(raw: dict) -> "str | None":
+    try:
+        times = raw.get("times", raw.get("result", raw))
+        if not isinstance(times, dict):
+            return None
+        lines = ["🕌 Namaz vakitleri:"]
+        name_map = {"Imsak": "İmsak", "Gunes": "Güneş", "Ogle": "Öğle",
+                     "Ikindi": "İkindi", "Aksam": "Akşam", "Yatsi": "Yatsı"}
+        for key, val in times.items():
+            label = name_map.get(key, key)
+            if isinstance(val, str) and ":" in val:
+                lines.append(f"  {label}: {val}")
+        return "\n".join(lines) if len(lines) > 1 else None
+    except (KeyError, TypeError):
+        return None
+
+
+_FORMATTERS = {
+    "weather": _format_weather,
+    "currency": _format_currency,
+    "earthquake": _format_earthquake,
+    "pharmacy": _format_pharmacy,
+    "fuel": _format_fuel,
+    "prayer_times": _format_prayer_times,
+}
+
+
 def _format_response(raw, category: str, api_name: str) -> str:
-    """Format raw API response into clean text."""
+    """Format raw API response — category-specific if available, else JSON fallback."""
     if isinstance(raw, str):
-        if len(raw) > 2000:
-            raw = raw[:2000] + "..."
-        return raw
+        return raw[:2000] + "..." if len(raw) > 2000 else raw
 
+    if isinstance(raw, dict) and category in _FORMATTERS:
+        formatted = _FORMATTERS[category](raw)
+        if formatted:
+            return formatted[:2000] + "..." if len(formatted) > 2000 else formatted
+
+    # Fallback: JSON
+    import json
     if isinstance(raw, dict):
-        import json
         return json.dumps(raw, ensure_ascii=False, indent=2)[:2000]
-
     return str(raw)[:2000]

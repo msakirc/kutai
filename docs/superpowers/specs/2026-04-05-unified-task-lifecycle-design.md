@@ -68,21 +68,23 @@ retry_reason TEXT,                     -- "quality" or "availability" (last fail
 failed_in_phase TEXT,                  -- "worker" or "grading" — which phase hit DLQ
 ```
 
-**Availability backoff** uses `next_retry_at` directly — no counter needed:
+**Availability backoff** stored as `context.last_avail_delay` (seconds):
 
 ```python
 # On availability failure:
-previous_delay = (now - task.next_retry_at).total_seconds() if task.next_retry_at else 0
-new_delay = max(60, min(previous_delay * 2, 7200))  # double each time, clamp 1min–2h
+last_delay = ctx.get("last_avail_delay", 0)
+if last_delay >= 7200:
+    → TERMINAL → failed → DLQ
+
+new_delay = max(60, min(last_delay * 2, 7200))  # double each time, clamp 1min–2h
+ctx["last_avail_delay"] = new_delay
 next_retry_at = now + timedelta(seconds=new_delay)
 
-# DLQ trigger: was already at max backoff (2h) and still failed
-if previous_delay >= 7200:
-    → failed → DLQ
+# Signal wake resets backoff: ctx["last_avail_delay"] = 0
 ```
 
 Total time before availability DLQ: ~5 hours (1m + 2m + 4m + 8m + 16m + 32m + 64m + 2h).
-Signal wakes (`accelerate_retries`) can pull `next_retry_at` to now at any point, resetting the backoff progression.
+Signal wakes (`accelerate_retries`) pull `next_retry_at` to now AND reset `last_avail_delay` to 0 (fresh backoff on next failure).
 
 ### Deprecated columns (keep for backward compat, stop writing)
 
@@ -187,15 +189,15 @@ Couldn't execute at all. The model, GPU, network, or API was unavailable.
 ```python
 def compute_retry_timing(
     failure_type: str,  # "quality" or "availability"
-    attempts: int = 0,         # quality failure count (worker or grading phase)
-    max_attempts: int = 6,     # quality hard cap
-    previous_retry_at: datetime | None = None,  # for availability backoff derivation
+    attempts: int = 0,           # quality failure count (worker or grading phase)
+    max_attempts: int = 6,       # quality hard cap
+    last_avail_delay: int = 0,   # from context, seconds
 ) -> RetryDecision:
     """
     Returns: IMMEDIATE, DELAYED(seconds), or TERMINAL
 
     Quality: caller increments attempts/grade_attempts before calling.
-    Availability: backoff derived from previous next_retry_at. No counter needed.
+    Availability: doubling backoff from last_avail_delay (stored in context).
     """
     if failure_type == "quality":
         if attempts >= max_attempts:
@@ -206,12 +208,9 @@ def compute_retry_timing(
             return DELAYED(600)  # 10 min
 
     elif failure_type == "availability":
-        previous_delay = 0
-        if previous_retry_at:
-            previous_delay = (datetime.now() - previous_retry_at).total_seconds()
-        new_delay = max(60, min(previous_delay * 2, 7200))
-        if previous_delay >= 7200:
+        if last_avail_delay >= 7200:
             return TERMINAL  # was already at 2h cap, still failing → DLQ
+        new_delay = max(60, min(last_avail_delay * 2, 7200))
         return DELAYED(new_delay)
 ```
 
@@ -238,23 +237,41 @@ Replaces `wake_sleeping_tasks()`:
 
 ```python
 async def accelerate_retries(reason: str) -> int:
-    """Pull next_retry_at to now for pending tasks waiting on availability.
+    """Pull next_retry_at to now for tasks waiting on availability.
 
     Called from: model_swap, gpu_available, rate_limit_reset,
     quota_restored, circuit_breaker_reset.
 
+    Resets last_avail_delay in context so backoff starts fresh
+    if the next attempt also fails.
+
+    Covers both phases: pending (worker) and ungraded (grading).
+
     Returns number of tasks accelerated.
     """
     db = await get_db()
+
+    # Find eligible tasks (pending or ungraded, waiting on availability)
     cursor = await db.execute(
-        """UPDATE tasks
-           SET next_retry_at = datetime('now')
-           WHERE status = 'pending'
+        """SELECT id, context FROM tasks
+           WHERE status IN ('pending', 'ungraded')
            AND next_retry_at > datetime('now')
            AND retry_reason = 'availability'"""
     )
-    await db.commit()
-    return cursor.rowcount
+    rows = [dict(r) for r in await cursor.fetchall()]
+
+    for row in rows:
+        ctx = json.loads(row.get("context", "{}"))
+        ctx["last_avail_delay"] = 0  # reset backoff
+        await db.execute(
+            """UPDATE tasks SET next_retry_at = datetime('now'),
+               context = ? WHERE id = ?""",
+            (json.dumps(ctx), row["id"]),
+        )
+
+    if rows:
+        await db.commit()
+    return len(rows)
 ```
 
 ---

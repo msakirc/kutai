@@ -597,24 +597,114 @@ _AUTH_MAP = {
 
 # Categories we care about from public-apis
 _CATEGORY_MAP = {
-    "weather": "weather",
+    # Direct matches
     "currency": "currency",
     "currency exchange": "currency",
     "finance": "finance",
-    "geocoding": "geo",
+    "weather": "weather",
     "news": "news",
-    "science & math": "science",
-    "science": "science",
-    "books": "knowledge",
-    "dictionaries": "knowledge",
-    "games & comics": "fun",
-    "animals": "fun",
-    "food & drink": "food",
     "health": "health",
-    "music": "music",
     "sports & fitness": "sports",
     "transportation": "transport",
+    "translation": "translation",
+    "science": "science",
+    "science & math": "science",
+    "music": "music",
+    "calendar": "calendar",
+    # Knowledge / reference
+    "books": "knowledge",
+    "dictionaries": "knowledge",
+    "documents & productivity": "knowledge",
+    "education": "knowledge",
+    "reading": "knowledge",
+    "quotes": "knowledge",
+    # Fun / entertainment
+    "animals": "fun",
+    "games & comics": "fun",
+    "games": "fun",
+    "jokes": "fun",
+    "personalization": "fun",
+    "pets": "fun",
+    # Geo / maps
+    "geocoding": "geo",
+    "gis": "geo",
+    "maps": "geo",
+    # Development / tech
+    "development": "development",
+    "continuous integration": "development",
+    "code quality": "development",
+    "version control": "development",
+    "web frameworks": "development",
+    "databases": "development",
+    "json": "development",
+    "logging": "development",
+    "monitoring": "development",
+    "ssl": "development",
+    "tools": "development",
+    "utilities": "development",
+    "validation": "development",
+    "data validation": "development",
+    "quality assurance": "development",
+    "proxy": "development",
+    "webhooks": "development",
+    "pdf": "development",
+    # Media / content
+    "photography": "media",
+    "images": "media",
+    "video": "media",
+    "movies": "media",
+    "tv": "media",
+    "fonts": "media",
+    # Social / communication
+    "social": "social",
+    "messaging": "social",
+    "email": "social",
+    "forums": "social",
+    "rss": "social",
+    # Shopping / commerce
+    "shopping": "shopping",
+    "e-commerce": "shopping",
+    "payment": "shopping",
+    # Food
+    "food & drink": "food",
+    "restaurants": "food",
+    # Data / open data
     "open data": "data",
+    "government": "data",
+    "environment": "data",
+    "analytics": "data",
+    # Travel / transport
+    "travel": "travel",
+    "events": "travel",
+    # Finance / crypto
+    "cryptocurrency": "finance",
+    "blockchain": "finance",
+    # Network / infra
+    "cloud storage & file hosting": "network",
+    "storage": "network",
+    "virtualization": "network",
+    "iot": "network",
+    "hardware": "network",
+    # Security
+    "security": "development",
+    "authentication & authorization": "development",
+    "cryptography": "development",
+    # Misc that maps to known
+    "machine learning": "science",
+    "ml": "science",
+    "text analysis": "knowledge",
+    "url shorteners": "network",
+    "real estate": "shopping",
+    "jobs": "data",
+    "legal": "data",
+    "fundraising": "finance",
+    "vehicle": "transport",
+    "tracking": "transport",
+    "fitness": "sports",
+    "advertising": "data",
+    "cms": "development",
+    "office": "knowledge",
+    "software": "development",
 }
 
 
@@ -631,7 +721,7 @@ def _parse_public_apis_md(md_text: str) -> list[dict]:
         cat_match = re.match(r"^###\s+(.+)", line)
         if cat_match:
             raw_cat = cat_match.group(1).strip().lower()
-            current_category = _CATEGORY_MAP.get(raw_cat, raw_cat)
+            current_category = _CATEGORY_MAP.get(raw_cat, "other")
             continue
 
         # Table rows: | Name | Description | Auth | HTTPS | CORS |
@@ -696,9 +786,10 @@ def _parse_free_apis_json(data: list) -> list[dict]:
         if auth_raw not in ("", "none", "no", "apikey"):
             continue
 
+        raw_cat = (entry.get("category") or entry.get("Category") or "other").lower()
         apis.append({
             "name": name[:100],
-            "category": (entry.get("category") or entry.get("Category") or "misc").lower(),
+            "category": _CATEGORY_MAP.get(raw_cat, "other"),
             "base_url": url,
             "auth_type": _AUTH_MAP.get(auth_raw, "none"),
             "description": (entry.get("description") or entry.get("Description") or "")[:300],
@@ -736,16 +827,26 @@ async def _discover_from_mcp_registry() -> int:
             # Order matters: more specific categories checked first
             desc_lower = description.lower()
             category = "other"
-            if any(w in desc_lower for w in ["database", "sql", "postgres"]):
-                category = "database"
-            elif any(w in desc_lower for w in ["git", "github"]):
+            if any(w in desc_lower for w in ["database", "sql", "postgres", "mysql", "mongo"]):
                 category = "development"
-            elif any(w in desc_lower for w in ["file", "storage", "drive"]):
-                category = "storage"
-            elif any(w in desc_lower for w in ["weather", "climate"]):
+            elif any(w in desc_lower for w in ["git", "github", "code", "lint", "test"]):
+                category = "development"
+            elif any(w in desc_lower for w in ["file", "storage", "drive", "s3", "blob"]):
+                category = "network"
+            elif any(w in desc_lower for w in ["weather", "climate", "forecast"]):
                 category = "weather"
-            elif any(w in desc_lower for w in ["search", "web", "browser"]):
-                category = "search"
+            elif any(w in desc_lower for w in ["search", "web", "browser", "scrape"]):
+                category = "knowledge"
+            elif any(w in desc_lower for w in ["map", "location", "geo", "coordinate"]):
+                category = "geo"
+            elif any(w in desc_lower for w in ["mail", "email", "message", "chat", "slack"]):
+                category = "social"
+            elif any(w in desc_lower for w in ["image", "photo", "video", "media"]):
+                category = "media"
+            elif any(w in desc_lower for w in ["pay", "stripe", "invoice", "billing"]):
+                category = "finance"
+            elif any(w in desc_lower for w in ["translate", "language", "i18n"]):
+                category = "translation"
 
             from src.infra.db import upsert_free_api
             await upsert_free_api({

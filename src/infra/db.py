@@ -430,11 +430,18 @@ async def init_db():
             api_name TEXT PRIMARY KEY,
             success_count INTEGER DEFAULT 0,
             failure_count INTEGER DEFAULT 0,
+            consecutive_failures INTEGER DEFAULT 0,
             last_success TEXT,
             last_failure TEXT,
             status TEXT DEFAULT 'active'
         )
     """)
+
+    # Migration: add consecutive_failures column if missing
+    try:
+        await db.execute("ALTER TABLE api_reliability ADD COLUMN consecutive_failures INTEGER DEFAULT 0")
+    except Exception:
+        pass  # column already exists
 
     await db.commit()
 
@@ -2707,36 +2714,41 @@ async def record_api_call(api_name: str, success: bool):
     now = "strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')"
     if success:
         await db.execute(
-            f"""INSERT INTO api_reliability (api_name, success_count, last_success)
-                VALUES (?, 1, {now})
+            f"""INSERT INTO api_reliability (api_name, success_count, last_success, consecutive_failures)
+                VALUES (?, 1, {now}, 0)
                 ON CONFLICT(api_name) DO UPDATE SET
                     success_count = success_count + 1,
+                    consecutive_failures = 0,
                     last_success = {now}""",
             (api_name,),
         )
     else:
         await db.execute(
-            f"""INSERT INTO api_reliability (api_name, failure_count, last_failure)
-                VALUES (?, 1, {now})
+            f"""INSERT INTO api_reliability (api_name, failure_count, last_failure, consecutive_failures)
+                VALUES (?, 1, {now}, 1)
                 ON CONFLICT(api_name) DO UPDATE SET
                     failure_count = failure_count + 1,
+                    consecutive_failures = consecutive_failures + 1,
                     last_failure = {now}""",
             (api_name,),
         )
     # Auto-demote check
     cur = await db.execute(
-        "SELECT success_count, failure_count FROM api_reliability WHERE api_name = ?",
+        "SELECT success_count, failure_count, consecutive_failures FROM api_reliability WHERE api_name = ?",
         (api_name,),
     )
     row = await cur.fetchone()
     if row:
         total = row[0] + row[1]
         rate = row[0] / max(total, 1)
-        if total >= 10 and rate < 0.10:
+        consec = row[2]
+        if total >= 20 and rate < 0.10:
             status = "suspended"
-        elif total >= 5 and rate < 0.25:
+        elif total >= 15 and rate < 0.25:
             status = "demoted"
-        elif total >= 5 and rate < 0.50:
+        elif total >= 15 and rate < 0.50:
+            status = "warning"
+        elif consec >= 3:
             status = "warning"
         else:
             status = "active"
@@ -2750,13 +2762,13 @@ async def record_api_call(api_name: str, success: bool):
 async def get_api_reliability(api_name: str) -> dict | None:
     db = await get_db()
     cur = await db.execute(
-        "SELECT api_name, success_count, failure_count, status FROM api_reliability WHERE api_name = ?",
+        "SELECT api_name, success_count, failure_count, status, consecutive_failures FROM api_reliability WHERE api_name = ?",
         (api_name,),
     )
     row = await cur.fetchone()
     if not row:
         return None
-    return {"api_name": row[0], "success_count": row[1], "failure_count": row[2], "status": row[3]}
+    return {"api_name": row[0], "success_count": row[1], "failure_count": row[2], "status": row[3], "consecutive_failures": row[4]}
 
 
 async def get_api_reliability_all() -> list[dict]:
@@ -2802,7 +2814,7 @@ async def get_smart_search_stats(days: int = 7) -> dict:
 async def unsuspend_api(api_name: str):
     db = await get_db()
     await db.execute(
-        "UPDATE api_reliability SET status = 'active', success_count = 0, failure_count = 0 WHERE api_name = ?",
+        "UPDATE api_reliability SET status = 'active', success_count = 0, failure_count = 0, consecutive_failures = 0 WHERE api_name = ?",
         (api_name,),
     )
     await db.commit()

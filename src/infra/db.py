@@ -2774,11 +2774,11 @@ async def get_api_reliability(api_name: str) -> dict | None:
 async def get_api_reliability_all() -> list[dict]:
     db = await get_db()
     cur = await db.execute(
-        "SELECT api_name, success_count, failure_count, status, last_success, last_failure FROM api_reliability ORDER BY (success_count + failure_count) DESC"
+        "SELECT api_name, success_count, failure_count, status, last_success, last_failure, consecutive_failures FROM api_reliability ORDER BY (success_count + failure_count) DESC"
     )
     rows = await cur.fetchall()
     return [
-        {"api_name": r[0], "success_count": r[1], "failure_count": r[2], "status": r[3], "last_success": r[4], "last_failure": r[5]}
+        {"api_name": r[0], "success_count": r[1], "failure_count": r[2], "status": r[3], "last_success": r[4], "last_failure": r[5], "consecutive_failures": r[6]}
         for r in rows
     ]
 

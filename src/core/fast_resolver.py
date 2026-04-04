@@ -41,6 +41,11 @@ async def try_resolve(task: dict) -> str | None:
         elapsed_ms = int((time.time() - start) * 1000)
 
         if not raw:
+            try:
+                from src.infra.db import record_api_call
+                await record_api_call(api.name, success=False)
+            except Exception:
+                pass
             return None
 
         formatted = _format_response(raw, match["category"], api.name)
@@ -57,6 +62,12 @@ async def try_resolve(task: dict) -> str | None:
 
     except Exception as exc:
         logger.info("fast-path failed, falling through: %s", exc)
+        if "api" in dir() and api is not None:
+            try:
+                from src.infra.db import record_api_call
+                await record_api_call(api.name, success=False)
+            except Exception:
+                pass
         return None
 
 
@@ -79,6 +90,11 @@ async def enrich_context(task: dict) -> str | None:
         elapsed_ms = int((time.time() - start) * 1000)
 
         if not raw:
+            try:
+                from src.infra.db import record_api_call
+                await record_api_call(api.name, success=False)
+            except Exception:
+                pass
             return None
 
         formatted = _format_response(raw, match["category"], api.name)
@@ -94,6 +110,12 @@ async def enrich_context(task: dict) -> str | None:
 
     except Exception as exc:
         logger.debug("context enrichment failed: %s", exc)
+        if "api" in dir() and api is not None:
+            try:
+                from src.infra.db import record_api_call
+                await record_api_call(api.name, success=False)
+            except Exception:
+                pass
         return None
 
 

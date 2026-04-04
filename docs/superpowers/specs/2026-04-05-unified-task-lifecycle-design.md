@@ -63,19 +63,33 @@ attempts INTEGER DEFAULT 0,           -- worker quality failures, NEVER resets
 max_attempts INTEGER DEFAULT 6,       -- worker hard cap → DLQ
 grade_attempts INTEGER DEFAULT 0,     -- grading quality failures, resets on worker retry
 max_grade_attempts INTEGER DEFAULT 3, -- grading hard cap → waive grading
-avail_retries INTEGER DEFAULT 0,      -- availability failures (shared, both phases)
-max_avail_retries INTEGER DEFAULT 5,  -- availability hard cap → DLQ
 next_retry_at TIMESTAMP,              -- NULL = immediately eligible, future = delayed
 retry_reason TEXT,                     -- "quality" or "availability" (last failure)
 failed_in_phase TEXT,                  -- "worker" or "grading" — which phase hit DLQ
 ```
+
+**Availability backoff** uses `next_retry_at` directly — no counter needed:
+
+```python
+# On availability failure:
+previous_delay = (now - task.next_retry_at).total_seconds() if task.next_retry_at else 0
+new_delay = max(60, min(previous_delay * 2, 7200))  # double each time, clamp 1min–2h
+next_retry_at = now + timedelta(seconds=new_delay)
+
+# DLQ trigger: was already at max backoff (2h) and still failed
+if previous_delay >= 7200:
+    → failed → DLQ
+```
+
+Total time before availability DLQ: ~5 hours (1m + 2m + 4m + 8m + 16m + 32m + 64m + 2h).
+Signal wakes (`accelerate_retries`) can pull `next_retry_at` to now at any point, resetting the backoff progression.
 
 ### Deprecated columns (keep for backward compat, stop writing)
 
 ```sql
 retry_count    → replaced by attempts
 max_retries    → replaced by max_attempts
-sleep_state    → replaced by next_retry_at + attempts
+sleep_state    → replaced by next_retry_at
 error_category → replaced by retry_reason
 ```
 
@@ -150,11 +164,9 @@ Couldn't execute at all. The model, GPU, network, or API was unavailable.
 
 **Retry behavior:**
 - **Does NOT increment `attempts` or `grade_attempts`** — availability is not the task's fault
-- Increments `avail_retries` (shared counter for backoff progression)
-- Signal-aware delay with exponential backoff
-- Delays: 1 min → 5 min → 15 min → 1 hour → 2 hours
-- At `max_avail_retries` (5): terminal → `failed` → DLQ
-- Signal wake (`accelerate_retries`) can pull `next_retry_at` to now
+- Doubling backoff derived from `next_retry_at`: 1m → 2m → 4m → 8m → ... → 2h cap
+- At 2h cap still failing: terminal → `failed` → DLQ (~5 hours total)
+- Signal wake (`accelerate_retries`) pulls `next_retry_at` to now, resetting backoff progression
 
 **Phase-preserving:** Availability failures return the task to its current phase, not the beginning:
 - Worker phase availability → task stays/returns to `pending` (not re-graded)
@@ -175,16 +187,15 @@ Couldn't execute at all. The model, GPU, network, or API was unavailable.
 ```python
 def compute_retry_timing(
     failure_type: str,  # "quality" or "availability"
-    attempts: int = 0,        # quality failure count (worker or grading)
-    max_attempts: int = 6,    # quality hard cap
-    avail_retries: int = 0,   # availability failure count
-    max_avail_retries: int = 5,  # availability hard cap
+    attempts: int = 0,         # quality failure count (worker or grading phase)
+    max_attempts: int = 6,     # quality hard cap
+    previous_retry_at: datetime | None = None,  # for availability backoff derivation
 ) -> RetryDecision:
     """
     Returns: IMMEDIATE, DELAYED(seconds), or TERMINAL
 
-    Quality failures increment attempts/grade_attempts (caller's responsibility).
-    Availability failures increment avail_retries (caller's responsibility).
+    Quality: caller increments attempts/grade_attempts before calling.
+    Availability: backoff derived from previous next_retry_at. No counter needed.
     """
     if failure_type == "quality":
         if attempts >= max_attempts:
@@ -195,11 +206,13 @@ def compute_retry_timing(
             return DELAYED(600)  # 10 min
 
     elif failure_type == "availability":
-        if avail_retries >= max_avail_retries:
-            return TERMINAL
-        delays = [60, 300, 900, 3600, 7200]
-        idx = min(avail_retries, len(delays) - 1)
-        return DELAYED(delays[idx])
+        previous_delay = 0
+        if previous_retry_at:
+            previous_delay = (datetime.now() - previous_retry_at).total_seconds()
+        new_delay = max(60, min(previous_delay * 2, 7200))
+        if previous_delay >= 7200:
+            return TERMINAL  # was already at 2h cap, still failing → DLQ
+        return DELAYED(new_delay)
 ```
 
 ### Model Exclusion on Quality Failure
@@ -326,16 +339,14 @@ async def drain_ungraded_tasks(new_model: str):
             await apply_grade_result(task, verdict)
         except AvailabilityError:
             # Grading availability failure — backoff, stay in grading phase
-            avail = task.get("avail_retries", 0) + 1
-            decision = compute_retry_timing("availability", avail_retries=avail)
+            decision = compute_retry_timing("availability",
+                          previous_retry_at=task.get("next_retry_at"))
             if decision == TERMINAL:
                 await update_task(task["id"],
-                                  status="failed", failed_in_phase="grading",
-                                  avail_retries=avail)
+                                  status="failed", failed_in_phase="grading")
                 await quarantine_task(task["id"], ...)
             else:
                 await update_task(task["id"],
-                                  avail_retries=avail,
                                   next_retry_at=decision.timestamp,
                                   retry_reason="availability")
                 # stays ungraded — will be retried on next drain

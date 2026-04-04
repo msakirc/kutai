@@ -293,7 +293,23 @@ Each phase has its own attempt budget:
 
 ### Worker Phase Completion
 
-When an agent returns `status="completed"`:
+When an agent returns `status="completed"`, the following happens in order:
+
+1. **Post-hook** (`post_execute_workflow_step`) — structural/schema validation. Instant, no LLM.
+   If it fails → quality failure, task retries immediately (never reaches `ungraded`).
+2. **Grade attempt** — quality assessment via different model. May be immediate or deferred.
+   If immediate and FAIL → quality failure, task retries.
+   If deferred → task enters `ungraded`.
+
+This ordering matters: post-hook catches hard structural failures fast (missing artifacts,
+broken schema) without wasting a model swap on grading. Only structurally valid output
+reaches the grading phase.
+
+`context.worker_completed_at` is set when entering `ungraded` (or `completed` if graded
+immediately). This tracks how long grading has been pending — useful for diagnostics and
+the watchdog's "stuck ungraded" safety net.
+
+Pseudocode:
 
 ```python
 grade_result = await dispatcher.request_grade(...)
@@ -322,12 +338,110 @@ else:
 
 ### Grading Phase (Deferred)
 
-Grading happens when main work drains naturally. The existing `ensure_gpu_utilized` path works:
+Grading of `ungraded` tasks is triggered by three existing call sites in the main loop.
+No new mechanisms needed — just replace in-memory grade queue operations with DB queries.
 
-1. `get_ready_tasks()` returns 0 (dependents blocked on `ungraded` predecessors)
-2. `ensure_gpu_utilized([])` → `has_pending_overhead_needs()` → finds `ungraded` tasks
-3. Loads fastest general model (different from generating model → unbiased)
-4. Model swap fires → grade all `ungraded` tasks in batch
+**Trigger 1: Model swap** (`on_model_swap`)
+
+When any model swap completes, drain `ungraded` tasks the new model can grade.
+This is the primary grading path during workflows — fan-in points cause main work
+to drain, `ensure_gpu_utilized` loads a grader model, the swap fires this trigger.
+
+```
+Main loop cycle:
+  get_ready_tasks() → 0 (dependents blocked on ungraded)
+  ensure_gpu_utilized([]) → sees ungraded tasks → loads fastest general model
+  → model swap completes → on_model_swap() → drain_ungraded_tasks(new_model)
+  → grades complete → ungraded → completed → dependents unblock
+  → next cycle: get_ready_tasks() finds newly ready tasks → back to main work
+```
+
+**Trigger 2: Main loop idle path** (existing line 3040 in orchestrator)
+
+When no tasks are running AND no tasks are ready, the main loop enters the idle path.
+If a model is already loaded and there are `ungraded` tasks it can grade, grade them
+directly. No swap needed.
+
+```python
+# Replaces drain_grades_if_idle():
+if no_ready_tasks and no_running_tasks:
+    loaded_model = get_loaded_litellm_name()
+    if loaded_model:
+        ungraded = await get_ungraded_tasks()
+        for task in ungraded:
+            if task.generating_model != loaded_model:
+                await grade_and_apply(task, loaded_model)
+```
+
+This handles the case where main work finishes and the model is still loaded —
+grade opportunistically before the idle unloader kicks in (60s window).
+
+**Trigger 3: `ensure_gpu_utilized`** (existing line 2923 in orchestrator)
+
+When no model is loaded AND no main work tasks exist, checks for overhead needs
+(ungraded tasks, pending todos). If found, loads the fastest general-purpose model.
+The load triggers a model swap → Trigger 1 fires → grades drain.
+
+```
+ensure_gpu_utilized([]):
+  no model loaded, no main work
+  → _has_pending_overhead_needs() → finds ungraded tasks
+  → loads fastest general model
+  → on_model_swap → drain_ungraded_tasks (Trigger 1)
+```
+
+**How these three work together:**
+
+| Situation | Which trigger fires |
+|---|---|
+| Workflow fan-in: main work blocked on ungraded | Trigger 3 (load grader) → Trigger 1 (swap drain) |
+| Main work finished, model still loaded, ungraded tasks exist | Trigger 2 (idle drain, no swap) |
+| System fully idle, no model loaded, ungraded tasks exist | Trigger 3 (load grader) → Trigger 1 (swap drain) |
+| Model swap for main work (different model loaded) | Trigger 1 (opportunistic drain during swap) |
+
+**`apply_grade_result`** — called when grading succeeds (both immediate and deferred):
+
+```python
+async def apply_grade_result(task: dict, verdict: GradeResult):
+    """Apply grade outcome to task. Handles both PASS and FAIL."""
+    task_id = task["id"]
+    ctx = json.loads(task.get("context", "{}"))
+    score = 4.0 if verdict.passed else 2.0  # analytics compat
+
+    if verdict.passed:
+        await transition_task(task_id, "completed", quality_score=score)
+
+        # Skill extraction — same as current _handle_complete logic
+        # Triggered here for deferred grades (immediate grades trigger in base.py)
+        iterations = task.get("iterations", 1)
+        tools_used = ctx.get("tools_used_names", [])
+        if iterations >= 2 and tools_used:
+            await extract_and_store_skill(task, verdict.grader_data)
+
+        # Record model quality feedback
+        await record_model_call(
+            model=ctx.get("generating_model"),
+            agent_type=task.get("agent_type"),
+            success=True, grade=score,
+        )
+    else:
+        # VERDICT=FAIL — worker quality failure, retry with model escalation
+        attempts = task.get("attempts", 0) + 1
+        update_exclusions_on_failure(ctx, ctx.get("generating_model"), attempts)
+        decision = compute_retry_timing("quality", attempts=attempts)
+
+        if decision == TERMINAL:
+            await transition_task(task_id, "failed", failed_in_phase="worker")
+            await quarantine_task(task_id, ...)
+        else:
+            excluded, diff_bump = get_model_constraints(ctx, attempts)
+            await transition_task(task_id, "pending",
+                attempts=attempts,
+                grade_attempts=0,  # reset for next worker run
+                next_retry_at=decision.timestamp,
+                retry_reason="quality",
+                context=json.dumps(ctx))
+```
 
 **Grade drain on model swap:**
 
@@ -356,16 +470,19 @@ async def drain_ungraded_tasks(new_model: str):
             await apply_grade_result(task, verdict)
         except AvailabilityError:
             # Grading availability failure — backoff, stay in grading phase
+            last_delay = ctx.get("last_avail_delay", 0)
             decision = compute_retry_timing("availability",
-                          previous_retry_at=task.get("next_retry_at"))
+                          last_avail_delay=last_delay)
             if decision == TERMINAL:
                 await update_task(task["id"],
                                   status="failed", failed_in_phase="grading")
                 await quarantine_task(task["id"], ...)
             else:
+                ctx["last_avail_delay"] = decision.seconds
                 await update_task(task["id"],
                                   next_retry_at=decision.timestamp,
-                                  retry_reason="availability")
+                                  retry_reason="availability",
+                                  context=json.dumps(ctx))
                 # stays ungraded — will be retried on next drain
         except QualityError:
             # Grader parse error — grader quality failure

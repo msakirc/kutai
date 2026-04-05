@@ -16,8 +16,7 @@ from ..infra.db import (
     get_due_scheduled_tasks, update_scheduled_task,
     cancel_task, get_task, get_mission,
     save_workspace_snapshot, release_task_locks, release_mission_locks,
-    get_sleeping_tasks, wake_sleeping_tasks, make_sleep_state,
-    compute_next_timer_wake, _SLEEP_TIER_INTERVALS,
+    make_sleep_state,
 )
 from src.infra.logging_config import get_logger
 from .router import _circuit_breakers, ModelCallFailed
@@ -313,7 +312,6 @@ class Orchestrator:
         self._current_task_future = None
         self._running_futures: list[asyncio.Task] = []
         self._model_manager_tasks: list[asyncio.Task] = []
-        self._restart_wake_done: bool = False  # one-time sleeping queue wake on startup
 
 
     # ─── NEW: Context Chaining ───────────────────────────────────────────
@@ -430,9 +428,12 @@ class Orchestrator:
         Detect and fix stuck states at BOTH task and resource level.
 
         Task-level:
-          - Tasks stuck in processing
-          - Tasks blocked by failed dependencies
-          - Missions with all children done but still waiting
+          1. Tasks stuck in processing → retry or fail (attempts-based)
+          2. Ungraded tasks stuck > 30 min → promote to completed
+          3. Tasks with all deps failed → cascade failure
+          4. Parent tasks with all children done → complete or fail
+          5. Overdue next_retry_at → clear stale retry gates
+          6. Waiting_human escalation (4h → 24h → 48h → 72h cancel)
 
         Resource-level:
           - Crashed llama-server → auto-restart
@@ -443,144 +444,64 @@ class Orchestrator:
         db = await get_db()
 
         # ═══════════════════════════════════════════════════════════
-        #  TASK-LEVEL RECOVERY (existing logic, preserved)
+        #  TASK-LEVEL RECOVERY
         # ═══════════════════════════════════════════════════════════
 
         # 1. Tasks stuck in "processing" for more than 5 minutes
         cursor = await db.execute(
-            """SELECT id, title, retry_count, max_retries FROM tasks
+            """SELECT id, title, attempts, max_attempts FROM tasks
                WHERE status = 'processing'
                AND started_at < datetime('now', '-5 minutes')"""
         )
         stuck = [dict(row) for row in await cursor.fetchall()]
         for task in stuck:
-            retry_count = task.get("retry_count", 0) or 0
-            max_retries = task.get("max_retries", 3) or 3
-            if retry_count >= max_retries:
+            attempts = (task.get("attempts") or 0) + 1
+            max_attempts = task.get("max_attempts") or 6
+            if attempts >= max_attempts:
                 logger.warning(
                     f"[Watchdog] Task #{task['id']} stuck in processing "
-                    f"and exhausted retries ({retry_count}/{max_retries}), "
+                    f"and exhausted attempts ({attempts}/{max_attempts}), "
                     f"marking failed"
                 )
                 await db.execute(
                     "UPDATE tasks SET status = 'failed', "
-                    "error = 'Stuck in processing — retries exhausted (watchdog)' "
+                    "error = 'Stuck in processing — attempts exhausted (watchdog)', "
+                    "failed_in_phase = 'worker', "
+                    "attempts = ? "
                     "WHERE id = ?",
-                    (task["id"],)
+                    (attempts, task["id"])
                 )
             else:
                 logger.warning(
                     f"[Watchdog] Task #{task['id']} stuck in processing, "
-                    f"resetting (retry {retry_count + 1}/{max_retries})"
+                    f"resetting (attempt {attempts}/{max_attempts})"
                 )
                 await db.execute(
                     "UPDATE tasks SET status = 'pending', "
-                    "retry_count = retry_count + 1 WHERE id = ?",
-                    (task["id"],)
+                    "attempts = ?, retry_reason = 'quality' WHERE id = ?",
+                    (attempts, task["id"])
                 )
         if stuck:
             await db.commit()
 
-        # 1b. Paused workflow tasks — retry every 10 minutes
-        cursor_paused = await db.execute(
-            """SELECT id, title FROM tasks
-               WHERE status = 'paused'
-               AND started_at < datetime('now', '-10 minutes')"""
+        # 2. Ungraded tasks stuck for > 30 min — safety net
+        cursor_ung = await db.execute(
+            """SELECT id FROM tasks
+               WHERE status = 'ungraded'
+               AND started_at < datetime('now', '-30 minutes')"""
         )
-        paused = [dict(row) for row in await cursor_paused.fetchall()]
-        for task in paused:
-            logger.info(
-                f"[Watchdog] Resuming paused task #{task['id']} for retry"
-            )
+        stuck_ungraded = [dict(row) for row in await cursor_ung.fetchall()]
+        for task in stuck_ungraded:
             await db.execute(
-                "UPDATE tasks SET status = 'pending', retry_count = 0 "
-                "WHERE id = ?",
-                (task["id"],)
+                "UPDATE tasks SET status = 'completed', quality_score = NULL, "
+                "completed_at = ? WHERE id = ?",
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), task["id"])
             )
-        if paused:
+            logger.warning(f"[Watchdog] Stuck ungraded #{task['id']} promoted to completed (safety net)")
+        if stuck_ungraded:
             await db.commit()
 
-        # 1b. Sleeping queue — restart wake + timer expiry scan
-        if not self._restart_wake_done:
-            sleeping = await get_sleeping_tasks()
-            if sleeping:
-                for stask in sleeping:
-                    state = {}
-                    try:
-                        state = json.loads(stask.get("sleep_state") or "{}")
-                    except (ValueError, TypeError):
-                        pass
-                    # Reset timer_tier on restart (fresh start, maybe new code)
-                    # but preserve signal_failures (structural issues persist)
-                    state["timer_tier"] = 0
-                    state["next_timer_wake"] = compute_next_timer_wake(0)
-                    await update_task(
-                        stask["id"], status="pending",
-                        sleep_state=json.dumps(state),
-                    )
-                await db.commit()
-                logger.info(f"[Watchdog] Restart wake: {len(sleeping)} sleeping tasks → pending")
-            self._restart_wake_done = True
-
-        # Sleeping timer scan: check if any sleeping task's timer has expired
-        sleeping_tasks = await get_sleeping_tasks()
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        for stask in sleeping_tasks:
-            state = {}
-            try:
-                state = json.loads(stask.get("sleep_state") or "{}")
-            except (ValueError, TypeError):
-                pass
-            next_wake = state.get("next_timer_wake", "")
-            if not next_wake or next_wake > now_str:
-                continue  # not yet
-
-            tier = state.get("timer_tier", 0)
-            if tier >= len(_SLEEP_TIER_INTERVALS) - 1:
-                # Tier 3 (2h cap) expired — escalate to DLQ
-                try:
-                    from ..infra.dead_letter import quarantine_task
-                    await quarantine_task(
-                        task_id=stask["id"],
-                        mission_id=stask.get("mission_id"),
-                        error=stask.get("error", "Sleeping queue exhausted"),
-                        error_category=state.get("last_error_category", "unknown"),
-                        original_agent=stask.get("agent_type", "executor"),
-                        retry_count=stask.get("retry_count", 0),
-                    )
-                except Exception as dlq_err:
-                    logger.error(f"DLQ quarantine failed for sleeping task #{stask['id']}: {dlq_err}")
-                await update_task(
-                    stask["id"], status="failed",
-                    error=f"Sleeping queue tier {tier} exhausted → DLQ",
-                )
-                logger.warning(f"[Watchdog] Sleeping task #{stask['id']} → DLQ (tier {tier} exhausted)")
-                if self.telegram:
-                    try:
-                        await self.telegram.send_notification(
-                            f"⚰️ Task #{stask['id']} exhausted all retries → DLQ\n"
-                            f"**{stask.get('title', '')[:60]}**"
-                        )
-                    except Exception:
-                        pass
-            else:
-                # Advance tier and set to pending for retry
-                new_tier = tier + 1
-                state["timer_tier"] = new_tier
-                state["next_timer_wake"] = compute_next_timer_wake(new_tier)
-                await update_task(
-                    stask["id"], status="pending",
-                    sleep_state=json.dumps(state),
-                )
-                logger.info(
-                    f"[Watchdog] Sleeping task #{stask['id']} timer wake "
-                    f"(tier {tier}→{new_tier})"
-                )
-
-        if sleeping_tasks:
-            await db.commit()
-
-        # 2. Tasks blocked by FAILED dependencies
+        # 3. Tasks blocked by ALL failed deps → cascade failure
         cursor2 = await db.execute(
             "SELECT id, title, depends_on FROM tasks "
             "WHERE status = 'pending' AND depends_on != '[]'"
@@ -591,62 +512,104 @@ class Orchestrator:
                 deps = json.loads(task.get("depends_on", "[]"))
             except (json.JSONDecodeError, TypeError):
                 deps = []
-
             if not deps:
                 continue
 
             placeholders = ",".join("?" * len(deps))
-            failed_cursor = await db.execute(
-                f"SELECT COUNT(*) FROM tasks "
-                f"WHERE id IN ({placeholders}) AND status = 'failed'",
-                deps,
+            # Count non-skipped deps that are failed
+            fail_cursor = await db.execute(
+                f"SELECT COUNT(*) FROM tasks WHERE id IN ({placeholders}) AND status = 'failed'",
+                deps
             )
-            failed_count = (await failed_cursor.fetchone())[0]
+            failed_count = (await fail_cursor.fetchone())[0]
 
-            if failed_count > 0:
+            if failed_count == 0:
+                continue
+
+            # Count deps still in progress (not terminal)
+            pending_cursor = await db.execute(
+                f"SELECT COUNT(*) FROM tasks WHERE id IN ({placeholders}) AND status NOT IN ('completed', 'failed', 'cancelled', 'skipped')",
+                deps
+            )
+            still_pending = (await pending_cursor.fetchone())[0]
+
+            if still_pending > 0:
+                continue  # some deps still running, don't cascade yet
+
+            # All deps are terminal. Count non-skipped ones.
+            total_cursor = await db.execute(
+                f"SELECT COUNT(*) FROM tasks WHERE id IN ({placeholders}) AND status NOT IN ('skipped')",
+                deps
+            )
+            total_non_skipped = (await total_cursor.fetchone())[0]
+
+            if failed_count == total_non_skipped and total_non_skipped > 0:
                 logger.warning(
-                    f"[Watchdog] Task #{task['id']} has failed deps, "
-                    f"clearing"
+                    f"[Watchdog] Task #{task['id']} all deps failed, cascading failure"
                 )
                 await db.execute(
-                    "UPDATE tasks SET depends_on = '[]' WHERE id = ?",
-                    (task["id"],),
+                    "UPDATE tasks SET status = 'failed', "
+                    "error = 'All dependencies failed', failed_in_phase = 'worker' "
+                    "WHERE id = ?",
+                    (task["id"],)
                 )
         if blocked:
             await db.commit()
 
-        # 3. Missions with all children done but parent still waiting
+        # 4. Parent tasks with all children done
         cursor3 = await db.execute(
-            "SELECT id, title FROM tasks "
-            "WHERE status = 'waiting_subtasks'"
+            "SELECT id, title FROM tasks WHERE status = 'waiting_subtasks'"
         )
         waiting = [dict(row) for row in await cursor3.fetchall()]
         for task in waiting:
             child_cursor = await db.execute(
                 """SELECT COUNT(*) as total,
                    SUM(CASE WHEN status IN (
-                       'completed','failed','rejected','cancelled'
-                   ) THEN 1 ELSE 0 END) as done
+                       'completed','failed','cancelled','skipped'
+                   ) THEN 1 ELSE 0 END) as done,
+                   SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_count
                    FROM tasks WHERE parent_task_id = ?""",
                 (task["id"],),
             )
             row = await child_cursor.fetchone()
             if row and row["total"] > 0 and row["total"] == row["done"]:
-                logger.info(
-                    f"[Watchdog] Task #{task['id']} all subtasks done, "
-                    f"marking complete"
-                )
-                await db.execute(
-                    "UPDATE tasks SET status = 'completed', "
-                    "completed_at = ? WHERE id = ?",
-                    (datetime.now().isoformat(), task["id"]),
-                )
+                if row["completed_count"] > 0:
+                    logger.info(f"[Watchdog] Task #{task['id']} all subtasks done, marking complete")
+                    await db.execute(
+                        "UPDATE tasks SET status = 'completed', "
+                        "completed_at = ? WHERE id = ?",
+                        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), task["id"]),
+                    )
+                else:
+                    logger.warning(f"[Watchdog] Task #{task['id']} all subtasks failed, marking failed")
+                    await db.execute(
+                        "UPDATE tasks SET status = 'failed', "
+                        "error = 'All subtasks failed', failed_in_phase = 'worker' "
+                        "WHERE id = ?",
+                        (task["id"],)
+                    )
         if waiting:
             await db.commit()
 
-        # 4. Escalation tiers for tasks stuck in needs_clarification
+        # 5. Pending tasks with next_retry_at far in the past
+        cursor_overdue = await db.execute(
+            """SELECT id FROM tasks
+               WHERE status = 'pending'
+               AND next_retry_at < datetime('now', '-1 hour')"""
+        )
+        overdue = [dict(row) for row in await cursor_overdue.fetchall()]
+        for task in overdue:
+            await db.execute(
+                "UPDATE tasks SET next_retry_at = NULL WHERE id = ?",
+                (task["id"],),
+            )
+        if overdue:
+            await db.commit()
+            logger.info(f"[Watchdog] Cleared overdue next_retry_at for {len(overdue)} task(s)")
+
+        # 6. Escalation tiers for tasks stuck in waiting_human
         #    Uses started_at as the baseline timestamp (set when task
-        #    began processing, before entering needs_clarification).
+        #    began processing, before entering waiting_human).
         #    We compute the threshold in Python with isoformat() so the
         #    string comparison matches the format used when storing
         #    started_at (which also uses datetime.now().isoformat()).
@@ -660,7 +623,7 @@ class Orchestrator:
         ).isoformat()
         cursor_nudge = await db.execute(
             """SELECT id, title, context FROM tasks
-               WHERE status = 'needs_clarification'
+               WHERE status = 'waiting_human'
                AND started_at < ?
                AND started_at >= ?""",
             (threshold_4h, threshold_24h),
@@ -686,7 +649,7 @@ class Orchestrator:
 
         cursor_clar = await db.execute(
             """SELECT id, title, context, started_at FROM tasks
-               WHERE status = 'needs_clarification'
+               WHERE status = 'waiting_human'
                AND started_at < ?""",
             (threshold_24h,),
         )
@@ -760,7 +723,7 @@ class Orchestrator:
                     f"received after 72h.\n*{ttitle}*"
                 )
 
-        # 5. Workflow-level timeout check — pause workflows running too long
+        # 7. Workflow-level timeout check — pause workflows running too long
         try:
             mission_cursor = await db.execute(
                 """SELECT id, title, context, created_at FROM missions
@@ -915,20 +878,7 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"[Watchdog] GPU scheduler check failed: {e}")
 
-        # 7. Check sleeping queue depth
-        try:
-            sleeping_count = len(await get_sleeping_tasks())
-            if sleeping_count > 10:
-                resource_issues.append(
-                    f"Sleeping queue high: {sleeping_count} tasks waiting"
-                )
-                logger.warning(
-                    f"[Watchdog] Sleeping queue: {sleeping_count} tasks"
-                )
-        except Exception as e:
-            logger.warning(f"[Watchdog] Sleeping queue check failed: {e}")
-
-        # 8. Check circuit breakers — are ALL cloud providers down?
+        # 7. Check circuit breakers — are ALL cloud providers down?
         try:
             degraded_providers = [
                 p for p, cb in _circuit_breakers.items()
@@ -960,14 +910,14 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"[Watchdog] Circuit breaker check failed: {e}")
 
-        # 9. Restore rate limits that were adaptively reduced
+        # 8. Restore rate limits that were adaptively reduced
         try:
             from ..models.rate_limiter import get_rate_limit_manager
             get_rate_limit_manager().restore_limits()
         except Exception as e:
             logger.warning(f"[Watchdog] Rate limit restore failed: {e}")
 
-        # 10. Check for expiring credentials (warn 24h before expiry)
+        # 9. Check for expiring credentials (warn 24h before expiry)
         try:
             from ..security.credential_store import list_credentials, get_credential
 

@@ -97,10 +97,12 @@ class TestDLQOperations:
 
     def test_retry_dlq_task(self):
         mock_db, cursor = _make_mock_db()
+        fake_task = {"id": 42, "context": "{}", "failed_in_phase": None}
         with patch(DB_PATCH, AsyncMock(return_value=mock_db)):
             with patch("src.infra.db.update_task", AsyncMock()):
-                result = _run(retry_dlq_task(42))
-                assert result is True
+                with patch("src.infra.db.get_task", AsyncMock(return_value=fake_task)):
+                    result = _run(retry_dlq_task(42))
+                    assert result is True
 
     def test_get_dlq_summary(self):
         mock_db, cursor = _make_mock_db()

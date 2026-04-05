@@ -82,24 +82,24 @@ class TestWatchdogRetryLimits(unittest.TestCase):
     """Watchdog must respect retry limits when resetting stuck tasks."""
 
     def test_watchdog_checks_retry_count(self):
-        """Watchdog query must SELECT retry_count and max_retries."""
+        """Watchdog query must SELECT attempts and max_attempts."""
         from src.core.orchestrator import Orchestrator
         source = inspect.getsource(Orchestrator.watchdog)
 
         # The stuck-processing query should fetch retry info
-        self.assertIn("retry_count", source,
-                       "watchdog must check retry_count for stuck tasks")
-        self.assertIn("max_retries", source,
-                       "watchdog must check max_retries for stuck tasks")
+        self.assertIn("attempts", source,
+                       "watchdog must check attempts for stuck tasks")
+        self.assertIn("max_attempts", source,
+                       "watchdog must check max_attempts for stuck tasks")
 
     def test_watchdog_has_failed_branch(self):
-        """Watchdog must mark exhausted-retry tasks as failed, not just reset."""
+        """Watchdog must mark exhausted-attempt tasks as failed, not just reset."""
         from src.core.orchestrator import Orchestrator
         source = inspect.getsource(Orchestrator.watchdog)
 
-        # Should have logic to mark tasks as failed when retries exhausted
-        self.assertIn("retries exhausted", source.lower(),
-                       "watchdog must handle exhausted retries differently")
+        # Should have logic to mark tasks as failed when attempts exhausted
+        self.assertIn("exhausted attempts", source.lower(),
+                       "watchdog must handle exhausted attempts differently")
 
 
 class TestDedupStuckReset(unittest.TestCase):

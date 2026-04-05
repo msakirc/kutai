@@ -216,13 +216,43 @@ async def resolve_dlq_task(
 async def retry_dlq_task(task_id: int) -> bool:
     """Re-queue a dead-letter task for another attempt.
 
-    Resets the task to 'pending' and marks the DLQ entry as resolved.
+    Phase-aware: restores to the phase where the task failed.
+    Resets exclusions and backoff, preserves attempt counters.
     """
-    from src.infra.db import update_task
+    import json
+    from src.infra.db import get_task, update_task
 
     await resolve_dlq_task(task_id, resolution="retry")
-    await update_task(task_id, status="pending", retry_count=0, error=None)
-    logger.info(f"[DLQ] Task #{task_id} re-queued for retry")
+
+    task = await get_task(task_id)
+    if not task:
+        logger.warning(f"[DLQ] Task #{task_id} not found for retry")
+        return False
+
+    # Phase-aware status
+    failed_phase = task.get("failed_in_phase")
+    new_status = "ungraded" if failed_phase == "grading" else "pending"
+
+    # Reset exclusions and backoff in context
+    ctx = {}
+    try:
+        ctx = json.loads(task.get("context") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    ctx["last_avail_delay"] = 0
+    ctx["excluded_models"] = []
+    ctx["grade_excluded_models"] = []
+    # Keep generating_model (prevents self-grading)
+
+    await update_task(
+        task_id,
+        status=new_status,
+        next_retry_at=None,
+        retry_reason=None,
+        context=json.dumps(ctx),
+    )
+    logger.info(f"[DLQ] Task #{task_id} re-queued → {new_status} (phase={failed_phase})")
     return True
 
 

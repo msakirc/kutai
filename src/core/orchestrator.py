@@ -1804,38 +1804,52 @@ class Orchestrator:
                 await self._handle_review(task, result)
             elif status == "failed":
                 error_str = result.get("error", result.get("result", "Unknown error"))
-                retry_count = task.get("retry_count", 0) or 0
-                max_retries = task.get("max_retries", 3) or 3
+                attempts = (task.get("attempts") or 0) + 1
+                max_attempts = task.get("max_attempts") or 6
 
-                if retry_count < max_retries:
-                    await update_task(task_id, status="pending",
-                                      retry_count=retry_count + 1,
-                                      error=error_str[:500])
-                    logger.warning(f"agent failed, retrying {retry_count + 1}/{max_retries}",
-                                   task_id=task_id, error=error_str[:200])
-                elif task_ctx.get("is_workflow_step"):
-                    # Workflow step: backpressure — pending with delayed retry
-                    from datetime import timedelta
-                    next_retry = (datetime.now() + timedelta(seconds=600)).strftime(_DB_DT_FMT)
+                from src.core.retry import compute_retry_timing, update_exclusions_on_failure
+                update_exclusions_on_failure(task_ctx, result.get("model", ""), attempts)
+                decision = compute_retry_timing("quality", attempts=attempts, max_attempts=max_attempts)
+
+                if decision.action == "terminal":
                     await update_task(
-                        task_id, status="pending",
-                        error=f"Backpressure after {max_retries} failures: {error_str[:300]}",
-                        next_retry_at=next_retry,
-                        retry_reason="quality",
+                        task_id, status="failed",
+                        error=error_str[:500],
+                        attempts=attempts,
+                        failed_in_phase="worker",
+                        context=json.dumps(task_ctx),
                     )
-                    logger.warning(f"workflow step backpressure retry in 10min",
-                                   task_id=task_id)
-                    await self.telegram.send_notification(
-                        f"⏸ Task #{task_id} backpressure — will auto-retry\n"
-                        f"**{title}**\n"
-                        f"Reason: {error_str[:100]}"
-                    )
-                else:
-                    await update_task(task_id, status="failed",
-                                      error=error_str[:500])
-                    logger.error("agent returned failure", task_id=task_id,
+                    logger.error("agent failure terminal", task_id=task_id,
                                  error=error_str[:200])
                     await self.telegram.send_error(task_id, title, error_str)
+                    try:
+                        from src.infra.dead_letter import quarantine_task
+                        await quarantine_task(
+                            task_id=task_id,
+                            mission_id=task.get("mission_id"),
+                            error=error_str[:500],
+                            error_category="quality",
+                            original_agent=task.get("agent_type", "executor"),
+                            retry_count=attempts,
+                        )
+                    except Exception:
+                        pass
+                else:
+                    next_retry = None
+                    if decision.action == "delayed":
+                        next_retry = (
+                            datetime.now() + timedelta(seconds=decision.delay_seconds)
+                        ).strftime(_DB_DT_FMT)
+                    await update_task(
+                        task_id, status="pending",
+                        attempts=attempts,
+                        error=error_str[:500],
+                        next_retry_at=next_retry,
+                        retry_reason="quality",
+                        context=json.dumps(task_ctx),
+                    )
+                    logger.warning(f"agent failed, retrying {attempts}/{max_attempts}",
+                                   task_id=task_id, error=error_str[:200])
             else:
                 logger.warning("unknown task status", task_id=task_id, status=status)
                 await self._handle_complete(task, result)
@@ -1910,17 +1924,14 @@ class Orchestrator:
                 await release_task_locks(task_id)
             except Exception:
                 pass
-            retry_count = task.get("retry_count", 0)
-            max_retries = task.get("max_retries", 3)
+            error_str = f"{type(e).__name__}: {str(e)[:500]}"
+            attempts = (task.get("attempts") or 0) + 1
+            max_attempts = task.get("max_attempts") or 6
 
-            if retry_count < max_retries:
-                await update_task(task_id, status="pending",
-                                  retry_count=retry_count + 1,
-                                  error=f"{type(e).__name__}: {str(e)[:200]}")
-                logger.info("task will retry", task_id=task_id, retry_count=retry_count + 1, max_retries=max_retries)
-            else:
-                error_str = f"{type(e).__name__}: {str(e)[:500]}"
-                # Classify the error for analytics and DLQ routing
+            from src.core.retry import compute_retry_timing
+            decision = compute_retry_timing("quality", attempts=attempts, max_attempts=max_attempts)
+
+            if decision.action == "terminal":
                 try:
                     from ..infra.dead_letter import _classify_error
                     error_cat = _classify_error(error_str, "unknown")
@@ -1929,11 +1940,13 @@ class Orchestrator:
                 await update_task(
                     task_id, status="failed", error=error_str,
                     error_category=error_cat,
+                    attempts=attempts,
+                    failed_in_phase="worker",
                 )
                 await self.telegram.send_error(task_id, title, error_str)
 
-                # ── Fix #9: Workflow step failure notification ──
-                if task_ctx.get("is_workflow_step"):
+                # Workflow step failure notification
+                if isinstance(task_ctx, dict) and task_ctx.get("is_workflow_step"):
                     try:
                         wf_phase = task_ctx.get("workflow_phase", "?")
                         await self.telegram.send_notification(
@@ -1944,7 +1957,7 @@ class Orchestrator:
                     except Exception:
                         pass
 
-                # Phase 11.2: Store failed task in episodic memory
+                # Episodic memory
                 try:
                     from ..memory.episodic import store_task_result
                     await store_task_result(
@@ -1954,12 +1967,8 @@ class Orchestrator:
                 except Exception:
                     pass
 
-                # ── Spawn error recovery agent ──
+                # Error recovery
                 recovery_spawned = await self._spawn_error_recovery(task, error_str)
-
-                # ── Dead-letter queue: quarantine only if no recovery was spawned.
-                # If recovery was spawned, it will handle the task — quarantine
-                # would falsely inflate the unresolved count and trigger mission pauses.
                 if not recovery_spawned:
                     try:
                         from ..infra.dead_letter import quarantine_task
@@ -1968,64 +1977,37 @@ class Orchestrator:
                             mission_id=task.get("mission_id"),
                             error=error_str,
                             original_agent=task.get("agent_type", "executor"),
-                            retry_count=max_retries,
+                            retry_count=attempts,
                         )
                     except Exception as dlq_err:
                         logger.error("dlq quarantine failed", task_id=task_id, error=str(dlq_err))
 
-                # Record failure for model health monitoring
+                # Model health
                 try:
                     from ..infra.db import update_model_stats
                     agent_type = task.get("agent_type", "executor")
                     model = result.get("model", "unknown") if isinstance(result, dict) else "unknown"
                     await update_model_stats(
-                        model=model,
-                        agent_type=agent_type,
-                        success=False,
-                        cost=0,
-                        latency_ms=0,
-                        grade=0.0,
+                        model=model, agent_type=agent_type,
+                        success=False, cost=0,
                     )
-                except Exception as _e:
-                    logger.debug("update_model_stats failed", error=str(_e))
-
-                # Phase 9.1: Record failed metrics
-                try:
-                    from src.infra.metrics import record_task_failed
-                    model = result.get("model", "") if isinstance(result, dict) else ""
-                    record_task_failed(model=model)
                 except Exception:
                     pass
-
-                # Track skill A/B metrics for failed tasks
-                try:
-                    injected_skills = task_ctx.get("injected_skills", [])
-                    agent_type = task.get("agent_type", "")
-                    started = task.get("started_at", "")
-                    duration = 0.0
-                    if started:
-                        try:
-                            t1 = datetime.strptime(started.replace("T", " ")[:19], "%Y-%m-%d %H:%M:%S")
-                            t2 = datetime.now()
-                            duration = (t2 - t1).total_seconds()
-                        except Exception:
-                            pass
-                    from src.infra.db import record_skill_metric, record_no_skill_metric
-                    if injected_skills:
-                        for skill_name in injected_skills:
-                            await record_skill_metric(
-                                task_id=task_id, skill_name=skill_name,
-                                succeeded=False, iterations=retry_count,
-                                agent_type=agent_type, duration=duration,
-                            )
-                    else:
-                        await record_no_skill_metric(
-                            task_id=task_id, succeeded=False,
-                            iterations=retry_count, agent_type=agent_type,
-                            duration=duration,
-                        )
-                except Exception:
-                    pass  # Non-critical
+            else:
+                next_retry = None
+                if decision.action == "delayed":
+                    next_retry = (
+                        datetime.now() + timedelta(seconds=decision.delay_seconds)
+                    ).strftime(_DB_DT_FMT)
+                await update_task(
+                    task_id, status="pending",
+                    attempts=attempts,
+                    error=error_str,
+                    next_retry_at=next_retry,
+                    retry_reason="quality",
+                )
+                logger.info("task will retry", task_id=task_id,
+                            attempts=attempts, max_attempts=max_attempts)
 
     # ─── Result Handlers ─────────────────────────────────────────────────
 

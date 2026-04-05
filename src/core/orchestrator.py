@@ -1699,25 +1699,39 @@ class Orchestrator:
                                 task_id=task_id,
                             )
                         else:
-                            # Backpressure: pause and let watchdog retry later
-                            # when conditions improve (shell restored, model
-                            # available, etc). Don't skip — holds quality.
+                            # Unified retry: use next_retry_at instead of paused state
+                            from datetime import timedelta
+                            next_retry = (datetime.now() + timedelta(seconds=600)).strftime(_DB_DT_FMT)
                             await update_task(
-                                task_id, status="paused",
-                                error=f"Paused after {max_retries} failures: {error_msg}",
+                                task_id, status="pending",
+                                error=f"Backpressure after {max_retries} failures: {error_msg}",
+                                next_retry_at=next_retry,
+                                retry_reason="quality",
                             )
                             logger.warning(
-                                f"disguised failure, pausing for backpressure "
+                                f"disguised failure, backpressure retry in 10min "
                                 f"after {max_retries} retries",
                                 task_id=task_id,
                             )
                             await self.telegram.send_notification(
-                                f"⏸ Task #{task_id} paused — will auto-retry\n"
+                                f"⏸ Task #{task_id} backpressure — will auto-retry\n"
                                 f"**{task.get('title', '')}**\n"
                                 f"Reason: {error_msg[:100]}"
                             )
                         return
                 await self._handle_complete(task, result)
+            elif status == "ungraded":
+                # Task deferred to grading phase — store result, don't notify
+                result_text = result.get("result", "No result")
+                cost = result.get("cost", 0)
+                await update_task(
+                    task_id, status="ungraded", result=result_text, cost=cost,
+                )
+                logger.info("task ungraded (deferred grading)", task_id=task_id,
+                            model=result.get("model", "unknown"))
+            elif status == "pending":
+                # Grade FAIL triggered immediate retry — task already updated by apply_grade_result
+                logger.info("task grade-failed, retrying", task_id=task_id)
             elif status == "needs_subtasks":
                 await self._handle_subtasks(task, result)
             elif status == "needs_clarification":
@@ -1759,13 +1773,19 @@ class Orchestrator:
                     logger.warning(f"agent failed, retrying {retry_count + 1}/{max_retries}",
                                    task_id=task_id, error=error_str[:200])
                 elif task_ctx.get("is_workflow_step"):
-                    # Workflow step: backpressure — pause for auto-retry
-                    await update_task(task_id, status="paused",
-                                      error=f"Paused after {max_retries} failures: {error_str[:300]}")
-                    logger.warning(f"workflow step paused for backpressure",
+                    # Workflow step: backpressure — pending with delayed retry
+                    from datetime import timedelta
+                    next_retry = (datetime.now() + timedelta(seconds=600)).strftime(_DB_DT_FMT)
+                    await update_task(
+                        task_id, status="pending",
+                        error=f"Backpressure after {max_retries} failures: {error_str[:300]}",
+                        next_retry_at=next_retry,
+                        retry_reason="quality",
+                    )
+                    logger.warning(f"workflow step backpressure retry in 10min",
                                    task_id=task_id)
                     await self.telegram.send_notification(
-                        f"⏸ Task #{task_id} paused — will auto-retry\n"
+                        f"⏸ Task #{task_id} backpressure — will auto-retry\n"
                         f"**{title}**\n"
                         f"Reason: {error_str[:100]}"
                     )

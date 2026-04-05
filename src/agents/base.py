@@ -1573,75 +1573,69 @@ class BaseAgent:
                         "difficulty":  reqs.difficulty,
                     }
 
-                # Grade ALL completed tasks — quality signal feeds model selection
+                # ── Grade or defer grading ──
                 quality_score = None
-                grader_data = {}
-                _iterations = iteration + 1
                 try:
                     from src.core.llm_dispatcher import get_dispatcher
+                    from src.core.grading import grade_task, apply_grade_result, GradeResult
 
-                    async def _apply_grade(score: float, gdata: dict = {}):
-                        """Callback to apply deferred grade — also triggers skill extraction."""
-                        if task_id != "?":
-                            await update_task(task_id, quality_score=score)
-                            await record_model_call(
-                                model=used_model,
-                                agent_type=self.name,
-                                success=True,
-                                grade=score,
-                            )
-                        # Skill extraction for deferred grades (mirrors orchestrator logic)
-                        if score >= 4.0 and _iterations >= 2 and tools_used_names:
+                    dispatcher = get_dispatcher()
+                    loaded = dispatcher._get_loaded_litellm_name()
+                    generating = used_model
+
+                    # Can we grade immediately? (loaded model != generating, or high priority)
+                    can_grade_now = (
+                        loaded and generating != loaded
+                    ) or reqs.priority >= 8
+
+                    if can_grade_now and task_id != "?":
+                        try:
+                            verdict = await grade_task(task, loaded or "")
+                            quality_score = verdict.score
+                            if not verdict.passed:
+                                # Grade FAIL — apply immediately, return retry signal
+                                await apply_grade_result(task_id, verdict)
+                                await self._clear_checkpoint_safe(task_id)
+                                return {
+                                    "status": "pending",
+                                    "result": result,
+                                    "model": used_model,
+                                    "quality_score": quality_score,
+                                }
+                        except Exception:
+                            # Grading failed — defer instead
+                            can_grade_now = False
+
+                    if not can_grade_now and task_id != "?":
+                        # Defer grading — set to ungraded
+                        import json as _json
+                        from datetime import datetime as _dt
+                        _ctx = task.get("context", "{}")
+                        if isinstance(_ctx, str):
                             try:
-                                from src.memory.skills import add_skill
-                                situation = gdata.get("situation_summary", "")
-                                strategy = gdata.get("strategy_summary", "")
-                                tool_tmpl = gdata.get("tool_template", [])
-                                _title = task.get("title", "")
-                                _task_id_val = task.get("id", 0)
-                                if situation and strategy:
-                                    await add_skill(
-                                        name=f"auto:{self.name}:{_title[:40]}",
-                                        description=situation,
-                                        strategy_summary=strategy,
-                                        tool_template=tool_tmpl,
-                                        tools_used=sorted(tools_used_names),
-                                        avg_iterations=_iterations,
-                                        source_grade="great",
-                                        source_task_id=_task_id_val,
-                                    )
-                                else:
-                                    await add_skill(
-                                        name=f"auto:{self.name}:{_title[:40]}",
-                                        description=f"Task: {_title[:100]}. Agent: {self.name}.",
-                                        strategy_summary=f"Used {', '.join(sorted(tools_used_names)[:5])} in {_iterations} iterations",
-                                        tools_used=sorted(tools_used_names),
-                                        avg_iterations=_iterations,
-                                        source_grade="great",
-                                        source_task_id=_task_id_val,
-                                    )
-                            except Exception as _sk_err:
-                                logger.debug(f"deferred skill extraction failed: {_sk_err}")
+                                _ctx = _json.loads(_ctx)
+                            except (ValueError, TypeError):
+                                _ctx = {}
+                        _ctx["generating_model"] = used_model
+                        _ctx["worker_completed_at"] = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+                        _ctx["tools_used_names"] = sorted(tools_used_names)
 
-                    quality_score, grader_data = await get_dispatcher().request_grade(
-                        task_id=str(task_id),
-                        task_title=task.get("title", ""),
-                        task_description=task.get("description", ""),
-                        response_text=result,
-                        generating_model=used_model,
-                        task_name=reqs.task,
-                        priority=reqs.priority,
-                        on_graded=_apply_grade,
-                    )
-                    # quality_score may be None if grading was deferred
-                    if quality_score is not None and task_id != "?":
-                        await update_task(task_id, quality_score=quality_score)
-                        await record_model_call(
-                            model=used_model,
-                            agent_type=self.name,
-                            success=True,
-                            grade=quality_score,
+                        from src.core.state_machine import transition_task
+                        await transition_task(
+                            task_id, "ungraded",
+                            context=_json.dumps(_ctx),
                         )
+                        await self._clear_checkpoint_safe(task_id)
+                        return {
+                            "status": "ungraded",
+                            "result": result,
+                            "model": used_model,
+                            "cost": total_cost,
+                            "difficulty": reqs.difficulty,
+                            "iterations": iteration + 1,
+                            "tools_used_names": sorted(tools_used_names),
+                        }
+
                 except Exception as exc:
                     logger.warning(f"grading failed | task_id={task_id} error={exc}")
 
@@ -1654,7 +1648,6 @@ class BaseAgent:
                     "difficulty":    reqs.difficulty,
                     "iterations":    iteration + 1,
                     "quality_score": quality_score,
-                    "grader_data":   grader_data,
                     "tools_used_names": sorted(tools_used_names),
                 }
 

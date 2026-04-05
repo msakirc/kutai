@@ -725,6 +725,7 @@ _TASK_COLUMNS = frozenset({
     "requires_approval", "depends_on", "result", "error", "error_category",
     "context", "retry_count", "max_retries", "started_at", "completed_at",
     "task_hash", "max_cost", "cost", "quality_score", "sleep_state",
+    "next_retry_at", "retry_reason",
 })
 
 

@@ -27,26 +27,52 @@
 3. Family profile + size/quant scaling (fallback for unknown models)
 ```
 
-### Thinking-On vs Thinking-Off: Dual ModelInfo Entries
+### Mode Variants: Dual/Multi ModelInfo Entries
 
-Thinking-capable models get **two separate ModelInfo entries** in the registry, pointing to the same physical GGUF:
+Any server flag that requires a restart to toggle = separate ModelInfo entry. Currently two such flags:
 
-- `Qwen3.5-35B-A3B` — thinking OFF, faster, better format compliance
-- `Qwen3.5-35B-A3B-thinking` — thinking ON, stronger reasoning, slower
+1. **Thinking** (`--reasoning on/off`) — changes reasoning capabilities
+2. **Vision** (`--mmproj <path>`) — enables vision, drains ~900MB VRAM
 
-Each entry has its own capability scores. The router selects between them like any other model — the thinking variant naturally wins for reasoning-heavy tasks, the non-thinking variant wins for speed/format tasks.
+**Variant naming convention:** `ModelName[-thinking][-vision]`
 
-General capability differences (thinking ON vs OFF):
+**Example — Gemma-4-26B-A4B (thinking + vision capable):**
+- `Gemma-4-26B-A4B` — base, fastest, no VRAM overhead
+- `Gemma-4-26B-A4B-thinking` — reasoning tasks, slower
+- `Gemma-4-26B-A4B-vision` — image understanding, +900MB VRAM
+- `Gemma-4-26B-A4B-thinking-vision` — both (rare, heaviest)
+
+**Example — Qwen3.5-35B-A3B (thinking only, no vision):**
+- `Qwen3.5-35B-A3B` — base
+- `Qwen3.5-35B-A3B-thinking` — reasoning tasks
+
+**Example — GigaChat3.1-Lightning (neither):**
+- `GigaChat3.1-Lightning` — single entry, no variants
+
+**Capability differences per mode:**
+
+Thinking ON vs OFF:
 - **Reasoning, planning, analysis, code_reasoning**: +0.5 to +1.5
 - **Instruction adherence, structured_output**: -0.5 to -1.0
 - **Conversation**: -0.5
 - **Code generation**: +0.0 to +0.5 (better logic but worse format compliance)
 
-Benchmark sources that test both modes (Aider, LiveCodeBench) provide separate scores. For sources that don't distinguish, the base score maps to thinking-off, and a delta function estimates thinking-on scores.
+Vision ON vs OFF:
+- **Vision**: 0.0 → actual score (only capability that changes)
+- All other capabilities identical
+
+Benchmark sources that test both thinking modes (Aider, LiveCodeBench) provide separate scores. For sources that don't distinguish, the base score maps to thinking-off, and a delta function estimates thinking-on scores. Vision scores come from vision-specific benchmarks or family profiles.
 
 ### Scorer Integration
 
-No changes to `score_model_for_task()`. The router already picks the best model from the registry — it now has thinking and non-thinking variants as separate candidates. The `LocalModelManager` maps both variants to the same GGUF path, toggling `--reasoning on/off` at load time. If the model is already loaded in the correct mode, no swap needed. If loaded in wrong mode, it's a lightweight restart (same file, different flag).
+No changes to `score_model_for_task()`. The router picks the best model from the registry — it now has mode variants as separate candidates. Vision variants only win when `needs_vision=True`. Thinking variants compete naturally based on capability fit.
+
+### Swap Logic
+
+The `LocalModelManager` maps all variants of the same model to the same GGUF path. Mode transitions are **lightweight restarts** (kill + relaunch with different flags), not full model swaps:
+- Same GGUF, no re-read from disk needed beyond what llama-server does at startup
+- Does NOT count against the swap budget
+- If already loaded in the correct mode, no action needed
 
 ## File Changes
 
@@ -92,13 +118,17 @@ No changes to `score_model_for_task()`. The router already picks the best model 
 
 ### 3. `src/models/model_registry.py`
 
-**Dual ModelInfo registration for thinking models:**
-- When a thinking-capable GGUF is discovered, register TWO ModelInfo entries:
-  - `ModelName` — `thinking_model=False`, base capabilities
-  - `ModelName-thinking` — `thinking_model=True`, thinking capabilities
-- Both entries share the same `path` to the physical GGUF file
-- `is_thinking_variant: bool` field added to ModelInfo to identify the thinking entry
-- `base_model_name: str` field links thinking variant back to its base (for swap logic)
+**Multi-variant ModelInfo registration:**
+- When a GGUF is discovered, register entries for each valid mode combination:
+  - Base: `ModelName` — `thinking_model=False`, `has_vision=False`
+  - If thinking-capable: `ModelName-thinking` — `thinking_model=True`
+  - If has mmproj: `ModelName-vision` — `has_vision=True`, vision capability populated
+  - If both: `ModelName-thinking-vision` — both enabled
+- All variants share the same `path` to the physical GGUF file
+- New ModelInfo fields:
+  - `is_variant: bool` — True for any non-base entry
+  - `base_model_name: str` — links variant back to base (for swap logic)
+  - `variant_flags: set[str]` — e.g. `{"thinking"}`, `{"vision"}`, `{"thinking", "vision"}`
 
 **`estimate_capabilities()` changes:**
 - Check benchmark cache first (via `enrich_registry_with_benchmarks`)
@@ -122,32 +152,34 @@ No changes to `score_model_for_task()`. The router already picks the best model 
 
 ### 6. `src/core/router.py`
 
-**Dual-entry awareness:**
-- Router sees thinking and non-thinking variants as separate candidates — no special logic needed for scoring
-- **Swap logic**: When the winner is a thinking variant of the already-loaded model (or vice versa), it's a lightweight restart (same GGUF, toggle `--reasoning` flag), NOT a full model swap. This should not count against the swap budget.
-- Filter: if `needs_thinking=True` in requirements, exclude non-thinking variants. If `needs_thinking=False`, exclude thinking variants. If unset, both compete.
+**Variant-aware routing:**
+- Router sees all variants as separate candidates — no special scoring logic needed
+- **Filtering**: `needs_vision=True` → exclude non-vision variants. `needs_thinking=True` → exclude non-thinking variants. If unset, all compete.
+- **Swap logic**: When winner is a different variant of the already-loaded model, it's a lightweight restart (same GGUF, toggle flags). Does NOT count against swap budget.
 
 ### 7. `src/models/local_model_manager.py`
 
-**Thinking mode toggle:**
-- `load_model()` accepts the ModelInfo which has `thinking_model` flag
-- If same GGUF is loaded but thinking mode differs, do a lightweight restart (kill + relaunch with different `--reasoning` flag) instead of full unload+load cycle
-- This is faster than a full swap (no GGUF re-read from disk)
+**Mode-aware loading:**
+- `load_model()` accepts the ModelInfo which has `thinking_model` and `has_vision` flags
+- If same GGUF is loaded but mode flags differ (thinking and/or vision), do a lightweight restart (kill + relaunch with different `--reasoning`/`--mmproj` flags) instead of full unload+load cycle
+- This is faster than a full swap (same GGUF, llama-server just needs different startup flags)
 
-## Models on Disk (Reference)
+## Models on Disk & Registry Entries
 
-| Model | Type | Quant | Thinking | Vision | mmproj |
-|-------|------|-------|----------|--------|--------|
-| Qwen3.5-35B-A3B | MoE 256E/8A | Q4_K_XL | Yes | No | — |
-| Qwen3.5-27B | Dense | Q4_K_M | Yes | No | — |
-| Qwen3.5-9B | Dense | Q4_K_XL | Yes | No | mmproj-F16 |
-| Qwen3-Coder-30B-A3B | MoE 128E/8A | Q4_K_XL | Yes | No | — |
-| GLM-4.7-Flash | MoE 64E/4A | Q4_K_XL | Yes | No | — |
-| Gemma-4-26B-A4B | MoE 128E/8A | IQ4_NL | Yes | Yes | mmproj-F16 |
-| gpt-oss-20b | MoE 32E/4A | Q4_K_XL | Yes | No | — |
-| Apriel-1.6-15b-Thinker | Dense | Q4_K_L | Yes | Yes | mmproj-f16 |
-| GigaChat3.1-Lightning | MoE 64E/4A | Q4_K_M | No | No | — |
-| nerdsking-python-coder-7B | Dense | Q5_K_M | No | No | — |
+| GGUF File | Type | Quant | Thinking | Vision | Registry Entries |
+|-----------|------|-------|----------|--------|-----------------|
+| Qwen3.5-35B-A3B | MoE 256E/8A | Q4_K_XL | Yes | No | base, thinking (2) |
+| Qwen3.5-27B | Dense | Q4_K_M | Yes | No | base, thinking (2) |
+| Qwen3.5-9B | Dense | Q4_K_XL | Yes | Yes (mmproj) | base, thinking, vision, thinking-vision (4) |
+| Qwen3-Coder-30B-A3B | MoE 128E/8A | Q4_K_XL | Yes | No | base, thinking (2) |
+| GLM-4.7-Flash | MoE 64E/4A | Q4_K_XL | Yes | No | base, thinking (2) |
+| Gemma-4-26B-A4B | MoE 128E/8A | IQ4_NL | Yes | Yes (mmproj) | base, thinking, vision, thinking-vision (4) |
+| gpt-oss-20b | MoE 32E/4A | Q4_K_XL | Yes | No | base, thinking (2) |
+| Apriel-1.6-15b-Thinker | Dense | Q4_K_L | Yes | Yes (mmproj) | base, thinking, vision, thinking-vision (4) |
+| GigaChat3.1-Lightning | MoE 64E/4A | Q4_K_M | No | No | base (1) |
+| nerdsking-python-coder-7B | Dense | Q5_K_M | No | No | base (1) |
+
+**Total: 10 GGUFs → 24 registry entries** (10 base + 8 thinking + 3 vision + 3 thinking-vision)
 
 ## Out of Scope
 

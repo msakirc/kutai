@@ -512,13 +512,13 @@ class LLMDispatcher:
             if manager.current_model:
                 if await self._loaded_model_can_grade():
                     return  # idle path will handle grading
-                # Loaded model can't grade (self-generated) → swap
-                best = self._find_fastest_general_model()
+                # Loaded model can't grade — find best alternative
+                best = await self._find_fastest_general_model()
                 if best and best != manager.current_model:
                     logger.info(f"grade swap | loaded={manager.current_model} → {best}")
                     await manager.ensure_model(best, reason="grade_swap")
             else:
-                best = self._find_fastest_general_model()
+                best = await self._find_fastest_general_model()
                 if best:
                     logger.info(f"overhead load | model={best}")
                     await manager.ensure_model(best, reason="overhead_load")
@@ -685,38 +685,99 @@ class LLMDispatcher:
         except Exception:
             return False
 
-    def _find_fastest_general_model(self) -> str | None:
-        """Find the fastest general-purpose local model for overhead work.
+    async def _find_fastest_general_model(self) -> str | None:
+        """Find the best local model for overhead work.
 
-        Picks a model that supports function calling (not code-only),
-        prioritizing speed over capability since overhead tasks are simple.
+        When ungraded tasks exist, score = gradeable_count x speed.
+        Models that can't grade anything score zero and are eliminated.
+        When no ungraded tasks exist, pure speed ranking.
         """
         try:
+            import json
             from src.models.model_registry import get_registry
+
             registry = get_registry()
-            local_models = [
+            candidates = [
                 m for m in registry.all_models()
                 if m.is_local
                 and not m.demoted
                 and m.supports_function_calling
                 and m.specialty not in ("code", "coding")
             ]
-
-            if not local_models:
+            if not candidates:
                 return None
 
-            def _speed_key(m):
+            def _speed(m):
                 if m.tokens_per_second > 0:
                     return m.tokens_per_second
                 if m.model_type == "moe":
                     return 30.0
                 return max(1.0, 50.0 - m.file_size_mb / 500)
 
-            return max(local_models, key=_speed_key).name
+            # Count gradeable tasks per model (the main overhead signal)
+            task_exclusions = await self._get_grade_exclusions()
+            total_ungraded = len(task_exclusions)
+
+            best_name = None
+            best_score = 0.0
+            for m in candidates:
+                speed = _speed(m)
+
+                if total_ungraded == 0:
+                    # No grading work — pure speed
+                    score = speed
+                else:
+                    gradeable = sum(
+                        1 for excl in task_exclusions
+                        if m.litellm_name not in excl
+                    )
+                    # Zero gradeable = zero score = eliminated.
+                    # Otherwise score = gradeable_count x speed.
+                    score = gradeable * speed
+
+                if score > best_score:
+                    best_score = score
+                    best_name = m.name
+
+            if best_name:
+                logger.debug(f"overhead model: {best_name} score={best_score:.1f}")
+            return best_name
 
         except Exception as e:
             logger.debug(f"_find_fastest_general_model failed: {e}")
             return None
+
+    async def _get_grade_exclusions(self) -> list[set[str]]:
+        """Get per-task exclusion sets for ungraded tasks.
+
+        Returns a list where each element is the set of litellm_names
+        that cannot grade that task (generating model + grade_excluded).
+        Empty list if no ungraded tasks.
+        """
+        try:
+            import json
+            from src.infra.db import get_db
+            db = await get_db()
+            cursor = await db.execute(
+                "SELECT context FROM tasks WHERE status = 'ungraded'"
+            )
+            rows = await cursor.fetchall()
+            if not rows:
+                return []
+
+            exclusions: list[set[str]] = []
+            for row in rows:
+                try:
+                    ctx = json.loads(row["context"] or "{}")
+                except (ValueError, TypeError):
+                    ctx = {}
+                excluded = {ctx.get("generating_model", "")}
+                excluded.update(ctx.get("grade_excluded_models", []))
+                excluded.discard("")
+                exclusions.append(excluded)
+            return exclusions
+        except Exception:
+            return []
 
     # ─── Metrics ─────────────────────────────────────────────────────────
 

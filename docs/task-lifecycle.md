@@ -254,10 +254,17 @@ These fields in the task's `context` JSON drive the retry and grading logic:
 
 ## Known Limitations
 
-1. **`transition_task()` not enforced everywhere yet**: Many raw `update_task(status=...)` calls in the orchestrator bypass validation. These should be migrated to use `transition_task()` to catch invalid transitions at runtime.
+1. **`transition_task()` not enforced everywhere yet**: Many raw `update_task(status=...)` calls in the orchestrator bypass validation. These should be migrated to use `transition_task()` to catch invalid transitions at runtime. The failure/retry handlers now use unified `attempts` counters, but still call `update_task` directly rather than `transition_task`.
 
-2. **Deprecated column writes**: Some code paths still write to `retry_count`/`max_retries`. These are being phased out — use `attempts`/`max_attempts` for new code.
+2. **Stale comments**: Some files still reference "sleeping queue" in comments. The function calls are correct — just the comments are outdated.
 
-3. **Watchdog uses `started_at` for stuck-ungraded check**: Should use `context.worker_completed_at` for accuracy, since a long-running agent could finish late and get immediately promoted by the watchdog.
+## Fixed (2026-04-05)
 
-4. **Stale comments**: Some files still reference "sleeping queue" in comments. The function calls are correct — just the comments are outdated.
+- `completed_at` timestamps now use `strftime("%Y-%m-%d %H:%M:%S")` everywhere (was `isoformat()` in 3 call sites)
+- All failure handlers (disguised failure, agent-failed, general exception) use unified `attempts`/`max_attempts` counters (was `retry_count`/`max_retries`, creating a dual-budget bug allowing 9 retries instead of 6)
+- Workflow backpressure infinite loop eliminated — unified retry has terminal condition via `compute_retry_timing`
+- Watchdog stuck-ungraded check uses `worker_completed_at` from context (was `started_at`, causing premature promotion for long-running agents)
+- Immediate grading injects actual agent result into task dict (was passing stale DB snapshot with empty result, causing every immediate grade to auto-pass)
+- Trivial/empty task output fails grading instead of auto-passing
+- `_loaded_model_can_grade` checks `grade_excluded_models` (was ignoring exclusions, causing stuck-ungraded tasks)
+- `failed_in_phase` set on all failure paths for correct DLQ recovery

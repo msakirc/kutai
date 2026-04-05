@@ -1654,7 +1654,8 @@ class Orchestrator:
                     logger.debug(f"[Task #{task_id}] Checkpoint recovery failed: {recovery_err}")
 
                 await update_task(
-                    task_id, status="failed", error=timeout_err
+                    task_id, status="failed", error=timeout_err,
+                    failed_in_phase="worker"
                 )
                 await self.telegram.send_error(task_id, title, timeout_err)
 
@@ -1787,7 +1788,8 @@ class Orchestrator:
                 if task_ctx.get("silent"):
                     logger.info(f"[Task #{task_id}] Suppressed clarification (silent task)")
                     await update_task(task_id, status="failed",
-                                      error="Insufficient info (silent task, no clarification)")
+                                      error="Insufficient info (silent task, no clarification)",
+                                      failed_in_phase="worker")
                 elif task_ctx.get("clarification_history"):
                     # Agent tried to clarify again despite having answers —
                     # treat as completed (answers are already in context).

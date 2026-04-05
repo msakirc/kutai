@@ -78,34 +78,62 @@ The `LocalModelManager` maps all variants of the same model to the same GGUF pat
 
 ### 1. `src/models/benchmark/benchmark_fetcher.py`
 
-**URL Updates:**
+**Source Inventory (8 sources → covers both local and cloud models):**
 
-| Source | Old URL | New URL |
-|--------|---------|---------|
-| Artificial Analysis | `artificialanalysis.ai/api/text/v1/leaderboard` (404) | Use authenticated API with `ARTIFICIAL_ANALYSIS_API_KEY` from .env |
-| HF Leaderboard | `open-llm-leaderboard/results` dataset (500) | `open-llm-leaderboard/contents` via datasets-server |
-| LiveCodeBench | `livecodebench.github.io/assets/data/results.json` (404) | `livecodebench.github.io/performances_generation.json` |
-| BFCL | `gorilla/.../leaderboard_output.json` (404) | `gorilla.cs.berkeley.edu/data_overall.csv` (CSV format) |
-| LMSys Arena | `lmsys/chatbot-arena-leaderboard` HF paths (404) | `lmarena-ai/leaderboard-dataset` via datasets-server |
-| BigCodeBench | `bigcodebench/.../results.json` (404) | `bigcode/bigcodebench-results` via datasets-server |
-| Aider | Same URLs | Still working, no changes |
-| OpenRouter | Same URL | Still working, no changes |
+| # | Source | URL | Auth | Format | Models | Covers |
+|---|--------|-----|------|--------|--------|--------|
+| 1 | **Artificial Analysis** | `GET https://artificialanalysis.ai/api/v2/data/llms/models` | `x-api-key` header | JSON | 459 | cloud + local |
+| 2 | **Chatbot Arena ELO** | `https://huggingface.co/api/datasets/mathewhe/chatbot-arena-elo/parquet/default/train/0.parquet` | none | Parquet | 218 | cloud + local |
+| 3 | **Open LLM Leaderboard** | `https://huggingface.co/api/datasets/open-llm-leaderboard/contents/parquet/default/train/0.parquet` | none | Parquet | 4576 | local only |
+| 4 | **LiveCodeBench** | `https://livecodebench.github.io/performances_generation.json` | none | JSON | 28 | cloud + local |
+| 5 | **BFCL** | `https://gorilla.cs.berkeley.edu/data_overall.csv` | none | CSV | 109 | cloud + local |
+| 6 | **Aider Polyglot** | `https://raw.githubusercontent.com/Aider-AI/aider/main/aider/website/_data/polyglot_leaderboard.yml` | none | YAML | 69 | cloud + local |
+| 7 | **BigCodeBench** | `https://huggingface.co/api/datasets/bigcode/bigcodebench-results/parquet/default/train/0.parquet` | none | Parquet | 202 | cloud + local |
+| 8 | **OpenRouter** | `https://openrouter.ai/api/v1/models` | none | JSON | 500+ | cloud + local |
 
-**New response parsing:**
-- BFCL: CSV parser instead of JSON
-- LiveCodeBench: New JSON schema with `performances` array and `models` array
-- HF Leaderboard: `contents` dataset has different column names (`IFEval`, `BBH`, `MATH Lvl 5`, `GPQA`, `MUSR`, `MMLU-PRO`)
-- LMSys Arena: New dataset structure with `rating` field, multiple configs (text, coding, vision, etc.)
-- BigCodeBench: HF dataset with `complete`, `instruct`, `model`, `size` fields
+**Removed:** Old HF Leaderboard (results dataset → 500), old LMSys Arena URLs (all 404).
+**Added:** Chatbot Arena ELO (HF Parquet), replaces old LMSys Arena fetcher.
+
+**Artificial Analysis API details:**
+- API key from env: `ARTIFICIAL_ANALYSIS_API_KEY`
+- Rate limit: 1,000 requests/day
+- Fields: `artificial_analysis_intelligence_index`, `artificial_analysis_coding_index`, `artificial_analysis_math_index`, `mmlu_pro`, `gpqa`, `hle`, `livecodebench`, `scicode`, `math_500`, `aime`, `ifbench`, `lcr`, `terminalbench_hard`, `tau2`
+- Also provides: `pricing`, `median_output_tokens_per_second`, `model_creator.name`, `slug`
+- Attribution required: link to https://artificialanalysis.ai/
+
+**Capability mapping per source:**
+
+| Source | Capabilities Covered |
+|--------|---------------------|
+| Artificial Analysis | reasoning, domain_knowledge, code_generation, code_reasoning, analysis, instruction_adherence (richest — 15 benchmark scores) |
+| Chatbot Arena ELO | conversation, prose_quality (human preference signal) |
+| Open LLM Leaderboard | reasoning, instruction_adherence, analysis, domain_knowledge (IFEval, BBH, MATH, GPQA, MUSR, MMLU-PRO) |
+| LiveCodeBench | code_generation, code_reasoning |
+| BFCL | tool_use, structured_output |
+| Aider | code_generation, code_reasoning, instruction_adherence |
+| BigCodeBench | code_generation, instruction_adherence |
+| OpenRouter | context_utilization (context_length tiers) |
+
+**Cloud model enrichment:**
+- Sources 1, 2, 4, 5, 6 all cover cloud models (GPT-4o, Claude, Gemini, etc.)
+- Cloud models in `CLOUD_PROFILES` get the same benchmark enrichment as local models
+- Benchmark data takes priority over hardcoded cloud profiles when available
+
+**Parquet handling:**
+- Sources 2, 3, 7 now use HuggingFace Parquet format instead of JSON
+- Use `pandas` or `pyarrow` to read (both already in typical Python env)
+- Fallback: download raw bytes + parse with minimal parquet reader if pandas unavailable
 
 **Thinking-on/off data:**
 - Where sources test both modes, store separate entries
-- Aider polyglot leaderboard often has both "ModelName" and "ModelName (thinking)" entries
+- Aider polyglot has both "ModelName" and "ModelName (thinking)" entries
+- AA may have separate entries for thinking variants (e.g., o3 vs o3-mini)
 - Cache format: `{model_name: {"thinking_off": {caps}, "thinking_on": {caps}}}`
 
 **Model name matching:**
-- Update `_MODEL_ALIASES` for all 10 current GGUF models
-- Better fuzzy matching: strip quant suffixes, normalize separators
+- Update `_MODEL_ALIASES` for all 10 current GGUF models + cloud models
+- AA uses slugs (e.g., `llama-3-3-instruct-70b`), Arena uses HF-style names
+- Better fuzzy matching: strip quant suffixes, normalize separators, match by slug/creator
 
 ### 2. `src/models/model_profiles.py`
 

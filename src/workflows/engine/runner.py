@@ -174,8 +174,8 @@ class WorkflowRunner:
                 existing_step_ids.add(sid)
             if t.get("status") in ("completed", "skipped"):
                 completed_step_ids.add(sid)
-            elif t.get("status") in ("failed", "needs_clarification"):
-                await update_task(t["id"], status="pending", retry_count=0, error=None)
+            elif t.get("status") in ("failed", "waiting_human"):
+                await update_task(t["id"], status="pending", error=None)
 
         # Find and insert missing steps
         missing_steps = [s for s in wf.steps if s["id"] not in existing_step_ids]

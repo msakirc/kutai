@@ -241,6 +241,7 @@ async def retry_dlq_task(task_id: int) -> bool:
         pass
 
     ctx["last_avail_delay"] = 0
+    ctx["failed_models"] = []
     ctx["excluded_models"] = []
     ctx["grade_excluded_models"] = []
     # Keep generating_model (prevents self-grading)

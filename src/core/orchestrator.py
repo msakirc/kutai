@@ -1382,7 +1382,8 @@ class Orchestrator:
                 fast_result = await try_resolve(task)
                 if fast_result:
                     logger.info("task resolved via fast-path", task_id=task_id)
-                    await update_task(task_id, status="done", result=fast_result)
+                    await update_task(task_id, status="completed", result=fast_result,
+                                      completed_at=datetime.now().strftime(_DB_DT_FMT))
                     if self.telegram and task.get("chat_id"):
                         await self.telegram.send_notification(fast_result)
                     return

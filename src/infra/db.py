@@ -726,6 +726,9 @@ _TASK_COLUMNS = frozenset({
     "context", "retry_count", "max_retries", "started_at", "completed_at",
     "task_hash", "max_cost", "cost", "quality_score", "sleep_state",
     "next_retry_at", "retry_reason",
+    # Unified lifecycle columns
+    "attempts", "max_attempts", "grade_attempts", "max_grade_attempts",
+    "failed_in_phase",
 })
 
 

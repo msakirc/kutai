@@ -1450,7 +1450,7 @@ class Orchestrator:
                     )
                     if not approved:
                         logger.info("human gate rejected", task_id=task_id)
-                        await update_task(task_id, status="paused")
+                        await update_task(task_id, status="cancelled")
                         return
                     logger.info("human gate approved", task_id=task_id)
                 except Exception as e:
@@ -1483,7 +1483,7 @@ class Orchestrator:
                     )
                     if not approved:
                         logger.info("risk gate rejected", task_id=task_id)
-                        await update_task(task_id, status="paused")
+                        await update_task(task_id, status="cancelled")
                         return
             except Exception as e:
                 logger.debug(f"Risk assessment skipped: {e}")
@@ -2372,7 +2372,7 @@ class Orchestrator:
     async def _handle_clarification(self, task, result):
         task_id = task["id"]
         question = result.get("clarification", "Need more information")
-        await update_task(task_id, status="needs_clarification")
+        await update_task(task_id, status="waiting_human")
         await self.telegram.request_clarification(task_id, task["title"], question)
         logger.info(f"[Task #{task_id}] Asking human for clarification")
 

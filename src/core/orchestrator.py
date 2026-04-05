@@ -16,7 +16,6 @@ from ..infra.db import (
     get_due_scheduled_tasks, update_scheduled_task,
     cancel_task, get_task, get_mission,
     save_workspace_snapshot, release_task_locks, release_mission_locks,
-    make_sleep_state,
 )
 from src.infra.logging_config import get_logger
 from .router import _circuit_breakers, ModelCallFailed
@@ -1806,53 +1805,61 @@ class Orchestrator:
                 pass
 
         except ModelCallFailed as mcf:
-            # ── Sleeping queue: all models exhausted ──
-            # Don't retry immediately — put the task to sleep until a
-            # signal (GPU freed, rate limit reset, model swap, etc.)
-            # indicates that capacity has changed.
+            # ── Availability failure: all models exhausted ──
+            # Use unified retry with backoff. Signal wakes (model_swap,
+            # gpu_available, rate_limit_reset) can accelerate the retry.
             try:
                 await release_task_locks(task_id)
             except Exception:
                 pass
 
-            # Classifier failure: task was never dispatched to an agent.
-            # Don't burn retry_count — the task hasn't been attempted yet.
-            is_classifier_failure = "classification" not in task_ctx
+            # Read last_avail_delay from context for backoff progression
+            _avail_ctx = task_ctx if isinstance(task_ctx, dict) else {}
+            last_delay = _avail_ctx.get("last_avail_delay", 0)
 
-            # Build or update sleep_state
-            existing_state = {}
-            try:
-                existing_state = json.loads(task.get("sleep_state") or "{}")
-            except (ValueError, TypeError):
-                pass
+            from src.core.retry import compute_retry_timing
+            decision = compute_retry_timing("availability", last_avail_delay=last_delay)
 
-            timer_tier = existing_state.get("timer_tier", 0)
-            signal_failures = existing_state.get("signal_failures", 0)
-
-            sleep_state = make_sleep_state(
-                timer_tier=timer_tier,
-                signal_failures=signal_failures,
-                error_category=mcf.error_category,
-            )
-
-            update_kwargs = dict(
-                status="sleeping",
-                sleep_state=sleep_state,
-                error=str(mcf)[:500],
-                error_category=mcf.error_category,
-            )
-            if not is_classifier_failure:
-                update_kwargs["retry_count"] = task.get("retry_count", 0) + 1
-
-            await update_task(task_id, **update_kwargs)
-
-            logger.warning(
-                "task sleeping — waiting for capacity signal",
-                task_id=task_id,
-                error_category=mcf.error_category,
-                timer_tier=timer_tier,
-                is_classifier_failure=is_classifier_failure,
-            )
+            if decision.action == "terminal":
+                await update_task(
+                    task_id, status="failed",
+                    error=str(mcf)[:500],
+                    failed_in_phase="worker",
+                    retry_reason="availability",
+                )
+                try:
+                    from src.infra.dead_letter import quarantine_task
+                    await quarantine_task(
+                        task_id=task_id,
+                        mission_id=task.get("mission_id"),
+                        error=str(mcf)[:500],
+                        error_category="availability",
+                        original_agent=task.get("agent_type", "executor"),
+                    )
+                except Exception:
+                    pass
+                logger.warning(
+                    "availability DLQ",
+                    task_id=task_id,
+                    error=str(mcf)[:200],
+                )
+            else:
+                _avail_ctx["last_avail_delay"] = decision.delay_seconds
+                next_retry = (
+                    datetime.now() + timedelta(seconds=decision.delay_seconds)
+                ).strftime(_DB_DT_FMT)
+                await update_task(
+                    task_id, status="pending",
+                    error=str(mcf)[:500],
+                    next_retry_at=next_retry,
+                    retry_reason="availability",
+                    context=json.dumps(_avail_ctx),
+                )
+                logger.warning(
+                    "availability backoff",
+                    task_id=task_id,
+                    delay=decision.delay_seconds,
+                )
 
         except Exception as e:
             logger.exception("task failed", task_id=task_id, error_type=type(e).__name__, error=str(e))

@@ -998,26 +998,6 @@ async def update_task(task_id, **kwargs):
     await db.commit()
 
 
-_SLEEP_TIER_INTERVALS = [600, 1800, 3600, 7200]
-
-
-def make_sleep_state(
-    timer_tier: int = 0,
-    signal_failures: int = 0,
-    error_category: str = "unknown",
-) -> str:
-    """Create a sleep_state JSON string for a task entering the sleeping queue."""
-    import json as _json
-    interval = _SLEEP_TIER_INTERVALS[min(timer_tier, len(_SLEEP_TIER_INTERVALS) - 1)]
-    next_wake = (datetime.now(timezone.utc) + timedelta(seconds=interval)).strftime("%Y-%m-%d %H:%M:%S")
-    return _json.dumps({
-        "timer_tier": timer_tier,
-        "signal_failures": signal_failures,
-        "last_error_category": error_category,
-        "sleeping_since": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-        "next_timer_wake": next_wake,
-    })
-
 
 async def accelerate_retries(reason: str) -> int:
     """Pull next_retry_at to now for tasks waiting on availability.

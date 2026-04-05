@@ -312,8 +312,8 @@ class LocalModelManager:
                 async def _wake_on_cooldown():
                     await _aio.sleep(_RESTART_COOLDOWN_S)
                     try:
-                        from src.infra.db import wake_sleeping_tasks
-                        await wake_sleeping_tasks("circuit_breaker_reset")
+                        from src.infra.db import accelerate_retries
+                        await accelerate_retries("circuit_breaker_reset")
                     except Exception:
                         pass
 

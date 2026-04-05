@@ -185,8 +185,8 @@ class GPUScheduler:
                 # Signal sleeping queue: GPU is free, tasks that timed out
                 # waiting for GPU might succeed now.
                 try:
-                    from src.infra.db import wake_sleeping_tasks
-                    asyncio.ensure_future(wake_sleeping_tasks("gpu_available"))
+                    from src.infra.db import accelerate_retries
+                    asyncio.ensure_future(accelerate_retries("gpu_available"))
                 except Exception:
                     pass
 

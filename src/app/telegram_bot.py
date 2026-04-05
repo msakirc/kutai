@@ -332,14 +332,14 @@ class TelegramInterface:
         """Rebuild _pending_clarifications and Q&A queues from DB after restart.
 
         Called once after Telegram polling starts. For any task in
-        needs_clarification, restore the in-memory tracking and re-send
+        waiting_human, restore the in-memory tracking and re-send
         the pending question so the user sees it again.
         """
         try:
             db = await get_db()
             cursor = await db.execute(
                 """SELECT id, title, context FROM tasks
-                   WHERE status = 'needs_clarification'
+                   WHERE status = 'waiting_human'
                    ORDER BY created_at DESC"""
             )
             rows = await cursor.fetchall()
@@ -406,7 +406,7 @@ class TelegramInterface:
                                     task_id=task_id)
                     else:
                         # No saved question text — just note it's pending
-                        logger.info("Found needs_clarification task without "
+                        logger.info("Found waiting_human task without "
                                     "saved question", task_id=task_id)
                 break  # One clarification at a time
 
@@ -505,7 +505,7 @@ class TelegramInterface:
                     buttons = []
                     for i, m in enumerate(missions[:10], 1):
                         status_icon = {"running": "🔄", "pending": "⏳",
-                                       "paused": "⏸", "needs_clarification": "❓"
+                                       "waiting_human": "❓", "ungraded": "⏳"
                                        }.get(m.get("status", ""), "📋")
                         title = m.get("title", m.get("description", "?"))[:50]
                         lines.append(f"{i}. {status_icon} {title}")
@@ -1104,8 +1104,8 @@ class TelegramInterface:
                 title = (t.get("title") or t.get("description", "?"))[:40]
                 agent = t.get("agent_type", "?")
                 status_icon = {"completed": "✅", "failed": "❌", "running": "🔄",
-                               "pending": "⏳", "paused": "⏸",
-                               "needs_clarification": "❓"
+                               "pending": "⏳", "ungraded": "⏳",
+                               "waiting_human": "❓"
                                }.get(t.get("status", ""), "📋")
                 # Time ago
                 time_str = ""
@@ -2065,8 +2065,9 @@ class TelegramInterface:
             "completed": "✅",
             "failed": "❌",
             "waiting_subtasks": "📋",
-            "needs_clarification": "❓",
-            "rejected": "🚫",
+            "waiting_human": "❓",
+            "cancelled": "🚫",
+            "ungraded": "⏳",
         }
 
         for t in tasks:
@@ -2346,7 +2347,7 @@ class TelegramInterface:
             "pending": "⏳", "processing": "⚙️",
             "completed": "✅", "failed": "❌",
             "cancelled": "🚫", "waiting_subtasks": "🔄",
-            "needs_clarification": "❓", "needs_review": "👀",
+            "waiting_human": "❓", "needs_review": "👀", "ungraded": "⏳",
         }
 
         # Build parent→children map
@@ -3168,7 +3169,7 @@ class TelegramInterface:
             await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
     async def cmd_retry(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Retry a sleeping, failed, or paused task: /retry <task_id>."""
+        """Retry a failed task: /retry <task_id>."""
         if not context.args:
             await self._reply(update, "Usage: /retry <task\\_id>", parse_mode="Markdown")
             return
@@ -3180,7 +3181,7 @@ class TelegramInterface:
             return
 
         try:
-            from ..infra.db import get_task, update_task
+            from ..infra.db import get_task
             task = await get_task(task_id)
             if task is None:
                 await self._reply(update, f"❌ Task #{task_id} not found.")
@@ -3188,26 +3189,23 @@ class TelegramInterface:
 
             status = task.get("status", "")
 
-            if status == "sleeping":
-                await update_task(task_id, status="pending", sleep_state=None, retry_count=0, error=None)
-                await self._reply(update, f"▶️ Task #{task_id} woken from sleeping queue.")
-            elif status == "failed":
+            if status == "failed":
                 from ..infra.dead_letter import retry_dlq_task
                 await retry_dlq_task(task_id)
-                await self._reply(update, f"🔄 Task #{task_id} re-queued from DLQ.")
-            elif status == "paused":
-                await update_task(task_id, status="pending", retry_count=0, error=None)
-                await self._reply(update, f"▶️ Task #{task_id} resumed.")
+                # Phase-aware: re-read task to show actual new status
+                refreshed = await get_task(task_id)
+                new_status = refreshed.get("status", "pending") if refreshed else "pending"
+                await self._reply(update, f"🔄 Task #{task_id} re-queued from DLQ → {new_status}.")
             else:
                 await self._reply(
                     update,
-                    f"⚠️ Task #{task_id} has status '{status}' — only sleeping, failed, or paused tasks can be retried."
+                    f"⚠️ Task #{task_id} has status '{status}' — only failed tasks can be retried."
                 )
         except Exception as e:
             await self._reply(update, f"❌ {_friendly_error(str(e))}")
 
     async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Resume a failed or paused workflow."""
+        """Resume a failed workflow."""
         if not context.args:
             await self._reply(update,"Usage: /resume <mission\\_id>",
                                             parse_mode="Markdown")
@@ -3238,10 +3236,10 @@ class TelegramInterface:
             )
 
     async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Pause a task or mission: /pause <mission_id|task_id>"""
+        """Cancel pending tasks in a mission: /pause <mission_id>"""
         args = context.args or []
         if not args:
-            await self._reply(update,"Usage: /pause <mission\\_id>\nPauses all pending/processing tasks for the mission.",
+            await self._reply(update,"Usage: /pause <mission\\_id>\nCancels all pending tasks for the mission.",
                                            parse_mode="Markdown")
             return
         try:
@@ -3249,14 +3247,14 @@ class TelegramInterface:
             from ..infra.db import get_db
             async with get_db() as db:
                 result = await db.execute(
-                    """UPDATE tasks SET status = 'paused'
-                       WHERE mission_id = ? AND status IN ('pending', 'processing')""",
+                    """UPDATE tasks SET status = 'cancelled'
+                       WHERE mission_id = ? AND status IN ('pending')""",
                     (mission_id,)
                 )
                 await db.commit()
                 count = result.rowcount
-            await self._reply(update,f"\u23f8 Mission #{mission_id}: paused {count} task(s).")
-            logger.info("mission paused via command", mission_id=mission_id, tasks_paused=count)
+            await self._reply(update,f"🚫 Mission #{mission_id}: cancelled {count} task(s).")
+            logger.info("mission cancelled via command", mission_id=mission_id, tasks_cancelled=count)
         except ValueError:
             await self._reply(update,"Please provide a valid integer mission ID.")
         except Exception as e:
@@ -3703,10 +3701,10 @@ class TelegramInterface:
                     )
                 # Fall through to normal routing (don't return)
             else:
-                # Also check DB to confirm task is still in needs_clarification
+                # Also check DB to confirm task is still in waiting_human
                 try:
                     task_info = await get_task(pending_task_id)
-                    if task_info and task_info.get("status") == "needs_clarification":
+                    if task_info and task_info.get("status") == "waiting_human":
                         await self._resume_with_clarification(
                             chat_id, pending_task_id, text, task_info, update
                         )
@@ -3717,12 +3715,12 @@ class TelegramInterface:
                 except Exception:
                     self._pending_clarifications.pop(chat_id, None)
 
-        # Also check DB for ANY task in needs_clarification (handles bot restart)
+        # Also check DB for ANY task in waiting_human (handles bot restart)
         try:
             db = await get_db()
             cursor = await db.execute(
                 """SELECT id, title, description, status, context FROM tasks
-                   WHERE status = 'needs_clarification'
+                   WHERE status = 'waiting_human'
                    ORDER BY created_at DESC LIMIT 1"""
             )
             row = await cursor.fetchone()
@@ -4885,7 +4883,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         task_id = self._clarification_msg_ids.get(replied_to.message_id)
         if task_id:
             task_info = await get_task(task_id)
-            if task_info and task_info.get("status") == "needs_clarification":
+            if task_info and task_info.get("status") == "waiting_human":
                 await self._resume_with_clarification(
                     chat_id, task_id, answer, task_info, update
                 )
@@ -4898,7 +4896,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             if match:
                 task_id = int(match.group(1))
                 task_info = await get_task(task_id)
-                if task_info and task_info.get("status") == "needs_clarification":
+                if task_info and task_info.get("status") == "waiting_human":
                     await self._resume_with_clarification(
                         chat_id, task_id, answer, task_info, update
                     )
@@ -4906,12 +4904,12 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             # Sequential questions don't have Task # — check pending_clarifications
             pending_task_id = self._pending_clarifications.get(chat_id)
             if not pending_task_id:
-                # DB fallback: any task in needs_clarification
+                # DB fallback: any task in waiting_human
                 try:
                     db = await get_db()
                     cursor = await db.execute(
                         """SELECT id FROM tasks
-                           WHERE status = 'needs_clarification'
+                           WHERE status = 'waiting_human'
                            ORDER BY created_at DESC LIMIT 1"""
                     )
                     row = await cursor.fetchone()
@@ -4921,7 +4919,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     pass
             if pending_task_id:
                 task_info = await get_task(pending_task_id)
-                if task_info and task_info.get("status") == "needs_clarification":
+                if task_info and task_info.get("status") == "waiting_human":
                     await self._resume_with_clarification(
                         chat_id, pending_task_id, answer, task_info, update
                     )
@@ -4953,20 +4951,15 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 status = mission.get("status", "?")
                 priority = mission.get("priority", "?")
                 status_tr = {"running": "çalışıyor", "pending": "bekliyor",
-                            "paused": "duraklatıldı", "completed": "tamamlandı",
-                            "failed": "başarısız", "needs_clarification": "açıklama bekliyor"
+                            "completed": "tamamlandı",
+                            "failed": "başarısız", "waiting_human": "yanıt bekleniyor",
+                            "ungraded": "derecelendirme bekleniyor", "cancelled": "iptal"
                             }.get(status, status)
                 text = (f"🎯 *{title}*\n"
                         f"Durum: {status_tr} | Öncelik: {priority}")
                 buttons = []
                 if status in ("running", "pending"):
                     buttons.append([
-                        InlineKeyboardButton("⏸ Duraklat", callback_data=f"m:task:pause:{mission_id}"),
-                        InlineKeyboardButton("🚫 İptal", callback_data=f"m:task:cancel:{mission_id}"),
-                    ])
-                elif status == "paused":
-                    buttons.append([
-                        InlineKeyboardButton("▶️ Devam", callback_data=f"m:task:resume:{mission_id}"),
                         InlineKeyboardButton("🚫 İptal", callback_data=f"m:task:cancel:{mission_id}"),
                     ])
                 buttons.append([
@@ -4983,17 +4976,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         if data.startswith("m:task:pause:"):
             mid = int(data.split(":")[-1])
             try:
-                await update_mission(mid, status="paused")
-                await query.message.reply_text(f"⏸ Görev #{mid} duraklatıldı.")
-            except Exception as e:
-                await query.message.reply_text(f"❌ {e}")
-            return
-
-        if data.startswith("m:task:resume:"):
-            mid = int(data.split(":")[-1])
-            try:
-                await update_mission(mid, status="pending")
-                await query.message.reply_text(f"▶️ Görev #{mid} devam ediyor.")
+                await update_mission(mid, status="cancelled")
+                await query.message.reply_text(f"🚫 Görev #{mid} iptal edildi.")
             except Exception as e:
                 await query.message.reply_text(f"❌ {e}")
             return
@@ -5732,8 +5716,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 if task_id in self._approval_events:
                     self._approval_events[task_id]["result"] = "rejected"
                     self._approval_events[task_id]["event"].set()
-                await update_task(task_id, status="rejected")
-                await query.edit_message_text(f"❌ Task #{task_id} rejected.")
+                await update_task(task_id, status="cancelled")
+                await query.edit_message_text(f"❌ Task #{task_id} cancelled.")
 
     # --- Outbound notifications ---
 

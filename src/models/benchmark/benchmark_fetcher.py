@@ -1,7 +1,7 @@
 # benchmark_fetcher.py
 """
 Benchmark Fetcher — pulls model evaluation data from multiple public sources
-and maps them to our 14-dimension capability schema.
+and maps them to our 15-dimension capability schema.
 
 Sources:
   1. Artificial Analysis API (artificialanalysis.ai)
@@ -995,7 +995,7 @@ class BenchmarkFetcher:
     def fetch_model(self, model_id: str) -> dict[str, float]:
         """
         Fetch and merge benchmark data for a single model from all sources.
-        Returns merged 14-dimension capability dict.
+        Returns merged 15-dimension capability dict.
 
         Merge strategy: weighted average by source confidence.
         """

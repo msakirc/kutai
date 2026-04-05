@@ -678,24 +678,24 @@ class LocalModelManager:
             "--ubatch-size", "512", # micro-batch for generation
         ]
 
-        # Always pass explicit --n-gpu-layers for deterministic VRAM usage.
-        # --fit auto-calculates but allocates fewer layers under runtime VRAM
-        # pressure (e.g. 1013MB baseline vs 760MB in clean benchmark), causing
-        # 12.9 tok/s instead of 25.4 tok/s.  Passing 99 forces maximum offload
-        # — llama-server caps at the model's actual layer count.
+        # Let llama-server's --fit (default-on) auto-calculate optimal GPU
+        # layer allocation based on actual free VRAM.  Only pass explicit
+        # --n-gpu-layers when the user/yaml specifies an override.
+        # --fit correctly handles both small models (full offload) and large
+        # models (partial offload), reserving ~1GB free VRAM headroom.
         if getattr(model, '_gpu_layers_from_override', False) and model.gpu_layers > 0:
             cmd.extend(["--n-gpu-layers", str(model.gpu_layers)])
-        else:
-            cmd.extend(["--n-gpu-layers", "99"])
 
-        # Control thinking via chat_template_kwargs (server-level flag,
-        # not supported per-request by llama-server).
-        if model.thinking_model:
-            import json as _json
-            cmd.extend([
-                "--chat-template-kwargs",
-                _json.dumps({"enable_thinking": enable_thinking}),
-            ])
+        # Control thinking/reasoning mode (server-level, not per-request).
+        # llama.cpp v8668+: --reasoning on/off + --reasoning-budget 0.
+        # --chat-template-kwargs {"enable_thinking": ...} is deprecated.
+        # Skip for --no-jinja models (e.g. Apriel: always-on, incompatible).
+        has_no_jinja = "--no-jinja" in (getattr(model, 'extra_server_flags', None) or [])
+        if model.thinking_model and not has_no_jinja:
+            if enable_thinking:
+                cmd.extend(["--reasoning", "on"])
+            else:
+                cmd.extend(["--reasoning", "off", "--reasoning-budget", "0"])
 
         # Vision projector (mmproj) — only loaded when a vision task needs it.
         # Saves ~876MB VRAM for the 99% of requests that are text-only.

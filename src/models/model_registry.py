@@ -1,6 +1,6 @@
 # model_registry.py
 """
-Model Registry v2 — auto-scanning, 14-dimension capabilities, hot reload.
+Model Registry v2 — auto-scanning, 15-dimension capabilities, hot reload.
 
 Loads models from:
   1. GGUF files in MODEL_DIR (from .env)
@@ -291,6 +291,7 @@ def _estimate_from_filename(path: str) -> dict:
         "gemma3", "gemma2", "gemma", "mistral", "mixtral", "deepseek",
         "codellama", "starcoder", "llava", "moondream", "internvl",
         "minicpm", "command-r", "yi", "internlm", "qwq",
+        "gigachat", "apriel", "gpt-oss", "gemma-4", "gemma4",
     ]:
         if arch in name:
             metadata["architecture"] = arch
@@ -316,7 +317,7 @@ def estimate_capabilities(
     has_vision_hint: bool = False,
 ) -> dict[str, float]:
     """
-    Estimate 14-dimension capability scores from model metadata.
+    Estimate 15-dimension capability scores from model metadata.
 
     Strategy:
     1. Look up family profile (or use default)
@@ -522,16 +523,19 @@ def find_mmproj_path(file_path: str) -> str | None:
     """Find a companion mmproj GGUF for the given model file.
 
     Returns the full path to the mmproj file, or None.
-    Matches by checking that the mmproj filename shares the first two
+    Matches by checking that the mmproj filename shares ALL of the first two
     stem segments with the model file (e.g. Qwen3.5-9B matches
-    Qwen3.5-9B-...-mmproj-F16.gguf).
+    Qwen3.5-9B-...-mmproj-F16.gguf but Qwen3-Coder does NOT match
+    Qwen3.5-9B-mmproj).
     """
     model_dir = Path(file_path).parent
     stem = Path(file_path).stem.lower()
+    # Use first two hyphen-separated segments as identity (e.g. "qwen3.5-9b")
     stem_parts = stem.split("-")[:2]
     for f in model_dir.iterdir():
         if f.suffix == ".gguf" and "mmproj" in f.stem.lower():
-            if any(part in f.stem.lower() for part in stem_parts):
+            mmproj_lower = f.stem.lower()
+            if all(part in mmproj_lower for part in stem_parts):
                 return str(f)
     return None
 
@@ -549,6 +553,10 @@ _TOOL_CALL_FAMILIES = {
     "deepseek_v3", "deepseek_r1",
     "command_r",
     "internlm",
+    "apriel", "apriel_thinker",
+    "gpt_oss",
+    "gigachat",
+    "gemma4",
 }
 
 
@@ -564,7 +572,7 @@ def detect_function_calling(family_key: str | None, gguf_metadata: dict) -> bool
 
 # ─── Thinking Model Detection ───────────────────────────────────────────────
 
-_THINKING_FAMILIES = {"qwen3", "qwen35", "qwen3_coder", "qwq", "deepseek_r1", "glm4_flash"}
+_THINKING_FAMILIES = {"qwen3", "qwen35", "qwen3_coder", "qwq", "deepseek_r1", "glm4_flash", "apriel_thinker", "gpt_oss", "gemma4"}
 _THINKING_NAME_PATTERNS = ["o1", "o3", "o4", "qwq", "deepseek-r1", "gemini-2.5", "glm"]
 
 
@@ -1075,11 +1083,31 @@ class ModelRegistry:
                 has_vision_hint=raw["has_vision"],
             )
 
-            # Context length (override > native)
-            context_length = model_overrides.get("context_length", raw["native_ctx"])
-
-            # GPU layers
+            # Context length + GPU layers (co-dependent — resolve iteratively).
+            # 1. Estimate GPU layers with a modest context (8192) to get baseline GPU ratio
+            # 2. Use dynamic context calculator to pick real context based on GPU ratio
+            # 3. Recalculate GPU layers with the actual context
             _gpu_layers_from_override = "gpu_layers" in model_overrides and model_overrides["gpu_layers"]
+            if model_overrides.get("context_length"):
+                context_length = model_overrides["context_length"]
+            else:
+                # Step 1: baseline GPU layers at 8K context
+                baseline_gpu = calculate_gpu_layers(
+                    file_size_mb=raw["file_size_mb"],
+                    n_layers=raw["n_layers"],
+                    available_vram_mb=available_vram,
+                    context_length=8192,
+                )
+                # Step 2: dynamic context based on what fits
+                context_length = calculate_dynamic_context(
+                    file_size_mb=raw["file_size_mb"],
+                    n_layers=raw["n_layers"],
+                    gpu_layers=baseline_gpu,
+                    available_ram_mb=32768,  # conservative 32GB
+                    available_vram_mb=available_vram,
+                    family_key=raw["family_key"],
+                )
+
             gpu_layers = model_overrides.get("gpu_layers") or calculate_gpu_layers(
                 file_size_mb=raw["file_size_mb"],
                 n_layers=raw["n_layers"],
@@ -1111,9 +1139,12 @@ class ModelRegistry:
             extra_server_flags = list(model_overrides.get("extra_server_flags", []))
             if not extra_server_flags:
                 # Family-based defaults
-                if raw["is_moe"]:
-                    extra_server_flags = ["--override-kv", "tokenizer.ggml.eos_token_id=int:151645"]
+                family = raw.get("family_key", "") or ""
                 name_lower = name.lower()
+                # Qwen3/Qwen3-Coder MoE need explicit eos token (151645).
+                # Qwen3.5 has correct eos (248046) baked into GGUF — no override needed.
+                if raw["is_moe"] and family in ("qwen3", "qwen3_coder"):
+                    extra_server_flags = ["--override-kv", "tokenizer.ggml.eos_token_id=int:151645"]
                 if "apriel" in name_lower:
                     extra_server_flags = ["--no-jinja", "--chat-template", "chatml"]
 

@@ -162,7 +162,7 @@ def cmd_model(name: str):
     if model.tokens_per_second > 0:
         print(f"  Speed:       {model.tokens_per_second:.1f} tok/s")
 
-    print(f"\n  📊 Capabilities (14 dimensions):")
+    print(f"\n  📊 Capabilities (15 dimensions):")
     print(f"  {'─' * 50}")
     sorted_caps = sorted(model.capabilities.items(), key=lambda x: x[1], reverse=True)
     for cap_name, score in sorted_caps:

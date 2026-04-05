@@ -1,6 +1,6 @@
 # router.py
 """
-Model Router v2 — 14-dimension task-aware model selection,
+Model Router v2 — 15-dimension task-aware model selection,
 rate limiting, retries, cross-provider fallback, GPU-aware scheduling.
 """
 
@@ -323,7 +323,7 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
     Select models matching requirements, ranked by composite score.
 
     Scoring (all 0-100, then weighted):
-    1. CAPABILITY FIT (35)  — 14-dimension weighted dot product
+    1. CAPABILITY FIT (35)  — 15-dimension weighted dot product
     2. COST EFFICIENCY (25) — local > free cloud > cheap paid > expensive
     3. AVAILABILITY (20)    — rate limit headroom, loaded status
     4. PERFORMANCE (15)     — historical success rate + quality grades
@@ -1522,12 +1522,34 @@ async def grade_response(
             }],
         )
 
-        raw = result.get("content", "").strip()
+        raw_content = result.get("content", "")
+        # Handle structured content (list of dicts from some LLM providers)
+        if isinstance(raw_content, list):
+            raw_content = " ".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in raw_content
+            )
+        elif not isinstance(raw_content, str):
+            raw_content = str(raw_content)
+        raw = raw_content.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
             raw = raw.rsplit("```", 1)[0]
 
-        parsed = json.loads(raw.strip())
+        # Parse JSON — with regex fallback for non-compliant LLMs
+        parsed = None
+        try:
+            parsed = json.loads(raw.strip())
+        except (json.JSONDecodeError, ValueError):
+            # Regex fallback: extract score from malformed output
+            score_match = re.search(r'"?score"?\s*[:=]\s*(\d(?:\.\d+)?)', raw)
+            if score_match:
+                parsed = {"score": float(score_match.group(1)), "reason": "parsed via fallback"}
+                logger.debug(f"grade JSON fallback succeeded | raw={raw[:100]}")
+
+        if parsed is None:
+            raise ValueError(f"grading LLM returned unparseable output: {raw[:150]}")
+
         score = float(parsed.get("score", 3))
         grade = max(1.0, min(5.0, score))
 
@@ -1556,8 +1578,8 @@ async def grade_response(
         return (grade, parsed)
 
     except Exception as e:
-        logger.debug("response grading failed", error=str(e))
-        return (None, {})
+        logger.warning(f"grade_response failed | error={e}")
+        raise
 
 
 # ─── Cost Budget ─────────────────────────────────────────────────────────────

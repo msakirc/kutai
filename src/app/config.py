@@ -85,7 +85,7 @@ def get_model_pool() -> dict:
 
         pool = {}
         for name, m in registry.models.items():
-            # Map 14-dimension capabilities back to a simple capability list
+            # Map 15-dimension capabilities back to a simple capability list
             # (top capabilities above threshold 5.0)
             top_caps = [
                 cap for cap, score in sorted(

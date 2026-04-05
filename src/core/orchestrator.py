@@ -484,17 +484,37 @@ class Orchestrator:
             await db.commit()
 
         # 2. Ungraded tasks stuck for > 30 min — safety net
+        #    Use worker_completed_at from context (set by base.py on entering ungraded).
+        #    Falls back to started_at if worker_completed_at is missing.
         cursor_ung = await db.execute(
-            """SELECT id FROM tasks
-               WHERE status = 'ungraded'
-               AND started_at < datetime('now', '-30 minutes')"""
+            "SELECT id, context, started_at FROM tasks WHERE status = 'ungraded'"
         )
-        stuck_ungraded = [dict(row) for row in await cursor_ung.fetchall()]
+        all_ungraded = [dict(row) for row in await cursor_ung.fetchall()]
+        stuck_ungraded = []
+        for task in all_ungraded:
+            raw_ctx = task.get("context", "{}")
+            try:
+                ctx = json.loads(raw_ctx) if isinstance(raw_ctx, str) else (raw_ctx or {})
+            except (json.JSONDecodeError, TypeError):
+                ctx = {}
+            ref_time_str = ctx.get("worker_completed_at") or task.get("started_at")
+            if not ref_time_str:
+                continue
+            try:
+                ref_dt = datetime.strptime(
+                    str(ref_time_str).replace("T", " ")[:19],
+                    "%Y-%m-%d %H:%M:%S",
+                )
+                if (datetime.now() - ref_dt).total_seconds() > 1800:
+                    stuck_ungraded.append(task)
+            except (ValueError, TypeError):
+                continue
+
         for task in stuck_ungraded:
             await db.execute(
                 "UPDATE tasks SET status = 'completed', quality_score = NULL, "
                 "completed_at = ? WHERE id = ?",
-                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), task["id"])
+                (datetime.now().strftime(_DB_DT_FMT), task["id"]),
             )
             logger.warning(f"[Watchdog] Stuck ungraded #{task['id']} promoted to completed (safety net)")
         if stuck_ungraded:
@@ -1682,41 +1702,62 @@ class Orchestrator:
                         await self._handle_clarification(task, result)
                         return
                     if result.get("status") == "failed":
-                        # Disguised failure detected — retry then backpressure
                         error_msg = result.get("error", "Disguised failure detected")
-                        retry_count = task.get("retry_count", 0) or 0
-                        max_retries = task.get("max_retries", 3) or 3
+                        attempts = (task.get("attempts") or 0) + 1
+                        max_attempts = task.get("max_attempts") or 6
 
-                        if retry_count < max_retries:
+                        from src.core.retry import compute_retry_timing, update_exclusions_on_failure
+                        update_exclusions_on_failure(task_ctx, result.get("model", ""), attempts)
+                        decision = compute_retry_timing("quality", attempts=attempts, max_attempts=max_attempts)
+
+                        if decision.action == "terminal":
+                            await update_task(
+                                task_id, status="failed",
+                                attempts=attempts,
+                                failed_in_phase="worker",
+                                error=f"Disguised failure exhausted: {error_msg[:300]}",
+                                context=json.dumps(task_ctx),
+                            )
+                            try:
+                                from src.infra.dead_letter import quarantine_task
+                                await quarantine_task(
+                                    task_id=task_id,
+                                    mission_id=task.get("mission_id"),
+                                    error=f"Disguised failure after {attempts} attempts: {error_msg[:300]}",
+                                    error_category="quality",
+                                    original_agent=task.get("agent_type", "executor"),
+                                    retry_count=attempts,
+                                )
+                            except Exception:
+                                pass
+                            await self.telegram.send_notification(
+                                f"❌ Task #{task_id} disguised failure → DLQ\n"
+                                f"**{task.get('title', '')[:60]}**\n"
+                                f"Reason: {error_msg[:100]}"
+                            )
+                            logger.warning(
+                                "disguised failure terminal",
+                                task_id=task_id,
+                                attempts=attempts,
+                            )
+                        else:
+                            next_retry = None
+                            if decision.action == "delayed":
+                                next_retry = (
+                                    datetime.now() + timedelta(seconds=decision.delay_seconds)
+                                ).strftime(_DB_DT_FMT)
                             await update_task(
                                 task_id, status="pending",
-                                retry_count=retry_count + 1,
-                                error=error_msg,
+                                attempts=attempts,
+                                error=error_msg[:500],
+                                next_retry_at=next_retry,
+                                retry_reason="quality",
+                                context=json.dumps(task_ctx),
                             )
                             logger.warning(
                                 f"disguised failure, retrying "
-                                f"{retry_count + 1}/{max_retries}",
+                                f"{attempts}/{max_attempts}",
                                 task_id=task_id,
-                            )
-                        else:
-                            # Unified retry: use next_retry_at instead of paused state
-                            from datetime import timedelta
-                            next_retry = (datetime.now() + timedelta(seconds=600)).strftime(_DB_DT_FMT)
-                            await update_task(
-                                task_id, status="pending",
-                                error=f"Backpressure after {max_retries} failures: {error_msg}",
-                                next_retry_at=next_retry,
-                                retry_reason="quality",
-                            )
-                            logger.warning(
-                                f"disguised failure, backpressure retry in 10min "
-                                f"after {max_retries} retries",
-                                task_id=task_id,
-                            )
-                            await self.telegram.send_notification(
-                                f"⏸ Task #{task_id} backpressure — will auto-retry\n"
-                                f"**{task.get('title', '')}**\n"
-                                f"Reason: {error_msg[:100]}"
                             )
                         return
                 await self._handle_complete(task, result)

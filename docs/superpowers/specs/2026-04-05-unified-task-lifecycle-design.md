@@ -568,6 +568,47 @@ VERDICT: Should this response be accepted?
 
 ---
 
+## Model Swap Signal Ordering
+
+When `on_model_swap` fires, two things need to happen:
+1. `accelerate_retries("model_swap")` — wake pending tasks with availability backoff
+2. `drain_ungraded_tasks(new_model)` — grade ungraded tasks
+
+**Order matters:** accelerate first, then drain. Accelerated tasks become immediately
+eligible for the next main loop cycle. Grading happens synchronously in the same
+`on_model_swap` call — by the time the main loop runs, both wakes and grades are done.
+
+```python
+async def on_model_swap(self, old_model, new_model):
+    # 1. Wake availability-delayed tasks (pending and ungraded)
+    woken = await accelerate_retries("model_swap")
+
+    # 2. Grade ungraded tasks the new model can handle
+    if new_model:
+        graded = await drain_ungraded_tasks(new_model)
+
+    # 3. All grading/routing goes through dispatcher (OVERHEAD)
+    #    Never call grade_response directly — dispatcher handles
+    #    timeout, error propagation, metrics.
+```
+
+## Mission Completion Query
+
+`_check_mission_completion` must be aware of `ungraded`:
+
+```python
+# Current: status not in (completed, failed, rejected)
+# Updated: status not in (completed, failed, cancelled, skipped)
+# "ungraded" is NOT in the exclusion list — keeps mission open until all grades resolve
+pending = [s for s in statuses if s not in ("completed", "failed", "cancelled", "skipped")]
+```
+
+Also must handle the renamed states:
+- `rejected` → `cancelled` (already in exclusion list)
+- `sleeping` / `paused` → no longer exist (tasks are `pending` with `next_retry_at`)
+
+---
+
 ## Watchdog (Simplified)
 
 The watchdog runs every 10 cycles. With the unified model, it handles fewer cases:
@@ -679,10 +720,11 @@ All status changes go through `transition_task()`. No more raw `update_task(stat
 
 ## DLQ
 
-**Entry** — three paths, all lead to `failed` → `quarantine_task()`:
+**Entry** — two paths lead to `failed` → `quarantine_task()`:
 - Worker quality exhausted: `attempts >= max_attempts`
-- Grading quality exhausted: `grade_attempts >= max_grade_attempts` → waive grading (promote to `completed` with `quality_score=NULL`). This does NOT go to DLQ — grading waiver is graceful degradation.
-- Availability exhausted: `avail_retries >= max_avail_retries` → `failed` → DLQ. `failed_in_phase` records whether the task was in worker or grading phase.
+- Availability exhausted: `last_avail_delay >= 7200` and still failing. `failed_in_phase` records whether the task was in worker or grading phase.
+
+Grading quality exhaustion (`grade_attempts >= max_grade_attempts`) does NOT go to DLQ — it waives grading and promotes to `completed` with `quality_score=NULL` (graceful degradation).
 
 **Exit** — manual only (`/dlq retry`, `/dlq discard`, inline button).
 
@@ -691,7 +733,17 @@ All status changes go through `transition_task()`. No more raw `update_task(stat
 - `failed_in_phase = "grading"` → `ungraded` (worker output preserved, retry grading only)
 - `failed_in_phase = NULL` (legacy) → `pending` (backward compat)
 
-Re-enable resets `avail_retries = 0` but preserves `attempts` and `grade_attempts` (quality budget is lifetime).
+**What resets on DLQ re-enable:**
+
+| Field | Reset? | Why |
+|---|---|---|
+| `context.last_avail_delay` | Yes → 0 | Fresh backoff progression |
+| `context.excluded_models` | Yes → `[]` | Models may have been updated/reloaded |
+| `context.grade_excluded_models` | Yes → `[]` (but `generating_model` stays excluded from grading) | Same reason, but self-grading still prevented |
+| `attempts` | No (preserved) | Quality budget is lifetime — human chose to retry, doesn't mean the task got easier |
+| `grade_attempts` | No (preserved) | Same |
+| `next_retry_at` | Yes → NULL | Immediately eligible |
+| `retry_reason` | Yes → NULL | Clean slate |
 
 **Mission health:** auto-pause mission if >= 3 DLQ tasks (unchanged).
 
@@ -699,38 +751,101 @@ Re-enable resets `avail_retries = 0` but preserves `attempts` and `grade_attempt
 
 ## Telegram Impact
 
+### Status Display
+
 | Change | Telegram side |
 |---|---|
-| `needs_clarification` → `waiting_human` | Update status display strings |
-| `paused` removed | Remove "paused" from status displays, keep "Retry" button for `failed` |
-| `sleeping` removed | Remove "sleeping" from status displays |
-| `rejected` → `cancelled` | Update display |
-| `ungraded` added | Show as "Grading..." in task status. Optional: show grade result on promotion. |
-| Grade VERDICT=FAIL notification | Notify user: "Task #{id} output rejected by grader, retrying with different model" |
+| `needs_clarification` → `waiting_human` | Update status display strings, clarification handlers reference new state |
+| `paused` removed | Remove "paused" from status displays and keyboard state handlers |
+| `sleeping` removed | Remove "sleeping" from status displays and `/status` output |
+| `rejected` → `cancelled` | Update display strings |
+| `ungraded` added | Show as "Bekliyor: Derecelendirme..." in task status |
+| Grade VERDICT=FAIL | Notify: "Task #{id} output rejected by grader, retrying with different model" |
+| Grade PASS (deferred) | Notify for non-silent tasks: "Task #{id} graded and completed" |
+
+### Button/Handler Changes
+
+| Button/Handler | Current | Updated |
+|---|---|---|
+| "Retry" button on task detail | Shows for `failed`, `paused`, `sleeping` | Shows for `failed` only (other states auto-retry) |
+| "Resume" for paused | Exists as handler | Remove — no more `paused` state |
+| `/reset paused` admin command | Bulk resets paused tasks | Remove — use `/reset pending` for stuck tasks |
+| `/reset failed` admin command | Bulk resets failed tasks | Unchanged |
+| `/dlq retry` | Sets `pending`, `retry_count=0` | Phase-aware: reads `failed_in_phase`, resets exclusions |
+| Task status in `/tasks` list | Shows sleeping/paused counts | Remove those categories, add `ungraded` count |
+| Inline "Tekrar Dene" on DLQ | Sets `pending` | Phase-aware: `pending` or `ungraded` based on `failed_in_phase` |
 
 ---
 
 ## Interaction with `ensure_gpu_utilized`
 
-The existing mechanism works with minimal changes:
+The current implementation bails out when any model is loaded (`if manager.current_model: return`).
+This creates a **60-second hole** at workflow fan-in points:
+
+```
+Problem scenario:
+  Steps 3.1-3.5 all generated by model X → finish as "ungraded"
+  Model X still loaded → ensure_gpu_utilized returns early
+  Idle path: all ungraded tasks generated by X → can't self-grade → nothing happens
+  60s idle → unloader unloads X
+  THEN ensure_gpu_utilized loads grader model Y → swap → drain
+  = 60s wasted at every fan-in point × 15-20 fan-in points = 15-20 min total waste
+```
+
+**Fix:** Don't bail out when the loaded model can't serve current needs:
 
 ```python
 async def ensure_gpu_utilized(self, upcoming_tasks):
-    if manager.current_model:
-        return  # already loaded
-
     if upcoming_tasks:
-        # Main work available → load best-fit work model
-        best = self._find_best_local_for_batch(upcoming_tasks)
-        if best:
-            await manager.ensure_model(best, reason="proactive_load")
-        return
+        if not manager.current_model:
+            # No model loaded, main work waiting → load best-fit
+            best = self._find_best_local_for_batch(upcoming_tasks)
+            if best:
+                await manager.ensure_model(best, reason="proactive_load")
+        return  # main work exists, proceed to process it
 
-    # No main work — check overhead needs
-    if await self._has_pending_overhead_needs():
+    # No main work. Check overhead needs.
+    if not await self._has_pending_overhead_needs():
+        return  # nothing to do
+
+    if manager.current_model:
+        # Model loaded but no main work. Can it grade ungraded tasks?
+        if await self._loaded_model_can_grade():
+            return  # idle path (Trigger 2) will handle it
+        # Loaded model can't grade (self-generated) → swap to grader
+        best = self._find_best_grader_model()
+        if best and best != manager.current_model:
+            await manager.ensure_model(best, reason="grade_swap")
+    else:
+        # No model loaded, overhead needs exist → load grader
         best = self._find_fastest_general_model()
         if best:
             await manager.ensure_model(best, reason="overhead_load")
+```
+
+```python
+async def _loaded_model_can_grade(self) -> bool:
+    """Check if loaded model can grade ANY ungraded task (not self-generated)."""
+    loaded = self._get_loaded_litellm_name()
+    if not loaded:
+        return False
+    db = await get_db()
+    # Check if any ungraded task was NOT generated by the loaded model
+    cursor = await db.execute(
+        "SELECT COUNT(*) FROM tasks WHERE status = 'ungraded'"
+    )
+    total = (await cursor.fetchone())[0]
+    if total == 0:
+        return False
+    # Check generating_model in context — need to parse JSON
+    cursor2 = await db.execute(
+        "SELECT context FROM tasks WHERE status = 'ungraded'"
+    )
+    for row in await cursor2.fetchall():
+        ctx = json.loads(row["context"] or "{}")
+        if ctx.get("generating_model") != loaded:
+            return True  # at least one task can be graded
+    return False
 ```
 
 `_has_pending_overhead_needs` updated:
@@ -742,8 +857,7 @@ async def _has_pending_overhead_needs(self) -> bool:
     cursor = await db.execute(
         "SELECT COUNT(*) FROM tasks WHERE status = 'ungraded'"
     )
-    ungraded_count = (await cursor.fetchone())[0]
-    if ungraded_count > 0:
+    if (await cursor.fetchone())[0] > 0:
         return True
 
     # Pending todos (suggestion calls)
@@ -755,17 +869,32 @@ async def _has_pending_overhead_needs(self) -> bool:
         return False
 ```
 
+**Revised fan-in scenario with fix:**
+
+```
+Steps 3.1-3.5 all generated by model X → finish as "ungraded"
+get_ready_tasks() → 0 (dependents blocked)
+ensure_gpu_utilized([]):
+  no main work, overhead needs exist, model X loaded
+  → _loaded_model_can_grade() → False (all self-generated)
+  → swap to fastest general model Y
+  → on_model_swap → Trigger 1 → drain all 5 grades
+  → 3.1-3.5 promoted to completed → 3.11 unblocks
+Total delay: swap time (~30s) only. No 60s idle waste.
+```
+
 ---
 
 ## Summary of Changes by File
 
 | File | Changes |
 |---|---|
-| `src/core/state_machine.py` | New states, enforced transitions |
-| `src/infra/db.py` | New columns, migration, updated `get_ready_tasks`, `accelerate_retries`, remove sleeping queue functions |
-| `src/core/orchestrator.py` | Unified retry calls, simplified watchdog, grade drain on swap, remove sleeping/paused handlers |
-| `src/core/llm_dispatcher.py` | Remove `GradeQueue`/`PendingGrade`, update `ensure_gpu_utilized`, add `drain_ungraded_tasks` |
-| `src/core/router.py` | Updated grading prompt (structured binary), read `excluded_models` from task context |
-| `src/agents/base.py` | Worker completion → `ungraded` status, grade result handling |
-| `src/app/telegram_bot.py` | Status display updates, remove sleeping/paused references |
-| `src/infra/dead_letter.py` | No changes (entry/exit unchanged) |
+| `src/core/state_machine.py` | New states (`ungraded`, `waiting_human`, `skipped`), remove old states, enforced transitions via `transition_task()` |
+| `src/infra/db.py` | New columns (attempts, grade_attempts, next_retry_at, retry_reason, failed_in_phase), migration SQL, updated `get_ready_tasks` (next_retry_at filter, ungraded exclusion), `accelerate_retries()` replaces `wake_sleeping_tasks()`, remove sleeping queue functions |
+| `src/core/orchestrator.py` | Unified retry via `compute_retry_timing()`, simplified watchdog (remove paused/sleeping handlers, add stuck-ungraded/failed-dep-cascade), `drain_ungraded_tasks()` called from `on_model_swap`, idle path grades with loaded model, updated `_check_mission_completion` for new states, `on_model_swap` ordering (accelerate → drain) |
+| `src/core/llm_dispatcher.py` | Remove `GradeQueue`/`PendingGrade`/`drain_grades_if_*`, update `ensure_gpu_utilized` (don't bail when loaded model can't grade, add `_loaded_model_can_grade`), `on_model_swap` calls `drain_ungraded_tasks` |
+| `src/core/router.py` | Updated grading prompt (structured binary YES/NO), read `excluded_models` + `grade_excluded_models` from task context, `grade_response` still routed through dispatcher OVERHEAD |
+| `src/agents/base.py` | Worker completion → `ungraded` (deferred) or `completed` (immediate grade), store `generating_model` + `worker_completed_at` in context |
+| `src/app/telegram_bot.py` | Status display updates, remove sleeping/paused/rejected references, add ungraded display, update DLQ retry to be phase-aware, update button handlers |
+| `src/infra/dead_letter.py` | `retry_dlq_task` reads `failed_in_phase` for phase-aware re-enable, resets exclusions + backoff |
+| `src/workflows/engine/hooks.py` | Remove `_schema_retry_count` from context, use shared `attempts` counter |

@@ -854,6 +854,7 @@ async def get_ready_tasks(limit=5):
     cursor = await db.execute(
         """SELECT * FROM tasks
            WHERE status = 'pending'
+           AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
            ORDER BY priority DESC, created_at ASC"""
     )
     all_pending = [dict(row) for row in await cursor.fetchall()]
@@ -1080,6 +1081,46 @@ def make_sleep_state(
         "sleeping_since": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         "next_timer_wake": compute_next_timer_wake(timer_tier),
     })
+
+
+async def accelerate_retries(reason: str) -> int:
+    """Pull next_retry_at to now for tasks waiting on availability.
+
+    Called from: model_swap, gpu_available, rate_limit_reset,
+    quota_restored, circuit_breaker_reset.
+
+    Resets last_avail_delay in context so backoff starts fresh.
+    Covers both phases: pending (worker) and ungraded (grading).
+
+    Returns number of tasks accelerated.
+    """
+    import json as _json
+
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT id, context FROM tasks
+           WHERE status IN ('pending', 'ungraded')
+           AND next_retry_at > datetime('now')
+           AND retry_reason = 'availability'"""
+    )
+    rows = [dict(r) for r in await cursor.fetchall()]
+
+    for row in rows:
+        try:
+            ctx = _json.loads(row.get("context") or "{}")
+        except (ValueError, TypeError):
+            ctx = {}
+        ctx["last_avail_delay"] = 0
+        await db.execute(
+            """UPDATE tasks SET next_retry_at = datetime('now'),
+               context = ? WHERE id = ?""",
+            (_json.dumps(ctx), row["id"]),
+        )
+
+    if rows:
+        await db.commit()
+        logger.info(f"Accelerated {len(rows)} task(s) | reason={reason}")
+    return len(rows)
 
 
 # ─── Task Locking (atomic claim) ────────────────────────────────────────────

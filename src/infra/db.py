@@ -579,6 +579,27 @@ async def init_db():
         except Exception as e:
             logger.debug(f"sleep_state column migration skipped: {e}")
 
+    # Migration: Unified Task Lifecycle — new retry columns
+    if "attempts" not in columns:
+        for col_sql in [
+            "ALTER TABLE tasks ADD COLUMN attempts INTEGER DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN max_attempts INTEGER DEFAULT 6",
+            "ALTER TABLE tasks ADD COLUMN grade_attempts INTEGER DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN max_grade_attempts INTEGER DEFAULT 3",
+            "ALTER TABLE tasks ADD COLUMN next_retry_at TIMESTAMP",
+            "ALTER TABLE tasks ADD COLUMN retry_reason TEXT",
+            "ALTER TABLE tasks ADD COLUMN failed_in_phase TEXT",
+        ]:
+            try:
+                await db.execute(col_sql)
+                await db.commit()
+            except Exception:
+                pass  # column may already exist
+        logger.info("Added unified task lifecycle columns")
+
+        # Run data migration
+        await _migrate_task_lifecycle(db)
+
     # Migration: add suggestion columns to todo_items
     for col in ["suggestion", "suggestion_agent", "suggestion_at"]:
         try:
@@ -623,6 +644,46 @@ async def init_db():
         pass
 
     await db.commit()
+
+async def _migrate_task_lifecycle(db) -> None:
+    """One-time migration: sleeping/paused/rejected → unified model."""
+    try:
+        # Backfill attempts from retry_count
+        await db.execute(
+            "UPDATE tasks SET attempts = COALESCE(retry_count, 0) "
+            "WHERE attempts = 0 AND COALESCE(retry_count, 0) > 0"
+        )
+        # Backfill max_attempts from max_retries (add 3 for grading headroom)
+        await db.execute(
+            "UPDATE tasks SET max_attempts = COALESCE(max_retries, 3) + 3 "
+            "WHERE max_attempts = 6 AND max_retries IS NOT NULL AND max_retries != 3"
+        )
+        # Convert sleeping → pending with next_retry_at
+        await db.execute(
+            """UPDATE tasks SET status = 'pending',
+               next_retry_at = json_extract(sleep_state, '$.next_timer_wake')
+               WHERE status = 'sleeping'"""
+        )
+        # Convert paused → pending with 10-min delay
+        await db.execute(
+            """UPDATE tasks SET status = 'pending',
+               next_retry_at = datetime('now', '+10 minutes')
+               WHERE status = 'paused'"""
+        )
+        # Rename needs_clarification → waiting_human
+        await db.execute(
+            "UPDATE tasks SET status = 'waiting_human' "
+            "WHERE status = 'needs_clarification'"
+        )
+        # Fix rejected → cancelled
+        await db.execute(
+            "UPDATE tasks SET status = 'cancelled' WHERE status = 'rejected'"
+        )
+        await db.commit()
+        logger.info("Migrated task lifecycle data")
+    except Exception as e:
+        logger.warning(f"Task lifecycle data migration error: {e}")
+
 
 # --- Mission Operations ---
 

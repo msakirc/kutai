@@ -941,6 +941,23 @@ class LocalModelManager:
                 continue
 
             if self.idle_seconds > max_idle:
+                # Don't unload if tasks are actively processing — the agent
+                # may be between LLM calls (tool execution, file I/O, etc.)
+                try:
+                    from src.infra.db import get_db
+                    db = await get_db()
+                    cursor = await db.execute(
+                        "SELECT COUNT(*) FROM tasks WHERE status = 'processing'"
+                    )
+                    processing = (await cursor.fetchone())[0]
+                    if processing > 0:
+                        logger.debug(
+                            f"Idle unload skipped: {processing} task(s) still processing"
+                        )
+                        continue
+                except Exception:
+                    pass  # DB error → safe to proceed with unload
+
                 logger.info(
                     f"Model {self.current_model} idle for "
                     f"{self.idle_seconds:.0f}s (>{max_idle}s), unloading"

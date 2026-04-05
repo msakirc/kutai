@@ -90,6 +90,7 @@ The `LocalModelManager` maps all variants of the same model to the same GGUF pat
 | 6 | **Aider Polyglot** | `https://raw.githubusercontent.com/Aider-AI/aider/main/aider/website/_data/polyglot_leaderboard.yml` | none | YAML | 69 | cloud + local |
 | 7 | **BigCodeBench** | `https://huggingface.co/api/datasets/bigcode/bigcodebench-results/parquet/default/train/0.parquet` | none | Parquet | 202 | cloud + local |
 | 8 | **OpenRouter** | `https://openrouter.ai/api/v1/models` | none | JSON | 500+ | cloud + local |
+| 9 | **Seneca-TRBench** | `https://huggingface.co/spaces/AlicanKiraz0/seneca-trbench/resolve/main/leaderboard_data.csv` | none | CSV | 20 | cloud + local |
 
 **Removed:** Old HF Leaderboard (results dataset → 500), old LMSys Arena URLs (all 404).
 **Added:** Chatbot Arena ELO (HF Parquet), replaces old LMSys Arena fetcher.
@@ -113,6 +114,7 @@ The `LocalModelManager` maps all variants of the same model to the same GGUF pat
 | Aider | code_generation, code_reasoning, instruction_adherence |
 | BigCodeBench | code_generation, instruction_adherence |
 | OpenRouter | context_utilization (context_length tiers) |
+| Seneca-TRBench | turkish (MCQ + SAQ combined score, Turkish grammar/morphology/idioms/instruction-following) |
 
 **Cloud model enrichment:**
 - Sources 1, 2, 4, 5, 6 all cover cloud models (GPT-4o, Claude, Gemini, etc.)
@@ -208,6 +210,15 @@ The `LocalModelManager` maps all variants of the same model to the same GGUF pat
 | nerdsking-python-coder-7B | Dense | Q5_K_M | No | No | base (1) |
 
 **Total: 10 GGUFs → 24 registry entries** (10 base + 8 thinking + 3 vision + 3 thinking-vision)
+
+## Future: Local Turkish Evaluation
+
+Seneca-TRBench leaderboard only has 20 models — our quantized local models won't be there. Two downloadable datasets could be run locally against our models via llama-server as a `benchmark_cli.py turkish` command:
+
+- **Seneca-TRBench** (553 questions, MIT) — grammar, idioms, instruction following
+- **Turkish-Grammar-MMLU** (3,700 questions, MIT) — pure grammar/fluency, fetchable at `https://huggingface.co/datasets/turkish-db/turkish-grammar-mmlu/resolve/main/db.csv`
+
+Not in scope for this iteration, but the datasets are ready when needed.
 
 ## Out of Scope
 

@@ -1930,7 +1930,10 @@ class Orchestrator:
             attempts = (task.get("attempts") or 0) + 1
             max_attempts = task.get("max_attempts") or 6
 
-            from src.core.retry import compute_retry_timing
+            from src.core.retry import compute_retry_timing, update_exclusions_on_failure
+            failed_model = result.get("model", "unknown") if isinstance(result, dict) else "unknown"
+            if isinstance(task_ctx, dict):
+                update_exclusions_on_failure(task_ctx, failed_model, attempts)
             decision = compute_retry_timing("quality", attempts=attempts, max_attempts=max_attempts)
 
             if decision.action == "terminal":

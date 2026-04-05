@@ -2563,7 +2563,7 @@ class Orchestrator:
             return
 
         statuses = [t["status"] for t in tasks]
-        pending = [s for s in statuses if s not in ("completed", "failed", "rejected")]
+        pending = [s for s in statuses if s not in ("completed", "failed", "cancelled", "skipped")]
 
         if not pending:
             completed = [t for t in tasks if t["status"] == "completed"]
@@ -2856,13 +2856,6 @@ class Orchestrator:
                 except Exception as _qp_err:
                     logger.debug(f"Quota planner scan failed: {_qp_err}")
 
-                # Drain deferred grade queue if it's getting full
-                try:
-                    from src.core.llm_dispatcher import get_dispatcher
-                    await get_dispatcher().drain_grades_if_full()
-                except Exception as _gd_err:
-                    logger.debug(f"Grade queue drain check failed: {_gd_err}")
-
                 # Update queue depth metric for Prometheus/Grafana
                 try:
                     from src.infra.metrics import record_queue_depth
@@ -2987,10 +2980,14 @@ class Orchestrator:
                     if self.cycle_count % 20 == 0:
                         logger.info(f"[Cycle {self.cycle_count}] Idle")
 
-                    # Drain deferred grades during idle (uses cloud if needed)
+                    # Grade ungraded tasks with loaded model (if compatible)
                     try:
                         from src.core.llm_dispatcher import get_dispatcher
-                        await get_dispatcher().drain_grades_if_idle()
+                        from src.core.grading import drain_ungraded_tasks
+                        dispatcher = get_dispatcher()
+                        loaded = dispatcher._get_loaded_litellm_name()
+                        if loaded:
+                            await drain_ungraded_tasks(loaded)
                     except Exception as _gd_err:
                         logger.debug(f"Idle grade drain failed: {_gd_err}")
 

@@ -1590,6 +1590,8 @@ class BaseAgent:
 
                     if can_grade_now and task_id != "?":
                         try:
+                            # Inject actual result so grade_task sees it
+                            task["result"] = result
                             verdict = await grade_task(task, loaded or "")
                             quality_score = verdict.score
                             if not verdict.passed:

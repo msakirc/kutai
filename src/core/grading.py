@@ -112,7 +112,7 @@ async def grade_task(task: dict, grader_model: str) -> GradeResult:
 
     result_text = task.get("result", "")
     if not result_text or len(str(result_text).strip()) < 10:
-        return GradeResult(passed=True, raw="auto-pass: trivial output")
+        return GradeResult(passed=False, raw="auto-fail: trivial/empty output")
 
     dispatcher = get_dispatcher()
     response = await dispatcher.request(

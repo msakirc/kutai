@@ -388,9 +388,9 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
     # Append schema validation error from previous retry
     schema_error = ctx.get("_schema_error")
     if schema_error:
-        retry_count = ctx.get("_schema_retry_count", 0)
+        retry_count = task.get("attempts", 0)
         parts.append(
-            f"\n\n## IMPORTANT: Previous Output Was Invalid (retry {retry_count}/2)\n"
+            f"\n\n## IMPORTANT: Previous Output Was Invalid (retry {retry_count})\n"
             f"Your previous output failed validation: **{schema_error}**\n"
             f"Fix your output to match the required format."
         )
@@ -561,39 +561,27 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
     if artifact_schema and output_value:
         is_valid, error_msg = validate_artifact_schema(output_value, artifact_schema)
         if not is_valid:
-            retry_count = ctx.get("_schema_retry_count", 0)
-            if retry_count < 2:
-                logger.warning(
-                    f"[Workflow Hook] Artifact schema validation failed for step "
-                    f"'{step_id}': {error_msg}. Retry {retry_count + 1}/2"
+            attempts = task.get("attempts", 0)
+            logger.warning(
+                f"[Workflow Hook] Artifact schema validation failed for step "
+                f"'{step_id}': {error_msg}. Attempt {attempts}"
+            )
+            # Store the error in context so the enriched prompt on next attempt
+            # can show the validation feedback to the agent.
+            try:
+                from ...infra.db import update_task
+                new_ctx = dict(ctx)
+                new_ctx["_schema_error"] = error_msg
+                await update_task(
+                    task.get("id"),
+                    context=new_ctx,
                 )
-                # Update retry count in context for next attempt
-                # The orchestrator will retry the task
-                try:
-                    from ...infra.db import update_task
-                    new_ctx = dict(ctx)
-                    new_ctx["_schema_retry_count"] = retry_count + 1
-                    new_ctx["_schema_error"] = error_msg
-                    # On second retry, escalate difficulty so router picks
-                    # a more capable model (often cloud)
-                    if retry_count >= 1:
-                        current_diff = new_ctx.get("difficulty", 6)
-                        new_ctx["difficulty"] = min(current_diff + 2, 10)
-                        new_ctx["prefer_quality"] = True
-                        new_ctx["needs_thinking"] = True
-                    await update_task(
-                        task.get("id"),
-                        status="pending",
-                        context=new_ctx,
-                        error=f"Schema validation: {error_msg}",
-                    )
-                except Exception as e:
-                    logger.debug(f"[Workflow Hook] Could not retry task: {e}")
-            else:
-                logger.warning(
-                    f"[Workflow Hook] Artifact schema validation failed after 2 retries "
-                    f"for step '{step_id}': {error_msg}. Accepting best attempt."
-                )
+            except Exception as e:
+                logger.debug(f"[Workflow Hook] Could not update task context: {e}")
+            # Signal failure — the unified retry/DLQ path in the orchestrator
+            # decides whether to retry, delay, or give up.
+            result["status"] = "failed"
+            result["error"] = f"Schema validation: {error_msg}"
 
     # ── Force needs_clarification for human-gate steps ──
     # Steps with triggers_clarification=true bypass LLM's clarify action.

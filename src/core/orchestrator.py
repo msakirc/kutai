@@ -2017,7 +2017,7 @@ class Orchestrator:
 
         await update_task(
             task_id, status="completed", result=result_text,
-            completed_at=datetime.now().isoformat(),
+            completed_at=datetime.now().strftime(_DB_DT_FMT),
             cost=cost,
         )
 
@@ -2393,7 +2393,7 @@ class Orchestrator:
         )
 
         await update_task(task_id, status="completed", result=content,
-                          completed_at=datetime.now().isoformat())
+                          completed_at=datetime.now().strftime(_DB_DT_FMT))
         if review_task_id:
             logger.info(f"[Task #{task_id}] Sent to reviewer (Task #{review_task_id})")
         else:
@@ -2598,7 +2598,7 @@ class Orchestrator:
             failed = [t for t in tasks if t["status"] == "failed"]
 
             await update_mission(mission_id, status="completed",
-                              completed_at=datetime.now().isoformat())
+                              completed_at=datetime.now().strftime(_DB_DT_FMT))
 
             # Phase 6: Release all locks held by this mission
             try:

@@ -589,9 +589,8 @@ _INTENT_TIER_MAP = {
 async def _deep_search_pipeline(
     query: str, ddgs_results: list, urls: list, intent: str, params: _SearchParams
 ) -> str:
-    """Deep path: fetch pages -> Trafilatura -> BM25 -> budget allocation."""
+    """Deep path: fetch pages -> BM25 relevance -> budget allocation."""
     from src.tools.page_fetch import fetch_pages
-    from src.tools.content_extract import extract_content
     from src.tools.relevance import score_and_budget
 
     max_tier = _INTENT_TIER_MAP.get(intent, 1)
@@ -610,12 +609,22 @@ async def _deep_search_pipeline(
         logger.debug("deep pipeline: no pages fetched, falling back to quick")
         return await _quick_search_pipeline(query, ddgs_results, urls)
 
-    # Extract content with Trafilatura
+    # Build ExtractedContent from pre-extracted text.
+    # fetch_pages already extracts via scraper → BeautifulSoup/extract_main_text,
+    # so the values are plain text, NOT HTML. Running trafilatura on plain text
+    # causes "parsed tree length: 0" errors.
+    from src.tools.content_extract import ExtractedContent, _PRICE_PATTERNS, _REVIEW_PATTERNS
     contents = []
-    for url, html in page_htmls.items():
-        extracted = extract_content(html, url=url)
-        if extracted.text and extracted.word_count > 10:
-            contents.append(extracted)
+    for url, text in page_htmls.items():
+        if not text:
+            continue
+        word_count = len(text.split())
+        if word_count > 10:
+            contents.append(ExtractedContent(
+                text=text, url=url, word_count=word_count,
+                has_prices=any(p.search(text) for p in _PRICE_PATTERNS),
+                has_reviews=any(p.search(text) for p in _REVIEW_PATTERNS),
+            ))
 
     if not contents:
         logger.debug("deep pipeline: no content extracted, falling back to quick")

@@ -12,5 +12,8 @@ dependencies = []
 [project.optional-dependencies]
 server = ["aiohttp>=3.9.0"]
 
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [project.scripts]
 yazbunu-server = "yazbunu.server:main"

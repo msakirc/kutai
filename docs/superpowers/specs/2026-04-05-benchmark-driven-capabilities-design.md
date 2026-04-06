@@ -91,6 +91,7 @@ The `LocalModelManager` maps all variants of the same model to the same GGUF pat
 | 7 | **BigCodeBench** | `https://huggingface.co/api/datasets/bigcode/bigcodebench-results/parquet/default/train/0.parquet` | none | Parquet | 202 | cloud + local |
 | 8 | **OpenRouter** | `https://openrouter.ai/api/v1/models` | none | JSON | 500+ | cloud + local |
 | 9 | **Seneca-TRBench** | `https://huggingface.co/spaces/AlicanKiraz0/seneca-trbench/resolve/main/leaderboard_data.csv` | none | CSV | 20 | cloud + local |
+| 10 | **Turkish MMLU** | `https://huggingface.co/api/datasets/alibayram/yapay_zeka_turkce_mmlu_liderlik_tablosu/parquet/default/train/0.parquet` | none | Parquet | 66 | local families + some cloud |
 
 **Removed:** Old HF Leaderboard (results dataset → 500), old LMSys Arena URLs (all 404).
 **Added:** Chatbot Arena ELO (HF Parquet), replaces old LMSys Arena fetcher.
@@ -115,11 +116,14 @@ The `LocalModelManager` maps all variants of the same model to the same GGUF pat
 | BigCodeBench | code_generation, instruction_adherence |
 | OpenRouter | context_utilization (context_length tiers) |
 | Seneca-TRBench | turkish (MCQ + SAQ combined score, Turkish grammar/morphology/idioms/instruction-following) |
+| Turkish MMLU | turkish (293K original Turkish academic questions — scores for 66 models including qwen3, gemma3, llama3, phi4 at various sizes/quants) |
 
-**Cloud model enrichment:**
+**Enrichment covers ALL registry models (local, cloud, ollama):**
+- Every model from every connected provider gets benchmark lookup — not just local GGUFs
+- Cloud models from models.yaml (gemini-flash, groq-llama-70b, claude-sonnet, gpt-4o, etc.) are matched against benchmark data by litellm_name/slug
 - Sources 1, 2, 4, 5, 6 all cover cloud models (GPT-4o, Claude, Gemini, etc.)
-- Cloud models in `CLOUD_PROFILES` get the same benchmark enrichment as local models
-- Benchmark data takes priority over hardcoded cloud profiles when available
+- Benchmark data takes priority over hardcoded `CLOUD_PROFILES` when available
+- Results cached alongside local model scores — same cache format, same TTL
 
 **Parquet handling:**
 - Sources 2, 3, 7 now use HuggingFace Parquet format instead of JSON

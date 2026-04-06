@@ -43,7 +43,46 @@ cloud:
 
 # ─── Overrides (apply to any model by name) ─────────────────────────────────
 # Model name for local = GGUF filename stem (e.g., "Qwen3-30B-A3B-Q4_K_M")
-#overrides:
+overrides:
+  # GigaChat 3.1 Lightning — self-reported benchmarks from HuggingFace model card
+  # MMLU-EN=73%, MMLU-PRO=62%, BBH=58%, SuperGPQA=29%, HumanEval+=73%
+  # MMLU-RU=68%, RUBQ=66%, Arena Hard=46.7
+  GigaChat3.1-Lightning-Uncensored.i1-Q4_K_M:
+    capabilities:
+      reasoning: 5.2        # BBH=58%, SuperGPQA=29% — inconsistent
+      code_generation: 6.8  # HumanEval+=73% — strong for size
+      code_reasoning: 5.8   # inferred from code + reasoning
+      domain_knowledge: 6.5 # MMLU-EN=73%, MMLU-PRO=62%
+      instruction_adherence: 5.5  # Arena Hard=46.7 — moderate
+      analysis: 4.8         # SuperGPQA=29% drags this down
+      conversation: 5.0     # Arena SBS=55.7 — decent
+      prose_quality: 5.5    # Russian-native, decent Arena scores
+      turkish: 3.5          # no Turkish data, likely weak
+      tool_use: 3.0         # no function calling benchmarks
+      structured_output: 3.5 # no data, likely weak
+      context_utilization: 4.0 # 8K context, no long-context benchmarks
+      planning: 4.5         # inferred from reasoning
+      system_design: 4.0    # inferred from reasoning + code
+
+  # nerdsking-python-coder-7B — self-reported benchmarks from HuggingFace model card
+  # HumanEval Pass@1=87% (bf16, zero-shot) — top Python-focused 7B model
+  # Note: Q5_K_M quant may be lower than bf16 scores
+  nerdsking-python-coder-7B-i_Q5_k_m:
+    capabilities:
+      code_generation: 8.2  # HumanEval=87% — exceptional for 7B, discount for quant
+      code_reasoning: 6.5   # Python-only specialist, limited general code reasoning
+      reasoning: 4.0        # no general reasoning benchmarks, 7B limitation
+      domain_knowledge: 3.0 # Python-only, no broad knowledge
+      instruction_adherence: 5.0  # zero-shot focused, decent instruction following
+      analysis: 3.5         # no data, 7B limitation
+      conversation: 2.0     # not a chat model, code-only
+      prose_quality: 2.0    # not designed for prose
+      turkish: 1.5          # English/code only
+      tool_use: 3.0         # no function calling data
+      structured_output: 4.5 # code output is structured by nature
+      context_utilization: 4.0 # 8K context, no long-context benchmarks
+      planning: 3.0         # 7B limitation
+      system_design: 3.5    # code specialist, limited architecture skills
   # Example: limit context for a model that OOMs at full context
   # Qwen3-30B-A3B-Q4_K_M:
   #   context_length: 16384

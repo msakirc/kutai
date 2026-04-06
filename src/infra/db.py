@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from src.app.config import DB_PATH
 from src.infra.logging_config import get_logger
+from src.infra.times import utc_now, db_now, to_db, DB_FMT
 
 logger = get_logger("infra.db")
 
@@ -372,8 +373,8 @@ async def init_db():
             strategies TEXT DEFAULT '[]',
             injection_count INTEGER DEFAULT 0,
             injection_success INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')),
-            updated_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime'))
+            created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
+            updated_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now'))
         )
     """)
 
@@ -416,7 +417,7 @@ async def init_db():
     await db.execute("""
         CREATE TABLE IF NOT EXISTS smart_search_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')),
+            timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
             query TEXT NOT NULL,
             layer INTEGER NOT NULL,
             source TEXT,
@@ -963,6 +964,79 @@ async def get_ready_tasks(limit=5):
 
     return ready[:limit]
 
+
+async def get_blocked_task_summary():
+    """Return summary of blocked pending tasks: total count and top blocker task IDs."""
+    db = await get_db()
+
+    # Count all pending tasks
+    cursor = await db.execute(
+        "SELECT COUNT(*) FROM tasks WHERE status = 'pending'"
+    )
+    total_pending = (await cursor.fetchone())[0]
+
+    # Count pending tasks that have unresolved dependencies
+    cursor = await db.execute(
+        """SELECT t.id, t.depends_on FROM tasks t
+           WHERE t.status = 'pending' AND t.depends_on IS NOT NULL
+           AND t.depends_on != '' AND t.depends_on != 'null' AND t.depends_on != '[]'"""
+    )
+    blocked_rows = await cursor.fetchall()
+
+    blocked_count = 0
+    blocker_counts = {}  # task_id -> how many tasks it blocks
+
+    for row in blocked_rows:
+        raw_deps = row[1]
+        try:
+            if isinstance(raw_deps, str):
+                deps = json.loads(raw_deps)
+                if isinstance(deps, int):
+                    deps = [deps]
+                elif not isinstance(deps, list):
+                    deps = []
+            elif isinstance(raw_deps, (list, tuple)):
+                deps = list(raw_deps)
+            elif isinstance(raw_deps, int):
+                deps = [raw_deps]
+            else:
+                deps = []
+        except (json.JSONDecodeError, TypeError):
+            deps = []
+
+        if not deps:
+            continue
+
+        # Check if any dep is NOT completed/skipped
+        placeholders = ",".join("?" * len(deps))
+        dep_cursor = await db.execute(
+            f"""SELECT COUNT(*) FROM tasks
+                WHERE id IN ({placeholders}) AND status IN ('completed', 'skipped')""",
+            deps
+        )
+        resolved = (await dep_cursor.fetchone())[0]
+
+        if resolved < len(deps):
+            blocked_count += 1
+            # Track which unresolved deps are blocking
+            unresolved_cursor = await db.execute(
+                f"""SELECT id FROM tasks
+                    WHERE id IN ({placeholders}) AND status NOT IN ('completed', 'skipped')""",
+                deps
+            )
+            for dep_row in await unresolved_cursor.fetchall():
+                blocker_counts[dep_row[0]] = blocker_counts.get(dep_row[0], 0) + 1
+
+    # Top blockers sorted by how many tasks they block
+    top_blockers = sorted(blocker_counts.items(), key=lambda x: -x[1])[:3]
+
+    return {
+        "blocked_count": blocked_count,
+        "total_pending": total_pending,
+        "top_blockers": top_blockers,  # [(task_id, count), ...]
+    }
+
+
 async def get_task(task_id):
     db = await get_db()
     cursor = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
@@ -1054,7 +1128,7 @@ async def claim_task(task_id: int) -> bool:
     # Use strftime format (space-separated, no TZ) so SQLite datetime()
     # comparisons in the watchdog work correctly.  isoformat() produces
     # a 'T' separator which breaks `started_at < datetime('now', ...)`.
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    now_str = db_now()
     cursor = await db.execute(
         "UPDATE tasks SET status = 'processing', started_at = ? "
         "WHERE id = ? AND status = 'pending'",
@@ -1409,7 +1483,7 @@ async def store_memory(key, value, category="general", mission_id=None):
     if row:
         await db.execute(
             "UPDATE memory SET value = ?, updated_at = ? WHERE id = ?",
-            (value, datetime.now(timezone.utc).isoformat(), row[0])
+            (value, db_now(), row[0])
         )
     else:
         await db.execute(
@@ -1445,7 +1519,7 @@ async def recall_memory(category=None, mission_id=None, limit=20):
         query += " AND category = ?"
         params.append(category)
     if mission_id:
-        query += " AND (mission_id = ? OR mission_id IS NULL)"
+        query += " AND mission_id = ?"
         params.append(mission_id)
     query += " ORDER BY updated_at DESC LIMIT ?"
     params.append(limit)
@@ -1458,11 +1532,12 @@ async def semantic_recall(query_text, category=None, mission_id=None, top_k=5):
     try:
         from src.memory.vector_store import query as vquery
 
-        where_filter = {"source": "memory_table"}
+        conditions = [{"source": {"$eq": "memory_table"}}]
         if category:
-            where_filter["category"] = category
+            conditions.append({"category": {"$eq": category}})
         if mission_id:
-            where_filter["mission_id"] = mission_id
+            conditions.append({"mission_id": {"$eq": mission_id}})
+        where_filter = {"$and": conditions} if len(conditions) > 1 else conditions[0]
 
         results = await vquery(
             text=query_text,
@@ -1562,8 +1637,7 @@ async def add_scheduled_task(
     # Inline minimal cron parse to avoid circular import with orchestrator.
     next_run_str: str | None = None
     try:
-        from datetime import datetime, timedelta, timezone
-        now = datetime.now(timezone.utc)
+        now = utc_now()
         parts = cron_expression.strip().split()
         if len(parts) == 5:
             minute, hour = parts[0], parts[1]
@@ -1695,7 +1769,7 @@ async def toggle_todo(todo_id: int) -> str:
         new_status = "done"
         await db.execute(
             "UPDATE todo_items SET status = 'done', completed_at = ? WHERE id = ?",
-            (datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), todo_id),
+            (db_now(), todo_id),
         )
     await db.commit()
     return new_status
@@ -1941,7 +2015,7 @@ async def set_budget(
     """Create or update a cost budget."""
     db = await get_db()
     existing = await get_budget(scope, scope_id)
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = utc_now().strftime("%Y-%m-%d")
 
     if existing:
         await db.execute(
@@ -1972,7 +2046,7 @@ async def record_cost(
     if not budget:
         return
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = utc_now().strftime("%Y-%m-%d")
     last_reset = budget.get("last_reset_date", "")
 
     # Reset daily spend if new day
@@ -2008,7 +2082,7 @@ async def check_budget(
     if not budget:
         return {"ok": True, "reason": "no budget set", "budget": None}
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = utc_now().strftime("%Y-%m-%d")
     spent_today = budget["spent_today"]
     if budget.get("last_reset_date") != today:
         spent_today = 0.0  # new day, reset hasn't happened yet
@@ -2216,7 +2290,7 @@ async def insert_approval_request(task_id: int, mission_id: int | None,
         """INSERT OR REPLACE INTO approval_requests
            (task_id, mission_id, title, details, status, created_at)
            VALUES (?, ?, ?, ?, 'pending', ?)""",
-        (task_id, mission_id, title, details, datetime.now(timezone.utc).isoformat()),
+        (task_id, mission_id, title, details, db_now()),
     )
     await db.commit()
 
@@ -2228,7 +2302,7 @@ async def update_approval_status(task_id: int, status: str):
         """UPDATE approval_requests
            SET status = ?, resolved_at = ?
            WHERE task_id = ?""",
-        (status, datetime.now(timezone.utc).isoformat(), task_id),
+        (status, db_now(), task_id),
     )
     await db.commit()
 
@@ -2255,8 +2329,6 @@ async def upsert_workflow_checkpoint(
     metadata: dict = None,
 ) -> None:
     """Create or update a workflow checkpoint for the given mission."""
-    from datetime import datetime, timezone
-
     db = await get_db()
     await db.execute(
         """INSERT OR REPLACE INTO workflow_checkpoints
@@ -2269,7 +2341,7 @@ async def upsert_workflow_checkpoint(
             current_phase,
             json.dumps(completed_phases or []),
             failed_step_id,
-            datetime.now(timezone.utc).isoformat(),
+            db_now(),
             json.dumps(metadata or {}),
         ),
     )
@@ -2340,7 +2412,7 @@ async def record_source_quality(
     """Upsert domain quality record, incrementing counts and updating timestamps."""
     try:
         db = await get_db()
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        now = db_now()
 
         # Try to insert first, then update on conflict
         if blocked:
@@ -2610,7 +2682,7 @@ async def upsert_skill(
                description = excluded.description,
                skill_type = excluded.skill_type,
                strategies = excluded.strategies,
-               updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')""",
+               updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now')""",
         (name, description, skill_type, strategies_json),
     )
     await db.commit()
@@ -2642,7 +2714,7 @@ async def increment_skill_injection(name: str) -> None:
     """Increment injection_count for a skill."""
     db = await get_db()
     await db.execute(
-        "UPDATE skills SET injection_count = injection_count + 1, updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime') WHERE name = ?",
+        "UPDATE skills SET injection_count = injection_count + 1, updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now') WHERE name = ?",
         (name,),
     )
     await db.commit()
@@ -2652,7 +2724,7 @@ async def increment_skill_success(name: str) -> None:
     """Increment injection_success for a skill."""
     db = await get_db()
     await db.execute(
-        "UPDATE skills SET injection_success = injection_success + 1, updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime') WHERE name = ?",
+        "UPDATE skills SET injection_success = injection_success + 1, updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now') WHERE name = ?",
         (name,),
     )
     await db.commit()
@@ -2739,7 +2811,7 @@ async def log_smart_search(query: str, layer: int, source: str | None, success: 
 async def record_api_call(api_name: str, success: bool):
     """Update api_reliability counters and auto-demote if needed."""
     db = await get_db()
-    now = "strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')"
+    now = "strftime('%Y-%m-%d %H:%M:%S', 'now')"
     if success:
         await db.execute(
             f"""INSERT INTO api_reliability (api_name, success_count, last_success, consecutive_failures)
@@ -2814,7 +2886,7 @@ async def get_api_reliability_all() -> list[dict]:
 async def get_smart_search_stats(days: int = 7) -> dict:
     """Aggregate smart_search_log for observability menu."""
     db = await get_db()
-    cutoff = f"datetime('now', 'localtime', '-{days} days')"
+    cutoff = f"datetime('now', '-{days} days')"
 
     # Layer breakdown
     cur = await db.execute(
@@ -2832,7 +2904,7 @@ async def get_smart_search_stats(days: int = 7) -> dict:
 
     # Today count
     cur = await db.execute(
-        "SELECT COUNT(*) FROM smart_search_log WHERE date(timestamp) = date('now', 'localtime')"
+        "SELECT COUNT(*) FROM smart_search_log WHERE date(timestamp) = date('now')"
     )
     today = (await cur.fetchone())[0]
 

@@ -66,11 +66,24 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
                     continue  # passed
             except (json.JSONDecodeError, TypeError):
                 pass
-            # Fallback: accept text if it has numbered/bulleted items
+            # Fallback: accept text if it has numbered/bulleted/table items
             min_items = rules.get("min_items", 0)
             if min_items > 0:
                 import re as _re
-                items = _re.findall(r'(?:^|\n)\s*(?:\d+[\.\)]|\-|\*)\s+\S', str(output_value))
+                text = str(output_value)
+                # Numbered/bulleted lists
+                items = _re.findall(r'(?:^|\n)\s*(?:\d+[\.\)]|\-|\*)\s+\S', text)
+                # Markdown table data rows (exclude header separator lines like |---|)
+                if len(items) < min_items:
+                    table_rows = [
+                        line for line in text.split("\n")
+                        if line.strip().startswith("|")
+                        and not _re.match(r'^\s*\|[\s\-:]+\|', line)  # skip separator
+                        and not _re.match(r'^\s*\|\s*:?-', line)  # skip separator variant
+                    ]
+                    # Exclude header row (first table row) from count
+                    if len(table_rows) > 1:
+                        items = table_rows[1:]  # skip header
                 if len(items) < min_items:
                     return False, f"'{artifact_name}' has ~{len(items)} list items, need >= {min_items}"
 
@@ -82,7 +95,20 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
         elif schema_type == "markdown":
             required_sections = rules.get("required_sections", [])
             text = str(output_value)
-            missing = [s for s in required_sections if s.lower() not in text.lower()]
+            text_lower = text.lower()
+            # Check for actual markdown headers (## Section or ### Section),
+            # not just substring mentions like "Vision (streamlining...)"
+            missing = []
+            for s in required_sections:
+                s_lower = s.lower()
+                # Accept: ## Vision, ### Vision, # Vision, **Vision**, Vision\n---
+                has_header = (
+                    f"# {s_lower}" in text_lower
+                    or f"**{s_lower}**" in text_lower
+                    or f"\n{s_lower}\n" in text_lower
+                )
+                if not has_header:
+                    missing.append(s)
             if missing:
                 return False, f"'{artifact_name}' missing sections: {missing}"
 
@@ -506,6 +532,31 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
 
     store = get_artifact_store()
     output_value = result.get("result", "")
+
+    # ── Recover artifact content from workspace files ──
+    # If the agent wrote its output to files (via write_file) instead of
+    # returning it in final_answer, the result text will be a short summary.
+    # Check workspace files for richer content matching artifact names.
+    if mission_id and output_names:
+        try:
+            import os
+            from ...tools.workspace import WORKSPACE_DIR
+            artifact_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+            for name in output_names:
+                for ext in (".md", ".json", ".txt"):
+                    fpath = os.path.join(artifact_dir, f"{name}{ext}")
+                    if os.path.isfile(fpath):
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            file_content = f.read()
+                        if len(file_content) > len(output_value):
+                            output_value = file_content
+                            logger.info(
+                                f"[Workflow Hook] Recovered artifact '{name}' "
+                                f"from workspace file ({len(file_content)} chars)"
+                            )
+                        break
+        except Exception as e:
+            logger.debug(f"[Workflow Hook] Workspace artifact recovery failed: {e}")
 
     # ── Detect fake completions ──
     # Small LLMs wrap failure reports in final_answer. Detect and reject.

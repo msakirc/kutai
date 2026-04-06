@@ -42,30 +42,30 @@ class _ContextLogger:
         self._log = logging.getLogger(name)
         self.name = name
 
-    def _emit(self, level: int, msg: str, ctx: dict):
+    def _emit(self, level: int, msg: str, args: tuple, ctx: dict):
         safe = {k: v for k, v in ctx.items() if k not in _RESERVED}
         extra = {**safe, "_yaz_extra": safe}
-        self._log.log(level, msg, extra=extra)
+        self._log.log(level, msg, *args, extra=extra)
 
-    def debug(self, msg: str, **ctx):
-        self._emit(logging.DEBUG, msg, ctx)
+    def debug(self, msg: str, *args, **ctx):
+        self._emit(logging.DEBUG, msg, args, ctx)
 
-    def info(self, msg: str, **ctx):
-        self._emit(logging.INFO, msg, ctx)
+    def info(self, msg: str, *args, **ctx):
+        self._emit(logging.INFO, msg, args, ctx)
 
-    def warning(self, msg: str, **ctx):
-        self._emit(logging.WARNING, msg, ctx)
+    def warning(self, msg: str, *args, **ctx):
+        self._emit(logging.WARNING, msg, args, ctx)
 
-    def error(self, msg: str, **ctx):
-        self._emit(logging.ERROR, msg, ctx)
+    def error(self, msg: str, *args, **ctx):
+        self._emit(logging.ERROR, msg, args, ctx)
 
-    def critical(self, msg: str, **ctx):
-        self._emit(logging.CRITICAL, msg, ctx)
+    def critical(self, msg: str, *args, **ctx):
+        self._emit(logging.CRITICAL, msg, args, ctx)
 
-    def exception(self, msg: str, **ctx):
+    def exception(self, msg: str, *args, **ctx):
         safe = {k: v for k, v in ctx.items() if k not in _RESERVED}
         extra = {**safe, "_yaz_extra": safe}
-        self._log.exception(msg, extra=extra)
+        self._log.exception(msg, *args, extra=extra)
 
     def bind(self, **ctx) -> "_BoundLogger":
         return _BoundLogger(self, ctx)
@@ -81,12 +81,12 @@ class _BoundLogger:
     def _merge(self, ctx: dict) -> dict:
         return {**self._bound, **ctx}
 
-    def debug(self, msg, **ctx): self._parent.debug(msg, **self._merge(ctx))
-    def info(self, msg, **ctx): self._parent.info(msg, **self._merge(ctx))
-    def warning(self, msg, **ctx): self._parent.warning(msg, **self._merge(ctx))
-    def error(self, msg, **ctx): self._parent.error(msg, **self._merge(ctx))
-    def critical(self, msg, **ctx): self._parent.critical(msg, **self._merge(ctx))
-    def exception(self, msg, **ctx): self._parent.exception(msg, **self._merge(ctx))
+    def debug(self, msg, *args, **ctx): self._parent.debug(msg, *args, **self._merge(ctx))
+    def info(self, msg, *args, **ctx): self._parent.info(msg, *args, **self._merge(ctx))
+    def warning(self, msg, *args, **ctx): self._parent.warning(msg, *args, **self._merge(ctx))
+    def error(self, msg, *args, **ctx): self._parent.error(msg, *args, **self._merge(ctx))
+    def critical(self, msg, *args, **ctx): self._parent.critical(msg, *args, **self._merge(ctx))
+    def exception(self, msg, *args, **ctx): self._parent.exception(msg, *args, **self._merge(ctx))
     def bind(self, **ctx): return _BoundLogger(self._parent, self._merge(ctx))
 
 

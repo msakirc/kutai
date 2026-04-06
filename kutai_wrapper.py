@@ -247,8 +247,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 CLAUDE_CMD = Path(os.environ.get("APPDATA", "")) / "npm" / "claude.cmd"
 
 
-def _wlog(msg: str):
-    """Append a timestamped line to the wrapper's own meta-log (not piped output)."""
+WRAPPER_JSONL = LOG_DIR / "wrapper.jsonl"
+
+
+def _wlog(msg: str, level: str = "INFO"):
+    """Append a timestamped line to the wrapper's own meta-log (not piped output).
+
+    Also writes JSONL to wrapper.jsonl so the yazbunu viewer can display it.
+    """
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
     try:
@@ -259,6 +265,20 @@ def _wlog(msg: str):
     try:
         with open(WRAPPER_LOG, "a", encoding="utf-8") as f:
             f.write(line + "\n")
+    except Exception:
+        pass
+    # JSONL for yazbunu viewer — inline, no yazbunu import
+    try:
+        import json as _json
+        from datetime import datetime, timezone
+        doc = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "level": level,
+            "src": "wrapper.yasar_usta",
+            "msg": msg,
+        }
+        with open(WRAPPER_JSONL, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(doc, ensure_ascii=False) + "\n")
     except Exception:
         pass
 
@@ -280,7 +300,7 @@ class KutAIWrapper:
         self._wrapper_start_time = time.time()
         self._signal_watcher: asyncio.Task | None = None
         self._claude_process: asyncio.subprocess.Process | None = None
-        self._yazbunu_process: asyncio.subprocess.Process | None = None
+        # yazbunu is fully independent (detached process with PID file)
 
     # ── Subprocess Management ─────────────────────────────────────────────
 
@@ -328,7 +348,7 @@ class KutAIWrapper:
                 **_kwargs,
             )
         except Exception as e:
-            _wlog(f"ERROR: Failed to spawn subprocess: {e}")
+            _wlog(f"ERROR: Failed to spawn subprocess: {e}", level="ERROR")
             self.process = None
             self.running = False
             return
@@ -417,7 +437,7 @@ class KutAIWrapper:
                 return code
             except asyncio.TimeoutError:
                 if self._is_orchestrator_hung():
-                    _wlog("Orchestrator heartbeat stale >120s — killing hung process")
+                    _wlog("Orchestrator heartbeat stale >120s — killing hung process", level="ERROR")
                     try:
                         self.process.kill()
                     except Exception:
@@ -510,9 +530,11 @@ class KutAIWrapper:
         except Exception as e:
             print(f"[Wrapper] Telegram send failed: {e}")
 
-    # Reply keyboard shown when KutAI is down — single [▶️ Başlat] button
+    # Reply keyboard shown when KutAI is down
     _KB_BASLAT = {
-        "keyboard": [[{"text": "▶️ Başlat"}]],
+        "keyboard": [
+            [{"text": "▶️ Başlat"}, {"text": "🔧 Yaşar Usta"}],
+        ],
         "resize_keyboard": True,
         "one_time_keyboard": False,
         "is_persistent": True,
@@ -538,7 +560,7 @@ class KutAIWrapper:
             f"Restarting in {backoff}s\n\n"
             f"```\n{last_lines}\n```"
         )
-        await self._send_telegram(msg)
+        await self._send_telegram(msg, reply_markup=self._KB_BASLAT)
 
     async def _notify_stopped(self):
         await self._send_telegram(
@@ -570,27 +592,25 @@ class KutAIWrapper:
     async def _telegram_poll_loop(self):
         """Poll Telegram for commands while KutAI is down.
 
-        CRITICAL: getUpdates(offset=N) is destructive — it confirms (deletes)
-        all updates with id < N on Telegram's server. To avoid stealing updates
-        meant for the orchestrator, we NEVER advance offset past non-wrapper
-        updates. We track processed wrapper command ids locally to skip
-        re-processing them on subsequent polls.
+        Consumes ALL updates while polling.  The orchestrator is not running,
+        so there is nobody else to process them.  Non-command messages from
+        the admin get a "Kutay is down" reply with the Başlat keyboard.
 
-        Wrapper commands handled here (in addition to /kutai_start, /kutai_status):
-        - "▶️ Başlat" button: start the orchestrator (same as /kutai_start)
-        - "⚙️ Sistem" button: check health — if orchestrator is unhealthy, kill
-          it and present the [▶️ Başlat] keyboard so the user can restart.
-          If healthy, treat as non-wrapper update (let orchestrator handle it).
+        Wrapper commands handled here:
+        - "▶️ Başlat" / /kutai_start: start the orchestrator
+        - /kutai_status: show status
+        - "⚙️ Sistem": kill hung orchestrator + show Başlat
+        - "🔧 Yaşar Usta": show process list
+        - /logs: show recent logs
         """
         import aiohttp
         base_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-        # Start with offset 0 — fetch whatever is pending.
-        # We will only advance offset to (wrapper_cmd_id + 1) when there are
-        # no non-wrapper updates with a LOWER id still pending.
         offset = 0
-        handled_wrapper_ids: set[int] = set()  # wrapper cmds we already acted on
-        _wlog("Telegram poller started (non-destructive mode)")
+        # Rate-limit "Kutay is down" replies so we don't spam on every tap
+        last_down_reply: float = 0
+        DOWN_REPLY_COOLDOWN = 30  # seconds
+        _wlog("Telegram poller started")
 
         while True:
             try:
@@ -606,105 +626,91 @@ class KutAIWrapper:
                 if not updates:
                     continue
 
-                # Classify each update
-                min_non_wrapper_id: int | None = None
-                max_wrapper_id: int | None = None
-
+                max_uid = 0
                 for update in updates:
                     uid = update["update_id"]
+                    if uid > max_uid:
+                        max_uid = uid
+
+                    # ── Handle callback queries (inline buttons) ──
+                    cb = update.get("callback_query")
+                    if cb:
+                        cb_chat_id = str(cb.get("message", {}).get("chat", {}).get("id", ""))
+                        cb_data = cb.get("data", "")
+                        cb_msg_id = cb.get("message", {}).get("message_id")
+                        if cb_chat_id == str(TELEGRAM_ADMIN_CHAT_ID):
+                            # Answer callback to remove loading spinner
+                            try:
+                                async with aiohttp.ClientSession() as s_cb:
+                                    await s_cb.post(
+                                        f"{base_url}/answerCallbackQuery",
+                                        json={"callback_query_id": cb["id"]},
+                                        timeout=aiohttp.ClientTimeout(total=5),
+                                    )
+                            except Exception:
+                                pass
+                            if cb_data == "restart_usta":
+                                offset = max_uid + 1
+                                await self._restart_self()
+                                return
+                            elif cb_data == "usta_refresh":
+                                await self._send_processes(edit_message_id=cb_msg_id)
+                            elif cb_data == "restart_yazbunu":
+                                await self._stop_yazbunu()
+                                await self._start_yazbunu()
+                                await self._send_processes(edit_message_id=cb_msg_id)
+                        continue
+
                     msg = update.get("message", {})
                     text = msg.get("text", "")
                     chat_id = str(msg.get("chat", {}).get("id", ""))
 
-                    # Determine if this is a wrapper-handled command/button.
-                    # "⚙️ Sistem" is only treated as a wrapper command when the
-                    # orchestrator is unhealthy; otherwise it falls through to
-                    # be handled by the orchestrator's bot.
-                    is_baslat = (
-                        chat_id == str(TELEGRAM_ADMIN_CHAT_ID)
-                        and text == "▶️ Başlat"
-                    )
-                    _unhealthy = not self._is_orchestrator_healthy()
-                    is_sistem_unhealthy = (
-                        chat_id == str(TELEGRAM_ADMIN_CHAT_ID)
-                        and text == "⚙️ Sistem"
-                        and _unhealthy
-                    )
-                    is_usta_unhealthy = (
-                        chat_id == str(TELEGRAM_ADMIN_CHAT_ID)
-                        and text == "🔧 Yaşar Usta"
-                        and _unhealthy
-                    )
-                    is_logs_cmd = (
-                        chat_id == str(TELEGRAM_ADMIN_CHAT_ID)
-                        and text.startswith("/logs")
-                    )
-                    is_wrapper_cmd = (
-                        chat_id == str(TELEGRAM_ADMIN_CHAT_ID)
-                        and (
-                            text.startswith(("/kutai_start", "/kutai_status"))
-                            or is_baslat
-                            or is_sistem_unhealthy
-                            or is_usta_unhealthy
-                            or is_logs_cmd
-                        )
-                    )
+                    # Only handle messages from admin
+                    if chat_id != str(TELEGRAM_ADMIN_CHAT_ID):
+                        continue
 
-                    if is_wrapper_cmd:
-                        if uid not in handled_wrapper_ids:
-                            handled_wrapper_ids.add(uid)
+                    # ── Wrapper commands ──
+                    if text.startswith("/kutai_start") or text == "▶️ Başlat":
+                        await self._send_telegram("🚀 Kutay başlatılıyor...")
+                        await self.start_kutai(_from_poller=True)
+                        return
 
-                            if text.startswith("/kutai_start") or is_baslat:
-                                await self._send_telegram("🚀 Kutay başlatılıyor...")
-                                await self.start_kutai(_from_poller=True)
-                                return  # Exit poll loop — KutAI takes over
+                    elif text.startswith("/kutai_status") or text == "🔧 Yaşar Usta":
+                        await self._send_processes()
 
-                            elif text.startswith("/kutai_status"):
-                                await self._send_status()
+                    elif text.startswith("/restart_usta"):
+                        await self._restart_self()
+                        return  # won't reach here, but for clarity
 
-                            elif is_usta_unhealthy:
-                                await self._send_processes()
+                    elif text.startswith("/logs"):
+                        await self._send_logs(text)
 
-                            elif is_logs_cmd:
-                                await self._send_logs(text)
+                    elif text == "⚙️ Sistem":
+                        if self.process and self.process.returncode is None:
+                            _wlog("⚙️ Sistem tapped — killing hung orchestrator")
+                            try:
+                                self.process.kill()
+                                await self.process.wait()
+                            except Exception as e:
+                                _wlog(f"Failed to kill hung orchestrator: {e}", level="ERROR")
+                            self.process = None
+                            self.running = False
+                        await self._send_baslat_prompt("🔴 Kutay yanıt vermiyor.")
 
-                            elif is_sistem_unhealthy:
-                                # Orchestrator is hung/dead — kill it and show Başlat
-                                _wlog("⚙️ Sistem tapped but orchestrator is unhealthy — killing and presenting Başlat")
-                                if self.process and self.process.returncode is None:
-                                    try:
-                                        self.process.kill()
-                                        await self.process.wait()
-                                    except Exception as e:
-                                        _wlog(f"Failed to kill hung orchestrator: {e}")
-                                    self.process = None
-                                    self.running = False
-                                await self._send_baslat_prompt("🔴 Kutay yanıt vermiyor.")
+                    elif text:
+                        # Any other admin message — let them know KutAI is down
+                        now = time.time()
+                        if now - last_down_reply > DOWN_REPLY_COOLDOWN:
+                            last_down_reply = now
+                            await self._send_baslat_prompt("⏸ Kutay şu an kapalı.")
 
-                        if max_wrapper_id is None or uid > max_wrapper_id:
-                            max_wrapper_id = uid
-                    else:
-                        if min_non_wrapper_id is None or uid < min_non_wrapper_id:
-                            min_non_wrapper_id = uid
-
-                # Advance offset safely: only past updates that are ALL wrapper
-                # commands. If there are non-wrapper updates with lower ids,
-                # we cannot advance past them (would consume them).
-                if min_non_wrapper_id is not None:
-                    # There are non-wrapper updates — don't advance past them.
-                    # We can advance up to (but not past) the first non-wrapper update.
-                    offset = min_non_wrapper_id
-                    # Sleep to avoid busy-looping: when non-wrapper updates are
-                    # stuck in the queue, getUpdates returns immediately (no long-poll).
-                    await asyncio.sleep(5)
-                elif max_wrapper_id is not None:
-                    # All pending updates are wrapper commands — safe to consume
-                    offset = max_wrapper_id + 1
+                # Consume all processed updates
+                offset = max_uid + 1
 
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                print(f"[Wrapper] Telegram poll error: {e}")
+                _wlog(f"Telegram poll error: {e}", level="ERROR")
                 await asyncio.sleep(5)
 
     # ── Signal File Watcher ──────────────────────────────────────────────
@@ -735,7 +741,7 @@ class KutAIWrapper:
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                _wlog(f"Signal watcher error: {e!r}")
+                _wlog(f"Signal watcher error: {e!r}", level="ERROR")
                 await asyncio.sleep(10)
 
     async def _start_claude_remote(self):
@@ -801,62 +807,93 @@ class KutAIWrapper:
                 self._claude_process.stdout, "claude-rc"))
 
         except FileNotFoundError:
-            _wlog("'claude' command not found — is Claude Code installed?")
+            _wlog("'claude' command not found — is Claude Code installed?", level="WARNING")
             await self._send_telegram("❌ `claude` command not found. Claude Code kurulu mu?")
         except Exception as e:
-            _wlog(f"Failed to start Claude remote-control: {e!r}")
+            _wlog(f"Failed to start Claude remote-control: {e!r}", level="ERROR")
             await self._send_telegram(f"❌ Claude Code başlatılamadı: `{e!r}`")
 
     # ── Yazbunu Log Viewer ─────────────────────────────────────────────────
 
+    _YAZBUNU_PID_FILE = LOG_DIR / "yazbunu.pid"
+
+    @staticmethod
+    def _yazbunu_pid_alive() -> int | None:
+        """Read yazbunu PID file and return PID if the process is alive, else None."""
+        pid_file = KutAIWrapper._YAZBUNU_PID_FILE
+        try:
+            pid = int(pid_file.read_text().strip())
+        except (FileNotFoundError, ValueError):
+            return None
+        if _is_pid_alive(pid):
+            return pid
+        # Stale PID file
+        try:
+            pid_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    async def _yazbunu_http_alive() -> bool:
+        """Check if yazbunu is responding on its HTTP port."""
+        import aiohttp
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(
+                    "http://127.0.0.1:9880/",
+                    timeout=aiohttp.ClientTimeout(total=3),
+                ) as r:
+                    return r.status == 200
+        except Exception:
+            return False
+
     async def _start_yazbunu(self):
-        """Spawn the yazbunu log viewer server as a background subprocess."""
-        if self._yazbunu_process and self._yazbunu_process.returncode is None:
-            return  # already running
+        """Ensure yazbunu is running. Spawns a detached process if none is alive."""
+        if self._yazbunu_pid_alive() or await self._yazbunu_http_alive():
+            _wlog("yazbunu already running")
+            return
         venv_python = self._find_python()
         log_file = LOG_DIR / "yazbunu.log"
         _wlog("Starting yazbunu log viewer (port 9880)")
         try:
             import subprocess as _sp
-            _kwargs = {}
-            if sys.platform == "win32":
-                _kwargs["creationflags"] = _sp.CREATE_NEW_PROCESS_GROUP
+            flags = _sp.CREATE_NEW_PROCESS_GROUP | _sp.DETACHED_PROCESS
             out_fh = open(log_file, "a", encoding="utf-8")
-            self._yazbunu_process = await asyncio.create_subprocess_exec(
-                venv_python, "-m", "yazbunu.server",
-                "--log-dir", "./logs",
-                "--port", "9880",
-                "--host", "0.0.0.0",
+            proc = _sp.Popen(
+                [venv_python, "-m", "yazbunu.server",
+                 "--log-dir", "./logs", "--port", "9880", "--host", "0.0.0.0"],
                 stdout=out_fh,
                 stderr=out_fh,
                 cwd=str(Path(__file__).parent),
-                **_kwargs,
+                creationflags=flags,
+                close_fds=True,
             )
-            _wlog(f"yazbunu started (PID {self._yazbunu_process.pid})")
+            self._YAZBUNU_PID_FILE.write_text(str(proc.pid))
+            _wlog(f"yazbunu started (PID {proc.pid}, detached)")
         except Exception as e:
-            _wlog(f"Failed to start yazbunu: {e!r}")
-            self._yazbunu_process = None
+            _wlog(f"Failed to start yazbunu: {e!r}", level="ERROR")
 
     async def _stop_yazbunu(self):
-        """Stop the yazbunu log viewer process."""
-        if not self._yazbunu_process or self._yazbunu_process.returncode is not None:
-            self._yazbunu_process = None
+        """Kill the running yazbunu process (by PID file)."""
+        pid = self._yazbunu_pid_alive()
+        if not pid:
             return
-        _wlog("Stopping yazbunu log viewer")
+        _wlog(f"Stopping yazbunu (PID {pid})")
         try:
-            self._yazbunu_process.kill()
-            await self._yazbunu_process.wait()
-        except Exception as e:
-            _wlog(f"yazbunu stop error: {e!r}")
-        self._yazbunu_process = None
+            os.kill(pid, signal.SIGTERM)
+        except OSError as e:
+            _wlog(f"yazbunu stop error: {e!r}", level="ERROR")
+        try:
+            self._YAZBUNU_PID_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     async def _ensure_yazbunu(self):
         """Check if yazbunu is alive, restart if dead."""
-        if self._yazbunu_process and self._yazbunu_process.returncode is None:
-            return  # healthy
-        if self._yazbunu_process:
-            _wlog(f"yazbunu exited (code {self._yazbunu_process.returncode}), restarting")
-            self._yazbunu_process = None
+        if self._yazbunu_pid_alive() or await self._yazbunu_http_alive():
+            return
+        _wlog("yazbunu not running, restarting", level="WARNING")
         await self._start_yazbunu()
 
     # ── Status & Logs ────────────────────────────────────────────────────────
@@ -865,8 +902,7 @@ class KutAIWrapper:
         uptime_w = int(time.time() - self._wrapper_start_time)
         uptime_k = int(time.time() - self.start_time) if self.start_time and self.running else 0
         state = "🟢 Running" if self.running else "🔴 Stopped"
-        yz_alive = self._yazbunu_process and self._yazbunu_process.returncode is None
-        yz_state = "🟢 Running" if yz_alive else "🔴 Stopped"
+        yz_state = "🟢 Running" if self._yazbunu_pid_alive() else "🔴 Stopped"
         msg = (
             f"*Yaşar Usta - Durum*\n"
             f"Durum: {state}\n"
@@ -878,8 +914,8 @@ class KutAIWrapper:
         )
         await self._send_telegram(msg)
 
-    async def _send_processes(self):
-        """Show process list + health, with KB_BASLAT for restart (wrapper-side Yaşar Usta panel)."""
+    async def _build_status_text(self) -> str:
+        """Build the Yaşar Usta status panel text."""
         import subprocess as _sp
         lines = []
         wrappers = []
@@ -900,10 +936,8 @@ class KutAIWrapper:
                 pid = line.split()[-1] if line.split() else ""
                 if "wrapper" in line.lower():
                     wrappers.append(pid)
-                    lines.append(f"🔵 Yaşar Usta PID {pid}")
                 elif "run.py" in line:
                     orchestrators.append(pid)
-                    lines.append(f"🟢 Kutay PID {pid}")
         except Exception as e:
             lines.append(f"⚠️ Süreç listesi alınamadı: {e}")
 
@@ -918,24 +952,17 @@ class KutAIWrapper:
                     parts = ll.split()
                     if len(parts) >= 2:
                         llama_pids.append(parts[1])
-                        lines.append(f"🟡 llama-server PID {parts[1]}")
         except Exception:
             pass
-
-        # yazbunu log viewer
-        yz_alive = self._yazbunu_process and self._yazbunu_process.returncode is None
-        if yz_alive:
-            lines.append(f"📊 yazbunu PID {self._yazbunu_process.pid}")
-        else:
-            lines.append("⚫ yazbunu: çalışmıyor")
-
-        if not lines:
-            lines.append("Çalışan süreç bulunamadı.")
 
         n_wrappers = (len(wrappers) + 1) // 2
         n_orchestrators = (len(orchestrators) + 1) // 2
 
-        # Heartbeat check
+        # ── Health: Yaşar Usta ──
+        uptime_w = int(time.time() - self._wrapper_start_time)
+        usta_line = f"🔵 Yaşar Usta: çalışıyor ({uptime_w // 3600}s {(uptime_w % 3600) // 60}dk)"
+
+        # ── Health: Kutay (orchestrator) ──
         kutay_healthy = False
         heartbeat_age = None
         for hb_path in ["logs/orchestrator.heartbeat", "logs/heartbeat"]:
@@ -949,31 +976,148 @@ class KutAIWrapper:
                 continue
 
         if n_orchestrators == 0:
-            health_line = "💀 Kutay: çalışmıyor"
+            kutay_line = "💀 Kutay: çalışmıyor"
         elif kutay_healthy:
             age_str = f"{int(heartbeat_age)}sn önce" if heartbeat_age else ""
-            health_line = f"💚 Kutay: sağlıklı (heartbeat {age_str})"
+            kutay_line = f"💚 Kutay: sağlıklı (heartbeat {age_str})"
         elif heartbeat_age is not None:
-            health_line = f"🔴 Kutay: YANIT VERMİYOR ({int(heartbeat_age)}sn sessiz)"
+            kutay_line = f"🔴 Kutay: YANIT VERMİYOR ({int(heartbeat_age)}sn sessiz)"
         else:
-            health_line = "⚪ Kutay: heartbeat dosyası yok"
+            kutay_line = "⚪ Kutay: heartbeat dosyası yok"
 
-        uptime_w = int(time.time() - self._wrapper_start_time)
-        summary = (
-            f"\n📊 Yaşar Usta: {n_wrappers} | Kutay: {n_orchestrators} | llama: {len(llama_pids)}"
-            f"\n⏱ Çalışma: {uptime_w // 3600}s {(uptime_w % 3600) // 60}dk"
-            f" | Çökmeler: {self.total_crashes}"
-        )
-        if n_wrappers > 1 or n_orchestrators > 1:
-            summary += "\n⚠️ Duplicate süreçler var!"
+        # ── Health: llama-server ──
+        if llama_pids:
+            llama_line = f"🟡 llama-server: çalışıyor (PID {', '.join(llama_pids)})"
+        else:
+            llama_line = "⚫ llama-server: çalışmıyor"
 
+        # ── Health: yazbunu ──
+        # Check HTTP first (authoritative), PID file is secondary
+        yz_responding = await self._yazbunu_http_alive()
+        yz_pid = self._yazbunu_pid_alive()
+        if yz_responding:
+            pid_str = f", PID {yz_pid}" if yz_pid else ""
+            yz_line = f"📊 yazbunu: çalışıyor (port 9880{pid_str})"
+        elif yz_pid:
+            yz_line = f"🟠 yazbunu: süreç var ama yanıt yok (PID {yz_pid})"
+        else:
+            yz_line = "⚫ yazbunu: çalışmıyor"
+
+        # ── Summary ──
+        warnings = []
+        if n_wrappers > 1:
+            warnings.append(f"⚠️ {n_wrappers} Yaşar Usta süreci var!")
+        if n_orchestrators > 1:
+            warnings.append(f"⚠️ {n_orchestrators} Kutay süreci var!")
+
+        ts = time.strftime("%H:%M:%S")
         text = (
-            f"🔧 *Yaşar Usta - Süreç Yönetimi*\n\n"
-            + "\n".join(lines)
-            + f"\n\n{health_line}"
-            + summary
+            f"🔧 *Yaşar Usta*\n\n"
+            f"{usta_line}\n"
+            f"{kutay_line}\n"
+            f"{llama_line}\n"
+            f"{yz_line}\n"
+            f"\nÇökmeler: {self.total_crashes}"
         )
-        await self._send_telegram(text, reply_markup=self._KB_BASLAT)
+        if warnings:
+            text += "\n" + "\n".join(warnings)
+        text += f"\n\n_Son güncelleme: {ts}_"
+        return text
+
+    def _status_inline_keyboard(self) -> dict:
+        """Build inline keyboard for the status panel."""
+        buttons = [
+            [
+                {"text": "🔄 Yenile", "callback_data": "usta_refresh"},
+            ],
+            [
+                {"text": "♻️ Usta'yı Yeniden Başlat", "callback_data": "restart_usta"},
+                {"text": "📊 Yazbunu Yeniden Başlat", "callback_data": "restart_yazbunu"},
+            ],
+        ]
+        return {"inline_keyboard": buttons}
+
+    async def _send_processes(self, edit_message_id: int | None = None):
+        """Show status panel. If edit_message_id is given, edit that message instead of sending new."""
+        import aiohttp
+        text = await self._build_status_text()
+        inline_kb = self._status_inline_keyboard()
+
+        if edit_message_id:
+            # Edit existing message in-place (keeps inline keyboard)
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
+            payload = {
+                "chat_id": TELEGRAM_ADMIN_CHAT_ID,
+                "message_id": edit_message_id,
+                "text": text,
+                "parse_mode": "Markdown",
+                "reply_markup": inline_kb,
+            }
+        else:
+            # New message — first set the reply keyboard (replaces orchestrator's),
+            # then send the status panel with inline buttons.
+            await self._send_telegram("🔧 Yaşar Usta paneli:", reply_markup=self._KB_BASLAT)
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            payload = {
+                "chat_id": TELEGRAM_ADMIN_CHAT_ID,
+                "text": text,
+                "parse_mode": "Markdown",
+                "reply_markup": inline_kb,
+            }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)):
+                    pass
+        except Exception as e:
+            _wlog(f"Failed to send status: {e}", level="ERROR")
+
+    async def _restart_self(self):
+        """Restart the wrapper process itself.
+
+        Spawns a new detached wrapper process, then exits cleanly.
+        The new process will acquire the lock after we release it.
+        """
+        _wlog("Self-restart requested via Telegram")
+        await self._send_telegram("🔄 *Yaşar Usta yeniden başlatılıyor...*")
+
+        # Stop managed processes (yazbunu is independent — leave it running)
+        if self.running:
+            await self.stop_kutai()
+        await self._stop_telegram_poller()
+
+        # Flush Telegram update queue so the new instance starts clean
+        import aiohttp
+        try:
+            async with aiohttp.ClientSession() as session:
+                # offset=-1 confirms all pending updates
+                await session.get(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
+                    params={"offset": -1, "timeout": 0},
+                    timeout=aiohttp.ClientTimeout(total=5),
+                )
+        except Exception:
+            pass
+
+        # Spawn new wrapper (detached)
+        import subprocess as _sp
+        venv_python = self._find_python()
+        script = str(Path(__file__).resolve())
+        argv = [a for a in sys.argv[1:] if a != script]
+        _wlog(f"Spawning new wrapper: {venv_python} {script}")
+        _sp.Popen(
+            [venv_python, script] + argv,
+            creationflags=(_sp.CREATE_NEW_PROCESS_GROUP
+                           | _sp.DETACHED_PROCESS
+                           | _sp.CREATE_NO_WINDOW),
+            close_fds=True,
+            cwd=str(Path(__file__).parent),
+        )
+
+        # Release lock and exit
+        _cleanup_lock()
+        _wlog("Old wrapper exiting for restart")
+        os._exit(0)
 
     async def _send_logs(self, text: str):
         """Read and send last N lines of orchestrator.jsonl."""
@@ -1008,14 +1152,14 @@ class KutAIWrapper:
                     continue
                 try:
                     entry = _json.loads(line)
-                    ts = entry.get("timestamp", "?")
+                    ts = entry.get("ts", "?")
                     if "T" in ts:
                         ts = ts.split("T")[1][:8]
                     elif " " in ts:
                         ts = ts.split(" ")[1][:8]
                     level = entry.get("level", "?")[:4]
-                    comp = entry.get("component", "?").split(".")[-1]
-                    msg = entry.get("message", "")[:120]
+                    comp = entry.get("src", "?").split(".")[-1]
+                    msg = entry.get("msg", "")[:120]
                     icon = {"ERRO": "🔴", "CRIT": "🔴", "WARN": "🟡", "INFO": "⚪", "DEBU": "⚫"}.get(level, "⚪")
                     formatted.append(f"{icon} `{ts}` *{comp}*: {msg}")
                 except (ValueError, KeyError):
@@ -1030,8 +1174,7 @@ class KutAIWrapper:
                 msg = msg[-4000:]
                 msg = "...(truncated)\n" + msg[msg.index("\n") + 1:]
 
-            yz_alive = self._yazbunu_process and self._yazbunu_process.returncode is None
-            if yz_alive:
+            if self._yazbunu_pid_alive():
                 msg += "\n\n📊 Full viewer: http://localhost:9880"
             await self._send_telegram(msg)
         except Exception as e:
@@ -1058,7 +1201,7 @@ class KutAIWrapper:
                 _wlog(f"Killed orphaned llama-server: {result.stdout.strip()}")
             # returncode != 0 means no matching process — that's fine
         except Exception as e:
-            _wlog(f"llama-server cleanup error: {e}")
+            _wlog(f"llama-server cleanup error: {e}", level="WARNING")
 
         # Stop Ollama if it's running (it auto-restarts via Windows startup,
         # but we don't want it hogging VRAM between orchestrator restarts).
@@ -1070,7 +1213,7 @@ class KutAIWrapper:
             if result.returncode == 0:
                 _wlog(f"Stopped Ollama: {result.stdout.strip()}")
         except Exception as e:
-            _wlog(f"Ollama cleanup error: {e}")
+            _wlog(f"Ollama cleanup error: {e}", level="WARNING")
 
         # Also kill ollama runner processes (ollama_llama_server.exe) that
         # Ollama spawns for model inference — these hold VRAM.
@@ -1149,7 +1292,7 @@ class KutAIWrapper:
                             await self._start_signal_watcher()
                         continue
                     # Orchestrator was killed for being hung — auto-restart
-                    _wlog("KutAI hung — Yasar Usta auto-restarting after 5s")
+                    _wlog("KutAI hung — Yasar Usta auto-restarting after 5s", level="ERROR")
                     self.crash_count += 1
                     self.total_crashes += 1
                     self.last_crash_time = time.time()
@@ -1201,7 +1344,8 @@ class KutAIWrapper:
                     self.last_crash_time = time.time()
                     backoff = self._get_backoff()
                     _wlog(f"KutAI crashed (exit {exit_code}), "
-                          f"crash #{self.total_crashes}, backoff {backoff}s")
+                          f"crash #{self.total_crashes}, backoff {backoff}s",
+                          level="ERROR")
                     await self._notify_crash(exit_code)
 
                     if not self.auto_restart:
@@ -1227,7 +1371,7 @@ class KutAIWrapper:
                 _wlog("Main loop cancelled (CancelledError)")
                 break
             except Exception as exc:
-                _wlog(f"UNHANDLED ERROR in main loop: {exc!r}")
+                _wlog(f"UNHANDLED ERROR in main loop: {exc!r}", level="CRITICAL")
                 # Always fall back to Telegram poller so we stay reachable
                 try:
                     await self._send_telegram(
@@ -1240,10 +1384,9 @@ class KutAIWrapper:
                 while not self._shutdown and not self.running:
                     await asyncio.sleep(5)
 
-        # Shutdown
+        # Shutdown (yazbunu is independent — leave it running)
         if self.running:
             await self.stop_kutai()
-        await self._stop_yazbunu()
         await self._stop_signal_watcher()
         await self._stop_telegram_poller()
         _wlog("Wrapper exiting.")
@@ -1264,7 +1407,7 @@ async def async_main():
     try:
         await wrapper.run()
     except Exception as exc:
-        _wlog(f"FATAL: async_main crashed: {exc!r}")
+        _wlog(f"FATAL: async_main crashed: {exc!r}", level="CRITICAL")
         raise
     finally:
         _wlog("Wrapper process ending (finally block)")
@@ -1276,7 +1419,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         _wlog("KeyboardInterrupt — exiting")
     except Exception as exc:
-        _wlog(f"FATAL top-level: {exc!r}")
+        _wlog(f"FATAL top-level: {exc!r}", level="CRITICAL")
         raise
     finally:
         _wlog("Wrapper process terminated.")

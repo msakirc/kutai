@@ -11,6 +11,7 @@ import time
 from typing import Any, Optional
 
 from .logging_config import get_logger
+from .times import db_now
 from .db import get_db
 
 logger = get_logger("infra.tracing")
@@ -53,10 +54,9 @@ async def append_trace(
         trace = json.loads(row[0]) if row else []
 
         # Append new entry
-        import datetime
         trace.append({
             "type": entry_type,
-            "timestamp": datetime.datetime.now().isoformat()[:19],
+            "timestamp": db_now(),
             "input": input_summary[:200],
             "output": output_summary[:200],
             "cost": round(cost, 6),

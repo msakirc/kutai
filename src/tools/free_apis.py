@@ -29,6 +29,7 @@ class FreeAPI:
     rate_limit: str  # human-readable
     description: str
     example_endpoint: str  # ready-to-call example
+    key_header: str = ""  # custom header name for API key (default: Authorization: Bearer)
 
 
 # Registry of known free APIs
@@ -69,12 +70,13 @@ API_REGISTRY: list[FreeAPI] = [
     FreeAPI(
         name="TCMB EVDS",
         category="currency",
-        base_url="https://evds2.tcmb.gov.tr",
-        auth_type="apikey_param",
+        base_url="https://evds3.tcmb.gov.tr",
+        auth_type="apikey_header",
         env_var="TCMB_EVDS_API_KEY",
         rate_limit="unlimited",
-        description="Turkish Central Bank official exchange rates and economic data. Free API key from TCMB.",
-        example_endpoint="https://evds2.tcmb.gov.tr/service/evds/series=TP.DK.USD.A-TP.DK.EUR.A&startDate=01-01-2026&endDate=31-12-2026&type=json&key={key}",
+        description="Turkish Central Bank official exchange rates and economic data. Free API key from TCMB. Key sent as 'key' HTTP header.",
+        example_endpoint="https://evds3.tcmb.gov.tr/igmevdsms-dis/series=TP.DK.USD.A-TP.DK.EUR.A&startDate=01-01-2026&endDate=31-12-2026&type=json",
+        key_header="key",
     ),
     FreeAPI(
         name="Frankfurter",
@@ -241,12 +243,12 @@ API_REGISTRY: list[FreeAPI] = [
     FreeAPI(
         name="Diyanet Prayer Times",
         category="religion",
-        base_url="https://ezanvakti.herokuapp.com",
+        base_url="https://api.aladhan.com",
         auth_type="none",
         env_var=None,
         rate_limit="unlimited",
-        description="Turkey prayer times (namaz vakitleri) by city/district. Unofficial Diyanet API.",
-        example_endpoint="https://ezanvakti.herokuapp.com/vakitler?ilce=9541",
+        description="Prayer times by city using Diyanet method (method=13). No API key needed.",
+        example_endpoint="https://api.aladhan.com/v1/timingsByCity?city=Istanbul&country=Turkey&method=13",
     ),
 
     # --- Turkish Holidays ---
@@ -265,12 +267,12 @@ API_REGISTRY: list[FreeAPI] = [
     FreeAPI(
         name="Gold Price Turkey",
         category="currency",
-        base_url="https://api.collectapi.com/economy",
-        auth_type="apikey_header",
-        env_var="COLLECTAPI_KEY",
-        rate_limit="free tier available",
-        description="Live gold prices in Turkey (gram altın, çeyrek altın, etc.). CollectAPI.",
-        example_endpoint="https://api.collectapi.com/economy/goldPrice",
+        base_url="https://finans.truncgil.com",
+        auth_type="none",
+        env_var=None,
+        rate_limit="unlimited",
+        description="Live gold and currency prices in Turkey (gram altın, çeyrek altın, döviz). No API key needed.",
+        example_endpoint="https://finans.truncgil.com/today.json",
     ),
 
     # --- BIST Stock Market ---
@@ -560,7 +562,10 @@ async def call_api(
         key = os.getenv(api.env_var, "")
         if not key:
             return f"Error: {api.env_var} not set."
-        headers["Authorization"] = f"Bearer {key}"
+        if api.key_header:
+            headers[api.key_header] = key
+        else:
+            headers["Authorization"] = f"Bearer {key}"
 
     try:
         async with aiohttp.ClientSession() as session:

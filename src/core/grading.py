@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from src.infra.logging_config import get_logger
+from src.infra.times import utc_now, db_now, to_db
 
 logger = get_logger("core.grading")
 
@@ -122,8 +123,8 @@ async def grade_task(task: dict, grader_model: str) -> GradeResult:
             "role": "user",
             "content": GRADING_PROMPT.format(
                 title=task.get("title", "")[:100],
-                description=task.get("description", "")[:200],
-                response=str(result_text)[:2000],
+                description=task.get("description", "")[:500],
+                response=str(result_text)[:4000],
             ),
         }],
     )
@@ -145,7 +146,6 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
     FAIL: increment attempts, add model to exclusions, retry or DLQ.
     """
     import json
-    from datetime import datetime
     from src.infra.db import get_task, update_task
     from src.core.state_machine import transition_task
     from src.core.retry import (
@@ -168,7 +168,7 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
         await transition_task(
             task_id, "completed",
             quality_score=verdict.score,
-            completed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            completed_at=db_now(),
         )
 
         # Record model quality feedback
@@ -265,7 +265,7 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
             next_retry = None
             if decision.action == "delayed":
                 from datetime import timedelta
-                next_retry = (datetime.now() + timedelta(seconds=decision.delay_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+                next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
 
             await transition_task(
                 task_id, "pending",
@@ -301,7 +301,7 @@ async def drain_ungraded_tasks(new_model: str) -> int:
     Returns number of tasks graded.
     """
     import json
-    from datetime import datetime, timedelta
+    from datetime import timedelta
     from src.infra.db import get_db, update_task
     from src.core.retry import compute_retry_timing
 
@@ -349,7 +349,7 @@ async def drain_ungraded_tasks(new_model: str) -> int:
                     task_id, "completed",
                     quality_score=None,
                     grade_attempts=g_attempts,
-                    completed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    completed_at=db_now(),
                     context=json.dumps(ctx),
                 )
                 logger.warning(f"grading waived (parse failures) | task_id={task_id} grade_attempts={g_attempts}")
@@ -385,7 +385,7 @@ async def drain_ungraded_tasks(new_model: str) -> int:
                 logger.warning(f"grading availability DLQ | task_id={task_id}")
             else:
                 ctx["last_avail_delay"] = decision.delay_seconds
-                next_retry = (datetime.now() + timedelta(seconds=decision.delay_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+                next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
                 await update_task(
                     task_id,
                     next_retry_at=next_retry,

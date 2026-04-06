@@ -410,6 +410,10 @@ def score_model_for_task(
         return -1.0
     if requirements.needs_vision and model_capabilities.get(Cap.VISION, 0) < 1.0:
         return -1.0
+    # Exclude vision variants from non-vision tasks — loading mmproj wastes
+    # RAM for no benefit, and the base model is identical otherwise
+    if not requirements.needs_vision and "vision" in ops.get("variant_flags", set()):
+        return -1.0
     if requirements.min_context and ops.get("context_length", 0) < requirements.min_context:
         return -1.0
     if ops.get("cost_per_1k_output", 0) > requirements.max_cost_per_1k_output:

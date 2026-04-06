@@ -8,6 +8,7 @@ import signal
 import time
 from ..app.config import DB_PATH, MAX_CONTEXT_CHAIN_LENGTH, TASK_PRIORITY
 from datetime import datetime, timedelta, timezone
+from ..infra.times import utc_now, db_now, to_db, from_db, DB_FMT
 from ..infra.db import (
     init_db, get_db, close_db, get_ready_tasks, update_task, add_task,
     claim_task, add_subtasks_atomically, log_conversation,
@@ -35,9 +36,7 @@ from ..app.telegram_bot import TelegramInterface
 
 logger = get_logger("core.orchestrator")
 
-# SQLite-compatible datetime format (no 'T', no timezone offset).
-# Must match what datetime('now') returns for <= comparisons to work.
-_DB_DT_FMT = "%Y-%m-%d %H:%M:%S"
+# DB_FMT removed — use DB_FMT from src.infra.times instead
 
 
     # Default timeouts per agent type (seconds).  Override via
@@ -303,9 +302,10 @@ class Orchestrator:
         self.running = False
         self._shutting_down = False
         self.cycle_count = 0
-        self.last_digest = datetime.now()
-        self.last_scheduler_check = datetime.min
-        self.last_decay_check = datetime.min
+        from ..infra.times import turkey_now
+        self.last_digest = turkey_now()
+        self.last_scheduler_check = datetime.min.replace(tzinfo=timezone.utc)
+        self.last_decay_check = datetime.min.replace(tzinfo=timezone.utc)
         self.shutdown_event = shutdown_event or asyncio.Event()
         self.requested_exit_code: int | None = None  # Set by /kutai_restart (42) or /kutai_stop (0)
         self._current_task_future = None
@@ -501,11 +501,8 @@ class Orchestrator:
             if not ref_time_str:
                 continue
             try:
-                ref_dt = datetime.strptime(
-                    str(ref_time_str).replace("T", " ")[:19],
-                    "%Y-%m-%d %H:%M:%S",
-                )
-                if (datetime.now() - ref_dt).total_seconds() > 1800:
+                ref_dt = from_db(str(ref_time_str))
+                if (utc_now() - ref_dt).total_seconds() > 1800:
                     stuck_ungraded.append(task)
             except (ValueError, TypeError):
                 continue
@@ -514,7 +511,7 @@ class Orchestrator:
             await db.execute(
                 "UPDATE tasks SET status = 'completed', quality_score = NULL, "
                 "completed_at = ? WHERE id = ?",
-                (datetime.now().strftime(_DB_DT_FMT), task["id"]),
+                (db_now(), task["id"]),
             )
             logger.warning(f"[Watchdog] Stuck ungraded #{task['id']} promoted to completed (safety net)")
         if stuck_ungraded:
@@ -597,7 +594,7 @@ class Orchestrator:
                     await db.execute(
                         "UPDATE tasks SET status = 'completed', "
                         "completed_at = ? WHERE id = ?",
-                        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), task["id"]),
+                        (db_now(), task["id"]),
                     )
                 else:
                     logger.warning(f"[Watchdog] Task #{task['id']} all subtasks failed, marking failed")
@@ -631,15 +628,15 @@ class Orchestrator:
         #    began processing, before entering waiting_human).
         #    We compute the threshold in Python with isoformat() so the
         #    string comparison matches the format used when storing
-        #    started_at (which also uses datetime.now().isoformat()).
-        threshold_24h = (
-            datetime.now() - timedelta(hours=24)
-        ).isoformat()
+        #    started_at (which also uses db_now() format).
+        threshold_24h = to_db(
+            utc_now() - timedelta(hours=24)
+        )
 
         # Tier 0: 4-hour gentle nudge (no escalation count increment)
-        threshold_4h = (
-            datetime.now() - timedelta(hours=4)
-        ).isoformat()
+        threshold_4h = to_db(
+            utc_now() - timedelta(hours=4)
+        )
         cursor_nudge = await db.execute(
             """SELECT id, title, context FROM tasks
                WHERE status = 'waiting_human'
@@ -690,11 +687,11 @@ class Orchestrator:
 
             # Calculate hours since started_at
             try:
-                started = datetime.fromisoformat(task["started_at"])
+                started = from_db(task["started_at"])
             except (ValueError, TypeError):
-                started = datetime.min
+                started = datetime.min.replace(tzinfo=timezone.utc)
             hours_waiting = (
-                datetime.now() - started
+                utc_now() - started
             ).total_seconds() / 3600
 
             if escalation_count == 0 and hours_waiting >= 24:
@@ -764,11 +761,11 @@ class Orchestrator:
                     continue
 
                 try:
-                    created = datetime.fromisoformat(mission["created_at"])
+                    created = from_db(mission["created_at"])
                 except (ValueError, TypeError):
                     continue
 
-                elapsed_hours = (datetime.now() - created).total_seconds() / 3600
+                elapsed_hours = (utc_now() - created).total_seconds() / 3600
                 if elapsed_hours > timeout_hours:
                     logger.warning(
                         "[Watchdog] Mission #%d exceeded timeout (%dh > %dh), pausing",
@@ -1025,14 +1022,14 @@ class Orchestrator:
                         except Exception:
                             pass
                     # Update last_run / next_run and skip task creation
-                    now = datetime.now(timezone.utc)
+                    now = utc_now()
                     next_run = self._compute_next_run(
                         sched.get("cron_expression", "0 * * * *"), now
                     )
                     await update_scheduled_task(
                         sched_id,
-                        last_run=now.strftime(_DB_DT_FMT),
-                        next_run=next_run.strftime(_DB_DT_FMT) if next_run else None,
+                        last_run=to_db(now),
+                        next_run=to_db(next_run) if next_run else None,
                     )
                     continue
 
@@ -1058,7 +1055,7 @@ class Orchestrator:
                     # Disable — no next_run for one-shot
                     await update_scheduled_task(
                         sched_id,
-                        last_run=datetime.now(timezone.utc).strftime(_DB_DT_FMT),
+                        last_run=db_now(),
                         next_run=None,
                         enabled=False,
                     )
@@ -1074,14 +1071,14 @@ class Orchestrator:
                         )
                     except Exception as e:
                         logger.error(f"[Scheduler] Price watch check failed: {e}")
-                    now = datetime.now(timezone.utc)
+                    now = utc_now()
                     next_run = self._compute_next_run(
                         sched.get("cron_expression", "0 * * * *"), now
                     )
                     await update_scheduled_task(
                         sched_id,
-                        last_run=now.strftime(_DB_DT_FMT),
-                        next_run=next_run.strftime(_DB_DT_FMT) if next_run else None,
+                        last_run=to_db(now),
+                        next_run=to_db(next_run) if next_run else None,
                     )
                     continue
 
@@ -1100,14 +1097,14 @@ class Orchestrator:
                     )
 
                 # Update last_run and compute next_run
-                now = datetime.now(timezone.utc)
+                now = utc_now()
                 next_run = self._compute_next_run(
                     sched.get("cron_expression", "0 * * * *"), now
                 )
                 await update_scheduled_task(
                     sched_id,
-                    last_run=now.strftime(_DB_DT_FMT),
-                    next_run=next_run.strftime(_DB_DT_FMT) if next_run else None,
+                    last_run=to_db(now),
+                    next_run=to_db(next_run) if next_run else None,
                 )
 
         except Exception as e:
@@ -1115,9 +1112,7 @@ class Orchestrator:
 
     async def _check_api_discovery(self):
         """Run API discovery daily at 8:30am, with catch-up if missed."""
-        from datetime import datetime
-
-        now = datetime.now()
+        now = utc_now()
 
         # Check DB for last discovery time (persists across restarts)
         last_discovery = None
@@ -1129,7 +1124,7 @@ class Orchestrator:
             )
             row = await cur.fetchone()
             if row and row[0]:
-                last_discovery = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+                last_discovery = from_db(row[0])
         except Exception:
             pass
 
@@ -1137,7 +1132,9 @@ class Orchestrator:
         if last_discovery and (now - last_discovery).total_seconds() < 86400:
             return
 
-        in_window = now.hour == 8 and 25 <= now.minute <= 35
+        from ..infra.times import turkey_now
+        tr_now = turkey_now()
+        in_window = tr_now.hour == 8 and 25 <= tr_now.minute <= 35
         overdue = (
             last_discovery is None
             or (now - last_discovery).total_seconds() > 36 * 3600
@@ -1227,7 +1224,7 @@ class Orchestrator:
             f"No preamble, no extra commentary."
         )
 
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        now_str = db_now()
 
         try:
             from src.core.llm_dispatcher import get_dispatcher, CallCategory
@@ -1299,8 +1296,6 @@ class Orchestrator:
             minute, hour, day, month, weekday = parts
 
             # Simple: advance by fixed intervals for common patterns
-            from datetime import timedelta
-
             if minute != "*" and hour == "*":
                 # Every hour at minute M
                 m = int(minute)
@@ -1403,7 +1398,7 @@ class Orchestrator:
                 if fast_result:
                     logger.info("task resolved via fast-path", task_id=task_id)
                     await update_task(task_id, status="completed", result=fast_result,
-                                      completed_at=datetime.now().strftime(_DB_DT_FMT))
+                                      completed_at=db_now())
                     if self.telegram and task.get("chat_id"):
                         await self.telegram.send_notification(fast_result)
                     return
@@ -1744,9 +1739,9 @@ class Orchestrator:
                         else:
                             next_retry = None
                             if decision.action == "delayed":
-                                next_retry = (
-                                    datetime.now() + timedelta(seconds=decision.delay_seconds)
-                                ).strftime(_DB_DT_FMT)
+                                next_retry = to_db(
+                                    utc_now() + timedelta(seconds=decision.delay_seconds)
+                                )
                             await update_task(
                                 task_id, status="pending",
                                 attempts=attempts,
@@ -1756,7 +1751,7 @@ class Orchestrator:
                                 context=json.dumps(task_ctx),
                             )
                             logger.warning(
-                                f"disguised failure, retrying "
+                                f"disguised failure, retrying"
                                 f"{attempts}/{max_attempts}",
                                 task_id=task_id,
                             )
@@ -1772,8 +1767,15 @@ class Orchestrator:
                 logger.info("task ungraded (deferred grading)", task_id=task_id,
                             model=result.get("model", "unknown"))
             elif status == "pending":
-                # Grade FAIL triggered immediate retry — task already updated by apply_grade_result
-                logger.info("task grade-failed, retrying", task_id=task_id)
+                # Grade FAIL may have triggered retry or terminal DLQ.
+                # Check actual DB state — apply_grade_result may have already
+                # transitioned to 'failed' (terminal) since this status was set.
+                db_task = await get_task(task_id)
+                actual = db_task["status"] if db_task else "unknown"
+                if actual == "failed":
+                    logger.info("task grade-failed terminal (DLQ)", task_id=task_id)
+                else:
+                    logger.info("task grade-failed, retrying", task_id=task_id)
             elif status == "needs_subtasks":
                 await self._handle_subtasks(task, result)
             elif status == "needs_clarification":
@@ -1790,6 +1792,29 @@ class Orchestrator:
                     await update_task(task_id, status="failed",
                                       error="Insufficient info (silent task, no clarification)",
                                       failed_in_phase="worker")
+                elif task_ctx.get("may_need_clarification") is False:
+                    # Workflow step declared it doesn't need clarification —
+                    # agent is confused, retry with a different model.
+                    logger.warning(
+                        f"[Task #{task_id}] Suppressed clarification "
+                        f"(may_need_clarification=false), retrying"
+                    )
+                    attempts = (task.get("attempts") or 0) + 1
+                    max_attempts = task.get("max_attempts") or 6
+                    from src.core.retry import compute_retry_timing
+                    decision = compute_retry_timing("quality", attempts=attempts, max_attempts=max_attempts)
+                    next_retry = None
+                    if decision.action == "delayed":
+                        next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
+                    if decision.action == "terminal":
+                        await update_task(task_id, status="failed",
+                                          error="Agent requested clarification on no-clarification step",
+                                          attempts=attempts, failed_in_phase="worker")
+                    else:
+                        await update_task(task_id, status="pending",
+                                          attempts=attempts, next_retry_at=next_retry,
+                                          retry_reason="quality",
+                                          error="Suppressed clarification, retrying")
                 elif task_ctx.get("clarification_history"):
                     # Agent tried to clarify again despite having answers —
                     # treat as completed (answers are already in context).
@@ -1839,9 +1864,9 @@ class Orchestrator:
                 else:
                     next_retry = None
                     if decision.action == "delayed":
-                        next_retry = (
-                            datetime.now() + timedelta(seconds=decision.delay_seconds)
-                        ).strftime(_DB_DT_FMT)
+                        next_retry = to_db(
+                            utc_now() + timedelta(seconds=decision.delay_seconds)
+                        )
                     await update_task(
                         task_id, status="pending",
                         attempts=attempts,
@@ -1903,9 +1928,9 @@ class Orchestrator:
                 )
             else:
                 _avail_ctx["last_avail_delay"] = decision.delay_seconds
-                next_retry = (
-                    datetime.now() + timedelta(seconds=decision.delay_seconds)
-                ).strftime(_DB_DT_FMT)
+                next_retry = to_db(
+                    utc_now() + timedelta(seconds=decision.delay_seconds)
+                )
                 await update_task(
                     task_id, status="pending",
                     error=str(mcf)[:500],
@@ -2001,9 +2026,9 @@ class Orchestrator:
             else:
                 next_retry = None
                 if decision.action == "delayed":
-                    next_retry = (
-                        datetime.now() + timedelta(seconds=decision.delay_seconds)
-                    ).strftime(_DB_DT_FMT)
+                    next_retry = to_db(
+                        utc_now() + timedelta(seconds=decision.delay_seconds)
+                    )
                 await update_task(
                     task_id, status="pending",
                     attempts=attempts,
@@ -2045,7 +2070,7 @@ class Orchestrator:
 
         await update_task(
             task_id, status="completed", result=result_text,
-            completed_at=datetime.now().strftime(_DB_DT_FMT),
+            completed_at=db_now(),
             cost=cost,
         )
 
@@ -2054,12 +2079,12 @@ class Orchestrator:
             injected_skills = task_ctx.get("injected_skills", [])
             agent_type = task.get("agent_type", "")
             started = task.get("started_at", "")
-            completed_at_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            completed_at_str = db_now()
             duration = 0.0
             if started:
                 try:
-                    t1 = datetime.strptime(started.replace("T", " ")[:19], "%Y-%m-%d %H:%M:%S")
-                    t2 = datetime.strptime(completed_at_str, "%Y-%m-%d %H:%M:%S")
+                    t1 = from_db(started)
+                    t2 = from_db(completed_at_str)
                     duration = (t2 - t1).total_seconds()
                 except Exception:
                     pass
@@ -2421,7 +2446,7 @@ class Orchestrator:
         )
 
         await update_task(task_id, status="completed", result=content,
-                          completed_at=datetime.now().strftime(_DB_DT_FMT))
+                          completed_at=db_now())
         if review_task_id:
             logger.info(f"[Task #{task_id}] Sent to reviewer (Task #{review_task_id})")
         else:
@@ -2626,7 +2651,7 @@ class Orchestrator:
             failed = [t for t in tasks if t["status"] == "failed"]
 
             await update_mission(mission_id, status="completed",
-                              completed_at=datetime.now().strftime(_DB_DT_FMT))
+                              completed_at=db_now())
 
             # Phase 6: Release all locks held by this mission
             try:
@@ -2652,14 +2677,13 @@ class Orchestrator:
                 mission_info = await get_mission(mission_id)
                 mission_title = mission_info.get('title', 'Unknown') if mission_info else 'Unknown'
                 mission_created = mission_info.get('created_at', '') if mission_info else ''
-                now = datetime.now()
+                now = utc_now()
 
                 # Calculate elapsed time
                 elapsed_str = ""
                 if mission_created:
                     try:
-                        from datetime import datetime as _dt
-                        created_dt = _dt.fromisoformat(str(mission_created))
+                        created_dt = from_db(str(mission_created))
                         delta = now - created_dt
                         hours, rem = divmod(int(delta.total_seconds()), 3600)
                         minutes = rem // 60
@@ -2837,11 +2861,11 @@ class Orchestrator:
 
                 # ── Cron scheduler check (every 60s) ──
                 sched_elapsed = (
-                    datetime.now() - self.last_scheduler_check
+                    utc_now() - self.last_scheduler_check
                 ).total_seconds()
                 if sched_elapsed >= 60:
                     await self.check_scheduled_tasks()
-                    self.last_scheduler_check = datetime.now()
+                    self.last_scheduler_check = utc_now()
 
                 # Get a generous batch, then compute how many to actually run
                 candidate_tasks = await get_ready_tasks(limit=8)
@@ -2852,8 +2876,8 @@ class Orchestrator:
                     _created = _t.get("created_at", "")
                     if _created:
                         try:
-                            _age_h = (datetime.now() - datetime.strptime(
-                                _created, "%Y-%m-%d %H:%M:%S"
+                            _age_h = (utc_now() - from_db(
+                                _created
                             )).total_seconds() / 3600
                             _age_boost = min(_age_h * 0.1, 1.0)
                             _t["_effective_priority"] = _t.get("priority", 5) + _age_boost
@@ -3056,8 +3080,9 @@ class Orchestrator:
                     except asyncio.TimeoutError:
                         pass  # normal idle cycle
 
-                # Phase 14.1: Time-based morning briefing (default 9:00 local)
-                now = datetime.now()
+                # Phase 14.1: Time-based morning briefing (default 9:00 Turkey local)
+                from ..infra.times import turkey_now as _turkey_now
+                now = _turkey_now()
                 briefing_hour = int(os.environ.get("BRIEFING_HOUR", "9"))
                 if (now.hour == briefing_hour
                         and now.date() > self.last_digest.date()):
@@ -3066,7 +3091,7 @@ class Orchestrator:
 
                 # ── Phase 11.6: Memory decay (weekly) ──
                 days_since_decay = (
-                    datetime.now() - self.last_decay_check
+                    utc_now() - self.last_decay_check
                 ).total_seconds() / 86400
                 if days_since_decay >= 7:
                     try:
@@ -3074,7 +3099,7 @@ class Orchestrator:
                         await run_decay_cycle()
                     except Exception as e:
                         logger.debug(f"Memory decay failed (non-critical): {e}")
-                    self.last_decay_check = datetime.now()
+                    self.last_decay_check = utc_now()
 
                 # ── Prune old conversations (daily) ──
                 if self.cycle_count == 1 or self.cycle_count % 8640 == 0:
@@ -3110,8 +3135,8 @@ class Orchestrator:
                 # Phase 13.4: Weekly self-improvement analysis
                 try:
                     if not hasattr(self, '_last_improvement_check'):
-                        self._last_improvement_check = datetime.now()
-                    elif (datetime.now() - self._last_improvement_check).total_seconds() > 604800:  # 7 days
+                        self._last_improvement_check = utc_now()
+                    elif (utc_now() - self._last_improvement_check).total_seconds() > 604800:  # 7 days
                         from src.memory.self_improvement import (
                             analyze_and_propose, format_proposals_for_telegram
                         )
@@ -3119,7 +3144,7 @@ class Orchestrator:
                         if proposals:
                             msg = format_proposals_for_telegram(proposals)
                             await self.telegram.send_notification(msg)
-                        self._last_improvement_check = datetime.now()
+                        self._last_improvement_check = utc_now()
                 except Exception as e:
                     logger.debug(f"Self-improvement check failed: {e}")
 
@@ -3150,8 +3175,91 @@ class Orchestrator:
                 pass
             await asyncio.sleep(15)
 
+    async def _startup_recovery(self):
+        """One-time recovery after restart: wake stuck/sleeping tasks.
+
+        Runs once at boot before the main loop. Acts as a wake signal so
+        that tasks stuck in retry backoff or interrupted mid-processing
+        don't stay dormant until the watchdog slowly picks them up.
+        """
+        db = await get_db()
+        summary: list[str] = []
+
+        # 1. Reset tasks stuck in 'processing' back to 'pending'.
+        #    These were interrupted by the restart and should be retried.
+        cursor_proc = await db.execute(
+            """SELECT id, title, attempts FROM tasks
+               WHERE status = 'processing'"""
+        )
+        interrupted = [dict(row) for row in await cursor_proc.fetchall()]
+        for task in interrupted:
+            attempts = (task.get("attempts") or 0) + 1
+            await db.execute(
+                "UPDATE tasks SET status = 'pending', "
+                "attempts = ?, retry_reason = 'quality' WHERE id = ?",
+                (attempts, task["id"]),
+            )
+        if interrupted:
+            await db.commit()
+            summary.append(
+                f"Reset {len(interrupted)} interrupted processing task(s) "
+                f"to pending"
+            )
+
+        # 2. Clear next_retry_at for all pending/ungraded tasks so they
+        #    retry immediately instead of sleeping through old backoff
+        #    timers from the previous session.
+        cursor_retry = await db.execute(
+            """SELECT id FROM tasks
+               WHERE status IN ('pending', 'ungraded')
+               AND next_retry_at IS NOT NULL
+               AND next_retry_at > datetime('now')"""
+        )
+        delayed = [dict(row) for row in await cursor_retry.fetchall()]
+        for task in delayed:
+            await db.execute(
+                "UPDATE tasks SET next_retry_at = NULL WHERE id = ?",
+                (task["id"],),
+            )
+        if delayed:
+            await db.commit()
+            summary.append(
+                f"Cleared retry backoff for {len(delayed)} delayed task(s)"
+            )
+
+        # 3. Accelerate availability-delayed tasks (resets backoff context)
+        try:
+            from ..infra.db import accelerate_retries
+            woken = await accelerate_retries("startup")
+            if woken:
+                summary.append(
+                    f"Accelerated {woken} availability-delayed task(s)"
+                )
+        except Exception as e:
+            logger.debug(f"accelerate_retries on startup failed: {e}")
+
+        # 4. Release all stale file locks from the previous session
+        try:
+            await db.execute("DELETE FROM file_locks")
+            await db.commit()
+            summary.append("Released all stale file locks")
+        except Exception:
+            pass  # file_locks table may not exist yet
+
+        if summary:
+            msg = " | ".join(summary)
+            logger.info(f"[Startup Recovery] {msg}")
+        else:
+            logger.info("[Startup Recovery] No stuck tasks found — clean start")
+
     async def start(self):
         await init_db()
+
+        # ── Startup recovery: wake stuck/sleeping tasks ──
+        try:
+            await self._startup_recovery()
+        except Exception as e:
+            logger.warning(f"Startup recovery failed (non-fatal): {e}")
 
         # ── Start background infrastructure ──
         from ..models.local_model_manager import get_local_manager

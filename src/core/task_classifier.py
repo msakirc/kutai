@@ -212,7 +212,7 @@ def _classify_search_depth(text: str) -> str:
     text_lower = text.lower()
 
     # Initial classification from keyword rules
-    depth = "quick"  # default for general questions
+    depth = "none"  # default: no web search unless keywords match
     for d, keywords in _SEARCH_DEPTH_RULES:
         if any(kw in text_lower for kw in keywords):
             depth = d

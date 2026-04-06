@@ -46,36 +46,26 @@ def _make_base_model(name="test-model", mmproj_path=None, **kwargs):
 
 class TestApplyThinkingDeltas:
     def test_boosts_reasoning_dimensions(self):
+        """Deltas derived from LM Arena thinking/non-thinking pairs."""
         caps = {"reasoning": 5.0, "planning": 5.0, "analysis": 5.0, "code_reasoning": 5.0}
         result = _apply_thinking_deltas(caps)
-        assert result["reasoning"] == 6.0
-        assert result["planning"] == 6.0
-        assert result["analysis"] == 6.0
-        assert result["code_reasoning"] == 6.0
+        assert result["reasoning"] == 5.4    # +0.4
+        assert result["planning"] == 5.4     # +0.4
+        assert result["analysis"] == 5.5     # +0.5
+        assert result["code_reasoning"] == 5.2  # +0.2
 
-    def test_boosts_code_generation(self):
-        caps = {"code_generation": 5.0}
+    def test_boosts_prose_and_instruction(self):
+        caps = {"prose_quality": 5.0, "instruction_adherence": 5.0, "context_utilization": 5.0}
         result = _apply_thinking_deltas(caps)
-        assert result["code_generation"] == pytest.approx(5.3)
-
-    def test_penalizes_instruction_structured_conversation(self):
-        caps = {"instruction_adherence": 5.0, "structured_output": 5.0, "conversation": 5.0}
-        result = _apply_thinking_deltas(caps)
-        assert result["instruction_adherence"] == pytest.approx(4.3)
-        assert result["structured_output"] == pytest.approx(4.3)
-        assert result["conversation"] == pytest.approx(4.5)
+        assert result["prose_quality"] == 5.3           # +0.3
+        assert result["instruction_adherence"] == 5.3   # +0.3
+        assert result["context_utilization"] == 5.2     # +0.2
 
     def test_caps_at_10(self):
-        caps = {"reasoning": 9.5, "planning": 10.0}
+        caps = {"reasoning": 9.8, "planning": 10.0}
         result = _apply_thinking_deltas(caps)
         assert result["reasoning"] == 10.0
         assert result["planning"] == 10.0
-
-    def test_floors_at_0(self):
-        caps = {"instruction_adherence": 0.3, "conversation": 0.2}
-        result = _apply_thinking_deltas(caps)
-        assert result["instruction_adherence"] == 0.0
-        assert result["conversation"] == 0.0
 
     def test_does_not_modify_original(self):
         caps = {"reasoning": 5.0}
@@ -86,7 +76,7 @@ class TestApplyThinkingDeltas:
         caps = {"knowledge": 7.0, "reasoning": 5.0}
         result = _apply_thinking_deltas(caps)
         assert result["knowledge"] == 7.0
-        assert result["reasoning"] == 6.0
+        assert result["reasoning"] == 5.4  # +0.4
 
 
 # ─── _create_model_variants ────────────────────────────────────────────────
@@ -202,11 +192,8 @@ class TestCreateModelVariants:
         assert base_entry.thinking_model is False
         assert base_entry.has_vision is False
 
-    def test_thinking_variant_has_same_base_capabilities(self):
-        """Thinking variant starts with same capabilities as base.
-
-        Real benchmark data is applied later by enrichment, not hardcoded deltas.
-        """
+    def test_thinking_variant_has_adjusted_capabilities(self):
+        """Thinking variant gets data-informed deltas from LM Arena pairs."""
         base = _make_base_model()
         profile = FamilyProfile(
             base_capabilities={},
@@ -216,9 +203,11 @@ class TestCreateModelVariants:
         variants = _create_model_variants(base, profile)
         thinking = [v for v in variants if v.name == "test-model-thinking"][0]
 
-        # Thinking variant has same scores as base (no hardcoded deltas)
-        assert thinking.capabilities["reasoning"] == 5.0
-        assert thinking.capabilities["instruction_adherence"] == 5.0
+        # Thinking variant gets modest boosts (reasoning +0.4, analysis +0.5, etc.)
+        assert thinking.capabilities["reasoning"] > 5.0
+        assert thinking.capabilities["analysis"] > 5.0
+        # instruction_adherence gets a small boost too (+0.3)
+        assert thinking.capabilities["instruction_adherence"] > 5.0
 
         # Base unchanged
         base_entry = [v for v in variants if v.name == "test-model"][0]

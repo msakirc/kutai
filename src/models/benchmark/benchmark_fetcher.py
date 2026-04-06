@@ -169,40 +169,131 @@ _MODEL_ALIASES: dict[str, list[str]] = {
 }
 
 
+def _strip_gguf_suffixes(name: str) -> str:
+    """Strip GGUF quantization and upscale suffixes from model names.
+
+    Examples:
+        Qwen3.5-27B.Q4_K_M          -> Qwen3.5-27B
+        gemma-4-26B-A4B-it-UD-IQ4_NL -> gemma-4-26B-A4B-it
+        GLM-4.7-Flash-UD-Q4_K_XL    -> GLM-4.7-Flash
+        ServiceNow-AI_Apriel-1.6-15b-Thinker-Q4_K_L -> ServiceNow-AI_Apriel-1.6-15b-Thinker
+    """
+    import re as _re
+    # Strip quantization suffix: .Q4_K_M, -Q4_K_XL, -IQ4_NL, _Q5_k_m, etc.
+    name = _re.sub(r"[.\-_](?:I?Q\d+[_\-][A-Za-z0-9_]+)$", "", name)
+    # Strip UD- prefix (ultra-dense) that comes before quant
+    name = _re.sub(r"[\-_]UD$", "", name)
+    # Strip .gguf extension
+    name = _re.sub(r"\.gguf$", "", name, flags=_re.IGNORECASE)
+    # Strip .i1- prefix (importance matrix indicator, e.g. .i1-Q4_K_M -> already stripped)
+    name = _re.sub(r"\.i1$", "", name)
+    return name
+
+
+def _normalize_for_matching(name: str) -> str:
+    """Normalize a model name for fuzzy matching.
+
+    Preserves version dots as dashes to avoid false matches
+    (e.g., 'qwen3.5' -> 'qwen3-5', not 'qwen35').
+    """
+    n = name.lower()
+    # Remove org prefixes
+    if "/" in n:
+        n = n.rsplit("/", 1)[-1]
+    # Remove common suffixes
+    for suffix in [":latest", ":free", "-instruct", "-chat", "-it", "-hf"]:
+        if n.endswith(suffix):
+            n = n[: -len(suffix)]
+    # Replace dots with dashes (preserve version boundaries: 3.5 -> 3-5)
+    n = n.replace(".", "-")
+    # Normalize separators (keep dashes as single separator)
+    n = n.replace("_", "-").replace(" ", "-").replace(":", "-")
+    # Collapse multiple dashes
+    while "--" in n:
+        n = n.replace("--", "-")
+    return n.strip("-")
+
+
 def _fuzzy_match_model(query: str, candidates: list[str]) -> Optional[str]:
     """
     Fuzzy match a model name against candidate list.
     Returns best match or None.
+
+    Matching strategy:
+    1. Exact match (after normalization)
+    2. Alias-based match
+    3. Stripped GGUF name match
+    4. Substring match with length-ratio scoring
     """
-    query_lower = query.lower().replace("-", "").replace("_", "").replace(" ", "")
+    query_stripped = _strip_gguf_suffixes(query)
+    query_norm = _normalize_for_matching(query_stripped)
+    # Also decompose into segments for boundary-aware matching
+    query_segs = query_norm.split("-")
 
     best_match = None
-    best_score = 0
+    best_score = 0.0
 
     for candidate in candidates:
-        cand_lower = candidate.lower().replace("-", "").replace("_", "").replace(" ", "")
+        cand_stripped = _strip_gguf_suffixes(candidate)
+        cand_norm = _normalize_for_matching(cand_stripped)
 
-        # Exact match
-        if query_lower == cand_lower:
+        # Exact match after normalization
+        if query_norm == cand_norm:
             return candidate
 
-        # Substring match
-        if query_lower in cand_lower or cand_lower in query_lower:
-            score = min(len(query_lower), len(cand_lower)) / max(len(query_lower), len(cand_lower))
+        # Segment-prefix match: check if one is a prefix of the other
+        # at segment boundaries (prevents qwen3 matching qwen3-5)
+        cand_segs = cand_norm.split("-")
+        min_len = min(len(query_segs), len(cand_segs))
+        if min_len >= 2 and query_segs[:min_len] == cand_segs[:min_len]:
+            score = min_len / max(len(query_segs), len(cand_segs))
             if score > best_score:
                 best_score = score
                 best_match = candidate
 
-        # Check aliases
-        for alias_key, alias_list in _MODEL_ALIASES.items():
-            ak = alias_key.lower().replace("-", "")
-            if ak in query_lower or query_lower in ak:
-                for alias in alias_list:
-                    al = alias.lower().replace("-", "").replace("_", "").replace("/", "")
-                    if al in cand_lower or cand_lower in al:
+        # Full substring match (only if high overlap ratio)
+        if query_norm in cand_norm or cand_norm in query_norm:
+            score = min(len(query_norm), len(cand_norm)) / max(len(query_norm), len(cand_norm))
+            if score > 0.7 and score > best_score:
+                best_score = score
+                best_match = candidate
+
+    # Check aliases (separate pass — aliases are authoritative)
+    for alias_key, alias_list in _MODEL_ALIASES.items():
+        ak = _normalize_for_matching(alias_key)
+        query_test = _normalize_for_matching(query_stripped)
+        if ak == query_test or _segments_contain(query_test, ak):
+            for alias in alias_list:
+                an = _normalize_for_matching(alias)
+                for candidate in candidates:
+                    cn = _normalize_for_matching(_strip_gguf_suffixes(candidate))
+                    if an == cn or _segments_contain(cn, an) or _segments_contain(an, cn):
                         return candidate
 
     return best_match if best_score > 0.5 else None
+
+
+def _segments_contain(haystack: str, needle: str) -> bool:
+    """Check if all segments of needle appear in haystack (order-preserving).
+
+    Example: needle='apriel-15b' matches haystack='servicenow-ai-apriel-1-6-15b-thinker'
+    because 'apriel' and '15b' appear in order.
+    Requires ALL needle segments to match and needle has at least 2 segments.
+    """
+    h_segs = haystack.split("-")
+    n_segs = needle.split("-")
+    if len(n_segs) < 2:
+        return False
+    h_idx = 0
+    matched = 0
+    for n_seg in n_segs:
+        while h_idx < len(h_segs):
+            if h_segs[h_idx] == n_seg:
+                matched += 1
+                h_idx += 1
+                break
+            h_idx += 1
+    return matched == len(n_segs)
 
 
 # --- Source Fetchers ---------------------------------------------------------
@@ -376,94 +467,32 @@ class ArtificialAnalysisFetcher(_BaseFetcher):
         )
 
 
-class ChatbotArenaFetcher(_BaseFetcher):
+class LMArenaFetcher(_BaseFetcher):
     """
-    Chatbot Arena ELO ratings (replaces LMSysArenaFetcher).
+    LM Arena (lmarena-ai) official leaderboard — per-category ELO ratings.
 
-    Covers: Arena Score (ELO-based)
-    Maps to: conversation, prose_quality
+    Covers: 27 categories including coding, math, creative_writing,
+            instruction_following, multi_turn, hard_prompts, expert, etc.
+    Maps to: code_generation, code_reasoning, reasoning, instruction_adherence,
+             prose_quality, conversation, context_utilization, domain_knowledge,
+             analysis
 
-    Source: HuggingFace Parquet dataset
+    Source: Official HuggingFace Parquet dataset (updated frequently)
     """
-    source_name = "chatbot_arena"
-    URL = "https://huggingface.co/api/datasets/mathewhe/chatbot-arena-elo/parquet/default/train/0.parquet"
+    source_name = "lm_arena"
+    URL = "https://huggingface.co/api/datasets/lmarena-ai/leaderboard-dataset/parquet/text/latest/0.parquet"
 
-    def fetch_bulk(self, cache: BenchmarkCache) -> dict[str, dict]:
-        cached = cache.get_all_models(self.source_name)
-        if cached and "models" in cached:
-            return cached["models"]
-
-        try:
-            import pandas as pd
-
-            df = pd.read_parquet(self.URL)
-
-            result = {}
-            for _, row in df.iterrows():
-                model_name = row.get("Model", "")
-                arena_score = row.get("Arena Score")
-
-                if not model_name or arena_score is None:
-                    continue
-
-                try:
-                    elo = float(arena_score)
-                    if math.isnan(elo):
-                        continue
-                except (ValueError, TypeError):
-                    continue
-
-                score = _normalize_elo(elo)
-                result[model_name] = {
-                    "conversation": score,
-                    "prose_quality": round(score * 0.95, 1),
-                }
-
-            if result:
-                cache.put_all_models(self.source_name, {"models": result})
-                logger.info(f"Chatbot Arena: fetched {len(result)} models")
-            return result
-
-        except Exception as e:
-            logger.warning(f"Chatbot Arena fetch failed: {e}")
-            return {}
-
-    def fetch(self, model_id: str, cache: BenchmarkCache) -> Optional[BenchmarkResult]:
-        all_models = self.fetch_bulk(cache)
-        if not all_models:
-            return None
-        matched = _fuzzy_match_model(model_id, list(all_models.keys()))
-        if not matched:
-            return None
-        return BenchmarkResult(
-            source=self.source_name,
-            model_id=model_id,
-            raw_scores={},
-            mapped_capabilities=all_models[matched],
-            timestamp=time.time(),
-            confidence=0.75,
-        )
-
-
-class HuggingFaceLeaderboardFetcher(_BaseFetcher):
-    """
-    HuggingFace Open LLM Leaderboard v2 (Parquet format).
-
-    Covers: IFEval, BBH, MATH Lvl 5, GPQA, MUSR, MMLU-PRO
-    Maps to: instruction_adherence, reasoning, analysis, domain_knowledge
-
-    Source: HuggingFace datasets Parquet API
-    """
-    source_name = "hf_leaderboard"
-    URL = "https://huggingface.co/api/datasets/open-llm-leaderboard/contents/parquet/default/train/0.parquet"
-
-    BENCHMARK_MAP = {
-        "IFEval":       {"cap": "instruction_adherence", "min": 20, "max": 90},
-        "BBH":          {"cap": "reasoning",             "min": 20, "max": 85},
-        "MATH Lvl 5":   {"cap": "reasoning",             "min": 5,  "max": 75},
-        "GPQA":         {"cap": "reasoning",             "min": 25, "max": 55},
-        "MUSR":         {"cap": "analysis",              "min": 20, "max": 70},
-        "MMLU-PRO":     {"cap": "domain_knowledge",      "min": 20, "max": 85},
+    # Maps LM Arena category -> (our capability, ELO weight multiplier)
+    CATEGORY_MAP = {
+        "overall":                ("conversation", 1.0),
+        "coding":                 ("code_generation", 1.0),
+        "math":                   ("reasoning", 1.0),
+        "creative_writing":       ("prose_quality", 1.0),
+        "instruction_following":  ("instruction_adherence", 1.0),
+        "hard_prompts":           ("reasoning", 0.8),
+        "multi_turn":             ("conversation", 0.9),
+        "expert":                 ("analysis", 1.0),
+        "longer_query":           ("context_utilization", 1.0),
     }
 
     def fetch_bulk(self, cache: BenchmarkCache) -> dict[str, dict]:
@@ -476,41 +505,51 @@ class HuggingFaceLeaderboardFetcher(_BaseFetcher):
 
             df = pd.read_parquet(self.URL)
 
-            result = {}
+            # Group by model, collect per-category ELO
+            model_cats: dict[str, dict[str, float]] = {}
             for _, row in df.iterrows():
-                model_name = row.get("Model", "")
-                if not model_name:
+                model_name = row.get("model_name", "")
+                category = row.get("category", "")
+                rating = row.get("rating")
+
+                if not model_name or not category or rating is None:
+                    continue
+                try:
+                    elo = float(rating)
+                    if math.isnan(elo):
+                        continue
+                except (ValueError, TypeError):
                     continue
 
-                mapped = {}
-                for bench_key, mapping in self.BENCHMARK_MAP.items():
-                    score = row.get(bench_key)
-                    if score is not None:
-                        try:
-                            score = float(score)
-                            if math.isnan(score):
-                                continue
-                            if 0 < score <= 1:
-                                score *= 100  # Convert fraction to percentage
-                            cap = mapping["cap"]
-                            norm = _normalize_score(score, mapping["min"], mapping["max"], 2.0, 10.0)
-                            if cap in mapped:
-                                mapped[cap] = round((mapped[cap] + norm) / 2, 1)
-                            else:
-                                mapped[cap] = norm
-                        except (ValueError, TypeError):
-                            pass
+                model_cats.setdefault(model_name, {})[category] = elo
 
-                if mapped:
+            # Map categories to capabilities
+            result: dict[str, dict[str, float]] = {}
+            for model_name, cats in model_cats.items():
+                caps: dict[str, list[float]] = {}
+                for cat, (cap, weight) in self.CATEGORY_MAP.items():
+                    if cat in cats:
+                        score = _normalize_elo(cats[cat]) * weight
+                        caps.setdefault(cap, []).append(score)
+
+                if caps:
+                    mapped = {}
+                    for cap, scores in caps.items():
+                        mapped[cap] = round(sum(scores) / len(scores), 1)
+                    # coding category also feeds code_reasoning
+                    if "coding" in cats:
+                        mapped["code_reasoning"] = round(
+                            _normalize_elo(cats["coding"]) * 0.95, 1
+                        )
                     result[model_name] = mapped
 
             if result:
                 cache.put_all_models(self.source_name, {"models": result})
-                logger.info(f"HF Leaderboard: fetched {len(result)} models")
+                logger.info(f"LM Arena: fetched {len(result)} models")
             return result
 
         except Exception as e:
-            logger.warning(f"HF Leaderboard fetch failed: {e}")
+            logger.warning(f"LM Arena fetch failed: {e}")
             return {}
 
     def fetch(self, model_id: str, cache: BenchmarkCache) -> Optional[BenchmarkResult]:
@@ -526,107 +565,7 @@ class HuggingFaceLeaderboardFetcher(_BaseFetcher):
             raw_scores={},
             mapped_capabilities=all_models[matched],
             timestamp=time.time(),
-            confidence=0.80,
-        )
-
-
-class LiveCodeBenchFetcher(_BaseFetcher):
-    """
-    LiveCodeBench — live coding problem evaluations.
-
-    Covers: pass@1 on live coding problems across difficulties
-    Maps to: code_generation, code_reasoning
-
-    Source: performances_generation.json (new format with models + performances)
-    """
-    source_name = "livecodebench"
-    URL = "https://livecodebench.github.io/performances_generation.json"
-
-    def fetch_bulk(self, cache: BenchmarkCache) -> dict[str, dict]:
-        cached = cache.get_all_models(self.source_name)
-        if cached and "models" in cached:
-            return cached["models"]
-
-        try:
-            import httpx
-
-            resp = httpx.get(self.URL, timeout=20.0, follow_redirects=True)
-            if resp.status_code != 200:
-                return {}
-
-            data = resp.json()
-
-            result = {}
-
-            # New format: {"models": [...], "performances": [{model, pass_at_1, difficulty}, ...]}
-            if isinstance(data, dict) and "performances" in data:
-                # Aggregate pass@1 per model across all difficulties
-                model_scores: dict[str, list[float]] = {}
-                for perf in data["performances"]:
-                    model_name = perf.get("model", "")
-                    pass_at_1 = perf.get("pass@1", perf.get("pass_at_1"))
-                    if model_name and pass_at_1 is not None:
-                        try:
-                            score = float(pass_at_1)
-                            if score <= 1.0:
-                                score *= 100
-                            model_scores.setdefault(model_name, []).append(score)
-                        except (ValueError, TypeError):
-                            pass
-
-                for model_name, scores in model_scores.items():
-                    avg_score = sum(scores) / len(scores)
-                    code_gen = _normalize_score(avg_score, 10.0, 80.0, 2.0, 10.0)
-                    code_reason = round(code_gen * 0.9, 1)
-                    result[model_name] = {
-                        "code_generation": code_gen,
-                        "code_reasoning": code_reason,
-                    }
-            else:
-                # Fallback: old flat list format
-                entries = data if isinstance(data, list) else data.get("results", data.get("data", []))
-                for entry in entries:
-                    model_name = entry.get("model", entry.get("name", ""))
-                    if not model_name:
-                        continue
-                    pass_at_1 = entry.get("pass@1", entry.get("pass_at_1"))
-                    if pass_at_1 is not None:
-                        try:
-                            score = float(pass_at_1)
-                            if score <= 1.0:
-                                score *= 100
-                            code_gen = _normalize_score(score, 10.0, 80.0, 2.0, 10.0)
-                            code_reason = round(code_gen * 0.9, 1)
-                            result[model_name] = {
-                                "code_generation": code_gen,
-                                "code_reasoning": code_reason,
-                            }
-                        except (ValueError, TypeError):
-                            pass
-
-            if result:
-                cache.put_all_models(self.source_name, {"models": result})
-                logger.info(f"LiveCodeBench: fetched {len(result)} models")
-            return result
-
-        except Exception as e:
-            logger.warning(f"LiveCodeBench fetch failed: {e}")
-            return {}
-
-    def fetch(self, model_id: str, cache: BenchmarkCache) -> Optional[BenchmarkResult]:
-        all_models = self.fetch_bulk(cache)
-        if not all_models:
-            return None
-        matched = _fuzzy_match_model(model_id, list(all_models.keys()))
-        if not matched:
-            return None
-        return BenchmarkResult(
-            source=self.source_name,
-            model_id=model_id,
-            raw_scores={},
-            mapped_capabilities=all_models[matched],
-            timestamp=time.time(),
-            confidence=0.90,
+            confidence=0.85,
         )
 
 
@@ -703,198 +642,6 @@ class BFCLFetcher(_BaseFetcher):
             mapped_capabilities=all_models[matched],
             timestamp=time.time(),
             confidence=0.90,
-        )
-
-
-class AiderLeaderboardFetcher(_BaseFetcher):
-    """
-    Aider polyglot coding leaderboard.
-
-    Covers: real-world code editing accuracy
-    Maps to: code_generation, code_reasoning, instruction_adherence
-
-    Source: https://aider.chat/docs/leaderboards/
-    """
-    source_name = "aider"
-    URL = "https://raw.githubusercontent.com/Aider-AI/aider/main/aider/website/_data/polyglot_leaderboard.yml"
-    FALLBACK_URL = "https://raw.githubusercontent.com/Aider-AI/aider/main/aider/website/_data/edit_leaderboard.yml"
-
-    def fetch_bulk(self, cache: BenchmarkCache) -> dict[str, dict]:
-        cached = cache.get_all_models(self.source_name)
-        if cached and "models" in cached:
-            return cached["models"]
-
-        try:
-            import httpx
-            import yaml
-
-            data = None
-            for url in [self.URL, self.FALLBACK_URL]:
-                try:
-                    resp = httpx.get(url, timeout=20.0, follow_redirects=True)
-                    if resp.status_code == 200:
-                        data = yaml.safe_load(resp.text)
-                        break
-                except Exception:
-                    continue
-
-            if not data:
-                return {}
-
-            result = {}
-            entries = data if isinstance(data, list) else data.get("results", [])
-
-            for entry in entries:
-                model_name = entry.get("model", entry.get("name", ""))
-                if not model_name:
-                    continue
-
-                # Aider reports percent_cases_well_formed and percent_correct
-                correct = entry.get("pass_rate_2", entry.get("percent_correct", entry.get("score")))
-                well_formed = entry.get("percent_cases_well_formed")
-
-                if correct is not None:
-                    try:
-                        correct = float(correct)
-                        if correct <= 1.0:
-                            correct *= 100
-
-                        code_gen = _normalize_score(correct, 15.0, 85.0, 2.0, 10.0)
-                        code_reason = round(code_gen * 0.95, 1)
-
-                        mapped = {
-                            "code_generation": code_gen,
-                            "code_reasoning": code_reason,
-                        }
-
-                        if well_formed is not None:
-                            wf = float(well_formed)
-                            if wf <= 1.0:
-                                wf *= 100
-                            mapped["instruction_adherence"] = _normalize_score(
-                                wf, 50.0, 100.0, 4.0, 10.0
-                            )
-
-                        # Detect thinking mode variants
-                        name_lower = model_name.lower()
-                        is_no_thinking = "(no think" in name_lower
-                        is_thinking = ("think" in name_lower and not is_no_thinking)
-
-                        if is_no_thinking or is_thinking:
-                            import re
-                            clean_name = re.sub(
-                                r'\s*\([^)]*think[^)]*\)\s*', '', model_name,
-                                flags=re.IGNORECASE
-                            ).strip().rstrip(',').strip()
-
-                            if is_thinking:
-                                result[f"{clean_name}::thinking"] = mapped
-                            else:
-                                result[clean_name] = mapped
-                        else:
-                            result[model_name] = mapped
-                    except (ValueError, TypeError):
-                        pass
-
-            if result:
-                cache.put_all_models(self.source_name, {"models": result})
-                logger.info(f"Aider: fetched {len(result)} models")
-            return result
-
-        except Exception as e:
-            logger.warning(f"Aider leaderboard fetch failed: {e}")
-            return {}
-
-    def fetch(self, model_id: str, cache: BenchmarkCache) -> Optional[BenchmarkResult]:
-        all_models = self.fetch_bulk(cache)
-        if not all_models:
-            return None
-        matched = _fuzzy_match_model(model_id, list(all_models.keys()))
-        if not matched:
-            return None
-        return BenchmarkResult(
-            source=self.source_name,
-            model_id=model_id,
-            raw_scores={},
-            mapped_capabilities=all_models[matched],
-            timestamp=time.time(),
-            confidence=0.90,
-        )
-
-
-class BigCodeBenchFetcher(_BaseFetcher):
-    """
-    BigCodeBench — comprehensive code generation benchmark (HF Parquet).
-
-    Covers: function-level code generation with complex instructions
-    Maps to: code_generation, instruction_adherence
-
-    Source: HuggingFace datasets Parquet API
-    """
-    source_name = "bigcodebench"
-    URL = "https://huggingface.co/api/datasets/bigcode/bigcodebench-results/parquet/default/train/0.parquet"
-
-    def fetch_bulk(self, cache: BenchmarkCache) -> dict[str, dict]:
-        cached = cache.get_all_models(self.source_name)
-        if cached and "models" in cached:
-            return cached["models"]
-
-        try:
-            import pandas as pd
-
-            df = pd.read_parquet(self.URL)
-
-            result = {}
-            for _, row in df.iterrows():
-                model_name = row.get("model", "")
-                if not model_name:
-                    continue
-
-                # Prefer 'complete', fallback to 'instruct'
-                score = row.get("complete")
-                if score is None or (isinstance(score, float) and math.isnan(score)):
-                    score = row.get("instruct")
-                if score is None or (isinstance(score, float) and math.isnan(score)):
-                    continue
-
-                try:
-                    score = float(score)
-                    if math.isnan(score):
-                        continue
-                    if score <= 1.0:
-                        score *= 100
-
-                    code_gen = _normalize_score(score, 10.0, 75.0, 2.0, 10.0)
-                    result[model_name] = {
-                        "code_generation": code_gen,
-                        "instruction_adherence": round(code_gen * 0.9, 1),
-                    }
-                except (ValueError, TypeError):
-                    pass
-
-            if result:
-                cache.put_all_models(self.source_name, {"models": result})
-                logger.info(f"BigCodeBench: fetched {len(result)} models")
-            return result
-
-        except Exception as e:
-            logger.warning(f"BigCodeBench fetch failed: {e}")
-            return {}
-
-    def fetch(self, model_id: str, cache: BenchmarkCache) -> Optional[BenchmarkResult]:
-        all_models = self.fetch_bulk(cache)
-        if not all_models:
-            return None
-        matched = _fuzzy_match_model(model_id, list(all_models.keys()))
-        if not matched:
-            return None
-        return BenchmarkResult(
-            source=self.source_name,
-            model_id=model_id,
-            raw_scores={},
-            mapped_capabilities=all_models[matched],
-            timestamp=time.time(),
-            confidence=0.85,
         )
 
 
@@ -1124,6 +871,111 @@ class TurkishMMLUFetcher(_BaseFetcher):
         )
 
 
+class UGILeaderboardFetcher(_BaseFetcher):
+    """
+    UGI (Uncensored General Intelligence) Leaderboard.
+
+    Covers: UGI composite, Writing quality, Natural Intelligence, Textbook knowledge
+    Maps to: prose_quality, domain_knowledge, analysis, conversation
+
+    Source: HuggingFace Spaces CSV (1000+ models, updated frequently)
+    Notable: Only source with Apriel-15B scores.
+    """
+    source_name = "ugi"
+    URL = "https://huggingface.co/spaces/DontPlanToEnd/UGI-Leaderboard/resolve/main/ugi-leaderboard-data.csv"
+
+    def fetch_bulk(self, cache: BenchmarkCache) -> dict[str, dict]:
+        cached = cache.get_all_models(self.source_name)
+        if cached and "models" in cached:
+            return cached["models"]
+
+        try:
+            import httpx
+
+            resp = httpx.get(self.URL, timeout=30.0, follow_redirects=True)
+            if resp.status_code != 200:
+                return {}
+
+            # Strip BOM if present
+            text = resp.text.lstrip("\ufeff")
+            reader = csv.DictReader(io.StringIO(text))
+            result = {}
+
+            for row in reader:
+                # Column name may have BOM prefix or vary
+                model_name = (
+                    row.get("author/model_name")
+                    or row.get("\ufeffauthor/model_name")
+                    or row.get("Model", "")
+                )
+                if not model_name:
+                    continue
+
+                mapped = {}
+
+                # Find columns by prefix (they have emoji suffixes)
+                def _get_col(prefix: str) -> Optional[str]:
+                    for k in row:
+                        if k.startswith(prefix):
+                            return row[k]
+                    return None
+
+                # UGI composite -> general quality indicator
+                ugi = _get_col("UGI ")  # "UGI 🏆"
+                if ugi:
+                    try:
+                        ugi_val = float(ugi)
+                        mapped["analysis"] = _normalize_score(ugi_val, 30, 80, 2.0, 10.0)
+                    except (ValueError, TypeError):
+                        pass
+
+                # Writing score -> prose_quality
+                writing = _get_col("Writing")  # "Writing ✍️"
+                if writing:
+                    try:
+                        w_val = float(writing)
+                        mapped["prose_quality"] = _normalize_score(w_val, 30, 90, 2.0, 10.0)
+                    except (ValueError, TypeError):
+                        pass
+
+                # NatInt (natural intelligence) -> domain_knowledge
+                natint = _get_col("NatInt")  # "NatInt 💡"
+                if natint:
+                    try:
+                        n_val = float(natint)
+                        mapped["domain_knowledge"] = _normalize_score(n_val, 20, 80, 2.0, 10.0)
+                    except (ValueError, TypeError):
+                        pass
+
+                if mapped:
+                    result[model_name] = mapped
+
+            if result:
+                cache.put_all_models(self.source_name, {"models": result})
+                logger.info(f"UGI: fetched {len(result)} models")
+            return result
+
+        except Exception as e:
+            logger.warning(f"UGI leaderboard fetch failed: {e}")
+            return {}
+
+    def fetch(self, model_id: str, cache: BenchmarkCache) -> Optional[BenchmarkResult]:
+        all_models = self.fetch_bulk(cache)
+        if not all_models:
+            return None
+        matched = _fuzzy_match_model(model_id, list(all_models.keys()))
+        if not matched:
+            return None
+        return BenchmarkResult(
+            source=self.source_name,
+            model_id=model_id,
+            raw_scores={},
+            mapped_capabilities=all_models[matched],
+            timestamp=time.time(),
+            confidence=0.70,
+        )
+
+
 # --- Main Fetcher Orchestrator -----------------------------------------------
 
 class BenchmarkFetcher:
@@ -1147,15 +999,12 @@ class BenchmarkFetcher:
         self.cache = BenchmarkCache(cache_dir=Path(cache_dir))
         self.fetchers: list[_BaseFetcher] = [
             ArtificialAnalysisFetcher(),
-            HuggingFaceLeaderboardFetcher(),
-            LiveCodeBenchFetcher(),
+            LMArenaFetcher(),
             BFCLFetcher(),
-            ChatbotArenaFetcher(),
-            AiderLeaderboardFetcher(),
-            BigCodeBenchFetcher(),
             OpenRouterRankingsFetcher(),
             SenecaTRBenchFetcher(),
             TurkishMMLUFetcher(),
+            UGILeaderboardFetcher(),
         ]
 
     def fetch_model(self, model_id: str) -> dict[str, float]:
@@ -1196,12 +1045,9 @@ class BenchmarkFetcher:
                     # Map source to confidence
                     conf_map = {
                         "artificial_analysis": 0.90,
-                        "hf_leaderboard": 0.80,
-                        "livecodebench": 0.90,
                         "bfcl": 0.90,
                         "chatbot_arena": 0.75,
                         "aider": 0.90,
-                        "bigcodebench": 0.85,
                         "openrouter": 0.60,
                         "seneca_trbench": 0.85,
                         "turkish_mmlu": 0.85,
@@ -1285,94 +1131,125 @@ class BenchmarkFetcher:
 
 # --- Integration with Registry -----------------------------------------------
 
+def _search_source_for_model(
+    source_models: dict[str, dict],
+    search_terms: list[str],
+    is_thinking: bool,
+) -> Optional[dict[str, float]]:
+    """Search a single source's model dict for the best match.
+
+    For thinking variants, tries ::thinking keys first.
+    Returns matched capabilities dict or None.
+    """
+    all_keys = list(source_models.keys())
+
+    if is_thinking:
+        # Try thinking-specific keys first
+        thinking_keys = [k for k in all_keys if k.endswith("::thinking")]
+        if thinking_keys:
+            for term in search_terms:
+                if not term:
+                    continue
+                match = _fuzzy_match_model(term, thinking_keys)
+                if match:
+                    return source_models[match]
+
+    # Search non-thinking keys (or all keys for non-thinking models)
+    non_thinking_keys = [k for k in all_keys if not k.endswith("::thinking")]
+    for term in search_terms:
+        if not term:
+            continue
+        match = _fuzzy_match_model(term, non_thinking_keys)
+        if match:
+            return source_models[match]
+
+    return None
+
+
 def enrich_registry_with_benchmarks(
     registry: "ModelRegistry",
     cache_dir: str | Path = ".benchmark_cache",
     override_existing: bool = False,
-    min_confidence_sources: int = 2,
+    min_confidence_sources: int = 1,
 ) -> dict[str, dict[str, float]]:
     """
     Fetch benchmark data and merge into the registry's capability scores.
 
     Strategy:
-    - For each model in the registry, try to find benchmark data
-    - If found AND at least min_confidence_sources contributed,
-      blend with existing estimate: 60% benchmark + 40% profile-estimate
-    - If override_existing=True, replace entirely with benchmark data
+    - For each model, search EACH source independently (different sources
+      use different naming conventions, so per-source matching is essential)
+    - Merge results across sources using confidence-weighted averaging
+    - Blend with existing profile estimates: 60% benchmark + 40% profile
 
     Returns dict of models that were enriched: {model_name: {updated_caps}}
-
-    Usage:
-        from model_registry import get_registry
-        from benchmark_fetcher import enrich_registry_with_benchmarks
-
-        registry = get_registry()
-        enriched = enrich_registry_with_benchmarks(registry)
-        print(f"Enriched {len(enriched)} models with benchmark data")
     """
     fetcher = BenchmarkFetcher(cache_dir=cache_dir)
 
-    # Fetch bulk data from all sources
-    bulk_data = fetcher.fetch_all_bulk()
-    if not bulk_data:
+    # Fetch per-source data (each source has its own naming convention)
+    source_confidence = {
+        "artificial_analysis": 0.90,
+        "lm_arena": 0.85,
+        "bfcl": 0.90,
+        "openrouter": 0.60,
+        "seneca_trbench": 0.85,
+        "turkish_mmlu": 0.85,
+        "ugi": 0.70,
+    }
+
+    per_source_data: dict[str, dict[str, dict]] = {}
+    for f_obj in fetcher.fetchers:
+        try:
+            bulk = f_obj.fetch_bulk(fetcher.cache)
+            if bulk:
+                per_source_data[f_obj.source_name] = bulk
+        except Exception as e:
+            logger.warning(f"Bulk fetch from {f_obj.source_name} failed: {e}")
+
+    if not per_source_data:
         logger.info("No benchmark data available for enrichment")
         return {}
 
     enriched = {}
 
     for model_name, model_info in registry.models.items():
-        # Try to match this model against benchmark data
         # Build search terms from model metadata
-        search_terms = [
-            model_name,
-            model_info.litellm_name,
-            model_info.family,
-        ]
+        search_terms = [model_name]
+        base_name = getattr(model_info, 'base_model_name', '')
+        if base_name and base_name != model_name:
+            search_terms.append(base_name)
+        if model_info.litellm_name:
+            search_terms.append(model_info.litellm_name)
         if model_info.path:
             search_terms.append(Path(model_info.path).stem)
+        # Also add the stripped GGUF name
+        for term in list(search_terms):
+            stripped = _strip_gguf_suffixes(term)
+            if stripped != term and stripped not in search_terms:
+                search_terms.append(stripped)
 
-        # Try each search term (thinking-aware matching)
-        bench_caps = None
+        is_thinking = getattr(model_info, 'is_variant', False) and \
+                      'thinking' in getattr(model_info, 'variant_flags', set())
 
-        is_thinking_variant = getattr(model_info, 'is_variant', False) and \
-                              'thinking' in getattr(model_info, 'variant_flags', set())
-        base_name = getattr(model_info, 'base_model_name', '')
+        # Search each source independently and collect results
+        results: list[BenchmarkResult] = []
+        for source_name, source_models in per_source_data.items():
+            matched_caps = _search_source_for_model(
+                source_models, search_terms, is_thinking
+            )
+            if matched_caps:
+                results.append(BenchmarkResult(
+                    source=source_name,
+                    model_id=model_name,
+                    raw_scores={},
+                    mapped_capabilities=matched_caps,
+                    confidence=source_confidence.get(source_name, 0.75),
+                ))
 
-        if is_thinking_variant and base_name:
-            # Try thinking-specific benchmark data first (e.g., "model::thinking")
-            thinking_keys = [k for k in bulk_data.keys() if k.endswith("::thinking")]
-            for term in [base_name, model_info.litellm_name.replace('-thinking', ''),
-                         model_info.family]:
-                if not term:
-                    continue
-                thinking_key = _fuzzy_match_model(term, thinking_keys)
-                if thinking_key:
-                    bench_caps = bulk_data[thinking_key]
-                    break
+        if not results:
+            continue
 
-            # Fall back to base model data if no thinking-specific entry
-            if not bench_caps:
-                non_thinking_keys = [k for k in bulk_data.keys()
-                                     if not k.endswith("::thinking")]
-                for term in search_terms:
-                    if not term:
-                        continue
-                    matched_key = _fuzzy_match_model(term, non_thinking_keys)
-                    if matched_key:
-                        bench_caps = bulk_data[matched_key]
-                        break
-        else:
-            # Normal model — prefer non-thinking entries
-            non_thinking_keys = [k for k in bulk_data.keys()
-                                 if not k.endswith("::thinking")]
-            for term in search_terms:
-                if not term:
-                    continue
-                matched_key = _fuzzy_match_model(term, non_thinking_keys)
-                if matched_key:
-                    bench_caps = bulk_data[matched_key]
-                    break
-
+        # Merge across sources using confidence-weighted averaging
+        bench_caps = BenchmarkFetcher._merge_results(results)
         if not bench_caps:
             continue
 
@@ -1382,12 +1259,14 @@ def enrich_registry_with_benchmarks(
         # Blend benchmark data with existing profile estimates
         updated = {}
         existing_caps = model_info.capabilities
+        bench_dims = 0
 
         for cap_name in existing_caps:
             existing_score = existing_caps[cap_name]
             bench_score = bench_caps.get(cap_name)
 
             if bench_score is not None and bench_score > 0:
+                bench_dims += 1
                 if override_existing:
                     updated[cap_name] = bench_score
                 else:
@@ -1401,9 +1280,11 @@ def enrich_registry_with_benchmarks(
         model_info.capabilities = updated
         enriched[model_name] = updated
 
+        sources_hit = [r.source for r in results]
         logger.debug(
             f"Enriched {model_name} with benchmark data "
-            f"({len(bench_caps)} dimensions from benchmarks)"
+            f"({bench_dims} dimensions from {len(results)} sources: "
+            f"{', '.join(sources_hit)})"
         )
 
     logger.info(f"Enriched {len(enriched)}/{len(registry.models)} models with benchmark data")

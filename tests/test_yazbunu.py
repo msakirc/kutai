@@ -4,8 +4,7 @@ import logging
 import sys
 import os
 
-# yazbunu is a sibling directory at repo root
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "yazbunu"))
+# yazbunu is installed as editable package from packages/yazbunu
 
 from yazbunu.formatter import YazFormatter
 

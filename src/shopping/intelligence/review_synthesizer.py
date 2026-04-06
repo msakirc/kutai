@@ -9,6 +9,7 @@ import time
 from datetime import datetime
 
 from src.infra.logging_config import get_logger
+from src.infra.times import utc_now
 
 logger = get_logger("shopping.intelligence.review_synthesizer")
 
@@ -26,7 +27,8 @@ def _compute_temporal_weight(review_date: str | None) -> float:
         return 1.0
     try:
         dt = datetime.fromisoformat(review_date.replace("Z", "+00:00"))
-        age_days = (datetime.now(dt.tzinfo) - dt).days if dt.tzinfo else (datetime.now() - dt).days
+        now = utc_now()
+        age_days = (now - dt).days if dt.tzinfo else (now.replace(tzinfo=None) - dt).days
         if age_days < _RECENT_THRESHOLD_DAYS:
             return 2.0
         return 1.0

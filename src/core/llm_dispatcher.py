@@ -705,6 +705,9 @@ class LLMDispatcher:
                 and not m.demoted
                 and m.supports_function_calling
                 and m.specialty not in ("code", "coding")
+                # Exclude vision variants — loading mmproj wastes RAM
+                # for non-vision tasks like grading
+                and "vision" not in getattr(m, "variant_flags", set())
             ]
             if not candidates:
                 return None

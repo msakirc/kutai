@@ -58,11 +58,14 @@ def test_kandilli_no_auth():
 
 
 def test_collectapi_apis_share_key():
-    """Turkey Fuel Prices, Gold Price Turkey, and BIST Stock Data all use COLLECTAPI_KEY."""
-    for name in ["Turkey Fuel Prices", "Gold Price Turkey", "BIST Stock Data"]:
+    """Turkey Fuel Prices and BIST Stock Data use COLLECTAPI_KEY; Gold uses free API."""
+    for name in ["Turkey Fuel Prices", "BIST Stock Data"]:
         api = get_api(name)
         assert api.env_var == "COLLECTAPI_KEY", f"{name} should use COLLECTAPI_KEY"
         assert api.auth_type == "apikey_header"
+    # Gold now uses free truncgil API
+    gold = get_api("Gold Price Turkey")
+    assert gold.auth_type == "none"
 
 
 def test_osrm_is_geo_category():
@@ -92,14 +95,14 @@ def test_find_apis_earthquake_category():
 # ---------------------------------------------------------------------------
 
 EXPECTED_SKILLS = [
-    "pharmacy_on_duty",
-    "earthquake_data",
-    "fuel_price_routing",
-    "gold_price_routing",
-    "map_directions_routing",
-    "prayer_times_routing",
-    "travel_ticket_routing",
-    "turkish_holidays_routing",
+    "pharmacy_finder",
+    "earthquake_data_lookup",
+    "fuel_price_lookup",
+    "gold_price_lookup",
+    "directions_and_routing",
+    "prayer_times_lookup",
+    "travel_ticket_search",
+    "turkish_holiday_lookup",
 ]
 
 
@@ -110,63 +113,45 @@ def test_skill_in_seed_skills(skill_name):
     assert skill_name in names, f"{skill_name} not found in SEED_SKILLS"
 
 
-def test_pharmacy_skill_matches_nobetci_eczane():
-    skill = next(s for s in SEED_SKILLS if s["name"] == "pharmacy_on_duty")
-    pattern = skill["trigger_pattern"]
-    assert re.search(pattern, "nöbetçi eczane", re.IGNORECASE)
-    assert re.search(pattern, "pharmacy on duty istanbul", re.IGNORECASE)
-    assert re.search(pattern, "en yakın eczane", re.IGNORECASE)
+def test_pharmacy_skill_description():
+    skill = next(s for s in SEED_SKILLS if s["name"] == "pharmacy_finder")
+    assert "pharmacy" in skill["description"].lower() or "eczane" in skill["description"].lower()
+    assert "pharmacy" in skill["tools_used"]
 
 
-def test_earthquake_skill_matches_deprem():
-    skill = next(s for s in SEED_SKILLS if s["name"] == "earthquake_data")
-    pattern = skill["trigger_pattern"]
-    assert re.search(pattern, "deprem oldu mu", re.IGNORECASE)
-    assert re.search(pattern, "earthquake in Turkey", re.IGNORECASE)
-    assert re.search(pattern, "kandilli son depremler", re.IGNORECASE)
+def test_earthquake_skill_description():
+    skill = next(s for s in SEED_SKILLS if s["name"] == "earthquake_data_lookup")
+    assert "earthquake" in skill["description"].lower() or "deprem" in skill["description"].lower()
 
 
-def test_fuel_skill_matches_benzin():
-    skill = next(s for s in SEED_SKILLS if s["name"] == "fuel_price_routing")
-    pattern = skill["trigger_pattern"]
-    assert re.search(pattern, "benzin fiyatı", re.IGNORECASE)
-    assert re.search(pattern, "mazot ne kadar", re.IGNORECASE)
+def test_fuel_skill_description():
+    skill = next(s for s in SEED_SKILLS if s["name"] == "fuel_price_lookup")
+    assert "fuel" in skill["description"].lower() or "benzin" in skill["description"].lower()
 
 
-def test_gold_skill_matches_altin():
-    skill = next(s for s in SEED_SKILLS if s["name"] == "gold_price_routing")
-    pattern = skill["trigger_pattern"]
-    assert re.search(pattern, "altın fiyatı", re.IGNORECASE)
-    assert re.search(pattern, "çeyrek altın", re.IGNORECASE)
-    assert re.search(pattern, "gram altın ne kadar", re.IGNORECASE)
+def test_gold_skill_description():
+    skill = next(s for s in SEED_SKILLS if s["name"] == "gold_price_lookup")
+    assert "gold" in skill["description"].lower() or "altin" in skill["description"].lower()
 
 
-def test_prayer_skill_matches_namaz():
-    skill = next(s for s in SEED_SKILLS if s["name"] == "prayer_times_routing")
-    pattern = skill["trigger_pattern"]
-    assert re.search(pattern, "namaz vakitleri", re.IGNORECASE)
-    assert re.search(pattern, "iftar saati", re.IGNORECASE)
+def test_prayer_skill_description():
+    skill = next(s for s in SEED_SKILLS if s["name"] == "prayer_times_lookup")
+    assert "prayer" in skill["description"].lower() or "namaz" in skill["description"].lower()
 
 
-def test_holiday_skill_matches_bayram():
-    skill = next(s for s in SEED_SKILLS if s["name"] == "turkish_holidays_routing")
-    pattern = skill["trigger_pattern"]
-    assert re.search(pattern, "bayram ne zaman", re.IGNORECASE)
-    assert re.search(pattern, "resmi tatil", re.IGNORECASE)
+def test_holiday_skill_description():
+    skill = next(s for s in SEED_SKILLS if s["name"] == "turkish_holiday_lookup")
+    assert "holiday" in skill["description"].lower() or "bayram" in skill["description"].lower()
 
 
-def test_travel_skill_matches_ucak():
-    skill = next(s for s in SEED_SKILLS if s["name"] == "travel_ticket_routing")
-    pattern = skill["trigger_pattern"]
-    assert re.search(pattern, "uçak bileti", re.IGNORECASE)
-    assert re.search(pattern, "enuygun", re.IGNORECASE)
+def test_travel_skill_description():
+    skill = next(s for s in SEED_SKILLS if s["name"] == "travel_ticket_search")
+    assert "ticket" in skill["description"].lower() or "flight" in skill["description"].lower()
 
 
-def test_directions_skill_matches_yol_tarifi():
-    skill = next(s for s in SEED_SKILLS if s["name"] == "map_directions_routing")
-    pattern = skill["trigger_pattern"]
-    assert re.search(pattern, "yol tarifi", re.IGNORECASE)
-    assert re.search(pattern, "directions to airport", re.IGNORECASE)
+def test_directions_skill_description():
+    skill = next(s for s in SEED_SKILLS if s["name"] == "directions_and_routing")
+    assert "direction" in skill["description"].lower() or "route" in skill["description"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -214,13 +199,13 @@ def test_mcp_registry_parser():
     upserted = {c[0][0]["name"]: c[0][0] for c in upsert_mock.call_args_list}
 
     assert "MCP: Brave Search" in upserted
-    assert upserted["MCP: Brave Search"]["category"] == "search"
+    assert upserted["MCP: Brave Search"]["category"] == "knowledge"  # "search" maps to "knowledge"
 
     assert "MCP: PostgreSQL" in upserted
-    assert upserted["MCP: PostgreSQL"]["category"] == "database"
+    assert upserted["MCP: PostgreSQL"]["category"] == "development"  # "database" maps to "development"
 
     assert "MCP: Google Drive" in upserted
-    assert upserted["MCP: Google Drive"]["category"] == "storage"
+    assert upserted["MCP: Google Drive"]["category"] == "network"  # "storage" maps to "network"
 
     assert "MCP: GitHub" in upserted
     assert upserted["MCP: GitHub"]["category"] == "development"

@@ -59,7 +59,7 @@ AGENT_PERMISSIONS: dict[str, Optional[set[str]]] = {
         "read_blackboard",
     },
     "analyst": {
-        "web_search", "web_extract", "file_tree", "read_file",
+        "web_search", "web_extract", "file_tree", "read_file", "write_file",
         "read_blackboard", "write_blackboard",
         "analyze_image", "read_document",
     },

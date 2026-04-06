@@ -1,9 +1,11 @@
 # telegram_bot.py
 import asyncio
 import os
+import signal
 from datetime import datetime
 from pathlib import Path
 from src.infra.logging_config import get_logger
+from ..infra.times import utc_now, to_turkey, TZ_TR, tr_hour_to_utc
 from .config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, TASK_PRIORITY
 
 logger = get_logger("app.telegram_bot")
@@ -20,7 +22,7 @@ from ..infra.db import (add_task, add_mission, get_active_missions,
                 get_mission_locks, get_tasks_for_mission, update_mission,
                 insert_approval_request, update_approval_status,
                 add_todo, get_todos, get_todo, toggle_todo, delete_todo,
-                update_todo)
+                update_todo, get_blocked_task_summary)
 from ..memory.conversations import format_recent_context, find_followup_context, \
     store_exchange
 from ..memory.ingest import ingest_document
@@ -865,28 +867,20 @@ class TelegramInterface:
         Returns a datetime or None if parsing fails.
         """
         from datetime import datetime, timedelta, timezone
-        try:
-            from zoneinfo import ZoneInfo
-            _TZ_TR = ZoneInfo("Europe/Istanbul")
-        except Exception:
-            _TZ_TR = None
         import re
 
         text = text.strip().lower()
         # Work in Turkey local time for user-facing absolute times (HH:MM, yarın).
         # For relative offsets (N dk, N saat) we use UTC directly.
-        now_utc = datetime.now(timezone.utc)
-        now_local = now_utc.astimezone(_TZ_TR) if _TZ_TR else now_utc
+        now_utc = utc_now()
+        now_local = now_utc.astimezone(TZ_TR)
 
         def _to_utc_naive(dt):
             """Convert a local (Turkey) datetime to a UTC naive datetime for DB storage."""
             if dt.tzinfo is not None:
                 return dt.astimezone(timezone.utc).replace(tzinfo=None)
             # dt is naive local Turkey time — attach tz then convert
-            if _TZ_TR:
-                return dt.replace(tzinfo=_TZ_TR).astimezone(timezone.utc).replace(tzinfo=None)
-            # Fallback: subtract 3h manually (Turkey is always UTC+3, no DST)
-            return dt - timedelta(hours=3)
+            return dt.replace(tzinfo=TZ_TR).astimezone(timezone.utc).replace(tzinfo=None)
 
         # Turkish number words → digits
         _TR_NUMS = {
@@ -933,8 +927,8 @@ class TelegramInterface:
                 hour=int(m.group(1)), minute=int(m.group(2)),
                 second=0, microsecond=0,
             )
-            if _TZ_TR and hasattr(candidate_local, 'tzinfo') and candidate_local.tzinfo is None:
-                candidate_local = candidate_local.replace(tzinfo=_TZ_TR)
+            if hasattr(candidate_local, 'tzinfo') and candidate_local.tzinfo is None:
+                candidate_local = candidate_local.replace(tzinfo=TZ_TR)
             if candidate_local <= now_local:
                 candidate_local += timedelta(days=1)
             return _to_utc_naive(candidate_local)
@@ -967,12 +961,6 @@ class TelegramInterface:
         """
         import re
 
-        _TR_UTC_OFFSET = 3  # Turkey is always UTC+3, no DST
-
-        def _tr_to_utc_hour(h: int) -> int:
-            """Convert Turkey local hour to UTC hour (0-23)."""
-            return (h - _TR_UTC_OFFSET) % 24
-
         text = text.strip().lower()
 
         day_map = {
@@ -992,21 +980,21 @@ class TelegramInterface:
         # her gün HH:MM — daily at Turkey-local time, convert to UTC
         m = re.match(r"^her\s+gün\s+(\d{1,2}):(\d{2})$", text)
         if m:
-            utc_h = _tr_to_utc_hour(int(m.group(1)))
+            utc_h = tr_hour_to_utc(int(m.group(1)))
             return f"{int(m.group(2))} {utc_h} * * *"
 
         # her gün (default 09:00 TR = 06:00 UTC)
         if re.match(r"^her\s+gün$", text):
-            return f"0 {_tr_to_utc_hour(9)} * * *"
+            return f"0 {tr_hour_to_utc(9)} * * *"
 
         # her <weekday> HH:MM — convert Turkey hour to UTC
         for day_name, day_num in day_map.items():
             m = re.match(rf"^her\s+{re.escape(day_name)}\s+(\d{{1,2}}):(\d{{2}})$", text)
             if m:
-                utc_h = _tr_to_utc_hour(int(m.group(1)))
+                utc_h = tr_hour_to_utc(int(m.group(1)))
                 return f"{int(m.group(2))} {utc_h} * * {day_num}"
             if re.match(rf"^her\s+{re.escape(day_name)}$", text):
-                return f"0 {_tr_to_utc_hour(9)} * * {day_num}"
+                return f"0 {tr_hour_to_utc(9)} * * {day_num}"
 
         return None
 
@@ -1113,7 +1101,7 @@ class TelegramInterface:
                     updated = t.get("last_ts", "")
                     if updated:
                         updated_dt = datetime.fromisoformat(str(updated).replace(" ", "T"))
-                        ago = (datetime.now() - updated_dt).total_seconds()
+                        ago = (utc_now().replace(tzinfo=None) - updated_dt).total_seconds()
                         if ago < 60:
                             time_str = f"{int(ago)}sn önce"
                         elif ago < 3600:
@@ -1165,19 +1153,58 @@ class TelegramInterface:
             logger.error("DLQ listing failed", error=str(e))
             await self._reply(update, f"❌ {_friendly_error(str(e))}")
 
-    async def _show_processes(self, update, context):
-        """Show running processes, Kutay health, and management buttons."""
+    @staticmethod
+    async def _check_yazbunu_health() -> str:
+        """Check yazbunu health via HTTP and PID file."""
+        import aiohttp
+        yz_responding = False
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(
+                    "http://127.0.0.1:9880/",
+                    timeout=aiohttp.ClientTimeout(total=3),
+                ) as r:
+                    yz_responding = r.status == 200
+        except Exception:
+            pass
+        yz_pid = None
+        try:
+            pid_file = Path("logs/yazbunu.pid")
+            pid = int(pid_file.read_text().strip())
+            # Check alive
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if h:
+                k32.CloseHandle(h)
+                yz_pid = pid
+        except Exception:
+            pass
+        if yz_responding:
+            pid_str = f", PID {yz_pid}" if yz_pid else ""
+            return f"📊 yazbunu: çalışıyor (port 9880{pid_str})"
+        elif yz_pid:
+            return f"🟠 yazbunu: süreç var ama yanıt yok (PID {yz_pid})"
+        else:
+            return "⚫ yazbunu: çalışmıyor"
+
+    async def _build_proc_panel(self) -> tuple[str, list[list[InlineKeyboardButton]]]:
+        """Build the Yaşar Usta status text and inline buttons."""
         import subprocess as _sp
         import time as _time
+
+        lines = []
+        wrappers = []
+        orchestrators = []
+        llama_pids = []
+
+        # Python processes
         try:
             raw = _sp.check_output(
                 ['wmic', 'process', 'where', "name='python.exe'",
                  'get', 'ProcessId,CommandLine'],
                 text=True, timeout=5,
             )
-            lines = []
-            wrappers = []
-            orchestrators = []
             for line in raw.strip().splitlines():
                 line = line.strip()
                 if not line or line.startswith("CommandLine"):
@@ -1185,89 +1212,97 @@ class TelegramInterface:
                 pid = line.split()[-1] if line.split() else ""
                 if "wrapper" in line.lower():
                     wrappers.append(pid)
-                    lines.append(f"🔵 Yaşar Usta PID {pid}")
                 elif "run.py" in line:
                     orchestrators.append(pid)
-                    lines.append(f"🟢 Kutay PID {pid}")
+        except Exception as e:
+            lines.append(f"⚠️ Süreç listesi alınamadı: {e}")
 
-            # Check llama-server
-            llama_pids = []
+        # llama-server
+        try:
+            llama_raw = _sp.check_output(
+                ['tasklist', '/FI', 'IMAGENAME eq llama-server.exe'],
+                text=True, timeout=5,
+            )
+            for ll in llama_raw.splitlines():
+                if 'llama-server' in ll.lower():
+                    parts = ll.split()
+                    if len(parts) >= 2:
+                        llama_pids.append(parts[1])
+        except Exception:
+            pass
+
+        # Dedup: Windows venv stub + real Python show as 2 PIDs per process
+        n_wrappers = (len(wrappers) + 1) // 2
+        n_orchestrators = (len(orchestrators) + 1) // 2
+
+        # ── Health: Yaşar Usta ──
+        usta_line = f"🔵 Yaşar Usta: {n_wrappers} süreç"
+        if n_wrappers > 1:
+            usta_line += " ⚠️ duplicate!"
+
+        # ── Health: Kutay ──
+        kutay_healthy = False
+        heartbeat_age = None
+        for hb_path in ["logs/orchestrator.heartbeat", "logs/heartbeat"]:
             try:
-                llama_raw = _sp.check_output(
-                    ['tasklist', '/FI', 'IMAGENAME eq llama-server.exe'],
-                    text=True, timeout=5,
-                )
-                for ll in llama_raw.splitlines():
-                    if 'llama-server' in ll.lower():
-                        parts = ll.split()
-                        if len(parts) >= 2:
-                            llama_pids.append(parts[1])
-                            lines.append(f"🟡 llama-server PID {parts[1]}")
-            except Exception:
-                pass
+                with open(hb_path, "r") as f:
+                    last_beat = float(f.read().strip())
+                heartbeat_age = _time.time() - last_beat
+                kutay_healthy = heartbeat_age < 60
+                break
+            except (FileNotFoundError, ValueError):
+                continue
 
-            if not lines:
-                lines.append("Çalışan süreç bulunamadı.")
+        if n_orchestrators == 0:
+            kutay_line = "💀 Kutay: çalışmıyor"
+        elif kutay_healthy:
+            age_str = f"{int(heartbeat_age)}sn önce" if heartbeat_age else ""
+            kutay_line = f"💚 Kutay: sağlıklı (heartbeat {age_str})"
+        elif heartbeat_age is not None:
+            kutay_line = f"🔴 Kutay: YANIT VERMİYOR ({int(heartbeat_age)}sn sessiz)"
+        else:
+            kutay_line = "⚪ Kutay: heartbeat dosyası yok"
 
-            # Dedup: Windows venv stub + real Python show as 2 PIDs per process
-            n_wrappers = (len(wrappers) + 1) // 2
-            n_orchestrators = (len(orchestrators) + 1) // 2
+        # ── Health: llama-server ──
+        if llama_pids:
+            llama_line = f"🟡 llama-server: çalışıyor (PID {', '.join(llama_pids)})"
+        else:
+            llama_line = "⚫ llama-server: çalışmıyor"
 
-            # ── Kutay health check via heartbeat ──
-            kutay_healthy = False
-            heartbeat_age = None
-            for hb_path in ["logs/orchestrator.heartbeat", "logs/heartbeat"]:
-                try:
-                    with open(hb_path, "r") as f:
-                        last_beat = float(f.read().strip())
-                    heartbeat_age = _time.time() - last_beat
-                    kutay_healthy = heartbeat_age < 60
-                    break
-                except (FileNotFoundError, ValueError):
-                    continue
+        # ── Health: yazbunu ──
+        yz_line = await self._check_yazbunu_health()
 
-            if n_orchestrators == 0:
-                health_line = "💀 Kutay: çalışmıyor"
-            elif kutay_healthy:
-                age_str = f"{int(heartbeat_age)}sn önce" if heartbeat_age else ""
-                health_line = f"💚 Kutay: sağlıklı (heartbeat {age_str})"
-            elif heartbeat_age is not None:
-                age_str = f"{int(heartbeat_age)}sn"
-                health_line = f"🔴 Kutay: YANIT VERMİYOR ({age_str} sessiz)"
-            else:
-                health_line = "⚪ Kutay: heartbeat dosyası yok"
+        ts = _time.strftime("%H:%M:%S")
+        text = (
+            f"🔧 *Yaşar Usta*\n\n"
+            f"{usta_line}\n"
+            f"{kutay_line}\n"
+            f"{llama_line}\n"
+            f"{yz_line}\n"
+            f"\n_Son güncelleme: {ts}_"
+        )
 
-            summary = (
-                f"\n\n📊 Yaşar Usta: {n_wrappers} | Kutay: {n_orchestrators} | "
-                f"llama: {len(llama_pids)}"
-            )
-            if n_wrappers > 1 or n_orchestrators > 1:
-                summary += "\n⚠️ Duplicate süreçler var!"
-
-            text = (
-                f"🔧 *Yaşar Usta - Süreç Yönetimi*\n\n"
-                + "\n".join(lines)
-                + f"\n\n{health_line}"
-                + summary
-            )
-
-            btn_rows = []
-            # If Kutay is unresponsive, show prominent kill button
-            if n_orchestrators > 0 and not kutay_healthy and heartbeat_age and heartbeat_age > 30:
-                btn_rows.append([InlineKeyboardButton(
-                    f"☠️ Kutay'ı öldür ({int(heartbeat_age)}sn yanıtsız)",
-                    callback_data="m:proc:kill_kutai_only")])
+        # ── Buttons ──
+        btn_rows = []
+        if n_orchestrators > 0 and not kutay_healthy and heartbeat_age and heartbeat_age > 30:
             btn_rows.append([InlineKeyboardButton(
-                "💀 Hepsini Kapat + Yaşar Usta Başlat",
-                callback_data="m:proc:kill_wrapper")])
-            btn_rows.append([InlineKeyboardButton(
-                "🔄 Hepsini Kapat + Kutay Başlat",
-                callback_data="m:proc:kill_kutai")])
-            btn_rows.append([InlineKeyboardButton(
-                "🔃 Yenile", callback_data="m:proc:refresh")])
-            btn_rows.append([InlineKeyboardButton(
-                "🔙 Geri", callback_data="m:proc:back")])
+                f"☠️ Kutay'ı öldür ({int(heartbeat_age)}sn yanıtsız)",
+                callback_data="m:proc:kill_kutai_only")])
+        btn_rows.append([
+            InlineKeyboardButton("♻️ Usta'yı Yeniden Başlat", callback_data="m:proc:kill_wrapper"),
+            InlineKeyboardButton("📊 Yazbunu Yeniden Başlat", callback_data="m:proc:restart_yazbunu"),
+        ])
+        btn_rows.append([
+            InlineKeyboardButton("🔃 Yenile", callback_data="m:proc:refresh"),
+            InlineKeyboardButton("🔙 Geri", callback_data="m:proc:back"),
+        ])
 
+        return text, btn_rows
+
+    async def _show_processes(self, update, context):
+        """Show running processes, Kutay health, and management buttons."""
+        try:
+            text, btn_rows = await self._build_proc_panel()
             await update.message.reply_text(
                 text, parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup(btn_rows))
@@ -1586,19 +1621,67 @@ class TelegramInterface:
             return f"❌ API '{api_name}' bulunamadı."
         return await call_api(api, endpoint=endpoint, params=params)
 
+    async def _fetch_truncgil(self) -> dict | None:
+        """Fetch live financial data from finans.truncgil.com."""
+        import aiohttp
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://finans.truncgil.com/today.json",
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        return await resp.json(content_type=None)
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _change_arrow(change_str: str) -> str:
+        """Convert '%0,03' or '%-0,64' to a colored arrow."""
+        if not change_str:
+            return ""
+        try:
+            val = float(change_str.replace("%", "").replace(",", "."))
+            if val > 0:
+                return f" ↑{change_str}"
+            elif val < 0:
+                return f" ↓{change_str}"
+        except ValueError:
+            pass
+        return f" {change_str}"
+
     async def _quick_exchange(self, update, context):
-        """Get exchange rates. Prefer TCMB if key available, else Frankfurter."""
+        """Get live exchange rates from truncgil."""
         await self._reply(update, "💰 Döviz kurları alınıyor...")
         try:
-            import os
-            if os.getenv("TCMB_EVDS_API_KEY"):
-                result = await self._call_api_by_name("TCMB EVDS")
-            else:
-                result = await self._call_api_by_name(
-                    "Frankfurter",
-                    endpoint="https://api.frankfurter.dev/latest?from=USD&to=TRY,EUR,GBP"
-                )
-            await self._reply(update, result or "Döviz kuru bilgisi alınamadı.")
+            data = await self._fetch_truncgil()
+            if not data:
+                await self._reply(update, "❌ Döviz kuru kaynağına ulaşılamadı.")
+                return
+
+            ts = data.get("Update_Date", "?")
+            _currencies = [
+                ("USD", "🇺🇸", "Amerikan Doları"),
+                ("EUR", "🇪🇺", "Euro"),
+                ("GBP", "🇬🇧", "İngiliz Sterlini"),
+                ("CHF", "🇨🇭", "İsviçre Frangı"),
+            ]
+
+            lines = [f"💰 *Döviz Kurları*", f"_{ts}_\n"]
+            lines.append("```")
+            lines.append(f"{'':2}{'Döviz':<6} {'Alış':>10} {'Satış':>10} {'Δ':>8}")
+            lines.append(f"{'':2}{'-'*38}")
+            for code, flag, _name in _currencies:
+                item = data.get(code, {})
+                buy = item.get("Alış", "—")
+                sell = item.get("Satış", "—")
+                chg = item.get("Değişim", "")
+                lines.append(f"  {code:<6} {buy:>10} {sell:>10} {chg:>8}")
+            lines.append("```")
+            lines.append("\n_Kaynak: Serbest piyasa anlık kurları_")
+
+            await self._reply(update, "\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             await self._reply(update, f"❌ Döviz kuru alınamadı: {_friendly_error(str(e))}")
 
@@ -1670,50 +1753,158 @@ class TelegramInterface:
             await self._reply(update, f"❌ Hava durumu alınamadı: {_friendly_error(str(e))}")
 
     async def _quick_fuel(self, update, context):
-        """Get fuel prices. Needs COLLECTAPI_KEY."""
-        import os
-        if not os.getenv("COLLECTAPI_KEY"):
-            await self._reply(update, "⛽ Yakıt fiyatları için COLLECTAPI_KEY gerekli.\n`/credential add collectapi` ile ekle.")
-            return
+        """Get fuel prices via web scraping."""
         await self._reply(update, "⛽ Yakıt fiyatları alınıyor...")
         try:
-            result = await self._call_api_by_name("Turkey Fuel Prices")
-            await self._reply(update, result or "Yakıt fiyatı bilgisi alınamadı.")
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://api.collectapi.com/gasPrice/turkeyGasPrice",
+                    headers={"User-Agent": "KutAI/1.0",
+                             "content-type": "application/json",
+                             "authorization": f"apikey {__import__('os').getenv('COLLECTAPI_KEY', '')}"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        results = data.get("result", [])
+                        if results:
+                            lines = ["⛽ *Güncel Yakıt Fiyatları*\n"]
+                            for item in results[:6]:
+                                name = item.get("name", "?")
+                                price = item.get("gasoline", item.get("price", "?"))
+                                diesel = item.get("diesel", "?")
+                                lpg = item.get("lpg", "?")
+                                lines.append(f"  *{name}*: Benzin {price}₺ | Dizel {diesel}₺ | LPG {lpg}₺")
+                            await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+                            return
+            # Fallback: no data available
+            await self._reply(update,
+                "⛽ Yakıt fiyatları şu an alınamıyor.\n"
+                "Güncel fiyatlar için: https://www.opet.com.tr/akaryakit-fiyatlari")
         except Exception as e:
-            await self._reply(update, f"❌ Yakıt fiyatları alınamadı: {_friendly_error(str(e))}")
+            await self._reply(update,
+                "⛽ Yakıt fiyatları şu an alınamıyor.\n"
+                "Güncel fiyatlar için: https://www.opet.com.tr/akaryakit-fiyatlari")
 
     async def _quick_prayer(self, update, context):
-        """Get prayer times from Diyanet (no key needed)."""
+        """Get prayer times using Aladhan API with Diyanet method."""
+        from src.infra.db import get_user_pref
+        city = await get_user_pref("location_city") or "Istanbul"
         await self._reply(update, "🕌 Namaz vakitleri alınıyor...")
         try:
-            result = await self._call_api_by_name("Diyanet Prayer Times")
-            await self._reply(update, result or "Namaz vakti bilgisi alınamadı.")
+            import aiohttp, json as _json
+            url = (f"https://api.aladhan.com/v1/timingsByCity"
+                   f"?city={city}&country=Turkey&method=13")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    data = await resp.json()
+            timings = data.get("data", {}).get("timings", {})
+            date_info = data.get("data", {}).get("date", {})
+            readable = date_info.get("readable", "")
+            hijri = date_info.get("hijri", {})
+            hijri_str = f"{hijri.get('day', '')} {hijri.get('month', {}).get('en', '')} {hijri.get('year', '')}"
+            _labels = {
+                "Fajr": "🌅 İmsak",
+                "Sunrise": "☀️ Güneş",
+                "Dhuhr": "🕐 Öğle",
+                "Asr": "🕑 İkindi",
+                "Maghrib": "🌇 Akşam",
+                "Isha": "🌙 Yatsı",
+            }
+            lines = [f"🕌 *Namaz Vakitleri — {city}*",
+                     f"📅 {readable} / {hijri_str}\n"]
+            for key, label in _labels.items():
+                t = timings.get(key, "?")
+                # Strip timezone suffix like " (EET)"
+                if " (" in t:
+                    t = t[:t.index(" (")]
+                lines.append(f"  {label}: *{t}*")
+            await self._reply(update, "\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             await self._reply(update, f"❌ Namaz vakitleri alınamadı: {_friendly_error(str(e))}")
 
     async def _quick_news(self, update, context):
-        """Get news headlines. Needs GNEWS_API_KEY."""
-        import os
-        if not os.getenv("GNEWS_API_KEY"):
-            await self._reply(update, "📰 Haberler için GNEWS_API_KEY gerekli.\nhttps://gnews.io adresinden ücretsiz alınabilir.")
-            return
+        """Get news headlines from RSS feeds (no key needed)."""
         await self._reply(update, "📰 Haberler alınıyor...")
         try:
-            result = await self._call_api_by_name("GNews")
-            await self._reply(update, result or "Haber alınamadı.")
+            import aiohttp
+            from xml.etree import ElementTree as ET
+            feeds = [
+                ("https://www.ntv.com.tr/son-dakika.rss", "NTV"),
+                ("https://www.sozcu.com.tr/feeds-rss-category-gundem", "Sözcü"),
+            ]
+            articles = []
+            async with aiohttp.ClientSession() as session:
+                for feed_url, source in feeds:
+                    try:
+                        async with session.get(
+                            feed_url,
+                            headers={"User-Agent": "KutAI/1.0"},
+                            timeout=aiohttp.ClientTimeout(total=8),
+                        ) as resp:
+                            if resp.status == 200:
+                                text = await resp.text()
+                                root = ET.fromstring(text)
+                                for item in root.findall(".//item")[:5]:
+                                    title_el = item.find("title")
+                                    if title_el is not None and title_el.text:
+                                        articles.append((source, title_el.text.strip()))
+                    except Exception:
+                        continue
+                    if len(articles) >= 8:
+                        break
+            if articles:
+                lines = ["📰 *Son Dakika Haberler*\n"]
+                for source, title in articles[:10]:
+                    lines.append(f"  • {title} _({source})_")
+                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+            else:
+                await self._reply(update, "📰 Haber kaynakları şu an erişilemedi.")
         except Exception as e:
             await self._reply(update, f"❌ Haberler alınamadı: {_friendly_error(str(e))}")
 
     async def _quick_gold(self, update, context):
-        """Get gold prices. Needs COLLECTAPI_KEY."""
-        import os
-        if not os.getenv("COLLECTAPI_KEY"):
-            await self._reply(update, "🪙 Altın fiyatları için COLLECTAPI_KEY gerekli.\n`/credential add collectapi` ile ekle.")
-            return
+        """Get live gold prices from truncgil."""
         await self._reply(update, "🪙 Altın fiyatları alınıyor...")
         try:
-            result = await self._call_api_by_name("Gold Price Turkey")
-            await self._reply(update, result or "Altın fiyatı bilgisi alınamadı.")
+            data = await self._fetch_truncgil()
+            if not data:
+                await self._reply(update, "❌ Altın fiyat kaynağına ulaşılamadı.")
+                return
+
+            ts = data.get("Update_Date", "?")
+            _gold_items = [
+                ("gram-altin", "Gram Altın"),
+                ("ceyrek-altin", "Çeyrek"),
+                ("yarim-altin", "Yarım"),
+                ("tam-altin", "Tam"),
+                ("cumhuriyet-altini", "Cumhuriyet"),
+                ("ata-altin", "Ata"),
+                ("22-ayar-bilezik", "22 Ayar Bilezik"),
+            ]
+
+            lines = [f"🪙 *Altın Fiyatları*", f"_{ts}_\n"]
+            lines.append("```")
+            lines.append(f"{'':2}{'Tür':<15} {'Alış':>11} {'Satış':>11}")
+            lines.append(f"{'':2}{'-'*40}")
+            for key, label in _gold_items:
+                item = data.get(key, {})
+                buy = item.get("Alış", "—")
+                sell = item.get("Satış", "—")
+                chg = item.get("Değişim", "")
+                arrow = self._change_arrow(chg)
+                lines.append(f"  {label:<15} {buy:>11} {sell:>11}")
+            lines.append("```")
+
+            # Gram altın change summary
+            gram = data.get("gram-altin", {})
+            gram_chg = gram.get("Değişim", "")
+            if gram_chg:
+                arrow = self._change_arrow(gram_chg)
+                lines.append(f"\n_Gram altın{arrow} | Kaynak: Serbest piyasa_")
+
+            await self._reply(update, "\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             await self._reply(update, f"❌ Altın fiyatları alınamadı: {_friendly_error(str(e))}")
 
@@ -1721,8 +1912,28 @@ class TelegramInterface:
         """Get recent earthquake info from Kandilli (no key needed)."""
         await self._reply(update, "🌍 Deprem bilgileri alınıyor...")
         try:
-            result = await self._call_api_by_name("Kandilli Observatory")
-            await self._reply(update, result or "Deprem bilgisi alınamadı.")
+            import aiohttp, json as _json
+            url = "https://api.orhanaydogdu.com.tr/deprem/kandilli/live"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    data = await resp.json()
+            quakes = data.get("result", [])
+            if not quakes:
+                await self._reply(update, "Son 24 saatte kayda değer deprem yok.")
+                return
+            # Show significant ones (mag >= 3.0) or last 5
+            significant = [q for q in quakes if float(q.get("mag", 0)) >= 3.0]
+            show = significant[:8] if significant else quakes[:5]
+            lines = ["🌍 *Son Depremler (Kandilli)*\n"]
+            for q in show:
+                mag = q.get("mag", "?")
+                loc = q.get("title", q.get("location_properties", {}).get("epiCenter", {}).get("name", "?"))
+                date = q.get("date", "?")
+                depth = q.get("depth", "?")
+                lines.append(f"  *{mag}* — {loc}\n  📍 Derinlik: {depth} km | {date}\n")
+            if significant:
+                lines.append(f"_Son 24 saatte {len(significant)} adet M3.0+ deprem_")
+            await self._reply(update, "\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             await self._reply(update, f"❌ Deprem bilgileri alınamadı: {_friendly_error(str(e))}")
 
@@ -1992,8 +2203,11 @@ class TelegramInterface:
         processing = [dict(row) for row in await cursor.fetchall()]
         # Fetch ready (pending with deps met)
         ready = await get_ready_tasks(limit=15)
+        # Fetch blocked task summary
+        blocked_summary = await get_blocked_task_summary()
+        blocked_count = blocked_summary["blocked_count"]
 
-        if not processing and not ready:
+        if not processing and not ready and blocked_count == 0:
             await self._reply(update, "No pending tasks. System is idle.")
             return
 
@@ -2009,6 +2223,13 @@ class TelegramInterface:
             for t in ready:
                 agent = t.get('agent_type', '?')
                 msg += f"  #{t['id']} [{agent}|{t['tier']}] {t['title'][:50]}\n"
+            msg += "\n"
+        if blocked_count > 0:
+            msg += f"🚫 {blocked_count} tasks blocked (waiting on dependencies)\n"
+            top_blockers = blocked_summary["top_blockers"]
+            if top_blockers:
+                blocker_parts = [f"#{tid} ({cnt} tasks)" for tid, cnt in top_blockers]
+                msg += f"  Top blockers: {', '.join(blocker_parts)}\n"
         await self._reply(update, msg)
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2209,7 +2430,7 @@ class TelegramInterface:
     async def cmd_claude(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Request the wrapper to start a Claude Code remote-control session."""
         signal_file = Path("logs/claude_remote.signal")
-        signal_file.write_text(datetime.now().isoformat(), encoding="utf-8")
+        signal_file.write_text(utc_now().isoformat(), encoding="utf-8")
         await self._reply(update, "🖥️ Claude Code remote-control session requested.\nYaşar Usta will start it shortly.")
 
     # ─── Result Command ─────────────────────────────────────────────────
@@ -3344,7 +3565,7 @@ class TelegramInterface:
                     import os
                     report = await format_proposals_for_file(proposals)
                     os.makedirs("workspace/results", exist_ok=True)
-                    path = f"workspace/results/improvement_report_{datetime.now().strftime('%Y%m%d')}.md"
+                    path = f"workspace/results/improvement_report_{utc_now().strftime('%Y%m%d')}.md"
                     with open(path, "w", encoding="utf-8") as f:
                         f.write(report)
                     await self._reply(update,f"Full report saved: {path}")
@@ -3560,13 +3781,7 @@ class TelegramInterface:
                         "ts": _time.time(),
                     }
                     # parsed_dt is UTC naive — show Turkey local time to user
-                    try:
-                        from zoneinfo import ZoneInfo as _ZI
-                        from datetime import timezone as _tz
-                        _display_dt = parsed_dt.replace(tzinfo=_tz.utc).astimezone(_ZI("Europe/Istanbul"))
-                    except Exception:
-                        from datetime import timedelta as _td
-                        _display_dt = parsed_dt + _td(hours=3)
+                    _display_dt = to_turkey(parsed_dt)
                     time_str = _display_dt.strftime("%d.%m.%Y %H:%M")
                     await self._reply(update, f"📝 Ne hatırlatılsın? _(Saat: {time_str})_")
                     return
@@ -5159,84 +5374,37 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 return
 
             if action == "refresh":
-                # Re-run the process check inline (edit the existing message)
-                import subprocess as _sp
-                import time as _time
                 try:
-                    raw = _sp.check_output(
-                        ['wmic', 'process', 'where', "name='python.exe'",
-                         'get', 'ProcessId,CommandLine'],
-                        text=True, timeout=5,
-                    )
-                    r_lines = []
-                    r_wrappers = []
-                    r_orchestrators = []
-                    for line in raw.strip().splitlines():
-                        line = line.strip()
-                        if not line or line.startswith("CommandLine"):
-                            continue
-                        pid = line.split()[-1] if line.split() else ""
-                        if "wrapper" in line.lower():
-                            r_wrappers.append(pid)
-                            r_lines.append(f"🔵 Yaşar Usta PID {pid}")
-                        elif "run.py" in line:
-                            r_orchestrators.append(pid)
-                            r_lines.append(f"🟢 Kutay PID {pid}")
-                    try:
-                        llama_raw = _sp.check_output(
-                            ['tasklist', '/FI', 'IMAGENAME eq llama-server.exe'],
-                            text=True, timeout=5)
-                        for ll in llama_raw.splitlines():
-                            if 'llama-server' in ll.lower():
-                                parts = ll.split()
-                                if len(parts) >= 2:
-                                    r_lines.append(f"🟡 llama-server PID {parts[1]}")
-                    except Exception:
-                        pass
-                    if not r_lines:
-                        r_lines.append("Çalışan süreç bulunamadı.")
-                    n_w = (len(r_wrappers) + 1) // 2
-                    n_o = (len(r_orchestrators) + 1) // 2
-                    # Health check
-                    hb_age = None
-                    for hb_path in ["logs/orchestrator.heartbeat", "logs/heartbeat"]:
-                        try:
-                            with open(hb_path) as f:
-                                hb_age = _time.time() - float(f.read().strip())
-                            break
-                        except Exception:
-                            continue
-                    if n_o == 0:
-                        health = "💀 Kutay: çalışmıyor"
-                    elif hb_age is not None and hb_age < 60:
-                        health = f"💚 Kutay: sağlıklı ({int(hb_age)}sn önce)"
-                    elif hb_age is not None:
-                        health = f"🔴 Kutay: YANIT VERMİYOR ({int(hb_age)}sn sessiz)"
-                    else:
-                        health = "⚪ Kutay: heartbeat yok"
-                    text = (
-                        f"🔧 *Yaşar Usta - Süreç Yönetimi*\n\n"
-                        + "\n".join(r_lines)
-                        + f"\n\n{health}"
-                        + f"\n\n📊 Yaşar Usta: {n_w} | Kutay: {n_o}"
-                    )
-                    btn_rows = []
-                    if n_o > 0 and (hb_age is None or hb_age > 30):
-                        btn_rows.append([InlineKeyboardButton(
-                            f"☠️ Kutay'ı öldür ({int(hb_age or 0)}sn yanıtsız)",
-                            callback_data="m:proc:kill_kutai_only")])
-                    btn_rows.append([InlineKeyboardButton(
-                        "💀 Hepsini Kapat + Yaşar Usta Başlat",
-                        callback_data="m:proc:kill_wrapper")])
-                    btn_rows.append([InlineKeyboardButton(
-                        "🔃 Yenile", callback_data="m:proc:refresh")])
-                    btn_rows.append([InlineKeyboardButton(
-                        "🔙 Geri", callback_data="m:proc:back")])
+                    text, btn_rows = await self._build_proc_panel()
                     await query.edit_message_text(
                         text, parse_mode="Markdown",
                         reply_markup=InlineKeyboardMarkup(btn_rows))
                 except Exception as e:
                     await query.answer(f"Refresh failed: {e}")
+                return
+
+            if action == "restart_yazbunu":
+                try:
+                    # Kill existing yazbunu by PID file
+                    pid_file = Path("logs/yazbunu.pid")
+                    try:
+                        pid = int(pid_file.read_text().strip())
+                        os.kill(pid, signal.SIGTERM)
+                        pid_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    # Signal wrapper to start a new one via ensure_yazbunu
+                    # (wrapper checks on each loop iteration)
+                    await query.answer("📊 Yazbunu yeniden başlatılıyor...")
+                    # Wait briefly for old process to die, then refresh
+                    import asyncio as _aio
+                    await _aio.sleep(2)
+                    text, btn_rows = await self._build_proc_panel()
+                    await query.edit_message_text(
+                        text, parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup(btn_rows))
+                except Exception as e:
+                    await query.answer(f"Restart failed: {e}")
                 return
 
             return

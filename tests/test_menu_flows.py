@@ -2,7 +2,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 # Import the keyboard/action data structures (no Telegram connection needed)
@@ -498,10 +498,9 @@ class TestParseReminderTime:
 
     def test_10dk(self):
         # _parse_reminder_time returns UTC naive datetime for DB storage.
-        from datetime import timezone
-        before = datetime.utcnow()
+        before = datetime.now(timezone.utc).replace(tzinfo=None)
         result = self._parse("10dk")
-        after = datetime.utcnow()
+        after = datetime.now(timezone.utc).replace(tzinfo=None)
         assert result is not None
         diff = (result - before).total_seconds()
         assert 590 <= diff <= 610, f"Expected ~600s, got {diff}"
@@ -509,19 +508,19 @@ class TestParseReminderTime:
     def test_10_dakika(self):
         result = self._parse("10 dakika")
         assert result is not None
-        diff = (result - datetime.utcnow()).total_seconds()
+        diff = (result - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds()
         assert 590 <= diff <= 610
 
     def test_1_saat(self):
         result = self._parse("1 saat")
         assert result is not None
-        diff = (result - datetime.utcnow()).total_seconds()
+        diff = (result - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds()
         assert 3590 <= diff <= 3610
 
     def test_2s(self):
         result = self._parse("2s")
         assert result is not None
-        diff = (result - datetime.utcnow()).total_seconds()
+        diff = (result - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds()
         assert 7190 <= diff <= 7210
 
     def test_hhmm_future(self):
@@ -529,18 +528,16 @@ class TestParseReminderTime:
         # Build a Turkey-local future time and check the UTC result is ~1h ahead of UTC now.
         try:
             from zoneinfo import ZoneInfo
-            from datetime import timezone
             tz_tr = ZoneInfo("Europe/Istanbul")
             now_local = datetime.now(tz_tr)
         except Exception:
-            from datetime import timezone
             now_local = datetime.now(timezone.utc)
         future_local = now_local + timedelta(hours=1)
         text = future_local.strftime("%H:%M")
         result = self._parse(text)
         assert result is not None
         # result is UTC naive; compare against UTC now
-        diff = abs((result - datetime.utcnow()).total_seconds() - 3600)
+        diff = abs((result - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds() - 3600)
         assert diff < 120, f"Expected ~3600s UTC offset, got diff {diff}"
 
     def test_hhmm_past_becomes_tomorrow(self):
@@ -550,12 +547,12 @@ class TestParseReminderTime:
             tz_tr = ZoneInfo("Europe/Istanbul")
             past_local = datetime.now(tz_tr) - timedelta(hours=1)
         except Exception:
-            past_local = datetime.utcnow() - timedelta(hours=1)
+            past_local = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
         text = past_local.strftime("%H:%M")
         result = self._parse(text)
         assert result is not None
         # result is UTC naive; must be in the future from UTC now
-        diff = (result - datetime.utcnow()).total_seconds()
+        diff = (result - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds()
         assert diff > 0, "Past Turkey time should roll over to tomorrow in UTC"
         assert diff < 86400 + 60
 
@@ -570,7 +567,7 @@ class TestParseReminderTime:
     def test_bare_integer_is_minutes(self):
         result = self._parse("30")
         assert result is not None
-        diff = (result - datetime.utcnow()).total_seconds()
+        diff = (result - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds()
         assert 1790 <= diff <= 1810
 
     def test_invalid_returns_none(self):

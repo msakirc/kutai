@@ -155,20 +155,29 @@ def _make_mock_session(status, json_data):
 
 
 def test_geocode_address_success():
-    """Should return (lat, lon) on successful geocode."""
-    mock_session = _make_mock_session(200, [{"lat": "40.9828", "lon": "29.0294"}])
+    """Should return (lat, lon) on successful geocode via HERE."""
+    from src.tools.distance import _geocode_cache
+    _geocode_cache.clear()
 
-    with patch("src.tools.pharmacy.aiohttp.ClientSession", return_value=mock_session):
+    async def mock_here(address, session):
+        return (40.9828, 29.0294)
+
+    with patch("src.tools.distance._geocode_here", side_effect=mock_here):
         result = _run(_geocode_address("Kadikoy, Istanbul"))
 
     assert result == (40.9828, 29.0294)
 
 
 def test_geocode_address_no_results():
-    """Should return None when no results found."""
-    mock_session = _make_mock_session(200, [])
+    """Should return None when all providers fail."""
+    from src.tools.distance import _geocode_cache
+    _geocode_cache.clear()
 
-    with patch("src.tools.pharmacy.aiohttp.ClientSession", return_value=mock_session):
+    async def mock_fail(address, session):
+        return None
+
+    with patch("src.tools.distance._geocode_here", side_effect=mock_fail), \
+         patch("src.tools.distance._geocode_locationiq", side_effect=mock_fail):
         result = _run(_geocode_address("Nonexistent Place"))
 
     assert result is None
@@ -184,7 +193,7 @@ def test_osrm_distance_success():
         "routes": [{"distance": 5200.0, "duration": 3900.0}]
     })
 
-    with patch("src.tools.pharmacy.aiohttp.ClientSession", return_value=mock_session):
+    with patch("src.tools.distance.aiohttp.ClientSession", return_value=mock_session):
         dist_km, dur_min = _run(_get_osrm_distance(40.98, 29.03, 41.04, 28.98, "foot"))
 
     assert dist_km == 5.2
@@ -195,7 +204,7 @@ def test_osrm_distance_failure():
     """Should return (-1, -1) on HTTP error."""
     mock_session = _make_mock_session(500, {})
 
-    with patch("src.tools.pharmacy.aiohttp.ClientSession", return_value=mock_session):
+    with patch("src.tools.distance.aiohttp.ClientSession", return_value=mock_session):
         dist_km, dur_min = _run(_get_osrm_distance(40.98, 29.03, 41.04, 28.98))
 
     assert dist_km == -1.0

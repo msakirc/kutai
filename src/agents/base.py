@@ -102,6 +102,7 @@ class BaseAgent:
     max_iterations: int = MAX_AGENT_ITERATIONS
 
     can_create_subtasks: bool = False
+    _suppress_clarification: bool = False
 
     # ── Phase 5: Execution pattern ──
     # "react_loop" (default) — multi-turn with tools
@@ -207,9 +208,13 @@ class BaseAgent:
             "- If you hit an error, read it carefully and fix the code.",
             f"- You have up to {self.max_iterations} iterations — don't waste them.",
             "- When done you MUST respond with the `final_answer` action.",
-            "- If you need more info from the user, use: "
-            '{\"action\": \"clarify\", \"question\": \"...\"}',
         ]
+        # Only offer clarify action if the task allows it
+        if not self._suppress_clarification:
+            lines.append(
+                "- If you need more info from the user, use: "
+                '{\"action\": \"clarify\", \"question\": \"...\"}'
+            )
         return "\n".join(lines)
 
     # ------------------------------------------------------------------ #
@@ -557,7 +562,7 @@ class BaseAgent:
             logger.debug(f"Preference retrieval failed (non-critical): {exc}")
 
         try:
-            memories = await recall_memory(mission_id=mission_id, limit=15)
+            memories = await recall_memory(mission_id=mission_id, limit=10)
         except Exception as exc:
             logger.warning(f"Failed to recall memory: {exc}")
             memories = []
@@ -565,7 +570,6 @@ class BaseAgent:
             parts.append("## Project Memory")
             for mem in memories:
                 mem_value = mem.get('value', '')
-                # Ensure mem_value is a string before slicing
                 if not isinstance(mem_value, str):
                     mem_value = str(mem_value)
                 parts.append(f"- **{mem.get('key', 'unknown')}**: {mem_value[:300]}")
@@ -1033,6 +1037,9 @@ class BaseAgent:
             self._original_allowed_tools = self.allowed_tools
             self.allowed_tools = tools_hint
 
+        # Suppress clarification if task explicitly disallows it
+        self._suppress_clarification = _task_ctx.get("may_need_clarification") is False
+
         try:
             # ── Phase 5: execution pattern routing ──
             if self.execution_pattern == "single_shot":
@@ -1116,6 +1123,15 @@ class BaseAgent:
         else:
             system_prompt = self._build_full_system_prompt(task)
             context = await self._build_context(task)
+
+            logger.info(
+                f"[Task #{task_id}] System prompt ({len(system_prompt)} chars):\n"
+                f"{system_prompt}"
+            )
+            logger.info(
+                f"[Task #{task_id}] User context ({len(context)} chars):\n"
+                f"{context}"
+            )
 
             messages: list[dict[str, str]] = [
                 {"role": "system", "content": system_prompt},
@@ -1279,7 +1295,7 @@ class BaseAgent:
                 except Exception:
                     pass
 
-            logger.debug(f"[Task #{task_id}] Raw response: {content[:200]}...")
+            logger.info(f"[Task #{task_id}] Raw response ({len(content)} chars):\n{content}")
             await self._safe_log(
                 task_id, "assistant", content, used_model, step_cost
             )
@@ -1394,7 +1410,7 @@ class BaseAgent:
             # The classifier already decided this task needs web search
             # (search_depth != "none"). If the LLM jumps to final_answer
             # without calling any data-fetching tool, reject and force a search.
-            _DATA_FETCH_TOOLS = {"web_search", "api_call", "api_lookup", "http_request", "shopping_search"}
+            _DATA_FETCH_TOOLS = {"web_search", "api_call", "api_lookup", "http_request", "shopping_search", "read_file", "read_blackboard"}
             _has_web_search = (
                 self.allowed_tools is None
                 or "web_search" in (self.allowed_tools or [])
@@ -1936,6 +1952,22 @@ class BaseAgent:
 
             # ── CLARIFY / DECOMPOSE / UNKNOWN (unchanged) ──
             if action_type == "clarify":
+                if self._suppress_clarification:
+                    # Task doesn't allow clarification — force agent to proceed
+                    logger.warning(
+                        f"[Task #{task_id}] Blocked clarification attempt "
+                        f"(may_need_clarification=false)"
+                    )
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "You cannot ask for clarification on this task. "
+                            "Work with the information you have and provide "
+                            "your best answer using final_answer."
+                        ),
+                    })
+                    continue
                 await self._clear_checkpoint_safe(task_id)
                 return {
                     "status": "needs_clarification",

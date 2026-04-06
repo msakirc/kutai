@@ -566,6 +566,11 @@ class LocalModelManager:
         # Stop existing server
         await self._stop_server()
 
+        # CUDA VRAM release lags behind process exit — wait for the driver
+        # to reclaim memory before probing free VRAM for the next model.
+        if old_model:
+            await asyncio.sleep(2)
+
         # ── Recalculate context + gpu_layers with live memory state ──
         # Server is stopped, so readings reflect true free memory.
         gpu_monitor.invalidate_cache()  # force fresh reading
@@ -734,10 +739,14 @@ class LocalModelManager:
             if platform.system() == "Windows":
                 creation_flags = subprocess.CREATE_NO_WINDOW
 
+            import os
+            log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs")
+            stderr_path = os.path.join(log_dir, "llama-server.stderr.log")
+            self._stderr_file = open(stderr_path, "w", encoding="utf-8")
             self.process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=self._stderr_file,
                 creationflags=creation_flags,
             )
             self._assign_to_job(self.process)
@@ -805,6 +814,14 @@ class LocalModelManager:
             except Exception:
                 pass
 
+        # Close stderr log file
+        if hasattr(self, '_stderr_file') and self._stderr_file:
+            try:
+                self._stderr_file.close()
+            except Exception:
+                pass
+            self._stderr_file = None
+
         self.process = None
         self.runtime_state = None
         if old_model:
@@ -819,9 +836,25 @@ class LocalModelManager:
             while (time.time() - start) < timeout:
                 # Check if process died
                 if self.process and self.process.poll() is not None:
+                    # Read last lines of stderr for crash diagnostics
+                    stderr_tail = ""
+                    if hasattr(self, '_stderr_file') and self._stderr_file:
+                        try:
+                            self._stderr_file.flush()
+                            import os
+                            stderr_path = os.path.join(
+                                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                                "logs", "llama-server.stderr.log"
+                            )
+                            with open(stderr_path, "r", encoding="utf-8", errors="replace") as f:
+                                lines = f.readlines()
+                                stderr_tail = "".join(lines[-10:]).strip()
+                        except Exception:
+                            pass
                     logger.error(
                         f"llama-server process exited with code "
                         f"{self.process.returncode}"
+                        + (f"\nStderr tail:\n{stderr_tail}" if stderr_tail else "")
                     )
                     return False
 
@@ -1054,6 +1087,11 @@ class LocalModelManager:
                     # Reset counter — the server is responsive, just occupied.
                     consecutive_health_failures = 0
                 else:
+                    # Re-check idle unload flag — may have started during
+                    # the async /health call above.
+                    if self._idle_unload_in_progress or self.swap_started_at > 0:
+                        consecutive_health_failures = 0
+                        continue
                     consecutive_health_failures += 1
                     logger.warning(
                         f"llama-server /health failed "

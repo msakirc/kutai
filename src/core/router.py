@@ -393,6 +393,10 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
         # Only needs_vision stays hard — you can't do vision without it.
         if reqs.needs_vision and not model.has_vision:
             _skip("no_vision"); continue
+        # Exclude vision variants from non-vision tasks — loading mmproj
+        # wastes RAM for no benefit, and the base model is identical.
+        if not reqs.needs_vision and "vision" in getattr(model, "variant_flags", set()):
+            _skip("vision_variant_not_needed"); continue
 
         if reqs.max_cost > 0 and not model.is_free:
             est_cost = model.estimated_cost(

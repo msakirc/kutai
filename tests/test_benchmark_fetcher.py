@@ -13,15 +13,12 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 from src.models.benchmark.benchmark_fetcher import (
-    AiderLeaderboardFetcher,
     ArtificialAnalysisFetcher,
-    ChatbotArenaFetcher,
-    HuggingFaceLeaderboardFetcher,
-    LiveCodeBenchFetcher,
+    LMArenaFetcher,
     BFCLFetcher,
-    BigCodeBenchFetcher,
     SenecaTRBenchFetcher,
     TurkishMMLUFetcher,
+    UGILeaderboardFetcher,
     BenchmarkCache,
     BenchmarkFetcher,
     _normalize_score,
@@ -148,247 +145,43 @@ class TestArtificialAnalysisFetcher:
         assert "reasoning" in result["test-model"]
 
 
-# --- ChatbotArenaFetcher -----------------------------------------------------
+# --- LMArenaFetcher ----------------------------------------------------------
 
-class TestChatbotArenaFetcher:
+class TestLMArenaFetcher:
 
-    def _make_parquet_bytes(self, data):
-        """Create parquet bytes from dict data."""
-        import pandas as pd
-        df = pd.DataFrame(data)
-        buf = io.BytesIO()
-        df.to_parquet(buf, index=False)
-        buf.seek(0)
-        return buf
-
-    def test_parquet_parsing(self, tmp_cache):
-        """Test Parquet parsing with Arena Score -> conversation/prose."""
+    def test_per_category_elo(self, tmp_cache):
+        """Test per-category ELO -> multi-dimension capabilities."""
         import pandas as pd
 
         df = pd.DataFrame({
-            "Model": ["GPT-4o", "Claude-3.5", "Qwen3-32B"],
-            "Arena Score": [1350.0, 1300.0, 1100.0],
-            "Votes": [5000, 4000, 2000],
-            "Organization": ["OpenAI", "Anthropic", "Alibaba"],
+            "model_name": ["qwen3.5-27b", "qwen3.5-27b", "qwen3.5-27b", "gpt-4o", "gpt-4o"],
+            "category": ["overall", "coding", "math", "overall", "coding"],
+            "rating": [1200.0, 1150.0, 1100.0, 1350.0, 1300.0],
+            "vote_count": [500, 300, 200, 5000, 3000],
         })
 
-        fetcher = ChatbotArenaFetcher()
+        fetcher = LMArenaFetcher()
 
         with patch("pandas.read_parquet", return_value=df):
             result = fetcher.fetch_bulk(tmp_cache)
 
-        assert len(result) == 3
-        assert "GPT-4o" in result
-        assert "conversation" in result["GPT-4o"]
-        assert "prose_quality" in result["GPT-4o"]
-
-        # GPT-4o ELO 1350 should score high
-        assert result["GPT-4o"]["conversation"] > 8.0
-        # Qwen3-32B ELO 1100 should score moderate
-        assert result["Qwen3-32B"]["conversation"] < result["GPT-4o"]["conversation"]
-
-    def test_elo_mapping(self, tmp_cache):
-        """Verify ELO -> conversation/prose mapping uses _normalize_elo."""
-        import pandas as pd
-
-        df = pd.DataFrame({
-            "Model": ["TestModel"],
-            "Arena Score": [1150.0],
-        })
-
-        fetcher = ChatbotArenaFetcher()
-
-        with patch("pandas.read_parquet", return_value=df):
-            result = fetcher.fetch_bulk(tmp_cache)
-
-        expected_score = _normalize_elo(1150.0)
-        assert result["TestModel"]["conversation"] == expected_score
-        assert result["TestModel"]["prose_quality"] == round(expected_score * 0.95, 1)
-
-    def test_empty_dataframe(self, tmp_cache):
-        """Empty DataFrame should return {}."""
-        import pandas as pd
-
-        df = pd.DataFrame(columns=["Model", "Arena Score"])
-
-        fetcher = ChatbotArenaFetcher()
-
-        with patch("pandas.read_parquet", return_value=df):
-            result = fetcher.fetch_bulk(tmp_cache)
-
-        assert result == {}
-
-    def test_missing_arena_score(self, tmp_cache):
-        """Rows without Arena Score should be skipped."""
-        import pandas as pd
-
-        df = pd.DataFrame({
-            "Model": ["HasScore", "NoScore"],
-            "Arena Score": [1200.0, None],
-        })
-
-        fetcher = ChatbotArenaFetcher()
-
-        with patch("pandas.read_parquet", return_value=df):
-            result = fetcher.fetch_bulk(tmp_cache)
-
-        assert "HasScore" in result
-        assert "NoScore" not in result
-
-
-# --- HuggingFaceLeaderboardFetcher -------------------------------------------
-
-class TestHFLeaderboardFetcher:
-
-    def test_parquet_parsing(self, tmp_cache):
-        """Test Parquet parsing with correct column names."""
-        import pandas as pd
-
-        df = pd.DataFrame({
-            "Model": ["Qwen/Qwen3-32B", "meta-llama/Llama-3.3-70B"],
-            "IFEval": [75.0, 65.0],
-            "BBH": [70.0, 55.0],
-            "MATH Lvl 5": [50.0, 35.0],
-            "GPQA": [40.0, 35.0],
-            "MUSR": [45.0, 40.0],
-            "MMLU-PRO": [72.0, 60.0],
-        })
-
-        fetcher = HuggingFaceLeaderboardFetcher()
-
-        with patch("pandas.read_parquet", return_value=df):
-            result = fetcher.fetch_bulk(tmp_cache)
-
-        assert len(result) == 2
-        assert "Qwen/Qwen3-32B" in result
-        caps = result["Qwen/Qwen3-32B"]
-        assert "instruction_adherence" in caps
-        assert "reasoning" in caps  # BBH + MATH + GPQA averaged
-        assert "analysis" in caps
-        assert "domain_knowledge" in caps
-
-    def test_fraction_conversion(self, tmp_cache):
-        """Scores between 0-1 should be converted to percentages."""
-        import pandas as pd
-
-        df = pd.DataFrame({
-            "Model": ["TestModel"],
-            "IFEval": [0.75],
-            "BBH": [0.65],
-            "MATH Lvl 5": [None],
-            "GPQA": [None],
-            "MUSR": [None],
-            "MMLU-PRO": [None],
-        })
-
-        fetcher = HuggingFaceLeaderboardFetcher()
-
-        with patch("pandas.read_parquet", return_value=df):
-            result = fetcher.fetch_bulk(tmp_cache)
-
-        assert "TestModel" in result
-        assert "instruction_adherence" in result["TestModel"]
-        assert "reasoning" in result["TestModel"]
+        assert "qwen3.5-27b" in result
+        assert "gpt-4o" in result
+        caps = result["qwen3.5-27b"]
+        assert "conversation" in caps  # from overall
+        assert "code_generation" in caps  # from coding
+        assert "reasoning" in caps  # from math
+        assert result["gpt-4o"]["code_generation"] > result["qwen3.5-27b"]["code_generation"]
 
     def test_empty_dataframe(self, tmp_cache):
         """Empty DataFrame returns {}."""
         import pandas as pd
 
-        df = pd.DataFrame(columns=["Model", "IFEval", "BBH"])
+        df = pd.DataFrame(columns=["model_name", "category", "rating"])
 
-        fetcher = HuggingFaceLeaderboardFetcher()
+        fetcher = LMArenaFetcher()
 
         with patch("pandas.read_parquet", return_value=df):
-            result = fetcher.fetch_bulk(tmp_cache)
-
-        assert result == {}
-
-
-# --- LiveCodeBenchFetcher ----------------------------------------------------
-
-class TestLiveCodeBenchFetcher:
-
-    def test_new_performances_format(self, tmp_cache):
-        """Test new JSON format with models + performances."""
-        json_data = {
-            "models": ["model-a", "model-b"],
-            "performances": [
-                {"model": "model-a", "pass_at_1": 0.65, "difficulty": "easy"},
-                {"model": "model-a", "pass_at_1": 0.45, "difficulty": "medium"},
-                {"model": "model-a", "pass_at_1": 0.25, "difficulty": "hard"},
-                {"model": "model-b", "pass_at_1": 0.50, "difficulty": "easy"},
-                {"model": "model-b", "pass_at_1": 0.30, "difficulty": "medium"},
-            ],
-        }
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = json_data
-
-        fetcher = LiveCodeBenchFetcher()
-
-        with patch("httpx.get", return_value=mock_resp):
-            result = fetcher.fetch_bulk(tmp_cache)
-
-        assert "model-a" in result
-        assert "model-b" in result
-        assert "code_generation" in result["model-a"]
-        assert "code_reasoning" in result["model-a"]
-
-        # model-a avg: (65+45+25)/3 = 45.0
-        # model-b avg: (50+30)/2 = 40.0
-        assert result["model-a"]["code_generation"] >= result["model-b"]["code_generation"]
-
-    def test_old_flat_list_fallback(self, tmp_cache):
-        """Old flat list format should still work."""
-        json_data = [
-            {"model": "old-model", "pass@1": 55.0},
-        ]
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = json_data
-
-        fetcher = LiveCodeBenchFetcher()
-
-        with patch("httpx.get", return_value=mock_resp):
-            result = fetcher.fetch_bulk(tmp_cache)
-
-        assert "old-model" in result
-        assert "code_generation" in result["old-model"]
-
-    def test_code_reasoning_is_0_9x_code_gen(self, tmp_cache):
-        """code_reasoning should be 0.9 * code_generation."""
-        json_data = {
-            "performances": [
-                {"model": "test", "pass_at_1": 0.50, "difficulty": "easy"},
-            ],
-        }
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = json_data
-
-        fetcher = LiveCodeBenchFetcher()
-
-        with patch("httpx.get", return_value=mock_resp):
-            result = fetcher.fetch_bulk(tmp_cache)
-
-        cg = result["test"]["code_generation"]
-        cr = result["test"]["code_reasoning"]
-        assert cr == round(cg * 0.9, 1)
-
-    def test_empty_performances(self, tmp_cache):
-        """Empty performances returns {}."""
-        json_data = {"models": [], "performances": []}
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = json_data
-
-        fetcher = LiveCodeBenchFetcher()
-
-        with patch("httpx.get", return_value=mock_resp):
             result = fetcher.fetch_bulk(tmp_cache)
 
         assert result == {}
@@ -466,67 +259,6 @@ class TestBFCLFetcher:
 
         assert "NoAccModel" not in result
         assert "HasAccModel" in result
-
-
-# --- BigCodeBenchFetcher -----------------------------------------------------
-
-class TestBigCodeBenchFetcher:
-
-    def test_parquet_parsing(self, tmp_cache):
-        """Test HF Parquet parsing with complete/instruct columns."""
-        import pandas as pd
-
-        df = pd.DataFrame({
-            "model": ["model-a", "model-b", "model-c"],
-            "complete": [55.0, None, 40.0],
-            "instruct": [50.0, 45.0, None],
-        })
-
-        fetcher = BigCodeBenchFetcher()
-
-        with patch("pandas.read_parquet", return_value=df):
-            result = fetcher.fetch_bulk(tmp_cache)
-
-        assert len(result) == 3
-        # model-a uses complete (55)
-        assert "model-a" in result
-        # model-b falls back to instruct (45)
-        assert "model-b" in result
-        assert "code_generation" in result["model-b"]
-        # model-c uses complete (40)
-        assert "model-c" in result
-
-    def test_instruction_adherence_is_0_9x(self, tmp_cache):
-        """instruction_adherence = code_gen * 0.9."""
-        import pandas as pd
-
-        df = pd.DataFrame({
-            "model": ["test"],
-            "complete": [50.0],
-            "instruct": [None],
-        })
-
-        fetcher = BigCodeBenchFetcher()
-
-        with patch("pandas.read_parquet", return_value=df):
-            result = fetcher.fetch_bulk(tmp_cache)
-
-        cg = result["test"]["code_generation"]
-        ia = result["test"]["instruction_adherence"]
-        assert ia == round(cg * 0.9, 1)
-
-    def test_empty_dataframe(self, tmp_cache):
-        """Empty DataFrame returns {}."""
-        import pandas as pd
-
-        df = pd.DataFrame(columns=["model", "complete", "instruct"])
-
-        fetcher = BigCodeBenchFetcher()
-
-        with patch("pandas.read_parquet", return_value=df):
-            result = fetcher.fetch_bulk(tmp_cache)
-
-        assert result == {}
 
 
 # --- SenecaTRBenchFetcher ----------------------------------------------------
@@ -672,34 +404,34 @@ class TestTurkishMMLUFetcher:
 class TestBenchmarkFetcher:
 
     def test_init_has_all_fetchers(self, tmp_path):
-        """BenchmarkFetcher must include all 10 sources."""
+        """BenchmarkFetcher must include all 7 sources."""
         bf = BenchmarkFetcher(cache_dir=tmp_path)
         source_names = [f.source_name for f in bf.fetchers]
 
         assert "artificial_analysis" in source_names
-        assert "chatbot_arena" in source_names
-        assert "hf_leaderboard" in source_names
-        assert "livecodebench" in source_names
+        assert "lm_arena" in source_names
         assert "bfcl" in source_names
-        assert "aider" in source_names
-        assert "bigcodebench" in source_names
         assert "openrouter" in source_names
         assert "seneca_trbench" in source_names
         assert "turkish_mmlu" in source_names
+        assert "ugi" in source_names
 
-        # LMSys should NOT be present
+        # Removed sources should NOT be present
         assert "lmsys_arena" not in source_names
+        assert "hf_leaderboard" not in source_names
+        assert "livecodebench" not in source_names
+        assert "bigcodebench" not in source_names
+        assert "chatbot_arena" not in source_names
+        assert "aider" not in source_names
 
     def test_confidence_map_has_all_sources(self, tmp_path):
         """The confidence map in fetch_all_bulk must include all sources."""
         bf = BenchmarkFetcher(cache_dir=tmp_path)
 
-        # Extract confidence map by checking fetch_all_bulk source code
-        # We check indirectly by ensuring all fetcher source_names appear
         expected_sources = {
-            "artificial_analysis", "hf_leaderboard", "livecodebench",
-            "bfcl", "chatbot_arena", "aider", "bigcodebench",
-            "openrouter", "seneca_trbench", "turkish_mmlu",
+            "artificial_analysis", "lm_arena",
+            "bfcl", "openrouter",
+            "seneca_trbench", "turkish_mmlu", "ugi",
         }
         actual_sources = {f.source_name for f in bf.fetchers}
         assert expected_sources == actual_sources
@@ -752,76 +484,48 @@ class TestFuzzyMatching:
         assert result is not None
 
 
-# --- AiderLeaderboardFetcher thinking pairs ----------------------------------
+# --- UGILeaderboardFetcher ---------------------------------------------------
 
-class TestAiderThinkingPairs:
-    """Test that Aider fetcher correctly separates thinking/non-thinking entries."""
+class TestUGILeaderboardFetcher:
 
-    def test_thinking_pair_detection(self, tmp_cache):
-        """Entries with (no thinking) and (thinking) are split correctly."""
-        import yaml
-        yaml_data = [
-            {"model": "claude-sonnet-4 (no thinking)", "pass_rate_2": 56.4, "percent_cases_well_formed": 98.0},
-            {"model": "claude-sonnet-4 (32k thinking)", "pass_rate_2": 61.3, "percent_cases_well_formed": 95.0},
-            {"model": "Qwen3 32B", "pass_rate_2": 40.0, "percent_cases_well_formed": 90.0},
-        ]
+    def test_csv_parsing(self, tmp_cache):
+        """Test UGI CSV parsing with real column names (emoji suffixes)."""
+        csv_text = (
+            "author/model_name,UGI \U0001f3c6,Writing \u270d\ufe0f,NatInt \U0001f4a1\n"
+            "Qwen/Qwen3.5-27B,65.0,72.0,58.0\n"
+            "ServiceNow-AI/Apriel-15B,55.0,60.0,45.0\n"
+        )
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.text = yaml.dump(yaml_data)
+        mock_resp.text = csv_text
 
-        fetcher = AiderLeaderboardFetcher()
+        fetcher = UGILeaderboardFetcher()
 
         with patch("httpx.get", return_value=mock_resp):
             result = fetcher.fetch_bulk(tmp_cache)
 
-        # Should have: claude-sonnet-4 (base), claude-sonnet-4::thinking, Qwen3 32B
-        assert "claude-sonnet-4" in result or any("claude" in k and "::thinking" not in k for k in result)
-        assert any("::thinking" in k for k in result), f"No thinking entries found in {list(result.keys())}"
-        # Non-annotated model stays as-is
-        assert "Qwen3 32B" in result
+        assert "Qwen/Qwen3.5-27B" in result
+        assert "ServiceNow-AI/Apriel-15B" in result
+        caps = result["Qwen/Qwen3.5-27B"]
+        assert "prose_quality" in caps
+        assert "domain_knowledge" in caps
+        assert "analysis" in caps
 
-    def test_thinking_entry_has_higher_code_gen(self, tmp_cache):
-        """Thinking variant should have higher code scores (from benchmark data)."""
-        import yaml
-        yaml_data = [
-            {"model": "test-model (no thinking)", "pass_rate_2": 50.0},
-            {"model": "test-model (32k thinking)", "pass_rate_2": 60.0},
-        ]
+    def test_empty_csv(self, tmp_cache):
+        """Empty CSV returns {}."""
+        csv_text = "author/model_name,UGI \U0001f3c6,Writing \u270d\ufe0f,NatInt \U0001f4a1\n"
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.text = yaml.dump(yaml_data)
+        mock_resp.text = csv_text
 
-        fetcher = AiderLeaderboardFetcher()
+        fetcher = UGILeaderboardFetcher()
 
         with patch("httpx.get", return_value=mock_resp):
             result = fetcher.fetch_bulk(tmp_cache)
 
-        base_key = [k for k in result if "test-model" in k and "::thinking" not in k][0]
-        think_key = [k for k in result if "test-model" in k and "::thinking" in k][0]
-
-        assert result[think_key]["code_generation"] > result[base_key]["code_generation"]
-
-    def test_no_think_variant_naming(self, tmp_cache):
-        """(no think) and (no thinking) both produce clean base name."""
-        import yaml
-        yaml_data = [
-            {"model": "gemini-2.5-flash (no think)", "pass_rate_2": 44.0},
-            {"model": "gemini-2.5-flash (24k think)", "pass_rate_2": 55.1},
-        ]
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.text = yaml.dump(yaml_data)
-
-        fetcher = AiderLeaderboardFetcher()
-
-        with patch("httpx.get", return_value=mock_resp):
-            result = fetcher.fetch_bulk(tmp_cache)
-
-        assert "gemini-2.5-flash" in result
-        assert "gemini-2.5-flash::thinking" in result
+        assert result == {}
 
 
 # --- ArtificialAnalysis Thinking Pairs --------------------------------------

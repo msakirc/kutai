@@ -135,20 +135,20 @@
 
   /* ─── Log line (recycled rows) ─── */
   .log-line {
-    height: 28px;
+    min-height: 28px;
     position: absolute;
     left: 0;
     right: 0;
     display: flex;
-    align-items: center;
-    padding: 0 12px;
+    align-items: baseline;
+    padding: 2px 12px;
     gap: 8px;
-    cursor: pointer;
+    cursor: default;
     border-bottom: 1px solid var(--border);
     word-break: break-word;
     flex-wrap: wrap;
-    overflow: hidden;
     transition: background 0.1s;
+    user-select: text;
   }
   .log-line:hover { background: rgba(255,255,255,0.03); }
   .log-line.selected { background: rgba(79,195,247,0.12); }
@@ -169,11 +169,6 @@
     border-radius: 50%;
     background: var(--warn);
   }
-  .log-line.has-exc {
-    height: auto;
-    min-height: 28px;
-  }
-
   .ts { color: var(--text-dim); white-space: nowrap; font-size: 11px; flex-shrink: 0; }
   .level { font-weight: bold; width: 50px; font-size: 11px; flex-shrink: 0; }
   .level-ERROR .level, .level-CRITICAL .level { color: var(--error); }
@@ -182,6 +177,17 @@
   .level-DEBUG .level { color: var(--debug); }
   .src { color: var(--accent); white-space: nowrap; flex-shrink: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
   .msg { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .extras { color: var(--text-dim); font-size: 11px; white-space: nowrap; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; max-width: 400px; }
+  .exc-inline {
+    width: 100%;
+    color: var(--error);
+    font-size: 11px;
+    white-space: pre-wrap;
+    padding: 2px 0 2px 62px;
+    max-height: 200px;
+    overflow-y: auto;
+    cursor: text;
+  }
   .pill {
     display: inline-block;
     font-size: 10px;
@@ -436,7 +442,17 @@
     <option value="ERROR">ERROR</option>
     <option value="CRITICAL">CRITICAL</option>
   </select>
-  <input type="text" id="searchBox" placeholder="Search... (level:ERROR src:db msg:timeout)" aria-label="Search query">
+  <input type="text" id="searchBox" placeholder="Search... (level:ERROR src:db after:&quot;5m ago&quot;)" aria-label="Search query">
+  <select id="timeFilter" aria-label="Time range">
+    <option value="">All time</option>
+    <option value="1m">Last 1 min</option>
+    <option value="5m" selected>Last 5 min</option>
+    <option value="15m">Last 15 min</option>
+    <option value="30m">Last 30 min</option>
+    <option value="1h">Last 1 hour</option>
+    <option value="6h">Last 6 hours</option>
+    <option value="24h">Last 24 hours</option>
+  </select>
   <select id="themeSelect" aria-label="Color theme"></select>
   <div class="export-wrapper">
     <button id="exportBtn" aria-label="Export logs">Export</button>
@@ -603,7 +619,10 @@ worker.onmessage = (e) => {
       selectedDocIdx = -1;
       renderVirtual();
       updateMinimap();
+      $status.textContent = `${msg.indices.length} / ${msg.total} lines`;
       announce(`Filter: ${msg.indices.length} of ${msg.total} lines`);
+      // If tailing, stay at bottom
+      if (tailing) $area.scrollTop = $area.scrollHeight;
       break;
     case "stats":
       renderSparkline(msg);
@@ -627,8 +646,8 @@ function loadHash() {
   if (p.get("file")) currentFile = p.get("file");
   if (p.get("level")) $level.value = p.get("level");
   if (p.get("q")) $search.value = p.get("q");
+  if (p.get("time")) document.getElementById("timeFilter").value = p.get("time");
   if (p.get("theme")) {
-    // will be applied after theme select is populated
     currentFile = p.get("file") || currentFile;
   }
 }
@@ -638,6 +657,8 @@ function saveHash() {
   if (currentFile) p.set("file", currentFile);
   if ($level.value) p.set("level", $level.value);
   if ($search.value) p.set("q", $search.value);
+  const tf = document.getElementById("timeFilter");
+  if (tf && tf.value) p.set("time", tf.value);
   const curTheme = $themeSelect.value;
   if (curTheme && curTheme !== "dark") p.set("theme", curTheme);
   history.replaceState(null, "", "#" + p.toString());
@@ -721,6 +742,15 @@ async function loadLogs(file, lines = 5000) {
   renderVirtual();
   requestSparkline();
   updateMinimap();
+
+  // Scroll to bottom (show most recent logs)
+  $area.scrollTop = $area.scrollHeight;
+
+  // Apply time filter if set (default: 5m)
+  if ($timeFilter && $timeFilter.value) {
+    // Delay slightly to let worker finish indexing
+    setTimeout(() => applyFilters(), 100);
+  }
 }
 
 // ─── Virtual Scroll ───
@@ -831,27 +861,38 @@ function populateRow(row, doc, docIdx, visibleIdx) {
     row.appendChild(fnEl);
   }
 
-  // Pills
-  for (const key of PILL_KEYS) {
-    if (doc[key] != null && doc[key] !== "") {
+  // Extra context fields (non-standard keys shown inline)
+  const extras = [];
+  for (const [k, v] of Object.entries(doc)) {
+    if (CONTEXT_KEYS.has(k)) continue;
+    if (PILL_KEYS.has(k)) {
       const pill = document.createElement("span");
       pill.className = "pill";
-      pill.textContent = key + "=" + doc[key];
-      pill.dataset.field = key;
-      pill.dataset.value = String(doc[key]);
+      pill.textContent = k + "=" + v;
+      pill.dataset.field = k;
+      pill.dataset.value = String(v);
       pill.addEventListener("click", onPillClick);
       row.appendChild(pill);
+    } else {
+      extras.push(k + "=" + v);
     }
   }
 
-  // Exception indicator
+  // Show extra fields inline like v1 did
+  if (extras.length) {
+    const extEl = document.createElement("span");
+    extEl.className = "extras";
+    extEl.textContent = extras.join(", ");
+    extEl.title = extras.join("\n");
+    row.appendChild(extEl);
+  }
+
+  // Exception shown inline (collapsible)
   if (doc.exc) {
-    const excPill = document.createElement("span");
-    excPill.className = "pill";
-    excPill.style.background = "rgba(239,83,80,0.3)";
-    excPill.style.color = "var(--error)";
-    excPill.textContent = "EXC";
-    row.appendChild(excPill);
+    const excToggle = document.createElement("details");
+    excToggle.style.width = "100%";
+    excToggle.innerHTML = `<summary style="color:var(--error);font-size:11px;cursor:pointer;user-select:none">Exception</summary><div class="exc-inline">${doc.exc.replace(/</g,"&lt;").replace(/>/g,"&gt;")}</div>`;
+    row.appendChild(excToggle);
   }
 }
 
@@ -859,6 +900,9 @@ function populateRow(row, doc, docIdx, visibleIdx) {
 
 function onRowClick(e) {
   if (e.target.classList.contains("pill")) return;
+  // Don't interfere with text selection
+  const sel = window.getSelection();
+  if (sel && sel.toString().length > 0) return;
   const row = e.currentTarget;
   const docIdx = parseInt(row.dataset.docIdx, 10);
   const visibleIdx = parseInt(row.dataset.visibleIdx, 10);
@@ -1016,9 +1060,12 @@ function clearBreadcrumbs() {
 
 let searchTimer = null;
 
+const $timeFilter = document.getElementById("timeFilter");
+
 function applyFilters() {
   let parts = [];
   if ($level.value) parts.push("level:" + $level.value);
+  if ($timeFilter.value) parts.push('after:"' + $timeFilter.value + ' ago"');
   for (const b of breadcrumbFilters) {
     parts.push(b.field + ":" + b.value);
   }
@@ -1034,6 +1081,11 @@ function applyFilters() {
   worker.postMessage({ type: "filter", query: q });
   saveHash();
 }
+
+$timeFilter.addEventListener("change", () => {
+  saveHash();
+  applyFilters();
+});
 
 $search.addEventListener("input", () => {
   clearTimeout(searchTimer);
@@ -1820,7 +1872,10 @@ if (hashTheme) {
 }
 
 fetchFiles().then(() => {
-  if ($file.value) loadLogs($file.value);
+  if ($file.value) loadLogs($file.value).then(() => {
+    // Auto-start live tail so new logs appear immediately
+    startTail();
+  });
 });
 
 // Service worker registration

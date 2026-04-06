@@ -12,6 +12,7 @@ import json
 from datetime import datetime, timedelta
 
 from src.infra.logging_config import get_logger
+from src.infra.times import utc_now
 from src.infra.db import get_db
 
 logger = get_logger("memory.self_improvement")
@@ -26,7 +27,7 @@ async def analyze_and_propose() -> list[dict]:
     """
     proposals: list[dict] = []
     db = await get_db()
-    cutoff = (datetime.now() - timedelta(days=7)).isoformat()
+    cutoff = (utc_now() - timedelta(days=7)).isoformat()
 
     # ── 1. Agent failure rate analysis ──
     try:
@@ -215,7 +216,7 @@ def format_proposals_for_telegram(proposals: list[dict]) -> str:
 async def format_proposals_for_file(proposals: list[dict]) -> str:
     """Format proposals as markdown for saving to workspace."""
     lines = [
-        f"# Self-Improvement Report — {datetime.now().strftime('%Y-%m-%d')}",
+        f"# Self-Improvement Report — {utc_now().strftime('%Y-%m-%d')}",
         "",
     ]
     for i, p in enumerate(proposals, 1):

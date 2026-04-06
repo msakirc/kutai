@@ -6,19 +6,26 @@ Usage:
     python benchmark_cli.py benchmarks        # Fetch/refresh benchmarks
     python benchmark_cli.py enrich            # Enrich registry with benchmarks
     python benchmark_cli.py show              # Show full registry
+    python benchmark_cli.py routing           # Show task routing preview only
     python benchmark_cli.py score <task>      # Show model ranking for a task
     python benchmark_cli.py model <name>      # Show single model details
     python benchmark_cli.py compare <m1> <m2> # Side-by-side comparison
 """
 
 import logging
+import os
 import sys
 
-from src.infra.logging_config import get_logger
-from src.models.benchmark.benchmark_fetcher import \
-    enrich_registry_with_benchmarks, BenchmarkFetcher
-from ..model_registry import reload_registry, get_registry
-from ..capabilities import TASK_PROFILES, Cap
+# Allow running from any directory (e.g. python benchmark_cli.py from src/models/benchmark/)
+_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+from src.models.benchmark.benchmark_fetcher import BenchmarkFetcher, \
+    enrich_registry_with_benchmarks
+from src.models.capabilities import TASK_PROFILES, Cap
+from src.models.model_registry import get_registry, reload_registry
+from yazbunu import get_logger
 
 logger = get_logger("models.benchmark.cli")
 
@@ -85,12 +92,12 @@ def cmd_enrich(force_refresh: bool = False):
 def cmd_show():
     """Show full registry summary."""
     registry = get_registry()
+    registry.wait_for_enrichment()
     registry.print_summary()
 
 
 def cmd_score(task_name: str):
     """Show model ranking for a task."""
-
     if task_name not in TASK_PROFILES:
         print(f"Unknown task: {task_name}")
         print(f"Available: {', '.join(sorted(TASK_PROFILES.keys()))}")
@@ -318,6 +325,32 @@ def cmd_variants():
         print()
 
 
+def cmd_routing():
+    """Show task routing preview — which models are best for each agent role."""
+    registry = get_registry()
+    registry.wait_for_enrichment()
+
+    print(f"\n🎯 Task Routing Preview ({len(registry.models)} models)")
+    print(f"{'═' * 70}")
+
+    tasks = [
+        "planner", "architect", "coder", "implementer", "fixer",
+        "test_generator", "reviewer", "visual_reviewer", "researcher",
+        "analyst", "writer", "summarizer", "assistant", "executor",
+        "error_recovery", "pipeline", "workflow",
+        "shopping_advisor", "classifier", "grader",
+    ]
+    for task in tasks:
+        if task not in TASK_PROFILES:
+            continue
+        ranked = registry.best_for_task(task, top_k=3)
+        if ranked:
+            models_str = " -> ".join(f"{n}({s:.1f})" for n, s in ranked)
+            print(f"  {task:20s}: {models_str}")
+
+    print()
+
+
 def cmd_tasks():
     """List all available tasks and their key capabilities."""
 
@@ -400,6 +433,8 @@ def main():
             print("Usage: benchmark_cli.py compare <model1> <model2>")
             return
         cmd_compare(sys.argv[2], sys.argv[3])
+    elif cmd == "routing":
+        cmd_routing()
     elif cmd == "variants":
         cmd_variants()
     elif cmd == "tasks":
@@ -414,5 +449,5 @@ def main():
 
 if __name__ == "__main__":
     from dotenv import load_dotenv
-    load_dotenv()  # loads .env into environment
+    load_dotenv(os.path.join(_project_root, ".env"))
     main()

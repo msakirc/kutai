@@ -149,6 +149,8 @@ class ModelInfo:
             "model_type": self.model_type,
             "total_params_b": self.total_params_b,
             "active_params_b": self.active_params_b,
+            "is_variant": getattr(self, "is_variant", False),
+            "variant_flags": getattr(self, "variant_flags", set()),
         }
 
     @property
@@ -896,21 +898,26 @@ def _resolve_provider(litellm_name: str) -> str | None:
 # ─── Model Variant Registration ─────────────────────────────────────────────
 
 def _apply_thinking_deltas(capabilities: dict[str, float]) -> dict[str, float]:
-    """Adjust capability scores for thinking mode variant."""
+    """Adjust capability scores for thinking mode variant.
+
+    Deltas derived from LM Arena thinking/non-thinking pairs (Qwen3-235B,
+    DeepSeek-V3.1/V3.2).  Frontier models show small gains; local models
+    further from the ceiling should benefit proportionally more, so we
+    apply modest positive deltas.
+    """
     caps = dict(capabilities)
     deltas = {
-        "reasoning": 1.0,
-        "planning": 1.0,
-        "analysis": 1.0,
-        "code_reasoning": 1.0,
-        "code_generation": 0.3,
-        "instruction_adherence": -0.7,
-        "structured_output": -0.7,
-        "conversation": -0.5,
+        "reasoning": 0.4,
+        "planning": 0.4,
+        "analysis": 0.5,
+        "code_reasoning": 0.2,
+        "prose_quality": 0.3,
+        "instruction_adherence": 0.3,
+        "context_utilization": 0.2,
     }
     for key, delta in deltas.items():
         if key in caps:
-            caps[key] = max(0.0, min(10.0, caps[key] + delta))
+            caps[key] = round(max(0.0, min(10.0, caps[key] + delta)), 1)
     return caps
 
 
@@ -953,7 +960,7 @@ def _create_model_variants(
             is_variant=True,
             base_model_name=base.name,
             variant_flags={"thinking"},
-            capabilities=dict(base.capabilities),
+            capabilities=_apply_thinking_deltas(base.capabilities),
             litellm_name=f"openai/{base.name}-thinking",
         )
         variants.append(thinking_entry)
@@ -980,7 +987,7 @@ def _create_model_variants(
             is_variant=True,
             base_model_name=base.name,
             variant_flags={"thinking", "vision"},
-            capabilities=dict(base.capabilities),
+            capabilities=_apply_thinking_deltas(base.capabilities),
             litellm_name=f"openai/{base.name}-thinking-vision",
         )
         variants.append(tv_entry)
@@ -1104,8 +1111,13 @@ class ModelRegistry:
                 if model_name not in new_models:
                     continue
                 if "capabilities" in model_overrides:
+                    manual_caps = {}
                     for cap_name, score in model_overrides["capabilities"].items():
                         new_models[model_name].capabilities[cap_name] = float(score)
+                        manual_caps[cap_name] = float(score)
+                    # Treat manual overrides as benchmark data so auto_tuner
+                    # and enrichment respect them in the blend
+                    new_models[model_name].benchmark_scores = manual_caps
                 if "sampling" in model_overrides:
                     new_models[model_name].sampling_overrides = {
                         k: {pk: float(pv) for pk, pv in v.items()}
@@ -1138,9 +1150,10 @@ class ModelRegistry:
                         logger.debug("benchmark_fetcher not available")
                     except Exception as e:
                         logger.warning(f"Benchmark enrichment failed (non-fatal): {e}")
-                t = threading.Thread(target=_enrich_bg, daemon=True,
-                                     name="benchmark-enrich")
-                t.start()
+                self._enrich_thread = threading.Thread(
+                    target=_enrich_bg, daemon=True, name="benchmark-enrich"
+                )
+                self._enrich_thread.start()
                 logger.info("Benchmark enrichment started in background")
 
             self._loaded = True
@@ -1837,6 +1850,12 @@ class ModelRegistry:
 
     # ── Diagnostics ──────────────────────────────────────────────────────────
 
+    def wait_for_enrichment(self, timeout: float = 30.0) -> None:
+        """Block until background benchmark enrichment finishes."""
+        t = getattr(self, "_enrich_thread", None)
+        if t is not None and t.is_alive():
+            t.join(timeout=timeout)
+
     def print_summary(self) -> None:
         """Print a formatted summary of all registered models."""
         print("=" * 80)
@@ -1879,6 +1898,7 @@ class ModelRegistry:
         # Show task routing preview
         print(f"\n  [>] Task Routing Preview")
         print(f"  {'-' * 76}")
+        routing_lines = []
         for task in [
             "planner",
             "architect",
@@ -1901,9 +1921,17 @@ class ModelRegistry:
             ranked = self.best_for_task(task, top_k=3)
             if ranked:
                 models_str = " -> ".join(f"{n}({s:.1f})" for n, s in ranked)
-                print(f"  {task:20s}: {models_str}")
+                line = f"  {task:20s}: {models_str}"
+                print(line)
+                routing_lines.append(line)
 
         print("=" * 80)
+
+        # Also log routing preview so it appears in yazbunu logs
+        if routing_lines:
+            logger.info(
+                "Task routing preview:\n" + "\n".join(routing_lines)
+            )
 
 
 # ─── Singleton ───────────────────────────────────────────────────────────────

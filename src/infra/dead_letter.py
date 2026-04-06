@@ -19,8 +19,9 @@ Integration with existing systems:
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Optional
+
+from .times import db_now
 
 from src.infra.logging_config import get_logger
 
@@ -74,15 +75,15 @@ async def quarantine_task(
         cursor = await db.execute(
             """INSERT OR REPLACE INTO dead_letter_tasks
                (task_id, mission_id, error, error_category, original_agent,
-                retry_count, quarantined_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                retry_count, quarantined_at, resolved_at, resolution)
+               VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)""",
             (
                 task_id, mission_id,
                 error[:2000],  # cap error text
                 _classify_error(error, error_category),
                 original_agent,
                 retry_count,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                db_now(),
             ),
         )
         await db.commit()
@@ -207,7 +208,7 @@ async def resolve_dlq_task(
         """UPDATE dead_letter_tasks
            SET resolved_at = ?, resolution = ?
            WHERE task_id = ? AND resolved_at IS NULL""",
-        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), resolution, task_id),
+        (db_now(), resolution, task_id),
     )
     await db.commit()
     return cursor.rowcount > 0

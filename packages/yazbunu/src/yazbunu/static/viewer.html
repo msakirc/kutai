@@ -18,6 +18,8 @@
     --warn: #ffa726;
     --info: #4fc3f7;
     --debug: #888;
+    --success: #66bb6a;
+    --row-height: 28px;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -28,6 +30,7 @@
     height: 100vh;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
   }
 
   /* ─── Toolbar ─── */
@@ -39,6 +42,7 @@
     background: var(--surface);
     border-bottom: 1px solid var(--border);
     align-items: center;
+    z-index: 10;
   }
   .toolbar select, .toolbar input, .toolbar button {
     font-family: inherit;
@@ -56,6 +60,7 @@
     border: none;
     font-weight: bold;
   }
+  .toolbar button:hover { opacity: 0.85; }
   .toolbar button.active {
     background: var(--error);
   }
@@ -63,41 +68,120 @@
     flex: 1;
     min-width: 120px;
   }
+  .toolbar select { max-width: 180px; }
   .status {
     color: var(--text-dim);
     font-size: 11px;
     margin-left: auto;
+    white-space: nowrap;
   }
 
-  /* ─── Log area ─── */
+  /* ─── Breadcrumbs ─── */
+  .breadcrumbs {
+    display: flex;
+    gap: 6px;
+    padding: 4px 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: 11px;
+  }
+  .breadcrumbs .crumb {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--border);
+    border-radius: 10px;
+    padding: 2px 8px;
+    color: var(--text);
+    cursor: default;
+  }
+  .breadcrumbs .crumb .remove {
+    cursor: pointer;
+    color: var(--text-dim);
+    font-weight: bold;
+    margin-left: 2px;
+  }
+  .breadcrumbs .crumb .remove:hover { color: var(--error); }
+
+  /* ─── Sparkline ─── */
+  #sparkline {
+    width: 100%;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: block;
+  }
+
+  /* ─── Main content ─── */
+  .main-content {
+    flex: 1;
+    display: flex;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* ─── Log area (virtual scroll container) ─── */
   .log-area {
     flex: 1;
+    position: relative;
     overflow-y: auto;
-    padding: 4px 0;
+    overflow-x: hidden;
   }
+  #spacer {
+    width: 100%;
+    pointer-events: none;
+  }
+
+  /* ─── Log line (recycled rows) ─── */
   .log-line {
+    height: 28px;
+    position: absolute;
+    left: 0;
+    right: 0;
     display: flex;
-    padding: 2px 12px;
-    border-bottom: 1px solid var(--border);
+    align-items: center;
+    padding: 0 12px;
     gap: 8px;
-    align-items: baseline;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
     word-break: break-word;
+    flex-wrap: wrap;
+    overflow: hidden;
+    transition: background 0.1s;
   }
   .log-line:hover { background: rgba(255,255,255,0.03); }
-  .log-line.level-ERROR { background: rgba(239,83,80,0.1); }
-  .log-line.level-WARNING { background: rgba(255,167,38,0.1); }
-  .log-line.level-CRITICAL { background: rgba(239,83,80,0.2); }
+  .log-line.selected { background: rgba(79,195,247,0.12); }
+  .log-line.level-ERROR { background: rgba(239,83,80,0.08); }
+  .log-line.level-WARNING { background: rgba(255,167,38,0.08); }
+  .log-line.level-CRITICAL { background: rgba(239,83,80,0.15); }
   .log-line.level-DEBUG { opacity: 0.6; }
+  .log-line.selected.level-ERROR { background: rgba(239,83,80,0.2); }
+  .log-line.selected.level-WARNING { background: rgba(255,167,38,0.2); }
+  .log-line.bookmarked::before {
+    content: "";
+    position: absolute;
+    left: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--warn);
+  }
+  .log-line.has-exc {
+    height: auto;
+    min-height: 28px;
+  }
 
-  .ts { color: var(--text-dim); white-space: nowrap; font-size: 11px; }
-  .level { font-weight: bold; width: 50px; font-size: 11px; }
-  .level-ERROR .level { color: var(--error); }
+  .ts { color: var(--text-dim); white-space: nowrap; font-size: 11px; flex-shrink: 0; }
+  .level { font-weight: bold; width: 50px; font-size: 11px; flex-shrink: 0; }
+  .level-ERROR .level, .level-CRITICAL .level { color: var(--error); }
   .level-WARNING .level { color: var(--warn); }
   .level-INFO .level { color: var(--info); }
   .level-DEBUG .level { color: var(--debug); }
-  .level-CRITICAL .level { color: var(--error); }
-  .src { color: var(--accent); white-space: nowrap; }
-  .msg { flex: 1; }
+  .src { color: var(--accent); white-space: nowrap; flex-shrink: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+  .msg { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pill {
     display: inline-block;
     font-size: 10px;
@@ -107,17 +191,123 @@
     color: var(--text);
     cursor: pointer;
     margin-left: 4px;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
   .pill:hover { background: var(--accent); color: #000; }
-  .fn-info { color: var(--text-dim); font-size: 11px; }
+  .fn-info { color: var(--text-dim); font-size: 11px; white-space: nowrap; flex-shrink: 0; }
+
+  /* ─── Minimap ─── */
+  #minimap {
+    width: 12px;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  /* ─── Detail panel ─── */
+  .detail-panel {
+    width: 400px;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 12px;
+    flex-shrink: 0;
+  }
+  .detail-panel h3 {
+    margin: 0 0 8px 0;
+    font-size: 13px;
+    color: var(--accent);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .detail-panel .close-btn {
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 16px;
+    background: none;
+    border: none;
+    padding: 0 4px;
+  }
+  .detail-panel .close-btn:hover { color: var(--error); }
+  .detail-field {
+    margin-bottom: 6px;
+    font-size: 12px;
+  }
+  .detail-field .field-key {
+    color: var(--accent);
+    font-weight: bold;
+  }
+  .detail-field .field-val {
+    color: var(--text);
+    word-break: break-all;
+  }
+  .detail-exc {
+    background: rgba(239,83,80,0.1);
+    border-radius: 4px;
+    padding: 8px;
+    margin-top: 8px;
+    font-size: 11px;
+    white-space: pre-wrap;
+    color: var(--error);
+    max-height: 300px;
+    overflow-y: auto;
+  }
+  .detail-related {
+    margin-top: 12px;
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+  }
+  .detail-related .related-line {
+    padding: 3px 0;
+    font-size: 11px;
+    cursor: pointer;
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .detail-related .related-line:hover { color: var(--text); }
+
+  /* ─── Export dropdown ─── */
+  .export-wrapper { position: relative; }
+  .export-menu {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    z-index: 100;
+    display: none;
+    min-width: 120px;
+  }
+  .export-menu.open { display: block; }
+  .export-menu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    color: var(--text);
+    border: none;
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .export-menu button:hover { background: var(--border); }
 
   /* ─── Mobile ─── */
   @media (max-width: 600px) {
     .ts { display: none; }
-    .src { max-width: 100px; overflow: hidden; text-overflow: ellipsis; }
+    .src { max-width: 80px; }
     .toolbar { padding: 6px 8px; gap: 4px; }
     .toolbar select, .toolbar input, .toolbar button { padding: 8px; font-size: 14px; }
     .log-line { padding: 4px 8px; font-size: 14px; }
+    .detail-panel { width: 100%; position: absolute; top: 0; right: 0; bottom: 0; z-index: 20; }
+    #minimap { display: none; }
+    #sparkline { height: 24px; }
   }
 </style>
 </head>
@@ -133,184 +323,944 @@
     <option value="ERROR">ERROR</option>
     <option value="CRITICAL">CRITICAL</option>
   </select>
-  <input type="text" id="searchBox" placeholder="Search src/msg (regex)...">
+  <input type="text" id="searchBox" placeholder="Search... (level:ERROR src:db msg:timeout)">
+  <select id="themeSelect">
+    <option value="dark">Dark</option>
+    <option value="light">Light</option>
+    <option value="midnight">Midnight</option>
+  </select>
+  <div class="export-wrapper">
+    <button id="exportBtn">Export</button>
+    <div class="export-menu" id="exportMenu">
+      <button data-fmt="json">JSON</button>
+      <button data-fmt="csv">CSV</button>
+      <button data-fmt="text">Plain Text</button>
+    </div>
+  </div>
   <button id="tailBtn">Live Tail</button>
   <span class="status" id="status">Ready</span>
 </div>
 
-<div class="log-area" id="logArea"></div>
+<div class="breadcrumbs" id="breadcrumbs" style="display:none"></div>
+<canvas id="sparkline" height="32"></canvas>
+
+<div class="main-content">
+  <div class="log-area" id="logArea">
+    <div id="spacer"></div>
+  </div>
+  <canvas id="minimap" width="12"></canvas>
+  <div id="detailPanel" class="detail-panel" style="display:none"></div>
+</div>
 
 <script>
-const LEVEL_ORDER = {DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4};
-const POLL_MS = 2000;
-const CONTEXT_KEYS = new Set(["ts", "level", "src", "msg", "fn", "ln", "exc"]);
+try { const s = document.createElement("script"); s.src = "/static/themes.js"; document.head.appendChild(s); } catch(e) {}
+</script>
+<script>
+// ═══════════════════════════════════════════════════════════════════════
+// Yazbunu Virtual Scrolling Log Viewer
+// ═══════════════════════════════════════════════════════════════════════
 
-let allLines = [];
+const ROW_HEIGHT = 28;
+const OVERSCAN = 20;
+const POLL_MS = 2000;
+const CHUNK_SIZE = 5000;
+const CONTEXT_KEYS = new Set(["ts", "level", "src", "msg", "fn", "ln", "exc", "_file"]);
+const PILL_KEYS = new Set(["task", "mission", "agent", "model"]);
+
+// ─── State ───
+let allDocs = [];
+let filteredIndices = null;  // null = show all, array = filtered subset
+let selectedRow = -1;
+let selectedDocIdx = -1;
 let tailing = false;
 let tailTimer = null;
 let lastTs = "";
 let currentFile = "";
+let ws = null;
+let wsRetryCount = 0;
+let breadcrumbFilters = [];  // [{field, value}]
+let bookmarks = new Set();
+let workerReady = false;
 
+// ─── DOM refs ───
 const $file = document.getElementById("fileSelect");
 const $level = document.getElementById("levelFilter");
 const $search = document.getElementById("searchBox");
 const $tailBtn = document.getElementById("tailBtn");
 const $area = document.getElementById("logArea");
+const $spacer = document.getElementById("spacer");
 const $status = document.getElementById("status");
+const $breadcrumbs = document.getElementById("breadcrumbs");
+const $sparkline = document.getElementById("sparkline");
+const $minimap = document.getElementById("minimap");
+const $detail = document.getElementById("detailPanel");
+const $themeSelect = document.getElementById("themeSelect");
+const $exportBtn = document.getElementById("exportBtn");
+const $exportMenu = document.getElementById("exportMenu");
 
-// ─── State from URL hash ───
+// ─── Row pool ───
+const rowPool = [];
+
+// ─── Bookmarks ───
+function loadBookmarks() {
+  try {
+    const raw = localStorage.getItem("_yz_bookmarks");
+    if (raw) {
+      const arr = JSON.parse(raw);
+      bookmarks = new Set(arr);
+    }
+  } catch(e) {}
+}
+function saveBookmarks() {
+  localStorage.setItem("_yz_bookmarks", JSON.stringify([...bookmarks]));
+}
+function bookmarkKey(doc) {
+  return (doc.ts || "") + "|" + (doc.src || "") + "|" + (doc.msg || "").slice(0, 80);
+}
+loadBookmarks();
+
+// ─── Web Worker ───
+const worker = new Worker("/static/worker.js");
+
+worker.onmessage = (e) => {
+  const msg = e.data;
+  switch (msg.type) {
+    case "loaded":
+      workerReady = true;
+      $status.textContent = `${msg.totalCount} lines indexed`;
+      break;
+    case "filtered":
+      filteredIndices = msg.indices;
+      selectedRow = -1;
+      selectedDocIdx = -1;
+      renderVirtual();
+      updateMinimap();
+      break;
+    case "stats":
+      renderSparkline(msg);
+      break;
+    case "fields":
+      // could populate autocomplete — storing for future use
+      break;
+    case "aggregated":
+      renderSparklineFromBuckets(msg.buckets);
+      break;
+    case "patterns":
+      // store for pattern view — future feature
+      break;
+    case "related":
+      renderRelated(msg.indices);
+      break;
+  }
+};
+
+// ─── URL Hash State ───
 function loadHash() {
   const p = new URLSearchParams(location.hash.slice(1));
   if (p.get("file")) currentFile = p.get("file");
   if (p.get("level")) $level.value = p.get("level");
   if (p.get("q")) $search.value = p.get("q");
+  if (p.get("theme")) $themeSelect.value = p.get("theme");
 }
+
 function saveHash() {
   const p = new URLSearchParams();
   if (currentFile) p.set("file", currentFile);
   if ($level.value) p.set("level", $level.value);
   if ($search.value) p.set("q", $search.value);
-  location.hash = p.toString();
+  if ($themeSelect.value && $themeSelect.value !== "dark") p.set("theme", $themeSelect.value);
+  history.replaceState(null, "", "#" + p.toString());
 }
 
 // ─── API ───
 async function fetchFiles() {
-  const r = await fetch("/api/files");
-  const d = await r.json();
-  $file.innerHTML = d.files.map(f =>
-    `<option value="${f.name}">${f.name} (${(f.size/1024).toFixed(0)}KB)</option>`
-  ).join("");
-  if (currentFile) $file.value = currentFile;
-  else currentFile = $file.value;
+  try {
+    const r = await fetch("/api/files");
+    const d = await r.json();
+    $file.innerHTML = '<option value="__all__">All files</option>' + d.files.map(f =>
+      `<option value="${f.name}">${f.name} (${(f.size / 1024).toFixed(0)}KB)</option>`
+    ).join("");
+    if (currentFile) $file.value = currentFile;
+    else currentFile = $file.value;
+  } catch(e) {
+    $status.textContent = "Failed to load file list";
+  }
 }
 
-async function fetchLogs(file, lines = 2000) {
+async function loadLogs(file, lines = 5000) {
   $status.textContent = "Loading...";
-  const r = await fetch(`/api/logs?file=${encodeURIComponent(file)}&lines=${lines}`);
-  if (!r.ok) { $status.textContent = "Error " + r.status; return; }
-  const d = await r.json();
-  allLines = d.lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-  lastTs = allLines.length ? allLines[allLines.length - 1].ts : "";
-  $status.textContent = `${allLines.length} / ${d.total} lines`;
-  render();
+  stopTail();
+  worker.postMessage({ type: "clear" });
+  allDocs = [];
+  filteredIndices = null;
+  selectedRow = -1;
+  selectedDocIdx = -1;
+
+  try {
+    if (file === "__all__") {
+      const fr = await fetch("/api/files");
+      const fd = await fr.json();
+      let allRawLines = [];
+      for (const f of fd.files) {
+        const r = await fetch(`/api/logs?file=${encodeURIComponent(f.name)}&lines=${lines}`);
+        if (!r.ok) continue;
+        const d = await r.json();
+        // Tag each line with _file for all-files mode
+        for (const l of d.lines) {
+          try {
+            const doc = JSON.parse(l);
+            doc._file = f.name;
+            allDocs.push(doc);
+            allRawLines.push(JSON.stringify(doc));
+          } catch { allDocs.push(null); allRawLines.push(l); }
+        }
+      }
+      // Sort by timestamp
+      const paired = allDocs.map((doc, i) => ({ doc, raw: allRawLines[i], i }));
+      paired.sort((a, b) => ((a.doc && a.doc.ts) || "").localeCompare((b.doc && b.doc.ts) || ""));
+      allDocs = paired.map(p => p.doc);
+      allRawLines = paired.map(p => p.raw);
+      // Keep only last N
+      if (allDocs.length > lines) {
+        allDocs = allDocs.slice(-lines);
+        allRawLines = allRawLines.slice(-lines);
+      }
+      // Send to worker in chunks
+      for (let i = 0; i < allRawLines.length; i += CHUNK_SIZE) {
+        const chunk = allRawLines.slice(i, i + CHUNK_SIZE);
+        worker.postMessage({ type: "load", lines: chunk, chunk: Math.floor(i / CHUNK_SIZE) });
+      }
+      lastTs = allDocs.length ? (allDocs[allDocs.length - 1] && allDocs[allDocs.length - 1].ts || "") : "";
+      $status.textContent = `${allDocs.length} lines (all files)`;
+    } else {
+      const r = await fetch(`/api/logs?file=${encodeURIComponent(file)}&lines=${lines}`);
+      if (!r.ok) { $status.textContent = "Error " + r.status; return; }
+      const d = await r.json();
+      const rawLines = d.lines;
+      // Parse locally for allDocs
+      for (const l of rawLines) {
+        try { allDocs.push(JSON.parse(l)); } catch { allDocs.push(null); }
+      }
+      // Send to worker in chunks for indexing
+      for (let i = 0; i < rawLines.length; i += CHUNK_SIZE) {
+        const chunk = rawLines.slice(i, i + CHUNK_SIZE);
+        worker.postMessage({ type: "load", lines: chunk, chunk: Math.floor(i / CHUNK_SIZE) });
+      }
+      lastTs = allDocs.length ? (allDocs[allDocs.length - 1] && allDocs[allDocs.length - 1].ts || "") : "";
+      $status.textContent = `${allDocs.length} / ${d.total} lines`;
+    }
+  } catch(e) {
+    $status.textContent = "Load error: " + e.message;
+  }
+
+  renderVirtual();
+  requestSparkline();
+  updateMinimap();
+}
+
+// ─── Virtual Scroll ───
+
+function ensurePoolSize(needed) {
+  while (rowPool.length < needed) {
+    const row = document.createElement("div");
+    row.className = "log-line";
+    row.style.height = ROW_HEIGHT + "px";
+    row.style.position = "absolute";
+    row.style.left = "0";
+    row.style.right = "0";
+    row.addEventListener("click", onRowClick);
+    row.addEventListener("dblclick", onRowDblClick);
+    $area.appendChild(row);
+    rowPool.push(row);
+  }
+}
+
+function getVisibleCount() {
+  return filteredIndices ? filteredIndices.length : allDocs.length;
+}
+
+function renderVirtual() {
+  const total = getVisibleCount();
+  $spacer.style.height = (total * ROW_HEIGHT) + "px";
+
+  const scrollTop = $area.scrollTop;
+  const startRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+  const visibleCount = Math.ceil($area.clientHeight / ROW_HEIGHT) + OVERSCAN * 2;
+  const endRow = Math.min(total, startRow + visibleCount);
+  const needed = endRow - startRow;
+
+  ensurePoolSize(needed);
+
+  for (let i = 0; i < rowPool.length; i++) {
+    const vi = startRow + i;
+    const row = rowPool[i];
+    if (vi >= endRow) {
+      row.style.display = "none";
+      continue;
+    }
+    row.style.display = "flex";
+    row.style.top = (vi * ROW_HEIGHT) + "px";
+    const docIdx = filteredIndices ? filteredIndices[vi] : vi;
+    populateRow(row, allDocs[docIdx], docIdx, vi);
+  }
+}
+
+function populateRow(row, doc, docIdx, visibleIdx) {
+  // Store index on row for click handling
+  row.dataset.docIdx = docIdx;
+  row.dataset.visibleIdx = visibleIdx;
+
+  // Clear previous content
+  row.innerHTML = "";
+
+  if (!doc) {
+    row.className = "log-line";
+    row.textContent = "(malformed line)";
+    return;
+  }
+
+  const level = doc.level || "";
+  row.className = "log-line level-" + level;
+  if (docIdx === selectedDocIdx) row.className += " selected";
+  const bk = bookmarkKey(doc);
+  if (bookmarks.has(bk)) row.className += " bookmarked";
+
+  // Timestamp
+  const tsEl = document.createElement("span");
+  tsEl.className = "ts";
+  if (doc.ts) {
+    const d = new Date(doc.ts);
+    tsEl.textContent = d.toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" })
+      + "." + String(d.getMilliseconds()).padStart(3, "0");
+  }
+  row.appendChild(tsEl);
+
+  // Level
+  const lvlEl = document.createElement("span");
+  lvlEl.className = "level";
+  lvlEl.textContent = level;
+  row.appendChild(lvlEl);
+
+  // Source
+  const srcEl = document.createElement("span");
+  srcEl.className = "src";
+  srcEl.textContent = doc.src || "";
+  if (doc._file) srcEl.title = doc._file + " / " + (doc.src || "");
+  row.appendChild(srcEl);
+
+  // Message
+  const msgEl = document.createElement("span");
+  msgEl.className = "msg";
+  msgEl.textContent = doc.msg || "";
+  row.appendChild(msgEl);
+
+  // fn:ln info
+  if (doc.fn) {
+    const fnEl = document.createElement("span");
+    fnEl.className = "fn-info";
+    fnEl.textContent = `(${doc.fn}:${doc.ln || ""})`;
+    row.appendChild(fnEl);
+  }
+
+  // Pills
+  for (const key of PILL_KEYS) {
+    if (doc[key] != null && doc[key] !== "") {
+      const pill = document.createElement("span");
+      pill.className = "pill";
+      pill.textContent = key + "=" + doc[key];
+      pill.dataset.field = key;
+      pill.dataset.value = String(doc[key]);
+      pill.addEventListener("click", onPillClick);
+      row.appendChild(pill);
+    }
+  }
+
+  // Exception indicator
+  if (doc.exc) {
+    const excPill = document.createElement("span");
+    excPill.className = "pill";
+    excPill.style.background = "rgba(239,83,80,0.3)";
+    excPill.style.color = "var(--error)";
+    excPill.textContent = "EXC";
+    row.appendChild(excPill);
+  }
+}
+
+// ─── Row interaction ───
+
+function onRowClick(e) {
+  // Don't handle if pill was clicked
+  if (e.target.classList.contains("pill")) return;
+  const row = e.currentTarget;
+  const docIdx = parseInt(row.dataset.docIdx, 10);
+  const visibleIdx = parseInt(row.dataset.visibleIdx, 10);
+  selectRow(docIdx, visibleIdx);
+}
+
+function onRowDblClick(e) {
+  const row = e.currentTarget;
+  const docIdx = parseInt(row.dataset.docIdx, 10);
+  const doc = allDocs[docIdx];
+  if (!doc) return;
+  const bk = bookmarkKey(doc);
+  if (bookmarks.has(bk)) bookmarks.delete(bk);
+  else bookmarks.add(bk);
+  saveBookmarks();
+  renderVirtual();
+}
+
+function onPillClick(e) {
+  e.stopPropagation();
+  const field = e.target.dataset.field;
+  const value = e.target.dataset.value;
+  addBreadcrumb(field, value);
+}
+
+function selectRow(docIdx, visibleIdx) {
+  selectedDocIdx = docIdx;
+  selectedRow = visibleIdx;
+  renderVirtual();
+  showDetail(docIdx);
+}
+
+// ─── Detail panel ───
+
+function showDetail(docIdx) {
+  const doc = allDocs[docIdx];
+  if (!doc) { hideDetail(); return; }
+
+  $detail.style.display = "block";
+  let html = '<h3>Log Detail <button class="close-btn" onclick="hideDetail()">&times;</button></h3>';
+
+  // All fields
+  for (const [k, v] of Object.entries(doc)) {
+    if (k === "exc") continue;
+    const escaped = String(v).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    html += `<div class="detail-field"><span class="field-key">${k}: </span><span class="field-val">${escaped}</span></div>`;
+  }
+
+  // Bookmark button
+  const bk = bookmarkKey(doc);
+  const isBookmarked = bookmarks.has(bk);
+  html += `<div style="margin-top:8px"><button onclick="toggleBookmark(${docIdx})" style="font-size:11px;padding:4px 8px;background:var(--border);color:var(--text);border:none;border-radius:4px;cursor:pointer">${isBookmarked ? "Remove Bookmark" : "Bookmark"}</button></div>`;
+
+  // Exception
+  if (doc.exc) {
+    html += `<div class="detail-exc">${doc.exc.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>`;
+  }
+
+  // Related logs placeholder
+  html += '<div class="detail-related" id="relatedArea"><em style="color:var(--text-dim);font-size:11px">Loading related...</em></div>';
+  $detail.innerHTML = html;
+
+  // Request related from worker
+  worker.postMessage({ type: "related", lineIndex: docIdx, windowSec: 60 });
+}
+
+function hideDetail() {
+  $detail.style.display = "none";
+  selectedDocIdx = -1;
+  selectedRow = -1;
+  renderVirtual();
+}
+
+function toggleBookmark(docIdx) {
+  const doc = allDocs[docIdx];
+  if (!doc) return;
+  const bk = bookmarkKey(doc);
+  if (bookmarks.has(bk)) bookmarks.delete(bk);
+  else bookmarks.add(bk);
+  saveBookmarks();
+  showDetail(docIdx);
+  renderVirtual();
+}
+
+function renderRelated(indices) {
+  const area = document.getElementById("relatedArea");
+  if (!area) return;
+  if (!indices.length) {
+    area.innerHTML = '<em style="color:var(--text-dim);font-size:11px">No related logs found</em>';
+    return;
+  }
+  let html = '<strong style="font-size:11px;color:var(--accent)">Related (' + indices.length + ')</strong>';
+  const shown = indices.slice(0, 30);
+  for (const idx of shown) {
+    const doc = allDocs[idx];
+    if (!doc) continue;
+    const ts = doc.ts ? new Date(doc.ts).toLocaleTimeString([], { hour12: false }) : "";
+    const msg = (doc.msg || "").slice(0, 80).replace(/</g, "&lt;");
+    html += `<div class="related-line" onclick="jumpToDoc(${idx})">[${ts}] ${doc.level || ""} ${msg}</div>`;
+  }
+  area.innerHTML = html;
+}
+
+function jumpToDoc(docIdx) {
+  // Find visible index
+  let visibleIdx = docIdx;
+  if (filteredIndices) {
+    visibleIdx = filteredIndices.indexOf(docIdx);
+    if (visibleIdx === -1) return;
+  }
+  $area.scrollTop = visibleIdx * ROW_HEIGHT - $area.clientHeight / 2;
+  selectRow(docIdx, visibleIdx);
+}
+
+// ─── Breadcrumb filters ───
+
+function addBreadcrumb(field, value) {
+  // Avoid duplicates
+  if (breadcrumbFilters.some(b => b.field === field && b.value === value)) return;
+  breadcrumbFilters.push({ field, value });
+  applyFilters();
+  renderBreadcrumbs();
+}
+
+function removeBreadcrumb(idx) {
+  breadcrumbFilters.splice(idx, 1);
+  applyFilters();
+  renderBreadcrumbs();
+}
+
+function renderBreadcrumbs() {
+  if (breadcrumbFilters.length === 0) {
+    $breadcrumbs.style.display = "none";
+    return;
+  }
+  $breadcrumbs.style.display = "flex";
+  $breadcrumbs.innerHTML = breadcrumbFilters.map((b, i) =>
+    `<span class="crumb">${b.field}:${b.value} <span class="remove" onclick="removeBreadcrumb(${i})">&times;</span></span>`
+  ).join("") + '<span class="crumb remove" onclick="clearBreadcrumbs()" style="cursor:pointer;color:var(--text-dim)">Clear all</span>';
+}
+
+function clearBreadcrumbs() {
+  breadcrumbFilters = [];
+  applyFilters();
+  renderBreadcrumbs();
+}
+
+// ─── Search / Filter ───
+
+let searchTimer = null;
+
+function applyFilters() {
+  let parts = [];
+  if ($level.value) parts.push("level:" + $level.value);
+  for (const b of breadcrumbFilters) {
+    parts.push(b.field + ":" + b.value);
+  }
+  if ($search.value.trim()) parts.push($search.value.trim());
+  const q = parts.join(" ");
+  if (!q) {
+    filteredIndices = null;
+    renderVirtual();
+    updateMinimap();
+    return;
+  }
+  worker.postMessage({ type: "filter", query: q });
+  saveHash();
+}
+
+$search.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    applyFilters();
+  }, 150);
+});
+
+$level.addEventListener("change", () => {
+  saveHash();
+  applyFilters();
+});
+
+// ─── Scroll handler ───
+let scrollRaf = null;
+$area.addEventListener("scroll", () => {
+  if (scrollRaf) return;
+  scrollRaf = requestAnimationFrame(() => {
+    scrollRaf = null;
+    renderVirtual();
+  });
+});
+
+// ─── WebSocket Tail ───
+
+function startTail() {
+  tailing = true;
+  $tailBtn.textContent = "Pause";
+  $tailBtn.classList.add("active");
+
+  if (currentFile === "__all__") {
+    // All-files mode: use HTTP polling
+    startHttpPolling();
+    return;
+  }
+
+  try {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(`${proto}//${location.host}/ws/tail?file=${encodeURIComponent(currentFile)}`);
+    ws.onopen = () => {
+      wsRetryCount = 0;
+      $status.textContent = `${allDocs.length} lines (WS live)`;
+    };
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "lines" && msg.lines && msg.lines.length) {
+          const newRawLines = msg.lines;
+          newRawLines.forEach(l => {
+            try { allDocs.push(JSON.parse(l)); } catch { allDocs.push(null); }
+          });
+          worker.postMessage({ type: "load", lines: newRawLines, chunk: -1 });
+          if (filteredIndices === null) {
+            // No active filter — just re-render
+            renderVirtual();
+          } else {
+            // Re-apply filters to include new lines
+            applyFilters();
+          }
+          if (tailing) {
+            $area.scrollTop = $area.scrollHeight;
+          }
+          lastTs = allDocs.length ? (allDocs[allDocs.length - 1] && allDocs[allDocs.length - 1].ts || lastTs) : lastTs;
+          $status.textContent = `${allDocs.length} lines (WS live)`;
+        }
+      } catch(err) {}
+    };
+    ws.onerror = () => {
+      ws = null;
+      startHttpPolling();
+    };
+    ws.onclose = () => {
+      ws = null;
+      if (tailing) {
+        wsRetryCount++;
+        if (wsRetryCount < 5) {
+          setTimeout(startTail, 1000 * wsRetryCount);
+        } else {
+          startHttpPolling();
+        }
+      }
+    };
+  } catch(e) {
+    startHttpPolling();
+  }
+}
+
+function startHttpPolling() {
+  if (tailTimer) clearInterval(tailTimer);
+  tailTimer = setInterval(fetchTail, POLL_MS);
+  fetchTail();
+  $status.textContent = `${allDocs.length} lines (HTTP polling)`;
 }
 
 async function fetchTail() {
   if (!currentFile || !lastTs) return;
-  const r = await fetch(`/api/tail?file=${encodeURIComponent(currentFile)}&after=${encodeURIComponent(lastTs)}`);
-  if (!r.ok) return;
-  const d = await r.json();
-  if (!d.lines.length) return;
-  const newDocs = d.lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-  allLines.push(...newDocs);
-  lastTs = allLines[allLines.length - 1].ts;
-  $status.textContent = `${allLines.length} lines (live)`;
-  render();
-  $area.scrollTop = $area.scrollHeight;
+  try {
+    let files = [currentFile];
+    if (currentFile === "__all__") {
+      const fr = await fetch("/api/files");
+      const fd = await fr.json();
+      files = fd.files.map(f => f.name);
+    }
+    let newRawLines = [];
+    let newDocs = [];
+    for (const f of files) {
+      const r = await fetch(`/api/tail?file=${encodeURIComponent(f)}&after=${encodeURIComponent(lastTs)}`);
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (!d.lines || !d.lines.length) continue;
+      for (const l of d.lines) {
+        try {
+          const doc = JSON.parse(l);
+          if (currentFile === "__all__") doc._file = f;
+          newDocs.push(doc);
+          newRawLines.push(currentFile === "__all__" ? JSON.stringify(doc) : l);
+        } catch {
+          newDocs.push(null);
+          newRawLines.push(l);
+        }
+      }
+    }
+    if (!newDocs.length) return;
+    if (currentFile === "__all__") {
+      // Sort new entries by timestamp
+      const paired = newDocs.map((doc, i) => ({ doc, raw: newRawLines[i] }));
+      paired.sort((a, b) => ((a.doc && a.doc.ts) || "").localeCompare((b.doc && b.doc.ts) || ""));
+      newDocs = paired.map(p => p.doc);
+      newRawLines = paired.map(p => p.raw);
+    }
+    allDocs.push(...newDocs);
+    worker.postMessage({ type: "load", lines: newRawLines, chunk: -1 });
+    lastTs = allDocs[allDocs.length - 1] && allDocs[allDocs.length - 1].ts || lastTs;
+    if (filteredIndices === null) {
+      renderVirtual();
+    } else {
+      applyFilters();
+    }
+    if (tailing) $area.scrollTop = $area.scrollHeight;
+    $status.textContent = `${allDocs.length} lines (live)`;
+  } catch(e) {}
 }
 
-// ─── Rendering ───
-function render() {
-  const levelMin = LEVEL_ORDER[$level.value] ?? -1;
-  let regex = null;
-  if ($search.value) {
-    try { regex = new RegExp($search.value, "i"); } catch { regex = null; }
-  }
-
-  const frag = document.createDocumentFragment();
-
-  for (const doc of allLines) {
-    if ((LEVEL_ORDER[doc.level] ?? 0) < levelMin) continue;
-    if (regex && !regex.test(doc.src || "") && !regex.test(doc.msg || "")) continue;
-
-    const row = document.createElement("div");
-    row.className = `log-line level-${doc.level}`;
-
-    // Timestamp
-    const tsEl = document.createElement("span");
-    tsEl.className = "ts";
-    tsEl.textContent = doc.ts ? doc.ts.slice(11, 23) : "";
-    row.appendChild(tsEl);
-
-    // Level
-    const lvl = document.createElement("span");
-    lvl.className = "level";
-    lvl.textContent = doc.level;
-    row.appendChild(lvl);
-
-    // Source
-    const src = document.createElement("span");
-    src.className = "src";
-    src.textContent = doc.src || "";
-    row.appendChild(src);
-
-    // Message
-    const msg = document.createElement("span");
-    msg.className = "msg";
-    msg.textContent = doc.msg || "";
-
-    // fn/ln info
-    if (doc.fn) {
-      const fnSpan = document.createElement("span");
-      fnSpan.className = "fn-info";
-      fnSpan.textContent = ` (${doc.fn}:${doc.ln})`;
-      msg.appendChild(fnSpan);
-    }
-
-    // Context pills
-    for (const [k, v] of Object.entries(doc)) {
-      if (CONTEXT_KEYS.has(k)) continue;
-      const pill = document.createElement("span");
-      pill.className = "pill";
-      pill.textContent = `${k}=${v}`;
-      pill.onclick = () => { $search.value = String(v); saveHash(); render(); };
-      msg.appendChild(pill);
-    }
-
-    row.appendChild(msg);
-
-    // Exception (collapsible)
-    if (doc.exc) {
-      const exc = document.createElement("details");
-      exc.style.cssText = "color:var(--error);font-size:11px;margin-top:2px;width:100%";
-      exc.innerHTML = `<summary>Exception</summary><pre style="white-space:pre-wrap;margin:4px 0">${doc.exc.replace(/</g,"&lt;")}</pre>`;
-      row.appendChild(exc);
-    }
-
-    frag.appendChild(row);
-  }
-
-  $area.innerHTML = "";
-  $area.appendChild(frag);
+function stopTail() {
+  tailing = false;
+  $tailBtn.textContent = "Live Tail";
+  $tailBtn.classList.remove("active");
+  if (ws) { try { ws.close(); } catch(e) {} ws = null; }
+  if (tailTimer) { clearInterval(tailTimer); tailTimer = null; }
 }
 
-// ─── Event handlers ───
-$file.onchange = () => {
+$tailBtn.addEventListener("click", () => {
+  if (tailing) stopTail();
+  else startTail();
+});
+
+// ─── Sparkline ───
+
+function requestSparkline() {
+  worker.postMessage({ type: "aggregate", field: "level", bucket: "minute" });
+}
+
+function renderSparklineFromBuckets(buckets) {
+  const canvas = $sparkline;
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = canvas.clientWidth * dpr;
+  canvas.height = 32 * dpr;
+  ctx.scale(dpr, dpr);
+  const w = canvas.clientWidth;
+  const h = 32;
+  ctx.clearRect(0, 0, w, h);
+
+  if (!buckets.length) return;
+
+  const maxCount = Math.max(...buckets.map(b => b.count), 1);
+  const barWidth = Math.max(1, w / buckets.length);
+
+  for (let i = 0; i < buckets.length; i++) {
+    const b = buckets[i];
+    const x = (i / buckets.length) * w;
+    const barH = (b.count / maxCount) * (h - 4);
+
+    // Color by dominant level
+    const errCount = (b.levels.ERROR || 0) + (b.levels.CRITICAL || 0);
+    const warnCount = b.levels.WARNING || 0;
+    if (errCount > 0) ctx.fillStyle = "rgba(239,83,80,0.7)";
+    else if (warnCount > 0) ctx.fillStyle = "rgba(255,167,38,0.5)";
+    else ctx.fillStyle = "rgba(79,195,247,0.4)";
+
+    ctx.fillRect(x, h - barH - 2, Math.max(barWidth - 0.5, 1), barH);
+  }
+}
+
+function renderSparkline(stats) {
+  // Simple level distribution display when no buckets
+  const canvas = $sparkline;
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = canvas.clientWidth * dpr;
+  canvas.height = 32 * dpr;
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, canvas.clientWidth, 32);
+}
+
+// ─── Minimap ───
+
+function updateMinimap() {
+  const canvas = $minimap;
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  canvas.height = canvas.clientHeight * dpr;
+  canvas.width = 12 * dpr;
+  ctx.scale(dpr, dpr);
+  const h = canvas.clientHeight;
+  ctx.clearRect(0, 0, 12, h);
+
+  const total = getVisibleCount();
+  if (!total) return;
+
+  const colors = {
+    ERROR: "#ef5350",
+    CRITICAL: "#ef5350",
+    WARNING: "#ffa726",
+    INFO: "rgba(79,195,247,0.3)",
+    DEBUG: "rgba(136,136,136,0.2)",
+  };
+
+  for (let i = 0; i < total; i++) {
+    const docIdx = filteredIndices ? filteredIndices[i] : i;
+    const doc = allDocs[docIdx];
+    if (!doc) continue;
+    const y = (i / total) * h;
+    const color = colors[doc.level] || colors.DEBUG;
+    ctx.fillStyle = color;
+    ctx.fillRect(0, y, 12, Math.max(1, h / total));
+  }
+}
+
+$minimap.addEventListener("click", (e) => {
+  const total = getVisibleCount();
+  if (!total) return;
+  const rect = $minimap.getBoundingClientRect();
+  const ratio = (e.clientY - rect.top) / rect.height;
+  const targetRow = Math.floor(ratio * total);
+  $area.scrollTop = targetRow * ROW_HEIGHT;
+});
+
+// ─── Theme ───
+
+const THEMES = {
+  dark: {
+    "--bg": "#1a1a2e", "--surface": "#16213e", "--text": "#e0e0e0",
+    "--text-dim": "#888", "--border": "#2a2a4a", "--accent": "#4fc3f7",
+  },
+  light: {
+    "--bg": "#f5f5f5", "--surface": "#ffffff", "--text": "#333",
+    "--text-dim": "#999", "--border": "#ddd", "--accent": "#0288d1",
+  },
+  midnight: {
+    "--bg": "#0d1117", "--surface": "#161b22", "--text": "#c9d1d9",
+    "--text-dim": "#6e7681", "--border": "#30363d", "--accent": "#58a6ff",
+  },
+};
+
+function applyTheme(name) {
+  const vars = THEMES[name];
+  if (!vars) return;
+  const root = document.documentElement;
+  for (const [k, v] of Object.entries(vars)) {
+    root.style.setProperty(k, v);
+  }
+}
+
+$themeSelect.addEventListener("change", () => {
+  applyTheme($themeSelect.value);
+  saveHash();
+});
+
+// ─── Export ───
+
+$exportBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  $exportMenu.classList.toggle("open");
+});
+
+document.addEventListener("click", () => {
+  $exportMenu.classList.remove("open");
+});
+
+$exportMenu.addEventListener("click", (e) => {
+  const fmt = e.target.dataset.fmt;
+  if (!fmt) return;
+  $exportMenu.classList.remove("open");
+  exportLogs(fmt);
+});
+
+function exportLogs(fmt) {
+  const indices = filteredIndices || allDocs.map((_, i) => i);
+  const docs = indices.map(i => allDocs[i]).filter(Boolean);
+  let content, mime, ext;
+
+  if (fmt === "json") {
+    content = JSON.stringify(docs, null, 2);
+    mime = "application/json";
+    ext = "json";
+  } else if (fmt === "csv") {
+    const keys = new Set();
+    docs.forEach(d => Object.keys(d).forEach(k => keys.add(k)));
+    const cols = [...keys];
+    const lines = [cols.join(",")];
+    for (const d of docs) {
+      lines.push(cols.map(c => {
+        const v = d[c] == null ? "" : String(d[c]).replace(/"/g, '""');
+        return `"${v}"`;
+      }).join(","));
+    }
+    content = lines.join("\n");
+    mime = "text/csv";
+    ext = "csv";
+  } else {
+    content = docs.map(d =>
+      `[${d.ts || ""}] ${d.level || ""} ${d.src || ""}: ${d.msg || ""}`
+    ).join("\n");
+    mime = "text/plain";
+    ext = "txt";
+  }
+
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `yazbunu-export.${ext}`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ─── File selector ───
+
+$file.addEventListener("change", () => {
   currentFile = $file.value;
   saveHash();
-  fetchLogs(currentFile);
-};
+  loadLogs(currentFile);
+});
 
-$level.onchange = () => { saveHash(); render(); };
-$search.oninput = () => { saveHash(); render(); };
+// ─── Keyboard shortcuts ───
 
-$tailBtn.onclick = () => {
-  tailing = !tailing;
-  $tailBtn.textContent = tailing ? "Pause" : "Live Tail";
-  $tailBtn.classList.toggle("active", tailing);
-  if (tailing) {
-    tailTimer = setInterval(fetchTail, POLL_MS);
-    fetchTail();
-  } else {
-    clearInterval(tailTimer);
+document.addEventListener("keydown", (e) => {
+  // Escape closes detail panel
+  if (e.key === "Escape") {
+    if ($detail.style.display !== "none") {
+      hideDetail();
+      e.preventDefault();
+    }
   }
-};
+  // Arrow keys for row navigation (only when not in input)
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  const total = getVisibleCount();
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    const next = Math.min((selectedRow < 0 ? -1 : selectedRow) + 1, total - 1);
+    const docIdx = filteredIndices ? filteredIndices[next] : next;
+    selectRow(docIdx, next);
+    ensureVisible(next);
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    const prev = Math.max((selectedRow < 0 ? 1 : selectedRow) - 1, 0);
+    const docIdx = filteredIndices ? filteredIndices[prev] : prev;
+    selectRow(docIdx, prev);
+    ensureVisible(prev);
+  } else if (e.key === "/" && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault();
+    $search.focus();
+  }
+});
+
+function ensureVisible(visibleIdx) {
+  const top = visibleIdx * ROW_HEIGHT;
+  const bottom = top + ROW_HEIGHT;
+  if (top < $area.scrollTop) $area.scrollTop = top;
+  else if (bottom > $area.scrollTop + $area.clientHeight) $area.scrollTop = bottom - $area.clientHeight;
+}
+
+// ─── Resize ───
+
+window.addEventListener("resize", () => {
+  renderVirtual();
+  updateMinimap();
+});
 
 // ─── Init ───
+
 loadHash();
+applyTheme($themeSelect.value);
 fetchFiles().then(() => {
-  if ($file.value) fetchLogs($file.value);
+  if ($file.value) loadLogs($file.value);
 });
+
+// Service worker registration
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/static/sw.js").catch(() => {});
+}
 </script>
 </body>
 </html>

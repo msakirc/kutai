@@ -280,6 +280,7 @@ class KutAIWrapper:
         self._wrapper_start_time = time.time()
         self._signal_watcher: asyncio.Task | None = None
         self._claude_process: asyncio.subprocess.Process | None = None
+        self._yazbunu_process: asyncio.subprocess.Process | None = None
 
     # ── Subprocess Management ─────────────────────────────────────────────
 
@@ -806,15 +807,72 @@ class KutAIWrapper:
             _wlog(f"Failed to start Claude remote-control: {e!r}")
             await self._send_telegram(f"❌ Claude Code başlatılamadı: `{e!r}`")
 
+    # ── Yazbunu Log Viewer ─────────────────────────────────────────────────
+
+    async def _start_yazbunu(self):
+        """Spawn the yazbunu log viewer server as a background subprocess."""
+        if self._yazbunu_process and self._yazbunu_process.returncode is None:
+            return  # already running
+        venv_python = self._find_python()
+        log_file = LOG_DIR / "yazbunu.log"
+        _wlog("Starting yazbunu log viewer (port 9880)")
+        try:
+            import subprocess as _sp
+            _kwargs = {}
+            if sys.platform == "win32":
+                _kwargs["creationflags"] = _sp.CREATE_NEW_PROCESS_GROUP
+            out_fh = open(log_file, "a", encoding="utf-8")
+            self._yazbunu_process = await asyncio.create_subprocess_exec(
+                venv_python, "-m", "yazbunu.server",
+                "--log-dir", "./logs",
+                "--port", "9880",
+                "--host", "0.0.0.0",
+                stdout=out_fh,
+                stderr=out_fh,
+                cwd=str(Path(__file__).parent),
+                **_kwargs,
+            )
+            _wlog(f"yazbunu started (PID {self._yazbunu_process.pid})")
+        except Exception as e:
+            _wlog(f"Failed to start yazbunu: {e!r}")
+            self._yazbunu_process = None
+
+    async def _stop_yazbunu(self):
+        """Stop the yazbunu log viewer process."""
+        if not self._yazbunu_process or self._yazbunu_process.returncode is not None:
+            self._yazbunu_process = None
+            return
+        _wlog("Stopping yazbunu log viewer")
+        try:
+            self._yazbunu_process.kill()
+            await self._yazbunu_process.wait()
+        except Exception as e:
+            _wlog(f"yazbunu stop error: {e!r}")
+        self._yazbunu_process = None
+
+    async def _ensure_yazbunu(self):
+        """Check if yazbunu is alive, restart if dead."""
+        if self._yazbunu_process and self._yazbunu_process.returncode is None:
+            return  # healthy
+        if self._yazbunu_process:
+            _wlog(f"yazbunu exited (code {self._yazbunu_process.returncode}), restarting")
+            self._yazbunu_process = None
+        await self._start_yazbunu()
+
+    # ── Status & Logs ────────────────────────────────────────────────────────
+
     async def _send_status(self):
         uptime_w = int(time.time() - self._wrapper_start_time)
         uptime_k = int(time.time() - self.start_time) if self.start_time and self.running else 0
         state = "🟢 Running" if self.running else "🔴 Stopped"
+        yz_alive = self._yazbunu_process and self._yazbunu_process.returncode is None
+        yz_state = "🟢 Running" if yz_alive else "🔴 Stopped"
         msg = (
             f"*Yaşar Usta - Durum*\n"
             f"Durum: {state}\n"
             f"Yaşar Usta çalışma: {uptime_w // 3600}s {(uptime_w % 3600) // 60}dk\n"
             f"Kutay çalışma: {uptime_k // 3600}s {(uptime_k % 3600) // 60}dk\n"
+            f"Yazbunu: {yz_state}\n"
             f"Toplam çökme: {self.total_crashes}\n"
             f"Son çıkış kodu: `{self.last_exit_code}`"
         )
@@ -863,6 +921,13 @@ class KutAIWrapper:
                         lines.append(f"🟡 llama-server PID {parts[1]}")
         except Exception:
             pass
+
+        # yazbunu log viewer
+        yz_alive = self._yazbunu_process and self._yazbunu_process.returncode is None
+        if yz_alive:
+            lines.append(f"📊 yazbunu PID {self._yazbunu_process.pid}")
+        else:
+            lines.append("⚫ yazbunu: çalışmıyor")
 
         if not lines:
             lines.append("Çalışan süreç bulunamadı.")
@@ -965,6 +1030,9 @@ class KutAIWrapper:
                 msg = msg[-4000:]
                 msg = "...(truncated)\n" + msg[msg.index("\n") + 1:]
 
+            yz_alive = self._yazbunu_process and self._yazbunu_process.returncode is None
+            if yz_alive:
+                msg += "\n\n📊 Full viewer: http://localhost:9880"
             await self._send_telegram(msg)
         except Exception as e:
             await self._send_telegram(f"❌ Error reading logs: {e}")
@@ -1041,6 +1109,9 @@ class KutAIWrapper:
         if CLAUDE_REMOTE_SIGNAL.exists():
             CLAUDE_REMOTE_SIGNAL.unlink()
 
+        # Start yazbunu log viewer (runs independently of orchestrator)
+        await self._start_yazbunu()
+
         # Announce ourselves
         await self._send_telegram(
             "🔧 *Bennn... Yaşar Usta!*\n\n"
@@ -1060,6 +1131,7 @@ class KutAIWrapper:
         while not self._shutdown:
             try:
                 exit_code = await self.wait_for_exit()
+                await self._ensure_yazbunu()
                 await self._stop_signal_watcher()
                 self._kill_orphan_processes()
                 self._maybe_reset_backoff()
@@ -1171,6 +1243,7 @@ class KutAIWrapper:
         # Shutdown
         if self.running:
             await self.stop_kutai()
+        await self._stop_yazbunu()
         await self._stop_signal_watcher()
         await self._stop_telegram_poller()
         _wlog("Wrapper exiting.")

@@ -637,22 +637,18 @@ class LLMDispatcher:
             return None
 
     async def _has_pending_overhead_needs(self) -> bool:
-        """Check if there's pending work that needs a model loaded."""
+        """Check if there's pending overhead work that needs a model loaded.
+
+        Only ungraded tasks qualify — they need a grader model.
+        Todos are handled by the reminder scheduler, not proactive loading.
+        """
         try:
             from src.infra.db import get_db
             db = await get_db()
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM tasks WHERE status = 'ungraded'"
             )
-            if (await cursor.fetchone())[0] > 0:
-                return True
-        except Exception:
-            pass
-
-        try:
-            from src.infra.db import get_todos
-            todos = await get_todos(status="pending")
-            return len(todos) > 0
+            return (await cursor.fetchone())[0] > 0
         except Exception:
             return False
 

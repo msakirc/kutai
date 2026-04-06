@@ -732,3 +732,14 @@ class TestNormalization:
     def test_fuzzy_match_no_match(self):
         candidates = ["Qwen3-32B"]
         assert _fuzzy_match_model("completely-different-model", candidates) is None
+
+
+class TestFuzzyMatching:
+    def test_alias_matches_cloud_model(self):
+        candidates = ["GPT-4o", "Claude-Sonnet-4", "gpt-4o-mini"]
+        assert _fuzzy_match_model("gpt-4o", candidates) == "GPT-4o"
+
+    def test_alias_matches_local_model(self):
+        candidates = ["Qwen/Qwen3.5-35B-A3B", "google/gemma-4-26b-it"]
+        result = _fuzzy_match_model("qwen3.5-35b", candidates)
+        assert result is not None

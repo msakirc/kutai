@@ -147,22 +147,25 @@ def _normalize_elo(elo: float) -> float:
 
 # Maps our local model family names to patterns found in leaderboard data
 _MODEL_ALIASES: dict[str, list[str]] = {
-    "qwen3-32b":       ["Qwen3-32B", "qwen3-32b", "Qwen/Qwen3-32B"],
-    "qwen3-8b":        ["Qwen3-8B", "qwen3-8b", "Qwen/Qwen3-8B"],
-    "qwen3-30b-a3b":   ["Qwen3-30B-A3B", "Qwen/Qwen3-30B-A3B"],
-    "qwen2.5-coder-32b": ["Qwen2.5-Coder-32B", "Qwen/Qwen2.5-Coder-32B-Instruct"],
-    "qwen2.5-coder-7b":  ["Qwen2.5-Coder-7B", "Qwen/Qwen2.5-Coder-7B-Instruct"],
-    "llama-3.3-70b":   ["Llama-3.3-70B", "meta-llama/Llama-3.3-70B-Instruct"],
-    "llama-3.1-8b":    ["Llama-3.1-8B", "meta-llama/Llama-3.1-8B-Instruct"],
-    "phi-4-14b":       ["Phi-4", "microsoft/phi-4"],
-    "gemma-3-27b":     ["Gemma-3-27B", "google/gemma-3-27b-it"],
-    "deepseek-r1":     ["DeepSeek-R1", "deepseek-ai/DeepSeek-R1"],
-    "mistral-24b":     ["Mistral-Small-24B", "mistralai/Mistral-Small-24B-Instruct"],
-    "qwq-32b":         ["QwQ-32B", "Qwen/QwQ-32B"],
-    "qwen3.5-32b":     ["Qwen3.5-32B", "Qwen/Qwen3.5-32B"],
-    "qwen3-coder-32b": ["Qwen3-Coder-32B", "Qwen/Qwen3-Coder-32B-Instruct"],
-    "gemma3-27b":      ["Gemma-3-27B", "google/gemma-3-27b-it"],
-    "phi4-14b":        ["Phi-4-14B", "microsoft/Phi-4"],
+    # ── Local models on disk ──
+    "qwen3.5-35b":     ["Qwen3.5-35B", "qwen3-5-35b", "Qwen/Qwen3.5-35B-A3B", "qwen-3.5-35b"],
+    "qwen3.5-27b":     ["Qwen3.5-27B", "qwen3-5-27b", "Qwen/Qwen3.5-27B"],
+    "qwen3.5-9b":      ["Qwen3.5-9B", "qwen3-5-9b", "Qwen/Qwen3.5-9B"],
+    "qwen3-coder-30b": ["Qwen3-Coder-30B", "Qwen/Qwen3-Coder-30B-A3B-Instruct"],
+    "glm-4.7-flash":   ["GLM-4.7-Flash", "glm4-flash", "THUDM/GLM-4.7-Flash"],
+    "gemma-4-26b":     ["Gemma-4-26B", "gemma-4-26b-it", "google/gemma-4-26b-it", "gemma4"],
+    "gpt-oss-20b":     ["gpt-oss-20b", "GPT-OSS-20B", "openai/gpt-oss-20b"],
+    "apriel-15b":      ["Apriel-15B-Thinker", "ServiceNow/Apriel-15B-Thinker", "apriel-thinker"],
+    "gigachat-lightning": ["GigaChat3.1-Lightning", "gigachat", "Sber/GigaChat3.1-Lightning"],
+    "nerdsking-7b":    ["nerdsking-python-coder-7B", "nerdsking-python-7B"],
+    # ── Cloud models ──
+    "gpt-4o":          ["GPT-4o", "gpt-4o-2024-11-20", "chatgpt-4o-latest"],
+    "gpt-4o-mini":     ["GPT-4o-mini", "gpt-4o-mini-2024-07-18"],
+    "claude-sonnet":   ["Claude-Sonnet-4", "claude-sonnet-4-20250514", "anthropic/claude-sonnet-4"],
+    "gemini-flash":    ["Gemini-2.0-Flash", "gemini-2.0-flash", "google/gemini-2.0-flash"],
+    "gemini-flash-thinking": ["Gemini-2.5-Flash", "gemini-2.5-flash-preview", "gemini-2.5-flash"],
+    "groq-llama-70b":  ["Llama-3.3-70B", "meta-llama/Llama-3.3-70B-Instruct"],
+    "o4-mini":         ["o4-mini", "o4-mini-2025-04-16"],
 }
 
 

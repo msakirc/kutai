@@ -54,17 +54,32 @@ def cmd_benchmarks():
         print(f"   {f.source_name:25s}: {count:>4} models")
 
 
-def cmd_enrich():
+def cmd_enrich(force_refresh: bool = False):
     """Enrich registry with benchmark data."""
+    if force_refresh:
+        print("🔄 Force-refreshing benchmark cache...")
+        fetcher = BenchmarkFetcher()
+        fetcher.refresh_cache()
 
     registry = get_registry()
     enriched = enrich_registry_with_benchmarks(registry)
 
     print(f"\n✅ Enriched {len(enriched)} models with benchmark data")
     for name, caps in enriched.items():
+        model = registry.get(name)
+        variant_tag = ""
+        if model and getattr(model, 'is_variant', False):
+            variant_tag = f" [{','.join(sorted(model.variant_flags))}]"
         top = sorted(caps.items(), key=lambda x: x[1], reverse=True)[:3]
         top_str = ", ".join(f"{k}={v:.1f}" for k, v in top)
-        print(f"   {name:40s}: {top_str}")
+        print(f"   {name:45s}{variant_tag:20s}: {top_str}")
+
+    fallback = [n for n in registry.models if n not in enriched]
+    if fallback:
+        print(f"\n⚠️  {len(fallback)} models fell back to family profiles:")
+        for name in sorted(fallback):
+            model = registry.get(name)
+            print(f"   {name:45s} (family={model.family if model else '?'})")
 
 
 def cmd_show():
@@ -279,6 +294,30 @@ def cmd_compare(name1: str, name2: str):
         print(f"  {task_name:28s} {s1:>{col_w-1}.1f}  {s2:>{col_w-1}.1f} {indicator}{winner}")
 
 
+def cmd_variants():
+    """Show all model variants and their mode flags."""
+    registry = get_registry()
+
+    print(f"\n🔀 Model Variants ({len(registry.models)} total entries)")
+    print(f"{'═' * 70}")
+
+    bases = {}
+    for name, model in registry.models.items():
+        base = getattr(model, 'base_model_name', '') or name
+        if base not in bases:
+            bases[base] = []
+        bases[base].append(model)
+
+    for base_name, variants in sorted(bases.items()):
+        for v in sorted(variants, key=lambda m: m.name):
+            flags = getattr(v, 'variant_flags', set())
+            mode = "base" if not getattr(v, 'is_variant', False) else ",".join(sorted(flags))
+            thinking = "🧠" if v.thinking_model else "  "
+            vision = "👁️" if v.has_vision else "  "
+            print(f"  {thinking} {vision} {v.name:45s} [{mode:20s}] best={v.best_score():.1f}")
+        print()
+
+
 def cmd_tasks():
     """List all available tasks and their key capabilities."""
 
@@ -341,7 +380,8 @@ def main():
     elif cmd == "benchmarks":
         cmd_benchmarks()
     elif cmd == "enrich":
-        cmd_enrich()
+        force = "--force-refresh" in sys.argv or "-f" in sys.argv
+        cmd_enrich(force_refresh=force)
     elif cmd == "show":
         cmd_show()
     elif cmd == "score":
@@ -360,6 +400,8 @@ def main():
             print("Usage: benchmark_cli.py compare <model1> <model2>")
             return
         cmd_compare(sys.argv[2], sys.argv[3])
+    elif cmd == "variants":
+        cmd_variants()
     elif cmd == "tasks":
         cmd_tasks()
     elif cmd == "export":

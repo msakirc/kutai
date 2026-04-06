@@ -110,6 +110,11 @@ class ModelInfo:
     demoted: bool = False
     api_base: Optional[str] = None
 
+    # Variant fields
+    is_variant: bool = False
+    base_model_name: str = ""
+    variant_flags: set[str] = field(default_factory=set)
+
     def score_for(self, cap: str) -> float:
         """Get score for a single capability."""
         return self.capabilities.get(cap, 0.0)
@@ -888,6 +893,102 @@ def _resolve_provider(litellm_name: str) -> str | None:
     return None
 
 
+# ─── Model Variant Registration ─────────────────────────────────────────────
+
+def _apply_thinking_deltas(capabilities: dict[str, float]) -> dict[str, float]:
+    """Adjust capability scores for thinking mode variant."""
+    caps = dict(capabilities)
+    deltas = {
+        "reasoning": 1.0,
+        "planning": 1.0,
+        "analysis": 1.0,
+        "code_reasoning": 1.0,
+        "code_generation": 0.3,
+        "instruction_adherence": -0.7,
+        "structured_output": -0.7,
+        "conversation": -0.5,
+    }
+    for key, delta in deltas.items():
+        if key in caps:
+            caps[key] = max(0.0, min(10.0, caps[key] + delta))
+    return caps
+
+
+def _create_model_variants(
+    base: ModelInfo,
+    family_profile: "FamilyProfile | None",
+) -> list[ModelInfo]:
+    """
+    Create 1-4 ModelInfo entries from a base model + family capabilities.
+
+    Returns:
+      - Base entry (thinking_model=False, has_vision=False)
+      - Thinking variant if family is thinking_capable
+      - Vision variant if family has_vision and mmproj_path exists
+      - Thinking+Vision variant if both apply
+    """
+    from dataclasses import replace as dc_replace
+
+    thinking_capable = family_profile.thinking_capable if family_profile else False
+    vision_capable = (
+        family_profile.has_vision if family_profile else False
+    ) and base.mmproj_path
+
+    # Base entry: always strip thinking/vision flags
+    base_entry = dc_replace(
+        base,
+        thinking_model=False,
+        has_vision=False,
+        is_variant=False,
+        base_model_name="",
+        variant_flags=set(),
+    )
+    variants = [base_entry]
+
+    if thinking_capable:
+        thinking_entry = dc_replace(
+            base,
+            name=f"{base.name}-thinking",
+            thinking_model=True,
+            has_vision=False,
+            is_variant=True,
+            base_model_name=base.name,
+            variant_flags={"thinking"},
+            capabilities=_apply_thinking_deltas(base.capabilities),
+            litellm_name=f"openai/{base.name}-thinking",
+        )
+        variants.append(thinking_entry)
+
+    if vision_capable:
+        vision_entry = dc_replace(
+            base,
+            name=f"{base.name}-vision",
+            thinking_model=False,
+            has_vision=True,
+            is_variant=True,
+            base_model_name=base.name,
+            variant_flags={"vision"},
+            litellm_name=f"openai/{base.name}-vision",
+        )
+        variants.append(vision_entry)
+
+    if thinking_capable and vision_capable:
+        tv_entry = dc_replace(
+            base,
+            name=f"{base.name}-thinking-vision",
+            thinking_model=True,
+            has_vision=True,
+            is_variant=True,
+            base_model_name=base.name,
+            variant_flags={"thinking", "vision"},
+            capabilities=_apply_thinking_deltas(base.capabilities),
+            litellm_name=f"openai/{base.name}-thinking-vision",
+        )
+        variants.append(tv_entry)
+
+    return variants
+
+
 class ModelRegistry:
     """
     Central model registry. Thread-safe for hot reload.
@@ -1176,9 +1277,14 @@ class ModelRegistry:
                 family=raw["family_key"] or "unknown",
                 extra_server_flags=extra_server_flags,
             )
-            result[name] = model
+            # Create variants (base, thinking, vision, thinking+vision)
+            family_profile = FAMILY_PROFILES.get(raw["family_key"] or "")
+            variants = _create_model_variants(model, family_profile)
+            for variant in variants:
+                result[variant.name] = variant
 
             moe_info = f"(MoE {raw['active_params_b']:.1f}B active)" if raw['is_moe'] else ""
+            variant_names = [v.name for v in variants if v.is_variant]
 
             logger.info(
                 f"  Local: {name} "
@@ -1191,6 +1297,7 @@ class ModelRegistry:
                 f"| best={model.best_score():.1f}"
                 f"{'| 👁️ vision' if raw['has_vision'] else ''}"
                 f"{'| 🧠 thinking' if raw['thinking'] else ''}"
+                f"{' | variants: ' + ', '.join(variant_names) if variant_names else ''}"
             )
 
         return result

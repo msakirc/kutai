@@ -953,7 +953,7 @@ def _create_model_variants(
             is_variant=True,
             base_model_name=base.name,
             variant_flags={"thinking"},
-            capabilities=_apply_thinking_deltas(base.capabilities),
+            capabilities=dict(base.capabilities),
             litellm_name=f"openai/{base.name}-thinking",
         )
         variants.append(thinking_entry)
@@ -980,7 +980,7 @@ def _create_model_variants(
             is_variant=True,
             base_model_name=base.name,
             variant_flags={"thinking", "vision"},
-            capabilities=_apply_thinking_deltas(base.capabilities),
+            capabilities=dict(base.capabilities),
             litellm_name=f"openai/{base.name}-thinking-vision",
         )
         variants.append(tv_entry)

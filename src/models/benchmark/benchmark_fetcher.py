@@ -311,6 +311,41 @@ class ArtificialAnalysisFetcher(_BaseFetcher):
                 if mapped:
                     result[slug] = mapped
 
+            # Post-process: detect thinking/non-thinking pairs
+            # AA uses several patterns:
+            # 1. "model-name" (default=thinking) + "model-name-non-reasoning"
+            # 2. "model-name-instruct" (default=non-thinking) + "model-name-instruct-reasoning"
+            # 3. "model-name-thinking" (thinking variant, no explicit non-thinking)
+            #
+            # We normalize to: "clean-name" (non-thinking) and "clean-name::thinking"
+            processed = {}
+
+            for slug, caps in result.items():
+                if slug.endswith("-non-reasoning"):
+                    # This is explicitly non-thinking
+                    clean = slug.replace("-non-reasoning", "")
+                    processed[clean] = caps
+                elif slug.endswith("-reasoning") and not slug.endswith("-non-reasoning"):
+                    # This is explicitly thinking
+                    clean = slug.replace("-reasoning", "")
+                    processed[f"{clean}::thinking"] = caps
+                elif slug.endswith("-thinking"):
+                    # Cloud model thinking variant
+                    clean = slug.replace("-thinking", "")
+                    processed[f"{clean}::thinking"] = caps
+                else:
+                    # Check if there's a corresponding -non-reasoning entry
+                    # If so, this slug IS the thinking version
+                    non_reasoning_slug = f"{slug}-non-reasoning"
+                    if non_reasoning_slug in result:
+                        # This is the thinking version
+                        processed[f"{slug}::thinking"] = caps
+                    else:
+                        # Regular model, no thinking pair detected
+                        processed[slug] = caps
+
+            result = processed
+
             cache.put_all_models(self.source_name, {"models": result})
             logger.info(f"Artificial Analysis: fetched {len(result)} models")
             return result

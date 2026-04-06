@@ -202,7 +202,11 @@ class TestCreateModelVariants:
         assert base_entry.thinking_model is False
         assert base_entry.has_vision is False
 
-    def test_thinking_variant_has_adjusted_capabilities(self):
+    def test_thinking_variant_has_same_base_capabilities(self):
+        """Thinking variant starts with same capabilities as base.
+
+        Real benchmark data is applied later by enrichment, not hardcoded deltas.
+        """
         base = _make_base_model()
         profile = FamilyProfile(
             base_capabilities={},
@@ -212,10 +216,9 @@ class TestCreateModelVariants:
         variants = _create_model_variants(base, profile)
         thinking = [v for v in variants if v.name == "test-model-thinking"][0]
 
-        # Reasoning boosted
-        assert thinking.capabilities["reasoning"] == 6.0
-        # Instruction adherence penalized
-        assert thinking.capabilities["instruction_adherence"] == pytest.approx(4.3)
+        # Thinking variant has same scores as base (no hardcoded deltas)
+        assert thinking.capabilities["reasoning"] == 5.0
+        assert thinking.capabilities["instruction_adherence"] == 5.0
 
         # Base unchanged
         base_entry = [v for v in variants if v.name == "test-model"][0]

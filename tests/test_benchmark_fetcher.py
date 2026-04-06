@@ -822,3 +822,122 @@ class TestAiderThinkingPairs:
 
         assert "gemini-2.5-flash" in result
         assert "gemini-2.5-flash::thinking" in result
+
+
+# --- ArtificialAnalysis Thinking Pairs --------------------------------------
+
+class TestAAThinkingPairs:
+    """Test that AA fetcher correctly separates thinking/non-thinking entries."""
+
+    def test_non_reasoning_suffix_detection(self, tmp_cache):
+        """AA entries with -non-reasoning suffix are stored as base models."""
+        api_response = {
+            "status": 200,
+            "data": [
+                {
+                    "slug": "qwen3-5-35b-a3b",
+                    "evaluations": {"gpqa": 0.70, "mmlu_pro": 0.80},
+                },
+                {
+                    "slug": "qwen3-5-35b-a3b-non-reasoning",
+                    "evaluations": {"gpqa": 0.50, "mmlu_pro": 0.75},
+                },
+            ],
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = api_response
+
+        fetcher = ArtificialAnalysisFetcher()
+
+        with patch("httpx.get", return_value=mock_resp), \
+             patch("src.app.config.ARTIFICIAL_ANALYSIS_API_KEY", "test-key"):
+            result = fetcher.fetch_bulk(tmp_cache)
+
+        # Base slug becomes thinking (it's the reasoning default)
+        assert "qwen3-5-35b-a3b::thinking" in result
+        # -non-reasoning becomes the base
+        assert "qwen3-5-35b-a3b" in result
+        # Thinking should have higher reasoning score
+        assert result["qwen3-5-35b-a3b::thinking"]["reasoning"] > result["qwen3-5-35b-a3b"]["reasoning"]
+
+    def test_reasoning_suffix_detection(self, tmp_cache):
+        """AA entries with -reasoning suffix (without -non) are stored as thinking."""
+        api_response = {
+            "status": 200,
+            "data": [
+                {
+                    "slug": "qwen3-30b-a3b-instruct",
+                    "evaluations": {"gpqa": 0.40, "mmlu_pro": 0.65},
+                },
+                {
+                    "slug": "qwen3-30b-a3b-instruct-reasoning",
+                    "evaluations": {"gpqa": 0.65, "mmlu_pro": 0.72},
+                },
+            ],
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = api_response
+
+        fetcher = ArtificialAnalysisFetcher()
+
+        with patch("httpx.get", return_value=mock_resp), \
+             patch("src.app.config.ARTIFICIAL_ANALYSIS_API_KEY", "test-key"):
+            result = fetcher.fetch_bulk(tmp_cache)
+
+        # -instruct stays as base (non-thinking)
+        assert "qwen3-30b-a3b-instruct" in result
+        # -instruct-reasoning becomes thinking variant
+        assert "qwen3-30b-a3b-instruct::thinking" in result
+
+    def test_thinking_suffix_for_cloud_models(self, tmp_cache):
+        """AA entries with -thinking suffix (cloud models) are stored as ::thinking."""
+        api_response = {
+            "status": 200,
+            "data": [
+                {
+                    "slug": "claude-4-sonnet-thinking",
+                    "evaluations": {"gpqa": 0.70},
+                },
+            ],
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = api_response
+
+        fetcher = ArtificialAnalysisFetcher()
+
+        with patch("httpx.get", return_value=mock_resp), \
+             patch("src.app.config.ARTIFICIAL_ANALYSIS_API_KEY", "test-key"):
+            result = fetcher.fetch_bulk(tmp_cache)
+
+        assert "claude-4-sonnet::thinking" in result
+
+    def test_model_without_pair_stays_as_is(self, tmp_cache):
+        """Models with no thinking pair are stored without ::thinking suffix."""
+        api_response = {
+            "status": 200,
+            "data": [
+                {
+                    "slug": "llama-3-3-70b",
+                    "evaluations": {"gpqa": 0.45, "mmlu_pro": 0.70},
+                },
+            ],
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = api_response
+
+        fetcher = ArtificialAnalysisFetcher()
+
+        with patch("httpx.get", return_value=mock_resp), \
+             patch("src.app.config.ARTIFICIAL_ANALYSIS_API_KEY", "test-key"):
+            result = fetcher.fetch_bulk(tmp_cache)
+
+        assert "llama-3-3-70b" in result
+        assert "llama-3-3-70b::thinking" not in result

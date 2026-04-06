@@ -144,3 +144,12 @@ def test_init_logging_rotation(tmp_path):
 
     files = list(tmp_path.glob("rottest.jsonl*"))
     assert len(files) >= 2  # at least one backup
+
+
+def test_kutai_shim_reexports():
+    """src.infra.logging_config re-exports yazbunu's public API."""
+    from src.infra.logging_config import get_logger, init_logging
+    # Verify they are the yazbunu versions
+    import yazbunu
+    assert get_logger is yazbunu.get_logger
+    assert init_logging is yazbunu.init_logging

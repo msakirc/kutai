@@ -27,8 +27,17 @@ from src.app.config import DOCKER_CONTAINER_NAME, print_config
 
 # ── Logging must be initialized before any other import that might log ────────
 from src.infra.logging_config import init_logging, get_logger
-init_logging()
+init_logging(log_dir="logs", project="kutai")
 _log = get_logger("app.run")
+
+# Attach Telegram alert handler (ERROR+) to root logger
+import logging as _logging
+try:
+    from src.infra.notifications import TelegramAlertHandler
+    _logging.getLogger().addHandler(TelegramAlertHandler())
+except Exception as e:
+    _log = get_logger("app.run")
+    _log.warning("Could not attach TelegramAlertHandler", error=str(e))
 
 from src.core.orchestrator import Orchestrator
 from src.infra.runtime_state import runtime_state, mark_degraded

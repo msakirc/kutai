@@ -45,21 +45,25 @@ class TestArtificialAnalysisFetcher:
             "data": [
                 {
                     "slug": "qwen3-32b",
-                    "gpqa": 55.0,
-                    "artificial_analysis_math_index": 70.0,
-                    "mmlu_pro": 75.0,
-                    "hle": 30.0,
-                    "livecodebench": 45.0,
-                    "artificial_analysis_coding_index": 60.0,
-                    "scicode": 25.0,
-                    "ifbench": 70.0,
-                    "terminalbench_hard": 35.0,
-                    "artificial_analysis_intelligence_index": 65.0,
+                    "evaluations": {
+                        "gpqa": 0.55,
+                        "artificial_analysis_math_index": 70.0,
+                        "mmlu_pro": 0.75,
+                        "hle": 0.30,
+                        "livecodebench": 0.45,
+                        "artificial_analysis_coding_index": 60.0,
+                        "scicode": 0.25,
+                        "ifbench": 0.70,
+                        "terminalbench_hard": 0.35,
+                        "artificial_analysis_intelligence_index": 65.0,
+                    },
                 },
                 {
                     "slug": "llama-3.3-70b",
-                    "gpqa": 40.0,
-                    "mmlu_pro": 60.0,
+                    "evaluations": {
+                        "gpqa": 0.40,
+                        "mmlu_pro": 0.60,
+                    },
                 },
             ],
         }
@@ -120,8 +124,10 @@ class TestArtificialAnalysisFetcher:
             "data": [
                 {
                     "slug": "test-model",
-                    "gpqa": 50.0,  # reasoning
-                    "artificial_analysis_math_index": 50.0,  # also reasoning
+                    "evaluations": {
+                        "gpqa": 0.50,  # reasoning (fraction)
+                        "artificial_analysis_math_index": 50.0,  # also reasoning (already 0-100)
+                    },
                 },
             ],
         }

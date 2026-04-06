@@ -283,12 +283,21 @@ class ArtificialAnalysisFetcher(_BaseFetcher):
                 if not slug:
                     continue
 
+                # Benchmark scores are nested under "evaluations"
+                evals = entry.get("evaluations", {})
+                if not evals:
+                    continue
+
                 mapped = {}
                 for bench_key, mapping in self.BENCHMARK_MAP.items():
-                    score = entry.get(bench_key)
+                    score = evals.get(bench_key)
                     if score is not None:
                         try:
                             score = float(score)
+                            # Most scores are 0-1 fractions, convert to percentage.
+                            # Composite indices (intelligence/coding/math) are already 0-100.
+                            if score <= 1.0 and "index" not in bench_key:
+                                score *= 100
                             cap = mapping["cap"]
                             norm = _normalize_score(score, mapping["min"], mapping["max"], 2.0, 10.0)
                             # If capability already has a value, average them
@@ -520,7 +529,7 @@ class LiveCodeBenchFetcher(_BaseFetcher):
                 model_scores: dict[str, list[float]] = {}
                 for perf in data["performances"]:
                     model_name = perf.get("model", "")
-                    pass_at_1 = perf.get("pass_at_1")
+                    pass_at_1 = perf.get("pass@1", perf.get("pass_at_1"))
                     if model_name and pass_at_1 is not None:
                         try:
                             score = float(pass_at_1)

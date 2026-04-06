@@ -930,9 +930,8 @@ def _create_model_variants(
     from dataclasses import replace as dc_replace
 
     thinking_capable = family_profile.thinking_capable if family_profile else False
-    vision_capable = (
-        family_profile.has_vision if family_profile else False
-    ) and base.mmproj_path
+    # Vision: if mmproj file exists, model supports vision regardless of family profile
+    vision_capable = bool(base.mmproj_path)
 
     # Base entry: always strip thinking/vision flags
     base_entry = dc_replace(

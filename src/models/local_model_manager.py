@@ -482,9 +482,28 @@ class LocalModelManager:
                     logger.debug(f"Model {model_name} already healthy (resolved under lock)")
                     return True
 
+            # ── Variant swap detection ──
+            from .model_registry import get_registry
+            registry = get_registry()
+            current_info = registry.get(self.current_model) if self.current_model else None
+            target_info = registry.get(model_name)
+            is_variant_swap = False
+            if (current_info and target_info
+                    and current_info.path and target_info.path
+                    and current_info.path == target_info.path):
+                is_variant_swap = True
+                logger.info(
+                    f"⚡ Variant swap (same GGUF): {self.current_model} → {model_name} "
+                    f"(lightweight restart, not counted as swap)"
+                )
+
             self.swap_started_at = time.monotonic()
             try:
-                return await self._do_swap(model_name, reason, enable_thinking, enable_vision)
+                result = await self._do_swap(model_name, reason, enable_thinking, enable_vision)
+                if result and is_variant_swap:
+                    # Don't count variant swaps against the budget
+                    self._total_swaps = max(0, self._total_swaps - 1)
+                return result
             finally:
                 self.swap_started_at = 0.0
 

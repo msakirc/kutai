@@ -242,3 +242,54 @@ class TestCreateModelVariants:
         variants = _create_model_variants(base, profile)
         for v in variants:
             assert v.litellm_name == f"openai/{v.name}"
+
+
+# ─── Variant Swap Detection ──────────────────────────────────────────────
+
+
+class TestVariantSwapDetection:
+    """Test that variant swaps are detected via shared GGUF path."""
+
+    def test_same_path_is_variant_swap(self):
+        """Two ModelInfo entries with same path = variant swap."""
+        base = ModelInfo(
+            name="test", location="local", provider="llama_cpp",
+            litellm_name="openai/test",
+            capabilities={"reasoning": 7.0},
+            context_length=8192, max_tokens=2048,
+            path="/models/test.gguf",
+        )
+        thinking = ModelInfo(
+            name="test-thinking", location="local", provider="llama_cpp",
+            litellm_name="openai/test-thinking",
+            capabilities={"reasoning": 8.0},
+            context_length=8192, max_tokens=2048,
+            path="/models/test.gguf",
+            thinking_model=True,
+            is_variant=True, base_model_name="test",
+            variant_flags={"thinking"},
+        )
+
+        # Same path means variant swap
+        assert base.path == thinking.path
+        assert thinking.is_variant is True
+        assert thinking.base_model_name == "test"
+
+    def test_different_path_is_not_variant_swap(self):
+        """Two ModelInfo entries with different paths = full swap."""
+        model_a = ModelInfo(
+            name="model-a", location="local", provider="llama_cpp",
+            litellm_name="openai/model-a",
+            capabilities={"reasoning": 7.0},
+            context_length=8192, max_tokens=2048,
+            path="/models/a.gguf",
+        )
+        model_b = ModelInfo(
+            name="model-b", location="local", provider="llama_cpp",
+            litellm_name="openai/model-b",
+            capabilities={"reasoning": 8.0},
+            context_length=8192, max_tokens=2048,
+            path="/models/b.gguf",
+        )
+
+        assert model_a.path != model_b.path

@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 from src.models.benchmark.benchmark_fetcher import (
+    AiderLeaderboardFetcher,
     ArtificialAnalysisFetcher,
     ChatbotArenaFetcher,
     HuggingFaceLeaderboardFetcher,
@@ -749,3 +750,75 @@ class TestFuzzyMatching:
         candidates = ["Qwen/Qwen3.5-35B-A3B", "google/gemma-4-26b-it"]
         result = _fuzzy_match_model("qwen3.5-35b", candidates)
         assert result is not None
+
+
+# --- AiderLeaderboardFetcher thinking pairs ----------------------------------
+
+class TestAiderThinkingPairs:
+    """Test that Aider fetcher correctly separates thinking/non-thinking entries."""
+
+    def test_thinking_pair_detection(self, tmp_cache):
+        """Entries with (no thinking) and (thinking) are split correctly."""
+        import yaml
+        yaml_data = [
+            {"model": "claude-sonnet-4 (no thinking)", "pass_rate_2": 56.4, "percent_cases_well_formed": 98.0},
+            {"model": "claude-sonnet-4 (32k thinking)", "pass_rate_2": 61.3, "percent_cases_well_formed": 95.0},
+            {"model": "Qwen3 32B", "pass_rate_2": 40.0, "percent_cases_well_formed": 90.0},
+        ]
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = yaml.dump(yaml_data)
+
+        fetcher = AiderLeaderboardFetcher()
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = fetcher.fetch_bulk(tmp_cache)
+
+        # Should have: claude-sonnet-4 (base), claude-sonnet-4::thinking, Qwen3 32B
+        assert "claude-sonnet-4" in result or any("claude" in k and "::thinking" not in k for k in result)
+        assert any("::thinking" in k for k in result), f"No thinking entries found in {list(result.keys())}"
+        # Non-annotated model stays as-is
+        assert "Qwen3 32B" in result
+
+    def test_thinking_entry_has_higher_code_gen(self, tmp_cache):
+        """Thinking variant should have higher code scores (from benchmark data)."""
+        import yaml
+        yaml_data = [
+            {"model": "test-model (no thinking)", "pass_rate_2": 50.0},
+            {"model": "test-model (32k thinking)", "pass_rate_2": 60.0},
+        ]
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = yaml.dump(yaml_data)
+
+        fetcher = AiderLeaderboardFetcher()
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = fetcher.fetch_bulk(tmp_cache)
+
+        base_key = [k for k in result if "test-model" in k and "::thinking" not in k][0]
+        think_key = [k for k in result if "test-model" in k and "::thinking" in k][0]
+
+        assert result[think_key]["code_generation"] > result[base_key]["code_generation"]
+
+    def test_no_think_variant_naming(self, tmp_cache):
+        """(no think) and (no thinking) both produce clean base name."""
+        import yaml
+        yaml_data = [
+            {"model": "gemini-2.5-flash (no think)", "pass_rate_2": 44.0},
+            {"model": "gemini-2.5-flash (24k think)", "pass_rate_2": 55.1},
+        ]
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = yaml.dump(yaml_data)
+
+        fetcher = AiderLeaderboardFetcher()
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = fetcher.fetch_bulk(tmp_cache)
+
+        assert "gemini-2.5-flash" in result
+        assert "gemini-2.5-flash::thinking" in result

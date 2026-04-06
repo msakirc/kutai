@@ -740,7 +740,24 @@ class AiderLeaderboardFetcher(_BaseFetcher):
                                 wf, 50.0, 100.0, 4.0, 10.0
                             )
 
-                        result[model_name] = mapped
+                        # Detect thinking mode variants
+                        name_lower = model_name.lower()
+                        is_no_thinking = "(no think" in name_lower
+                        is_thinking = ("think" in name_lower and not is_no_thinking)
+
+                        if is_no_thinking or is_thinking:
+                            import re
+                            clean_name = re.sub(
+                                r'\s*\([^)]*think[^)]*\)\s*', '', model_name,
+                                flags=re.IGNORECASE
+                            ).strip().rstrip(',').strip()
+
+                            if is_thinking:
+                                result[f"{clean_name}::thinking"] = mapped
+                            else:
+                                result[clean_name] = mapped
+                        else:
+                            result[model_name] = mapped
                     except (ValueError, TypeError):
                         pass
 
@@ -1279,15 +1296,47 @@ def enrich_registry_with_benchmarks(
         if model_info.path:
             search_terms.append(Path(model_info.path).stem)
 
-        # Try each search term
+        # Try each search term (thinking-aware matching)
         bench_caps = None
-        for term in search_terms:
-            if not term:
-                continue
-            matched_key = _fuzzy_match_model(term, list(bulk_data.keys()))
-            if matched_key:
-                bench_caps = bulk_data[matched_key]
-                break
+
+        is_thinking_variant = getattr(model_info, 'is_variant', False) and \
+                              'thinking' in getattr(model_info, 'variant_flags', set())
+        base_name = getattr(model_info, 'base_model_name', '')
+
+        if is_thinking_variant and base_name:
+            # Try thinking-specific benchmark data first (e.g., "model::thinking")
+            thinking_keys = [k for k in bulk_data.keys() if k.endswith("::thinking")]
+            for term in [base_name, model_info.litellm_name.replace('-thinking', ''),
+                         model_info.family]:
+                if not term:
+                    continue
+                thinking_key = _fuzzy_match_model(term, thinking_keys)
+                if thinking_key:
+                    bench_caps = bulk_data[thinking_key]
+                    break
+
+            # Fall back to base model data if no thinking-specific entry
+            if not bench_caps:
+                non_thinking_keys = [k for k in bulk_data.keys()
+                                     if not k.endswith("::thinking")]
+                for term in search_terms:
+                    if not term:
+                        continue
+                    matched_key = _fuzzy_match_model(term, non_thinking_keys)
+                    if matched_key:
+                        bench_caps = bulk_data[matched_key]
+                        break
+        else:
+            # Normal model — prefer non-thinking entries
+            non_thinking_keys = [k for k in bulk_data.keys()
+                                 if not k.endswith("::thinking")]
+            for term in search_terms:
+                if not term:
+                    continue
+                matched_key = _fuzzy_match_model(term, non_thinking_keys)
+                if matched_key:
+                    bench_caps = bulk_data[matched_key]
+                    break
 
         if not bench_caps:
             continue

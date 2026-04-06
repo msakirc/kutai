@@ -98,3 +98,49 @@ def test_formatter_exception():
     doc = json.loads(line)
     assert "exc" in doc
     assert "ValueError" in doc["exc"]
+
+
+import tempfile
+from pathlib import Path
+from yazbunu import get_logger, init_logging
+
+
+def test_get_logger_info(tmp_path):
+    """get_logger returns a logger that writes structured JSONL."""
+    init_logging(log_dir=str(tmp_path), project="testproj", console=False)
+    logger = get_logger("core.thing")
+    logger.info("hello", task="1")
+
+    log_file = tmp_path / "testproj.jsonl"
+    assert log_file.exists()
+    lines = log_file.read_text(encoding="utf-8").strip().split("\n")
+    doc = json.loads(lines[-1])
+    assert doc["src"] == "testproj.core.thing"
+    assert doc["msg"] == "hello"
+    assert doc["task"] == "1"
+
+
+def test_get_logger_bind(tmp_path):
+    """Bound loggers carry context across calls."""
+    init_logging(log_dir=str(tmp_path), project="testproj2", console=False)
+    logger = get_logger("agents.base").bind(task="99", mission="m-3")
+    logger.info("step done")
+
+    log_file = tmp_path / "testproj2.jsonl"
+    lines = log_file.read_text(encoding="utf-8").strip().split("\n")
+    doc = json.loads(lines[-1])
+    assert doc["task"] == "99"
+    assert doc["mission"] == "m-3"
+
+
+def test_init_logging_rotation(tmp_path):
+    """Rotating file handler is created with correct params."""
+    init_logging(log_dir=str(tmp_path), project="rottest", console=False,
+                 max_bytes=1000, backup_count=2)
+    logger = get_logger("x")
+    # Write enough to trigger rotation
+    for i in range(200):
+        logger.info(f"line {i}" + "x" * 100)
+
+    files = list(tmp_path.glob("rottest.jsonl*"))
+    assert len(files) >= 2  # at least one backup

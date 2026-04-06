@@ -54,6 +54,9 @@ AVAILABLE_KEYS: dict[str, bool] = {
 HERE_API_KEY = os.getenv("HERE_API_KEY", "")
 LOCATIONIQ_API_KEY = os.getenv("LOCATIONIQ_API_KEY", "")
 
+# ─── Benchmark API Keys ────────────────────────────────────────────────────
+ARTIFICIAL_ANALYSIS_API_KEY = os.getenv("ARTIFICIAL_ANALYSIS_API_KEY", "")
+
 # ─── Task Priority Levels ────────────────────────────────────────────────────
 
 TASK_PRIORITY = {

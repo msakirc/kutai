@@ -534,10 +534,9 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
 
     if not output_names:
         # No output artifacts — skip artifact storage but still run
-        # phase completion and clarification checks below.
-        # Jump to phase completion.
+        # phase completion check below.
         workflow_phase = ctx.get("workflow_phase")
-        if mission_id and workflow_phase:
+        if workflow_phase:
             await _check_phase_completion(mission_id, workflow_phase)
         return
     output_value = result.get("result", "")

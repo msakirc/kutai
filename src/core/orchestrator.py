@@ -1766,7 +1766,10 @@ class Orchestrator:
                 # whether the output artifacts should be persisted.
                 if is_workflow_step(task_ctx):
                     await post_execute_workflow_step(task, result)
-                    # Post-hook may detect disguised failure
+                    # Post-hook may override status
+                    if result.get("status") == "needs_clarification":
+                        await self._handle_clarification(task, result)
+                        return
                     if result.get("status") == "failed":
                         error_msg = result.get("error", "Disguised failure detected")
                         attempts = (task.get("attempts") or 0) + 1
@@ -1780,6 +1783,23 @@ class Orchestrator:
                                 failed_in_phase="worker",
                                 error=f"Disguised failure exhausted: {error_msg[:300]}",
                                 context=json.dumps(task_ctx),
+                            )
+                            try:
+                                from src.infra.dead_letter import quarantine_task
+                                await quarantine_task(
+                                    task_id=task_id,
+                                    mission_id=task.get("mission_id"),
+                                    error=f"Disguised failure after {attempts} attempts: {error_msg[:300]}",
+                                    error_category="quality",
+                                    original_agent=task.get("agent_type", "executor"),
+                                    retry_count=attempts,
+                                )
+                            except Exception:
+                                pass
+                            await self.telegram.send_notification(
+                                f"❌ Task #{task_id} disguised failure → DLQ\n"
+                                f"**{task.get('title', '')[:60]}**\n"
+                                f"Reason: {error_msg[:100]}"
                             )
                         else:
                             next_retry = None

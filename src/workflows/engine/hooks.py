@@ -96,6 +96,14 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
             required_sections = rules.get("required_sections", [])
             text = str(output_value)
             text_lower = text.lower()
+            # Normalize numbered headers: "## 1. Vision" → "## Vision"
+            import re as _re
+            text_normalized = _re.sub(
+                r'^(#{1,4})\s*\d+[\.\)]\s*',
+                r'\1 ',
+                text_lower,
+                flags=_re.MULTILINE,
+            )
             # Check for actual markdown headers (## Section or ### Section),
             # not just substring mentions like "Vision (streamlining...)"
             missing = []
@@ -103,9 +111,9 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
                 s_lower = s.lower()
                 # Accept: ## Vision, ### Vision, # Vision, **Vision**, Vision\n---
                 has_header = (
-                    f"# {s_lower}" in text_lower
-                    or f"**{s_lower}**" in text_lower
-                    or f"\n{s_lower}\n" in text_lower
+                    f"# {s_lower}" in text_normalized
+                    or f"**{s_lower}**" in text_normalized
+                    or f"\n{s_lower}\n" in text_normalized
                 )
                 if not has_header:
                     missing.append(s)

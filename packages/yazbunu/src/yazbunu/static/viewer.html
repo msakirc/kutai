@@ -19,61 +19,79 @@
     --info: #4fc3f7;
     --debug: #888;
     --success: #66bb6a;
-    --row-height: 28px;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
-    font-size: 13px;
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+    font-size: 12px;
+    line-height: 1.5;
     background: var(--bg);
     color: var(--text);
     height: 100vh;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    -webkit-font-smoothing: antialiased;
   }
 
   /* ─── Toolbar ─── */
   .toolbar {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
-    padding: 8px 12px;
+    gap: 6px;
+    padding: 6px 12px;
     background: var(--surface);
     border-bottom: 1px solid var(--border);
     align-items: center;
     z-index: 10;
   }
+  .toolbar .group {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  .toolbar .group + .group {
+    margin-left: 2px;
+    padding-left: 8px;
+    border-left: 1px solid var(--border);
+  }
   .toolbar select, .toolbar input, .toolbar button {
     font-family: inherit;
-    font-size: 13px;
+    font-size: 12px;
     background: var(--bg);
     color: var(--text);
     border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 6px 10px;
+    border-radius: 3px;
+    padding: 4px 8px;
+    line-height: 1.4;
   }
   .toolbar button {
     cursor: pointer;
-    background: var(--accent);
-    color: #000;
-    border: none;
-    font-weight: bold;
+    font-weight: 600;
+    transition: opacity 0.1s;
   }
   .toolbar button:hover { opacity: 0.85; }
+  .toolbar button.primary {
+    background: var(--accent);
+    color: #000;
+    border-color: transparent;
+  }
   .toolbar button.active {
     background: var(--error);
+    color: #fff;
+    border-color: transparent;
   }
   .toolbar input[type="text"] {
     flex: 1;
-    min-width: 120px;
+    min-width: 180px;
   }
-  .toolbar select { max-width: 180px; }
+  .toolbar select { max-width: 160px; }
   .status {
     color: var(--text-dim);
     font-size: 11px;
     margin-left: auto;
     white-space: nowrap;
+    font-variant-numeric: tabular-nums;
   }
 
   /* ─── Breadcrumbs ─── */
@@ -108,7 +126,8 @@
   /* ─── Sparkline ─── */
   #sparkline {
     width: 100%;
-    background: var(--surface);
+    height: 24px;
+    background: var(--bg);
     border-bottom: 1px solid var(--border);
     display: block;
   }
@@ -121,63 +140,44 @@
     overflow: hidden;
   }
 
-  /* ─── Log area (virtual scroll container) ─── */
+  /* ─── Log area ─── */
   .log-area {
     flex: 1;
-    position: relative;
     overflow-y: auto;
     overflow-x: hidden;
-  }
-  #spacer {
-    width: 100%;
-    pointer-events: none;
+    padding: 4px 0;
   }
 
-  /* ─── Log line (recycled rows) ─── */
+  /* ─── Log line (flow-based, not absolute) ─── */
   .log-line {
-    min-height: 28px;
-    position: absolute;
-    left: 0;
-    right: 0;
     display: flex;
     align-items: baseline;
-    padding: 2px 12px;
+    padding: 1px 12px;
     gap: 8px;
-    cursor: default;
-    border-bottom: 1px solid var(--border);
     word-break: break-word;
     flex-wrap: wrap;
-    transition: background 0.1s;
     user-select: text;
+    border-left: 3px solid transparent;
   }
-  .log-line:hover { background: rgba(255,255,255,0.03); }
-  .log-line.selected { background: rgba(79,195,247,0.12); }
-  .log-line.level-ERROR { background: rgba(239,83,80,0.08); }
-  .log-line.level-WARNING { background: rgba(255,167,38,0.08); }
-  .log-line.level-CRITICAL { background: rgba(239,83,80,0.15); }
+  .log-line:nth-child(even) { background: rgba(255,255,255,0.015); }
+  .log-line:hover { background: rgba(255,255,255,0.04); }
+  .log-line.selected { background: rgba(79,195,247,0.12); border-left-color: var(--accent); }
+  .log-line.level-ERROR { border-left-color: var(--error); }
+  .log-line.level-WARNING { border-left-color: var(--warn); }
+  .log-line.level-CRITICAL { border-left-color: var(--error); background: rgba(239,83,80,0.06); }
   .log-line.level-DEBUG { opacity: 0.6; }
-  .log-line.selected.level-ERROR { background: rgba(239,83,80,0.2); }
-  .log-line.selected.level-WARNING { background: rgba(255,167,38,0.2); }
-  .log-line.bookmarked::before {
-    content: "";
-    position: absolute;
-    left: 2px;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--warn);
-  }
-  .ts { color: var(--text-dim); white-space: nowrap; font-size: 11px; flex-shrink: 0; }
-  .level { font-weight: bold; width: 50px; font-size: 11px; flex-shrink: 0; }
+  .log-line.selected.level-ERROR { background: rgba(239,83,80,0.18); border-left-color: var(--error); }
+  .log-line.selected.level-WARNING { background: rgba(255,167,38,0.18); border-left-color: var(--warn); }
+  .log-line.bookmarked { border-left-color: var(--warn); }
+  .ts { color: var(--text-dim); white-space: nowrap; font-size: 11px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .level { font-weight: 700; width: 44px; font-size: 10px; flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.5px; }
   .level-ERROR .level, .level-CRITICAL .level { color: var(--error); }
   .level-WARNING .level { color: var(--warn); }
   .level-INFO .level { color: var(--info); }
   .level-DEBUG .level { color: var(--debug); }
-  .src { color: var(--accent); white-space: nowrap; flex-shrink: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
-  .msg { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .extras { color: var(--text-dim); font-size: 11px; white-space: nowrap; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; max-width: 400px; }
+  .src { color: var(--accent); white-space: nowrap; flex-shrink: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; opacity: 0.8; }
+  .msg { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; }
+  .extras { color: var(--text-dim); font-size: 11px; flex-shrink: 0; }
   .exc-inline {
     width: 100%;
     color: var(--error);
@@ -191,17 +191,18 @@
   .pill {
     display: inline-block;
     font-size: 10px;
-    padding: 1px 6px;
-    border-radius: 8px;
+    padding: 0 5px;
+    border-radius: 3px;
     background: var(--border);
     color: var(--text);
     cursor: pointer;
     margin-left: 4px;
     white-space: nowrap;
     flex-shrink: 0;
+    line-height: 1.6;
   }
   .pill:hover { background: var(--accent); color: #000; }
-  .fn-info { color: var(--text-dim); font-size: 11px; white-space: nowrap; flex-shrink: 0; }
+  .fn-info { color: var(--text-dim); font-size: 10px; white-space: nowrap; flex-shrink: 0; opacity: 0.6; }
 
   /* ─── Minimap ─── */
   #minimap {
@@ -212,14 +213,19 @@
     flex-shrink: 0;
   }
 
-  /* ─── Detail panel ─── */
+  /* ─── Detail drawer (bottom) ─── */
   .detail-panel {
-    width: 400px;
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    max-height: 40vh;
     background: var(--surface);
-    border-left: 1px solid var(--border);
+    border-top: 2px solid var(--accent);
     overflow-y: auto;
-    padding: 12px;
-    flex-shrink: 0;
+    padding: 12px 16px;
+    box-shadow: 0 -4px 20px rgba(0,0,0,0.3);
+    z-index: 20;
   }
   .detail-panel h3 {
     margin: 0 0 8px 0;
@@ -235,12 +241,19 @@
     font-size: 16px;
     background: none;
     border: none;
-    padding: 0 4px;
+    padding: 2px 6px;
+    border-radius: 4px;
   }
-  .detail-panel .close-btn:hover { color: var(--error); }
+  .detail-panel .close-btn:hover { color: var(--error); background: rgba(239,83,80,0.1); }
+  .detail-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 4px 16px;
+  }
   .detail-field {
-    margin-bottom: 6px;
     font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .detail-field .field-key {
     color: var(--accent);
@@ -258,16 +271,16 @@
     font-size: 11px;
     white-space: pre-wrap;
     color: var(--error);
-    max-height: 300px;
+    max-height: 200px;
     overflow-y: auto;
   }
   .detail-related {
-    margin-top: 12px;
+    margin-top: 8px;
     border-top: 1px solid var(--border);
     padding-top: 8px;
   }
   .detail-related .related-line {
-    padding: 3px 0;
+    padding: 2px 0;
     font-size: 11px;
     cursor: pointer;
     color: var(--text-dim);
@@ -281,14 +294,15 @@
   .export-wrapper { position: relative; }
   .export-menu {
     position: absolute;
-    top: 100%;
+    top: calc(100% + 4px);
     right: 0;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 6px;
     z-index: 100;
     display: none;
     min-width: 140px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
   }
   .export-menu.open { display: block; }
   .export-menu button {
@@ -304,23 +318,32 @@
   }
   .export-menu button:hover { background: var(--border); }
 
-  /* ─── Command Palette ─── */
-  .cmd-palette-overlay {
+  /* ─── Overlays (shared) ─── */
+  .cmd-palette-overlay, .shortcuts-overlay, .bookmarks-overlay {
     position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(0,0,0,0.5);
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(2px);
     z-index: 200;
     display: none;
+    justify-content: center;
   }
-  .cmd-palette-overlay.open { display: flex; justify-content: center; padding-top: 80px; }
-  .cmd-palette {
-    width: 460px;
-    max-width: 90vw;
+  .cmd-palette-overlay.open, .shortcuts-overlay.open, .bookmarks-overlay.open { display: flex; }
+  .cmd-palette-overlay { padding-top: 80px; align-items: flex-start; }
+  .shortcuts-overlay { align-items: center; }
+  .bookmarks-overlay { padding-top: 60px; align-items: flex-start; }
+  .cmd-palette, .shortcuts-panel, .bookmarks-panel {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 8px;
     box-shadow: 0 8px 32px rgba(0,0,0,0.5);
     overflow: hidden;
+  }
+
+  /* ─── Command Palette ─── */
+  .cmd-palette {
+    width: 460px;
+    max-width: 90vw;
     height: fit-content;
   }
   .cmd-palette input {
@@ -341,25 +364,11 @@
   }
 
   /* ─── Shortcuts Overlay ─── */
-  .shortcuts-overlay {
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(0,0,0,0.6);
-    z-index: 200;
-    display: none;
-    justify-content: center;
-    align-items: center;
-  }
-  .shortcuts-overlay.open { display: flex; }
   .shortcuts-panel {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
     padding: 20px 28px;
     max-width: 500px;
     max-height: 80vh;
     overflow-y: auto;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
   }
   .shortcuts-panel h2 { color: var(--accent); font-size: 15px; margin-bottom: 12px; }
   .shortcuts-panel table { width: 100%; border-collapse: collapse; }
@@ -367,24 +376,10 @@
   .shortcuts-panel td:first-child { color: var(--accent); font-weight: bold; white-space: nowrap; width: 80px; }
 
   /* ─── Bookmarks Panel ─── */
-  .bookmarks-overlay {
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(0,0,0,0.5);
-    z-index: 200;
-    display: none;
-    justify-content: center;
-    padding-top: 60px;
-  }
-  .bookmarks-overlay.open { display: flex; }
   .bookmarks-panel {
     width: 560px;
     max-width: 90vw;
     max-height: 70vh;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
     overflow-y: auto;
     padding: 16px;
   }
@@ -413,14 +408,16 @@
 
   /* ─── Mobile Responsive ─── */
   @media (max-width: 600px) {
-    .toolbar { flex-direction: column; gap: 4px; }
-    .toolbar select, .toolbar input, .toolbar button { padding: 10px; font-size: 15px; width: 100%; }
-    .log-line { font-size: 14px; }
+    .toolbar { gap: 4px; padding: 6px 8px; }
+    .toolbar .group { flex-wrap: wrap; width: 100%; }
+    .toolbar .group + .group { margin-left: 0; padding-left: 0; border-left: none; border-top: 1px solid var(--border); padding-top: 4px; }
+    .toolbar select, .toolbar input, .toolbar button { padding: 8px; font-size: 14px; }
+    .log-line { font-size: 13px; padding: 2px 8px; }
     .ts { display: none; }
-    .src { max-width: 80px; overflow: hidden; text-overflow: ellipsis; }
-    .detail-panel { position:fixed; bottom:0; left:0; right:0; width:100%!important; max-height:50vh; border-left:none; border-top:2px solid var(--accent); border-radius:12px 12px 0 0; z-index:100; }
+    .src { max-width: 60px; }
+    .detail-panel { max-height: 50vh; }
     #minimap { display: none; }
-    #sparkline { height: 24px; }
+    #sparkline { height: 20px; }
   }
 
   /* ─── Reduced motion ─── */
@@ -433,51 +430,57 @@
 <body>
 
 <div class="toolbar" role="toolbar" aria-label="Log viewer controls">
-  <select id="fileSelect" aria-label="Log file"><option value="">Loading...</option></select>
-  <select id="levelFilter" aria-label="Level filter">
-    <option value="">All levels</option>
-    <option value="DEBUG">DEBUG</option>
-    <option value="INFO">INFO</option>
-    <option value="WARNING">WARNING</option>
-    <option value="ERROR">ERROR</option>
-    <option value="CRITICAL">CRITICAL</option>
-  </select>
-  <input type="text" id="searchBox" placeholder="Search... (level:ERROR src:db after:&quot;5m ago&quot;)" aria-label="Search query">
-  <select id="timeFilter" aria-label="Time range">
-    <option value="">All time</option>
-    <option value="1m">Last 1 min</option>
-    <option value="5m" selected>Last 5 min</option>
-    <option value="15m">Last 15 min</option>
-    <option value="30m">Last 30 min</option>
-    <option value="1h">Last 1 hour</option>
-    <option value="6h">Last 6 hours</option>
-    <option value="24h">Last 24 hours</option>
-  </select>
-  <select id="themeSelect" aria-label="Color theme"></select>
-  <div class="export-wrapper">
-    <button id="exportBtn" aria-label="Export logs">Export</button>
-    <div class="export-menu" id="exportMenu" role="menu">
-      <button data-fmt="jsonl" role="menuitem">JSONL</button>
-      <button data-fmt="json" role="menuitem">JSON</button>
-      <button data-fmt="csv" role="menuitem">CSV</button>
-      <button data-fmt="markdown" role="menuitem">Markdown</button>
-      <button data-fmt="text" role="menuitem">Plain Text</button>
-      <button data-fmt="clipboard" role="menuitem">Copy to Clipboard</button>
-      <button data-fmt="share" role="menuitem">Share Link</button>
-    </div>
+  <div class="group">
+    <select id="fileSelect" aria-label="Log file"><option value="">Loading...</option></select>
   </div>
-  <button id="tailBtn" aria-label="Toggle live tail" aria-pressed="false">Live Tail</button>
-  <button id="notifyBtn" aria-label="Enable browser notifications" style="background:var(--bg);color:var(--text);border:1px solid var(--border)">Notify</button>
-  <span class="status" id="status">Ready</span>
+  <div class="group">
+    <select id="levelFilter" aria-label="Level filter">
+      <option value="">All levels</option>
+      <option value="DEBUG">DEBUG</option>
+      <option value="INFO">INFO</option>
+      <option value="WARNING">WARNING</option>
+      <option value="ERROR">ERROR</option>
+      <option value="CRITICAL">CRITICAL</option>
+    </select>
+    <select id="timeFilter" aria-label="Time range">
+      <option value="">All time</option>
+      <option value="1m">1m</option>
+      <option value="5m" selected>5m</option>
+      <option value="15m">15m</option>
+      <option value="30m">30m</option>
+      <option value="1h">1h</option>
+      <option value="6h">6h</option>
+      <option value="24h">24h</option>
+    </select>
+  </div>
+  <div class="group" style="flex:1">
+    <input type="text" id="searchBox" placeholder="level:ERROR src:db after:&quot;5m ago&quot;" aria-label="Search query">
+  </div>
+  <div class="group">
+    <button id="tailBtn" class="primary" aria-label="Toggle live tail" aria-pressed="false">Tail</button>
+    <div class="export-wrapper">
+      <button id="exportBtn" aria-label="Export logs">Export</button>
+      <div class="export-menu" id="exportMenu" role="menu">
+        <button data-fmt="jsonl" role="menuitem">JSONL</button>
+        <button data-fmt="json" role="menuitem">JSON</button>
+        <button data-fmt="csv" role="menuitem">CSV</button>
+        <button data-fmt="markdown" role="menuitem">Markdown</button>
+        <button data-fmt="text" role="menuitem">Plain Text</button>
+        <button data-fmt="clipboard" role="menuitem">Copy to Clipboard</button>
+        <button data-fmt="share" role="menuitem">Share Link</button>
+      </div>
+    </div>
+    <button id="notifyBtn" aria-label="Enable browser notifications">Notify</button>
+    <select id="themeSelect" aria-label="Color theme"></select>
+  </div>
+  <span class="status" id="status" aria-live="polite">Ready</span>
 </div>
 
 <div class="breadcrumbs" id="breadcrumbs" style="display:none" role="navigation" aria-label="Active filters"></div>
-<canvas id="sparkline" height="32" aria-hidden="true"></canvas>
+<canvas id="sparkline" height="24" aria-hidden="true"></canvas>
 
 <div class="main-content">
-  <div class="log-area" id="logArea" role="log" aria-label="Log entries" aria-live="polite">
-    <div id="spacer"></div>
-  </div>
+  <div class="log-area" id="logArea" role="log" aria-label="Log entries" aria-live="polite"></div>
   <canvas id="minimap" width="12" aria-hidden="true"></canvas>
   <div id="detailPanel" class="detail-panel" style="display:none" role="complementary" aria-label="Log detail"></div>
 </div>
@@ -531,8 +534,6 @@
 // Yazbunu Virtual Scrolling Log Viewer
 // ═══════════════════════════════════════════════════════════════════════
 
-const ROW_HEIGHT = 28;
-const OVERSCAN = 20;
 const POLL_MS = 2000;
 const CHUNK_SIZE = 5000;
 const CONTEXT_KEYS = new Set(["ts", "level", "src", "msg", "fn", "ln", "exc", "_file"]);
@@ -560,7 +561,6 @@ const $level = document.getElementById("levelFilter");
 const $search = document.getElementById("searchBox");
 const $tailBtn = document.getElementById("tailBtn");
 const $area = document.getElementById("logArea");
-const $spacer = document.getElementById("spacer");
 const $status = document.getElementById("status");
 const $breadcrumbs = document.getElementById("breadcrumbs");
 const $sparkline = document.getElementById("sparkline");
@@ -581,9 +581,6 @@ const $announcer = document.getElementById("a11yAnnouncer");
 function announce(msg) {
   $announcer.textContent = msg;
 }
-
-// ─── Row pool ───
-const rowPool = [];
 
 // ─── Bookmarks ───
 function loadBookmarks() {
@@ -617,7 +614,7 @@ worker.onmessage = (e) => {
       filteredIndices = msg.indices;
       selectedRow = -1;
       selectedDocIdx = -1;
-      renderVirtual();
+      render();
       updateMinimap();
       $status.textContent = `${msg.indices.length} / ${msg.total} lines`;
       announce(`Filter: ${msg.indices.length} of ${msg.total} lines`);
@@ -739,7 +736,7 @@ async function loadLogs(file, lines = 5000) {
     $status.textContent = "Load error: " + e.message;
   }
 
-  renderVirtual();
+  render();
   requestSparkline();
   updateMinimap();
 
@@ -753,51 +750,64 @@ async function loadLogs(file, lines = 5000) {
   }
 }
 
-// ─── Virtual Scroll ───
-
-function ensurePoolSize(needed) {
-  while (rowPool.length < needed) {
-    const row = document.createElement("div");
-    row.className = "log-line";
-    row.style.height = ROW_HEIGHT + "px";
-    row.style.position = "absolute";
-    row.style.left = "0";
-    row.style.right = "0";
-    row.addEventListener("click", onRowClick);
-    row.addEventListener("dblclick", onRowDblClick);
-    $area.appendChild(row);
-    rowPool.push(row);
-  }
-}
+// ─── Rendering (flow-based DOM) ───
 
 function getVisibleCount() {
   return filteredIndices ? filteredIndices.length : allDocs.length;
 }
 
-function renderVirtual() {
+function render() {
+  const wasAtBottom = $area.scrollTop + $area.clientHeight >= $area.scrollHeight - 50;
+  const frag = document.createDocumentFragment();
   const total = getVisibleCount();
-  $spacer.style.height = (total * ROW_HEIGHT) + "px";
 
-  const scrollTop = $area.scrollTop;
-  const startRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
-  const visibleCount = Math.ceil($area.clientHeight / ROW_HEIGHT) + OVERSCAN * 2;
-  const endRow = Math.min(total, startRow + visibleCount);
-  const needed = endRow - startRow;
-
-  ensurePoolSize(needed);
-
-  for (let i = 0; i < rowPool.length; i++) {
-    const vi = startRow + i;
-    const row = rowPool[i];
-    if (vi >= endRow) {
-      row.style.display = "none";
-      continue;
-    }
-    row.style.display = "flex";
-    row.style.top = (vi * ROW_HEIGHT) + "px";
+  for (let vi = 0; vi < total; vi++) {
     const docIdx = filteredIndices ? filteredIndices[vi] : vi;
-    populateRow(row, allDocs[docIdx], docIdx, vi);
+    const doc = allDocs[docIdx];
+    const row = document.createElement("div");
+    populateRow(row, doc, docIdx, vi);
+    row.addEventListener("click", onRowClick);
+    row.addEventListener("dblclick", onRowDblClick);
+    frag.appendChild(row);
   }
+
+  $area.innerHTML = "";
+  $area.appendChild(frag);
+
+  if (wasAtBottom || tailing) {
+    $area.scrollTop = $area.scrollHeight;
+  }
+}
+
+function updateSelection(oldVisibleIdx, newVisibleIdx) {
+  if (oldVisibleIdx >= 0 && oldVisibleIdx < $area.children.length) {
+    const oldEl = $area.children[oldVisibleIdx];
+    oldEl.classList.remove('selected');
+    oldEl.removeAttribute('aria-selected');
+  }
+  if (newVisibleIdx >= 0 && newVisibleIdx < $area.children.length) {
+    const newEl = $area.children[newVisibleIdx];
+    newEl.classList.add('selected');
+    newEl.setAttribute('aria-selected', 'true');
+  }
+}
+
+function appendNewDocs(startIdx, count) {
+  const wasAtBottom = $area.scrollTop + $area.clientHeight >= $area.scrollHeight - 50;
+  const frag = document.createDocumentFragment();
+  for (let i = startIdx; i < startIdx + count; i++) {
+    const doc = allDocs[i];
+    const row = document.createElement("div");
+    populateRow(row, doc, i, i);
+    row.addEventListener("click", onRowClick);
+    row.addEventListener("dblclick", onRowDblClick);
+    frag.appendChild(row);
+  }
+  $area.appendChild(frag);
+  if (wasAtBottom || tailing) {
+    $area.scrollTop = $area.scrollHeight;
+  }
+  $status.textContent = `${allDocs.length} lines (live)`;
 }
 
 function populateRow(row, doc, docIdx, visibleIdx) {
@@ -915,10 +925,14 @@ function onRowDblClick(e) {
   const doc = allDocs[docIdx];
   if (!doc) return;
   const bk = bookmarkKey(doc);
-  if (bookmarks.has(bk)) bookmarks.delete(bk);
-  else bookmarks.add(bk);
+  if (bookmarks.has(bk)) {
+    bookmarks.delete(bk);
+    row.classList.remove('bookmarked');
+  } else {
+    bookmarks.add(bk);
+    row.classList.add('bookmarked');
+  }
   saveBookmarks();
-  renderVirtual();
 }
 
 function onPillClick(e) {
@@ -929,10 +943,10 @@ function onPillClick(e) {
 }
 
 function selectRow(docIdx, visibleIdx) {
+  const oldVisible = selectedRow;
   selectedDocIdx = docIdx;
   selectedRow = visibleIdx;
-  renderVirtual();
-  showDetail(docIdx);
+  updateSelection(oldVisible, visibleIdx);
 }
 
 // ─── Detail panel ───
@@ -941,34 +955,33 @@ function showDetail(docIdx) {
   const doc = allDocs[docIdx];
   if (!doc) { hideDetail(); return; }
 
-  $detail.style.display = "block";
-  let html = '<h3>Log Detail <button class="close-btn" onclick="hideDetail()">&times;</button></h3>';
+  $detail.style.display = 'block';
+  let html = '<h3>Detail <button class="close-btn" onclick="hideDetail()" title="Escape">&times;</button></h3>';
+  html += '<div class="detail-fields">';
 
   for (const [k, v] of Object.entries(doc)) {
-    if (k === "exc") continue;
-    const escaped = String(v).replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    html += `<div class="detail-field"><span class="field-key">${k}: </span><span class="field-val">${escaped}</span></div>`;
+    if (k === 'exc') continue;
+    const escaped = String(v).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    html += `<div class="detail-field"><span class="field-key">${k}:</span> <span class="field-val">${escaped}</span></div>`;
   }
+  html += '</div>';
 
   const bk = bookmarkKey(doc);
   const isBookmarked = bookmarks.has(bk);
-  html += `<div style="margin-top:8px"><button onclick="toggleBookmarkIdx(${docIdx})" style="font-size:11px;padding:4px 8px;background:var(--border);color:var(--text);border:none;border-radius:4px;cursor:pointer">${isBookmarked ? "Remove Bookmark" : "Bookmark"}</button></div>`;
+  html += `<div style="margin-top:8px"><button onclick="toggleBookmarkIdx(${docIdx})" style="font-size:11px;padding:4px 8px;background:var(--border);color:var(--text);border:none;border-radius:4px;cursor:pointer">${isBookmarked ? 'Unbookmark' : 'Bookmark'}</button></div>`;
 
   if (doc.exc) {
-    html += `<div class="detail-exc">${doc.exc.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>`;
+    html += `<div class="detail-exc">${doc.exc.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`;
   }
 
   html += '<div class="detail-related" id="relatedArea"><em style="color:var(--text-dim);font-size:11px">Loading related...</em></div>';
   $detail.innerHTML = html;
 
-  worker.postMessage({ type: "related", lineIndex: docIdx, windowSec: 60 });
+  worker.postMessage({ type: 'related', lineIndex: docIdx, windowSec: 60 });
 }
 
 function hideDetail() {
-  $detail.style.display = "none";
-  selectedDocIdx = -1;
-  selectedRow = -1;
-  renderVirtual();
+  $detail.style.display = 'none';
 }
 
 function toggleBookmarkIdx(docIdx) {
@@ -979,20 +992,31 @@ function toggleBookmarkIdx(docIdx) {
   else bookmarks.add(bk);
   saveBookmarks();
   showDetail(docIdx);
-  renderVirtual();
+  const visibleIdx = filteredIndices ? filteredIndices.indexOf(docIdx) : docIdx;
+  if (visibleIdx >= 0 && visibleIdx < $area.children.length) {
+    const el = $area.children[visibleIdx];
+    if (bookmarks.has(bk)) el.classList.add('bookmarked');
+    else el.classList.remove('bookmarked');
+  }
 }
 
 function toggleBookmarkSelected(visibleIdx) {
   const total = getVisibleCount();
   if (visibleIdx < 0 || visibleIdx >= total) return;
+  const el = $area.children[visibleIdx];
+  if (!el) return;
   const docIdx = filteredIndices ? filteredIndices[visibleIdx] : visibleIdx;
   const doc = allDocs[docIdx];
   if (!doc) return;
   const bk = bookmarkKey(doc);
-  if (bookmarks.has(bk)) bookmarks.delete(bk);
-  else bookmarks.add(bk);
+  if (bookmarks.has(bk)) {
+    bookmarks.delete(bk);
+    el.classList.remove('bookmarked');
+  } else {
+    bookmarks.add(bk);
+    el.classList.add('bookmarked');
+  }
   saveBookmarks();
-  renderVirtual();
 }
 
 function renderRelated(indices) {
@@ -1020,7 +1044,8 @@ function jumpToDoc(docIdx) {
     visibleIdx = filteredIndices.indexOf(docIdx);
     if (visibleIdx === -1) return;
   }
-  $area.scrollTop = visibleIdx * ROW_HEIGHT - $area.clientHeight / 2;
+  const el = $area.children[visibleIdx];
+  if (el) el.scrollIntoView({ block: "center" });
   selectRow(docIdx, visibleIdx);
 }
 
@@ -1073,7 +1098,7 @@ function applyFilters() {
   const q = parts.join(" ");
   if (!q) {
     filteredIndices = null;
-    renderVirtual();
+    render();
     updateMinimap();
     announce(`Showing all ${allDocs.length} lines`);
     return;
@@ -1099,21 +1124,12 @@ $level.addEventListener("change", () => {
   applyFilters();
 });
 
-// ─── Scroll handler ───
-let scrollRaf = null;
-$area.addEventListener("scroll", () => {
-  if (scrollRaf) return;
-  scrollRaf = requestAnimationFrame(() => {
-    scrollRaf = null;
-    renderVirtual();
-  });
-});
-
 // ─── WebSocket Tail ───
 
 function startTail() {
   tailing = true;
   $tailBtn.textContent = "Pause";
+  $tailBtn.classList.remove('primary');
   $tailBtn.classList.add("active");
   $tailBtn.setAttribute("aria-pressed", "true");
 
@@ -1143,12 +1159,10 @@ function startTail() {
           });
           worker.postMessage({ type: "load", lines: newRawLines, chunk: -1 });
           if (filteredIndices === null) {
-            renderVirtual();
+            // Append to DOM instead of full re-render
+            appendNewDocs(allDocs.length - newRawLines.length, newRawLines.length);
           } else {
             applyFilters();
-          }
-          if (tailing) {
-            $area.scrollTop = $area.scrollHeight;
           }
           lastTs = allDocs.length ? (allDocs[allDocs.length - 1] && allDocs[allDocs.length - 1].ts || lastTs) : lastTs;
           $status.textContent = `${allDocs.length} lines (WS live)`;
@@ -1217,24 +1231,25 @@ async function fetchTail() {
       newDocs = paired.map(p => p.doc);
       newRawLines = paired.map(p => p.raw);
     }
+    const startIdx = allDocs.length;
     allDocs.push(...newDocs);
     for (const doc of newDocs) { if (doc) notifyLine(doc); }
     worker.postMessage({ type: "load", lines: newRawLines, chunk: -1 });
     lastTs = allDocs[allDocs.length - 1] && allDocs[allDocs.length - 1].ts || lastTs;
     if (filteredIndices === null) {
-      renderVirtual();
+      appendNewDocs(startIdx, newDocs.length);
     } else {
       applyFilters();
     }
-    if (tailing) $area.scrollTop = $area.scrollHeight;
     $status.textContent = `${allDocs.length} lines (live)`;
   } catch(e) {}
 }
 
 function stopTail() {
   tailing = false;
-  $tailBtn.textContent = "Live Tail";
+  $tailBtn.textContent = "Tail";
   $tailBtn.classList.remove("active");
+  $tailBtn.classList.add('primary');
   $tailBtn.setAttribute("aria-pressed", "false");
   if (ws) { try { ws.close(); } catch(e) {} ws = null; }
   if (tailTimer) { clearInterval(tailTimer); tailTimer = null; }
@@ -1289,10 +1304,10 @@ function renderSparklineFromBuckets(buckets) {
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
   canvas.width = canvas.clientWidth * dpr;
-  canvas.height = 32 * dpr;
+  canvas.height = 24 * dpr;
   ctx.scale(dpr, dpr);
   const w = canvas.clientWidth;
-  const h = 32;
+  const h = 24;
   ctx.clearRect(0, 0, w, h);
 
   if (!buckets.length) return;
@@ -1320,9 +1335,9 @@ function renderSparkline(stats) {
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
   canvas.width = canvas.clientWidth * dpr;
-  canvas.height = 32 * dpr;
+  canvas.height = 24 * dpr;
   ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, canvas.clientWidth, 32);
+  ctx.clearRect(0, 0, canvas.clientWidth, 24);
 }
 
 // ─── Minimap ───
@@ -1365,7 +1380,8 @@ $minimap.addEventListener("click", (e) => {
   const rect = $minimap.getBoundingClientRect();
   const ratio = (e.clientY - rect.top) / rect.height;
   const targetRow = Math.floor(ratio * total);
-  $area.scrollTop = targetRow * ROW_HEIGHT;
+  const el = $area.children[targetRow];
+  if (el) el.scrollIntoView({ block: "center" });
 });
 
 // ─── Theme ───
@@ -1504,21 +1520,19 @@ let numPrefixTimeout = null;
 function vimMove(delta) {
   const total = getVisibleCount();
   if (!total) return;
+  const oldVisible = selectedRow;
   if (selectedRow < 0) selectedRow = 0;
   selectedRow = Math.max(0, Math.min(total - 1, selectedRow + delta));
   const docIdx = filteredIndices ? filteredIndices[selectedRow] : selectedRow;
   selectedDocIdx = docIdx;
+  updateSelection(oldVisible, selectedRow);
   scrollToRow(selectedRow);
-  renderVirtual();
-  // Update detail if panel is open
-  if ($detail.style.display !== "none") showDetail(docIdx);
+  if ($detail.style.display !== 'none') showDetail(docIdx);
 }
 
 function scrollToRow(row) {
-  const top = row * ROW_HEIGHT;
-  if (top < $area.scrollTop) $area.scrollTop = top;
-  else if (top + ROW_HEIGHT > $area.scrollTop + $area.clientHeight)
-    $area.scrollTop = top - $area.clientHeight + ROW_HEIGHT;
+  const el = $area.children[row];
+  if (el) el.scrollIntoView({ block: "nearest" });
 }
 
 function ensureVisible(visibleIdx) {
@@ -1537,6 +1551,7 @@ function nextMatch(dir) {
   // Navigate through filtered results when search active
   if (!filteredIndices || !filteredIndices.length) return;
   const total = filteredIndices.length;
+  const oldVisible = selectedRow;
   if (selectedRow < 0) {
     selectedRow = dir > 0 ? 0 : total - 1;
   } else {
@@ -1544,8 +1559,8 @@ function nextMatch(dir) {
   }
   const docIdx = filteredIndices[selectedRow];
   selectedDocIdx = docIdx;
+  updateSelection(oldVisible, selectedRow);
   scrollToRow(selectedRow);
-  renderVirtual();
 }
 
 function showCommandPalette() {
@@ -1733,33 +1748,35 @@ document.addEventListener("keydown", (e) => {
     case "g": {
       const total = getVisibleCount();
       if (total) {
+        const oldVisible = selectedRow;
         selectedRow = 0;
         selectedDocIdx = filteredIndices ? filteredIndices[0] : 0;
+        updateSelection(oldVisible, 0);
         scrollToRow(0);
-        renderVirtual();
       }
       break;
     }
     case "G": {
       const total = getVisibleCount();
       if (total) {
+        const oldVisible = selectedRow;
         const last = total - 1;
         selectedRow = last;
         selectedDocIdx = filteredIndices ? filteredIndices[last] : last;
+        updateSelection(oldVisible, last);
         scrollToRow(last);
-        renderVirtual();
       }
       break;
     }
     case "d":
       if (e.ctrlKey) {
-        vimMove(Math.floor($area.clientHeight / ROW_HEIGHT));
+        vimMove(20);
         e.preventDefault();
       }
       break;
     case "u":
       if (e.ctrlKey) {
-        vimMove(-Math.floor($area.clientHeight / ROW_HEIGHT));
+        vimMove(-20);
         e.preventDefault();
       }
       break;
@@ -1834,7 +1851,7 @@ $area.addEventListener("touchend", (e) => {
     if (!bookmarks.has(bk)) {
       bookmarks.add(bk);
       saveBookmarks();
-      renderVirtual();
+      touchRow.classList.add('bookmarked');
       announce("Bookmarked");
     }
   } else if (dx < -50) {
@@ -1850,7 +1867,6 @@ $area.addEventListener("touchend", (e) => {
 // ─── Resize ───
 
 window.addEventListener("resize", () => {
-  renderVirtual();
   updateMinimap();
 });
 

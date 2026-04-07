@@ -1586,6 +1586,7 @@ class Orchestrator:
                 except Exception:
                     pass
 
+                agent._task_timeout = timeout_seconds
                 coro = agent.execute(task, progress_callback=_progress_cb)
 
             # Wrap with timeout

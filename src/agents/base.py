@@ -1234,7 +1234,21 @@ class BaseAgent:
             # LLM is forced to produce a text response (final_answer).
             # Small models ignore "LAST ITERATION" text warnings — this makes
             # it physically impossible to call tools on the final turn.
+            #
+            # Also strip tools when running low on time — local LLMs need
+            # 120+ seconds to generate a full analysis.  Without this, the
+            # agent wastes iterations on tool calls and then the task-level
+            # timeout kills the final-answer LLM call mid-generation.
             is_last_iteration = (iteration + 1 >= self.max_iterations)
+            _elapsed = time.time() - _start_time
+            _time_budget = getattr(self, '_task_timeout', 300)
+            _remaining = _time_budget - _elapsed
+            if not is_last_iteration and _remaining < 120 and iteration > 0:
+                logger.warning(
+                    f"[Task #{task_id}] Forcing final answer: "
+                    f"only {_remaining:.0f}s remaining (need 120s for answer)"
+                )
+                is_last_iteration = True
             if is_last_iteration:
                 litellm_tools = None
                 # Inject a system reminder that tools are gone

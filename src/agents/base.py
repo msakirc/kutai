@@ -1324,7 +1324,16 @@ class BaseAgent:
 
             # ── FORMAT RETRY ──
             if parsed is None:
-                if format_retries < MAX_FORMAT_RETRIES:
+                # If the response is substantial but just missing the JSON
+                # wrapper, accept it as a final answer rather than wasting
+                # an iteration on format correction.
+                if len(content) > 200:
+                    logger.info(
+                        f"[Task #{task_id}] Accepting unparsed response "
+                        f"as final answer ({len(content)} chars)"
+                    )
+                    parsed = {"action": "final_answer", "result": content}
+                elif format_retries < MAX_FORMAT_RETRIES:
                     format_retries += 1
                     logger.warning(
                         f"[Task #{task_id}] JSON parse failed — "

@@ -346,19 +346,23 @@ class BaseAgent:
     # ------------------------------------------------------------------ #
     async def _build_context(self, task: dict) -> str:
         """
-        Assemble the user message with task info, dependency results,
-        inline prior-step data, and recalled memories.
+        Assemble the user message with task info and policy-gated context layers.
+        Each layer respects its allocated token budget.
         """
+        from ..memory.context_policy import (
+            get_context_policy, apply_heuristics, compute_layer_budgets,
+        )
+
         parts: list[str] = []
 
-        # ── Task description (primary instruction — overrides any retrieved context) ──
+        # ── Task description (PRIMARY — always injected) ──
         parts.append(
             f"## Task (PRIMARY — this is what you must do)\n"
             f"**{task.get('title', 'Untitled')}**\n"
             f"{task.get('description', '')}"
         )
 
-        # ── Parse task.context (may be str or dict) ──
+        # ── Parse task.context ──
         task_context = task.get("context")
         if isinstance(task_context, str):
             try:
@@ -368,7 +372,7 @@ class BaseAgent:
         if not isinstance(task_context, dict):
             task_context = {}
 
-        # Specific known keys
+        # ── Task context fields (always injected if present) ──
         if "workspace_snapshot" in task_context:
             parts.append(
                 f"## Current Workspace State\n{task_context['workspace_snapshot']}"
@@ -377,8 +381,6 @@ class BaseAgent:
             parts.append(
                 f"## Prior Tool Result\n{task_context['tool_result']}"
             )
-
-        # ── User clarification (answer to a previous needs_clarification) ──
         if "user_clarification" in task_context:
             answer = task_context["user_clarification"]
             history = task_context.get("clarification_history", [])
@@ -390,191 +392,222 @@ class BaseAgent:
             if len(history) > 1:
                 parts.append(f"Previous answers: {history}")
 
-        # Remaining context (exclude internal / already-handled keys)
         _skip = {"workspace_snapshot", "tool_result", "prior_steps", "tool_depth",
                  "recent_conversation", "user_clarification", "clarification_history"}
-        extra = {k: v for k, v in task_context.items() if k not in _skip}
+        extra = {k: v for k, v in task_context.items() if k not in _skip and not k.startswith("_")}
         if extra:
             parts.append(
                 f"## Additional Context\n{json.dumps(extra, indent=2)}"
             )
 
-        # ── Dependency results from DB ──
+        # ── Determine active layers and budgets ──
+        agent_type = task.get("agent_type") or self.name
+        policy = get_context_policy(agent_type)
+        policy = apply_heuristics(task, policy)
+
+        model_ctx = task_context.get("model_context_length", 4096)
+        budgets = compute_layer_budgets(model_ctx, policy)
+
+        mission_id = task.get("mission_id")
+
+        # ── Gated layers ──
+
+        if "deps" in policy:
+            block = await self._fetch_deps(task, max_tokens=budgets.get("deps", 2000))
+            if block:
+                parts.append(block)
+
+        if "prior" in policy:
+            block = self._format_prior_steps(task_context, max_tokens=budgets.get("prior", 1500))
+            if block:
+                parts.append(block)
+
+        if "convo" in policy:
+            block = self._format_conversation(task_context, max_tokens=budgets.get("convo", 800))
+            if block:
+                parts.append(block)
+
+        if "ambient" in policy:
+            try:
+                from ..context.assembler import assemble_ambient_context
+                ambient = await assemble_ambient_context(
+                    mission_id=mission_id,
+                    max_tokens=min(budgets.get("ambient", 400), 400),
+                )
+                if ambient:
+                    parts.append(ambient)
+            except Exception as exc:
+                logger.debug(f"Ambient context failed: {exc}")
+
+        if "profile" in policy:
+            try:
+                project_profile = await get_project_profile_for_task(task)
+                profile_block = format_project_profile(project_profile) if project_profile else ""
+                if profile_block:
+                    parts.append(self._truncate_to_tokens(profile_block, budgets.get("profile", 500)))
+            except Exception as exc:
+                logger.debug(f"Project profile failed: {exc}")
+
+        if "board" in policy and mission_id:
+            try:
+                board = await get_or_create_blackboard(mission_id)
+                bb_block = format_blackboard_for_prompt(board)
+                if bb_block:
+                    parts.append(self._truncate_to_tokens(bb_block, budgets.get("board", 500)))
+            except Exception as exc:
+                logger.debug(f"Blackboard failed: {exc}")
+
+        if "skills" in policy:
+            try:
+                from ..memory.skills import (
+                    find_relevant_skills, format_skills_for_prompt,
+                    get_tools_to_inject, record_injection,
+                )
+                task_text = f"{task.get('title', '')} {task.get('description', '')}"
+                budget = budgets.get("skills", 800)
+                relevant_skills = await find_relevant_skills(task_text, limit=3)
+                if relevant_skills:
+                    skills_block = format_skills_for_prompt(relevant_skills, budget)
+                    if skills_block:
+                        parts.append(skills_block)
+
+                    extra_tools = get_tools_to_inject(relevant_skills)
+                    if extra_tools and self.allowed_tools is not None:
+                        for tool in extra_tools:
+                            if tool not in self.allowed_tools:
+                                self.allowed_tools.append(tool)
+                                logger.info("Skill-injected tool: %s", tool)
+
+                    skill_names = [s["name"] for s in relevant_skills]
+                    await record_injection(skill_names)
+                    try:
+                        _ctx = json.loads(task.get("context", "{}"))
+                        _ctx["injected_skills"] = skill_names
+                        task["context"] = json.dumps(_ctx)
+                    except Exception:
+                        pass
+
+                    logger.info("Skills injected: %s", skill_names)
+            except Exception as exc:
+                logger.debug("Skill injection failed: %s", exc)
+
+        if "api" in policy:
+            try:
+                api_enrichment = task_context.get("api_enrichment")
+                if api_enrichment:
+                    parts.append(self._truncate_to_tokens(api_enrichment, budgets.get("api", 300)))
+            except Exception as exc:
+                logger.debug("API enrichment failed: %s", exc)
+
+        if "rag" in policy:
+            try:
+                rag_block = await retrieve_context(
+                    task=task, agent_type=self.name,
+                    max_tokens=budgets.get("rag", 2000),
+                )
+                if rag_block:
+                    parts.append(rag_block)
+            except Exception as exc:
+                logger.debug(f"RAG retrieval failed: {exc}")
+
+        if "prefs" in policy:
+            try:
+                prefs = await get_user_preferences()
+                pref_block = format_preferences(prefs)
+                if pref_block:
+                    parts.append(self._truncate_to_tokens(pref_block, budgets.get("prefs", 200)))
+            except Exception as exc:
+                logger.debug(f"Preference retrieval failed: {exc}")
+
+        if "memory" in policy:
+            try:
+                memories = await recall_memory(mission_id=mission_id, limit=10)
+                if memories:
+                    mem_parts = ["## Project Memory"]
+                    for mem in memories:
+                        mem_value = mem.get('value', '')
+                        if not isinstance(mem_value, str):
+                            mem_value = str(mem_value)
+                        mem_parts.append(f"- **{mem.get('key', 'unknown')}**: {mem_value[:300]}")
+                    mem_block = "\n".join(mem_parts)
+                    parts.append(self._truncate_to_tokens(mem_block, budgets.get("memory", 500)))
+            except Exception as exc:
+                logger.debug(f"Memory recall failed: {exc}")
+
+        return "\n\n".join(parts)
+
+    def _truncate_to_tokens(self, text: str, max_tokens: int) -> str:
+        """Rough truncation: ~4 chars per token."""
+        max_chars = max_tokens * 4
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars] + "\n... [truncated to budget]"
+
+    async def _fetch_deps(self, task: dict, max_tokens: int) -> str:
+        """Fetch dependency results, truncated to budget."""
         depends_on = task.get("depends_on")
         if isinstance(depends_on, str):
             try:
                 depends_on = json.loads(depends_on)
             except (json.JSONDecodeError, TypeError):
                 depends_on = []
-        if depends_on:
-            try:
-                dep_results = await get_completed_dependency_results(depends_on)
-            except Exception as exc:
-                logger.warning(f"Failed to fetch dependency results: {exc}")
-                dep_results = {}
-            if dep_results:
-                parts.append("## Results from Previous Steps")
-                for dep_id, dep in dep_results.items():
-                    text = dep.get("result") or "(no result)"
-                    if len(text) > 4000:
-                        text = text[:4000] + "\n... (truncated)"
-                    parts.append(
-                        f"### Step #{dep_id}: "
-                        f"{dep.get('title', 'Unknown')}\n{text}"
-                    )
+        if not depends_on:
+            return ""
+        try:
+            dep_results = await get_completed_dependency_results(depends_on)
+        except Exception as exc:
+            logger.warning(f"Failed to fetch dependency results: {exc}")
+            return ""
+        if not dep_results:
+            return ""
 
-        # ── Inline prior_steps (orchestrator-injected fallback) ──
-        if "prior_steps" in task_context:
-            parts.append("## Results from Prior Steps (Inline)")
-            for step in task_context["prior_steps"]:
-                result = step.get("result", "")
-                if len(result) > 2000:
-                    result = result[:2000] + "\n... [truncated]"
-                parts.append(
-                    f"### Step: {step.get('title', 'Unknown')} "
-                    f"(Status: {step.get('status', '?')})\n{result}"
-                )
+        parts = ["## Results from Previous Steps"]
+        budget_chars = max_tokens * 4
+        used = len(parts[0])
+        per_dep = max(500, (budget_chars - used) // max(len(dep_results), 1))
 
-        # ── Recalled memories ──
-        mission_id = task.get("mission_id")
-
-        # ── Recent conversation (for follow-up understanding) ──
-        if "recent_conversation" in task_context:
-            parts.append("## Recent Conversation (for context)")
-            for entry in task_context["recent_conversation"]:
-                user_q = entry.get("user_asked", "?")
-                result = entry.get("result", "")
-                if len(result) > 600:
-                    result = result[:600] + "... [truncated]"
-                parts.append(
-                    f"**User asked:** {user_q}\n**Result:** {result}\n"
-                )
+        for dep_id, dep in dep_results.items():
+            text = dep.get("result") or "(no result)"
+            if len(text) > per_dep:
+                text = text[:per_dep] + "\n... (truncated)"
             parts.append(
-                "_Use this context to understand follow-up references "
-                "like 'list them', 'the names', 'do it again', etc._"
+                f"### Step #{dep_id}: {dep.get('title', 'Unknown')}\n{text}"
             )
-        # ── Phase 6.4: Ambient context injection ──
-        try:
-            from ..context.assembler import assemble_ambient_context
-            ambient = await assemble_ambient_context(mission_id=mission_id, max_tokens=400)
-            if ambient:
-                parts.append(ambient)
-        except Exception as exc:
-            logger.debug(f"Ambient context injection failed (non-critical): {exc}")
 
-        # ── Phase 12.6: Project profile injection ──
-        try:
-            project_profile = await get_project_profile_for_task(task)
-            profile_block = format_project_profile(project_profile) if project_profile else ""
-            if profile_block:
-                parts.append(profile_block)
-        except Exception as exc:
-            logger.debug(f"Project profile injection failed (non-critical): {exc}")
+        return self._truncate_to_tokens("\n".join(parts), max_tokens)
 
-        # ── Phase 13.1: Blackboard injection ──
-        if mission_id:
-            try:
-                board = await get_or_create_blackboard(mission_id)
-                bb_block = format_blackboard_for_prompt(board)
-                if bb_block:
-                    parts.append(bb_block)
-            except Exception as exc:
-                logger.debug(f"Blackboard injection failed (non-critical): {exc}")
-
-        # ── Skill library injection (v2 — execution recipes) ──
-        try:
-            from ..memory.skills import (
-                find_relevant_skills, format_skills_for_prompt,
-                get_tools_to_inject, record_injection,
+    def _format_prior_steps(self, task_context: dict, max_tokens: int) -> str:
+        """Format inline prior steps, truncated to budget."""
+        if "prior_steps" not in task_context:
+            return ""
+        parts = ["## Results from Prior Steps (Inline)"]
+        per_step = max(400, (max_tokens * 4) // max(len(task_context["prior_steps"]), 1))
+        for step in task_context["prior_steps"]:
+            result = step.get("result", "")
+            if len(result) > per_step:
+                result = result[:per_step] + "\n... [truncated]"
+            parts.append(
+                f"### Step: {step.get('title', 'Unknown')} "
+                f"(Status: {step.get('status', '?')})\n{result}"
             )
-            task_text = f"{task.get('title', '')} {task.get('description', '')}"
-            relevant_skills = await find_relevant_skills(task_text, limit=5)
-            if relevant_skills:
-                # Estimate context budget from model info
-                model_ctx = task.get("context", "{}")
-                if isinstance(model_ctx, str):
-                    try:
-                        model_ctx = json.loads(model_ctx)
-                    except (json.JSONDecodeError, TypeError):
-                        model_ctx = {}
-                if not isinstance(model_ctx, dict):
-                    model_ctx = {}
-                context_budget = model_ctx.get("model_context_length", 4096)
+        return self._truncate_to_tokens("\n".join(parts), max_tokens)
 
-                skills_block = format_skills_for_prompt(relevant_skills, context_budget)
-                if skills_block:
-                    parts.append(skills_block)
-
-                # Tool injection for high-confidence skills
-                extra_tools = get_tools_to_inject(relevant_skills)
-                if extra_tools and self.allowed_tools is not None:
-                    for tool in extra_tools:
-                        if tool not in self.allowed_tools:
-                            self.allowed_tools.append(tool)
-                            logger.info("Skill-injected tool: %s", tool)
-
-                # Track injections
-                skill_names = [s["name"] for s in relevant_skills]
-                await record_injection(skill_names)
-
-                # Store for success tracking after task completes
-                try:
-                    _ctx = json.loads(task.get("context", "{}"))
-                    _ctx["injected_skills"] = skill_names
-                    task["context"] = json.dumps(_ctx)
-                except Exception:
-                    pass
-
-                logger.info("Skills injected: %s", skill_names)
-        except Exception as exc:
-            logger.debug("Skill injection failed (non-critical): %s", exc)
-
-        # ── Smart Resource Integration: Layer 1 API enrichment ──
-        try:
-            _task_ctx_raw = task.get("context", "{}")
-            if isinstance(_task_ctx_raw, str):
-                _task_ctx_parsed = json.loads(_task_ctx_raw)
-            else:
-                _task_ctx_parsed = _task_ctx_raw or {}
-            api_enrichment = _task_ctx_parsed.get("api_enrichment")
-            if api_enrichment:
-                parts.append(api_enrichment)
-        except Exception as exc:
-            logger.debug("API enrichment injection failed (non-critical): %s", exc)
-
-        # ── Phase 11.3: RAG context injection ──
-        try:
-            rag_block = await retrieve_context(
-                task=task, agent_type=self.name,
-            )
-            if rag_block:
-                parts.append(rag_block)
-        except Exception as exc:
-            logger.debug(f"RAG retrieval failed (non-critical): {exc}")
-
-        # ── Phase 11.7: User preference injection ──
-        try:
-            prefs = await get_user_preferences()
-            pref_block = format_preferences(prefs)
-            if pref_block:
-                parts.append(pref_block)
-        except Exception as exc:
-            logger.debug(f"Preference retrieval failed (non-critical): {exc}")
-
-        try:
-            memories = await recall_memory(mission_id=mission_id, limit=10)
-        except Exception as exc:
-            logger.warning(f"Failed to recall memory: {exc}")
-            memories = []
-        if memories:
-            parts.append("## Project Memory")
-            for mem in memories:
-                mem_value = mem.get('value', '')
-                if not isinstance(mem_value, str):
-                    mem_value = str(mem_value)
-                parts.append(f"- **{mem.get('key', 'unknown')}**: {mem_value[:300]}")
-
-        return "\n\n".join(parts)
+    def _format_conversation(self, task_context: dict, max_tokens: int) -> str:
+        """Format recent conversation, truncated to budget."""
+        if "recent_conversation" not in task_context:
+            return ""
+        parts = ["## Recent Conversation (for context)"]
+        for entry in task_context["recent_conversation"]:
+            user_q = entry.get("user_asked", "?")
+            result = entry.get("result", "")
+            if len(result) > 600:
+                result = result[:600] + "... [truncated]"
+            parts.append(f"**User asked:** {user_q}\n**Result:** {result}\n")
+        parts.append(
+            "_Use this context to understand follow-up references "
+            "like 'list them', 'the names', 'do it again', etc._"
+        )
+        return self._truncate_to_tokens("\n".join(parts), max_tokens)
 
     # ------------------------------------------------------------------ #
     #  JSON parsing & normalisation                                       #

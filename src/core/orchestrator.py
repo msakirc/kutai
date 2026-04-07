@@ -477,7 +477,7 @@ class Orchestrator:
                 )
                 await db.execute(
                     "UPDATE tasks SET status = 'pending', "
-                    "attempts = ?, retry_reason = 'quality' WHERE id = ?",
+                    "attempts = ?, retry_reason = 'availability' WHERE id = ?",
                     (attempts, task["id"])
                 )
         if stuck:
@@ -1348,6 +1348,7 @@ class Orchestrator:
         logger.info("task received", task_id=task_id, title=title, agent_type=agent_type)
 
         task_ctx = {}  # initialized here so except handler can safely access it
+        result = None  # initialized here so except handler can safely access it
         try:
             # Atomic claim — if another worker grabbed it first, skip
             claimed = await claim_task(task_id)
@@ -1758,7 +1759,39 @@ class Orchestrator:
                         return
                 await self._handle_complete(task, result)
             elif status == "ungraded":
-                # Task deferred to grading phase — store result, don't notify
+                # Task deferred to grading phase — store result, don't notify.
+                # BUT: still run the workflow post-hook so artifacts are stored
+                # and phase completion is tracked. Grading only affects the
+                # task status (ungraded→completed vs ungraded→retry), not
+                # whether the output artifacts should be persisted.
+                if is_workflow_step(task_ctx):
+                    await post_execute_workflow_step(task, result)
+                    # Post-hook may detect disguised failure
+                    if result.get("status") == "failed":
+                        error_msg = result.get("error", "Disguised failure detected")
+                        attempts = (task.get("attempts") or 0) + 1
+                        max_attempts = task.get("max_attempts") or 6
+                        from src.core.retry import compute_retry_timing, update_exclusions_on_failure
+                        update_exclusions_on_failure(task_ctx, result.get("model", ""), attempts)
+                        decision = compute_retry_timing("quality", attempts=attempts, max_attempts=max_attempts)
+                        if decision.action == "terminal":
+                            await update_task(
+                                task_id, status="failed", attempts=attempts,
+                                failed_in_phase="worker",
+                                error=f"Disguised failure exhausted: {error_msg[:300]}",
+                                context=json.dumps(task_ctx),
+                            )
+                        else:
+                            next_retry = None
+                            if decision.action == "delayed":
+                                next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
+                            await update_task(
+                                task_id, status="pending", attempts=attempts,
+                                error=error_msg[:500], next_retry_at=next_retry,
+                                retry_reason="quality", context=json.dumps(task_ctx),
+                            )
+                        return
+
                 result_text = result.get("result", "No result")
                 cost = result.get("cost", 0)
                 await update_task(
@@ -3196,7 +3229,7 @@ class Orchestrator:
             attempts = (task.get("attempts") or 0) + 1
             await db.execute(
                 "UPDATE tasks SET status = 'pending', "
-                "attempts = ?, retry_reason = 'quality' WHERE id = ?",
+                "attempts = ?, retry_reason = 'availability' WHERE id = ?",
                 (attempts, task["id"]),
             )
         if interrupted:
@@ -3332,7 +3365,6 @@ class Orchestrator:
                     self.running = False
 
                     # Stop background tasks
-                    bp_queue.stop()
                     for t in self._background_tasks:
                         t.cancel()
 

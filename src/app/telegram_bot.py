@@ -431,7 +431,14 @@ class TelegramInterface:
             kwargs["reply_markup"] = self._get_current_keyboard(chat_id)
         # Accept either an Update or a Message object
         msg = getattr(update_or_msg, "message", update_or_msg)
-        return await msg.reply_text(text, **kwargs)
+        try:
+            return await msg.reply_text(text, **kwargs)
+        except Exception as e:
+            # Markdown parse error — retry without parse_mode
+            if "parse_mode" in kwargs and "parse entities" in str(e).lower():
+                kwargs.pop("parse_mode")
+                return await msg.reply_text(text, **kwargs)
+            raise
 
     def _get_current_keyboard(self, chat_id: int | None) -> ReplyKeyboardMarkup:
         """Return the keyboard for the current navigation state."""

@@ -781,6 +781,7 @@ class TestCallbackData:
 
     @pytest.mark.asyncio
     async def test_task_pause_calls_update_mission(self):
+        """Pause button now cancels — 'paused' state removed in unified lifecycle."""
         bot = _make_bot()
         update = self._make_callback_update("m:task:pause:7")
         ctx = _make_context()
@@ -788,7 +789,7 @@ class TestCallbackData:
         with patch("src.app.telegram_bot.update_mission",
                    new_callable=AsyncMock) as mock_update:
             await bot.handle_callback(update, ctx)
-            mock_update.assert_called_once_with(7, status="paused")
+            mock_update.assert_called_once_with(7, status="cancelled")
 
     @pytest.mark.asyncio
     async def test_confirm_cancel_edits_message(self):

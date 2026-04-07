@@ -527,10 +527,19 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
     output_names = extract_output_artifact_names(ctx)
     step_id = ctx.get("workflow_step_id", "")
 
-    if not mission_id or not output_names:
+    if not mission_id:
         return
 
     store = get_artifact_store()
+
+    if not output_names:
+        # No output artifacts — skip artifact storage but still run
+        # phase completion and clarification checks below.
+        # Jump to phase completion.
+        workflow_phase = ctx.get("workflow_phase")
+        if mission_id and workflow_phase:
+            await _check_phase_completion(mission_id, workflow_phase)
+        return
     output_value = result.get("result", "")
 
     # ── Recover artifact content from workspace files ──
@@ -625,7 +634,7 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
                 new_ctx["_schema_error"] = error_msg
                 await update_task(
                     task.get("id"),
-                    context=new_ctx,
+                    context=json.dumps(new_ctx),
                 )
             except Exception as e:
                 logger.debug(f"[Workflow Hook] Could not update task context: {e}")
@@ -713,7 +722,7 @@ async def _check_phase_completion(mission_id: int, phase_id: str) -> bool:
         logger.debug(f"[Workflow Hook] Could not fetch tasks for mission {mission_id}: {exc}")
         return False
 
-    terminal_states = {"completed", "skipped", "cancelled"}
+    terminal_states = {"completed", "skipped", "cancelled", "failed"}
     phase_tasks = []
     for t in tasks:
         ctx = _parse_context(t)

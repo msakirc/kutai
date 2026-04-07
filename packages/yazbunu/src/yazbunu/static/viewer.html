@@ -183,8 +183,8 @@
   .level-INFO .level { color: var(--info); }
   .level-DEBUG .level { color: var(--debug); }
   .src { color: var(--accent); white-space: nowrap; flex-shrink: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; opacity: 0.8; }
-  .msg { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .log-line.selected .msg { white-space: pre-wrap; word-break: break-word; overflow: visible; text-overflow: unset; user-select: text; }
+  .msg { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; }
+  .log-line.selected .msg { -webkit-line-clamp: unset; overflow: visible; }
   .extras { color: var(--text-dim); font-size: 11px; flex-shrink: 0; }
   .exc-inline {
     width: 100%;
@@ -758,24 +758,58 @@ function getVisibleCount() {
 
 function render() {
   const wasAtBottom = $area.scrollTop + $area.clientHeight >= $area.scrollHeight - 50;
-  const frag = document.createDocumentFragment();
+  const savedScroll = $area.scrollTop;
   const total = getVisibleCount();
+  const existing = $area.children;
 
+  // Build list of docIdx we need to show
+  const needed = [];
   for (let vi = 0; vi < total; vi++) {
-    const docIdx = filteredIndices ? filteredIndices[vi] : vi;
-    const doc = allDocs[docIdx];
-    const row = document.createElement("div");
-    populateRow(row, doc, docIdx, vi);
-    row.addEventListener("click", onRowClick);
-    row.addEventListener("dblclick", onRowDblClick);
-    frag.appendChild(row);
+    needed.push(filteredIndices ? filteredIndices[vi] : vi);
   }
 
-  $area.innerHTML = "";
-  $area.appendChild(frag);
+  // Fast path: if the set of docIdx hasn't changed, just update selection classes
+  let canReconcile = existing.length === needed.length;
+  if (canReconcile) {
+    for (let i = 0; i < needed.length; i++) {
+      if (parseInt(existing[i].dataset.docIdx, 10) !== needed[i]) {
+        canReconcile = false;
+        break;
+      }
+    }
+  }
 
+  if (canReconcile) {
+    // Just update selection/bookmark state, don't touch DOM structure
+    for (let vi = 0; vi < needed.length; vi++) {
+      const el = existing[vi];
+      const docIdx = needed[vi];
+      const isSelected = docIdx === selectedDocIdx;
+      el.classList.toggle("selected", isSelected);
+      if (isSelected) el.setAttribute("aria-selected", "true");
+      else el.removeAttribute("aria-selected");
+    }
+  } else {
+    // Full rebuild needed — preserve scroll position
+    const frag = document.createDocumentFragment();
+    for (let vi = 0; vi < total; vi++) {
+      const docIdx = needed[vi];
+      const doc = allDocs[docIdx];
+      const row = document.createElement("div");
+      populateRow(row, doc, docIdx, vi);
+      row.addEventListener("click", onRowClick);
+      row.addEventListener("dblclick", onRowDblClick);
+      frag.appendChild(row);
+    }
+    $area.innerHTML = "";
+    $area.appendChild(frag);
+  }
+
+  // Scroll: if was at bottom stay there, otherwise restore exact position
   if (wasAtBottom) {
     $area.scrollTop = $area.scrollHeight;
+  } else {
+    $area.scrollTop = savedScroll;
   }
 }
 
@@ -908,11 +942,20 @@ function populateRow(row, doc, docIdx, visibleIdx) {
 
 // ─── Row interaction ───
 
+// Track mouse drag to distinguish click from text selection
+let _mouseDownPos = null;
+$area.addEventListener("mousedown", (e) => {
+  _mouseDownPos = { x: e.clientX, y: e.clientY };
+});
+
 function onRowClick(e) {
   if (e.target.classList.contains("pill")) return;
-  // Don't interfere with text selection
-  const sel = window.getSelection();
-  if (sel && sel.toString().length > 0) return;
+  // If mouse moved more than 5px, user was selecting text — don't hijack
+  if (_mouseDownPos) {
+    const dx = Math.abs(e.clientX - _mouseDownPos.x);
+    const dy = Math.abs(e.clientY - _mouseDownPos.y);
+    if (dx > 5 || dy > 5) return;
+  }
   const row = e.currentTarget;
   const docIdx = parseInt(row.dataset.docIdx, 10);
   const visibleIdx = parseInt(row.dataset.visibleIdx, 10);

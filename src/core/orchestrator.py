@@ -1612,20 +1612,24 @@ class Orchestrator:
                                 c = msg["content"]
                                 # Quick check for final_answer JSON
                                 if "final_answer" in c and len(c) > 100:
-                                    partial_result = c[:3000]
+                                    try:
+                                        _p = json.loads(c)
+                                        partial_result = _p.get("result", c)[:8000]
+                                    except (json.JSONDecodeError, TypeError):
+                                        partial_result = c[:8000]
                                     break
                         # Strategy 2: last tool result (user message echoing
                         # a tool's output — usually the most informative).
                         if not partial_result:
                             for msg in reversed(last_messages):
                                 if msg.get("role") == "user" and "Tool Result" in msg.get("content", ""):
-                                    partial_result = msg["content"][:3000]
+                                    partial_result = msg["content"][:8000]
                                     break
                         # Strategy 3: last substantial assistant message
                         if not partial_result:
                             for msg in reversed(last_messages):
                                 if msg.get("role") == "assistant" and len(msg.get("content", "")) > 100:
-                                    partial_result = msg["content"][:3000]
+                                    partial_result = msg["content"][:8000]
                                     break
 
                         if partial_result:

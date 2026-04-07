@@ -243,20 +243,77 @@ Issues #6, #7, #8 are the main design. Issues #1-4 are independent cleanup that 
 
 ---
 
+## 14. Stale References in skill-system.md
+
+**Location**: `docs/skill-system.md` lines 125, 127, 186
+
+**Problem**: After the grading unification, three references still describe the old system:
+- Line 125: "Reads `grader_data`, calls `add_skill`" — skill extraction now lives in `grading.py:apply_grade_result()`, not the orchestrator
+- Line 127: "`grade_response` returns `(bool, dict)`" — this function no longer exists; `grade_task()` returns `GradeResult` dataclass
+- Line 186: Same stale reference to `grade_response` returning a tuple
+
+**Impact**: Misleading documentation for anyone modifying the grading or skill system.
+
+**Fix**: Update these lines to describe the current flow: `grade_task()` returns `GradeResult`, `apply_grade_result()` handles skill extraction using `verdict.situation`/`verdict.strategy`/`verdict.tools`.
+
+**Complexity**: Trivial. Text-only change.
+
+---
+
+## 15. Missing Test Coverage for apply_grade_result
+
+**Location**: `tests/test_grading.py`
+
+**Problem**: The test file covers parsing well (18 tests) but does not test:
+- `apply_grade_result()` PASS path (skill extraction, state transition, injection success tracking)
+- `apply_grade_result()` FAIL path (retry logic, DLQ quarantine)
+- `grade_task()` with empty/trivial result (auto-fail at <10 chars)
+- `drain_ungraded_tasks()` flow
+
+These are the most critical business logic paths in the grading module. Currently only tested indirectly via integration.
+
+**Impact**: Regressions in grading behavior (e.g., broken skill extraction, incorrect retry logic) would not be caught by unit tests.
+
+**Fix**: Add tests with mocked DB, dispatcher, and skills module. The PASS path needs mocks for `transition_task`, `record_model_call`, `add_skill`, `record_injection_success`. The FAIL path needs mocks for `compute_retry_timing`, `update_exclusions_on_failure`, `quarantine_task`.
+
+**Complexity**: Medium. Heavy mocking required but the test structure is straightforward.
+
+---
+
+## 16. _parse_text_field Regex is Single-Line Only
+
+**Location**: `src/core/grading.py:_parse_text_field()`
+
+**Problem**: The regex `KEY\s*:\s*(.+)` only captures content on the same line as the key. If a small LLM wraps the TOOLS line across multiple lines (e.g., `TOOLS: smart_search,\n  web_search, api_call`), only `smart_search,` would be captured.
+
+**Impact**: Low currently — the grading prompt asks for single-line answers and most small LLMs comply. But could cause silent data loss for models that wrap long tool lists.
+
+**Fix**: Either make the regex multiline-aware (capture until next KEY or end of string) or document that the prompt design relies on single-line responses. A multiline-aware version: `rf"{key}\s*:\s*(.+?)(?=\n[A-Z]+\s*:|$)"` with `re.DOTALL`.
+
+**Complexity**: Low, but needs careful testing to avoid matching across unrelated fields.
+
+---
+
 ## Updated Priority Matrix
 
-| Issue | Severity | Independence | Suggested Order |
-|-------|----------|-------------|-----------------|
-| #8 Uncapped context layers | Critical | Main design | Main design |
-| #6 Two grading systems | Critical | Main design | Main design |
-| #7 Loose thresholds | High | Main design | Main design |
+**Resolved by main design (2026-04-07):** #6 (two grading systems), #7 (loose thresholds), #8 (uncapped context layers)
+
+
+| Issue | Severity | Independence | Status |
+|-------|----------|-------------|--------|
+| #8 Uncapped context layers | Critical | Main design | ✅ Resolved 2026-04-07 |
+| #6 Two grading systems | Critical | Main design | ✅ Resolved 2026-04-07 |
+| #7 Loose thresholds | High | Main design | ✅ Resolved 2026-04-07 |
 | #3 Keyword preferences | High | Independent | Parallel session |
 | #4 Fake insights | Medium | Independent | Parallel session |
 | #1 Fake HyDE | Medium | Independent | Parallel session |
 | #10 Bilingual query expansion | Medium | Independent | Parallel session |
 | #9 Temporal validity | Medium | Independent | Parallel session |
-| #11 Precomputed essentials | Medium | Independent | Parallel session (after #8) |
+| #15 Missing grading test coverage | Medium | Independent | Parallel session |
+| #11 Precomputed essentials | Medium | Independent | Parallel session |
+| #14 Stale skill-system.md refs | Low | Independent | Parallel session (trivial) |
 | #2 Dead summaries | Low | Independent | Parallel session |
-| #13 Reranker enablement | Low | Depends on #8 | After main design |
-| #12 Weight validation | Low | Depends on #8 | After main design + data collection |
-| #5 Disabled reranker | Low | Same as #13 | After main design |
+| #16 Single-line text field parsing | Low | Independent | Parallel session |
+| #13 Reranker enablement | Low | Depends on #8 | Ready now (#8 resolved) |
+| #12 Weight validation | Low | Depends on #8 | Ready now (#8 resolved) |
+| #5 Disabled reranker | Low | Same as #13 | Ready now (#8 resolved) |

@@ -38,8 +38,18 @@ Backward compat always complicates systems. When we kill the old score-based gra
 ### 2. Binary grading with progressive extraction (not two separate graders)
 We unify `router.py:grade_response()` and `grading.py:grade_task()` into one prompt. The prompt asks RELEVANT/COMPLETE/VERDICT (binary, robust) followed by SITUATION/STRATEGY/TOOLS (optional, for skill capture). Parsing is progressive — if structured fields fail, the grade still works. This fixes the deferred grading gap without adding LLM calls.
 
-### 3. No additional LLM calls for memory improvement
-Running an extra LLM pass before/after every task is too much load on the limited GPU. Any memory improvement must piggyback on existing LLM calls (grading) or use heuristics. This rules out: real HyDE (needs LLM), LLM-based preference detection, LLM-based query reformulation, LLM-based insight extraction.
+### 3. No additional LLM calls — piggyback on grading instead
+Running an extra LLM pass before/after every task is too much load on the limited GPU. Any memory improvement must piggyback on existing LLM calls (grading) or use heuristics.
+
+**The merge opportunity**: The grading LLM call already reads the full task + response. Instead of adding separate LLM calls for preference detection, insight extraction, or skill capture, we expanded the grading prompt to also ask for SITUATION/STRATEGY/TOOLS. This adds ~50-100 tokens to grading output but zero additional LLM calls. The parsing is progressive — if the model can't produce the optional fields, grading still works.
+
+**What this enables for parallel fixes**: Issues #3 (preferences) and #4 (insights) could similarly piggyback on grading by adding optional fields to the prompt:
+- `PREFERENCE: one-line user preference signal if detected, or "none"` — replaces keyword-matching preference detection
+- `INSIGHT: one-line reusable learning if any, or "none"` — replaces reformatted-title "insights"
+
+These should NOT be added to the grading prompt yet (keep it lean for small LLMs), but they're the recommended approach when those issues are tackled. The progressive parsing infrastructure already handles optional fields gracefully — empty fields are silently ignored.
+
+**What this rules out**: real HyDE (needs LLM before retrieval, not after), LLM-based query reformulation, LLM-based conversation summarization. These need their own LLM calls and aren't viable on current hardware.
 
 ### 4. Context gating via static policy map + lightweight heuristics
 We considered three gating approaches:

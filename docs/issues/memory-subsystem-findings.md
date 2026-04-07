@@ -62,7 +62,7 @@ if "python" in combined:
 - B) Replace keyword matching with classification piggybacked on the grading LLM call (add an optional "preference_signal" field to grading output).
 - C) Require explicit user confirmation before storing preferences (e.g., "I noticed you prefer Python — is that right?").
 
-**Recommendation**: A immediately (stop the noise), B as part of the unified grading redesign.
+**Recommendation**: A immediately (stop the noise), B when ready. The unified grading prompt already has progressive parsing infrastructure for optional fields. Adding `PREFERENCE: one-line user preference signal or "none"` to the grading prompt would replace keyword matching with LLM-based detection at zero additional LLM cost. See `docs/issues/memory-redesign-context.md` decision #3 for the piggybacking approach.
 
 ---
 
@@ -83,7 +83,7 @@ This is just string formatting, not extraction. Every completed task generates a
 - B) Gate by task complexity (only extract for iterations >= 3 AND tools_used >= 2). Still won't be real extraction but at least reduces noise.
 - C) Replace with real extraction piggybacked on grading (add "reusable_insight" field to grading output for score >= 4).
 
-**Recommendation**: A now (remove noise source), C as part of unified grading if budget allows.
+**Recommendation**: A now (remove noise source), C when ready. Same piggybacking approach as #3: add `INSIGHT: one-line reusable learning or "none"` to the grading prompt. The progressive parsing already handles optional fields — empty = silently skipped. See `docs/issues/memory-redesign-context.md` decision #3.
 
 ---
 

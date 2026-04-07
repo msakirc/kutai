@@ -2757,11 +2757,6 @@ class TelegramInterface:
         if cost > 0:
             lines.append(f"\n💰 Cost: ${cost:.4f}")
 
-        # Quality
-        quality = task.get('quality_score', 0) or 0
-        if quality > 0:
-            lines.append(f"Quality: {quality}/5")
-
         # Error
         error = task.get('error', '')
         if error:

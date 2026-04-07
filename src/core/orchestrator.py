@@ -2243,78 +2243,14 @@ class Orchestrator:
 
         logger.info("task completed", task_id=task_id, model=model, cost=cost, iterations=iterations)
 
-        # ── Quality grade notification — warn user about low-quality results ──
-        quality_score = result.get("quality_score")
-        if quality_score and quality_score < 4:
-            try:
-                chat_id = task_ctx_parsed.get("chat_id")
-                if chat_id and not task_ctx_parsed.get("silent"):
-                    await self.telegram.app.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"⚠️ Task #{task_id} quality score: {quality_score}/5 — result may need review",
-                    )
-            except Exception:
-                pass
-
-        # (Legacy batch suggestion code removed — suggestions now use direct LLM call)
-
-        # Phase 13.2 v2: Extract execution recipe from high-quality tasks
-        tools_used = result.get("tools_used_names", [])
-        quality = result.get("quality_score")
-        worth_capturing = (
-            iterations >= 2
-            and tools_used
-            and quality is not None
-            and quality >= 4.0
-        )
-        if worth_capturing:
-            try:
-                from ..memory.skills import add_skill
-                grader_data = result.get("grader_data", {})
-                situation = grader_data.get("situation_summary", "")
-                strategy = grader_data.get("strategy_summary", "")
-                tool_template = grader_data.get("tool_template", [])
-                agent_type = task.get("agent_type", "executor")
-                title = task.get("title", "")
-                task_id_val = task.get("id", 0)
-
-                if situation and strategy:
-                    skill_name = f"auto:{agent_type}:{title[:40]}"
-                    await add_skill(
-                        name=skill_name,
-                        description=situation,
-                        strategy_summary=strategy,
-                        tool_template=tool_template,
-                        tools_used=tools_used,
-                        avg_iterations=iterations,
-                        source_grade="great",
-                        source_task_id=task_id_val,
-                    )
-                else:
-                    skill_name = f"auto:{agent_type}:{title[:40]}"
-                    auto_desc = f"Task: {title[:100]}. Agent: {agent_type}."
-                    auto_strategy = f"Used {', '.join(tools_used[:5])} in {iterations} iterations"
-                    await add_skill(
-                        name=skill_name,
-                        description=auto_desc,
-                        strategy_summary=auto_strategy,
-                        tools_used=tools_used,
-                        avg_iterations=iterations,
-                        source_grade="great",
-                        source_task_id=task_id_val,
-                    )
-            except Exception:
-                pass
-
         # Track injection success
-        if quality is not None and quality >= 4.0:
-            try:
-                injected = task_ctx_parsed.get("injected_skills", [])
-                if injected:
-                    from ..memory.skills import record_injection_success
-                    await record_injection_success(injected)
-            except Exception:
-                pass
+        try:
+            injected = task_ctx_parsed.get("injected_skills", [])
+            if injected and result.get("status") != "ungraded":
+                from ..memory.skills import record_injection_success
+                await record_injection_success(injected)
+        except Exception:
+            pass
 
         # ── Fix #9: Workflow phase completion notification ──
         if task_ctx.get("is_workflow_step") and task.get("mission_id"):

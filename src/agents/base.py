@@ -1613,7 +1613,6 @@ class BaseAgent:
                     }
 
                 # ── Grade or defer grading ──
-                quality_score = None
                 try:
                     from src.core.llm_dispatcher import get_dispatcher
                     from src.core.grading import grade_task, apply_grade_result, GradeResult
@@ -1632,7 +1631,6 @@ class BaseAgent:
                             # Inject actual result so grade_task sees it
                             task["result"] = result
                             verdict = await grade_task(task, loaded or "")
-                            quality_score = verdict.score
                             if not verdict.passed:
                                 # Grade FAIL — apply immediately, return retry signal
                                 await apply_grade_result(task_id, verdict)
@@ -1641,7 +1639,6 @@ class BaseAgent:
                                     "status": "pending",
                                     "result": result,
                                     "model": used_model,
-                                    "quality_score": quality_score,
                                 }
                         except Exception:
                             # Grading failed — defer instead
@@ -1688,7 +1685,6 @@ class BaseAgent:
                     "cost":          total_cost,
                     "difficulty":    reqs.difficulty,
                     "iterations":    iteration + 1,
-                    "quality_score": quality_score,
                     "tools_used_names": sorted(tools_used_names),
                 }
 

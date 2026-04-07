@@ -426,29 +426,6 @@ class TestLLMDispatcherIntegration(unittest.TestCase):
         # All local models excluded (none loaded)
         self.assertIn("openai/model-a", result.exclude_models)
 
-    # 29. grade_response uses priority=1
-    def test_grade_response_uses_low_priority(self):
-        """grade_response should use priority=1 so grading never blocks main work."""
-        captured_reqs = {}
-
-        async def _fake_request(category, reqs, messages, tools=None):
-            captured_reqs["priority"] = reqs.priority
-            return {"content": '{"score": 4, "reason": "ok"}', "model": "m"}
-
-        dispatcher = self._make_dispatcher()
-        with patch("src.core.llm_dispatcher.get_dispatcher", return_value=dispatcher), \
-             patch.object(dispatcher, "request",
-                          side_effect=_fake_request):
-            from src.core.router import grade_response
-            score, grader_data = run_async(grade_response(
-                task_title="Test",
-                task_description="Test desc",
-                response_text="Some response text that is long enough",
-                generating_model="model-x",
-            ))
-
-        self.assertEqual(captured_reqs.get("priority"), 1)
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Cold-Start Wait Tests

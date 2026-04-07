@@ -184,7 +184,7 @@
   .level-DEBUG .level { color: var(--debug); }
   .src { color: var(--accent); white-space: nowrap; flex-shrink: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; opacity: 0.8; }
   .msg { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .log-line:hover .msg, .log-line.selected .msg { white-space: pre-wrap; word-break: break-word; overflow: visible; text-overflow: unset; }
+  .log-line.selected .msg { white-space: pre-wrap; word-break: break-word; overflow: visible; text-overflow: unset; }
   .extras { color: var(--text-dim); font-size: 11px; flex-shrink: 0; }
   .exc-inline {
     width: 100%;
@@ -623,8 +623,7 @@ worker.onmessage = (e) => {
       updateMinimap();
       $status.textContent = `${msg.indices.length} / ${msg.total} lines`;
       announce(`Filter: ${msg.indices.length} of ${msg.total} lines`);
-      // If tailing, stay at bottom
-      if (tailing) $area.scrollTop = $area.scrollHeight;
+      // Stay at bottom only if user was already there
       break;
     case "stats":
     case "fields":
@@ -775,7 +774,7 @@ function render() {
   $area.innerHTML = "";
   $area.appendChild(frag);
 
-  if (wasAtBottom || tailing) {
+  if (wasAtBottom) {
     $area.scrollTop = $area.scrollHeight;
   }
 }
@@ -805,7 +804,7 @@ function appendNewDocs(startIdx, count) {
     frag.appendChild(row);
   }
   $area.appendChild(frag);
-  if (wasAtBottom || tailing) {
+  if (wasAtBottom) {
     $area.scrollTop = $area.scrollHeight;
   }
   $status.textContent = `${allDocs.length} lines (live)`;

@@ -201,7 +201,6 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
     if verdict.passed:
         await transition_task(
             task_id, "completed",
-            quality_score=verdict.score,
             completed_at=db_now(),
         )
 
@@ -212,30 +211,45 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
                 model=ctx.get("generating_model", ""),
                 agent_type=task.get("agent_type", "executor"),
                 success=True,
-                grade=verdict.score,
             )
         except Exception:
             pass
 
-        # Skill extraction for deferred grades
+        # Skill extraction — uses verdict fields when available, mechanical fallback otherwise
         iterations = task.get("iterations", 1) or 1
         tools_used = ctx.get("tools_used_names", [])
-        if iterations >= 2 and tools_used and verdict.score >= 4.0:
+        if iterations >= 2 and tools_used:
             try:
                 from src.memory.skills import add_skill
                 agent_type = task.get("agent_type", "executor")
                 title = task.get("title", "")
-                await add_skill(
-                    name=f"auto:{agent_type}:{title[:40]}",
-                    description=f"Task: {title[:100]}. Agent: {agent_type}.",
-                    strategy_summary=f"Used {', '.join(sorted(tools_used)[:5])} in {iterations} iterations",
-                    tools_used=sorted(tools_used),
-                    avg_iterations=iterations,
-                    source_grade="great",
-                    source_task_id=task_id,
-                )
+
+                skill_name = f"auto:{agent_type}:{title[:40]}"
+
+                if verdict.situation:
+                    # Rich extraction from grader output
+                    await add_skill(
+                        name=skill_name,
+                        description=verdict.situation,
+                        strategy_summary=verdict.strategy or f"Used {', '.join(tools_used[:5])}",
+                        tools_used=verdict.tools or sorted(tools_used),
+                        avg_iterations=iterations,
+                        source_grade="great",
+                        source_task_id=task_id,
+                    )
+                else:
+                    # Mechanical fallback — still better than nothing
+                    await add_skill(
+                        name=skill_name,
+                        description=f"Task: {title[:100]}. Agent: {agent_type}.",
+                        strategy_summary=f"Used {', '.join(sorted(tools_used)[:5])} in {iterations} iterations",
+                        tools_used=sorted(tools_used),
+                        avg_iterations=iterations,
+                        source_grade="great",
+                        source_task_id=task_id,
+                    )
             except Exception as e:
-                logger.debug(f"deferred skill extraction failed: {e}")
+                logger.debug(f"skill extraction failed: {e}")
 
         # Telegram notification for non-silent tasks
         try:
@@ -251,7 +265,7 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
         except Exception:
             pass
 
-        logger.info(f"grade PASS | task_id={task_id} score={verdict.score}")
+        logger.info(f"grade PASS | task_id={task_id}")
     else:
         # VERDICT=FAIL — worker quality failure
         generating_model = ctx.get("generating_model", "")
@@ -381,7 +395,6 @@ async def drain_ungraded_tasks(new_model: str) -> int:
                 from src.core.state_machine import transition_task
                 await transition_task(
                     task_id, "completed",
-                    quality_score=None,
                     grade_attempts=g_attempts,
                     completed_at=db_now(),
                     context=json.dumps(ctx),

@@ -721,7 +721,7 @@ async def _check_phase_completion(mission_id: int, phase_id: str) -> bool:
         logger.debug(f"[Workflow Hook] Could not fetch tasks for mission {mission_id}: {exc}")
         return False
 
-    terminal_states = {"completed", "skipped", "cancelled", "failed"}
+    terminal_states = {"completed", "skipped", "cancelled"}
     phase_tasks = []
     for t in tasks:
         ctx = _parse_context(t)

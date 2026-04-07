@@ -39,11 +39,38 @@ def _load_deps():
 
 # ─── Configuration ──────────────────────────────────────────────────────────
 
-RAG_MIN_BUDGET = 2000
-RAG_MAX_BUDGET = 12000
-RAG_BUDGET_FRACTION = 0.15  # of available context window
-RAG_MIN_RELEVANCE = 0.5     # cosine distance threshold (lower = more similar)
-RAG_DEDUP_THRESHOLD = 0.85  # embedding similarity for dedup
+RAG_CONFIG = {
+    "min_relevance": 0.72,
+    "top_k_per_collection": 2,
+    "max_budget": 12000,
+    "min_budget": 800,
+    "budget_fraction": 0.15,
+    "dedup_threshold": 0.85,
+}
+
+# ─── Collection Gating ───────────────────────────────────────────────────────
+
+RAG_COLLECTIONS: dict[str, list[str]] = {
+    "coder":            ["errors", "codebase"],
+    "fixer":            ["errors", "codebase", "episodic"],
+    "implementer":      ["errors", "codebase"],
+    "researcher":       ["web_knowledge", "semantic"],
+    "shopping_advisor": ["shopping"],
+    "assistant":        ["semantic", "conversations"],
+    "writer":           ["semantic"],
+    "error_recovery":   ["errors", "episodic"],
+    "test_generator":   ["errors", "codebase"],
+    "planner":          ["episodic", "semantic"],
+    "architect":        ["episodic", "semantic"],
+    "analyst":          ["semantic", "web_knowledge"],
+}
+
+RAG_DEFAULT_COLLECTIONS = ["episodic", "semantic"]
+
+
+def get_rag_collections(agent_type: str) -> list[str]:
+    """Return which ChromaDB collections to query for a given agent type."""
+    return RAG_COLLECTIONS.get(agent_type, RAG_DEFAULT_COLLECTIONS)
 
 # Phase F: Reranker config
 RERANKER_ENABLED = False  # Disabled by default — enable when cross-encoder is installed
@@ -112,8 +139,8 @@ def _compute_rag_budget(
         # Reserve space for system prompt, tools, task, conversation
         reserved = 10000
         available = ctx_window - reserved
-        budget = int(available * RAG_BUDGET_FRACTION)
-        return max(RAG_MIN_BUDGET, min(RAG_MAX_BUDGET, budget))
+        budget = int(available * RAG_CONFIG["budget_fraction"])
+        return max(RAG_CONFIG["min_budget"], min(RAG_CONFIG["max_budget"], budget))
 
     # Infer from task type
     task_type = task.get("type", "default")
@@ -183,7 +210,7 @@ def _rank_results(results: list[dict]) -> list[dict]:
         distance = r.get("distance", 1.0)
 
         # Filter by relevance threshold (cosine distance)
-        if distance > (1.0 - RAG_MIN_RELEVANCE):
+        if distance > (1.0 - RAG_CONFIG["min_relevance"]):
             continue
 
         # Convert distance to relevance (cosine distance: 0 = identical)
@@ -418,42 +445,23 @@ async def retrieve_context(
     if hyde_text:
         queries.append(hyde_text)
 
-    # ── 1. Query core collections (with all query variants) ──
-    episodic_results = []
-    semantic_results = []
-    error_results = []
-    shopping_results = []
-    web_results = []
+    # ── 1. Query collections gated by agent type ──
+    collections_to_query = get_rag_collections(agent_type or "")
+    top_k = RAG_CONFIG["top_k_per_collection"]
 
+    all_raw_results = []
     for q in queries:
-        episodic_results.extend(await _vs_query(
-            text=q, collection="episodic", top_k=5,
-        ))
-        semantic_results.extend(await _vs_query(
-            text=q, collection="semantic", top_k=5,
-        ))
-        error_results.extend(await _vs_query(
-            text=q, collection="errors", top_k=3,
-        ))
-
-    # ── 2. Query domain-specific collections ──
-    task_desc_lower = (title + description).lower()
-    if any(kw in task_desc_lower for kw in ("shop", "buy", "price", "product", "compare")):
-        for q in queries[:2]:  # Limit domain queries to reduce latency
-            shopping_results.extend(await _vs_query(
-                text=q, collection="shopping", top_k=5,
-            ))
-
-    for q in queries[:2]:
-        web_results.extend(await _vs_query(
-            text=q, collection="web_knowledge", top_k=3,
-        ))
+        for col_name in collections_to_query:
+            try:
+                results = await _vs_query(text=q, collection=col_name, top_k=top_k)
+                all_raw_results.extend(results)
+            except Exception:
+                pass
 
     # Deduplicate by ID (multiple queries may return same docs)
     seen_ids: set[str] = set()
     all_raw: list[dict] = []
-    for r in (episodic_results + semantic_results + error_results
-              + shopping_results + web_results):
+    for r in all_raw_results:
         doc_id = r.get("id", "")
         if doc_id and doc_id not in seen_ids:
             seen_ids.add(doc_id)

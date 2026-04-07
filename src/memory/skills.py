@@ -27,7 +27,7 @@ logger = get_logger("memory.skills")
 # ─── Constants / Thresholds ──────────────────────────────────────────────────
 
 DEDUP_SIMILARITY_THRESHOLD = 0.85
-MATCH_SIMILARITY_THRESHOLD = 0.6
+MATCH_SIMILARITY_THRESHOLD = 0.75  # was 0.6
 HIGH_CONFIDENCE_THRESHOLD = 0.8
 MIN_INJECTIONS_FOR_CONFIDENCE = 5
 MAX_STRATEGIES_PER_SKILL = 5

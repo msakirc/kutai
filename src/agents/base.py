@@ -1260,18 +1260,6 @@ class BaseAgent:
                         "you have gathered so far."
                     ),
                 })
-                # Avoid model swaps on the last iteration — swaps eat
-                # 60-90s which often causes task-level timeouts.  The loaded
-                # model already handled the tool-call iterations; pin to it.
-                reqs.prefer_speed = True
-                reqs.needs_function_calling = False
-                try:
-                    from src.core.llm_dispatcher import get_dispatcher
-                    _loaded = get_dispatcher()._get_loaded_litellm_name()
-                    if _loaded:
-                        reqs.model_override = _loaded
-                except Exception:
-                    pass
             else:
                 litellm_tools = self._build_litellm_tools()
             if litellm_tools:

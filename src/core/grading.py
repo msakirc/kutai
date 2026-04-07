@@ -8,7 +8,7 @@ All grading calls go through the LLM dispatcher as OVERHEAD.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from src.infra.logging_config import get_logger
@@ -16,16 +16,18 @@ from src.infra.times import utc_now, db_now, to_db
 
 logger = get_logger("core.grading")
 
-GRADING_PROMPT = """Evaluate this task response.
+GRADING_PROMPT = """Evaluate this task result.
 
 Task: {title}
 Description: {description}
-Response: {response}
+Result: {response}
 
-Answer each with YES or NO only:
-RELEVANT: Does the response address the task?
-COMPLETE: Does it contain a concrete deliverable, not just a plan or description?
-VERDICT: Should this response be accepted?"""
+RELEVANT: YES or NO
+COMPLETE: YES or NO
+VERDICT: PASS or FAIL
+SITUATION: one line, what type of problem was solved
+STRATEGY: one line, what approach worked
+TOOLS: comma-separated list of tools used effectively"""
 
 
 @dataclass
@@ -33,11 +35,10 @@ class GradeResult:
     passed: bool
     relevant: Optional[bool] = None
     complete: Optional[bool] = None
+    situation: str = ""
+    strategy: str = ""
+    tools: list[str] = field(default_factory=list)
     raw: str = ""
-    score: float = 0.0
-
-    def __post_init__(self):
-        self.score = 4.0 if self.passed else 2.0
 
 
 def _parse_yes_no(text: str, key: str) -> Optional[bool]:
@@ -50,23 +51,56 @@ def _parse_yes_no(text: str, key: str) -> Optional[bool]:
     return val in ("YES", "PASS")
 
 
+def _parse_text_field(text: str, key: str) -> str:
+    """Extract a free-text value for a given key from grader output."""
+    pattern = rf"{key}\s*:\s*(.+)"
+    match = re.search(pattern, text, re.IGNORECASE)
+    if not match:
+        return ""
+    return match.group(1).strip()
+
+
 def parse_grade_response(raw: str) -> GradeResult:
     """Parse structured grader output into a GradeResult.
 
-    Parse priority:
-      1. VERDICT → use directly
-      2. If no VERDICT but RELEVANT+COMPLETE → derive (both YES = PASS)
-      3. If nothing parses → raise ValueError (grader incapable)
+    Parsing cascade (most structured → least):
+      1. All 6 fields via regex
+      2. If SITUATION/STRATEGY/TOOLS fail → grade still valid, skill fields empty
+      3. If RELEVANT/COMPLETE fail → derive from VERDICT
+      4. If VERDICT not found → scan for bare PASS/FAIL keyword
+      5. Nothing → raise ValueError
     """
     relevant = _parse_yes_no(raw, "RELEVANT")
     complete = _parse_yes_no(raw, "COMPLETE")
     verdict = _parse_yes_no(raw, "VERDICT")
 
-    if verdict is not None:
-        return GradeResult(passed=verdict, relevant=relevant, complete=complete, raw=raw)
+    # Skill extraction fields (optional — never block grading)
+    situation = _parse_text_field(raw, "SITUATION")
+    strategy = _parse_text_field(raw, "STRATEGY")
+    tools_raw = _parse_text_field(raw, "TOOLS")
+    tools = [t.strip() for t in tools_raw.split(",") if t.strip()] if tools_raw else []
 
+    # Cascade 1: VERDICT present
+    if verdict is not None:
+        return GradeResult(
+            passed=verdict, relevant=relevant, complete=complete,
+            situation=situation, strategy=strategy, tools=tools, raw=raw,
+        )
+
+    # Cascade 2: derive from RELEVANT + COMPLETE
     if relevant is not None and complete is not None:
-        return GradeResult(passed=(relevant and complete), relevant=relevant, complete=complete, raw=raw)
+        return GradeResult(
+            passed=(relevant and complete), relevant=relevant, complete=complete,
+            situation=situation, strategy=strategy, tools=tools, raw=raw,
+        )
+
+    # Cascade 3: bare PASS/FAIL keyword anywhere
+    bare = re.search(r'\bPASS\b', raw, re.IGNORECASE)
+    if bare:
+        return GradeResult(passed=True, situation=situation, strategy=strategy, tools=tools, raw=raw)
+    bare_fail = re.search(r'\bFAIL\b', raw, re.IGNORECASE)
+    if bare_fail:
+        return GradeResult(passed=False, situation=situation, strategy=strategy, tools=tools, raw=raw)
 
     raise ValueError(f"grader incapable: could not parse VERDICT, RELEVANT, or COMPLETE from output: {raw[:150]}")
 

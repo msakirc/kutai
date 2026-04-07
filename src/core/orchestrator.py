@@ -1671,11 +1671,62 @@ class Orchestrator:
                 except Exception as recovery_err:
                     logger.debug(f"[Task #{task_id}] Checkpoint recovery failed: {recovery_err}")
 
-                await update_task(
-                    task_id, status="failed", error=timeout_err,
-                    failed_in_phase="worker"
-                )
-                await self.telegram.send_error(task_id, title, timeout_err)
+                # Use the same retry/DLQ pipeline as other failure paths
+                task_ctx = task.get("context", {})
+                if isinstance(task_ctx, str):
+                    try:
+                        task_ctx = json.loads(task_ctx)
+                    except (json.JSONDecodeError, TypeError):
+                        task_ctx = {}
+
+                attempts = (task.get("attempts") or 0) + 1
+                max_attempts = task.get("max_attempts") or 6
+
+                from src.core.retry import compute_retry_timing, update_exclusions_on_failure
+                update_exclusions_on_failure(task_ctx, "", attempts)
+                decision = compute_retry_timing("quality", attempts=attempts, max_attempts=max_attempts)
+
+                if decision.action == "terminal":
+                    await update_task(
+                        task_id, status="failed",
+                        attempts=attempts,
+                        failed_in_phase="worker",
+                        error=timeout_err,
+                        context=json.dumps(task_ctx),
+                    )
+                    try:
+                        from src.infra.dead_letter import quarantine_task
+                        await quarantine_task(
+                            task_id=task_id,
+                            mission_id=task.get("mission_id"),
+                            error=f"Timeout after {attempts} attempts: {timeout_err}",
+                            error_category="timeout",
+                            original_agent=agent_type,
+                            retry_count=attempts,
+                        )
+                    except Exception:
+                        pass
+                    await self.telegram.send_notification(
+                        f"❌ Task #{task_id} timeout → DLQ\n"
+                        f"**{title[:60]}**\n"
+                        f"Failed {attempts} times"
+                    )
+                else:
+                    next_retry = None
+                    if decision.action == "delayed":
+                        next_retry = to_db(
+                            utc_now() + timedelta(seconds=decision.delay_seconds)
+                        )
+                    await update_task(
+                        task_id, status="pending",
+                        attempts=attempts,
+                        error=timeout_err,
+                        next_retry_at=next_retry,
+                        retry_reason="timeout",
+                        context=json.dumps(task_ctx),
+                    )
+                    await self.telegram.send_error(task_id, title,
+                        f"{timeout_err} (retry {attempts}/{max_attempts})")
 
                 # Spawn error recovery for timeouts too
                 await self._spawn_error_recovery(task, timeout_err)
@@ -3391,6 +3442,14 @@ class Orchestrator:
                         from src.infra.metrics import persist_metrics
                         await persist_metrics()
                         logger.info("Final metrics snapshot persisted")
+                    except Exception:
+                        pass
+
+                    # Flush model speed cache to disk
+                    try:
+                        from src.models.model_registry import get_registry
+                        get_registry().flush_speed_cache()
+                        logger.info("Model speed cache flushed")
                     except Exception:
                         pass
 

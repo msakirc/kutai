@@ -622,8 +622,6 @@ worker.onmessage = (e) => {
       if (tailing) $area.scrollTop = $area.scrollHeight;
       break;
     case "stats":
-      renderSparkline(msg);
-      break;
     case "fields":
       break;
     case "aggregated":
@@ -644,9 +642,7 @@ function loadHash() {
   if (p.get("level")) $level.value = p.get("level");
   if (p.get("q")) $search.value = p.get("q");
   if (p.get("time")) document.getElementById("timeFilter").value = p.get("time");
-  if (p.get("theme")) {
-    currentFile = p.get("file") || currentFile;
-  }
+  // Theme is applied from hash in the init block below
 }
 
 function saveHash() {
@@ -992,9 +988,8 @@ function toggleBookmarkIdx(docIdx) {
   else bookmarks.add(bk);
   saveBookmarks();
   showDetail(docIdx);
-  const visibleIdx = filteredIndices ? filteredIndices.indexOf(docIdx) : docIdx;
-  if (visibleIdx >= 0 && visibleIdx < $area.children.length) {
-    const el = $area.children[visibleIdx];
+  const el = $area.querySelector(`[data-doc-idx="${docIdx}"]`);
+  if (el) {
     if (bookmarks.has(bk)) el.classList.add('bookmarked');
     else el.classList.remove('bookmarked');
   }
@@ -1098,9 +1093,12 @@ function applyFilters() {
   const q = parts.join(" ");
   if (!q) {
     filteredIndices = null;
+    selectedRow = -1;
+    selectedDocIdx = -1;
     render();
     updateMinimap();
     announce(`Showing all ${allDocs.length} lines`);
+    saveHash();
     return;
   }
   worker.postMessage({ type: "filter", query: q });
@@ -1278,15 +1276,13 @@ $notifyBtn.addEventListener("click", () => {
   }
   if (Notification.permission === "granted") {
     notificationsEnabled = !notificationsEnabled;
-    $notifyBtn.style.background = notificationsEnabled ? "var(--accent)" : "var(--bg)";
-    $notifyBtn.style.color = notificationsEnabled ? "#000" : "var(--text)";
+    $notifyBtn.classList.toggle("primary", notificationsEnabled);
     $notifyBtn.textContent = notificationsEnabled ? "Notify ON" : "Notify";
   } else if (Notification.permission !== "denied") {
     Notification.requestPermission().then(p => {
       if (p === "granted") {
         notificationsEnabled = true;
-        $notifyBtn.style.background = "var(--accent)";
-        $notifyBtn.style.color = "#000";
+        $notifyBtn.classList.add("primary");
         $notifyBtn.textContent = "Notify ON";
       }
     });
@@ -1330,15 +1326,6 @@ function renderSparklineFromBuckets(buckets) {
   }
 }
 
-function renderSparkline(stats) {
-  const canvas = $sparkline;
-  const ctx = canvas.getContext("2d");
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = canvas.clientWidth * dpr;
-  canvas.height = 24 * dpr;
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, canvas.clientWidth, 24);
-}
 
 // ─── Minimap ───
 
@@ -1535,9 +1522,6 @@ function scrollToRow(row) {
   if (el) el.scrollIntoView({ block: "nearest" });
 }
 
-function ensureVisible(visibleIdx) {
-  scrollToRow(visibleIdx);
-}
 
 function cycleLevel() {
   const levels = ["", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
@@ -1592,23 +1576,25 @@ function hideBookmarksPanel() {
 }
 
 function renderBookmarksList() {
+  $bookmarksList.innerHTML = "";
   if (!bookmarks.size) {
     $bookmarksList.innerHTML = '<em style="color:var(--text-dim);font-size:12px">No bookmarks yet. Double-click or press b to bookmark a line.</em>';
     return;
   }
-  let html = "";
   const bkArr = [...bookmarks];
   for (let bi = 0; bi < bkArr.length; bi++) {
     const bk = bkArr[bi];
-    // Find matching doc
     const parts = bk.split("|");
     const ts = parts[0] || "";
     const src = parts[1] || "";
     const msgSnip = parts.slice(2).join("|");
     const tsDisp = ts ? new Date(ts).toLocaleTimeString([], { hour12: false }) : "";
-    html += `<div class="bm-line" onclick="jumpToBookmark('${bk.replace(/'/g, "\\'")}')">[${tsDisp}] ${src}: ${msgSnip}</div>`;
+    const div = document.createElement("div");
+    div.className = "bm-line";
+    div.textContent = `[${tsDisp}] ${src}: ${msgSnip}`;
+    div.addEventListener("click", () => jumpToBookmark(bk));
+    $bookmarksList.appendChild(div);
   }
-  $bookmarksList.innerHTML = html;
 }
 
 function jumpToBookmark(bk) {

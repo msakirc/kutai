@@ -405,7 +405,16 @@ class BaseAgent:
         policy = get_context_policy(agent_type)
         policy = apply_heuristics(task, policy)
 
-        model_ctx = task_context.get("model_context_length", 4096)
+        # Get model context window — try dispatcher's loaded model, fall back to 4096
+        model_ctx = 4096
+        try:
+            from ..core.llm_dispatcher import get_dispatcher
+            dispatcher = get_dispatcher()
+            loaded = dispatcher._get_loaded_litellm_name()
+            if loaded:
+                model_ctx = self._get_context_window(loaded) or 4096
+        except Exception:
+            pass
         budgets = compute_layer_budgets(model_ctx, policy)
 
         mission_id = task.get("mission_id")

@@ -265,6 +265,15 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
         except Exception:
             pass
 
+        # Track injection success for skills that were injected into this task
+        try:
+            injected = ctx.get("injected_skills", [])
+            if injected:
+                from src.memory.skills import record_injection_success
+                await record_injection_success(injected)
+        except Exception:
+            pass
+
         logger.info(f"grade PASS | task_id={task_id}")
     else:
         # VERDICT=FAIL — worker quality failure

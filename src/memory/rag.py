@@ -475,7 +475,7 @@ async def retrieve_context(
         all_results = await _rerank_results(query_text, all_results, top_k=15)
 
     # ── 4. Deduplicate ──
-    deduped = _deduplicate(all_results)
+    deduped = _deduplicate(all_results, threshold=RAG_CONFIG["dedup_threshold"])
 
     if not deduped:
         return ""

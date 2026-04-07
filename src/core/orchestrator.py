@@ -509,7 +509,7 @@ class Orchestrator:
 
         for task in stuck_ungraded:
             await db.execute(
-                "UPDATE tasks SET status = 'completed', quality_score = NULL, "
+                "UPDATE tasks SET status = 'completed', "
                 "completed_at = ? WHERE id = ?",
                 (db_now(), task["id"]),
             )

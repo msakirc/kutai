@@ -177,7 +177,14 @@ class LLMDispatcher:
             from src.models.local_model_manager import get_runtime_state
             runtime = get_runtime_state()
             if runtime is not None and runtime.measured_tps > 0.0:
-                est_gen_secs = reqs.estimated_output_tokens / runtime.measured_tps
+                tps = runtime.measured_tps
+                # Thinking models: /metrics reports TPS including thinking
+                # tokens, which are much faster than content tokens.  The
+                # effective content-only speed is ~3-4x slower, so halve
+                # the measured TPS to avoid timeouts that are too aggressive.
+                if runtime.thinking_enabled:
+                    tps = tps * 0.5
+                est_gen_secs = reqs.estimated_output_tokens / tps
                 return max(_MAIN_WORK_MIN, min(_MAIN_WORK_MAX, est_gen_secs * 2.0))
         except Exception:
             pass

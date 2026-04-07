@@ -1075,6 +1075,34 @@ async def update_task(task_id, **kwargs):
     await db.commit()
 
 
+async def update_task_by_context_field(
+    mission_id: int, field: str, value: str, **kwargs
+):
+    """Update tasks matching a JSON context field within a mission.
+
+    Uses SQLite's json_extract to find tasks where
+    ``context->>'$.{field}' = value`` and applies the given updates.
+
+    Example::
+
+        await update_task_by_context_field(
+            mission_id=30,
+            field="workflow_step_id",
+            value="1.3",
+            status="skipped",
+        )
+    """
+    _validate_columns(kwargs, _TASK_COLUMNS, "tasks")
+    db = await get_db()
+    sets = ", ".join(f"{k} = ?" for k in kwargs)
+    values = list(kwargs.values()) + [mission_id, value]
+    await db.execute(
+        f"UPDATE tasks SET {sets} "
+        f"WHERE mission_id = ? AND json_extract(context, '$.{field}') = ?",
+        values,
+    )
+    await db.commit()
+
 
 async def accelerate_retries(reason: str) -> int:
     """Pull next_retry_at to now for tasks waiting on availability.

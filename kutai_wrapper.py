@@ -337,7 +337,9 @@ class KutAIWrapper:
             import subprocess as _sp
             _kwargs = {}
             if sys.platform == "win32":
-                _kwargs["creationflags"] = _sp.CREATE_NEW_PROCESS_GROUP
+                _kwargs["creationflags"] = (
+                    _sp.CREATE_NEW_PROCESS_GROUP | _sp.CREATE_NO_WINDOW
+                )
 
             self.process = await asyncio.create_subprocess_exec(
                 venv_python, run_script,
@@ -1403,6 +1405,27 @@ async def async_main():
     signal.signal(signal.SIGINT, _sig)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _sig)
+
+    # On Windows, closing the console window sends CTRL_CLOSE_EVENT which
+    # bypasses Python signal handlers and forcibly kills the process within
+    # ~5 seconds.  Register a native handler so the wrapper can survive
+    # console-close and shut down gracefully instead of dying silently.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_ulong)
+            def _console_handler(event):
+                if event in (0, 2):  # CTRL_C_EVENT, CTRL_CLOSE_EVENT
+                    wrapper._shutdown = True
+                    return True  # handled — prevent immediate termination
+                return False
+
+            ctypes.windll.kernel32.SetConsoleCtrlHandler(_console_handler, True)
+            # prevent GC of the callback
+            wrapper._console_handler = _console_handler  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
     try:
         await wrapper.run()

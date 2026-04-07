@@ -1404,6 +1404,26 @@ async def call_model(
                             continue
                         break
 
+                    # Local 500 during model swap — wait for swap to finish
+                    is_server_error = "500" in error_str or "internal server error" in error_str
+                    if is_server_error and model.is_local and local_manager:
+                        if local_manager.swap_started_at > 0:
+                            # Swap in progress — wait for it to complete
+                            import time as _time
+                            swap_wait = 0
+                            while local_manager.swap_started_at > 0 and swap_wait < 30:
+                                await asyncio.sleep(2)
+                                swap_wait += 2
+                            if swap_wait > 0:
+                                logger.info(
+                                    "waited for model swap",
+                                    model_name=model.name,
+                                    wait_seconds=swap_wait,
+                                )
+                            # After swap, the model may have changed — break
+                            # to let the outer loop re-select the best model
+                            break
+
                     if attempt < 1:
                         await asyncio.sleep(2)
                         continue

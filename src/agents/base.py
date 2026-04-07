@@ -58,7 +58,7 @@ SIDE_EFFECT_TOOLS: frozenset[str] = frozenset({
 # agent execution. Cache is invalidated when any SIDE_EFFECT_TOOL runs.
 CACHEABLE_READ_TOOLS: frozenset[str] = frozenset({
     "read_file", "file_tree", "git_status", "git_log", "git_diff",
-    "web_search", "extract_url", "read_pdf", "read_docx",
+    "web_search", "smart_search", "extract_url", "read_pdf", "read_docx",
     "read_spreadsheet", "extract_text",
 })
 
@@ -2006,11 +2006,12 @@ class BaseAgent:
 
         # ── Exhausted iterations ──
         await self._clear_checkpoint_safe(task_id)
-        # Extract last meaningful assistant response for the result
+        # Extract last meaningful assistant response for the result.
+        # Do NOT truncate before unwrapping — truncation breaks JSON parsing.
         last_assistant = ""
         for msg in reversed(messages):
             if msg.get("role") == "assistant" and msg.get("content"):
-                last_assistant = msg["content"][:3000]
+                last_assistant = msg["content"]
                 break
         # Try to parse as JSON and extract "result" field — the LLM often
         # wraps its answer in {"action": "final_answer", "result": "..."}
@@ -2018,6 +2019,20 @@ class BaseAgent:
             parsed_final = self._parse_agent_response(last_assistant)
             if parsed_final and parsed_final.get("result"):
                 last_assistant = parsed_final["result"]
+            elif '"result"' in last_assistant and '"final_answer"' in last_assistant:
+                # JSON parse failed (truncated by context trimming?) — regex fallback
+                import re as _re
+                m = _re.search(r'"result"\s*:\s*"((?:[^"\\]|\\.)*)', last_assistant)
+                if m:
+                    try:
+                        last_assistant = m.group(1).encode().decode('unicode_escape')
+                    except Exception:
+                        last_assistant = m.group(1)
+        # Truncate AFTER unwrapping — preserve the actual content.
+        # 8000 chars is well above _SUMMARY_THRESHOLD (3000) so the post-hook
+        # will always create a summary for large artifacts.
+        if len(last_assistant) > 8000:
+            last_assistant = last_assistant[:8000]
         return {
             "status": "completed",
             "result": last_assistant or "Task completed but could not produce a final answer.",

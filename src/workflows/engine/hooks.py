@@ -25,6 +25,16 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
     if not schema:
         return True, ""
 
+    # Unwrap final_answer JSON envelope if present — agents sometimes
+    # wrap their results in {"action": "final_answer", "result": "..."}
+    if isinstance(output_value, str) and '"final_answer"' in output_value:
+        try:
+            _envelope = json.loads(output_value)
+            if isinstance(_envelope, dict) and "result" in _envelope:
+                output_value = _envelope["result"]
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     for artifact_name, rules in schema.items():
         schema_type = rules.get("type", "string")
 

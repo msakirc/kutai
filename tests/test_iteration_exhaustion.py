@@ -55,3 +55,49 @@ class TestValidateTaskOutput(unittest.TestCase):
         result = "## Analysis\n\n**Sources:**\n- Market data"
         errors = validate_task_output("analyst", result)
         self.assertEqual(errors, [])
+
+
+class TestArtifactSchemaValidation(unittest.TestCase):
+    """Tests for validate_artifact_schema handling of JSON-wrapped content."""
+
+    def test_array_validation_with_table_rows(self):
+        """Normal markdown table should pass array validation."""
+        from src.workflows.engine.hooks import validate_artifact_schema
+        content = (
+            "## Competitors\n\n"
+            "| Name | Rating | Notes |\n"
+            "|------|--------|-------|\n"
+            "| App A | 4.5 | Good UX |\n"
+            "| App B | 3.8 | Slow |\n"
+            "| App C | 4.2 | Expensive |\n"
+        )
+        schema = {"competitor_list": {"type": "array", "min_items": 1}}
+        is_valid, err = validate_artifact_schema(content, schema)
+        self.assertTrue(is_valid, f"Should pass but got: {err}")
+
+    def test_array_validation_with_json_escaped_table(self):
+        """JSON-escaped table (\\n instead of newlines) should be unwrapped."""
+        from src.workflows.engine.hooks import validate_artifact_schema
+        inner = (
+            "## Competitors\n\n"
+            "| Name | Rating |\n"
+            "|------|--------|\n"
+            "| App A | 4.5 |\n"
+            "| App B | 3.8 |\n"
+        )
+        wrapped = json.dumps({"action": "final_answer", "result": inner})
+        schema = {"competitor_list": {"type": "array", "min_items": 1}}
+        is_valid, err = validate_artifact_schema(wrapped, schema)
+        self.assertTrue(is_valid, f"JSON-wrapped content should be unwrapped: {err}")
+
+    def test_object_validation_with_json_wrapped(self):
+        """JSON-wrapped content should pass object field validation."""
+        from src.workflows.engine.hooks import validate_artifact_schema
+        inner = "## Research\n\npain_points: Users struggle with...\ncurrent_tools: They use..."
+        wrapped = json.dumps({"action": "final_answer", "result": inner})
+        schema = {"audience_data": {
+            "type": "object",
+            "required_fields": ["pain_points", "current_tools"],
+        }}
+        is_valid, err = validate_artifact_schema(wrapped, schema)
+        self.assertTrue(is_valid, f"Should find keywords after unwrapping: {err}")

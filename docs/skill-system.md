@@ -18,21 +18,21 @@ Skills are cross-cutting. An "app store search" skill can help both a shopping_a
 
 There are two types:
 - **Seed skills** (24): Hand-crafted, cover common Turkish use cases (weather, currency, shopping, pharmacy, etc.). Created at startup.
-- **Auto-captured skills**: Learned from tasks that grade >= 4.0. The grader generates the description and strategy summary.
+- **Auto-captured skills**: Learned from tasks that pass unified grading. The grader generates the description and strategy summary.
 
 ## How It Works
 
 ### Capture (after task completion)
 
 ```
-Task completes → Grader scores it
+Task completes → Unified grader evaluates (PASS/FAIL)
   │
-  ├─ Grade < 4.0 → nothing captured
+  ├─ FAIL → nothing captured
   │
-  └─ Grade >= 4.0 → grader also outputs:
-       situation_summary: "Comparing laptop prices across Turkish stores"
-       strategy_summary: "Search Trendyol, Hepsiburada, Akakce separately then compare"
-       tool_template: ["smart_search({product} trendyol)", "smart_search({product} hepsiburada)", "compare"]
+  └─ PASS → grader also outputs (when model can produce them):
+       SITUATION: "Comparing laptop prices across Turkish stores"
+       STRATEGY: "Search each store separately then compare"
+       TOOLS: smart_search, web_search
              │
              ▼
        Check ChromaDB: does a similar skill exist? (cosine similarity >= 0.85)
@@ -43,9 +43,9 @@ Task completes → Grader scores it
              └─ No  → create new skill, embed description in ChromaDB
 ```
 
-**Graceful degradation**: Small LLMs often botch the grader's JSON. If `situation_summary` or `strategy_summary` are missing, the system falls back to task metadata (title + agent_type + tools used) for a basic skill entry. If the grader output is completely unparseable, capture is skipped. Never crashes, never stores garbage.
+**Graceful degradation**: If SITUATION/STRATEGY/TOOLS are empty (small LLM couldn't produce them), falls back to task metadata (title + agent_type + tools used). Parsing is progressive — binary PASS/FAIL always works, skill fields are bonus.
 
-**Deferred grading caveat**: Most tasks use deferred grading (non-urgent, batched). For these, `grader_data` is empty at capture time, so the fallback path runs. Only immediately-graded tasks get full grader-driven capture. This is a known limitation — the system still learns from the fallback path, just with less rich descriptions.
+**Unified grading**: Both immediate and deferred grading use the same prompt and parser. The deferred grading gap (where most tasks got only mechanical skill entries) is fixed.
 
 ### Injection (before task execution)
 
@@ -56,7 +56,7 @@ Task about to execute → base.py._build_context()
 Embed task text (title + description) → vector search ChromaDB
   │
   ▼
-Top 5 candidates with similarity >= 0.6
+Top 5 candidates with similarity >= 0.75
   │
   ▼
 Rank by: similarity * 0.5 + injection_success_rate * 0.5
@@ -80,7 +80,7 @@ Adaptive injection depth:
 
 At injection time: `injection_count += 1` on each injected skill.
 
-After task completes with grade >= 4.0: `injection_success += 1` on all skills that were injected into that task.
+After task completes with a PASS grade: `injection_success += 1` on all skills that were injected into that task.
 
 This creates a feedback loop. The initial grading score is just a rough gate (noisy, from small LLMs). The **injection success rate** — "when this skill was injected, did the task succeed?" — is the real ranking signal. It self-corrects over time: skills that actually help rise, skills that don't contribute fall behind.
 
@@ -102,9 +102,9 @@ Vector matching on rich descriptions works because: the grader writes descriptio
 
 An "app store search" skill should serve both a shopping task and an i2p competitor research step. Storing agent_type on skills and filtering by it would prevent this. Instead, the task text naturally includes agent context in the embedding — "shopping_advisor: find laptop alternatives" will match differently than "researcher: competitor analysis for mobile apps" even against the same skill, because the embedding captures the full context.
 
-### Coarse quality buckets, not precise grades
+### Binary grading, not numeric scores
 
-Small LLMs grading their own work produce noisy scores. A 3.8 vs 4.1 distinction is meaningless. Three buckets: great (>= 4.0, capture it), OK (3.0-3.9, ignore), bad (< 3.0, ignore). Within the great bucket, ranking uses injection success rate — real-world validation — not the original grade.
+Small LLMs grading their own work produce noisy scores. Binary PASS/FAIL is far more reliable than a 1-5 scale. Within passed tasks, ranking uses injection success rate — real-world validation from deployment.
 
 ### Accumulate strategies, never overwrite
 
@@ -123,8 +123,9 @@ One highly trusted skill gets full verbose context (situation, strategy, numbere
 | `src/infra/db.py` | `skills` table schema + 5 helper functions: `upsert_skill`, `get_all_skills`, `get_skill_by_name`, `increment_skill_injection`, `increment_skill_success`. |
 | `src/agents/base.py:479-525` | Injection point in `_build_context()`. Calls `find_relevant_skills`, formats output, injects tools, tracks injections, stores skill names in task context. |
 | `src/core/orchestrator.py:~2172-2230` | Capture point after task completion. Reads `grader_data`, calls `add_skill`. Also calls `record_injection_success` for tasks that had skills injected. |
-| `src/core/router.py:1468-1476` | `GRADING_PROMPT` — asks grader for `situation_summary`, `strategy_summary`, `tool_template` alongside the score. |
-| `src/core/llm_dispatcher.py` | Passes `grader_data` tuple through the grading pipeline. `grade_response` returns `(float, dict)`. |
+| `src/core/grading.py` | Unified grading module — single prompt and parser used by both immediate and deferred grading paths. Progressive skill field extraction alongside binary PASS/FAIL. |
+| `src/core/llm_dispatcher.py` | Passes `grader_data` tuple through the grading pipeline. `grade_response` returns `(bool, dict)`. |
+| `src/memory/context_policy.py` | Context gating — decides which layers to inject per task type, with token budgets. |
 | `src/memory/vector_store.py` | ChromaDB wrapper. Skills use the `semantic` collection with `{"type": "skill"}` metadata. |
 
 ## DB Schema
@@ -164,7 +165,7 @@ CREATE TABLE skills (
 | Constant | Value | What it controls |
 |----------|-------|-----------------|
 | `DEDUP_SIMILARITY_THRESHOLD` | 0.85 | Minimum similarity to merge into existing skill instead of creating new |
-| `MATCH_SIMILARITY_THRESHOLD` | 0.6 | Minimum similarity to consider a skill relevant for injection |
+| `MATCH_SIMILARITY_THRESHOLD` | 0.75 | Minimum similarity to consider a skill relevant for injection |
 | `HIGH_CONFIDENCE_THRESHOLD` | 0.8 | Injection success rate needed for "trusted" status (verbose injection) |
 | `MIN_INJECTIONS_FOR_CONFIDENCE` | 5 | Minimum injections before trusting the success rate |
 | `MAX_STRATEGIES_PER_SKILL` | 5 | Cap on strategies per skill |
@@ -182,9 +183,9 @@ These are starting values. Tune based on observed behavior — especially `MATCH
 - The `upsert_skill` DB helper accepts `strategies` as either a list (auto-serialized) or a JSON string. Check the current implementation if unsure.
 
 **If you're modifying the grading system:**
-- `grade_response` in router.py returns `tuple[float | None, dict]`. The dict is the full parsed grader JSON. All callers must unpack the tuple.
-- `GRADING_PROMPT` asks for skill fields only when score >= 4. Don't change this without updating the capture threshold in orchestrator.py.
-- Deferred grading (via GradeQueue) returns `(None, {})` immediately. The `grader_data` is lost for deferred tasks — capture uses the fallback path.
+- `grade_response` in `grading.py` returns `tuple[bool, dict]`. The bool is PASS/FAIL; the dict contains progressive skill fields. All callers must unpack the tuple.
+- The unified grading prompt always asks for SITUATION/STRATEGY/TOOLS. Skill fields are parsed opportunistically — absence is gracefully handled.
+- Both immediate and deferred grading (via GradeQueue) use the same prompt and parser. There is no longer a grader-data loss path for deferred tasks.
 
 **If you're modifying agent execution:**
 - Skill injection happens in `base.py:_build_context()`. It's wrapped in try/except — failures are non-critical.
@@ -198,17 +199,14 @@ These are starting values. Tune based on observed behavior — especially `MATCH
 
 ## Known Limitations
 
-1. **Deferred grading loses skill metadata**: Most tasks use deferred grading, so `grader_data` is empty at capture time. The fallback produces lower-quality skill descriptions. Full grader-driven capture only works for immediately-graded tasks.
+1. **Embedding model dependency**: Vector matching requires ChromaDB + multilingual-e5-base. If ChromaDB is unavailable, all skill matching silently returns empty. Skills are still captured to SQLite (they just won't match until ChromaDB is back).
 
-2. **Embedding model dependency**: Vector matching requires ChromaDB + multilingual-e5-base. If ChromaDB is unavailable, all skill matching silently returns empty. Skills are still captured to SQLite (they just won't match until ChromaDB is back).
+2. **Cold start**: New skills have `injection_count = 0`, so their success rate is capped at 0.5 (neutral). They need 5+ injections before the real rate is trusted. Until then, they compete on vector similarity alone.
 
-3. **Cold start**: New skills have `injection_count = 0`, so their success rate is capped at 0.5 (neutral). They need 5+ injections before the real rate is trusted. Until then, they compete on vector similarity alone.
-
-4. **No skill deletion via Telegram**: Skills can only be managed through direct DB access or code. A `/skillstats` command exists in the old system but needs updating for the new schema.
+3. **No skill deletion via Telegram**: Skills can only be managed through direct DB access or code. A `/skillstats` command exists in the old system but needs updating for the new schema.
 
 ## Future Work
 
 - **Evaluate seed skill relevance**: Many of the 24 seed skills may be redundant with the fast resolver (which handles weather, currency, etc. directly). After the system runs for a while, check which seed skills actually get injected and remove dead weight.
-- **Address deferred grading gap**: When deferred grades complete, update the task's `grader_data` retroactively and trigger skill capture. This would let most tasks benefit from grader-driven descriptions.
 - **`/skillstats` Telegram command**: Show injection counts, top performers, strategy counts. The data is all there — just needs a Telegram handler.
 - **Skill decay**: Skills that haven't been injected in 30+ days could have their confidence lowered, preventing stale strategies from crowding out new ones.

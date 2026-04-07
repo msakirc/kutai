@@ -53,7 +53,7 @@ AGENT_TIMEOUTS: dict[str, int] = {
     "reviewer":       180,  # was 120 — model swap alone takes 60s
     "visual_reviewer":180,  # was 120
     "researcher":     300,
-    "analyst":        300,  # was 240
+    "analyst":        300,
     "writer":         240,  # was 180
     "summarizer":     180,  # was 120
     "assistant":      180,  # was 120
@@ -1618,38 +1618,55 @@ class Orchestrator:
                                     except (json.JSONDecodeError, TypeError):
                                         partial_result = c[:8000]
                                     break
-                        # Strategy 2: last tool result (user message echoing
-                        # a tool's output — usually the most informative).
-                        if not partial_result:
-                            for msg in reversed(last_messages):
-                                if msg.get("role") == "user" and "Tool Result" in msg.get("content", ""):
-                                    partial_result = msg["content"][:8000]
-                                    break
-                        # Strategy 3: last substantial assistant message
+                        # Strategy 2: last substantial assistant message
+                        # (the LLM's reasoning or partial answer — far more
+                        # useful than raw tool output).
                         if not partial_result:
                             for msg in reversed(last_messages):
                                 if msg.get("role") == "assistant" and len(msg.get("content", "")) > 100:
+                                    partial_result = msg["content"][:8000]
+                                    break
+                        # Strategy 3: last tool result (user message echoing
+                        # a tool's output — last resort, often just a search
+                        # cache snippet that's not useful as a result).
+                        if not partial_result:
+                            for msg in reversed(last_messages):
+                                if msg.get("role") == "user" and "Tool Result" in msg.get("content", ""):
                                     partial_result = msg["content"][:8000]
                                     break
 
                         if partial_result:
                             logger.info(f"[Task #{task_id}] Timeout recovery: using checkpoint from iteration {iter_num}")
                             result_text = f"(Partial result from iteration {iter_num} before timeout)\n\n{partial_result}"
+
+                            # For workflow steps, don't mark partial results
+                            # as completed — they bypass the post-hook and
+                            # poison downstream tasks with garbage.  Let them
+                            # fail and go through normal retry/DLQ.
                             task_ctx = task.get("context", {})
                             if isinstance(task_ctx, str):
                                 try:
                                     task_ctx = json.loads(task_ctx)
                                 except (json.JSONDecodeError, TypeError):
                                     task_ctx = {}
-                            task_ctx["partial"] = True
-                            await update_task(
-                                task_id, status="completed",
-                                result=result_text,
-                                context=json.dumps(task_ctx),
-                            )
-                            await self.telegram.send_result(task_id, title, result_text, "timeout-recovery", 0,
-                                                            mission_id=task.get("mission_id"))
-                            return
+
+                            if is_workflow_step(task_ctx):
+                                logger.warning(
+                                    f"[Task #{task_id}] Timeout recovery: "
+                                    f"workflow step — failing instead of "
+                                    f"completing with partial result"
+                                )
+                                # Fall through to the failed path below
+                            else:
+                                task_ctx["partial"] = True
+                                await update_task(
+                                    task_id, status="completed",
+                                    result=result_text,
+                                    context=json.dumps(task_ctx),
+                                )
+                                await self.telegram.send_result(task_id, title, result_text, "timeout-recovery", 0,
+                                                                mission_id=task.get("mission_id"))
+                                return
                 except Exception as recovery_err:
                     logger.debug(f"[Task #{task_id}] Checkpoint recovery failed: {recovery_err}")
 

@@ -9,7 +9,7 @@ import json
 from typing import Optional
 
 from src.infra.logging_config import get_logger
-from .artifacts import ArtifactStore, format_artifacts_for_prompt, get_phase_summaries
+from .artifacts import ArtifactStore, format_artifacts_for_prompt, get_phase_summaries, CONTEXT_BUDGETS, _TIER_ORDER
 from .conditions import evaluate_condition, resolve_group
 from .policies import ReviewTracker
 from .quality_gates import evaluate_gate, format_gate_result
@@ -463,11 +463,35 @@ async def pre_execute_workflow_step(task: dict) -> dict:
     mission_id = ctx.get("mission_id") or task.get("mission_id")
     input_artifact_names: list[str] = ctx.get("input_artifacts", [])
 
-    # Fetch artifacts from store
+    # Fetch artifacts from store — prefer summaries when full artifact
+    # exceeds the tier budget (summaries preserve meaning better than
+    # blind truncation).
     store = get_artifact_store()
     artifact_contents: dict[str, Optional[str]] = {}
     if mission_id is not None and input_artifact_names:
-        artifact_contents = await store.collect(mission_id, input_artifact_names)
+        context_strategy = ctx.get("context_strategy")
+        for name in input_artifact_names:
+            full = await store.retrieve(mission_id, name)
+            if full is None:
+                artifact_contents[name] = None
+                continue
+
+            # Determine this artifact's tier budget
+            budget = CONTEXT_BUDGETS["default"]
+            if isinstance(context_strategy, dict):
+                for tier in _TIER_ORDER:
+                    if name in context_strategy.get(tier, []):
+                        budget = CONTEXT_BUDGETS[tier]
+                        break
+
+            # Use summary if full artifact exceeds the tier budget
+            if len(full) > budget:
+                summary = await store.retrieve(mission_id, f"{name}_summary")
+                if summary:
+                    artifact_contents[name] = summary
+                    continue
+
+            artifact_contents[name] = full
 
     # Inject phase summaries from earlier phases
     workflow_phase = ctx.get("workflow_phase")

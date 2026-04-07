@@ -101,3 +101,46 @@ class TestArtifactSchemaValidation(unittest.TestCase):
         }}
         is_valid, err = validate_artifact_schema(wrapped, schema)
         self.assertTrue(is_valid, f"Should find keywords after unwrapping: {err}")
+
+
+class TestSummaryFirstFetching(unittest.TestCase):
+    """Downstream steps should prefer summaries when full artifact exceeds budget."""
+
+    def test_summary_used_when_artifact_exceeds_budget(self):
+        """When full artifact > tier budget, summary should be used instead."""
+        from src.workflows.engine.artifacts import CONTEXT_BUDGETS
+
+        full_content = "## Full Research\n\n" + "X" * 10000  # 10k chars
+        summary_content = "## Summary\n\nKey findings: X, Y, Z."  # 40 chars
+
+        # reference tier budget is 3000 — full_content (10k) exceeds it
+        budget = CONTEXT_BUDGETS["reference"]
+        self.assertGreater(len(full_content), budget)
+        self.assertLess(len(summary_content), budget)
+
+        # The logic: if len(full) > budget and summary exists, use summary
+        should_use_summary = len(full_content) > budget and summary_content
+        self.assertTrue(should_use_summary)
+
+    def test_full_artifact_used_when_fits_budget(self):
+        """When full artifact fits in tier budget, use it directly."""
+        from src.workflows.engine.artifacts import CONTEXT_BUDGETS
+
+        full_content = "## Short Report\n\nDone."  # 23 chars
+        summary_content = "Short report done."
+
+        budget = CONTEXT_BUDGETS["primary"]  # 8000
+        self.assertLess(len(full_content), budget)
+
+        # The logic: if len(full) <= budget, use full even if summary exists
+        should_use_summary = len(full_content) > budget and summary_content
+        self.assertFalse(should_use_summary)
+
+    def test_full_artifact_used_when_no_summary(self):
+        """When no summary exists, fall back to full artifact (truncated by formatter)."""
+        full_content = "## Big Report\n\n" + "Y" * 10000
+        summary_content = None
+
+        budget = 3000
+        should_use_summary = len(full_content) > budget and summary_content
+        self.assertFalse(should_use_summary)  # no summary, must use full

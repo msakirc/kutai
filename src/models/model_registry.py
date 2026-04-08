@@ -1996,7 +1996,6 @@ class ModelRegistry:
             "summarizer",
             "assistant",
             "executor",
-            "error_recovery",
             "pipeline",
             "workflow"
         ]:

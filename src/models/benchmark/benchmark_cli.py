@@ -337,7 +337,7 @@ def cmd_routing():
         "planner", "architect", "coder", "implementer", "fixer",
         "test_generator", "reviewer", "visual_reviewer", "researcher",
         "analyst", "writer", "summarizer", "assistant", "executor",
-        "error_recovery", "pipeline", "workflow",
+        "pipeline", "workflow",
         "shopping_advisor", "classifier", "grader",
     ]
     for task in tasks:

@@ -232,7 +232,6 @@ _AGENT_TYPE_CATEGORY: dict[str, str] = {
     "test_generator":  "code",
     "reviewer":        "code",
     "visual_reviewer": "code",
-    "error_recovery":  "code",
     "analyst":         "research",
     "researcher":      "research",
     "planner":         "planner",

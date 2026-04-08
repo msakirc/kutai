@@ -1,4 +1,4 @@
-"""Shopping-specific error recovery.
+"""Shopping-specific scraper failure handling.
 
 Classifies errors and recommends recovery actions so the orchestration
 layer can react appropriately to scraper and LLM failures.
@@ -11,7 +11,7 @@ from typing import Any
 
 from src.infra.logging_config import get_logger
 
-logger = get_logger("shopping.resilience.error_recovery")
+logger = get_logger("shopping.resilience.scraper_failure_handler")
 
 # ─── Error Classification ───────────────────────────────────────────────────
 

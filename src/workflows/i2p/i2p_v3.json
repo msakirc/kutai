@@ -15,7 +15,6 @@
       "writer",
       "analyst",
       "executor",
-      "error_recovery",
       "visual_reviewer",
       "summarizer",
       "assistant",
@@ -6940,7 +6939,7 @@
       "id": "15.1",
       "phase": "phase_15",
       "name": "post_launch_monitoring",
-      "agent": "error_recovery",
+      "agent": "coder",
       "difficulty": "medium",
       "tools_hint": [
         "shell",
@@ -7063,7 +7062,7 @@
       "id": "15.4",
       "phase": "phase_15",
       "name": "incident_response",
-      "agent": "error_recovery",
+      "agent": "coder",
       "difficulty": "hard",
       "tools_hint": [
         "shell",

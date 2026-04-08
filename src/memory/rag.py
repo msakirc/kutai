@@ -76,9 +76,6 @@ def get_rag_collections(agent_type: str) -> list[str]:
 RERANKER_ENABLED = False  # Disabled by default — enable when cross-encoder is installed
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
-# Phase F: HyDE config
-HYDE_ENABLED = True  # Generate hypothetical answers for better retrieval
-
 # Task-type budgets (when model context window is unknown)
 _TASK_TYPE_BUDGETS = {
     "code": 6000,
@@ -269,38 +266,6 @@ def _estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
-# ─── Phase F: HyDE Query Expansion ──────────────────────────────────────────
-
-async def _hyde_expand(query_text: str) -> Optional[str]:
-    """
-    HyDE (Hypothetical Document Embeddings): Generate a hypothetical
-    ideal answer to the query, then embed THAT for retrieval.
-
-    The idea is that the hypothetical answer is more semantically
-    similar to the actual stored documents than the question itself.
-
-    Returns the hypothetical answer text, or None if disabled/failed.
-    """
-    if not HYDE_ENABLED:
-        return None
-
-    # Generate a brief hypothetical answer using the query text itself
-    # We don't call an LLM here (too expensive for every RAG query).
-    # Instead, we create a pseudo-document that captures the intent.
-    title_part = query_text.split(":")[0] if ":" in query_text else query_text
-    desc_part = query_text.split(":", 1)[1] if ":" in query_text else ""
-
-    # Construct hypothetical answer from the query
-    hyde_text = (
-        f"The task '{title_part.strip()}' was completed successfully. "
-        f"{desc_part.strip()} "
-        f"The approach involved analyzing the requirements and implementing "
-        f"a solution that addressed all aspects of the problem."
-    )
-
-    return hyde_text[:500]
-
-
 # ─── Phase F: Query Decomposition ──────────────────────────────────────────
 
 def _decompose_query(query_text: str) -> list[str]:
@@ -402,13 +367,12 @@ async def retrieve_context(
     Phase F enhanced pipeline:
       1. Compute dynamic token budget (scales to model context window)
       2. Query decomposition for multi-part queries
-      3. HyDE query expansion (hypothetical answer embedding)
-      4. Query episodic, semantic, errors, shopping, web_knowledge
-      5. Optional cross-encoder reranking
-      6. Rank by recency * relevance * importance
-      7. Filter by minimum relevance threshold
-      8. Deduplicate
-      9. Format within token budget
+      3. Query collections gated by agent type
+      4. Optional cross-encoder reranking
+      5. Rank by recency * relevance * importance
+      6. Filter by minimum relevance threshold
+      7. Deduplicate
+      8. Format within token budget
 
     Args:
         task:                 Task dict with title, description, etc.
@@ -439,11 +403,6 @@ async def retrieve_context(
 
     # Phase F: Query decomposition for complex queries
     queries = _decompose_query(query_text)
-
-    # Phase F: HyDE expansion — add hypothetical answer as extra query
-    hyde_text = await _hyde_expand(query_text)
-    if hyde_text:
-        queries.append(hyde_text)
 
     # ── 1. Query collections gated by agent type ──
     collections_to_query = get_rag_collections(agent_type or "")

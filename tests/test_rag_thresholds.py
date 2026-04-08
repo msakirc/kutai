@@ -33,6 +33,14 @@ class TestRAGCollectionGating:
         assert "conversations" in collections
 
 
+class TestHyDERemoved:
+    def test_hyde_disabled_or_removed(self):
+        """Fake HyDE must not exist — raw queries are better."""
+        import src.memory.rag as rag_mod
+        assert not getattr(rag_mod, "HYDE_ENABLED", False), "HYDE_ENABLED should be False or removed"
+        assert not hasattr(rag_mod, "_hyde_expand"), "_hyde_expand should be removed"
+
+
 class TestSkillThreshold:
     def test_match_threshold_raised(self):
         from src.memory.skills import MATCH_SIMILARITY_THRESHOLD

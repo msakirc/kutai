@@ -51,10 +51,17 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
             except (json.JSONDecodeError, TypeError):
                 pass
             # Fallback: accept text/markdown if required fields appear as keywords
-            # Small LLMs often produce structured text, not JSON
+            # Small LLMs often produce structured text, not JSON.
+            # Check each word of multi-word fields independently — e.g.
+            # "per_competitor" matches if both "per" and "competitor"
+            # appear anywhere in the text, since LLMs rephrase freely.
             if required:
                 text_lower = str(output_value).lower().replace("_", " ").replace("-", " ")
-                missing = [f for f in required if f.lower().replace("_", " ") not in text_lower]
+                missing = []
+                for f in required:
+                    words = f.lower().replace("_", " ").replace("-", " ").split()
+                    if not all(w in text_lower for w in words):
+                        missing.append(f)
                 if missing:
                     return False, f"'{artifact_name}' missing content about: {missing}"
 

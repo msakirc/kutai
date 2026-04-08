@@ -66,6 +66,20 @@ CACHEABLE_READ_TOOLS: frozenset[str] = frozenset({
 # Max JSON format corrections (sub-iteration) before falling through to final_answer.
 MAX_FORMAT_CORRECTIONS: int = 2
 
+
+def _partition_tool_calls(tools: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split tool calls into parallel (read-only) and sequential (side-effect).
+
+    Unknown tools are treated as side-effect (safe default).
+    """
+    parallel, sequential = [], []
+    for tc in tools:
+        if tc.get("tool", "") in CACHEABLE_READ_TOOLS:
+            parallel.append(tc)
+        else:
+            sequential.append(tc)
+    return parallel, sequential
+
 # Model escalation: after this many consecutive tool failures,
 # escalate to the next tier up.
 TOOL_FAILURE_ESCALATION_THRESHOLD: int = 3
@@ -182,6 +196,17 @@ class BaseAgent:
             "}",
             "```",
             "",
+            "You can call MULTIPLE tools at once for efficiency:",
+            "```json",
+            "{",
+            '  "action": "multi_tool_call",',
+            '  "tools": [',
+            '    {"tool": "read_file", "args": {"filepath": "a.py"}},',
+            '    {"tool": "read_file", "args": {"filepath": "b.py"}}',
+            "  ]",
+            "}",
+            "```",
+            "",
             "When you have your FINAL answer, respond with:",
             "```json",
             "{",
@@ -213,7 +238,7 @@ class BaseAgent:
             "",
             "### IMPORTANT RULES:",
             "- EVERY response must be a single JSON block. Nothing else.",
-            "- Use ONE action per response.",
+            "- Use ONE action per response (multi_tool_call counts as one action).",
             "- After using a tool you will see the result and can act again.",
             "- Always inspect the workspace (file_tree) before writing code.",
             "- After writing code, ALWAYS run it to verify it works.",
@@ -834,6 +859,10 @@ class BaseAgent:
         """
         action = parsed.get("action")
 
+        # ── multi_tool_call passthrough ──
+        if action == "multi_tool_call" and "tools" in parsed:
+            return parsed
+
         # ── alias mapping for action field ──
         _aliases = {
             # → tool_call
@@ -874,7 +903,7 @@ class BaseAgent:
 
         # ── Tool name used as action, OR wrong action but "tool" key present ──
         if action and action not in (
-            "tool_call", "final_answer", "clarify", "decompose",
+            "tool_call", "multi_tool_call", "final_answer", "clarify", "decompose",
             "ask_agent",
             "think", "thinking", "reasoning", "analyze",
             "observation", "reflect", "consider",
@@ -1087,37 +1116,52 @@ class BaseAgent:
         """
         Convert LiteLLM tool_calls into the canonical action dict.
 
-        Returns the first valid action found, or None if none could
-        be parsed.
+        Returns a single tool_call for one tool, multi_tool_call for
+        multiple concurrent tools, or a pseudo-action (final_answer/clarify).
+        Returns None when nothing could be parsed.
         """
         if not tool_calls:
             return None
 
-        tc = tool_calls[0]  # use the first tool call
-        name = tc.get("name", "")
-        args = tc.get("arguments", {})
+        first = tool_calls[0]
+        first_name = first.get("name", "")
+        first_args = first.get("arguments", {})
 
-        # Pseudo-tool: final_answer
-        if name == "final_answer":
+        # Pseudo-tools always take priority (checked on first call only)
+        if first_name == "final_answer":
             return {
                 "action": "final_answer",
-                "result": args.get("result", ""),
-                "memories": args.get("memories", {}),
+                "result": first_args.get("result", ""),
+                "memories": first_args.get("memories", {}),
             }
-
-        # Pseudo-tool: clarify
-        if name == "clarify":
+        if first_name == "clarify":
             return {
                 "action": "clarify",
-                "question": args.get("question", ""),
+                "question": first_args.get("question", ""),
             }
 
-        # Real tool call
-        return {
-            "action": "tool_call",
-            "tool": name,
-            "args": args,
-        }
+        # Single tool call — backwards compatible
+        if len(tool_calls) == 1:
+            return {
+                "action": "tool_call",
+                "tool": first_name,
+                "args": first_args,
+            }
+
+        # Multiple → multi_tool_call (filter out pseudo-tools)
+        tools = []
+        for tc in tool_calls:
+            name = tc.get("name", "")
+            args = tc.get("arguments", {})
+            if name in ("final_answer", "clarify"):
+                continue
+            tools.append({"tool": name, "args": args})
+
+        if len(tools) == 1:
+            return {"action": "tool_call", "tool": tools[0]["tool"], "args": tools[0]["args"]}
+        if not tools:
+            return None
+        return {"action": "multi_tool_call", "tools": tools}
 
     # ------------------------------------------------------------------ #
     #  Output validation                                                   #
@@ -2005,6 +2049,176 @@ class BaseAgent:
                 await self._safe_log(
                     task_id, "tool",
                     f"[{tool_name}] {tool_output[:2000]}",
+                    None, 0,
+                )
+                await self._save_checkpoint(
+                    task_id, iteration + 1, messages, total_cost,
+                    used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
+                    completed_tool_ops, format_corrections,
+                )
+                continue
+
+            # ── MULTI TOOL CALL (parallel read-only, sequential side-effect) ──
+            if action_type == "multi_tool_call":
+                tools_used = True
+                tool_list = parsed.get("tools", [])
+
+                # Validate each tool call
+                validated: list[tuple[str, dict, str | None]] = []
+                for tc in tool_list:
+                    t_name = tc.get("tool", "")
+                    t_args = tc.get("args", {})
+                    if not isinstance(t_args, dict):
+                        t_args = {}
+                    tools_used_names.add(t_name)
+
+                    if self.allowed_tools is not None and t_name not in self.allowed_tools:
+                        validated.append((t_name, t_args, f"❌ Tool '{t_name}' not available."))
+                    elif not self._check_tool_permission(t_name):
+                        validated.append((t_name, t_args, f"🚫 Tool '{t_name}' not permitted."))
+                    elif t_name not in TOOL_REGISTRY:
+                        validated.append((t_name, t_args, f"❌ Unknown tool '{t_name}'."))
+                    else:
+                        validated.append((t_name, t_args, None))
+
+                to_execute = [(n, a) for n, a, err in validated if err is None]
+                errors = [(n, err) for n, _, err in validated if err is not None]
+
+                parallel_group, sequential_group = _partition_tool_calls(
+                    [{"tool": n, "args": a} for n, a in to_execute]
+                )
+
+                results: list[tuple[str, dict, str]] = []
+
+                # --- Parallel group (read-only) ---
+                if parallel_group:
+                    async def _exec_one(tc_item: dict) -> tuple[str, dict, str]:
+                        _tn, _ta = tc_item["tool"], tc_item["args"]
+                        _timeout = 120 if _tn in ("shell", "shell_stdin", "shell_sequential") else 60
+                        _hints = {
+                            "agent_type": self.name,
+                            "search_depth": _search_depth,
+                            "shopping_sub_intent": task.get("shopping_sub_intent"),
+                            "workspace_path": _task_ctx.get("workspace_path", ""),
+                        }
+                        try:
+                            out = await asyncio.wait_for(
+                                execute_tool(_tn, agent_type=self.name, task_hints=_hints, **_ta),
+                                timeout=_timeout,
+                            )
+                        except asyncio.TimeoutError:
+                            out = f"❌ Tool '{_tn}' timed out after {_timeout}s"
+                        except Exception as exc:
+                            out = f"❌ Tool execution error: {exc}"
+                        return _tn, _ta, out
+
+                    par_results = await asyncio.gather(
+                        *[_exec_one(tc_item) for tc_item in parallel_group],
+                        return_exceptions=True,
+                    )
+                    for r in par_results:
+                        if isinstance(r, Exception):
+                            results.append(("unknown", {}, f"❌ Parallel error: {r}"))
+                        else:
+                            results.append(r)
+
+                # --- Sequential group (side-effect) ---
+                for tc_item in sequential_group:
+                    _tn, _ta = tc_item["tool"], tc_item["args"]
+                    _timeout = 120 if _tn in ("shell", "shell_stdin", "shell_sequential") else 60
+                    _hints = {
+                        "agent_type": self.name,
+                        "search_depth": _search_depth,
+                        "shopping_sub_intent": task.get("shopping_sub_intent"),
+                        "workspace_path": _task_ctx.get("workspace_path", ""),
+                    }
+                    try:
+                        out = await asyncio.wait_for(
+                            execute_tool(_tn, agent_type=self.name, task_hints=_hints, **_ta),
+                            timeout=_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        out = f"❌ Tool '{_tn}' timed out after {_timeout}s"
+                    except Exception as exc:
+                        out = f"❌ Tool execution error: {exc}"
+                    results.append((_tn, _ta, out))
+
+                # Add pre-validation errors
+                for n, err in errors:
+                    results.append((n, {}, err))
+
+                # Audit, metrics, caching per tool result
+                for t_name, t_args, t_output in results:
+                    # Audit log
+                    try:
+                        from ..infra.audit import audit, ACTOR_AGENT, ACTION_TOOL_EXEC
+                        _tid = int(task_id) if str(task_id).isdigit() else None
+                        await audit(
+                            actor=f"{ACTOR_AGENT}:{self.name}",
+                            action=ACTION_TOOL_EXEC,
+                            target=t_name,
+                            details=str(t_args)[:500],
+                            task_id=_tid,
+                            mission_id=mission_id,
+                        )
+                    except Exception:
+                        pass
+
+                    # Metrics
+                    try:
+                        from ..infra.metrics import record_tool_call
+                        record_tool_call(tool=t_name)
+                    except Exception:
+                        pass
+
+                    # Cache results
+                    if t_name in SIDE_EFFECT_TOOLS:
+                        idem_key = self._tool_idempotency_key(t_name, t_args)
+                        completed_tool_ops[idem_key] = t_output
+                        _to_remove = [k for k in completed_tool_ops if k.startswith("rc:")]
+                        for k in _to_remove:
+                            del completed_tool_ops[k]
+                    elif t_name in CACHEABLE_READ_TOOLS:
+                        idem_key = self._tool_idempotency_key(t_name, t_args)
+                        completed_tool_ops[f"rc:{idem_key}"] = t_output
+
+                # Build combined result message
+                result_parts = []
+                tool_failures = 0
+                for t_name, t_args, t_output in results:
+                    if len(t_output) > MAX_TOOL_OUTPUT_LENGTH:
+                        t_output = (
+                            t_output[:MAX_TOOL_OUTPUT_LENGTH]
+                            + f"\n\n... [{len(t_output)} chars total]"
+                        )
+                    key_arg = next(iter(t_args.values()), "") if t_args else ""
+                    if isinstance(key_arg, str) and len(key_arg) > 60:
+                        key_arg = key_arg[:60]
+                    result_parts.append(
+                        f"## Tool Result (`{t_name}` → {key_arg}):\n\n"
+                        f"```\n{t_output}\n```"
+                    )
+                    if t_output.startswith("❌") or t_output.startswith("🚫"):
+                        tool_failures += 1
+
+                if tool_failures > 0:
+                    consecutive_tool_failures += tool_failures
+                else:
+                    consecutive_tool_failures = 0
+
+                is_next_last = (iteration + 2 >= self.max_iterations)
+                combined = "\n\n".join(result_parts)
+                combined += (
+                    f"\n\n{'LAST ITERATION — you MUST respond with final_answer now.' if is_next_last else 'Continue working.'}"
+                    f" Iteration {iteration + 2}/{self.max_iterations}."
+                )
+
+                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "user", "content": combined})
+
+                await self._safe_log(
+                    task_id, "tool",
+                    f"[multi:{len(results)} tools] {', '.join(n for n, _, _ in results)}",
                     None, 0,
                 )
                 await self._save_checkpoint(

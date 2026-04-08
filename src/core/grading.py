@@ -278,8 +278,8 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
     else:
         # VERDICT=FAIL — worker quality failure
         generating_model = ctx.get("generating_model", "")
-        attempts = (task.get("attempts") or 0) + 1
-        max_attempts = task.get("max_attempts") or 6
+        attempts = (task.get("worker_attempts") or 0) + 1
+        max_attempts = task.get("max_worker_attempts") or 6
 
         update_exclusions_on_failure(ctx, generating_model, attempts)
         decision = compute_retry_timing("quality", attempts=attempts, max_attempts=max_attempts)
@@ -288,7 +288,7 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
             await transition_task(
                 task_id, "failed",
                 failed_in_phase="worker",
-                attempts=attempts,
+                worker_attempts=attempts,
                 context=json.dumps(ctx),
             )
             try:
@@ -299,7 +299,7 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
                     error=f"Quality gate failed after {attempts} attempts",
                     error_category="quality",
                     original_agent=task.get("agent_type", "executor"),
-                    retry_count=attempts,
+                    attempts_snapshot=attempts,
                 )
             except Exception as e:
                 logger.warning(f"DLQ quarantine failed: {e}")
@@ -326,7 +326,7 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
 
             await transition_task(
                 task_id, "pending",
-                attempts=attempts,
+                worker_attempts=attempts,
                 grade_attempts=0,
                 next_retry_at=next_retry,
                 retry_reason="quality",

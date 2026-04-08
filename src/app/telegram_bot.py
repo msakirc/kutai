@@ -2373,7 +2373,7 @@ class TelegramInterface:
         else:
             try:
                 task_id = int(arg)
-                await update_task(task_id, status="pending", retry_count=0, error=None)
+                await update_task(task_id, status="pending", worker_attempts=0, error=None)
                 await self._reply(update,f"♻️ Task #{task_id} reset to pending.")
             except ValueError:
                 await self._reply(update,"Invalid argument. Use a task ID, 'failed', 'stuck', or 'blocked'.")

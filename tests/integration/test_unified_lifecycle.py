@@ -74,9 +74,10 @@ class TestUnifiedLifecycle:
             db = await get_db()
             cursor = await db.execute("PRAGMA table_info(tasks)")
             columns = {row[1] for row in await cursor.fetchall()}
-            for col in ["attempts", "max_attempts", "grade_attempts",
+            for col in ["worker_attempts", "max_worker_attempts", "grade_attempts",
                         "max_grade_attempts", "next_retry_at",
-                        "retry_reason", "failed_in_phase"]:
+                        "retry_reason", "failed_in_phase",
+                        "infra_resets", "exhaustion_reason"]:
                 assert col in columns, f"Missing column: {col}"
 
         self._run(_test())

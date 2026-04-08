@@ -2181,7 +2181,7 @@ class BaseAgent:
             reqs.exclude_models = exclude
 
         # ── Retry-based model exclusion and difficulty escalation ──
-        task_attempts = task.get("attempts", 0) or 0
+        task_attempts = task.get("worker_attempts", 0) or 0
         if task_attempts >= 3:
             from src.core.retry import get_model_constraints
             retry_excluded, difficulty_bump = get_model_constraints(task_ctx, task_attempts)

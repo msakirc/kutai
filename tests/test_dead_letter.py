@@ -78,7 +78,7 @@ class TestDLQOperations:
                     mission_id=10,
                     error="Test error",
                     original_agent="executor",
-                    retry_count=3,
+                    attempts_snapshot=3,
                 ))
                 assert dlq_id == 1
                 assert mock_db.execute.call_count >= 2
@@ -108,13 +108,17 @@ class TestDLQOperations:
         mock_db, cursor = _make_mock_db()
         cursor.fetchone = AsyncMock(return_value=(5, 3, 2))
 
+        pragma_cursor = AsyncMock()
+        pragma_cursor.fetchall = AsyncMock(return_value=[])
+
         cat_cursor = AsyncMock()
         cat_cursor.fetchall = AsyncMock(return_value=[("timeout", 2), ("unknown", 1)])
 
         mock_db.execute = AsyncMock(side_effect=[
-            cursor,       # CREATE TABLE
-            cursor,       # summary query
-            cat_cursor,   # category query
+            cursor,         # CREATE TABLE
+            pragma_cursor,  # PRAGMA table_info (migration check)
+            cursor,         # summary query
+            cat_cursor,     # category query
         ])
 
         with patch(DB_PATCH, AsyncMock(return_value=mock_db)):

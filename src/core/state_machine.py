@@ -131,7 +131,7 @@ async def transition_task(
     Loads current state from DB, validates the transition is legal,
     then updates. Raises InvalidTransition if the move is not allowed.
 
-    Additional fields (result, completed_at, retry_count, etc.) can be
+    Additional fields (result, completed_at, worker_attempts, etc.) can be
     passed as **extra_fields and will be included in the DB update.
     """
     # Lazy import to avoid circular dependency

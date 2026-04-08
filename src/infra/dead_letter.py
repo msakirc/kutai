@@ -44,7 +44,7 @@ async def _ensure_dlq_table() -> None:
             error TEXT,
             error_category TEXT DEFAULT 'unknown',
             original_agent TEXT,
-            retry_count INTEGER DEFAULT 0,
+            attempts_snapshot INTEGER DEFAULT 0,
             quarantined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             resolved_at TIMESTAMP,
             resolution TEXT,
@@ -53,6 +53,18 @@ async def _ensure_dlq_table() -> None:
     """)
     await db.commit()
 
+    # Rename column if old schema
+    try:
+        cursor = await db.execute("PRAGMA table_info(dead_letter_tasks)")
+        cols = {row[1] for row in await cursor.fetchall()}
+        if "retry_count" in cols and "attempts_snapshot" not in cols:
+            await db.execute(
+                "ALTER TABLE dead_letter_tasks RENAME COLUMN retry_count TO attempts_snapshot"
+            )
+            await db.commit()
+    except Exception:
+        pass
+
 
 async def quarantine_task(
     task_id: int,
@@ -60,7 +72,7 @@ async def quarantine_task(
     error: str,
     error_category: str = "unknown",
     original_agent: str = "executor",
-    retry_count: int = 0,
+    attempts_snapshot: int = 0,
 ) -> int:
     """Move a permanently-failed task into the dead-letter queue.
 
@@ -75,14 +87,14 @@ async def quarantine_task(
         cursor = await db.execute(
             """INSERT OR REPLACE INTO dead_letter_tasks
                (task_id, mission_id, error, error_category, original_agent,
-                retry_count, quarantined_at, resolved_at, resolution)
+                attempts_snapshot, quarantined_at, resolved_at, resolution)
                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)""",
             (
                 task_id, mission_id,
                 error[:2000],  # cap error text
                 _classify_error(error, error_category),
                 original_agent,
-                retry_count,
+                attempts_snapshot,
                 db_now(),
             ),
         )

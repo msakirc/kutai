@@ -143,8 +143,15 @@ async def init_db():
             result TEXT,
             error TEXT,
             context JSON DEFAULT '{}',
-            retry_count INTEGER DEFAULT 0,
-            max_retries INTEGER DEFAULT 3,
+            worker_attempts INTEGER DEFAULT 0,
+            max_worker_attempts INTEGER DEFAULT 6,
+            grade_attempts INTEGER DEFAULT 0,
+            max_grade_attempts INTEGER DEFAULT 3,
+            next_retry_at TIMESTAMP,
+            retry_reason TEXT,
+            failed_in_phase TEXT,
+            infra_resets INTEGER DEFAULT 0,
+            exhaustion_reason TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             started_at TIMESTAMP,
             completed_at TIMESTAMP,
@@ -581,15 +588,17 @@ async def init_db():
             logger.debug(f"sleep_state column migration skipped: {e}")
 
     # Migration: Unified Task Lifecycle — new retry columns
-    if "attempts" not in columns:
+    if "worker_attempts" not in columns and "attempts" not in columns:
         for col_sql in [
-            "ALTER TABLE tasks ADD COLUMN attempts INTEGER DEFAULT 0",
-            "ALTER TABLE tasks ADD COLUMN max_attempts INTEGER DEFAULT 6",
+            "ALTER TABLE tasks ADD COLUMN worker_attempts INTEGER DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN max_worker_attempts INTEGER DEFAULT 6",
             "ALTER TABLE tasks ADD COLUMN grade_attempts INTEGER DEFAULT 0",
             "ALTER TABLE tasks ADD COLUMN max_grade_attempts INTEGER DEFAULT 3",
             "ALTER TABLE tasks ADD COLUMN next_retry_at TIMESTAMP",
             "ALTER TABLE tasks ADD COLUMN retry_reason TEXT",
             "ALTER TABLE tasks ADD COLUMN failed_in_phase TEXT",
+            "ALTER TABLE tasks ADD COLUMN infra_resets INTEGER DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN exhaustion_reason TEXT",
         ]:
             try:
                 await db.execute(col_sql)
@@ -600,6 +609,34 @@ async def init_db():
 
         # Run data migration
         await _migrate_task_lifecycle(db)
+
+    # Migration: Retry Pipeline Overhaul — rename columns, add new ones
+    if "attempts" in columns and "worker_attempts" not in columns:
+        for sql in [
+            "ALTER TABLE tasks RENAME COLUMN attempts TO worker_attempts",
+            "ALTER TABLE tasks RENAME COLUMN max_attempts TO max_worker_attempts",
+            "ALTER TABLE tasks ADD COLUMN infra_resets INTEGER DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN exhaustion_reason TEXT",
+        ]:
+            try:
+                await db.execute(sql)
+                await db.commit()
+            except Exception:
+                pass
+        logger.info("Applied retry pipeline overhaul migration")
+
+    # Migration: Add infra_resets/exhaustion_reason if missing (fresh DB with worker_attempts already)
+    if "worker_attempts" in columns and "infra_resets" not in columns:
+        for sql in [
+            "ALTER TABLE tasks ADD COLUMN infra_resets INTEGER DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN exhaustion_reason TEXT",
+        ]:
+            try:
+                await db.execute(sql)
+                await db.commit()
+            except Exception:
+                pass
+        logger.info("Added infra_resets/exhaustion_reason columns")
 
     # Migration: add suggestion columns to todo_items
     for col in ["suggestion", "suggestion_agent", "suggestion_at"]:
@@ -649,15 +686,15 @@ async def init_db():
 async def _migrate_task_lifecycle(db) -> None:
     """One-time migration: sleeping/paused/rejected → unified model."""
     try:
-        # Backfill attempts from retry_count
+        # Backfill worker_attempts from retry_count (legacy column)
         await db.execute(
-            "UPDATE tasks SET attempts = COALESCE(retry_count, 0) "
-            "WHERE attempts = 0 AND COALESCE(retry_count, 0) > 0"
+            "UPDATE tasks SET worker_attempts = COALESCE(retry_count, 0) "
+            "WHERE worker_attempts = 0 AND COALESCE(retry_count, 0) > 0"
         )
-        # Backfill max_attempts from max_retries (add 3 for grading headroom)
+        # Backfill max_worker_attempts from max_retries (add 3 for grading headroom)
         await db.execute(
-            "UPDATE tasks SET max_attempts = COALESCE(max_retries, 3) + 3 "
-            "WHERE max_attempts = 6 AND max_retries IS NOT NULL AND max_retries != 3"
+            "UPDATE tasks SET max_worker_attempts = COALESCE(max_retries, 3) + 3 "
+            "WHERE max_worker_attempts = 6 AND max_retries IS NOT NULL AND max_retries != 3"
         )
         # Convert sleeping → pending with next_retry_at
         await db.execute(
@@ -724,12 +761,12 @@ _MISSION_COLUMNS = frozenset({
 _TASK_COLUMNS = frozenset({
     "title", "description", "agent_type", "status", "tier", "priority",
     "requires_approval", "depends_on", "result", "error", "error_category",
-    "context", "retry_count", "max_retries", "started_at", "completed_at",
+    "context", "worker_attempts", "max_worker_attempts", "started_at", "completed_at",
     "task_hash", "max_cost", "cost", "quality_score", "sleep_state",
     "next_retry_at", "retry_reason",
     # Unified lifecycle columns
-    "attempts", "max_attempts", "grade_attempts", "max_grade_attempts",
-    "failed_in_phase",
+    "grade_attempts", "max_grade_attempts",
+    "failed_in_phase", "infra_resets", "exhaustion_reason",
 })
 
 
@@ -813,7 +850,7 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
                     )
                     await db.execute(
                         "UPDATE tasks SET status = 'pending', "
-                        "retry_count = COALESCE(retry_count, 0) + 1 "
+                        "worker_attempts = COALESCE(worker_attempts, 0) + 1 "
                         "WHERE id = ?",
                         (dup["id"],)
                     )

@@ -460,7 +460,7 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
     # Append schema validation error from previous retry
     schema_error = ctx.get("_schema_error")
     if schema_error:
-        retry_count = task.get("attempts", 0)
+        retry_count = task.get("worker_attempts", 0)
         parts.append(
             f"\n\n## IMPORTANT: Previous Output Was Invalid (retry {retry_count})\n"
             f"Your previous output failed validation: **{schema_error}**\n"
@@ -690,7 +690,7 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
     if artifact_schema and output_value:
         is_valid, error_msg = validate_artifact_schema(output_value, artifact_schema)
         if not is_valid:
-            attempts = task.get("attempts", 0)
+            attempts = task.get("worker_attempts", 0)
             logger.warning(
                 f"[Workflow Hook] Artifact schema validation failed for step "
                 f"'{step_id}': {error_msg}. Attempt {attempts}"

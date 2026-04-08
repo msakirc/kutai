@@ -1500,7 +1500,7 @@ class BaseAgent:
                                 _last_action = f"Thinking: {_snippet}..." if _snippet else "Processing..."
                             break
                     await self.progress_callback(
-                        task_id, iteration + 1, self.max_iterations, _last_action
+                        task_id, iteration + 1, effective_max_iterations, _last_action
                     )
                     _progress_last_sent = _now
                 except Exception:

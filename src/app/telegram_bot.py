@@ -5337,6 +5337,59 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 await query.message.reply_text(f"❌ {e}")
             return
 
+        # ── DLQ Analyst actions ──
+        if data.startswith("dlqa:"):
+            parts = data.split(":", 2)
+            if len(parts) < 3:
+                await query.answer("Invalid action")
+                return
+
+            action = parts[1]
+            payload = parts[2]
+
+            if action == "retry":
+                task_ids = [int(t) for t in payload.split(",") if t.isdigit()]
+                from src.infra.dead_letter import retry_dlq_task
+                retried = 0
+                for tid in task_ids:
+                    if await retry_dlq_task(tid):
+                        retried += 1
+                await query.answer(f"Retried {retried}/{len(task_ids)} tasks")
+                await query.edit_message_text(
+                    query.message.text + f"\n\nRetried {retried} tasks.",
+                )
+
+            elif action == "drop":
+                task_ids = [int(t) for t in payload.split(",") if t.isdigit()]
+                from src.infra.dead_letter import resolve_dlq_task
+                dropped = 0
+                for tid in task_ids:
+                    if await resolve_dlq_task(tid, resolution="discarded"):
+                        dropped += 1
+                await query.answer(f"Dropped {dropped}/{len(task_ids)} tasks")
+                await query.edit_message_text(
+                    query.message.text + f"\n\nDropped {dropped} tasks.",
+                )
+
+            elif action == "pause":
+                pattern_key = payload
+                # Store pause in orchestrator's pause set
+                try:
+                    from src.core.orchestrator import get_orchestrator
+                    orch = get_orchestrator()
+                    if orch and hasattr(orch, "paused_patterns"):
+                        orch.paused_patterns.add(pattern_key)
+                        await query.answer(f"Paused: {pattern_key}")
+                        await query.edit_message_text(
+                            query.message.text + f"\n\nPaused pattern: {pattern_key}. Use /dlq unpause to lift.",
+                        )
+                    else:
+                        await query.answer("Orchestrator not available")
+                except Exception as e:
+                    await query.answer(f"Pause failed: {e}")
+
+            return
+
         # ── Process Management Callbacks ──────────────────────────
         if data.startswith("m:proc:"):
             action = data.split(":")[-1]

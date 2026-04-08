@@ -56,12 +56,19 @@ def _parse_yes_no(text: str, key: str) -> Optional[bool]:
 
 
 def _parse_text_field(text: str, key: str) -> str:
-    """Extract a free-text value for a given key from grader output."""
-    pattern = rf"{key}\s*:\s*(.+)"
-    match = re.search(pattern, text, re.IGNORECASE)
+    """Extract a free-text value for a given key from grader output.
+
+    Captures everything after KEY: until the next uppercase KEY: marker
+    or end of string. Handles values that wrap across multiple lines.
+    """
+    pattern = rf"{key}\s*:\s*(.+?)(?=\n[A-Z]{{2,}}\s*:|$)"
+    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
     if not match:
         return ""
-    return match.group(1).strip()
+    # Collapse internal newlines + whitespace into single spaces
+    value = match.group(1).strip()
+    value = re.sub(r'\s*\n\s*', ' ', value)
+    return value
 
 
 def parse_grade_response(raw: str) -> GradeResult:

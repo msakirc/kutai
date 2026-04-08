@@ -204,3 +204,57 @@ class TestInsightField:
     def test_default_insight_empty(self):
         result = GradeResult(passed=True)
         assert result.insight == ""
+
+
+class TestMultilineParsing:
+    def test_tools_spanning_two_lines(self):
+        raw = (
+            "VERDICT: PASS\n"
+            "SITUATION: Multi-store price check\n"
+            "STRATEGY: Sequential scraping\n"
+            "TOOLS: smart_search, web_search,\n"
+            "  api_call, scraper\n"
+            "PREFERENCE: NONE\n"
+            "INSIGHT: NONE"
+        )
+        result = parse_grade_response(raw)
+        assert "smart_search" in result.tools
+        assert "api_call" in result.tools
+        assert "scraper" in result.tools
+
+    def test_strategy_wrapping(self):
+        raw = (
+            "VERDICT: PASS\n"
+            "SITUATION: Complex research\n"
+            "STRATEGY: First searched each store,\n"
+            "  then compared prices across all\n"
+            "TOOLS: smart_search\n"
+            "PREFERENCE: NONE"
+        )
+        result = parse_grade_response(raw)
+        assert "First searched each store" in result.strategy
+        assert "compared prices" in result.strategy
+
+    def test_single_line_still_works(self):
+        """Regression: single-line values must still parse correctly."""
+        raw = (
+            "VERDICT: PASS\n"
+            "SITUATION: Weather lookup\n"
+            "STRATEGY: Used API\n"
+            "TOOLS: api_call"
+        )
+        result = parse_grade_response(raw)
+        assert result.situation == "Weather lookup"
+        assert result.strategy == "Used API"
+        assert result.tools == ["api_call"]
+
+    def test_last_field_captures_to_end(self):
+        """Last field in output has no next KEY: to stop at."""
+        raw = (
+            "VERDICT: PASS\n"
+            "INSIGHT: Turkish sites need UA header\n"
+            "  and proper Accept-Language"
+        )
+        result = parse_grade_response(raw)
+        assert "Turkish sites need UA header" in result.insight
+        assert "Accept-Language" in result.insight

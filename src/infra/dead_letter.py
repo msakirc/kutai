@@ -2,19 +2,20 @@
 """
 Dead-letter queue for permanently failed tasks.
 
-When a task exhausts all retries and the error_recovery agent also fails
-(or the task is non-recoverable), it enters the dead-letter queue.
+When a task exhausts all retries (worker attempts, infrastructure resets,
+or grading attempts), it enters the dead-letter queue.
 
 The DLQ:
 - Quarantines tasks so they don't block downstream work
 - Notifies via Telegram
 - Provides `/dlq` command to inspect / retry / discard
 - Auto-pauses a workflow mission if too many tasks land here
+- Feeds the DLQ Analyst for pattern detection and proactive alerts
 
 Integration with existing systems:
-- BackpressureQueue handles *transient* model call failures (rate limits)
-- _spawn_error_recovery handles *individual* task failures (bugs, bad prompts)
-- DeadLetterQueue handles *permanent* failures that survive both layers
+- RetryContext handles in-flight failure recovery (model rotation, difficulty bumps)
+- BackpressureQueue handles transient model call failures (rate limits)
+- DLQAnalyst detects cross-task failure patterns after quarantine
 """
 
 from __future__ import annotations

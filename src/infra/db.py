@@ -497,7 +497,7 @@ async def init_db():
     # Verify schema
     cursor = await db.execute("PRAGMA table_info(tasks)")
     columns = [row[1] for row in await cursor.fetchall()]
-    logger.info(f"📊 DB schema verified. Tasks columns: {columns}")
+    logger.info(f"DB schema verified. Tasks columns: {columns}")
 
     # Migration: add task_hash column if not present
     if "task_hash" not in columns:
@@ -506,7 +506,7 @@ async def init_db():
                 "ALTER TABLE tasks ADD COLUMN task_hash TEXT"
             )
             await db.commit()
-            logger.info("📊 Added task_hash column to tasks table")
+            logger.info("Added task_hash column to tasks table")
         except Exception as e:
             logger.debug(f"task_hash column migration skipped: {e}")
 
@@ -517,7 +517,7 @@ async def init_db():
                 "ALTER TABLE tasks ADD COLUMN task_state JSON DEFAULT NULL"
             )
             await db.commit()
-            logger.info("📊 Added task_state column to tasks table")
+            logger.info("Added task_state column to tasks table")
         except Exception as e:
             logger.debug(f"task_state column migration skipped: {e}")
 
@@ -528,7 +528,7 @@ async def init_db():
                 "ALTER TABLE tasks ADD COLUMN timeout_seconds INTEGER DEFAULT NULL"
             )
             await db.commit()
-            logger.info("📊 Added timeout_seconds column to tasks table")
+            logger.info("Added timeout_seconds column to tasks table")
         except Exception as e:
             logger.debug(f"timeout_seconds column migration skipped: {e}")
 
@@ -539,7 +539,7 @@ async def init_db():
                 "ALTER TABLE tasks ADD COLUMN quality_score REAL DEFAULT NULL"
             )
             await db.commit()
-            logger.info("📊 Added quality_score column to tasks table")
+            logger.info("Added quality_score column to tasks table")
         except Exception as e:
             logger.debug(f"quality_score column migration skipped: {e}")
 
@@ -550,7 +550,7 @@ async def init_db():
                 "ALTER TABLE tasks ADD COLUMN error_category TEXT DEFAULT NULL"
             )
             await db.commit()
-            logger.info("📊 Added error_category column to tasks table")
+            logger.info("Added error_category column to tasks table")
         except Exception as e:
             logger.debug(f"error_category column migration skipped: {e}")
 

@@ -13,10 +13,12 @@ Call reload() at any time to rescan without restarting.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
 import threading
+import time
 
 from src.infra.logging_config import get_logger
 from dataclasses import dataclass, field
@@ -450,7 +452,7 @@ def calculate_dynamic_context(
     gpu_ratio = gpu_layers / max(n_layers, 1)
     if gpu_ratio < 0.3:
         hard_cap = 8192
-    elif gpu_ratio < 0.5:
+    elif gpu_ratio <= 0.5:
         hard_cap = 16384
     else:
         hard_cap = 32768
@@ -1005,12 +1007,17 @@ class ModelRegistry:
         best = registry.best_for_task("coder") # smart selection
     """
 
+    _SPEED_CACHE_PATH = Path("data/model_speeds.json")
+    _SPEED_SAVE_INTERVAL = 30  # seconds between disk writes
+
     def __init__(self):
         self.models: dict[str, ModelInfo] = {}
         self.personal_projects: list[str] = []
         self._raw_config: dict = {}
         self._lock = threading.RLock()
         self._loaded = False
+        self._speed_cache_dirty = False
+        self._speed_cache_last_save: float = 0.0
 
     # ── Loading ──────────────────────────────────────────────────────────────
 
@@ -1156,6 +1163,9 @@ class ModelRegistry:
                 self._enrich_thread.start()
                 logger.info("Benchmark enrichment started in background")
 
+            # ── 7. Restore persisted speed measurements ──
+            self._load_speed_cache()
+
             self._loaded = True
 
             # Summary
@@ -1166,6 +1176,64 @@ class ModelRegistry:
                 f"Registry built: {len(new_models)} models "
                 f"({n_local} local, {n_cloud} cloud, {n_ollama} ollama)"
             )
+
+    # ── Speed Cache Persistence ───────────────────────────────────────────────
+
+    def _load_speed_cache(self) -> None:
+        """Load persisted speed measurements into current models."""
+        try:
+            if not self._SPEED_CACHE_PATH.exists():
+                return
+            with open(self._SPEED_CACHE_PATH, "r", encoding="utf-8") as f:
+                cache = json.load(f)
+            restored = 0
+            for name, entry in cache.items():
+                model = self.models.get(name)
+                if model is None:
+                    continue
+                tps = entry.get("tps", 0.0)
+                demoted = entry.get("demoted", False)
+                if tps > 0 and model.tokens_per_second <= 0:
+                    model.tokens_per_second = tps
+                    restored += 1
+                if demoted and not model.demoted:
+                    model.demoted = True
+            if restored:
+                logger.info(f"Restored speed data for {restored} models from cache")
+        except Exception as e:
+            logger.warning(f"Failed to load speed cache: {e}")
+
+    def _save_speed_cache(self, force: bool = False) -> None:
+        """Persist speed measurements to disk (debounced)."""
+        now = time.time()
+        if not force and (now - self._speed_cache_last_save) < self._SPEED_SAVE_INTERVAL:
+            self._speed_cache_dirty = True
+            return
+        try:
+            cache = {}
+            for name, model in self.models.items():
+                if model.tokens_per_second > 0 or model.demoted:
+                    cache[name] = {
+                        "tps": round(model.tokens_per_second, 1),
+                        "demoted": model.demoted,
+                        "updated": time.strftime("%Y-%m-%d"),
+                    }
+            if not cache:
+                return
+            self._SPEED_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._SPEED_CACHE_PATH.with_suffix(".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(cache, f, indent=2)
+            tmp.replace(self._SPEED_CACHE_PATH)
+            self._speed_cache_last_save = now
+            self._speed_cache_dirty = False
+        except Exception as e:
+            logger.warning(f"Failed to save speed cache: {e}")
+
+    def flush_speed_cache(self) -> None:
+        """Force-write speed cache to disk. Call on shutdown."""
+        if self._speed_cache_dirty:
+            self._save_speed_cache(force=True)
 
     def _load_local_models(
         self, model_dir: str, overrides: dict
@@ -1283,7 +1351,7 @@ class ModelRegistry:
                 _gpu_layers_from_override=_gpu_layers_from_override,
                 total_layers=raw["n_layers"],
                 file_size_mb=raw["file_size_mb"],
-                load_time_seconds=max(10, raw["file_size_mb"] / 250),  # ~250 MB/s cold-start load speed
+                load_time_seconds=max(10, raw["file_size_mb"] / 500),  # ~500 MB/s typical VRAM load speed
                 priority_class=priority_class,
                 specialty=specialty,
                 family=raw["family_key"] or "unknown",
@@ -1382,7 +1450,7 @@ class ModelRegistry:
             _gpu_layers_from_override=_gpu_layers_from_override,
             total_layers=n_layers,
             file_size_mb=meta.get("file_size_mb", 0),
-            load_time_seconds=max(10, meta.get("file_size_mb", 0) / 250),  # ~250 MB/s cold-start
+            load_time_seconds=max(10, meta.get("file_size_mb", 0) / 500),  # ~500 MB/s typical VRAM load speed
             specialty=specialty,
             family=family_key or "unknown",
         )
@@ -1664,14 +1732,25 @@ class ModelRegistry:
         prompt lengths and concurrent load.
         """
         info = self.models.get(model_name)
-        if info is None:
+        if info is None or measured_tps <= 0:
             return
         if info.tokens_per_second <= 0:
             # First measurement — use raw value
             info.tokens_per_second = measured_tps
         else:
-            # EMA with alpha=0.3 (recent measurements weighted 30%)
-            alpha = 0.3
+            # Outlier guard: if new measurement differs by >5x from current
+            # EMA, it's likely a cold-start/contention artifact — dampen it
+            # with a much lower alpha to avoid corrupting the estimate.
+            ratio = measured_tps / info.tokens_per_second
+            if ratio > 5.0 or ratio < 0.2:
+                alpha = 0.05  # barely nudge for outliers
+                logger.debug(
+                    f"Speed outlier for {model_name}: "
+                    f"{measured_tps:.1f} vs EMA {info.tokens_per_second:.1f} "
+                    f"({ratio:.1f}x), using dampened alpha"
+                )
+            else:
+                alpha = 0.3
             info.tokens_per_second = info.tokens_per_second * (1 - alpha) + measured_tps * alpha
 
         # Auto-demote local models below minimum usable speed.
@@ -1695,6 +1774,9 @@ class ModelRegistry:
                     ))
             except Exception:
                 pass  # best-effort notification
+
+        # Persist to disk (debounced)
+        self._save_speed_cache()
 
     def local_models(self) -> list[ModelInfo]:
         models = self.models

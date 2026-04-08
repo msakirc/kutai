@@ -336,6 +336,7 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
     min_score = reqs.effective_min_score
 
     candidates: list[ScoredModel] = []
+    _time_gated: list[ScoredModel] = []  # models that passed all other filters but are too slow
 
     # Fetch actual runtime state for the currently loaded local model.
     # Used to apply runtime-aware scoring adjustments inside the loop.
@@ -433,6 +434,33 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
                         _budget_mb = int(_gpu.vram_total_mb * _vram_budget)
                         if _model_vram > _budget_mb:
                             _skip(f"vram_budget({_model_vram}>{_budget_mb}MB)"); continue
+
+        # ── Time gate flag: mark models too slow for the timeout budget ──
+        # Checked after scoring; if ALL candidates would be time-gated,
+        # the least-slow one is rescued so we never return empty.
+        # Uses the dispatcher's hard cap (300s) as ceiling: when TPS is
+        # known, the dispatcher computes min(300, est_gen*2), so generation
+        # can never exceed 300s without timing out.
+        _is_time_gated = False
+        if model.is_local and reqs.estimated_output_tokens > 0:
+            _gate_tps = (
+                _loaded_runtime.measured_tps
+                if (model.is_loaded
+                    and _loaded_runtime is not None
+                    and _loaded_runtime.model_name == name
+                    and _loaded_runtime.measured_tps > 0)
+                else model.tokens_per_second
+            )
+            if _gate_tps > 0:
+                _gate_secs = reqs.estimated_output_tokens / _gate_tps
+                _TIME_BUDGET = 300.0  # dispatcher hard cap
+                if _gate_secs > _TIME_BUDGET:
+                    _is_time_gated = True
+                    reasons.append(
+                        f"time_gated({_gate_tps:.1f}tps×"
+                        f"{reqs.estimated_output_tokens}tok"
+                        f"={_gate_secs:.0f}s>{_TIME_BUDGET:.0f}s)"
+                    )
 
         # ╔══════════════════════════════════════════╗
         # ║  LAYER 2: Capability gate              ║
@@ -741,13 +769,30 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
             composite *= 0.75
             reasons.append("needs_swap")
 
-        candidates.append(ScoredModel(
+        _scored = ScoredModel(
             model=model,
             score=composite,
             capability_score=cap_score_raw,
             composite_score=composite,
             reasons=reasons,
-        ))
+        )
+        if _is_time_gated:
+            _time_gated.append(_scored)
+        else:
+            candidates.append(_scored)
+
+    # ── Rescue: if time gate filtered all candidates, let the fastest through ──
+    if not candidates and _time_gated:
+        _time_gated.sort(key=lambda c: -(c.model.tokens_per_second or 0))
+        rescued = _time_gated[0]
+        rescued.reasons.append("rescued(only_option)")
+        candidates.append(rescued)
+        logger.warning(
+            "time_gate_rescue",
+            model=rescued.model.name,
+            tps=rescued.model.tokens_per_second,
+            msg="all candidates were too slow, rescued fastest",
+        )
 
     candidates.sort(key=lambda c: -c.score)
 
@@ -1408,10 +1453,9 @@ async def call_model(
                     is_server_error = "500" in error_str or "internal server error" in error_str
                     if is_server_error and model.is_local and local_manager:
                         if local_manager.swap_started_at > 0:
-                            # Swap in progress — wait for it to complete
-                            import time as _time
+                            # Swap in progress — brief wait then let outer loop re-select
                             swap_wait = 0
-                            while local_manager.swap_started_at > 0 and swap_wait < 30:
+                            while local_manager.swap_started_at > 0 and swap_wait < 10:
                                 await asyncio.sleep(2)
                                 swap_wait += 2
                             if swap_wait > 0:

@@ -165,6 +165,7 @@ class RetryContext:
             )
 
         if failure_type == "availability":
+            self.worker_attempts += 1
             return compute_retry_timing(
                 failure_type="availability",
                 last_avail_delay=0,

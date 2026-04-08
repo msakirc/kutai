@@ -761,13 +761,20 @@ class LocalModelManager:
             return False
 
         # Wait for health endpoint — poll with backoff.
-        # Large models (>20GB) can take 90s+ to load on first start after
-        # reboot when VRAM needs initial allocation. The 2x multiplier on
-        # estimated load time handles most cases, but the ceiling must be
-        # high enough for worst-case cold starts.
-        max_wait = model.load_time_seconds * 2.5  # 2.5x estimated time
-        max_wait = max(max_wait, 30)               # at least 30s
-        max_wait = min(max_wait, 180)              # at most 180s
+        # Load time depends on model weights AND KV cache pre-allocation.
+        # llama-server pre-allocates the full KV cache at startup, which
+        # can take 60-120s for large contexts on partial-VRAM models.
+        # Weight loading: ~500 MB/s from disk to VRAM.
+        # KV cache: scales with context * layers. Models that spill to
+        # RAM (file_size > VRAM) are much slower due to split allocation.
+        weight_time = model.load_time_seconds  # file_size / 500
+        ctx_factor = model.context_length / 8192  # baseline 8K
+        layer_factor = model.total_layers / 32    # baseline 32 layers
+        kv_time = ctx_factor * layer_factor * 15   # ~15s base for 8K/32L
+        estimated_total = weight_time + kv_time
+        max_wait = estimated_total * 2.0          # 2x safety margin
+        max_wait = max(max_wait, 45)               # at least 45s
+        max_wait = min(max_wait, 300)              # at most 5 min
 
         healthy = await self._wait_for_healthy(timeout=max_wait)
 

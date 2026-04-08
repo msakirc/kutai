@@ -32,9 +32,9 @@ Tested via `LocalModelManager.ensure_model()` with `--fit` auto-allocation, `ena
 | **GLM-4.7-Flash-UD** | 17GB | MoE | **24.6** | 50.1 | 7.5GB | 20s | NO | v8668 fixed thinking disable |
 | **Gemma-4-26B-A4B (MoE)** | 13GB | MoE 26B/4B | **23.2** | 47.4 | 7.4GB | 20s | NO | Vision (mmproj), Google's best open model |
 | **Apriel-15B-Thinker** | 8.7GB | Dense | **6.7** | 27.5 | 7.3GB | 11s | INLINE | Vision (mmproj), always-on CoT in content |
-| **Qwen3.5-27B** | 16GB | Dense | **3.5** | 8.2 | 6.9GB | 20s | NO | Near demote threshold |
+| **Qwen3.5-27B** | 16GB | Dense | **2.9** | 8.2 | 6.9GB | 20s | YES | Still thinks despite disable flag, hard-filtered for >1000 output tokens |
 
-**Thinking control**: llama.cpp v8668+ uses `--reasoning off --reasoning-budget 0` (the old `--chat-template-kwargs {"enable_thinking": false}` is deprecated and ignored). Works for all thinking models including Qwen3.5-27B. Always-on (cannot disable): gpt-oss (reasoning_content), Apriel (inline in content via `--no-jinja --chat-template chatml`).
+**Thinking control**: llama.cpp v8668+ uses `--reasoning off --reasoning-budget 0` (the old `--chat-template-kwargs {"enable_thinking": false}` is deprecated and ignored). Works for all thinking models **except** Qwen3.5-27B (still produces thinking tokens despite flag). Always-on (cannot disable): gpt-oss (reasoning_content), Apriel (inline in content via `--no-jinja --chat-template chatml`), Qwen3.5-27B.
 
 **New models (2026-04-05)**: GigaChat3.1-Lightning, gpt-oss-20b, Apriel-15B-Thinker Q4_K_L + mmproj, Gemma-4-26B-A4B + mmproj.
 **Removed**: gemma-3-27b-heretic (replaced by Gemma 4).

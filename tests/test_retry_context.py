@@ -217,6 +217,11 @@ class TestRecordFailure:
         assert decision.action == "delayed"
         assert decision.delay_seconds == 60
 
+    def test_record_availability_increments_worker_attempts(self):
+        ctx = RetryContext(worker_attempts=1)
+        ctx.record_failure("availability")
+        assert ctx.worker_attempts == 2
+
     def test_duplicate_model_not_added(self):
         ctx = RetryContext(failed_models=["m1"])
         ctx.record_failure("quality", model="m1")

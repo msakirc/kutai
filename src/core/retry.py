@@ -140,9 +140,10 @@ class RetryContext:
         if failure_type == "infrastructure":
             self.infra_resets += 1
             self.retry_reason = "infrastructure"
+            self.failed_in_phase = "infrastructure"
             if self.infra_resets >= 3:
                 return RetryDecision.terminal()
-            return RetryDecision.delayed(60)
+            return RetryDecision.immediate()
 
         if failure_type == "exhaustion":
             # Classify exhaustion reason first
@@ -152,12 +153,14 @@ class RetryContext:
                 self.exhaustion_reason = "tool_failures"
             else:
                 self.exhaustion_reason = "budget"
+            self.failed_in_phase = "worker"
             # Then handle as quality
             failure_type = "quality"
 
         if failure_type in ("quality", "timeout"):
             self.worker_attempts += 1
             self.retry_reason = failure_type
+            self.failed_in_phase = "worker"
             return compute_retry_timing(
                 failure_type="quality",
                 attempts=self.worker_attempts,
@@ -166,6 +169,7 @@ class RetryContext:
 
         if failure_type == "availability":
             self.worker_attempts += 1
+            self.retry_reason = "availability"
             return compute_retry_timing(
                 failure_type="availability",
                 last_avail_delay=0,
@@ -173,7 +177,7 @@ class RetryContext:
 
         raise ValueError(f"Unknown failure_type: {failure_type}")
 
-    def record_guard_burn(self) -> None:
+    def record_guard_burn(self, guard_name: str) -> None:
         self.guard_burns += 1
 
     def record_useful_iteration(self) -> None:
@@ -192,6 +196,7 @@ class RetryContext:
             "next_retry_at": self.next_retry_at,
             "retry_reason": self.retry_reason,
             "failed_in_phase": self.failed_in_phase,
+            "exhaustion_reason": self.exhaustion_reason,
         }
 
     def to_context_patch(self) -> dict:

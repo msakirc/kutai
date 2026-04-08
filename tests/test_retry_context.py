@@ -113,6 +113,13 @@ class TestFromTask:
         ctx = RetryContext.from_task(task)
         assert ctx.failed_models == []
 
+    def test_malformed_json_context(self):
+        """Malformed JSON string in context falls back to empty state."""
+        task = {"id": 1, "context": "{not valid json{{"}
+        ctx = RetryContext.from_task(task)
+        assert ctx.failed_models == []
+        assert ctx.grade_excluded_models == []
+
 
 class TestProperties:
     def test_total_attempts(self):
@@ -152,6 +159,7 @@ class TestRecordFailure:
         decision = ctx.record_failure("quality", model="model-a")
         assert ctx.worker_attempts == 1
         assert ctx.retry_reason == "quality"
+        assert ctx.failed_in_phase == "worker"
         assert "model-a" in ctx.failed_models
         assert decision.action == "immediate"
 
@@ -174,6 +182,7 @@ class TestRecordFailure:
         decision = ctx.record_failure("timeout", model="model-t")
         assert ctx.worker_attempts == 1
         assert ctx.retry_reason == "timeout"
+        assert ctx.failed_in_phase == "worker"
         assert decision.action == "immediate"
 
     def test_infrastructure_increment(self):
@@ -181,12 +190,14 @@ class TestRecordFailure:
         decision = ctx.record_failure("infrastructure", model=None)
         assert ctx.infra_resets == 1
         assert ctx.retry_reason == "infrastructure"
-        assert decision.action != "terminal"
+        assert ctx.failed_in_phase == "infrastructure"
+        assert decision.action == "immediate"
 
     def test_infrastructure_terminal_at_3(self):
         ctx = RetryContext(infra_resets=2)
         decision = ctx.record_failure("infrastructure", model=None)
         assert ctx.infra_resets == 3
+        assert ctx.failed_in_phase == "infrastructure"
         assert decision.action == "terminal"
 
     def test_infrastructure_model_tracked(self):
@@ -214,6 +225,7 @@ class TestRecordFailure:
     def test_availability(self):
         ctx = RetryContext()
         decision = ctx.record_failure("availability", model=None)
+        assert ctx.retry_reason == "availability"
         assert decision.action == "delayed"
         assert decision.delay_seconds == 60
 
@@ -232,6 +244,11 @@ class TestRecordFailure:
         ctx.record_failure("quality", model=None)
         assert ctx.failed_models == []
 
+    def test_unknown_failure_type_raises(self):
+        ctx = RetryContext()
+        with pytest.raises(ValueError, match="Unknown failure_type"):
+            ctx.record_failure("bogus_type")
+
 
 class TestSerialization:
     def test_to_db_fields(self):
@@ -244,6 +261,7 @@ class TestSerialization:
             next_retry_at="2026-04-07 12:00:00",
             retry_reason="quality",
             failed_in_phase="execution",
+            exhaustion_reason="budget",
         )
         fields = ctx.to_db_fields()
         assert fields == {
@@ -255,6 +273,7 @@ class TestSerialization:
             "next_retry_at": "2026-04-07 12:00:00",
             "retry_reason": "quality",
             "failed_in_phase": "execution",
+            "exhaustion_reason": "budget",
         }
         # Must NOT contain iteration-level or model-tracking fields
         assert "failed_models" not in fields
@@ -316,9 +335,9 @@ class TestSerialization:
 class TestGuardTracking:
     def test_record_guard_burn(self):
         ctx = RetryContext()
-        ctx.record_guard_burn()
+        ctx.record_guard_burn("loop_guard")
         assert ctx.guard_burns == 1
-        ctx.record_guard_burn()
+        ctx.record_guard_burn("tool_guard")
         assert ctx.guard_burns == 2
 
     def test_record_useful_iteration(self):

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from dataclasses import dataclass
 import hashlib
 import json
 import re
@@ -78,6 +79,17 @@ for _ts in TOOL_SCHEMAS:
     if _ts_name:
         _TOOL_SCHEMAS_BY_NAME[_ts_name] = _fn.get("parameters", {})
 del _ts, _fn, _ts_name
+
+
+@dataclass
+class GuardCorrection:
+    """Result from a sub-iteration guard check."""
+    guard_name: str
+    message: str
+
+
+# Max sub-iteration corrections (guards + format) within a single outer iteration.
+MAX_SUB_CORRECTIONS: int = 3
 
 
 class BaseAgent:
@@ -318,6 +330,114 @@ class BaseAgent:
                 ctx = {}
         cls = ctx.get("classification", {})
         return cls.get("search_depth", "none") or "none"
+
+    # ------------------------------------------------------------------ #
+    #  Sub-iteration guards                                                #
+    # ------------------------------------------------------------------ #
+
+    _DATA_FETCH_TOOLS = frozenset({
+        "web_search", "api_call", "api_lookup", "http_request",
+        "shopping_search", "read_file", "read_blackboard",
+    })
+
+    def _check_sub_iteration_guards(
+        self,
+        parsed: dict,
+        iteration: int,
+        tools_used: bool,
+        tools_used_names: set[str],
+        task: dict,
+        search_depth: str,
+        suppress_guards: bool,
+    ) -> GuardCorrection | None:
+        """Check Category-A guards that should not burn an outer iteration.
+
+        Returns a ``GuardCorrection`` if a guard fires, or ``None`` if all pass.
+        """
+        if suppress_guards:
+            return None
+
+        action_type = parsed.get("action", "final_answer")
+
+        # 1. Blocked clarification guard
+        if action_type == "clarify" and self._suppress_clarification:
+            return GuardCorrection(
+                guard_name="blocked_clarification",
+                message=(
+                    "You cannot ask for clarification on this task. "
+                    "Work with the information you have and provide "
+                    "your best answer using final_answer."
+                ),
+            )
+
+        # 2. Hallucination guard (action tasks)
+        has_tools = (
+            self.allowed_tools is None or len(self.allowed_tools) > 0
+        )
+        if (
+            action_type == "final_answer"
+            and not tools_used
+            and has_tools
+            and self._is_action_task(task)
+            and iteration < 2
+        ):
+            available = (
+                list(TOOL_REGISTRY.keys())[:6]
+                if self.allowed_tools is None
+                else self.allowed_tools[:6]
+            )
+            tool_list = ", ".join(available)
+            task_title = task.get("title", "")
+            return GuardCorrection(
+                guard_name="hallucination",
+                message=(
+                    "STOP. You did NOT actually perform this task. "
+                    "You just described what you would do, but nothing "
+                    "was executed.\n\n"
+                    f"Your task: {task_title}\n\n"
+                    "You MUST call a tool to take real action. "
+                    f"Available tools: {tool_list}\n\n"
+                    "Example — to run a shell command:\n"
+                    "```json\n"
+                    '{"action": "tool_call", "tool": "shell", '
+                    '"args": {"command": "ls -la"}}\n'
+                    "```\n\n"
+                    "Respond with ONLY the JSON block. No explanation."
+                ),
+            )
+
+        # 3. Search-required guard
+        _has_web_search = (
+            self.allowed_tools is None
+            or "web_search" in (self.allowed_tools or [])
+        )
+        _data_fetched = bool(tools_used_names & self._DATA_FETCH_TOOLS)
+        if (
+            action_type == "final_answer"
+            and _has_web_search
+            and search_depth in ("quick", "standard", "deep")
+            and not _data_fetched
+            and iteration < 3
+        ):
+            task_title = task.get("title", "")
+            return GuardCorrection(
+                guard_name="search_required",
+                message=(
+                    "STOP. This task requires a web search but you "
+                    "answered without searching. Your answer may contain "
+                    "fabricated information.\n\n"
+                    f"Task: {task_title}\n\n"
+                    "You MUST call web_search or api_call first to get "
+                    "real, up-to-date information. Example:\n"
+                    "```json\n"
+                    '{"action": "tool_call", "tool": "web_search", '
+                    '"args": {"query": "your search query here"}}\n'
+                    "```\n\n"
+                    "Respond with ONLY the JSON block. No explanation."
+                ),
+            )
+
+        return None
 
     # ------------------------------------------------------------------ #
     #  Tier helpers                                                       #
@@ -1194,6 +1314,8 @@ class BaseAgent:
         model_escalated = False
 
         _progress_last_sent = time.time()
+        _search_depth = self._get_search_depth(task)
+        _suppress_guards = _task_ctx.get("suppress_guards", False)
 
         for iteration in range(start_iteration, self.max_iterations):
             # ── Check if task was cancelled while running ──
@@ -1258,272 +1380,238 @@ class BaseAgent:
                 except Exception:
                     pass
 
-            # ── Update token estimates ──
-            estimation_model = used_model if used_model != "unknown" else "gpt-4o-mini"
-            reqs.estimated_input_tokens = self._count_tokens(
-                messages, estimation_model
-            )
-            reqs.estimated_output_tokens = min(
-                reqs.estimated_output_tokens, 4096,
-            )
+            # ── Inner correction loop ──
+            # Guards and format corrections are handled as sub-iterations
+            # within the SAME outer iteration, so they don't burn iteration budget.
+            sub_corrections = 0
 
-            # ── Trim context ── (now accepts reqs directly)
-            messages = self._trim_messages_if_needed(
-                messages, estimation_model, reqs,
-            )
-
-            # ── Tools ──
-            # Hard guardrail: on the LAST iteration, strip all tools so the
-            # LLM is forced to produce a text response (final_answer).
-            # Small models ignore "LAST ITERATION" text warnings — this makes
-            # it physically impossible to call tools on the final turn.
-            #
-            # Also strip tools when running low on time — local LLMs need
-            # 120+ seconds to generate a full analysis.  Without this, the
-            # agent wastes iterations on tool calls and then the task-level
-            # timeout kills the final-answer LLM call mid-generation.
-            is_last_iteration = (iteration + 1 >= self.max_iterations)
-            _elapsed = time.time() - _start_time
-            _time_budget = getattr(self, '_task_timeout', 300)
-            _remaining = _time_budget - _elapsed
-            if not is_last_iteration and _remaining < 120 and iteration > 0:
-                logger.warning(
-                    f"[Task #{task_id}] Forcing final answer: "
-                    f"only {_remaining:.0f}s remaining (need 120s for answer)"
+            while sub_corrections <= MAX_SUB_CORRECTIONS:
+                # ── Update token estimates ──
+                estimation_model = used_model if used_model != "unknown" else "gpt-4o-mini"
+                reqs.estimated_input_tokens = self._count_tokens(
+                    messages, estimation_model
                 )
-                is_last_iteration = True
-            if is_last_iteration:
-                litellm_tools = None
-                # Inject a system reminder that tools are gone
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "FINAL ITERATION — no tools available. You MUST produce your "
-                        "final answer NOW as plain text or JSON. Summarize everything "
-                        "you have gathered so far."
-                    ),
-                })
-            else:
-                litellm_tools = self._build_litellm_tools()
-            if litellm_tools:
-                reqs.needs_function_calling = True
-
-            # ── Call LLM ──
-            try:
-                from src.core.llm_dispatcher import get_dispatcher, CallCategory
-                response = await get_dispatcher().request(
-                    CallCategory.MAIN_WORK,
-                    reqs,
-                    messages,
-                    tools=litellm_tools,
+                reqs.estimated_output_tokens = min(
+                    reqs.estimated_output_tokens, 4096,
                 )
-            except Exception as exc:
-                logger.error(f"[Task #{task_id}] Model call failed: {exc}")
-                return {
-                    "status": "failed",
-                    "result": f"Agent failed after {iteration} iteration(s): {exc}",
-                    "error": str(exc),
-                    "model": used_model,
-                    "cost": total_cost,
-                    "iterations": iteration,
-                    "difficulty": reqs.difficulty,
-                }
 
-            content    = response.get("content", "")
-            used_model = response.get("model", used_model)
-            step_cost  = response.get("cost", 0)
-            step_latency = response.get("latency", 0)
-            total_cost += step_cost
-
-            try:
-                await record_model_call(
-                    model=used_model,
-                    agent_type=self.name,
-                    success=True,
-                    cost=step_cost,
-                    latency=step_latency,
+                # ── Trim context ── (now accepts reqs directly)
+                messages = self._trim_messages_if_needed(
+                    messages, estimation_model, reqs,
                 )
-            except Exception:
-                pass
 
-            if step_cost > 0:
+                # ── Tools ──
+                # Hard guardrail: on the LAST iteration, strip all tools so the
+                # LLM is forced to produce a text response (final_answer).
+                # Small models ignore "LAST ITERATION" text warnings — this makes
+                # it physically impossible to call tools on the final turn.
+                #
+                # Also strip tools when running low on time — local LLMs need
+                # 120+ seconds to generate a full analysis.  Without this, the
+                # agent wastes iterations on tool calls and then the task-level
+                # timeout kills the final-answer LLM call mid-generation.
+                is_last_iteration = (iteration + 1 >= self.max_iterations)
+                _elapsed = time.time() - _start_time
+                _time_budget = getattr(self, '_task_timeout', 300)
+                _remaining = _time_budget - _elapsed
+                if not is_last_iteration and _remaining < 120 and iteration > 0:
+                    logger.warning(
+                        f"[Task #{task_id}] Forcing final answer: "
+                        f"only {_remaining:.0f}s remaining (need 120s for answer)"
+                    )
+                    is_last_iteration = True
+                if is_last_iteration:
+                    litellm_tools = None
+                    # Inject a system reminder that tools are gone
+                    # (only on first sub-correction pass to avoid duplicates)
+                    if sub_corrections == 0:
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "FINAL ITERATION — no tools available. You MUST produce your "
+                                "final answer NOW as plain text or JSON. Summarize everything "
+                                "you have gathered so far."
+                            ),
+                        })
+                else:
+                    litellm_tools = self._build_litellm_tools()
+                if litellm_tools:
+                    reqs.needs_function_calling = True
+
+                # ── Call LLM ──
                 try:
-                    await record_cost(step_cost)
+                    from src.core.llm_dispatcher import get_dispatcher, CallCategory
+                    response = await get_dispatcher().request(
+                        CallCategory.MAIN_WORK,
+                        reqs,
+                        messages,
+                        tools=litellm_tools,
+                    )
+                except Exception as exc:
+                    logger.error(f"[Task #{task_id}] Model call failed: {exc}")
+                    return {
+                        "status": "failed",
+                        "result": f"Agent failed after {iteration} iteration(s): {exc}",
+                        "error": str(exc),
+                        "model": used_model,
+                        "cost": total_cost,
+                        "iterations": iteration,
+                        "difficulty": reqs.difficulty,
+                    }
+
+                content    = response.get("content", "")
+                used_model = response.get("model", used_model)
+                step_cost  = response.get("cost", 0)
+                step_latency = response.get("latency", 0)
+                total_cost += step_cost
+
+                try:
+                    await record_model_call(
+                        model=used_model,
+                        agent_type=self.name,
+                        success=True,
+                        cost=step_cost,
+                        latency=step_latency,
+                    )
                 except Exception:
                     pass
 
-            logger.info(f"[Task #{task_id}] Raw response ({len(content)} chars):\n{content}")
-            await self._safe_log(
-                task_id, "assistant", content, used_model, step_cost
-            )
+                if step_cost > 0:
+                    try:
+                        await record_cost(step_cost)
+                    except Exception:
+                        pass
 
-            # ── Parse response ──
-            fc_tool_calls = response.get("tool_calls")
-            parsed = None
-            if fc_tool_calls:
-                parsed = self._parse_function_call_response(fc_tool_calls)
-            if parsed is None:
-                parsed = self._parse_agent_response(content)
+                logger.info(f"[Task #{task_id}] Raw response ({len(content)} chars):\n{content}")
+                await self._safe_log(
+                    task_id, "assistant", content, used_model, step_cost
+                )
 
-            # ── FORMAT RETRY ──
-            if parsed is None:
-                # If the response is substantial but just missing the JSON
-                # wrapper, accept it as a final answer rather than wasting
-                # an iteration on format correction.
-                if len(content) > 200:
-                    logger.info(
-                        f"[Task #{task_id}] Accepting unparsed response "
-                        f"as final answer ({len(content)} chars)"
-                    )
-                    parsed = {"action": "final_answer", "result": content}
-                elif format_corrections < MAX_FORMAT_CORRECTIONS:
-                    format_corrections += 1
+                # ── Parse response ──
+                fc_tool_calls = response.get("tool_calls")
+                parsed = None
+                if fc_tool_calls:
+                    parsed = self._parse_function_call_response(fc_tool_calls)
+                if parsed is None:
+                    parsed = self._parse_agent_response(content)
+
+                # ── FORMAT CORRECTION (sub-iteration) ──
+                if parsed is None:
+                    # If the response is substantial but just missing the JSON
+                    # wrapper, accept it as a final answer rather than wasting
+                    # a correction on format.
+                    if len(content) > 200:
+                        logger.info(
+                            f"[Task #{task_id}] Accepting unparsed response "
+                            f"as final answer ({len(content)} chars)"
+                        )
+                        parsed = {"action": "final_answer", "result": content}
+                    elif format_corrections < MAX_FORMAT_CORRECTIONS and sub_corrections < MAX_SUB_CORRECTIONS:
+                        format_corrections += 1
+                        sub_corrections += 1
+                        logger.warning(
+                            f"[Task #{task_id}] JSON parse failed — "
+                            f"format-correction {format_corrections}/{MAX_FORMAT_CORRECTIONS}"
+                        )
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "Your response could not be parsed as valid JSON. "
+                                "Please fix the formatting and try again.\n\n"
+                                "You MUST respond with ONLY a valid JSON block:\n"
+                                "```json\n"
+                                '{"action": "tool_call", "tool": "...", "args": {...}}\n'
+                                "```\nor:\n```json\n"
+                                '{"action": "final_answer", "result": "..."}\n'
+                                "```\nNo text before or after the JSON block."
+                            ),
+                        })
+                        continue  # inner loop — re-prompt LLM
+                    else:
+                        parsed = {
+                            "action": "final_answer",
+                            "result": (
+                                f"[Parse failure] Agent could not produce valid "
+                                f"JSON after {MAX_FORMAT_CORRECTIONS} format corrections. "
+                                f"Raw output:\n{content[:2000]}"
+                            ),
+                        }
+
+                try:
+                    parsed = validate_action(parsed)
+                except ValueError as exc:
+                    logger.warning(f"[Task #{task_id}] Action validation warning: {exc}")
+
+                # ── SUB-ITERATION GUARD CHECK ──
+                correction = self._check_sub_iteration_guards(
+                    parsed=parsed,
+                    iteration=iteration,
+                    tools_used=tools_used,
+                    tools_used_names=tools_used_names,
+                    task=task,
+                    search_depth=_search_depth,
+                    suppress_guards=_suppress_guards,
+                )
+                if correction and sub_corrections < MAX_SUB_CORRECTIONS:
                     logger.warning(
-                        f"[Task #{task_id}] JSON parse failed — "
-                        f"format-correction {format_corrections}/{MAX_FORMAT_CORRECTIONS}"
+                        f"[Task #{task_id}] [{correction.guard_name}] "
+                        f"sub-correction {sub_corrections + 1}/{MAX_SUB_CORRECTIONS}"
+                    )
+                    await self._safe_log(
+                        task_id, "system",
+                        f"[{correction.guard_name}] sub-correction",
+                        None, 0,
                     )
                     messages.append({"role": "assistant", "content": content})
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "Your response could not be parsed as valid JSON. "
-                            "Please fix the formatting and try again.\n\n"
-                            "You MUST respond with ONLY a valid JSON block:\n"
-                            "```json\n"
-                            '{"action": "tool_call", "tool": "...", "args": {...}}\n'
-                            "```\nor:\n```json\n"
-                            '{"action": "final_answer", "result": "..."}\n'
-                            "```\nNo text before or after the JSON block."
-                        ),
-                    })
-                    await self._save_checkpoint(
-                        task_id, iteration + 1, messages, total_cost,
-                        used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
-                        completed_tool_ops, format_corrections,
-                        tools_used_names,
-                    )
-                    continue
-                else:
-                    parsed = {
-                        "action": "final_answer",
-                        "result": (
-                            f"[Parse failure] Agent could not produce valid "
-                            f"JSON after {MAX_FORMAT_CORRECTIONS} format corrections. "
-                            f"Raw output:\n{content[:2000]}"
-                        ),
-                    }
+                    messages.append({"role": "user", "content": correction.message})
+                    sub_corrections += 1
+                    continue  # inner loop — re-prompt LLM
 
-            try:
-                parsed = validate_action(parsed)
-            except ValueError as exc:
-                logger.warning(f"[Task #{task_id}] Action validation warning: {exc}")
+                # ── CUSTOM VALIDATION (sub-iteration) ──
+                action_type = parsed.get("action", "final_answer")
+                if action_type == "final_answer":
+                    result = parsed.get("result", content)
+                    if not isinstance(result, str):
+                        result = json.dumps(result, ensure_ascii=False, indent=2)
+
+                    if not custom_validation_retried and sub_corrections < MAX_SUB_CORRECTIONS:
+                        validation_error = self._validate_response(result, task)
+                        if validation_error:
+                            custom_validation_retried = True
+                            sub_corrections += 1
+                            messages.append({"role": "assistant", "content": content})
+                            messages.append({
+                                "role": "user",
+                                "content": f"{validation_error}\n\nPlease try again.",
+                            })
+                            continue  # inner loop — re-prompt LLM
+
+                    # ── TASK-TYPE VALIDATION (sub-iteration) ──
+                    task_type_errors = validate_task_output(self.name, result)
+                    if task_type_errors and not task_type_validation_retried and sub_corrections < MAX_SUB_CORRECTIONS:
+                        task_type_validation_retried = True
+                        err_msg = "; ".join(task_type_errors)
+                        sub_corrections += 1
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({
+                            "role": "user",
+                            "content": f"Output quality issue: {err_msg}\n\nPlease revise.",
+                        })
+                        continue  # inner loop — re-prompt LLM
+
+                break  # No guard/correction fired → proceed to action handling
+
+            # Save checkpoint after inner loop completes
+            await self._save_checkpoint(
+                task_id, iteration + 1, messages, total_cost,
+                used_model, reqs, tools_used,
+                custom_validation_retried or task_type_validation_retried,
+                completed_tool_ops, format_corrections,
+                tools_used_names,
+            )
 
             action_type = parsed.get("action", "final_answer")
-
-            # ── HALLUCINATION GUARD (action tasks) ──
-            has_tools = (
-                self.allowed_tools is None or len(self.allowed_tools) > 0
-            )
-            if (
-                action_type == "final_answer"
-                and not tools_used
-                and has_tools
-                and self._is_action_task(task)
-                and iteration < 2
-            ):
-                available = (
-                    list(TOOL_REGISTRY.keys())[:6]
-                    if self.allowed_tools is None
-                    else self.allowed_tools[:6]
-                )
-                tool_list = ", ".join(available)
-                task_title = task.get("title", "")
-
-                logger.warning(
-                    f"[Task #{task_id}] ⚠️ Hallucination guard triggered"
-                )
-                messages.append({"role": "assistant", "content": content})
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "STOP. You did NOT actually perform this task. "
-                        "You just described what you would do, but nothing "
-                        "was executed.\n\n"
-                        f"Your task: {task_title}\n\n"
-                        "You MUST call a tool to take real action. "
-                        f"Available tools: {tool_list}\n\n"
-                        "Example — to run a shell command:\n"
-                        "```json\n"
-                        '{"action": "tool_call", "tool": "shell", '
-                        '"args": {"command": "ls -la"}}\n'
-                        "```\n\n"
-                        "Respond with ONLY the JSON block. No explanation."
-                    ),
-                })
-                await self._safe_log(
-                    task_id, "system",
-                    f"[hallucination_guard] Rejected premature final_answer",
-                    None, 0,
-                )
-                await self._save_checkpoint(
-                    task_id, iteration + 1, messages, total_cost,
-                    used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
-                    completed_tool_ops, format_corrections,
-                )
-                continue
-
-            # ── SEARCH-REQUIRED GUARD ──
-            # The classifier already decided this task needs web search
-            # (search_depth != "none"). If the LLM jumps to final_answer
-            # without calling any data-fetching tool, reject and force a search.
-            _DATA_FETCH_TOOLS = {"web_search", "api_call", "api_lookup", "http_request", "shopping_search", "read_file", "read_blackboard"}
-            _has_web_search = (
-                self.allowed_tools is None
-                or "web_search" in (self.allowed_tools or [])
-            )
-            _search_depth = self._get_search_depth(task)
-            _data_fetched = bool(tools_used_names & _DATA_FETCH_TOOLS)
-            if (
-                action_type == "final_answer"
-                and _has_web_search
-                and _search_depth in ("quick", "standard", "deep")
-                and not _data_fetched
-                and iteration < 3
-            ):
-                task_title = task.get("title", "")
-                logger.warning(
-                    f"[Task #{task_id}] ⚠️ Search-required guard triggered "
-                    f"(search_depth={_search_depth}, iter={iteration})"
-                )
-                messages.append({"role": "assistant", "content": content})
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "STOP. This task requires a web search but you "
-                        "answered without searching. Your answer may contain "
-                        "fabricated information.\n\n"
-                        f"Task: {task_title}\n\n"
-                        "You MUST call web_search or api_call first to get "
-                        "real, up-to-date information. Example:\n"
-                        "```json\n"
-                        '{"action": "tool_call", "tool": "web_search", '
-                        '"args": {"query": "your search query here"}}\n'
-                        "```\n\n"
-                        "Respond with ONLY the JSON block. No explanation."
-                    ),
-                })
-                await self._safe_log(
-                    task_id, "system",
-                    f"[search_guard] Rejected final_answer without data-fetching tool "
-                    f"(depth={_search_depth})",
-                    None, 0,
-                )
-                await self._save_checkpoint(
-                    task_id, iteration + 1, messages, total_cost,
-                    used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
-                    completed_tool_ops, format_corrections,
-                )
-                continue
 
             # ── FINAL ANSWER ──
             if action_type == "final_answer":
@@ -1532,41 +1620,6 @@ class BaseAgent:
                 # a dict/list as the result value instead of text.
                 if not isinstance(result, str):
                     result = json.dumps(result, ensure_ascii=False, indent=2)
-
-                if not custom_validation_retried:
-                    validation_error = self._validate_response(result, task)
-                    if validation_error:
-                        custom_validation_retried = True
-                        messages.append({"role": "assistant", "content": content})
-                        messages.append({
-                            "role": "user",
-                            "content": f"{validation_error}\n\nPlease try again.",
-                        })
-                        await self._save_checkpoint(
-                            task_id, iteration + 1, messages, total_cost,
-                            used_model, reqs, tools_used,
-                            custom_validation_retried or task_type_validation_retried,
-                            completed_tool_ops, format_corrections,
-                        )
-                        continue
-
-                task_type_errors = validate_task_output(self.name, result)
-                if task_type_errors and not task_type_validation_retried:
-                    task_type_validation_retried = True
-                    err_msg = "; ".join(task_type_errors)
-                    messages.append({"role": "assistant", "content": content})
-                    messages.append({
-                        "role": "user",
-                        "content": f"Output quality issue: {err_msg}\n\nPlease revise.",
-                    })
-                    await self._save_checkpoint(
-                        task_id, iteration + 1, messages, total_cost,
-                        used_model, reqs, tools_used,
-                        custom_validation_retried or task_type_validation_retried,
-                        completed_tool_ops, format_corrections,
-                        tools_used_names,
-                    )
-                    continue
 
                 # Memories
                 raw_memories = parsed.get("memories", {})
@@ -2016,24 +2069,11 @@ class BaseAgent:
                 )
                 continue
 
-            # ── CLARIFY / DECOMPOSE / UNKNOWN (unchanged) ──
+            # ── CLARIFY / DECOMPOSE / UNKNOWN ──
+            # NOTE: Blocked clarification (suppress_clarification=True) is now
+            # handled as a sub-iteration guard — see _check_sub_iteration_guards.
+            # Only the non-suppressed return path remains here.
             if action_type == "clarify":
-                if self._suppress_clarification:
-                    # Task doesn't allow clarification — force agent to proceed
-                    logger.warning(
-                        f"[Task #{task_id}] Blocked clarification attempt "
-                        f"(may_need_clarification=false)"
-                    )
-                    messages.append({"role": "assistant", "content": content})
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "You cannot ask for clarification on this task. "
-                            "Work with the information you have and provide "
-                            "your best answer using final_answer."
-                        ),
-                    })
-                    continue
                 await self._clear_checkpoint_safe(task_id)
                 return {
                     "status": "needs_clarification",

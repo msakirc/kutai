@@ -59,9 +59,16 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
                     return False, f"'{artifact_name}' missing content about: {missing}"
 
         elif schema_type == "array":
-            # Try JSON first
+            # Try JSON first — the output may be a raw JSON array, a JSON
+            # object containing the array as a field, or markdown text with
+            # embedded JSON.
             try:
                 data = json.loads(output_value) if isinstance(output_value, str) else output_value
+                # If it's a dict, look for the artifact key or any list value
+                if isinstance(data, dict):
+                    data = data.get(artifact_name) or next(
+                        (v for v in data.values() if isinstance(v, list)), None
+                    )
                 if isinstance(data, list):
                     min_items = rules.get("min_items", 0)
                     if len(data) < min_items:
@@ -75,7 +82,21 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
                                     return False, f"Item {i} in '{artifact_name}' missing fields: {missing}"
                     continue  # passed
             except (json.JSONDecodeError, TypeError):
-                pass
+                # Try extracting JSON from markdown code blocks
+                import re as _re2
+                _json_block = _re2.search(r'```(?:json)?\s*\n([\s\S]*?)\n```', str(output_value))
+                if _json_block:
+                    try:
+                        data = json.loads(_json_block.group(1))
+                        if isinstance(data, dict):
+                            data = data.get(artifact_name) or next(
+                                (v for v in data.values() if isinstance(v, list)), None
+                            )
+                        if isinstance(data, list):
+                            if len(data) >= rules.get("min_items", 0):
+                                continue  # passed
+                    except (json.JSONDecodeError, TypeError):
+                        pass
             # Fallback: accept text if it has numbered/bulleted/table items
             min_items = rules.get("min_items", 0)
             if min_items > 0:

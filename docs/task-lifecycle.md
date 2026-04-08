@@ -50,26 +50,44 @@ pending → processing → ungraded → completed
 **Grading phase**: A different model evaluates the output using a structured binary prompt (YES/NO for RELEVANT, COMPLETE, VERDICT). The grade result determines: PASS → `completed`, FAIL → back to `pending` for retry.
 
 Each phase has its own attempt budget:
-- `attempts` / `max_attempts` (default 6) — worker phase quality failures
+- `worker_attempts` / `max_worker_attempts` (default 6) — worker phase quality failures
+- `infra_resets` (max 3) — infrastructure crashes (watchdog), independent from quality budget
 - `grade_attempts` / `max_grade_attempts` (default 3) — grading phase quality failures
 
-`grade_attempts` resets to 0 when a task returns to `pending` (new worker output needs fresh grading).
+`grade_attempts` resets to 0 when a task returns to `pending` (new worker output needs fresh grading). `infra_resets` is independent — infrastructure crashes don't consume quality retry budget.
 
-## Two Failure Types
+See `docs/retry-pipeline-xray.md` for detailed coverage of all retry layers, parallel tools, sub-iteration guards, and exhaustion handling.
 
-Every failure is one of two types. No exceptions.
+## Three Failure Types
+
+Every failure is one of three types. No exceptions.
 
 ### Quality
 
 Output is bad or missing. The agent ran (or the grader ran) but the result isn't acceptable.
 
-Triggers: agent returns failed, post-hook detects disguised failure, schema validation fails, grade VERDICT=FAIL, grade parse error.
+Triggers: agent returns failed, post-hook detects disguised failure, schema validation fails, grade VERDICT=FAIL, agent exhaustion with tool_failures, execution timeout.
+
+Counter: `worker_attempts` (0 → max_worker_attempts, default 6).
 
 Retry behavior:
 - Attempts 1-2: immediate retry, same model allowed
 - Attempt 3: immediate retry, MUST exclude previously failed models (`context.failed_models`)
 - Attempt 4+: delayed retry (10 min), exclude failed models, difficulty += 2 per attempt past 3
-- At `max_attempts`: terminal → `failed` → DLQ
+- At `max_worker_attempts`: terminal → `failed` → DLQ with `failed_in_phase="worker"`
+
+### Infrastructure
+
+Task didn't finish — process crash, hung agent, model load failure during execution.
+
+Triggers: watchdog detects stuck-in-processing (>5 min), module resumption finds interrupted tasks.
+
+Counter: `infra_resets` (0 → 3, independent from quality budget).
+
+Retry behavior:
+- Always immediate retry
+- NEVER excludes models, NEVER bumps difficulty (model wasn't the problem)
+- At 3 resets: terminal → `failed` → DLQ with `failed_in_phase="infrastructure"`
 
 ### Availability
 
@@ -160,7 +178,7 @@ Runs every 10 orchestrator cycles. Simplified from the old system:
 
 | Check | Condition | Action |
 |---|---|---|
-| Stuck processing | `processing` > 5 min | Quality failure, retry |
+| Stuck processing | `processing` > 5 min | Infrastructure reset (`infra_resets`), not quality failure |
 | Stuck ungraded | `ungraded` > 30 min | Safety net: promote to `completed` with `quality_score=NULL` |
 | Overdue retry | `pending`, `next_retry_at` > 1h in past | Clear `next_retry_at`, make immediately eligible |
 | Failed deps | All non-skipped deps `failed` | Cascade failure (never clears deps) |
@@ -179,9 +197,13 @@ A task that grades FAIL gets retried. If dependents already started, their input
 
 Small local models can't reliably distinguish 2/5 from 3/5. A single point of miscalibration could reset good work or pass garbage. YES/NO is a binary signal that even 3B models handle reliably. The RELEVANT/COMPLETE sub-questions give redundancy — if VERDICT parses wrong, we can derive from the sub-questions.
 
-### Why availability doesn't increment attempts
+### Why availability doesn't increment worker_attempts
 
 Availability failures aren't the task's fault. Burning the quality retry budget because the GPU was busy would punish the task for infrastructure issues. Availability has its own escalation (doubling backoff → DLQ after ~5h).
+
+### Why infrastructure has its own budget
+
+Watchdog resets (stuck-in-processing) used to increment the same `attempts` counter as quality failures. Three infrastructure crashes + three quality failures = DLQ after only 3 real quality tries. The `infra_resets` counter (max 3) is independent — a task gets its full 6 quality attempts regardless of infrastructure issues.
 
 ### Why the grade queue was killed
 
@@ -196,7 +218,7 @@ Both meant "try again later." `sleeping` had proper escalation (tiers → DLQ). 
 | File | What it does |
 |---|---|
 | `src/core/state_machine.py` | 9-state enum, transition validation, `transition_task()` |
-| `src/core/retry.py` | `compute_retry_timing()`, `RetryDecision`, model exclusion helpers |
+| `src/core/retry.py` | `RetryContext` (unified state), `compute_retry_timing()`, `RetryDecision`, model exclusion helpers |
 | `src/core/grading.py` | `grade_task()`, `apply_grade_result()`, `drain_ungraded_tasks()`, structured prompt parsing |
 | `src/core/orchestrator.py` | Main loop (idle grading), watchdog, `_check_mission_completion`, availability backoff on `ModelCallFailed` |
 | `src/core/llm_dispatcher.py` | `on_model_swap` (accelerate + drain), `ensure_gpu_utilized` (grade swap when self-generated), `_loaded_model_can_grade` |
@@ -206,19 +228,21 @@ Both meant "try again later." `sleeping` had proper escalation (tiers → DLQ). 
 
 ## DB Schema (task columns)
 
-New columns added by the unified lifecycle:
-
 ```sql
-attempts INTEGER DEFAULT 0,           -- worker quality failures, never resets
-max_attempts INTEGER DEFAULT 6,       -- worker hard cap → DLQ
-grade_attempts INTEGER DEFAULT 0,     -- grading quality failures, resets on worker retry
-max_grade_attempts INTEGER DEFAULT 3, -- grading hard cap → waive grading
-next_retry_at TIMESTAMP,              -- NULL = immediately eligible, future = delayed
-retry_reason TEXT,                     -- "quality" or "availability"
-failed_in_phase TEXT,                  -- "worker" or "grading" — which phase hit DLQ
+worker_attempts INTEGER DEFAULT 0,       -- quality failures (was: attempts)
+max_worker_attempts INTEGER DEFAULT 6,   -- quality cap → DLQ (was: max_attempts)
+infra_resets INTEGER DEFAULT 0,          -- infrastructure crashes, independent budget
+grade_attempts INTEGER DEFAULT 0,        -- grading parse failures, resets on worker retry
+max_grade_attempts INTEGER DEFAULT 3,    -- grading cap → waive grading
+next_retry_at TIMESTAMP,                 -- NULL = immediately eligible, future = delayed
+retry_reason TEXT,                        -- "quality" | "availability" | "timeout" | "infrastructure"
+failed_in_phase TEXT,                     -- "worker" | "grading" | "infrastructure"
+exhaustion_reason TEXT,                   -- "budget" | "guards" | "tool_failures"
 ```
 
-Deprecated (kept for backward compat, not written to): `retry_count`, `max_retries`, `sleep_state`.
+Dead letter queue uses `attempts_snapshot` (was: `retry_count`) — frozen copy of `worker_attempts` at quarantine time.
+
+Deprecated (kept for migration compat, never written): `retry_count`, `max_retries`, `attempts`, `max_attempts`, `sleep_state`.
 
 ## Context Fields
 
@@ -240,9 +264,9 @@ These fields in the task's `context` JSON drive the retry and grading logic:
 - `apply_grade_result` handles everything: state transitions, skill extraction, model feedback, Telegram notifications. Never duplicate this logic.
 
 **If you're modifying retry/failure handling:**
-- All failures are `quality` or `availability`. There is no third type. Use `compute_retry_timing` from `retry.py`.
-- Availability failures DON'T increment `attempts`. They use `context.last_avail_delay` for doubling backoff.
-- Quality failures DO increment `attempts` and add the failing model to `context.failed_models`.
+- All failures are `quality`, `infrastructure`, or `availability`. Use `RetryContext.record_failure()` — never increment counters directly.
+- Infrastructure failures increment `infra_resets` (watchdog, crashes). Quality failures increment `worker_attempts`. Availability uses doubling backoff via `last_avail_delay`.
+- See `docs/retry-pipeline-xray.md` for the full retry pipeline architecture.
 
 **If you're modifying the grading prompt:**
 - Keep it structured binary (YES/NO). Don't switch to numeric scales — small models can't handle them.
@@ -254,9 +278,9 @@ These fields in the task's `context` JSON drive the retry and grading logic:
 
 ## Known Limitations
 
-1. **`transition_task()` not enforced everywhere yet**: Many raw `update_task(status=...)` calls in the orchestrator bypass validation. These should be migrated to use `transition_task()` to catch invalid transitions at runtime. The failure/retry handlers now use unified `attempts` counters, but still call `update_task` directly rather than `transition_task`.
+1. **`transition_task()` not enforced everywhere yet**: Many raw `update_task(status=...)` calls in the orchestrator bypass validation. These should be migrated to use `transition_task()` to catch invalid transitions at runtime.
 
-2. **Stale comments**: Some files still reference "sleeping queue" in comments. The function calls are correct — just the comments are outdated.
+2. **DLQ retry preserves attempt counters**: `/dlq retry` keeps `worker_attempts` at its DLQ-entry value. A task that entered DLQ at 6/6 has zero margin on retry. Consider granting 1-2 extra attempts on manual DLQ retry.
 
 ## Fixed (2026-04-05)
 

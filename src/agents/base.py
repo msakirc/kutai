@@ -62,12 +62,12 @@ CACHEABLE_READ_TOOLS: frozenset[str] = frozenset({
     "read_spreadsheet", "extract_text",
 })
 
-# Max JSON format-correction retries before falling through to final_answer.
-MAX_FORMAT_RETRIES: int = 2
+# Max JSON format corrections (sub-iteration) before falling through to final_answer.
+MAX_FORMAT_CORRECTIONS: int = 2
 
-# Mid-task escalation: after this many iterations with tool failures,
+# Model escalation: after this many consecutive tool failures,
 # escalate to the next tier up.
-ESCALATION_THRESHOLD: int = 3
+TOOL_FAILURE_ESCALATION_THRESHOLD: int = 3
 
 
 # Pre-build tool schema lookup by name for O(1) access during arg validation.
@@ -1137,7 +1137,8 @@ class BaseAgent:
             _compat_retried = checkpoint.get("validation_retried", False)
             custom_validation_retried = _compat_retried
             task_type_validation_retried = _compat_retried
-            format_retries = checkpoint.get("format_retries", 0)
+            format_corrections = checkpoint.get("format_corrections",
+                                                checkpoint.get("format_retries", 0))
             completed_tool_ops: dict[str, str] = checkpoint.get(
                 "completed_tool_ops", {}
             )
@@ -1186,11 +1187,11 @@ class BaseAgent:
             tools_used_names: set[str] = set()
             custom_validation_retried = False
             task_type_validation_retried = False
-            format_retries = 0
+            format_corrections = 0
             completed_tool_ops: dict[str, str] = {}
 
         consecutive_tool_failures = 0
-        escalated = False
+        model_escalated = False
 
         _progress_last_sent = time.time()
 
@@ -1375,11 +1376,11 @@ class BaseAgent:
                         f"as final answer ({len(content)} chars)"
                     )
                     parsed = {"action": "final_answer", "result": content}
-                elif format_retries < MAX_FORMAT_RETRIES:
-                    format_retries += 1
+                elif format_corrections < MAX_FORMAT_CORRECTIONS:
+                    format_corrections += 1
                     logger.warning(
                         f"[Task #{task_id}] JSON parse failed — "
-                        f"retry {format_retries}/{MAX_FORMAT_RETRIES}"
+                        f"format-correction {format_corrections}/{MAX_FORMAT_CORRECTIONS}"
                     )
                     messages.append({"role": "assistant", "content": content})
                     messages.append({
@@ -1398,7 +1399,7 @@ class BaseAgent:
                     await self._save_checkpoint(
                         task_id, iteration + 1, messages, total_cost,
                         used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
-                        completed_tool_ops, format_retries,
+                        completed_tool_ops, format_corrections,
                         tools_used_names,
                     )
                     continue
@@ -1407,7 +1408,7 @@ class BaseAgent:
                         "action": "final_answer",
                         "result": (
                             f"[Parse failure] Agent could not produce valid "
-                            f"JSON after {MAX_FORMAT_RETRIES} retries. "
+                            f"JSON after {MAX_FORMAT_CORRECTIONS} format corrections. "
                             f"Raw output:\n{content[:2000]}"
                         ),
                     }
@@ -1467,7 +1468,7 @@ class BaseAgent:
                 await self._save_checkpoint(
                     task_id, iteration + 1, messages, total_cost,
                     used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
-                    completed_tool_ops, format_retries,
+                    completed_tool_ops, format_corrections,
                 )
                 continue
 
@@ -1520,7 +1521,7 @@ class BaseAgent:
                 await self._save_checkpoint(
                     task_id, iteration + 1, messages, total_cost,
                     used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
-                    completed_tool_ops, format_retries,
+                    completed_tool_ops, format_corrections,
                 )
                 continue
 
@@ -1545,7 +1546,7 @@ class BaseAgent:
                             task_id, iteration + 1, messages, total_cost,
                             used_model, reqs, tools_used,
                             custom_validation_retried or task_type_validation_retried,
-                            completed_tool_ops, format_retries,
+                            completed_tool_ops, format_corrections,
                         )
                         continue
 
@@ -1562,7 +1563,7 @@ class BaseAgent:
                         task_id, iteration + 1, messages, total_cost,
                         used_model, reqs, tools_used,
                         custom_validation_retried or task_type_validation_retried,
-                        completed_tool_ops, format_retries,
+                        completed_tool_ops, format_corrections,
                         tools_used_names,
                     )
                     continue
@@ -1783,7 +1784,7 @@ class BaseAgent:
                                 task_id, iteration + 1, messages, total_cost,
                                 used_model, reqs, tools_used,
                                 custom_validation_retried or task_type_validation_retried,
-                                completed_tool_ops, format_retries,
+                                completed_tool_ops, format_corrections,
                             )
                             continue
 
@@ -1910,9 +1911,9 @@ class BaseAgent:
 
                 # ── Mid-task escalation ── (NOW uses reqs.escalate())
                 if (
-                    not escalated
-                    and consecutive_tool_failures >= ESCALATION_THRESHOLD
-                    and iteration >= ESCALATION_THRESHOLD
+                    not model_escalated
+                    and consecutive_tool_failures >= TOOL_FAILURE_ESCALATION_THRESHOLD
+                    and iteration >= TOOL_FAILURE_ESCALATION_THRESHOLD
                 ):
                     old_tier = reqs.difficulty
                     reqs = self._escalate_requirements(reqs)
@@ -1923,7 +1924,7 @@ class BaseAgent:
                             f"'{old_tier}' → '{new_tier}' after "
                             f"{consecutive_tool_failures} consecutive failures"
                         )
-                        escalated = True
+                        model_escalated = True
                         await self._safe_log(
                             task_id, "system",
                             f"[escalation] Upgraded quality after "
@@ -1956,7 +1957,7 @@ class BaseAgent:
                 await self._save_checkpoint(
                     task_id, iteration + 1, messages, total_cost,
                     used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
-                    completed_tool_ops, format_retries,
+                    completed_tool_ops, format_corrections,
                 )
                 continue
 
@@ -2011,7 +2012,7 @@ class BaseAgent:
                     task_id, iteration + 1, messages, total_cost,
                     used_model, reqs, tools_used,
                     custom_validation_retried or task_type_validation_retried,
-                    completed_tool_ops, format_retries,
+                    completed_tool_ops, format_corrections,
                 )
                 continue
 
@@ -2066,7 +2067,7 @@ class BaseAgent:
             await self._save_checkpoint(
                 task_id, iteration + 1, messages, total_cost,
                 used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
-                completed_tool_ops, format_retries,
+                completed_tool_ops, format_corrections,
             )
 
         # ── Exhausted iterations ──
@@ -2386,7 +2387,7 @@ class BaseAgent:
         tools_used: bool,
         validation_retried: bool,
         completed_tool_ops: dict[str, str] | None = None,
-        format_retries: int = 0,
+        format_corrections: int = 0,
         tools_used_names: set[str] | None = None,
     ) -> None:
         """Persist agent loop state so execution can resume after a crash."""
@@ -2402,7 +2403,7 @@ class BaseAgent:
                 "tools_used": tools_used,
                 "tools_used_names": list(tools_used_names or []),
                 "validation_retried": validation_retried,
-                "format_retries": format_retries,
+                "format_corrections": format_corrections,
                 "completed_tool_ops": completed_tool_ops or {},
             }
             await save_task_checkpoint(task_id, state)

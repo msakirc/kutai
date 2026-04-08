@@ -577,6 +577,14 @@ class LLMDispatcher:
                             ctx = _json.loads(ctx)
                         except (Exception,):
                             ctx = {}
+
+                    # Skip if this model is excluded by retry constraints
+                    worker_attempts = task.get("worker_attempts", task.get("attempts", 0)) or 0
+                    if worker_attempts >= 3:
+                        failed = ctx.get("failed_models", [])
+                        if model.litellm_name in failed:
+                            continue
+
                     cls = ctx.get("classification", {})
                     agent_type = task.get(
                         "agent_type", cls.get("agent_type", "executor"),

@@ -210,6 +210,10 @@ def _reorder_by_model_affinity(tasks: list[dict]) -> list[dict]:
                     # Normalize fit to 0.0-1.0 range (cap_score is 0-10)
                     fit = min(1.0, cap_score / 10.0)
 
+            # Zero affinity for tasks that would reject the loaded model
+            if _should_defer_for_loaded_model(task, manager.current_litellm_name or ""):
+                fit = 0.0
+
             # Boost by fit * 0.9, so max boost < 1 priority level
             effective_priority = priority + (fit * 0.9)
 
@@ -240,6 +244,20 @@ def _parse_task_difficulty(task: dict) -> int:
             ctx = {}
     cls = ctx.get("classification", {})
     return max(1, min(10, int(cls.get("difficulty", 5))))
+
+
+def _should_defer_for_loaded_model(task: dict, loaded_model: str) -> bool:
+    """Check if this task would reject the currently loaded model."""
+    worker_attempts = task.get("worker_attempts", task.get("attempts", 0)) or 0
+    if worker_attempts < 3:
+        return False
+    ctx = task.get("context", {})
+    if isinstance(ctx, str):
+        try:
+            ctx = json.loads(ctx)
+        except (json.JSONDecodeError, TypeError):
+            return False
+    return loaded_model in ctx.get("failed_models", [])
 
 
 _VALID_SUGGESTION_AGENTS = {"researcher", "shopping_advisor", "assistant", "coder"}
@@ -3037,6 +3055,20 @@ class Orchestrator:
                             _t["_effective_priority"] = _t.get("priority", 5)
                     else:
                         _t["_effective_priority"] = _t.get("priority", 5)
+
+                # ── Swap-aware: defer tasks that will reject the loaded model ──
+                loaded_model = ""
+                try:
+                    from src.models.local_model_manager import get_local_manager
+                    _mgr = get_local_manager()
+                    loaded_model = getattr(_mgr, 'current_litellm_name', '') or ''
+                except Exception:
+                    pass
+
+                if loaded_model and len(candidate_tasks) > 1:
+                    runnable = [t for t in candidate_tasks if not _should_defer_for_loaded_model(t, loaded_model)]
+                    deferred = [t for t in candidate_tasks if _should_defer_for_loaded_model(t, loaded_model)]
+                    candidate_tasks = runnable or deferred  # fallback: run deferred if nothing else
 
                 # ── Model-aware task reordering ──
                 # Boost tasks that match the currently loaded model to reduce swaps.

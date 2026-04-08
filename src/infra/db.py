@@ -1159,7 +1159,7 @@ async def accelerate_retries(reason: str) -> int:
         """SELECT id, context FROM tasks
            WHERE status IN ('pending', 'ungraded')
            AND next_retry_at > datetime('now')
-           AND retry_reason = 'availability'"""
+           AND retry_reason IN ('availability', 'quality')"""
     )
     rows = [dict(r) for r in await cursor.fetchall()]
 

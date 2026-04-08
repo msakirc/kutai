@@ -102,6 +102,7 @@ class RetryContext:
             next_retry_at=task.get("next_retry_at"),
             retry_reason=task.get("retry_reason"),
             failed_in_phase=task.get("failed_in_phase"),
+            exhaustion_reason=task.get("exhaustion_reason"),
             failed_models=list(ctx.get("failed_models", [])),
             grade_excluded_models=list(ctx.get("grade_excluded_models", [])),
         )

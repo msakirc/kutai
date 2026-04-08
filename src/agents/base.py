@@ -1361,7 +1361,21 @@ class BaseAgent:
         _search_depth = self._get_search_depth(task)
         _suppress_guards = _task_ctx.get("suppress_guards", False)
 
-        for iteration in range(start_iteration, self.max_iterations):
+        # Dynamic iteration budget (retry boost from exhaustion handler)
+        effective_max_iterations = self.max_iterations
+        _boost = _task_ctx.get("iteration_budget_boost", 1.0)
+        if _boost > 1.0:
+            effective_max_iterations = min(int(self.max_iterations * _boost), 12)
+            logger.info(
+                f"[Task #{task_id}] Iteration budget boosted: "
+                f"{self.max_iterations} → {effective_max_iterations}"
+            )
+
+        # Exhaustion tracking counters
+        guard_burns = 0
+        useful_iterations = 0
+
+        for iteration in range(start_iteration, effective_max_iterations):
             # ── Check if task was cancelled while running ──
             if iteration > 0 and iteration % 2 == 0:
                 try:
@@ -1375,7 +1389,7 @@ class BaseAgent:
 
             logger.info(
                 f"[Task #{task_id}] Agent '{self.name}' iteration "
-                f"{iteration + 1}/{self.max_iterations}"
+                f"{iteration + 1}/{effective_max_iterations}"
             )
 
             # ── Phase 4.6: Progress streaming ──
@@ -1454,7 +1468,7 @@ class BaseAgent:
                 # 120+ seconds to generate a full analysis.  Without this, the
                 # agent wastes iterations on tool calls and then the task-level
                 # timeout kills the final-answer LLM call mid-generation.
-                is_last_iteration = (iteration + 1 >= self.max_iterations)
+                is_last_iteration = (iteration + 1 >= effective_max_iterations)
                 _elapsed = time.time() - _start_time
                 _time_budget = getattr(self, '_task_timeout', 300)
                 _remaining = _time_budget - _elapsed
@@ -1598,6 +1612,7 @@ class BaseAgent:
                     suppress_guards=_suppress_guards,
                 )
                 if correction and sub_corrections < MAX_SUB_CORRECTIONS:
+                    guard_burns += 1
                     logger.warning(
                         f"[Task #{task_id}] [{correction.guard_name}] "
                         f"sub-correction {sub_corrections + 1}/{MAX_SUB_CORRECTIONS}"
@@ -2005,6 +2020,7 @@ class BaseAgent:
                     consecutive_tool_failures += 1
                 else:
                     consecutive_tool_failures = 0
+                    useful_iterations += 1
 
                 # ── Mid-task escalation ── (NOW uses reqs.escalate())
                 if (
@@ -2034,13 +2050,13 @@ class BaseAgent:
                         f"## Tool Result (`{tool_name}`) — ERROR:\n\n"
                         f"```\n{tool_output}\n```\n\n"
                         f"The tool call failed. Try a DIFFERENT approach.\n"
-                        f"Iteration {iteration + 2}/{self.max_iterations}."
+                        f"Iteration {iteration + 2}/{effective_max_iterations}."
                     )
                 else:
                     recovery_guidance = (
                         f"## Tool Result (`{tool_name}`):\n\n"
                         f"```\n{tool_output}\n```\n\n"
-                        f"{'LAST ITERATION — you MUST respond with final_answer now. Do NOT call any more tools.' if iteration + 2 >= self.max_iterations else 'Continue working.'} Iteration {iteration + 2}/{self.max_iterations}."
+                        f"{'LAST ITERATION — you MUST respond with final_answer now. Do NOT call any more tools.' if iteration + 2 >= effective_max_iterations else 'Continue working.'} Iteration {iteration + 2}/{effective_max_iterations}."
                     )
 
                 messages.append({"role": "assistant", "content": content})
@@ -2205,12 +2221,13 @@ class BaseAgent:
                     consecutive_tool_failures += tool_failures
                 else:
                     consecutive_tool_failures = 0
+                    useful_iterations += 1
 
-                is_next_last = (iteration + 2 >= self.max_iterations)
+                is_next_last = (iteration + 2 >= effective_max_iterations)
                 combined = "\n\n".join(result_parts)
                 combined += (
                     f"\n\n{'LAST ITERATION — you MUST respond with final_answer now.' if is_next_last else 'Continue working.'}"
-                    f" Iteration {iteration + 2}/{self.max_iterations}."
+                    f" Iteration {iteration + 2}/{effective_max_iterations}."
                 )
 
                 messages.append({"role": "assistant", "content": content})
@@ -2272,7 +2289,7 @@ class BaseAgent:
                     "role": "user",
                     "content": (
                         f"{tool_output}\n\n"
-                        f"{'LAST ITERATION — you MUST respond with final_answer now. Do NOT call any more tools.' if iteration + 2 >= self.max_iterations else 'Continue working.'} Iteration {iteration + 2}/{self.max_iterations}."
+                        f"{'LAST ITERATION — you MUST respond with final_answer now. Do NOT call any more tools.' if iteration + 2 >= effective_max_iterations else 'Continue working.'} Iteration {iteration + 2}/{effective_max_iterations}."
                     ),
                 })
                 await self._save_checkpoint(
@@ -2326,6 +2343,15 @@ class BaseAgent:
 
         # ── Exhausted iterations ──
         await self._clear_checkpoint_safe(task_id)
+
+        # Classify exhaustion reason
+        if guard_burns >= effective_max_iterations * 0.5:
+            exhaustion_reason = "guards"
+        elif consecutive_tool_failures >= TOOL_FAILURE_ESCALATION_THRESHOLD:
+            exhaustion_reason = "tool_failures"
+        else:
+            exhaustion_reason = "budget"
+
         # Extract last meaningful assistant response for the result.
         # Do NOT truncate before unwrapping — truncation breaks JSON parsing.
         last_assistant = ""
@@ -2353,13 +2379,24 @@ class BaseAgent:
         # will always create a summary for large artifacts.
         if len(last_assistant) > 8000:
             last_assistant = last_assistant[:8000]
+
+        logger.warning(
+            f"[Task #{task_id}] Exhausted iterations | "
+            f"reason={exhaustion_reason} "
+            f"guard_burns={guard_burns} "
+            f"useful={useful_iterations}/{effective_max_iterations}"
+        )
+
         return {
-            "status": "completed",
-            "result": last_assistant or "Task completed but could not produce a final answer.",
+            "status": "exhausted",
+            "result": last_assistant or "",
+            "exhaustion_reason": exhaustion_reason,
+            "guard_burns": guard_burns,
+            "useful_iterations": useful_iterations,
             "model": used_model,
             "cost": total_cost,
             "difficulty": reqs.difficulty,
-            "iterations": self.max_iterations,
+            "iterations": effective_max_iterations,
             "tools_used_names": sorted(tools_used_names),
         }
 

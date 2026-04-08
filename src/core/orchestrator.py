@@ -328,6 +328,7 @@ class Orchestrator:
         self._current_task_future = None
         self._running_futures: list[asyncio.Task] = []
         self._model_manager_tasks: list[asyncio.Task] = []
+        self.paused_patterns: set[str] = set()
 
 
     # ─── NEW: Context Chaining ───────────────────────────────────────────
@@ -2848,6 +2849,18 @@ class Orchestrator:
                             _t["_effective_priority"] = _t.get("priority", 5)
                     else:
                         _t["_effective_priority"] = _t.get("priority", 5)
+
+                # ── Skip tasks matching paused DLQ patterns ──
+                if self.paused_patterns:
+                    filtered = []
+                    for _t in candidate_tasks:
+                        if _t.get("error_category"):
+                            pattern_key = f"category:{_t['error_category']}"
+                            if pattern_key in self.paused_patterns:
+                                logger.debug(f"[Task #{_t['id']}] Skipped — pattern {pattern_key} paused")
+                                continue
+                        filtered.append(_t)
+                    candidate_tasks = filtered
 
                 # ── Swap-aware: defer tasks that will reject the loaded model ──
                 loaded_model = ""

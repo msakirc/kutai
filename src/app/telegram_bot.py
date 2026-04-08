@@ -3337,6 +3337,21 @@ class TelegramInterface:
 
         args = context.args or []
 
+        if args and args[0] == "unpause":
+            try:
+                from src.core.orchestrator import get_orchestrator
+                orch = get_orchestrator()
+                if orch and hasattr(orch, "paused_patterns") and orch.paused_patterns:
+                    cleared = list(orch.paused_patterns)
+                    orch.paused_patterns.clear()
+                    await self._reply(update, f"Unpaused {len(cleared)} patterns:\n" +
+                                      "\n".join(f"- {p}" for p in cleared))
+                else:
+                    await self._reply(update, "No patterns currently paused.")
+            except Exception as e:
+                await self._reply(update, f"Error: {e}")
+            return
+
         try:
             if len(args) >= 2 and args[0] == "retry":
                 task_id = int(args[1])

@@ -10,7 +10,7 @@
     "updated": "2026-04-08"
   },
   "GigaChat3.1-Lightning-Uncensored.i1-Q4_K_M": {
-    "tps": 7.6,
+    "tps": 8.1,
     "demoted": false,
     "updated": "2026-04-08"
   },
@@ -25,12 +25,12 @@
     "updated": "2026-04-08"
   },
   "gpt-oss-20b-UD-Q4_K_XL": {
-    "tps": 28.3,
+    "tps": 30.9,
     "demoted": false,
     "updated": "2026-04-08"
   },
   "gpt-oss-20b-UD-Q4_K_XL-thinking": {
-    "tps": 27.4,
+    "tps": 29.6,
     "demoted": false,
     "updated": "2026-04-08"
   },
@@ -45,7 +45,7 @@
     "updated": "2026-04-08"
   },
   "Qwen3.5-35B-A3B-UD-Q4_K_XL": {
-    "tps": 27.6,
+    "tps": 32.0,
     "demoted": false,
     "updated": "2026-04-08"
   },
@@ -60,7 +60,7 @@
     "updated": "2026-04-08"
   },
   "Qwen3.5-9B-UD-Q4_K_XL-thinking": {
-    "tps": 25.0,
+    "tps": 24.2,
     "demoted": false,
     "updated": "2026-04-08"
   },

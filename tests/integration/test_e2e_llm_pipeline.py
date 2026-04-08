@@ -75,7 +75,7 @@ class TestAgentRegistry:
         "planner", "architect", "coder", "implementer", "fixer",
         "test_generator", "reviewer", "visual_reviewer", "researcher",
         "analyst", "writer", "summarizer", "assistant", "executor",
-        "error_recovery", "shopping_advisor", "product_researcher",
+        "shopping_advisor", "product_researcher",
         "deal_analyst", "shopping_clarifier",
     ]
 

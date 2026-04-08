@@ -58,7 +58,6 @@ RAG_COLLECTIONS: dict[str, list[str]] = {
     "shopping_advisor": ["shopping"],
     "assistant":        ["semantic", "conversations"],
     "writer":           ["semantic"],
-    "error_recovery":   ["errors", "episodic"],
     "test_generator":   ["errors", "codebase"],
     "planner":          ["episodic", "semantic"],
     "architect":        ["episodic", "semantic"],
@@ -183,7 +182,7 @@ def _importance_weight(metadata: dict) -> float:
     importance = metadata.get("importance", 5)
 
     # Type-based floor
-    if doc_type in ("error_recovery", "user_preference"):
+    if doc_type in ("user_preference",):
         importance = max(importance, 8)
     elif doc_type == "task_result":
         # Failed tasks are more important (we learn from failures)
@@ -458,8 +457,6 @@ async def retrieve_context(
 
         if doc_type == "task_result":
             episodic_items.append(r)
-        elif doc_type == "error_recovery":
-            error_items.append(r)
         elif data_type in ("product", "review", "shopping_session"):
             shopping_items.append(r)
         elif meta.get("source_url") or data_type == "web_result":

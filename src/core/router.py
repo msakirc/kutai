@@ -1568,7 +1568,6 @@ AGENT_REQUIREMENTS: dict[str, ModelRequirements] = {
     "fixer":          ModelRequirements(task="fixer",          difficulty=6, estimated_output_tokens=3000, needs_function_calling=True),
     "reviewer":       ModelRequirements(task="reviewer",       difficulty=6, estimated_output_tokens=2000),
     "analyst":        ModelRequirements(task="analyst",        difficulty=6, estimated_output_tokens=3000, needs_function_calling=True),
-    "error_recovery": ModelRequirements(task="error_recovery", difficulty=6, estimated_output_tokens=2000, needs_function_calling=True),
     # ── Moderate → let the scorer decide (local if free, cloud if rate OK) ──
     "implementer":    ModelRequirements(task="implementer",    difficulty=5, estimated_output_tokens=4000, needs_function_calling=True),
     "test_generator": ModelRequirements(task="test_generator", difficulty=5, estimated_output_tokens=3000, needs_function_calling=True),

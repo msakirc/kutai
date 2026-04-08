@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yazbunu"
-version = "0.2.0"
+version = "0.1.0"
 description = "Lightweight structured JSONL logging with a mobile-friendly web viewer"
 requires-python = ">=3.10"
 dependencies = []

@@ -159,12 +159,12 @@ class LLMDispatcher:
         which uses it for both the litellm HTTP timeout (override − 5s) and
         for outer asyncio cancellation should the HTTP layer not fire in time.
         """
-        # ── OVERHEAD: 20s default, 60s for grading ────────────────────────
+        # ── OVERHEAD: 20s default, 60s for grading/summarization ─────────
         if category == CallCategory.OVERHEAD:
-            # Grading generates ~100 tokens of structured output and may
-            # run on slower models (MoE, large dense).  Classifiers and
-            # other overhead are short-context, low-output → 20s is fine.
-            if reqs.task == "reviewer":
+            # Grading and summarization generate structured output on
+            # potentially slow models (MoE, large dense) → 60s.
+            # Classifiers and other overhead are short-context → 20s.
+            if reqs.task in ("reviewer", "summarizer"):
                 return 60.0
             return 20.0
 

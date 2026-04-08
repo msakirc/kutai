@@ -1,5 +1,6 @@
 import pytest
-from src.core.grading import parse_grade_response, GradeResult
+from unittest.mock import patch, AsyncMock, MagicMock
+from src.core.grading import parse_grade_response, GradeResult, apply_grade_result
 
 
 class TestGradeResult:
@@ -258,3 +259,226 @@ class TestMultilineParsing:
         result = parse_grade_response(raw)
         assert "Turkish sites need UA header" in result.insight
         assert "Accept-Language" in result.insight
+
+
+class TestApplyGradeResultPass:
+    """Test apply_grade_result PASS path."""
+
+    @pytest.mark.asyncio
+    @patch("src.core.state_machine.transition_task", new_callable=AsyncMock)
+    @patch("src.infra.db.get_task", new_callable=AsyncMock)
+    @patch("src.memory.skills.add_skill", new_callable=AsyncMock)
+    @patch("src.infra.db.record_model_call", new_callable=AsyncMock)
+    @patch("src.memory.preferences.store_preference", new_callable=AsyncMock)
+    @patch("src.memory.episodic.store_insight", new_callable=AsyncMock)
+    async def test_pass_with_rich_verdict(
+        self, mock_insight, mock_pref, mock_record, mock_skill, mock_get, mock_trans
+    ):
+        mock_get.return_value = {
+            "id": 42, "title": "Compare laptop prices",
+            "agent_type": "shopping_advisor", "iterations": 3,
+            "context": '{"generating_model": "test-model", "tools_used_names": ["smart_search", "web_search"], "chat_id": "12345"}',
+        }
+        verdict = GradeResult(
+            passed=True,
+            situation="Price comparison across Turkish stores",
+            strategy="Search each store separately then compare",
+            tools=["smart_search", "web_search"],
+            preference="User prefers Turkish responses",
+            insight="Trendyol requires User-Agent header",
+        )
+
+        await apply_grade_result(42, verdict)
+
+        mock_trans.assert_called_once()
+        mock_skill.assert_called_once()
+        mock_pref.assert_called_once()
+        mock_insight.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("src.core.state_machine.transition_task", new_callable=AsyncMock)
+    @patch("src.infra.db.get_task", new_callable=AsyncMock)
+    @patch("src.memory.skills.add_skill", new_callable=AsyncMock)
+    @patch("src.infra.db.record_model_call", new_callable=AsyncMock)
+    @patch("src.memory.preferences.store_preference", new_callable=AsyncMock)
+    @patch("src.memory.episodic.store_insight", new_callable=AsyncMock)
+    async def test_pass_empty_verdict_uses_mechanical_fallback(
+        self, mock_insight, mock_pref, mock_record, mock_skill, mock_get, mock_trans
+    ):
+        mock_get.return_value = {
+            "id": 43, "title": "Check weather",
+            "agent_type": "executor", "iterations": 2,
+            "context": '{"generating_model": "test-model", "tools_used_names": ["api_call"]}',
+        }
+        verdict = GradeResult(passed=True)
+
+        await apply_grade_result(43, verdict)
+
+        mock_trans.assert_called_once()
+        mock_skill.assert_called_once()
+        # Mechanical fallback: description should contain task title and agent type
+        call_kwargs = mock_skill.call_args
+        assert "Check weather" in call_kwargs.kwargs.get("description", call_kwargs[1].get("description", ""))
+        mock_pref.assert_not_called()
+        mock_insight.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.core.state_machine.transition_task", new_callable=AsyncMock)
+    @patch("src.infra.db.get_task", new_callable=AsyncMock)
+    @patch("src.memory.skills.add_skill", new_callable=AsyncMock)
+    @patch("src.infra.db.record_model_call", new_callable=AsyncMock)
+    async def test_pass_low_iterations_skips_skill(
+        self, mock_record, mock_skill, mock_get, mock_trans
+    ):
+        mock_get.return_value = {
+            "id": 44, "title": "Simple lookup",
+            "agent_type": "executor", "iterations": 1,
+            "context": '{"generating_model": "test-model", "tools_used_names": ["api_call"]}',
+        }
+        verdict = GradeResult(passed=True, situation="Simple API call")
+
+        await apply_grade_result(44, verdict)
+
+        mock_trans.assert_called_once()
+        mock_skill.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.core.state_machine.transition_task", new_callable=AsyncMock)
+    @patch("src.infra.db.get_task", new_callable=AsyncMock)
+    @patch("src.memory.skills.add_skill", new_callable=AsyncMock)
+    @patch("src.infra.db.record_model_call", new_callable=AsyncMock)
+    async def test_pass_no_tools_skips_skill(
+        self, mock_record, mock_skill, mock_get, mock_trans
+    ):
+        mock_get.return_value = {
+            "id": 45, "title": "Think about it",
+            "agent_type": "executor", "iterations": 5,
+            "context": '{"generating_model": "test-model"}',
+        }
+        verdict = GradeResult(passed=True, situation="Deep thinking task")
+
+        await apply_grade_result(45, verdict)
+
+        mock_trans.assert_called_once()
+        mock_skill.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.core.state_machine.transition_task", new_callable=AsyncMock)
+    @patch("src.infra.db.get_task", new_callable=AsyncMock)
+    @patch("src.infra.db.record_model_call", new_callable=AsyncMock)
+    async def test_pass_task_not_found(
+        self, mock_record, mock_get, mock_trans
+    ):
+        mock_get.return_value = None
+
+        await apply_grade_result(999, GradeResult(passed=True))
+
+        mock_trans.assert_not_called()
+
+
+class TestApplyGradeResultFail:
+    """Test apply_grade_result FAIL path."""
+
+    @pytest.mark.asyncio
+    @patch("src.core.state_machine.transition_task", new_callable=AsyncMock)
+    @patch("src.infra.db.get_task", new_callable=AsyncMock)
+    @patch("src.core.retry.RetryContext.from_task")
+    async def test_fail_with_retries_remaining(
+        self, mock_from_task, mock_get, mock_trans
+    ):
+        mock_get.return_value = {
+            "id": 50, "title": "Failed task",
+            "agent_type": "coder", "worker_attempts": 1, "max_worker_attempts": 6,
+            "context": '{"generating_model": "test-model"}',
+        }
+        mock_retry_ctx = MagicMock()
+        mock_retry_ctx.record_failure.return_value = MagicMock(action="delayed", delay_seconds=30)
+        mock_retry_ctx.to_context_patch.return_value = {"failed_models": ["test-model"]}
+        mock_retry_ctx.to_db_fields.return_value = {"worker_attempts": 2}
+        mock_retry_ctx.grade_attempts = 0
+        mock_retry_ctx.next_retry_at = None
+        mock_from_task.return_value = mock_retry_ctx
+        verdict = GradeResult(passed=False)
+
+        await apply_grade_result(50, verdict)
+
+        mock_retry_ctx.record_failure.assert_called_once_with("quality", model="test-model")
+        # Should transition to pending for retry
+        mock_trans.assert_called_once()
+        args, kwargs = mock_trans.call_args
+        assert args == (50, "pending")
+
+    @pytest.mark.asyncio
+    @patch("src.core.state_machine.transition_task", new_callable=AsyncMock)
+    @patch("src.infra.db.get_task", new_callable=AsyncMock)
+    @patch("src.core.retry.RetryContext.from_task")
+    @patch("src.infra.dead_letter.quarantine_task", new_callable=AsyncMock)
+    async def test_fail_terminal_quarantines(
+        self, mock_quarantine, mock_from_task, mock_get, mock_trans
+    ):
+        mock_get.return_value = {
+            "id": 51, "title": "Hopeless task",
+            "agent_type": "coder", "worker_attempts": 5, "max_worker_attempts": 6,
+            "context": '{"generating_model": "test-model"}',
+        }
+        mock_retry_ctx = MagicMock()
+        mock_retry_ctx.record_failure.return_value = MagicMock(action="terminal")
+        mock_retry_ctx.to_context_patch.return_value = {"failed_models": ["test-model"]}
+        mock_retry_ctx.to_db_fields.return_value = {"worker_attempts": 6}
+        mock_retry_ctx.worker_attempts = 6
+        mock_from_task.return_value = mock_retry_ctx
+        verdict = GradeResult(passed=False)
+
+        await apply_grade_result(51, verdict)
+
+        # Should transition to failed
+        mock_trans.assert_called_once()
+        args, kwargs = mock_trans.call_args
+        assert args == (51, "failed")
+        # Should quarantine to DLQ
+        mock_quarantine.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("src.core.state_machine.transition_task", new_callable=AsyncMock)
+    @patch("src.infra.db.get_task", new_callable=AsyncMock)
+    @patch("src.core.retry.RetryContext.from_task")
+    async def test_fail_immediate_retry(
+        self, mock_from_task, mock_get, mock_trans
+    ):
+        mock_get.return_value = {
+            "id": 52, "title": "Retry immediately",
+            "agent_type": "executor", "worker_attempts": 0, "max_worker_attempts": 6,
+            "context": '{"generating_model": "test-model"}',
+        }
+        mock_retry_ctx = MagicMock()
+        mock_retry_ctx.record_failure.return_value = MagicMock(action="immediate", delay_seconds=0)
+        mock_retry_ctx.to_context_patch.return_value = {}
+        mock_retry_ctx.to_db_fields.return_value = {"worker_attempts": 1}
+        mock_retry_ctx.grade_attempts = 0
+        mock_retry_ctx.next_retry_at = None
+        mock_from_task.return_value = mock_retry_ctx
+        verdict = GradeResult(passed=False)
+
+        await apply_grade_result(52, verdict)
+
+        mock_trans.assert_called_once()
+        args, kwargs = mock_trans.call_args
+        assert args == (52, "pending")
+
+
+class TestGradeTaskAutoFail:
+    @pytest.mark.asyncio
+    async def test_empty_result_auto_fails(self):
+        from src.core.grading import grade_task
+        task = {"title": "Test", "description": "Test", "result": "", "context": "{}"}
+        result = await grade_task(task, "test-model")
+        assert result.passed is False
+        assert "auto-fail" in result.raw
+
+    @pytest.mark.asyncio
+    async def test_short_result_auto_fails(self):
+        from src.core.grading import grade_task
+        task = {"title": "Test", "description": "Test", "result": "ok", "context": "{}"}
+        result = await grade_task(task, "test-model")
+        assert result.passed is False
+        assert "auto-fail" in result.raw

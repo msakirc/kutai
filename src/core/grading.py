@@ -391,7 +391,7 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
             except Exception:
                 pass
 
-            logger.info(f"grade FAIL retry | task_id={task_id} attempts={attempts}")
+            logger.info(f"grade FAIL retry | task_id={task_id} attempts={retry_ctx.worker_attempts}")
 
 
 async def drain_ungraded_tasks(new_model: str) -> int:

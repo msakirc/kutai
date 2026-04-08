@@ -19,6 +19,30 @@ import aiohttp
 
 from src.infra.logging_config import get_logger
 
+
+def _suppress_browser_errors(loop, context):
+    """Suppress orphaned patchright/playwright Future exceptions.
+
+    When asyncio.wait_for cancels a browser fetch, patchright's internal
+    navigation Future raises TargetClosedError after the browser context
+    is cleaned up.  These are harmless — swallow them instead of letting
+    asyncio log "Future exception was never retrieved".
+    """
+    exc = context.get("exception")
+    if exc and "TargetClosedError" in type(exc).__name__:
+        return  # swallow
+    # Fall through to default handler for anything else
+    loop.default_exception_handler(context)
+
+
+def install_browser_error_suppressor():
+    """Install once from orchestrator startup or first scraper use."""
+    try:
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(_suppress_browser_errors)
+    except RuntimeError:
+        pass  # no running loop yet
+
 logger = get_logger("tools.scraper")
 
 _USER_AGENT = (
@@ -137,6 +161,7 @@ async def _fetch_tls(url: str, timeout: float = 12.0) -> ScrapeResult:
 
 async def _fetch_stealth(url: str, timeout: float = 25.0) -> ScrapeResult:
     """Tier 2: Scrapling StealthyFetcher (Camoufox)."""
+    install_browser_error_suppressor()
     try:
         from scrapling import StealthyFetcher
 
@@ -154,7 +179,7 @@ async def _fetch_stealth(url: str, timeout: float = 25.0) -> ScrapeResult:
         logger.warning("scrapling not installed, stealth tier unavailable")
         return ScrapeResult(html="", status=0, tier=ScrapeTier.STEALTH,
                             url=url, error="scrapling not installed")
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, asyncio.CancelledError):
         return ScrapeResult(html="", status=0, tier=ScrapeTier.STEALTH,
                             url=url, error="timeout")
     except Exception as e:
@@ -164,6 +189,7 @@ async def _fetch_stealth(url: str, timeout: float = 25.0) -> ScrapeResult:
 
 async def _fetch_browser(url: str, timeout: float = 30.0) -> ScrapeResult:
     """Tier 3: Scrapling DynamicFetcher (Playwright Chromium)."""
+    install_browser_error_suppressor()
     try:
         from scrapling import DynamicFetcher
 
@@ -181,7 +207,7 @@ async def _fetch_browser(url: str, timeout: float = 30.0) -> ScrapeResult:
         logger.warning("scrapling not installed, browser tier unavailable")
         return ScrapeResult(html="", status=0, tier=ScrapeTier.BROWSER,
                             url=url, error="scrapling not installed")
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, asyncio.CancelledError):
         return ScrapeResult(html="", status=0, tier=ScrapeTier.BROWSER,
                             url=url, error="timeout")
     except Exception as e:

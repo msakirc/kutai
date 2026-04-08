@@ -1314,6 +1314,15 @@ async def call_model(
 
                     thinking_content = _extract_thinking(msg) if is_thinking else None
 
+                    # When thinking wasn't requested but the model still
+                    # produced reasoning_content (server ran with thinking
+                    # enabled, or model template emits it regardless),
+                    # rescue the content so callers don't get empty output.
+                    if not is_thinking and not (msg.content or "").strip():
+                        _rc = getattr(msg, "reasoning_content", None) or ""
+                        if _rc.strip():
+                            msg.content = re.sub(r"</?think>", "", _rc).strip()
+
                     # Strip <think>…</think> blocks when thinking wasn't
                     # requested.  This covers two cases:
                     #  1. thinking_model with enable_thinking=false (llama-
@@ -1321,7 +1330,10 @@ async def call_model(
                     #  2. Non-thinking models (e.g. Qwen 9B) that still emit
                     #     <think> tokens despite enable_thinking=false
                     # Also strip orphaned/unclosed <think> tags.
+                    # If stripping would leave nothing (model put ALL content
+                    # in <think>), preserve the think content instead.
                     if not is_thinking and msg.content and "<think>" in msg.content:
+                        original = msg.content
                         msg.content = re.sub(
                             r"<think>.*?</think>", "", msg.content, flags=re.DOTALL
                         )
@@ -1331,6 +1343,9 @@ async def call_model(
                         )
                         msg.content = re.sub(r"</?think>", "", msg.content)
                         msg.content = msg.content.strip()
+                        if not msg.content:
+                            # Model put everything in <think> — extract it
+                            msg.content = re.sub(r"</?think>", "", original).strip()
 
                     if not model.is_local:
                         _get_circuit_breaker(model.provider).record_success()

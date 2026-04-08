@@ -1392,7 +1392,7 @@ class Orchestrator:
             if not isinstance(task_ctx, dict):
                 task_ctx = {}
 
-            if "classification" not in task_ctx:
+            if "classification" not in task_ctx and agent_type == "executor":
                 from .task_classifier import classify_task as classify
                 classification = await classify(
                     task["title"], task.get("description", ""),

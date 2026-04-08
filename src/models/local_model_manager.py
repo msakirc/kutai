@@ -619,6 +619,7 @@ class LocalModelManager:
             self._thinking_enabled = enable_thinking
             self._vision_enabled = enable_vision
             self._started_at = time.time()
+            self._last_request_time = time.time()  # reset idle timer for new model
             self.runtime_state = ModelRuntimeState(
                 model_name=model_name,
                 thinking_enabled=enable_thinking,

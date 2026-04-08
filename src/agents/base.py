@@ -1853,6 +1853,7 @@ class BaseAgent:
                         loaded and generating != loaded
                     ) or reqs.priority >= 8
 
+                    grade_applied = False
                     if can_grade_now and task_id != "?":
                         try:
                             # Inject actual result so grade_task sees it
@@ -1861,6 +1862,7 @@ class BaseAgent:
                             if not verdict.passed:
                                 # Grade FAIL — apply immediately, return retry signal
                                 await apply_grade_result(task_id, verdict)
+                                grade_applied = True
                                 await self._clear_checkpoint_safe(task_id)
                                 return {
                                     "status": "pending",
@@ -1868,7 +1870,16 @@ class BaseAgent:
                                     "model": used_model,
                                 }
                         except Exception:
-                            # Grading failed — defer instead
+                            if grade_applied:
+                                # apply_grade_result already transitioned the task;
+                                # returning "pending" so orchestrator doesn't overwrite.
+                                await self._clear_checkpoint_safe(task_id)
+                                return {
+                                    "status": "pending",
+                                    "result": result,
+                                    "model": used_model,
+                                }
+                            # Grading failed before state change — defer instead
                             can_grade_now = False
 
                     if not can_grade_now and task_id != "?":

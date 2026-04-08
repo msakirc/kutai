@@ -16,12 +16,18 @@ from src.infra.times import utc_now, db_now, to_db
 
 logger = get_logger("core.grading")
 
+GRADING_SYSTEM = (
+    "You are a strict evaluator. Reply ONLY with the requested fields, "
+    "one per line. Do not add explanation or commentary."
+)
+
 GRADING_PROMPT = """Evaluate this task result.
 
 Task: {title}
 Description: {description}
 Result: {response}
 
+Reply with EXACTLY these fields, one per line:
 RELEVANT: YES or NO
 COMPLETE: YES or NO
 VERDICT: PASS or FAIL
@@ -187,14 +193,17 @@ async def grade_task(task: dict, grader_model: str) -> GradeResult:
     response = await dispatcher.request(
         CallCategory.OVERHEAD,
         reqs,
-        messages=[{
-            "role": "user",
-            "content": GRADING_PROMPT.format(
-                title=task.get("title", "")[:100],
-                description=task.get("description", "")[:500],
-                response=str(result_text)[:4000],
-            ),
-        }],
+        messages=[
+            {"role": "system", "content": GRADING_SYSTEM},
+            {
+                "role": "user",
+                "content": GRADING_PROMPT.format(
+                    title=task.get("title", "")[:100],
+                    description=task.get("description", "")[:500],
+                    response=str(result_text)[:4000],
+                ),
+            },
+        ],
     )
 
     raw_content = response.get("content", "")
@@ -204,7 +213,13 @@ async def grade_task(task: dict, grader_model: str) -> GradeResult:
             for block in raw_content
         )
 
-    return parse_grade_response(str(raw_content))
+    raw_str = str(raw_content)
+    logger.debug(
+        f"grader raw response ({len(raw_str)} chars): {raw_str[:300]}",
+        task_id=task.get("id"),
+        grader_model=grader_model,
+    )
+    return parse_grade_response(raw_str)
 
 
 async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
@@ -445,6 +460,12 @@ async def drain_ungraded_tasks(new_model: str) -> int:
             continue  # this grader already failed for this task
 
         task_id = task["id"]
+
+        # Re-check status — another drain may have graded this task
+        from src.infra.db import get_task as _get_task
+        fresh = await _get_task(task_id)
+        if not fresh or fresh.get("status") != "ungraded":
+            continue
 
         try:
             verdict = await grade_task(task, new_model)

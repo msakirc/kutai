@@ -811,20 +811,23 @@ class BaseAgent:
         return self._truncate_to_tokens("\n".join(parts), max_tokens)
 
     def _format_conversation(self, task_context: dict, max_tokens: int) -> str:
-        """Format recent conversation, truncated to budget."""
-        if "recent_conversation" not in task_context:
-            return ""
+        """Format recent conversation + summaries, truncated to budget."""
         parts = ["## Recent Conversation (for context)"]
-        for entry in task_context["recent_conversation"]:
+
+        # Tier 1: Last 1-2 raw exchanges for immediate follow-up context
+        raw_exchanges = task_context.get("recent_conversation", [])
+        for entry in raw_exchanges[:2]:
             user_q = entry.get("user_asked", "?")
             result = entry.get("result", "")
-            if len(result) > 600:
-                result = result[:600] + "... [truncated]"
+            if len(result) > 400:
+                result = result[:400] + "... [truncated]"
             parts.append(f"**User asked:** {user_q}\n**Result:** {result}\n")
+
         parts.append(
             "_Use this context to understand follow-up references "
             "like 'list them', 'the names', 'do it again', etc._"
         )
+
         return self._truncate_to_tokens("\n".join(parts), max_tokens)
 
     # ------------------------------------------------------------------ #

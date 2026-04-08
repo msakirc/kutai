@@ -54,7 +54,7 @@ RAG_COLLECTIONS: dict[str, list[str]] = {
     "coder":            ["errors", "codebase"],
     "fixer":            ["errors", "codebase", "episodic"],
     "implementer":      ["errors", "codebase"],
-    "researcher":       ["web_knowledge", "semantic"],
+    "researcher":       ["web_knowledge", "semantic", "conversations"],
     "shopping_advisor": ["shopping"],
     "assistant":        ["semantic", "conversations"],
     "writer":           ["semantic"],

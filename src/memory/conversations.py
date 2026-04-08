@@ -282,7 +282,7 @@ async def maybe_summarize(chat_id: int | str) -> Optional[str]:
             "topics": topic_str[:200],
             "timestamp": time.time(),
         },
-        collection="semantic",
+        collection="conversations",
         doc_id=doc_id,
     )
 

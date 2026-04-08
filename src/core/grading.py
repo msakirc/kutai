@@ -27,7 +27,9 @@ COMPLETE: YES or NO
 VERDICT: PASS or FAIL
 SITUATION: one line, what type of problem was solved
 STRATEGY: one line, what approach worked
-TOOLS: comma-separated list of tools used effectively"""
+TOOLS: comma-separated list of tools used effectively
+PREFERENCE: one-line user preference signal observed in this task, or NONE
+INSIGHT: one-line reusable learning from this task, or NONE"""
 
 
 @dataclass
@@ -38,6 +40,8 @@ class GradeResult:
     situation: str = ""
     strategy: str = ""
     tools: list[str] = field(default_factory=list)
+    preference: str = ""
+    insight: str = ""
     raw: str = ""
 
 
@@ -80,27 +84,39 @@ def parse_grade_response(raw: str) -> GradeResult:
     tools_raw = _parse_text_field(raw, "TOOLS")
     tools = [t.strip() for t in tools_raw.split(",") if t.strip()] if tools_raw else []
 
+    # Piggybacked learning fields (optional)
+    preference = _parse_text_field(raw, "PREFERENCE")
+    if preference.upper() == "NONE":
+        preference = ""
+    insight = _parse_text_field(raw, "INSIGHT")
+    if insight.upper() == "NONE":
+        insight = ""
+
     # Cascade 1: VERDICT present
     if verdict is not None:
         return GradeResult(
             passed=verdict, relevant=relevant, complete=complete,
-            situation=situation, strategy=strategy, tools=tools, raw=raw,
+            situation=situation, strategy=strategy, tools=tools,
+            preference=preference, insight=insight, raw=raw,
         )
 
     # Cascade 2: derive from RELEVANT + COMPLETE
     if relevant is not None and complete is not None:
         return GradeResult(
             passed=(relevant and complete), relevant=relevant, complete=complete,
-            situation=situation, strategy=strategy, tools=tools, raw=raw,
+            situation=situation, strategy=strategy, tools=tools,
+            preference=preference, insight=insight, raw=raw,
         )
 
     # Cascade 3: bare PASS/FAIL keyword anywhere
     bare = re.search(r'\bPASS\b', raw, re.IGNORECASE)
     if bare:
-        return GradeResult(passed=True, situation=situation, strategy=strategy, tools=tools, raw=raw)
+        return GradeResult(passed=True, situation=situation, strategy=strategy, tools=tools,
+                           preference=preference, insight=insight, raw=raw)
     bare_fail = re.search(r'\bFAIL\b', raw, re.IGNORECASE)
     if bare_fail:
-        return GradeResult(passed=False, situation=situation, strategy=strategy, tools=tools, raw=raw)
+        return GradeResult(passed=False, situation=situation, strategy=strategy, tools=tools,
+                           preference=preference, insight=insight, raw=raw)
 
     raise ValueError(f"grader incapable: could not parse VERDICT, RELEVANT, or COMPLETE from output: {raw[:150]}")
 
@@ -271,6 +287,19 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
                 await record_injection_success(injected)
         except Exception:
             pass
+
+        # Preference extraction — piggybacked from grading output
+        if verdict.preference:
+            try:
+                from src.memory.preferences import store_preference
+                await store_preference(
+                    preference=verdict.preference,
+                    category="grader_observed",
+                    chat_id=ctx.get("chat_id", "default"),
+                    confidence=0.8,
+                )
+            except Exception as e:
+                logger.debug(f"preference storage failed: {e}")
 
         logger.info(f"grade PASS | task_id={task_id}")
     else:

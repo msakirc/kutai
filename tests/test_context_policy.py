@@ -24,6 +24,14 @@ class TestGetContextPolicy:
         policy = get_context_policy("nonexistent_agent_type")
         assert policy == DEFAULT_POLICY
 
+    def test_assistant_has_prefs(self):
+        policy = get_context_policy("assistant")
+        assert "prefs" in policy
+
+    def test_writer_has_prefs(self):
+        policy = get_context_policy("writer")
+        assert "prefs" in policy
+
 
 class TestApplyHeuristics:
     def test_tools_hint_adds_skills_and_api(self):

@@ -16,7 +16,7 @@ Detects patterns like:
 
 Public API:
     await record_feedback(task, feedback_type, details)
-    await detect_preferences(chat_id)
+    await store_preference(preference, category, chat_id, confidence)
     prefs = await get_user_preferences(chat_id)
     prompt_block = format_preferences(preferences)
 """
@@ -36,21 +36,6 @@ FEEDBACK_MODIFIED = "modified"
 FEEDBACK_REJECTED = "rejected"
 
 
-# ─── Preference Categories ──────────────────────────────────────────────────
-
-PREFERENCE_CATEGORIES = [
-    "language",           # programming language preferences
-    "framework",          # framework / library preferences
-    "style",              # code style / naming conventions
-    "verbosity",          # concise vs detailed responses
-    "testing",            # testing preferences (framework, coverage)
-    "risk_tolerance",     # conservative vs experimental
-    "communication",      # communication style preferences
-    "tools",              # preferred tools (linter, formatter, etc.)
-    "general",            # catch-all
-]
-
-
 # ─── Record Feedback ────────────────────────────────────────────────────────
 
 async def record_feedback(
@@ -62,8 +47,7 @@ async def record_feedback(
     """
     Record user feedback on a task result.
 
-    This builds the interaction history that detect_preferences()
-    analyzes to learn user preferences.
+    This builds the interaction history for preference learning.
 
     Args:
         task:          Task dict with id, title, description, agent_type.
@@ -205,160 +189,6 @@ async def get_user_preferences(
     # Sort by confidence (highest first)
     prefs.sort(key=lambda x: -x.get("confidence", 0))
     return prefs
-
-
-# ─── Detect Preferences from Feedback ───────────────────────────────────────
-
-async def detect_preferences(
-    chat_id: int | str = "default",
-) -> list[dict]:
-    """
-    Analyze feedback history to detect user preferences.
-
-    Looks at patterns in:
-      - Tasks that were modified (what did the user change?)
-      - Tasks that were rejected (what did the user dislike?)
-      - Accepted patterns (what does the user prefer?)
-
-    Returns list of detected preferences (each is a dict with
-    preference_text, category, confidence).
-    """
-    if not is_ready():
-        return []
-
-    # Get recent feedback entries
-    modifications = await query(
-        text="user modified task correction",
-        collection="semantic",
-        top_k=20,
-        where={"feedback_type": "modified"},
-    )
-
-    rejections = await query(
-        text="user rejected task result",
-        collection="semantic",
-        top_k=10,
-        where={"feedback_type": "rejected"},
-    )
-
-    detected: list[dict] = []
-
-    # Analyze modification patterns
-    corrections: list[str] = []
-    for r in modifications:
-        meta = r.get("metadata", {})
-        correction = meta.get("correction_preview", "")
-        if correction:
-            corrections.append(correction)
-
-    if corrections:
-        # Look for common themes in corrections
-        detected.extend(_extract_patterns(corrections, "modification"))
-
-    # Analyze rejection patterns
-    rejection_titles: list[str] = []
-    for r in rejections:
-        meta = r.get("metadata", {})
-        title = meta.get("title", "")
-        if title:
-            rejection_titles.append(title)
-
-    if rejection_titles:
-        detected.extend(_extract_patterns(rejection_titles, "rejection"))
-
-    # Store detected preferences
-    for pref in detected:
-        await store_preference(
-            preference=pref["preference_text"],
-            category=pref["category"],
-            chat_id=chat_id,
-            confidence=pref["confidence"],
-        )
-
-    return detected
-
-
-def _extract_patterns(
-    texts: list[str],
-    source: str,
-) -> list[dict]:
-    """
-    Extract preference patterns from a collection of feedback texts.
-
-    Uses simple keyword/pattern matching to detect preferences.
-    This is a heuristic approach — future versions could use LLM analysis.
-    """
-    patterns: list[dict] = []
-    combined = " ".join(texts).lower()
-
-    # ── Language preferences ──
-    language_signals = {
-        "python": "Prefers Python for implementation",
-        "typescript": "Prefers TypeScript over JavaScript",
-        "javascript": "Prefers JavaScript",
-        "rust": "Prefers Rust for systems work",
-        "go": "Prefers Go for backend services",
-    }
-    for lang, pref_text in language_signals.items():
-        count = combined.count(lang)
-        if count >= 2:
-            patterns.append({
-                "preference_text": pref_text,
-                "category": "language",
-                "confidence": min(0.5 + count * 0.1, 0.9),
-            })
-
-    # ── Style preferences ──
-    style_signals = {
-        "snake_case": ("Prefers snake_case naming convention", "style"),
-        "camelcase": ("Prefers camelCase naming convention", "style"),
-        "camel_case": ("Prefers camelCase naming convention", "style"),
-        "concise": ("Prefers concise, brief responses", "verbosity"),
-        "detailed": ("Prefers detailed, thorough responses", "verbosity"),
-        "verbose": ("Prefers verbose, explanatory responses", "verbosity"),
-        "brief": ("Prefers brief, to-the-point responses", "verbosity"),
-        "comments": ("Prefers well-commented code", "style"),
-        "docstring": ("Prefers docstrings on functions", "style"),
-        "type hint": ("Prefers type hints / type annotations", "style"),
-    }
-    for signal, (pref_text, category) in style_signals.items():
-        if signal in combined:
-            count = combined.count(signal)
-            patterns.append({
-                "preference_text": pref_text,
-                "category": category,
-                "confidence": min(0.5 + count * 0.1, 0.9),
-            })
-
-    # ── Framework preferences ──
-    framework_signals = {
-        "fastapi": "Prefers FastAPI for web APIs",
-        "flask": "Prefers Flask for web development",
-        "django": "Prefers Django for web development",
-        "react": "Prefers React for frontend",
-        "vue": "Prefers Vue.js for frontend",
-        "pytest": "Prefers pytest for testing",
-        "unittest": "Prefers unittest for testing",
-    }
-    for fw, pref_text in framework_signals.items():
-        if fw in combined:
-            count = combined.count(fw)
-            patterns.append({
-                "preference_text": pref_text,
-                "category": "framework",
-                "confidence": min(0.5 + count * 0.1, 0.9),
-            })
-
-    # ── Testing preferences ──
-    if "test" in combined:
-        if "always" in combined and "test" in combined:
-            patterns.append({
-                "preference_text": "Always wants tests written for new code",
-                "category": "testing",
-                "confidence": 0.7,
-            })
-
-    return patterns
 
 
 # ─── Format for Prompt Injection ─────────────────────────────────────────────

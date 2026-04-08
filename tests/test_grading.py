@@ -140,3 +140,41 @@ class TestParseGradeResponse:
         )
         result = parse_grade_response(raw)
         assert result.tools == ["smart_search", "web_search", "api_call"]
+
+
+class TestPreferenceField:
+    def test_preference_parsed(self):
+        raw = (
+            "RELEVANT: YES\nCOMPLETE: YES\nVERDICT: PASS\n"
+            "SITUATION: test\nSTRATEGY: test\nTOOLS: api_call\n"
+            "PREFERENCE: User prefers Turkish responses\n"
+            "INSIGHT: NONE"
+        )
+        result = parse_grade_response(raw)
+        assert result.passed is True
+        assert result.preference == "User prefers Turkish responses"
+
+    def test_preference_none_becomes_empty(self):
+        raw = (
+            "VERDICT: PASS\n"
+            "PREFERENCE: NONE"
+        )
+        result = parse_grade_response(raw)
+        assert result.preference == ""
+
+    def test_preference_none_lowercase(self):
+        raw = (
+            "VERDICT: PASS\n"
+            "PREFERENCE: none"
+        )
+        result = parse_grade_response(raw)
+        assert result.preference == ""
+
+    def test_missing_preference_stays_empty(self):
+        raw = "VERDICT: PASS"
+        result = parse_grade_response(raw)
+        assert result.preference == ""
+
+    def test_default_preference_empty(self):
+        result = GradeResult(passed=True)
+        assert result.preference == ""

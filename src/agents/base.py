@@ -1527,6 +1527,10 @@ class BaseAgent:
             # ── FINAL ANSWER ──
             if action_type == "final_answer":
                 result = parsed.get("result", content)
+                # Ensure result is always a string — LLMs sometimes return
+                # a dict/list as the result value instead of text.
+                if not isinstance(result, str):
+                    result = json.dumps(result, ensure_ascii=False, indent=2)
 
                 if not custom_validation_retried:
                     validation_error = self._validate_response(result, task)

@@ -73,7 +73,7 @@ def get_rag_collections(agent_type: str) -> list[str]:
     return RAG_COLLECTIONS.get(agent_type, RAG_DEFAULT_COLLECTIONS)
 
 # Phase F: Reranker config
-RERANKER_ENABLED = False  # Disabled by default — enable when cross-encoder is installed
+RERANKER_ENABLED = True  # Cross-encoder reranking for 3+ results
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 # Task-type budgets (when model context window is unknown)
@@ -320,7 +320,7 @@ async def _rerank_results(
     """
     global _reranker_model, _reranker_load_attempted
 
-    if not RERANKER_ENABLED or not results:
+    if not RERANKER_ENABLED or len(results) < 3:
         return results
 
     if _reranker_load_attempted and _reranker_model is None:

@@ -41,6 +41,25 @@ class TestHyDERemoved:
         assert not hasattr(rag_mod, "_hyde_expand"), "_hyde_expand should be removed"
 
 
+class TestRerankerConfig:
+    def test_reranker_enabled(self):
+        from src.memory.rag import RERANKER_ENABLED
+        assert RERANKER_ENABLED is True
+
+    def test_reranker_skips_small_result_sets(self):
+        """Reranking <3 results has no value."""
+        import asyncio
+        from src.memory.rag import _rerank_results
+        results = [
+            {"text": "result 1", "id": "1"},
+            {"text": "result 2", "id": "2"},
+        ]
+        out = asyncio.get_event_loop().run_until_complete(
+            _rerank_results("test query", results)
+        )
+        assert out == results
+
+
 class TestSkillThreshold:
     def test_match_threshold_raised(self):
         from src.memory.skills import MATCH_SIMILARITY_THRESHOLD

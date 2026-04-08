@@ -455,17 +455,16 @@ class Orchestrator:
         stuck = [dict(row) for row in await cursor.fetchall()]
         for task in stuck:
             infra_resets = (task.get("infra_resets") or 0) + 1
-            max_attempts = task.get("max_worker_attempts") or 6
-            if infra_resets >= max_attempts:
+            if infra_resets >= 3:
                 logger.warning(
                     f"[Watchdog] Task #{task['id']} stuck in processing "
-                    f"and exhausted attempts (infra_resets={infra_resets}/{max_attempts}), "
+                    f"and exhausted infra resets ({infra_resets}/3), "
                     f"marking failed"
                 )
                 await db.execute(
                     "UPDATE tasks SET status = 'failed', "
-                    "error = 'Stuck in processing — attempts exhausted (watchdog)', "
-                    "failed_in_phase = 'worker', "
+                    "error = 'Stuck in processing — infra resets exhausted (watchdog)', "
+                    "failed_in_phase = 'infrastructure', "
                     "infra_resets = ? "
                     "WHERE id = ?",
                     (infra_resets, task["id"])
@@ -473,11 +472,11 @@ class Orchestrator:
             else:
                 logger.warning(
                     f"[Watchdog] Task #{task['id']} stuck in processing, "
-                    f"resetting (infra_reset {infra_resets}/{max_attempts})"
+                    f"infra-reset {infra_resets}/3"
                 )
                 await db.execute(
                     "UPDATE tasks SET status = 'pending', "
-                    "infra_resets = ?, retry_reason = 'availability' WHERE id = ?",
+                    "infra_resets = ?, retry_reason = 'infrastructure' WHERE id = ?",
                     (infra_resets, task["id"])
                 )
         if stuck:
@@ -3258,7 +3257,7 @@ class Orchestrator:
             infra_resets = (task.get("infra_resets") or 0) + 1
             await db.execute(
                 "UPDATE tasks SET status = 'pending', "
-                "infra_resets = ?, retry_reason = 'availability' WHERE id = ?",
+                "infra_resets = ?, retry_reason = 'infrastructure' WHERE id = ?",
                 (infra_resets, task["id"]),
             )
         if interrupted:

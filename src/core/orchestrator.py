@@ -58,7 +58,6 @@ AGENT_TIMEOUTS: dict[str, int] = {
     "summarizer":     180,  # was 120
     "assistant":      180,  # was 120
     "executor":       240,  # was 180
-    "error_recovery": 300,  # was 240
     "pipeline":       600,
     "workflow":       900,
     "shopping_advisor":    600,
@@ -1742,10 +1741,6 @@ class Orchestrator:
                     await self.telegram.send_error(task_id, title,
                         f"{timeout_err} (worker-retry {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts})")
 
-                # Spawn error recovery for timeouts too
-                await self._spawn_error_recovery(task, timeout_err)
-                return
-
             status = result.get("status", "completed")
 
             logger.info("result received", task_id=task_id, status=status)
@@ -2221,20 +2216,18 @@ class Orchestrator:
                 except Exception:
                     pass
 
-                # Error recovery
-                recovery_spawned = await self._spawn_error_recovery(task, error_str)
-                if not recovery_spawned:
-                    try:
-                        from ..infra.dead_letter import quarantine_task
-                        await quarantine_task(
-                            task_id=task_id,
-                            mission_id=task.get("mission_id"),
-                            error=error_str,
-                            original_agent=task.get("agent_type", "executor"),
-                            attempts_snapshot=retry_ctx.worker_attempts,
-                        )
-                    except Exception as dlq_err:
-                        logger.error("dlq quarantine failed", task_id=task_id, error=str(dlq_err))
+                # DLQ fallback
+                try:
+                    from ..infra.dead_letter import quarantine_task
+                    await quarantine_task(
+                        task_id=task_id,
+                        mission_id=task.get("mission_id"),
+                        error=error_str,
+                        original_agent=task.get("agent_type", "executor"),
+                        attempts_snapshot=retry_ctx.worker_attempts,
+                    )
+                except Exception as dlq_err:
+                    logger.error("dlq quarantine failed", task_id=task_id, error=str(dlq_err))
 
                 # Model health
                 try:
@@ -2443,14 +2436,6 @@ class Orchestrator:
         except Exception as e:
             logger.debug(f"Preference feedback failed (non-critical): {e}")
 
-        # ── Error recovery: extract and store diagnosis ──
-        agent_type = task.get("agent_type", "")
-        if agent_type == "error_recovery":
-            try:
-                await self._process_recovery_result(task, result_text)
-            except Exception as e:
-                logger.warning(f"[Task #{task_id}] Recovery result processing failed: {e}")
-
         # Record model performance for health monitoring and routing
         try:
             from ..infra.db import update_model_stats
@@ -2612,189 +2597,6 @@ class Orchestrator:
             logger.info(f"[Task #{task_id}] Sent to reviewer (Task #{review_task_id})")
         else:
             logger.info(f"[Task #{task_id}] Review task deduped, skipping")
-
-    # ─── Error Recovery ─────────────────────────────────────────────────
-
-    async def _spawn_error_recovery(self, failed_task: dict, error_str: str) -> bool:
-        """Spawn an error_recovery agent to diagnose and learn from a failed task.
-
-        Returns True if a recovery task was spawned, False otherwise.
-
-        Skips if:
-          - The failed task is itself an error_recovery task (prevent loops)
-          - The failed task is low-priority background work (not worth diagnosing)
-        """
-        task_id = failed_task["id"]
-        agent_type = failed_task.get("agent_type", "")
-
-        # Never spawn recovery for recovery tasks — prevent infinite loops
-        if agent_type == "error_recovery":
-            logger.debug(f"[Task #{task_id}] Skipping error recovery for error_recovery task")
-            return False
-
-        # Skip for very low priority tasks (background noise)
-        if failed_task.get("priority", 5) <= 1:
-            logger.debug(f"[Task #{task_id}] Skipping error recovery for low-priority task")
-            return False
-
-        title = failed_task.get("title", "Unknown")
-        description = failed_task.get("description", "")
-        mission_id = failed_task.get("mission_id")
-
-        recovery_description = (
-            f"## Failed Task Diagnosis\n\n"
-            f"**Original Task:** {title}\n"
-            f"**Agent:** {agent_type}\n"
-            f"**Task ID:** {task_id}\n"
-            f"**Retries exhausted:** {failed_task.get('max_retries', 3)}\n\n"
-            f"**Error:**\n```\n{error_str}\n```\n\n"
-            f"**Task Description:**\n{description[:1000]}\n\n"
-            f"Diagnose the root cause of this failure. If you can fix the "
-            f"underlying issue (missing file, bad config, etc.), do so. "
-            f"Report what went wrong and how to prevent it."
-        )
-
-        # Use a stable title for dedup — error text varies between retries
-        # but we only want ONE recovery task per failed task
-        stable_title = f"Error recovery: task#{task_id}"
-
-        # If the failure was a timeout, the local model is likely the problem.
-        # Route error recovery to cloud/fast models to avoid repeating the timeout.
-        is_timeout = "timed out" in error_str.lower() or "timeout" in error_str.lower()
-
-        # Find which model the failed task used — exclude it from recovery routing
-        failed_model = None
-        try:
-            from ..infra.db import get_last_model_for_task
-            failed_model = await get_last_model_for_task(task_id)
-            if failed_model:
-                logger.info(
-                    f"[Task #{task_id}] Error recovery will exclude model: {failed_model}"
-                )
-        except Exception as e:
-            logger.debug(f"[Task #{task_id}] Could not look up failed model: {e}")
-
-        try:
-            error_ctx = {
-                "failed_task_id": task_id,
-                "failed_agent_type": agent_type,
-                "error": error_str,
-                "original_title": title,
-                "prefer_speed": is_timeout,
-                "exclude_models": [failed_model] if failed_model else [],
-            }
-
-            # Inherit user-provided context from the failed task so the
-            # recovery agent (or any retry it spawns) doesn't re-ask the user
-            # for information they already provided.
-            failed_ctx = failed_task.get("context", {})
-            if isinstance(failed_ctx, str):
-                try:
-                    failed_ctx = json.loads(failed_ctx)
-                except (json.JSONDecodeError, TypeError):
-                    failed_ctx = {}
-            _INHERIT_KEYS = (
-                "chat_id", "user_clarification", "clarification_history",
-                "classification", "shopping_query", "shopping_sub_intent",
-                "mission_id", "silent",
-            )
-            for _key in _INHERIT_KEYS:
-                if _key in failed_ctx:
-                    error_ctx[_key] = failed_ctx[_key]
-
-            recovery_task_id = await add_task(
-                title=stable_title,
-                description=recovery_description,
-                mission_id=mission_id,
-                parent_task_id=task_id,
-                agent_type="error_recovery",
-                tier="medium",
-                priority=max(failed_task.get("priority", 5), 7),
-                context=error_ctx,
-            )
-            if recovery_task_id:
-                logger.info(
-                    f"[Task #{task_id}] Spawned error recovery → Task #{recovery_task_id}"
-                )
-                return True
-            else:
-                logger.info(f"[Task #{task_id}] Error recovery task deduped, skipping")
-                return False
-        except Exception as e:
-            logger.warning(f"[Task #{task_id}] Failed to spawn error recovery: {e}")
-            return False
-
-    async def _process_recovery_result(self, task: dict, result_text: str):
-        """Extract diagnosis from error recovery result and store in episodic memory."""
-        ctx = task.get("context")
-        if isinstance(ctx, str):
-            try:
-                ctx = json.loads(ctx)
-            except (json.JSONDecodeError, TypeError):
-                ctx = {}
-        ctx = ctx or {}
-
-        failed_task_id = ctx.get("failed_task_id")
-        failed_agent_type = ctx.get("failed_agent_type", "unknown")
-        original_title = ctx.get("original_title", task.get("title", ""))
-        error_str = ctx.get("error", "unknown error")
-
-        # Parse structured fields from the recovery report
-        root_cause = ""
-        category = ""
-        fix_applied = ""
-
-        for line in result_text.split("\n"):
-            line_lower = line.strip().lower()
-            if line_lower.startswith("**root cause:**"):
-                root_cause = line.split(":", 1)[-1].strip().strip("*")
-            elif line_lower.startswith("**category:**"):
-                category = line.split(":", 1)[-1].strip().strip("*")
-            elif line_lower.startswith("**fix applied:**"):
-                fix_applied = line.split(":", 1)[-1].strip().strip("*")
-
-        # Fallback: use the full result if parsing didn't find fields
-        if not root_cause:
-            root_cause = result_text[:300]
-
-        # Build a concise error signature
-        error_sig = error_str.split("\n")[0][:150]
-        if category:
-            error_sig = f"[{category}] {error_sig}"
-
-        # Store the recovery pattern for future tasks
-        try:
-            from ..memory.episodic import store_error_recovery
-            await store_error_recovery(
-                task={
-                    "id": failed_task_id or task["id"],
-                    "title": original_title,
-                    "agent_type": failed_agent_type,
-                },
-                error_signature=error_sig,
-                root_cause=root_cause,
-                fix_applied=fix_applied or "No fix applied — diagnosis only",
-                prevention_hint=f"Agent: {failed_agent_type}. {root_cause[:100]}",
-            )
-            logger.info(
-                f"[ErrorRecovery] Stored pattern for task #{failed_task_id}: "
-                f"{error_sig[:80]}"
-            )
-        except Exception as e:
-            logger.warning(f"[ErrorRecovery] Failed to store recovery pattern: {e}")
-
-        # Notify about the recovery outcome
-        fixed = bool(fix_applied and "no fix" not in fix_applied.lower())
-        emoji = "🔧" if fixed else "🔍"
-        try:
-            await self.telegram.send_notification(
-                f"{emoji} *Error Recovery — Task #{failed_task_id}*\n\n"
-                f"**Task:** {original_title[:60]}\n"
-                f"**Root Cause:** {root_cause[:150]}\n"
-                f"**Fix:** {fix_applied[:150] if fix_applied else 'Diagnosis only'}"
-            )
-        except Exception:
-            pass
 
     # ─── Mission Completion ───────────────────────────────────────────────
 

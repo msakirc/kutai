@@ -8,9 +8,12 @@ No LLM calls — pure Python pattern matching.
 
 from __future__ import annotations
 
+import re
 import time
 from collections import defaultdict
 from typing import Optional
+
+import aiohttp
 
 from src.infra.logging_config import get_logger
 
@@ -106,3 +109,68 @@ class DLQAnalyst:
             lines.append(f"Diagnostic: {diagnostic}")
 
         return "\n".join(lines)
+
+    async def run_diagnostic(self, pattern_key: str, entries: list[dict]) -> str:
+        """Run a quick diagnostic check based on the failure pattern.
+
+        Returns a human-readable diagnostic string, or empty string if no check applies.
+        """
+        group_type, group_value = pattern_key.split(":", 1)
+
+        if group_type == "category":
+            if group_value == "timeout":
+                return await self._check_llama_health()
+            if group_value == "network_error":
+                return await self._check_connectivity()
+            if group_value == "rate_limit":
+                return "Rate limiting detected — external API throttling"
+
+        # Check if failures reference the same model
+        model_counts = self._extract_model_mentions(entries)
+        if model_counts:
+            top_model, count = max(model_counts.items(), key=lambda x: x[1])
+            if count >= PATTERN_THRESHOLD:
+                return f"Model {top_model}: failed {count} times — may be misconfigured"
+
+        return ""
+
+    async def _check_llama_health(self) -> str:
+        """Ping llama-server /health endpoint."""
+        try:
+            start = time.time()
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "http://127.0.0.1:8080/health", timeout=aiohttp.ClientTimeout(total=5)
+                ) as resp:
+                    elapsed = round(time.time() - start, 1)
+                    if resp.status == 200:
+                        if elapsed > 2.0:
+                            return f"llama-server responding but slow ({elapsed}s)"
+                        return f"llama-server healthy ({elapsed}s) — timeouts likely from long generation"
+                    return f"llama-server unhealthy (HTTP {resp.status})"
+        except Exception:
+            return "llama-server not responding — may be down or restarting"
+
+    async def _check_connectivity(self) -> str:
+        """Basic internet connectivity check."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://www.google.com", timeout=aiohttp.ClientTimeout(total=5)
+                ) as resp:
+                    if resp.status == 200:
+                        return "Internet reachable — issue may be with specific API"
+                    return f"Connectivity check returned HTTP {resp.status}"
+        except Exception:
+            return "Network connectivity issue — internet unreachable"
+
+    @staticmethod
+    def _extract_model_mentions(entries: list[dict]) -> dict[str, int]:
+        """Extract model names mentioned in error text."""
+        model_counts: dict[str, int] = defaultdict(int)
+        pattern = re.compile(r"model=([^\s,)]+)")
+        for entry in entries:
+            error = entry.get("error", "")
+            for match in pattern.finditer(error):
+                model_counts[match.group(1)] += 1
+        return dict(model_counts)

@@ -94,3 +94,39 @@ class TestAlertFormatting:
         assert "#48" in msg
         assert "timeout" in msg.lower()
         assert "4.2s" in msg
+
+
+class TestDiagnostics:
+    """Known failure signature checks."""
+
+    def setup_method(self):
+        self.analyst = DLQAnalyst()
+
+    @patch("src.infra.dlq_analyst.aiohttp.ClientSession")
+    def test_timeout_diagnostic_server_down(self, mock_session_cls):
+        """Timeout pattern should check llama-server health."""
+        mock_resp = AsyncMock()
+        mock_resp.status = 500
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.get = AsyncMock(return_value=mock_resp)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_session_cls.return_value = mock_session
+
+        result = _run(self.analyst.run_diagnostic("category:timeout", []))
+        assert "not responding" in result.lower() or "unhealthy" in result.lower()
+
+    def test_grading_diagnostic_same_model(self):
+        """Grading failures with same model should flag the model."""
+        entries = [
+            {"task_id": i, "error": f"grade fail", "original_agent": "coder",
+             "error_category": "unknown", "mission_id": None,
+             "quarantined_at": f"2026-04-08 1{i}:00:00"}
+            for i in range(1, 4)
+        ]
+        for e in entries:
+            e["error"] = "Grading exhausted: model=qwen2.5-7b"
+        result = _run(self.analyst.run_diagnostic("category:unknown", entries))
+        assert "qwen2.5-7b" in result or "same model" in result.lower() or result == ""

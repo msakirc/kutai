@@ -178,3 +178,29 @@ class TestPreferenceField:
     def test_default_preference_empty(self):
         result = GradeResult(passed=True)
         assert result.preference == ""
+
+
+class TestInsightField:
+    def test_insight_parsed(self):
+        raw = (
+            "VERDICT: PASS\n"
+            "SITUATION: test\nSTRATEGY: test\nTOOLS: api_call\n"
+            "PREFERENCE: NONE\n"
+            "INSIGHT: Turkish e-commerce sites require User-Agent header"
+        )
+        result = parse_grade_response(raw)
+        assert result.insight == "Turkish e-commerce sites require User-Agent header"
+
+    def test_insight_none_becomes_empty(self):
+        raw = "VERDICT: PASS\nINSIGHT: NONE"
+        result = parse_grade_response(raw)
+        assert result.insight == ""
+
+    def test_missing_insight_stays_empty(self):
+        raw = "VERDICT: PASS"
+        result = parse_grade_response(raw)
+        assert result.insight == ""
+
+    def test_default_insight_empty(self):
+        result = GradeResult(passed=True)
+        assert result.insight == ""

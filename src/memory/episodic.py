@@ -87,13 +87,6 @@ async def store_task_result(
         doc_id=doc_id,
     )
 
-    # Phase D: Extract cross-agent insight from successful tasks
-    if stored and success:
-        try:
-            await extract_and_store_insight(task, result, agent_type=agent_type)
-        except Exception as e:
-            logger.debug("Insight extraction skipped: %s", e)
-
     return stored
 
 
@@ -293,53 +286,30 @@ def format_error_warnings(patterns: list[dict]) -> str:
 
 # ─── Cross-Agent Insight Extraction (Phase D) ───────────────────────────────
 
-async def extract_and_store_insight(
-    task: dict,
-    result: str,
-    agent_type: str = "",
+async def store_insight(
+    insight_text: str,
+    agent_type: str,
+    task_id: int,
+    task_title: str = "",
 ) -> str | None:
+    """Store a grader-extracted insight in the semantic collection.
+
+    Unlike the old extract_and_store_insight, this receives real LLM-extracted
+    insight text, not a reformatted task title. Called from apply_grade_result.
     """
-    Extract key insights from a completed task and store them in
-    the semantic collection for cross-agent knowledge sharing.
-
-    Called after task completion. Extracts a concise insight from the
-    task outcome and embeds it with agent_type metadata so other agents
-    can retrieve relevant cross-domain knowledge.
-
-    Args:
-        task:       Task dict with title, description.
-        result:     Task result text.
-        agent_type: The agent that produced this result.
-
-    Returns:
-        Document ID if an insight was stored, None otherwise.
-    """
-    if not is_ready():
+    if not is_ready() or not insight_text:
         return None
-
-    title = task.get("title", "")
-    description = task.get("description", "")
-    result_preview = (result or "")[:400]
-
-    if not title or not result_preview:
-        return None
-
-    # Build insight text — concise summary of what was learned
-    insight_text = (
-        f"Insight from {agent_type or 'agent'}: "
-        f"Task '{title}' — {result_preview}"
-    )
 
     metadata = {
         "type": "cross_agent_insight",
         "agent_type": agent_type,
-        "task_title": title[:200],
-        "source": "task_completion",
-        "importance": 6,
+        "task_title": task_title[:200],
+        "source": "grader_extraction",
+        "importance": 7,
         "timestamp": time.time(),
     }
 
-    doc_id = f"insight-{task.get('id', '0')}-{int(time.time())}"
+    doc_id = f"insight-{task_id}-{int(time.time())}"
 
     return await embed_and_store(
         text=insight_text,

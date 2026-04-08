@@ -301,6 +301,19 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
             except Exception as e:
                 logger.debug(f"preference storage failed: {e}")
 
+        # Insight extraction — piggybacked from grading output
+        if verdict.insight:
+            try:
+                from src.memory.episodic import store_insight
+                await store_insight(
+                    insight_text=verdict.insight,
+                    agent_type=task.get("agent_type", "executor"),
+                    task_id=task_id,
+                    task_title=task.get("title", ""),
+                )
+            except Exception as e:
+                logger.debug(f"insight storage failed: {e}")
+
         logger.info(f"grade PASS | task_id={task_id}")
     else:
         # VERDICT=FAIL — worker quality failure

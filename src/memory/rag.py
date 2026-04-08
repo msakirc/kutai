@@ -337,9 +337,10 @@ async def _rerank_results(
             return results
 
     try:
+        import asyncio
         # Prepare pairs for cross-encoder
         pairs = [(query_text, r.get("text", "")[:500]) for r in results]
-        scores = _reranker_model.predict(pairs)
+        scores = await asyncio.to_thread(_reranker_model.predict, pairs)
 
         # Attach reranker scores and sort
         for r, score in zip(results, scores):

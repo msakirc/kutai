@@ -730,7 +730,8 @@ class BaseAgent:
 
         if "prefs" in policy:
             try:
-                prefs = await get_user_preferences()
+                _chat_id = task_context.get("chat_id", "default")
+                prefs = await get_user_preferences(chat_id=_chat_id)
                 pref_block = format_preferences(prefs)
                 if pref_block:
                     parts.append(self._truncate_to_tokens(pref_block, budgets.get("prefs", 200)))

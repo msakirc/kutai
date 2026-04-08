@@ -55,6 +55,17 @@ def _parse_yes_no(text: str, key: str) -> Optional[bool]:
     return val in ("YES", "PASS")
 
 
+_NONE_VARIANTS = frozenset({"none", "n/a", "na", "no", "nil", "null", "-", "not applicable"})
+
+
+def _is_none_value(val: str) -> bool:
+    """Check if a parsed field value is a 'none' variant from the LLM."""
+    if not val:
+        return True
+    normalized = val.strip().rstrip(".").lower()
+    return normalized in _NONE_VARIANTS or normalized.startswith("no ")
+
+
 def _parse_text_field(text: str, key: str) -> str:
     """Extract a free-text value for a given key from grader output.
 
@@ -93,10 +104,10 @@ def parse_grade_response(raw: str) -> GradeResult:
 
     # Piggybacked learning fields (optional)
     preference = _parse_text_field(raw, "PREFERENCE")
-    if preference.upper() == "NONE":
+    if _is_none_value(preference):
         preference = ""
     insight = _parse_text_field(raw, "INSIGHT")
-    if insight.upper() == "NONE":
+    if _is_none_value(insight):
         insight = ""
 
     # Cascade 1: VERDICT present

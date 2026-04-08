@@ -1713,7 +1713,7 @@ class Orchestrator:
                         await quarantine_task(
                             task_id=task_id,
                             mission_id=task.get("mission_id"),
-                            error=f"Timeout after {retry_ctx.worker_attempts} attempts: {timeout_err}",
+                            error=f"Timeout after {retry_ctx.worker_attempts} worker attempts: {timeout_err}",
                             error_category="timeout",
                             original_agent=agent_type,
                             attempts_snapshot=retry_ctx.worker_attempts,
@@ -1723,7 +1723,7 @@ class Orchestrator:
                     await self.telegram.send_notification(
                         f"❌ Task #{task_id} timeout → DLQ\n"
                         f"**{title[:60]}**\n"
-                        f"Failed {retry_ctx.worker_attempts} times"
+                        f"Failed {retry_ctx.worker_attempts} worker attempts"
                     )
                 else:
                     next_retry = None
@@ -1740,7 +1740,7 @@ class Orchestrator:
                         **retry_ctx.to_db_fields(),
                     )
                     await self.telegram.send_error(task_id, title,
-                        f"{timeout_err} (retry {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts})")
+                        f"{timeout_err} (worker-retry {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts})")
 
                 # Spawn error recovery for timeouts too
                 await self._spawn_error_recovery(task, timeout_err)
@@ -2101,7 +2101,7 @@ class Orchestrator:
                         context=json.dumps(task_ctx),
                         **retry_ctx.to_db_fields(),
                     )
-                    logger.warning(f"agent failed, retrying {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts}",
+                    logger.warning(f"agent failed, worker-retry {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts}",
                                    task_id=task_id, error=error_str[:200])
             else:
                 logger.warning("unknown task status", task_id=task_id, status=status)

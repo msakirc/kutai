@@ -2097,7 +2097,7 @@ class BaseAgent:
                     new_tier = reqs.difficulty
                     if new_tier != old_tier:
                         logger.warning(
-                            f"[Task #{task_id}] ⬆️ Escalating: "
+                            f"[Task #{task_id}] ⬆️ model-escalation: "
                             f"'{old_tier}' → '{new_tier}' after "
                             f"{consecutive_tool_failures} consecutive failures"
                         )

@@ -64,6 +64,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 - **Model-aware task ordering**: After fetching ready tasks, reorder by loaded model affinity (up to +0.9 priority boost, never overrides 2+ priority gap)
 - **Loaded model runtime state**: `ModelRuntimeState` tracks actual thinking_enabled, context_length, gpu_layers, measured_tps — scorer uses these instead of static ModelInfo
 - **Swap budget**: Max 3 swaps per 5 minutes. Exemptions: local_only, priority>=9
+- **Thinking/reasoning control**: llama.cpp v8668+ uses `--reasoning off --reasoning-budget 0` to disable thinking. The old `--chat-template-kwargs {"enable_thinking": false}` is deprecated and ignored. Always-on models (gpt-oss, Apriel) skip reasoning flags.
 - See `docs/orchestrator-xray.md` for full architecture documentation
 
 ### Common Pitfalls
@@ -77,6 +78,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 - **Shopping agents must NOT have file tools**: `shopping_advisor`, `product_researcher`, and `deal_analyst` must NOT have `read_file`, `write_file`, or `file_tree` in their `allowed_tools` — these cause the LLM to waste iterations browsing the filesystem instead of searching products.
 - **Never call `call_model()` directly** — always use `LLMDispatcher.request()`. Direct calls bypass swap protection, quota management, and deferred grading.
 - **`shopping_advisor` task profile** must exist in `TASK_PROFILES` (capabilities.py) — without it, shopping tasks fall back to a flat adhoc profile with bad scoring.
+- **Never pass `--n-gpu-layers` to llama-server** — it overrides `--fit` (default-on since v8000+). `--fit` auto-calculates optimal GPU layer allocation. Forcing `--n-gpu-layers 99` causes VRAM thrashing for models that don't fully fit (e.g. Apriel 8.7GB on 8GB GPU: 3.7→6.8 tok/s). Only pass `--n-gpu-layers` when `models.yaml` has an explicit `gpu_layers` override.
 
 ### Telegram Bot Patterns
 - **`_pending_action` flow**: When a command is called without args (e.g. `/shop`), it stores `_pending_action[chat_id]` and prompts the user. The NEXT message MUST be handled by checking `_pending_action` BEFORE calling the message classifier — otherwise it gets misclassified (e.g. "Coffee machine" routed to a workflow instead of shopping).

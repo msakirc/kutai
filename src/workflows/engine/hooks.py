@@ -9,7 +9,7 @@ import json
 from typing import Optional
 
 from src.infra.logging_config import get_logger
-from .artifacts import ArtifactStore, format_artifacts_for_prompt, get_phase_summaries
+from .artifacts import ArtifactStore, format_artifacts_for_prompt, get_phase_summaries, CONTEXT_BUDGETS, _TIER_ORDER
 from .conditions import evaluate_condition, resolve_group
 from .policies import ReviewTracker
 from .quality_gates import evaluate_gate, format_gate_result
@@ -24,6 +24,16 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
     """
     if not schema:
         return True, ""
+
+    # Unwrap final_answer JSON envelope if present — agents sometimes
+    # wrap their results in {"action": "final_answer", "result": "..."}
+    if isinstance(output_value, str) and '"final_answer"' in output_value:
+        try:
+            _envelope = json.loads(output_value)
+            if isinstance(_envelope, dict) and "result" in _envelope:
+                output_value = _envelope["result"]
+        except (json.JSONDecodeError, TypeError):
+            pass
 
     for artifact_name, rules in schema.items():
         schema_type = rules.get("type", "string")
@@ -41,17 +51,31 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
             except (json.JSONDecodeError, TypeError):
                 pass
             # Fallback: accept text/markdown if required fields appear as keywords
-            # Small LLMs often produce structured text, not JSON
+            # Small LLMs often produce structured text, not JSON.
+            # Check each word of multi-word fields independently — e.g.
+            # "per_competitor" matches if both "per" and "competitor"
+            # appear anywhere in the text, since LLMs rephrase freely.
             if required:
                 text_lower = str(output_value).lower().replace("_", " ").replace("-", " ")
-                missing = [f for f in required if f.lower().replace("_", " ") not in text_lower]
+                missing = []
+                for f in required:
+                    words = f.lower().replace("_", " ").replace("-", " ").split()
+                    if not all(w in text_lower for w in words):
+                        missing.append(f)
                 if missing:
                     return False, f"'{artifact_name}' missing content about: {missing}"
 
         elif schema_type == "array":
-            # Try JSON first
+            # Try JSON first — the output may be a raw JSON array, a JSON
+            # object containing the array as a field, or markdown text with
+            # embedded JSON.
             try:
                 data = json.loads(output_value) if isinstance(output_value, str) else output_value
+                # If it's a dict, look for the artifact key or any list value
+                if isinstance(data, dict):
+                    data = data.get(artifact_name) or next(
+                        (v for v in data.values() if isinstance(v, list)), None
+                    )
                 if isinstance(data, list):
                     min_items = rules.get("min_items", 0)
                     if len(data) < min_items:
@@ -65,12 +89,39 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
                                     return False, f"Item {i} in '{artifact_name}' missing fields: {missing}"
                     continue  # passed
             except (json.JSONDecodeError, TypeError):
-                pass
-            # Fallback: accept text if it has numbered/bulleted items
+                # Try extracting JSON from markdown code blocks
+                import re as _re2
+                _json_block = _re2.search(r'```(?:json)?\s*\n([\s\S]*?)\n```', str(output_value))
+                if _json_block:
+                    try:
+                        data = json.loads(_json_block.group(1))
+                        if isinstance(data, dict):
+                            data = data.get(artifact_name) or next(
+                                (v for v in data.values() if isinstance(v, list)), None
+                            )
+                        if isinstance(data, list):
+                            if len(data) >= rules.get("min_items", 0):
+                                continue  # passed
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            # Fallback: accept text if it has numbered/bulleted/table items
             min_items = rules.get("min_items", 0)
             if min_items > 0:
                 import re as _re
-                items = _re.findall(r'(?:^|\n)\s*(?:\d+[\.\)]|\-|\*)\s+\S', str(output_value))
+                text = str(output_value)
+                # Numbered/bulleted lists
+                items = _re.findall(r'(?:^|\n)\s*(?:\d+[\.\)]|\-|\*)\s+\S', text)
+                # Markdown table data rows (exclude header separator lines like |---|)
+                if len(items) < min_items:
+                    table_rows = [
+                        line for line in text.split("\n")
+                        if line.strip().startswith("|")
+                        and not _re.match(r'^\s*\|[\s\-:]+\|', line)  # skip separator
+                        and not _re.match(r'^\s*\|\s*:?-', line)  # skip separator variant
+                    ]
+                    # Exclude header row (first table row) from count
+                    if len(table_rows) > 1:
+                        items = table_rows[1:]  # skip header
                 if len(items) < min_items:
                     return False, f"'{artifact_name}' has ~{len(items)} list items, need >= {min_items}"
 
@@ -82,7 +133,28 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
         elif schema_type == "markdown":
             required_sections = rules.get("required_sections", [])
             text = str(output_value)
-            missing = [s for s in required_sections if s.lower() not in text.lower()]
+            text_lower = text.lower()
+            # Normalize numbered headers: "## 1. Vision" → "## Vision"
+            import re as _re
+            text_normalized = _re.sub(
+                r'^(#{1,4})\s*\d+[\.\)]\s*',
+                r'\1 ',
+                text_lower,
+                flags=_re.MULTILINE,
+            )
+            # Check for actual markdown headers (## Section or ### Section),
+            # not just substring mentions like "Vision (streamlining...)"
+            missing = []
+            for s in required_sections:
+                s_lower = s.lower()
+                # Accept: ## Vision, ### Vision, # Vision, **Vision**, Vision\n---
+                has_header = (
+                    f"# {s_lower}" in text_normalized
+                    or f"**{s_lower}**" in text_normalized
+                    or f"\n{s_lower}\n" in text_normalized
+                )
+                if not has_header:
+                    missing.append(s)
             if missing:
                 return False, f"'{artifact_name}' missing sections: {missing}"
 
@@ -388,9 +460,9 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
     # Append schema validation error from previous retry
     schema_error = ctx.get("_schema_error")
     if schema_error:
-        retry_count = ctx.get("_schema_retry_count", 0)
+        retry_count = task.get("worker_attempts", 0)
         parts.append(
-            f"\n\n## IMPORTANT: Previous Output Was Invalid (retry {retry_count}/2)\n"
+            f"\n\n## IMPORTANT: Previous Output Was Invalid (retry {retry_count})\n"
             f"Your previous output failed validation: **{schema_error}**\n"
             f"Fix your output to match the required format."
         )
@@ -419,11 +491,35 @@ async def pre_execute_workflow_step(task: dict) -> dict:
     mission_id = ctx.get("mission_id") or task.get("mission_id")
     input_artifact_names: list[str] = ctx.get("input_artifacts", [])
 
-    # Fetch artifacts from store
+    # Fetch artifacts from store — prefer summaries when full artifact
+    # exceeds the tier budget (summaries preserve meaning better than
+    # blind truncation).
     store = get_artifact_store()
     artifact_contents: dict[str, Optional[str]] = {}
     if mission_id is not None and input_artifact_names:
-        artifact_contents = await store.collect(mission_id, input_artifact_names)
+        context_strategy = ctx.get("context_strategy")
+        for name in input_artifact_names:
+            full = await store.retrieve(mission_id, name)
+            if full is None:
+                artifact_contents[name] = None
+                continue
+
+            # Determine this artifact's tier budget
+            budget = CONTEXT_BUDGETS["default"]
+            if isinstance(context_strategy, dict):
+                for tier in _TIER_ORDER:
+                    if name in context_strategy.get(tier, []):
+                        budget = CONTEXT_BUDGETS[tier]
+                        break
+
+            # Use summary if full artifact exceeds the tier budget
+            if len(full) > budget:
+                summary = await store.retrieve(mission_id, f"{name}_summary")
+                if summary:
+                    artifact_contents[name] = summary
+                    continue
+
+            artifact_contents[name] = full
 
     # Inject phase summaries from earlier phases
     workflow_phase = ctx.get("workflow_phase")
@@ -501,11 +597,44 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
     output_names = extract_output_artifact_names(ctx)
     step_id = ctx.get("workflow_step_id", "")
 
-    if not mission_id or not output_names:
+    if not mission_id:
         return
 
     store = get_artifact_store()
+
+    if not output_names:
+        # No output artifacts — skip artifact storage but still run
+        # phase completion check below.
+        workflow_phase = ctx.get("workflow_phase")
+        if workflow_phase:
+            await _check_phase_completion(mission_id, workflow_phase)
+        return
     output_value = result.get("result", "")
+
+    # ── Recover artifact content from workspace files ──
+    # If the agent wrote its output to files (via write_file) instead of
+    # returning it in final_answer, the result text will be a short summary.
+    # Check workspace files for richer content matching artifact names.
+    if mission_id and output_names:
+        try:
+            import os
+            from ...tools.workspace import WORKSPACE_DIR
+            artifact_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+            for name in output_names:
+                for ext in (".md", ".json", ".txt"):
+                    fpath = os.path.join(artifact_dir, f"{name}{ext}")
+                    if os.path.isfile(fpath):
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            file_content = f.read()
+                        if len(file_content) > len(output_value):
+                            output_value = file_content
+                            logger.info(
+                                f"[Workflow Hook] Recovered artifact '{name}' "
+                                f"from workspace file ({len(file_content)} chars)"
+                            )
+                        break
+        except Exception as e:
+            logger.debug(f"[Workflow Hook] Workspace artifact recovery failed: {e}")
 
     # ── Detect fake completions ──
     # Small LLMs wrap failure reports in final_answer. Detect and reject.
@@ -561,39 +690,27 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
     if artifact_schema and output_value:
         is_valid, error_msg = validate_artifact_schema(output_value, artifact_schema)
         if not is_valid:
-            retry_count = ctx.get("_schema_retry_count", 0)
-            if retry_count < 2:
-                logger.warning(
-                    f"[Workflow Hook] Artifact schema validation failed for step "
-                    f"'{step_id}': {error_msg}. Retry {retry_count + 1}/2"
+            attempts = task.get("worker_attempts", 0)
+            logger.warning(
+                f"[Workflow Hook] Artifact schema validation failed for step "
+                f"'{step_id}': {error_msg}. Attempt {attempts}"
+            )
+            # Store the error in context so the enriched prompt on next attempt
+            # can show the validation feedback to the agent.
+            try:
+                from ...infra.db import update_task
+                new_ctx = dict(ctx)
+                new_ctx["_schema_error"] = error_msg
+                await update_task(
+                    task.get("id"),
+                    context=json.dumps(new_ctx),
                 )
-                # Update retry count in context for next attempt
-                # The orchestrator will retry the task
-                try:
-                    from ...infra.db import update_task
-                    new_ctx = dict(ctx)
-                    new_ctx["_schema_retry_count"] = retry_count + 1
-                    new_ctx["_schema_error"] = error_msg
-                    # On second retry, escalate difficulty so router picks
-                    # a more capable model (often cloud)
-                    if retry_count >= 1:
-                        current_diff = new_ctx.get("difficulty", 6)
-                        new_ctx["difficulty"] = min(current_diff + 2, 10)
-                        new_ctx["prefer_quality"] = True
-                        new_ctx["needs_thinking"] = True
-                    await update_task(
-                        task.get("id"),
-                        status="pending",
-                        context=new_ctx,
-                        error=f"Schema validation: {error_msg}",
-                    )
-                except Exception as e:
-                    logger.debug(f"[Workflow Hook] Could not retry task: {e}")
-            else:
-                logger.warning(
-                    f"[Workflow Hook] Artifact schema validation failed after 2 retries "
-                    f"for step '{step_id}': {error_msg}. Accepting best attempt."
-                )
+            except Exception as e:
+                logger.debug(f"[Workflow Hook] Could not update task context: {e}")
+            # Signal failure — the unified retry/DLQ path in the orchestrator
+            # decides whether to retry, delay, or give up.
+            result["status"] = "failed"
+            result["error"] = f"Schema validation: {error_msg}"
 
     # ── Force needs_clarification for human-gate steps ──
     # Steps with triggers_clarification=true bypass LLM's clarify action.

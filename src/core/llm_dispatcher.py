@@ -25,9 +25,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import time
-from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Awaitable, Optional
+from typing import Any
 
 from src.infra.logging_config import get_logger
 
@@ -90,140 +89,6 @@ class SwapBudget:
         return len(self._timestamps) >= self.max_swaps
 
 
-# ─── Deferred Grade Queue ───────────────────────────────────────────────────
-
-@dataclass
-class PendingGrade:
-    """A grading request deferred until a natural opportunity."""
-    task_id: str
-    task_title: str
-    task_description: str
-    response_text: str
-    generating_model: str
-    task_name: str
-    priority: int
-    queued_at: float = field(default_factory=time.time)
-    # Callback to apply grade result back to the task
-    on_graded: Optional[Callable[[float, dict], Awaitable[None]]] = None
-
-
-class GradeQueue:
-    """Queue for deferred grading requests.
-
-    Grading is deferred when:
-      - The loaded model IS the generating model (can't self-grade)
-      - Cloud quota is tight
-      - Task is non-urgent (priority < 8)
-
-    Queue drains when:
-      - A model swap happens (before: drain what old model can grade;
-        after: drain what new model can grade)
-      - Cloud quota has headroom (batch-grade via cheapest model)
-      - Queue exceeds max_pending threshold
-      - No main work tasks remain (idle drain)
-    """
-
-    def __init__(self, max_pending: int = 20):
-        self.max_pending = max_pending
-        self._queue: list[PendingGrade] = []
-        self._lock = asyncio.Lock()
-
-    async def enqueue(self, grade: PendingGrade):
-        """Add a grading request to the deferred queue."""
-        async with self._lock:
-            self._queue.append(grade)
-            logger.info(f"grade deferred | task_id={grade.task_id} queue_depth={len(self._queue)} generating_model={grade.generating_model}")
-
-    async def drain(
-        self,
-        available_model: str | None = None,
-        use_cloud: bool = False,
-        max_batch: int = 3,
-    ) -> int:
-        """Drain pending grades in small batches.
-
-        Processes at most `max_batch` grades per call so the orchestrator's
-        main loop can interleave main work between drain cycles.  Remaining
-        eligible grades stay in the queue for the next drain call.
-
-        Args:
-            available_model: Currently loaded local model name (litellm_name).
-                             Grades whose generating_model != this can be graded.
-            use_cloud: If True, use cloud for remaining grades.
-            max_batch: Maximum grades to process in this call (default 3).
-
-        Returns:
-            Number of grades completed.
-        """
-        async with self._lock:
-            if not self._queue:
-                return 0
-
-            to_process = []
-            remaining = []
-
-            for grade in self._queue:
-                can_grade_locally = (
-                    available_model
-                    and grade.generating_model != available_model
-                )
-                if (can_grade_locally or use_cloud) and len(to_process) < max_batch:
-                    to_process.append(grade)
-                else:
-                    remaining.append(grade)
-
-            self._queue = remaining
-
-        if not to_process:
-            return 0
-
-        # Process grades outside the lock — one at a time so GPU scheduler
-        # can interleave higher-priority requests between grades.
-        completed = 0
-        for grade in to_process:
-            try:
-                score, grader_data = await self._execute_grade(grade)
-                if score is not None and grade.on_graded:
-                    await grade.on_graded(score, grader_data)
-                completed += 1
-            except Exception as e:
-                logger.warning(f"deferred grade failed | task_id={grade.task_id} error={e}")
-                # Re-queue failed grades
-                async with self._lock:
-                    self._queue.append(grade)
-
-        if completed > 0:
-            logger.info(f"grade queue drained | completed={completed} remaining={len(self._queue)}")
-        return completed
-
-    async def _execute_grade(
-        self,
-        grade: PendingGrade,
-    ) -> tuple[float | None, dict]:
-        """Execute a single grade via dispatcher's OVERHEAD routing."""
-        from src.core.router import grade_response
-        return await grade_response(
-            task_title=grade.task_title,
-            task_description=grade.task_description,
-            response_text=grade.response_text,
-            generating_model=grade.generating_model,
-            task_name=grade.task_name,
-        )
-
-    @property
-    def depth(self) -> int:
-        return len(self._queue)
-
-    @property
-    def needs_drain(self) -> bool:
-        return len(self._queue) >= self.max_pending
-
-    async def get_pending_models(self) -> set[str]:
-        """Get set of generating models that have pending grades."""
-        async with self._lock:
-            return {g.generating_model for g in self._queue}
-
-
 # ─── LLM Dispatcher ─────────────────────────────────────────────────────────
 
 class LLMDispatcher:
@@ -244,7 +109,6 @@ class LLMDispatcher:
 
     def __init__(self):
         self.swap_budget = SwapBudget(max_swaps=3, window_seconds=300.0)
-        self.grade_queue = GradeQueue(max_pending=20)
         self._total_calls = 0
         self._overhead_calls = 0
         self._swaps_prevented = 0
@@ -295,8 +159,13 @@ class LLMDispatcher:
         which uses it for both the litellm HTTP timeout (override − 5s) and
         for outer asyncio cancellation should the HTTP layer not fire in time.
         """
-        # ── OVERHEAD: hard 20s cap ────────────────────────────────────────
+        # ── OVERHEAD: 20s default, 60s for grading ────────────────────────
         if category == CallCategory.OVERHEAD:
+            # Grading generates ~100 tokens of structured output and may
+            # run on slower models (MoE, large dense).  Classifiers and
+            # other overhead are short-context, low-output → 20s is fine.
+            if reqs.task == "reviewer":
+                return 60.0
             return 20.0
 
         # ── MAIN_WORK: TPS-based adaptive timeout ─────────────────────────
@@ -308,7 +177,14 @@ class LLMDispatcher:
             from src.models.local_model_manager import get_runtime_state
             runtime = get_runtime_state()
             if runtime is not None and runtime.measured_tps > 0.0:
-                est_gen_secs = reqs.estimated_output_tokens / runtime.measured_tps
+                tps = runtime.measured_tps
+                # Thinking models: /metrics reports TPS including thinking
+                # tokens, which are much faster than content tokens.  The
+                # effective content-only speed is ~3-4x slower, so halve
+                # the measured TPS to avoid timeouts that are too aggressive.
+                if runtime.thinking_enabled:
+                    tps = tps * 0.5
+                est_gen_secs = reqs.estimated_output_tokens / tps
                 return max(_MAIN_WORK_MIN, min(_MAIN_WORK_MAX, est_gen_secs * 2.0))
         except Exception:
             pass
@@ -596,159 +472,72 @@ class LLMDispatcher:
             pass
         return False
 
-    # ─── Deferred Grading ────────────────────────────────────────────────
-
-    async def request_grade(
-        self,
-        task_id: str,
-        task_title: str,
-        task_description: str,
-        response_text: str,
-        generating_model: str,
-        task_name: str = "",
-        priority: int = 5,
-        on_graded: Optional[Callable[[float, dict], Awaitable[None]]] = None,
-    ) -> tuple[float | None, dict]:
-        """Request grading — may execute immediately or defer.
-
-        Immediate grading when:
-          - Priority >= 8 (urgent, need quality signal now)
-          - Loaded model != generating model (can grade for free)
-
-        Deferred grading when:
-          - Loaded model IS the generating model
-          - Priority < 8 (non-urgent)
-        """
-        from src.core.router import grade_response
-
-        loaded_litellm = self._get_loaded_litellm_name()
-
-        # Urgent tasks: grade immediately via whatever is available
-        if priority >= 8:
-            return await grade_response(
-                task_title=task_title,
-                task_description=task_description,
-                response_text=response_text,
-                generating_model=generating_model,
-                task_name=task_name,
-            )
-
-        # Can the loaded model grade? (loaded != generator)
-        can_grade_locally = (
-            loaded_litellm
-            and generating_model != loaded_litellm
-        )
-
-        if can_grade_locally:
-            # Grade immediately using loaded model (free, no swap)
-            return await grade_response(
-                task_title=task_title,
-                task_description=task_description,
-                response_text=response_text,
-                generating_model=generating_model,
-                task_name=task_name,
-            )
-
-        # Defer grading — loaded model is the generator or nothing loaded
-        await self.grade_queue.enqueue(PendingGrade(
-            task_id=str(task_id),
-            task_title=task_title,
-            task_description=task_description,
-            response_text=response_text,
-            generating_model=generating_model,
-            task_name=task_name,
-            priority=priority,
-            on_graded=on_graded,
-        ))
-        return (None, {})  # grade will be applied retroactively
-
     async def on_model_swap(self, old_model: str | None, new_model: str | None):
-        """Called when a model swap occurs. Drains deferred grades and
-        wakes sleeping tasks that may now have capacity.
+        """Called when a model swap occurs. Grades ungraded tasks and
+        wakes availability-delayed tasks.
 
-        Called by ensure_model() via asyncio.ensure_future after a successful swap.
-        Note: by the time this runs, the old model's server is already stopped
-        and the new model is loaded.
+        Order matters: accelerate first, then drain.
         """
-        # Drain grades the new model can handle.
-        # These are grades generated by models other than new_model.
-        # (Grades generated BY new_model would need a different model,
-        # and grade_response excludes generating_model automatically.)
-        if new_model:
-            drained = await self.grade_queue.drain(available_model=new_model)
-            if drained:
-                logger.info(f"drained grades after swap | new_model={new_model} drained={drained}")
-
-        # Wake sleeping tasks — a model swap means new capacity.
-        # Tasks that failed because the old model couldn't handle them
-        # might succeed with the new one.
+        # 1. Wake availability-delayed tasks
         try:
-            from src.infra.db import wake_sleeping_tasks
-            await wake_sleeping_tasks("model_swap")
-        except Exception:
-            pass
+            from src.infra.db import accelerate_retries
+            woken = await accelerate_retries("model_swap")
+            if woken:
+                logger.info(f"accelerated {woken} task(s) after swap")
+        except Exception as e:
+            logger.debug(f"accelerate_retries failed: {e}")
 
-    async def drain_grades_if_idle(self):
-        """Called from main loop when no tasks are running.
-
-        Uses cloud to drain any remaining deferred grades.
-        """
-        if self.grade_queue.depth > 0:
-            drained = await self.grade_queue.drain(use_cloud=True)
-            if drained:
-                logger.info(f"drained grades during idle | drained={drained}")
-
-    async def drain_grades_if_full(self):
-        """Called periodically. If queue exceeds threshold, force drain via cloud."""
-        if self.grade_queue.needs_drain:
-            logger.info(f"grade queue full, forcing cloud drain | depth={self.grade_queue.depth}")
-            await self.grade_queue.drain(use_cloud=True)
+        # 2. Grade ungraded tasks the new model can handle
+        if new_model:
+            try:
+                from src.core.grading import drain_ungraded_tasks
+                graded = await drain_ungraded_tasks(new_model)
+                if graded:
+                    logger.info(f"graded {graded} task(s) after swap to {new_model}")
+            except Exception as e:
+                logger.debug(f"drain_ungraded_tasks failed: {e}")
 
     # ─── Proactive GPU Loading ───────────────────────────────────────────
 
     async def ensure_gpu_utilized(self, upcoming_tasks: list[dict]):
-        """Proactively load a local model if GPU is idle and queue has work.
+        """Proactively load a local model if GPU is idle and there's work.
 
-        Called from the orchestrator main loop. If no model is loaded and
-        there are tasks in the queue that ANY local model can handle,
-        load the best-fit model. Local inference is free — don't waste the GPU.
-
-        When no main work tasks exist, checks for pending overhead needs
-        (e.g. todo suggestions) and loads a fast general-purpose model so
-        OVERHEAD calls don't fail with "no models available".
-
-        Args:
-            upcoming_tasks: List of task dicts from get_ready_tasks()
+        Enhanced: when loaded model can't grade self-generated tasks,
+        swap to a grader model instead of waiting for idle unload.
         """
         try:
             from src.models.local_model_manager import get_local_manager
             manager = get_local_manager()
 
-            if manager.current_model:
-                return  # already loaded, nothing to do
-
             if upcoming_tasks:
-                best_model = self._find_best_local_for_batch(upcoming_tasks)
-                if best_model:
-                    logger.info(f"proactive GPU load | model={best_model} queue_depth={len(upcoming_tasks)}")
-                    await manager.ensure_model(
-                        best_model,
-                        reason="proactive_load",
-                    )
+                if not manager.current_model:
+                    best_model = self._find_best_local_for_batch(upcoming_tasks)
+                    if best_model:
+                        logger.info(f"proactive GPU load | model={best_model} queue_depth={len(upcoming_tasks)}")
+                        await manager.ensure_model(best_model, reason="proactive_load")
                 return
 
-            # No main work — check if overhead needs a model
-            # (e.g. todo suggestions, deferred grading)
-            if await self._has_pending_overhead_needs():
-                best_model = self._find_fastest_general_model()
-                if best_model:
-                    logger.info(f"proactive GPU load for overhead | model={best_model}")
-                    await manager.ensure_model(
-                        best_model,
-                        reason="overhead_idle_load",
-                    )
+            # No main work. Check overhead needs.
+            if not await self._has_pending_overhead_needs():
+                return
+
+            if manager.current_model:
+                can_grade = await self._loaded_model_can_grade()
+                if can_grade or can_grade is None:
+                    return  # gradeable or no ungraded tasks → idle path handles it
+                # Loaded model can't grade any ungraded task — find best alternative
+                best = await self._find_fastest_general_model()
+                if best and best != manager.current_model:
+                    logger.info(f"grade swap | loaded={manager.current_model} → {best}")
+                    await manager.ensure_model(best, reason="grade_swap")
+            else:
+                best = await self._find_fastest_general_model()
+                if best:
+                    logger.info(f"overhead load | model={best}")
+                    await manager.ensure_model(best, reason="overhead_load")
+
         except Exception as e:
-            logger.debug(f"Proactive GPU load failed: {e}")
+            logger.debug(f"ensure_gpu_utilized failed: {e}")
 
     def _find_best_local_for_batch(self, tasks: list[dict]) -> str | None:
         """Find the local model that can serve the most upcoming tasks.
@@ -788,6 +577,14 @@ class LLMDispatcher:
                             ctx = _json.loads(ctx)
                         except (Exception,):
                             ctx = {}
+
+                    # Skip if this model is excluded by retry constraints
+                    worker_attempts = task.get("worker_attempts", task.get("attempts", 0)) or 0
+                    if worker_attempts >= 3:
+                        failed = ctx.get("failed_models", [])
+                        if model.litellm_name in failed:
+                            continue
+
                     cls = ctx.get("classification", {})
                     agent_type = task.get(
                         "agent_type", cls.get("agent_type", "executor"),
@@ -855,60 +652,154 @@ class LLMDispatcher:
             return None
 
     async def _has_pending_overhead_needs(self) -> bool:
-        """Check if there's pending work that OVERHEAD calls would serve.
+        """Check if there's pending overhead work that needs a model loaded.
 
-        Currently checks: pending todo items (suggestions need LLM).
-        Also checks deferred grade queue depth.
+        Only ungraded tasks qualify — they need a grader model.
+        Todos are handled by the reminder scheduler, not proactive loading.
         """
-        # Deferred grades waiting
-        if self.grade_queue.depth > 0:
-            return True
-
-        # Pending todos → upcoming todo suggestion call
         try:
-            from src.infra.db import get_todos
-            todos = await get_todos(status="pending")
-            return len(todos) > 0
+            from src.infra.db import get_db
+            db = await get_db()
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = 'ungraded'"
+            )
+            return (await cursor.fetchone())[0] > 0
         except Exception:
             return False
 
-    def _find_fastest_general_model(self) -> str | None:
-        """Find the fastest general-purpose local model for overhead work.
+    async def _loaded_model_can_grade(self) -> bool | None:
+        """Check if loaded model can grade ANY ungraded task.
 
-        Picks a model that supports function calling (not code-only),
-        prioritizing speed over capability since overhead tasks are simple.
+        Returns:
+            True  — loaded model can grade at least one task
+            False — ungraded tasks exist but loaded model can't grade any
+            None  — no ungraded tasks exist (nothing to grade)
+        """
+        loaded = self._get_loaded_litellm_name()
+        if not loaded:
+            return False
+        try:
+            import json
+            from src.infra.db import get_db
+            db = await get_db()
+            cursor = await db.execute(
+                "SELECT context FROM tasks WHERE status = 'ungraded'"
+            )
+            rows = await cursor.fetchall()
+            if not rows:
+                return None  # no grading work
+            for row in rows:
+                try:
+                    ctx = json.loads(row["context"] or "{}")
+                except (ValueError, TypeError):
+                    ctx = {}
+                if ctx.get("generating_model") == loaded:
+                    continue
+                if loaded in ctx.get("grade_excluded_models", []):
+                    continue
+                return True
+            return False
+        except Exception:
+            return False
+
+    async def _find_fastest_general_model(self) -> str | None:
+        """Find the best local model for overhead work.
+
+        When ungraded tasks exist, score = gradeable_count x speed.
+        Models that can't grade anything score zero and are eliminated.
+        When no ungraded tasks exist, pure speed ranking.
         """
         try:
+            import json
             from src.models.model_registry import get_registry
+
             registry = get_registry()
-            local_models = [
+            candidates = [
                 m for m in registry.all_models()
                 if m.is_local
                 and not m.demoted
                 and m.supports_function_calling
                 and m.specialty not in ("code", "coding")
+                # Exclude vision variants — loading mmproj wastes RAM
+                # for non-vision tasks like grading
+                and "vision" not in getattr(m, "variant_flags", set())
             ]
-
-            if not local_models:
+            if not candidates:
                 return None
 
-            def _speed_key(m):
+            def _speed(m):
                 if m.tokens_per_second > 0:
                     return m.tokens_per_second
                 if m.model_type == "moe":
                     return 30.0
                 return max(1.0, 50.0 - m.file_size_mb / 500)
 
-            return max(local_models, key=_speed_key).name
+            # Count gradeable tasks per model (the main overhead signal)
+            task_exclusions = await self._get_grade_exclusions()
+            total_ungraded = len(task_exclusions)
+
+            best_name = None
+            best_score = 0.0
+            for m in candidates:
+                speed = _speed(m)
+
+                if total_ungraded == 0:
+                    # No grading work — pure speed
+                    score = speed
+                else:
+                    gradeable = sum(
+                        1 for excl in task_exclusions
+                        if m.litellm_name not in excl
+                    )
+                    # Zero gradeable = zero score = eliminated.
+                    # Otherwise score = gradeable_count x speed.
+                    score = gradeable * speed
+
+                if score > best_score:
+                    best_score = score
+                    best_name = m.name
+
+            return best_name
 
         except Exception as e:
             logger.debug(f"_find_fastest_general_model failed: {e}")
             return None
 
+    async def _get_grade_exclusions(self) -> list[set[str]]:
+        """Get per-task exclusion sets for ungraded tasks.
+
+        Returns a list where each element is the set of litellm_names
+        that cannot grade that task (generating model + grade_excluded).
+        Empty list if no ungraded tasks.
+        """
+        try:
+            import json
+            from src.infra.db import get_db
+            db = await get_db()
+            cursor = await db.execute(
+                "SELECT context FROM tasks WHERE status = 'ungraded'"
+            )
+            rows = await cursor.fetchall()
+            if not rows:
+                return []
+
+            exclusions: list[set[str]] = []
+            for row in rows:
+                try:
+                    ctx = json.loads(row["context"] or "{}")
+                except (ValueError, TypeError):
+                    ctx = {}
+                excluded = {ctx.get("generating_model", "")}
+                excluded.update(ctx.get("grade_excluded_models", []))
+                excluded.discard("")
+                exclusions.append(excluded)
+            return exclusions
+        except Exception:
+            return []
+
     # ─── Metrics ─────────────────────────────────────────────────────────
 
     def get_stats(self) -> dict:
-        """Return dispatcher statistics for monitoring."""
         return {
             "total_calls": self._total_calls,
             "overhead_calls": self._overhead_calls,
@@ -918,7 +809,6 @@ class LLMDispatcher:
             ),
             "swaps_prevented": self._swaps_prevented,
             "swap_budget_remaining": self.swap_budget.remaining,
-            "grade_queue_depth": self.grade_queue.depth,
         }
 
 

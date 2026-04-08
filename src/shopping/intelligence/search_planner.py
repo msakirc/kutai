@@ -32,8 +32,8 @@ _SOURCES_BY_CATEGORY: dict[str, list[str]] = {
     "books": ["kitapyurdu", "dr", "trendyol"],
     "sports": ["decathlon", "trendyol", "hepsiburada"],
     "outdoor": ["decathlon", "trendyol"],
-    "cars": ["arabam", "sahibinden"],
-    "automotive": ["arabam", "sahibinden"],
+    "cars": ["arabam"],
+    "automotive": ["arabam"],
 }
 _DEFAULT_SOURCES = ["akakce", "trendyol", "hepsiburada"]
 

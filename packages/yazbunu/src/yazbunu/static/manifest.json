@@ -1,0 +1,9 @@
+{
+  "name": "Yazbunu",
+  "short_name": "Yazbunu",
+  "description": "Featherweight structured log viewer",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1a1a2e",
+  "theme_color": "#1a1a2e"
+}

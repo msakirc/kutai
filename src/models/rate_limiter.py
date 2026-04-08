@@ -39,8 +39,8 @@ def _schedule_rate_limit_wake(delay: float) -> None:
     async def _wake_after_delay():
         await asyncio.sleep(delay)
         try:
-            from src.infra.db import wake_sleeping_tasks
-            await wake_sleeping_tasks("rate_limit_reset")
+            from src.infra.db import accelerate_retries
+            await accelerate_retries("rate_limit_reset")
         except Exception:
             pass
 

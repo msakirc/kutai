@@ -66,15 +66,26 @@ def blend_capability_scores(
     result: dict[str, float] = {}
     for cap in all_caps:
         p = profile_scores.get(cap, 0.0)
-        b = benchmark_scores.get(cap, 0.0)
+        b = benchmark_scores.get(cap)  # None if no benchmark data
         g = grading_scores.get(cap, 0.0)
 
-        if cap in grading_scores and grading_call_count >= 5:
-            # 3-way blend
+        has_bench = b is not None and b > 0
+        has_grading = cap in grading_scores and grading_call_count >= 5
+
+        if has_grading and has_bench:
+            # 3-way blend: grading + benchmark + profile
             score = grading_w * g + bench_w * b + profile_w * p
-        else:
-            # 2-way fallback
+        elif has_grading:
+            # 2-way: grading + profile (no benchmark for this dimension)
+            gw_adj = grading_w + bench_w * 0.6  # redistribute bench weight
+            pw_adj = profile_w + bench_w * 0.4
+            score = gw_adj * g + pw_adj * p
+        elif has_bench:
+            # 2-way: benchmark + profile
             score = 0.60 * b + 0.40 * p
+        else:
+            # No external signal — keep profile score as-is
+            score = p
 
         result[cap] = round(min(10.0, max(0.0, score)), 2)
 
@@ -195,13 +206,11 @@ async def run_tuning_cycle() -> dict[str, Any]:
             # Fall back to current capabilities as profile baseline
             profile_scores = dict(model_info.capabilities)
 
-        # Benchmark scores — from ModelInfo (may not be populated yet)
+        # Benchmark scores — only use real benchmark data, not fallback
         benchmark_scores = getattr(model_info, "benchmark_scores", None) or {}
-        if not benchmark_scores:
-            # Fall back to current capabilities as benchmark baseline
-            benchmark_scores = dict(model_info.capabilities)
 
-        # Grading scores from DB — try registry name first, then litellm_name
+        # Grading scores from DB — try registry name first, then litellm_name,
+        # then base_model_name (thinking variants share grading with base)
         stats_key = model_name
         model_stats = stats_by_model.get(model_name, [])
         if not model_stats:
@@ -210,6 +219,12 @@ async def run_tuning_cycle() -> dict[str, Any]:
                 model_stats = stats_by_model.get(litellm_name, [])
                 if model_stats:
                     stats_key = litellm_name
+        if not model_stats:
+            base_name = getattr(model_info, "base_model_name", "")
+            if base_name and base_name != model_name:
+                model_stats = stats_by_model.get(base_name, [])
+                if model_stats:
+                    stats_key = base_name
         grading_scores, grading_calls = compute_grading_scores(
             stats_key, model_stats
         )
@@ -238,9 +253,16 @@ async def run_tuning_cycle() -> dict[str, Any]:
                 "grading_calls": grading_calls,
                 "grading_weight": grading_w,
             }
+            signals = []
+            if benchmark_scores:
+                signals.append(f"bench={len(benchmark_scores)}d")
+            if grading_calls > 0:
+                signals.append(f"grading={grading_calls}calls,w={grading_w:.0%}")
+            if not signals:
+                signals.append("profile-only")
             log.info(
-                f"tuned {model_name}: {len(changes)} caps changed "
-                f"(grading_calls={grading_calls}, grading_w={grading_w:.2f})"
+                f"tuned {model_name}: {len(changes)} caps adjusted "
+                f"({', '.join(signals)})"
             )
         else:
             skipped.append(model_name)

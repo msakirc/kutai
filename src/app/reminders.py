@@ -4,6 +4,7 @@
 from datetime import datetime, timezone
 
 from ..infra.db import get_todos
+from ..infra.times import utc_now
 from ..infra.logging_config import get_logger
 
 logger = get_logger("app.reminders")
@@ -28,7 +29,7 @@ def _format_age(created_at, now=None):
     if created_at.tzinfo is not None:
         created_at = created_at.astimezone(timezone.utc).replace(tzinfo=None)
     if now is None:
-        now = datetime.utcnow()
+        now = utc_now().replace(tzinfo=None)
     elif now.tzinfo is not None:
         now = now.astimezone(timezone.utc).replace(tzinfo=None)
     diff = now - created_at

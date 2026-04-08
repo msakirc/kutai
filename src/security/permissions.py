@@ -18,11 +18,11 @@ AGENT_PERMISSIONS: dict[str, Optional[set[str]]] = {
     # Planning agents — read-only, no shell execution
     "planner": {
         "file_tree", "read_file", "read_blackboard", "write_blackboard",
-        "git_log", "list_workspace", "project_info", "web_search",
+        "git_log", "list_workspace", "project_info", "web_search", "smart_search",
     },
     "architect": {
         "file_tree", "read_file", "read_blackboard", "write_blackboard",
-        "git_log", "list_workspace", "web_search",
+        "git_log", "list_workspace", "web_search", "smart_search",
     },
     # Coding agents — file manipulation + shell
     "coder": {
@@ -55,18 +55,18 @@ AGENT_PERMISSIONS: dict[str, Optional[set[str]]] = {
     },
     # Research agents — web + read
     "researcher": {
-        "web_search", "web_extract", "file_tree", "read_file",
+        "web_search", "smart_search", "web_extract", "file_tree", "read_file",
         "read_blackboard",
     },
     "analyst": {
-        "web_search", "web_extract", "file_tree", "read_file",
+        "web_search", "smart_search", "web_extract", "file_tree", "read_file", "write_file",
         "read_blackboard", "write_blackboard",
         "analyze_image", "read_document",
     },
     # Writing agents — file write only
     "writer": {
         "file_tree", "read_file", "write_file", "edit_file",
-        "read_blackboard", "web_search",
+        "read_blackboard", "web_search", "smart_search",
     },
     "summarizer": {
         "file_tree", "read_file", "read_blackboard",

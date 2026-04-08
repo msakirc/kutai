@@ -1,99 +1,62 @@
 # KutAI Inference Performance X-Ray
 
 > Model speed analysis, routing decisions, and Perplexica latency breakdown.
-> Based on measurements from 2026-03-28 session logs + live benchmarks.
-> All benchmarks run with `--n-gpu-layers 99` (auto-fit), `--flash-attn auto`, `--threads 9`, `--batch-size 2048`, `--ubatch-size 512`.
+> Based on measurements from 2026-04-05 session + live benchmarks.
+> All benchmarks run with `--fit` (llama-server auto-allocates GPU layers), `--flash-attn auto`, `--threads 9`, `--batch-size 2048`, `--ubatch-size 512`.
 
 ---
 
 ## GPU Environment
 
-- **GPU**: NVIDIA 8GB VRAM (8192 MiB total)
+- **GPU**: NVIDIA GeForce RTX 3070 Ti, 8GB VRAM (8192 MiB total)
 - **CPU**: 9 inference threads (physical cores - 2)
-- **llama-server**: flash-attn auto, batch 2048, ubatch 512
+- **llama-server**: v8398+, `--fit` (default-on), flash-attn auto, batch 2048, ubatch 512
+- **CRITICAL**: Do NOT pass `--n-gpu-layers` — it overrides `--fit` and causes VRAM thrashing for models that don't fully fit. Only pass it when models.yaml has an explicit `gpu_layers` override.
 
 ---
 
-## Full Benchmark Results (2026-03-28)
+## Full Benchmark Results
 
-All models tested with `--n-gpu-layers 99` (llama-server auto-clamps to VRAM capacity).
+### Benchmark v3 (Driver 595.97, llama.cpp v8668, 2026-04-05) — CURRENT
 
-### Benchmark v1 (Driver 546.x, 2026-03-28)
+Tested via `LocalModelManager.ensure_model()` with `--fit` auto-allocation, `enable_thinking=False`, clean server restart per model. Context set by `calculate_dynamic_context()`.
 
-| Model | Size | Gen tok/s | Prompt tok/s | VRAM | Load | Thinking | Status |
-|-------|------|----------|-------------|------|------|----------|--------|
-| nerdsking-python-7B | 5.1GB | 82.6 | 2662 | 6.3GB | 6s | NO | Full GPU |
-| Qwen3.5-9B-UD | 5.6GB | 53.0 | 432 | 7.6GB | 7s | YES* | Full GPU |
-| Qwen3-Coder-30B-A3B (MoE) | 17GB | 7.1 | 76 | 7.6GB | 50s | NO | Partial GPU |
-| GLM-4.7-Flash | 17GB | 5.6 | 58 | 7.6GB | 49s | YES (forced) | Partial GPU |
-| Qwen3.5-35B-A3B-UD (MoE) | 21GB | 4.4 | 47 | 7.6GB | 62s | YES* | Partial GPU |
-| Qwen3.5-27B | 16GB | 0.6 | 5 | 7.7GB | 49s | YES | Mostly CPU, timed out |
-| gemma-3-27b-heretic | 14GB | 1.0 | 7 | 7.6GB | 26s | NO | Mostly CPU, timed out |
-| Apriel-15B-Thinker | 12GB | 4.8 | 23 | 6.0GB | ~5s | NO* | Needs --no-jinja |
+| Model | Size | Type | Gen tok/s | Prompt tok/s | VRAM | Load | Thinking | Notes |
+|-------|------|------|----------|-------------|------|------|----------|-------|
+| **GigaChat3.1-Lightning** | 6.1GB | MoE 64E/4A | **107.4** | 295.7 | 7.5GB | 8s | NO | Fastest model, Russian-focused |
+| **nerdsking-python-7B** | 5.1GB | Dense | **63.7** | 396.9 | 7.1GB | 6s | NO | Code-only specialist |
+| **gpt-oss-20b** | 11.3GB | MoE 32E/4A | **37.4** | 101.7 | 7.5GB | 14s | YES (always-on) | OpenAI open-source, strong agentic |
+| **Qwen3.5-35B-A3B (MoE)** | 21GB | MoE | **28.4** | 65.4 | 7.2GB | 23s | NO | Best quality+speed combo |
+| **Qwen3.5-9B-UD** | 5.6GB | Dense | **27.6** | 83.9 | 7.3GB | 8s | NO | Good prompt throughput, has vision (mmproj) |
+| **Qwen3-Coder-30B-A3B (MoE)** | 17GB | MoE | **27.4** | 65.1 | 7.5GB | 17s | NO | Best for code tasks |
+| **GLM-4.7-Flash-UD** | 17GB | MoE | **24.6** | 50.1 | 7.5GB | 20s | NO | v8668 fixed thinking disable |
+| **Gemma-4-26B-A4B (MoE)** | 13GB | MoE 26B/4B | **23.2** | 47.4 | 7.4GB | 20s | NO | Vision (mmproj), Google's best open model |
+| **Apriel-15B-Thinker** | 8.7GB | Dense | **6.7** | 27.5 | 7.3GB | 11s | INLINE | Vision (mmproj), always-on CoT in content |
+| **Qwen3.5-27B** | 16GB | Dense | **2.9** | 8.2 | 6.9GB | 20s | YES | Still thinks despite disable flag, hard-filtered for >1000 output tokens |
 
-### Benchmark v2 (Driver 595.97, 2026-03-29) — CURRENT
+**Thinking control**: llama.cpp v8668+ uses `--reasoning off --reasoning-budget 0` (the old `--chat-template-kwargs {"enable_thinking": false}` is deprecated and ignored). Works for all thinking models **except** Qwen3.5-27B (still produces thinking tokens despite flag). Always-on (cannot disable): gpt-oss (reasoning_content), Apriel (inline in content via `--no-jinja --chat-template chatml`), Qwen3.5-27B.
 
-| Model | Size | Gen tok/s | Prompt tok/s | VRAM | Load | Thinking | Status |
-|-------|------|----------|-------------|------|------|----------|--------|
-| **nerdsking-python-7B** | 5.1GB | **87.6** | 2017 | 7.0GB | 4s | NO | Full GPU, code-only |
-| **Qwen3.5-35B-A3B-UD (MoE)** | 21GB | **33.2** | 65 | 6.9GB | 19s | YES* | **Best quality+speed combo** |
-| **Qwen3-Coder-30B-A3B (MoE)** | 17GB | **29.5** | 62 | 7.3GB | 14s | NO* | Fast, good for code |
-| **GLM-4.7-Flash-UD** | 17GB | **27.6** | 53 | 7.2GB | 16s | YES (forced) | Fast but wastes thinking tokens |
-| **Qwen3.5-9B-UD** | 5.6GB | **25.4** | 267 | 7.1GB | 7s | NO* | Fast, best prompt throughput |
-| **Apriel-15B-Thinker** | 12GB | **4.9** | 82 | 7.1GB | 10s | NO | Slow, needs --no-jinja |
-| **gemma-3-27b-heretic** | 14GB | **3.1** | 40 | 7.3GB | 14s | NO | Slow, borderline usable |
-| **Qwen3.5-27B** | 16GB | **2.8** | 32 | 6.5GB | 14s | YES | Near demote threshold |
+**New models (2026-04-05)**: GigaChat3.1-Lightning, gpt-oss-20b, Apriel-15B-Thinker Q4_K_L + mmproj, Gemma-4-26B-A4B + mmproj.
+**Removed**: gemma-3-27b-heretic (replaced by Gemma 4).
 
-**Driver impact**: MoE models improved 4-7.5x. Qwen3.5-35B-A3B went from slowest quality model (4.4 tok/s) to fastest (33.2 tok/s). Dense models >12GB improved 3-5x.
+### --fit vs --n-gpu-layers 99
 
-**IMPORTANT: Benchmark results are highly driver-dependent.** The v1→v2 jump (NVIDIA 546→595) changed the entire model ranking. Speeds may regress with future driver updates, VRAM pressure changes, or thermal throttling. The auto-demote system (2 tok/s threshold) and TPS EMA tracking handle this at runtime — if a model underperforms its benchmarked speed, it gets demoted and the user is notified via Telegram.
+`--fit` (default-on in llama.cpp v8000+) auto-calculates optimal GPU layer allocation based on actual free VRAM, reserving ~1GB headroom. Passing `--n-gpu-layers 99` **overrides** `--fit` and force-loads all layers, causing VRAM thrashing when the model doesn't fit:
 
-### Model Roster Recommendation
+| Model | --n-gpu-layers 99 | --fit (auto) | Improvement |
+|-------|-------------------|-------------|-------------|
+| Apriel-15B (8.7GB) | 3.7 tok/s (thrashing) | **6.8 tok/s** | **1.8x** |
+| Qwen3.5-9B (5.6GB) | 25.4 tok/s | **25.9 tok/s** | ~same |
 
-**Keep**: Qwen3.5-35B-A3B (MoE), Qwen3-Coder-30B (MoE), GLM-4.7-Flash, Qwen3.5-9B — all >25 tok/s, good coverage.
-
-**Replace gemma-3-27b-heretic** (3.1 tok/s, dense 27B, poor speed-to-quality ratio on 8GB VRAM). Ideal replacement profile:
-- **Architecture**: MoE (mixture-of-experts) with 3-4B active params — these run at 25-35 tok/s on 8GB VRAM because only active experts need GPU bandwidth. Dense models >12B are too slow on this hardware.
-- **Size**: 15-35B total params, 3-8B active params. File size 10-20GB GGUF (Q4_K or higher).
-- **Quantization**: Q4_K_XL or Q4_K_M — best speed/quality tradeoff for 8GB VRAM. Avoid IQ4_XS (gemma's quant was likely part of its poor performance).
-- **Capability gap to fill**: A strong general-purpose conversational model with good instruction following and Turkish language support. The current roster has code (Qwen3-Coder), quality reasoning (Qwen3.5-35B), speed (9B), but lacks a model optimized for multilingual chat and creative tasks.
-- **Avoid**: Dense models >12B params, thinking-only models (waste tokens), models without chat template support.
-
-*Thinking models: Qwen3.5 family (9B, 27B, 35B) and Qwen3-Coder have thinking capability. KutAI passes `--chat-template-kwargs {"enable_thinking": false}` at server startup to disable it — this works correctly for these models. The benchmark script (`scripts/benchmark_all.py`) also passes this flag so results reflect production behavior. GLM-4.7-Flash ignores the disable flag and always generates reasoning_content (no workaround at the llama-server level).
-
-**Benchmark methodology**: All models tested with `--fit` (no explicit --n-gpu-layers). Short test: 1-sentence prompt, 50 output tokens. Medium test: ~100 token prompt, 200 output tokens. Medium gen tok/s used as the definitive speed metric. Script: `scripts/benchmark_all.py`.
+Rule: **never pass `--n-gpu-layers` unless models.yaml specifies explicit `gpu_layers` override.**
 
 ### Speed Tiers
 
 | Tier | Models | Gen tok/s | Use Case |
 |------|--------|-----------|----------|
-| **Fast** (>30 tok/s) | Qwen3.5-9B, nerdsking-7B | 41-85 | Classification, simple Q&A, shopping search, Perplexica synthesis |
-| **Medium** (5-10 tok/s) | Qwen3-Coder-30B, GLM-4.7, Qwen3.5-35B MoE | 4.5-7.4 | Complex tasks where quality matters, code generation |
-| **Slow** (<2 tok/s) | Qwen3.5-27B, gemma-3-27b | 1.0-1.3 | Unusable for interactive tasks, only background batch work |
-
----
-
-## GLM-4.7-Flash Performance Analysis
-
-### Orchestrator vs Optimal Configuration
-
-| Config | GPU Layers | Ctx | Gen tok/s | Improvement |
-|--------|-----------|-----|-----------|-------------|
-| **Orchestrator** (calculated) | 16-17 | 8192 | **1.2** | baseline |
-| **Manual** (`--n-gpu-layers 40`) | ~40 | 4096 | **9.0** | **7.5x faster** |
-| **Auto-max** (`--n-gpu-layers 99`) | auto | 4096 | **6.0** | **5x faster** |
-
-### Root Cause of Slow Speed
-
-1. **Conservative GPU layer calculation**: `calculate_gpu_layers()` uses `(available_vram - 300) * 0.90` safety margin, computing only 16-17 layers for GLM (17GB model). With 75% of layers on CPU, generation drops to 1.2 tok/s.
-
-2. **Forced thinking**: GLM-4.7-Flash is in `_THINKING_FAMILIES` and generates `reasoning_content` even with `enable_thinking: false`. These wasted tokens reduce effective content speed to near 0 for short outputs.
-
-3. **Why not 30 tok/s**: Even with maximum GPU offload (40 layers, 7.7GB VRAM), GLM only achieves 6-9 tok/s. The 30 tok/s previously observed was likely Qwen3.5-9B (which genuinely achieves 41 tok/s). GLM at 29.9B params with partial GPU offload cannot reach 30 tok/s on 8GB VRAM.
-
-### Fix Impact
-
-Passing `--n-gpu-layers 99` instead of the calculated value gives llama-server freedom to fit as many layers as possible. This is the single biggest performance improvement available: **1.2 → 6.0+ tok/s** (5x) for all partially-offloaded models.
+| **Ultra** (>80 tok/s) | GigaChat3.1-Lightning, nerdsking-7B | 89-116 | Classification, simple Q&A, fast overhead |
+| **Fast** (>20 tok/s) | gpt-oss-20b, Qwen3.5-35B MoE, Coder-30B, GLM, 9B, Gemma-4 | 21-36 | Main work, complex tasks, code, vision |
+| **Slow** (<10 tok/s) | Apriel-15B, Qwen3.5-27B | 3-7 | Vision tasks (Apriel), background batch (27B) |
 
 ---
 
@@ -211,10 +174,10 @@ Missing link: feed the measured speed back into ModelInfo so the scorer uses it.
 **Problem**: When a slow model is loaded and Perplexica fails, the agent falls back to DuckDuckGo (poor results). The system should proactively prefer fast models for search-heavy tasks.
 **Fix**: If the task profile includes web_search capability and the loaded model is slow, the dispatcher should consider a swap to a fast model before the agent starts.
 
-### Fix 6: Pass `--n-gpu-layers 99` Instead of Calculated Value
+### Fix 6: Use `--fit` Instead of `--n-gpu-layers 99` (REVISED 2026-04-05)
 
-**Problem**: Conservative GPU layer calculation leaves most layers on CPU for large models.
-**Fix**: Pass `--n-gpu-layers 99` and let llama-server auto-fit. llama-server already handles VRAM limits gracefully. Only override with calculated value if `models.yaml` specifies explicit `gpu_layers`.
+**Problem**: `--n-gpu-layers 99` overrides `--fit` and force-loads all layers. For models that exceed VRAM (Apriel 8.7GB on 8GB GPU), this causes VRAM thrashing (3.7 tok/s vs 6.8 tok/s with proper allocation).
+**Fix**: Do NOT pass `--n-gpu-layers` at all. llama-server's `--fit` (default-on since v8000+) auto-calculates optimal GPU layers based on actual free VRAM. Only pass explicit `--n-gpu-layers` when `models.yaml` specifies a `gpu_layers` override.
 
 ### Fix 7: Disable/Deprioritize Unusable Models
 

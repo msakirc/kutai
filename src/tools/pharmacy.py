@@ -81,11 +81,11 @@ async def _fetch_duty_pharmacies_eczaneler_gen_tr(
         tab: Which Bootstrap tab to read — "dun" (yesterday), "bugun" (today),
              or "yarin" (tomorrow). Defaults to "bugun".
     """
-    from datetime import datetime
+    from src.infra.times import turkey_now
     try:
         from src.tools.scraper import scrape_url, ScrapeTier
 
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = turkey_now().strftime("%Y-%m-%d")
         # Normalize Turkish chars for URL: İ→i, ş→s, ç→c, ğ→g, ö→o, ü→u
         _TR_MAP = str.maketrans("İıŞşÇçĞğÖöÜü", "IiSsCcGgOoUu")
         city_slug = city.translate(_TR_MAP).lower()

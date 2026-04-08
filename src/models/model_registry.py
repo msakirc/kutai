@@ -1,6 +1,6 @@
 # model_registry.py
 """
-Model Registry v2 — auto-scanning, 14-dimension capabilities, hot reload.
+Model Registry v2 — auto-scanning, 15-dimension capabilities, hot reload.
 
 Loads models from:
   1. GGUF files in MODEL_DIR (from .env)
@@ -13,10 +13,12 @@ Call reload() at any time to rescan without restarting.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
 import threading
+import time
 
 from src.infra.logging_config import get_logger
 from dataclasses import dataclass, field
@@ -110,6 +112,11 @@ class ModelInfo:
     demoted: bool = False
     api_base: Optional[str] = None
 
+    # Variant fields
+    is_variant: bool = False
+    base_model_name: str = ""
+    variant_flags: set[str] = field(default_factory=set)
+
     def score_for(self, cap: str) -> float:
         """Get score for a single capability."""
         return self.capabilities.get(cap, 0.0)
@@ -144,6 +151,8 @@ class ModelInfo:
             "model_type": self.model_type,
             "total_params_b": self.total_params_b,
             "active_params_b": self.active_params_b,
+            "is_variant": getattr(self, "is_variant", False),
+            "variant_flags": getattr(self, "variant_flags", set()),
         }
 
     @property
@@ -291,6 +300,7 @@ def _estimate_from_filename(path: str) -> dict:
         "gemma3", "gemma2", "gemma", "mistral", "mixtral", "deepseek",
         "codellama", "starcoder", "llava", "moondream", "internvl",
         "minicpm", "command-r", "yi", "internlm", "qwq",
+        "gigachat", "apriel", "gpt-oss", "gemma-4", "gemma4",
     ]:
         if arch in name:
             metadata["architecture"] = arch
@@ -316,7 +326,7 @@ def estimate_capabilities(
     has_vision_hint: bool = False,
 ) -> dict[str, float]:
     """
-    Estimate 14-dimension capability scores from model metadata.
+    Estimate 15-dimension capability scores from model metadata.
 
     Strategy:
     1. Look up family profile (or use default)
@@ -442,7 +452,7 @@ def calculate_dynamic_context(
     gpu_ratio = gpu_layers / max(n_layers, 1)
     if gpu_ratio < 0.3:
         hard_cap = 8192
-    elif gpu_ratio < 0.5:
+    elif gpu_ratio <= 0.5:
         hard_cap = 16384
     else:
         hard_cap = 32768
@@ -522,16 +532,19 @@ def find_mmproj_path(file_path: str) -> str | None:
     """Find a companion mmproj GGUF for the given model file.
 
     Returns the full path to the mmproj file, or None.
-    Matches by checking that the mmproj filename shares the first two
+    Matches by checking that the mmproj filename shares ALL of the first two
     stem segments with the model file (e.g. Qwen3.5-9B matches
-    Qwen3.5-9B-...-mmproj-F16.gguf).
+    Qwen3.5-9B-...-mmproj-F16.gguf but Qwen3-Coder does NOT match
+    Qwen3.5-9B-mmproj).
     """
     model_dir = Path(file_path).parent
     stem = Path(file_path).stem.lower()
+    # Use first two hyphen-separated segments as identity (e.g. "qwen3.5-9b")
     stem_parts = stem.split("-")[:2]
     for f in model_dir.iterdir():
         if f.suffix == ".gguf" and "mmproj" in f.stem.lower():
-            if any(part in f.stem.lower() for part in stem_parts):
+            mmproj_lower = f.stem.lower()
+            if all(part in mmproj_lower for part in stem_parts):
                 return str(f)
     return None
 
@@ -549,6 +562,10 @@ _TOOL_CALL_FAMILIES = {
     "deepseek_v3", "deepseek_r1",
     "command_r",
     "internlm",
+    "apriel", "apriel_thinker",
+    "gpt_oss",
+    "gigachat",
+    "gemma4",
 }
 
 
@@ -564,7 +581,7 @@ def detect_function_calling(family_key: str | None, gguf_metadata: dict) -> bool
 
 # ─── Thinking Model Detection ───────────────────────────────────────────────
 
-_THINKING_FAMILIES = {"qwen3", "qwen35", "qwen3_coder", "qwq", "deepseek_r1", "glm4_flash"}
+_THINKING_FAMILIES = {"qwen3", "qwen35", "qwen3_coder", "qwq", "deepseek_r1", "glm4_flash", "apriel_thinker", "gpt_oss", "gemma4"}
 _THINKING_NAME_PATTERNS = ["o1", "o3", "o4", "qwq", "deepseek-r1", "gemini-2.5", "glm"]
 
 
@@ -880,6 +897,106 @@ def _resolve_provider(litellm_name: str) -> str | None:
     return None
 
 
+# ─── Model Variant Registration ─────────────────────────────────────────────
+
+def _apply_thinking_deltas(capabilities: dict[str, float]) -> dict[str, float]:
+    """Adjust capability scores for thinking mode variant.
+
+    Deltas derived from LM Arena thinking/non-thinking pairs (Qwen3-235B,
+    DeepSeek-V3.1/V3.2).  Frontier models show small gains; local models
+    further from the ceiling should benefit proportionally more, so we
+    apply modest positive deltas.
+    """
+    caps = dict(capabilities)
+    deltas = {
+        "reasoning": 0.4,
+        "planning": 0.4,
+        "analysis": 0.5,
+        "code_reasoning": 0.2,
+        "prose_quality": 0.3,
+        "instruction_adherence": 0.3,
+        "context_utilization": 0.2,
+    }
+    for key, delta in deltas.items():
+        if key in caps:
+            caps[key] = round(max(0.0, min(10.0, caps[key] + delta)), 1)
+    return caps
+
+
+def _create_model_variants(
+    base: ModelInfo,
+    family_profile: "FamilyProfile | None",
+) -> list[ModelInfo]:
+    """
+    Create 1-4 ModelInfo entries from a base model + family capabilities.
+
+    Returns:
+      - Base entry (thinking_model=False, has_vision=False)
+      - Thinking variant if family is thinking_capable
+      - Vision variant if family has_vision and mmproj_path exists
+      - Thinking+Vision variant if both apply
+    """
+    from dataclasses import replace as dc_replace
+
+    thinking_capable = family_profile.thinking_capable if family_profile else False
+    # Vision: if mmproj file exists, model supports vision regardless of family profile
+    vision_capable = bool(base.mmproj_path)
+
+    # Base entry: always strip thinking/vision flags
+    base_entry = dc_replace(
+        base,
+        thinking_model=False,
+        has_vision=False,
+        is_variant=False,
+        base_model_name="",
+        variant_flags=set(),
+    )
+    variants = [base_entry]
+
+    if thinking_capable:
+        thinking_entry = dc_replace(
+            base,
+            name=f"{base.name}-thinking",
+            thinking_model=True,
+            has_vision=False,
+            is_variant=True,
+            base_model_name=base.name,
+            variant_flags={"thinking"},
+            capabilities=_apply_thinking_deltas(base.capabilities),
+            litellm_name=f"openai/{base.name}-thinking",
+        )
+        variants.append(thinking_entry)
+
+    if vision_capable:
+        vision_entry = dc_replace(
+            base,
+            name=f"{base.name}-vision",
+            thinking_model=False,
+            has_vision=True,
+            is_variant=True,
+            base_model_name=base.name,
+            variant_flags={"vision"},
+            litellm_name=f"openai/{base.name}-vision",
+        )
+        variants.append(vision_entry)
+
+    if thinking_capable and vision_capable:
+        tv_entry = dc_replace(
+            base,
+            name=f"{base.name}-thinking-vision",
+            thinking_model=True,
+            has_vision=True,
+            is_variant=True,
+            base_model_name=base.name,
+            variant_flags={"thinking", "vision"},
+            capabilities=_apply_thinking_deltas(base.capabilities),
+            litellm_name=f"openai/{base.name}-thinking-vision",
+        )
+        variants.append(tv_entry)
+
+    return variants
+
+
 class ModelRegistry:
     """
     Central model registry. Thread-safe for hot reload.
@@ -890,12 +1007,17 @@ class ModelRegistry:
         best = registry.best_for_task("coder") # smart selection
     """
 
+    _SPEED_CACHE_PATH = Path("data/model_speeds.json")
+    _SPEED_SAVE_INTERVAL = 30  # seconds between disk writes
+
     def __init__(self):
         self.models: dict[str, ModelInfo] = {}
         self.personal_projects: list[str] = []
         self._raw_config: dict = {}
         self._lock = threading.RLock()
         self._loaded = False
+        self._speed_cache_dirty = False
+        self._speed_cache_last_save: float = 0.0
 
     # ── Loading ──────────────────────────────────────────────────────────────
 
@@ -996,8 +1118,13 @@ class ModelRegistry:
                 if model_name not in new_models:
                     continue
                 if "capabilities" in model_overrides:
+                    manual_caps = {}
                     for cap_name, score in model_overrides["capabilities"].items():
                         new_models[model_name].capabilities[cap_name] = float(score)
+                        manual_caps[cap_name] = float(score)
+                    # Treat manual overrides as benchmark data so auto_tuner
+                    # and enrichment respect them in the blend
+                    new_models[model_name].benchmark_scores = manual_caps
                 if "sampling" in model_overrides:
                     new_models[model_name].sampling_overrides = {
                         k: {pk: float(pv) for pk, pv in v.items()}
@@ -1030,10 +1157,14 @@ class ModelRegistry:
                         logger.debug("benchmark_fetcher not available")
                     except Exception as e:
                         logger.warning(f"Benchmark enrichment failed (non-fatal): {e}")
-                t = threading.Thread(target=_enrich_bg, daemon=True,
-                                     name="benchmark-enrich")
-                t.start()
+                self._enrich_thread = threading.Thread(
+                    target=_enrich_bg, daemon=True, name="benchmark-enrich"
+                )
+                self._enrich_thread.start()
                 logger.info("Benchmark enrichment started in background")
+
+            # ── 7. Restore persisted speed measurements ──
+            self._load_speed_cache()
 
             self._loaded = True
 
@@ -1045,6 +1176,64 @@ class ModelRegistry:
                 f"Registry built: {len(new_models)} models "
                 f"({n_local} local, {n_cloud} cloud, {n_ollama} ollama)"
             )
+
+    # ── Speed Cache Persistence ───────────────────────────────────────────────
+
+    def _load_speed_cache(self) -> None:
+        """Load persisted speed measurements into current models."""
+        try:
+            if not self._SPEED_CACHE_PATH.exists():
+                return
+            with open(self._SPEED_CACHE_PATH, "r", encoding="utf-8") as f:
+                cache = json.load(f)
+            restored = 0
+            for name, entry in cache.items():
+                model = self.models.get(name)
+                if model is None:
+                    continue
+                tps = entry.get("tps", 0.0)
+                demoted = entry.get("demoted", False)
+                if tps > 0 and model.tokens_per_second <= 0:
+                    model.tokens_per_second = tps
+                    restored += 1
+                if demoted and not model.demoted:
+                    model.demoted = True
+            if restored:
+                logger.info(f"Restored speed data for {restored} models from cache")
+        except Exception as e:
+            logger.warning(f"Failed to load speed cache: {e}")
+
+    def _save_speed_cache(self, force: bool = False) -> None:
+        """Persist speed measurements to disk (debounced)."""
+        now = time.time()
+        if not force and (now - self._speed_cache_last_save) < self._SPEED_SAVE_INTERVAL:
+            self._speed_cache_dirty = True
+            return
+        try:
+            cache = {}
+            for name, model in self.models.items():
+                if model.tokens_per_second > 0 or model.demoted:
+                    cache[name] = {
+                        "tps": round(model.tokens_per_second, 1),
+                        "demoted": model.demoted,
+                        "updated": time.strftime("%Y-%m-%d"),
+                    }
+            if not cache:
+                return
+            self._SPEED_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._SPEED_CACHE_PATH.with_suffix(".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(cache, f, indent=2)
+            tmp.replace(self._SPEED_CACHE_PATH)
+            self._speed_cache_last_save = now
+            self._speed_cache_dirty = False
+        except Exception as e:
+            logger.warning(f"Failed to save speed cache: {e}")
+
+    def flush_speed_cache(self) -> None:
+        """Force-write speed cache to disk. Call on shutdown."""
+        if self._speed_cache_dirty:
+            self._save_speed_cache(force=True)
 
     def _load_local_models(
         self, model_dir: str, overrides: dict
@@ -1075,11 +1264,31 @@ class ModelRegistry:
                 has_vision_hint=raw["has_vision"],
             )
 
-            # Context length (override > native)
-            context_length = model_overrides.get("context_length", raw["native_ctx"])
-
-            # GPU layers
+            # Context length + GPU layers (co-dependent — resolve iteratively).
+            # 1. Estimate GPU layers with a modest context (8192) to get baseline GPU ratio
+            # 2. Use dynamic context calculator to pick real context based on GPU ratio
+            # 3. Recalculate GPU layers with the actual context
             _gpu_layers_from_override = "gpu_layers" in model_overrides and model_overrides["gpu_layers"]
+            if model_overrides.get("context_length"):
+                context_length = model_overrides["context_length"]
+            else:
+                # Step 1: baseline GPU layers at 8K context
+                baseline_gpu = calculate_gpu_layers(
+                    file_size_mb=raw["file_size_mb"],
+                    n_layers=raw["n_layers"],
+                    available_vram_mb=available_vram,
+                    context_length=8192,
+                )
+                # Step 2: dynamic context based on what fits
+                context_length = calculate_dynamic_context(
+                    file_size_mb=raw["file_size_mb"],
+                    n_layers=raw["n_layers"],
+                    gpu_layers=baseline_gpu,
+                    available_ram_mb=32768,  # conservative 32GB
+                    available_vram_mb=available_vram,
+                    family_key=raw["family_key"],
+                )
+
             gpu_layers = model_overrides.get("gpu_layers") or calculate_gpu_layers(
                 file_size_mb=raw["file_size_mb"],
                 n_layers=raw["n_layers"],
@@ -1111,9 +1320,12 @@ class ModelRegistry:
             extra_server_flags = list(model_overrides.get("extra_server_flags", []))
             if not extra_server_flags:
                 # Family-based defaults
-                if raw["is_moe"]:
-                    extra_server_flags = ["--override-kv", "tokenizer.ggml.eos_token_id=int:151645"]
+                family = raw.get("family_key", "") or ""
                 name_lower = name.lower()
+                # Qwen3/Qwen3-Coder MoE need explicit eos token (151645).
+                # Qwen3.5 has correct eos (248046) baked into GGUF — no override needed.
+                if raw["is_moe"] and family in ("qwen3", "qwen3_coder"):
+                    extra_server_flags = ["--override-kv", "tokenizer.ggml.eos_token_id=int:151645"]
                 if "apriel" in name_lower:
                     extra_server_flags = ["--no-jinja", "--chat-template", "chatml"]
 
@@ -1139,15 +1351,20 @@ class ModelRegistry:
                 _gpu_layers_from_override=_gpu_layers_from_override,
                 total_layers=raw["n_layers"],
                 file_size_mb=raw["file_size_mb"],
-                load_time_seconds=max(10, raw["file_size_mb"] / 250),  # ~250 MB/s cold-start load speed
+                load_time_seconds=max(10, raw["file_size_mb"] / 500),  # ~500 MB/s typical VRAM load speed
                 priority_class=priority_class,
                 specialty=specialty,
                 family=raw["family_key"] or "unknown",
                 extra_server_flags=extra_server_flags,
             )
-            result[name] = model
+            # Create variants (base, thinking, vision, thinking+vision)
+            family_profile = FAMILY_PROFILES.get(raw["family_key"] or "")
+            variants = _create_model_variants(model, family_profile)
+            for variant in variants:
+                result[variant.name] = variant
 
             moe_info = f"(MoE {raw['active_params_b']:.1f}B active)" if raw['is_moe'] else ""
+            variant_names = [v.name for v in variants if v.is_variant]
 
             logger.info(
                 f"  Local: {name} "
@@ -1160,6 +1377,7 @@ class ModelRegistry:
                 f"| best={model.best_score():.1f}"
                 f"{'| 👁️ vision' if raw['has_vision'] else ''}"
                 f"{'| 🧠 thinking' if raw['thinking'] else ''}"
+                f"{' | variants: ' + ', '.join(variant_names) if variant_names else ''}"
             )
 
         return result
@@ -1232,7 +1450,7 @@ class ModelRegistry:
             _gpu_layers_from_override=_gpu_layers_from_override,
             total_layers=n_layers,
             file_size_mb=meta.get("file_size_mb", 0),
-            load_time_seconds=max(10, meta.get("file_size_mb", 0) / 250),  # ~250 MB/s cold-start
+            load_time_seconds=max(10, meta.get("file_size_mb", 0) / 500),  # ~500 MB/s typical VRAM load speed
             specialty=specialty,
             family=family_key or "unknown",
         )
@@ -1514,14 +1732,25 @@ class ModelRegistry:
         prompt lengths and concurrent load.
         """
         info = self.models.get(model_name)
-        if info is None:
+        if info is None or measured_tps <= 0:
             return
         if info.tokens_per_second <= 0:
             # First measurement — use raw value
             info.tokens_per_second = measured_tps
         else:
-            # EMA with alpha=0.3 (recent measurements weighted 30%)
-            alpha = 0.3
+            # Outlier guard: if new measurement differs by >5x from current
+            # EMA, it's likely a cold-start/contention artifact — dampen it
+            # with a much lower alpha to avoid corrupting the estimate.
+            ratio = measured_tps / info.tokens_per_second
+            if ratio > 5.0 or ratio < 0.2:
+                alpha = 0.05  # barely nudge for outliers
+                logger.debug(
+                    f"Speed outlier for {model_name}: "
+                    f"{measured_tps:.1f} vs EMA {info.tokens_per_second:.1f} "
+                    f"({ratio:.1f}x), using dampened alpha"
+                )
+            else:
+                alpha = 0.3
             info.tokens_per_second = info.tokens_per_second * (1 - alpha) + measured_tps * alpha
 
         # Auto-demote local models below minimum usable speed.
@@ -1545,6 +1774,9 @@ class ModelRegistry:
                     ))
             except Exception:
                 pass  # best-effort notification
+
+        # Persist to disk (debounced)
+        self._save_speed_cache()
 
     def local_models(self) -> list[ModelInfo]:
         models = self.models
@@ -1700,6 +1932,12 @@ class ModelRegistry:
 
     # ── Diagnostics ──────────────────────────────────────────────────────────
 
+    def wait_for_enrichment(self, timeout: float = 30.0) -> None:
+        """Block until background benchmark enrichment finishes."""
+        t = getattr(self, "_enrich_thread", None)
+        if t is not None and t.is_alive():
+            t.join(timeout=timeout)
+
     def print_summary(self) -> None:
         """Print a formatted summary of all registered models."""
         print("=" * 80)
@@ -1742,6 +1980,7 @@ class ModelRegistry:
         # Show task routing preview
         print(f"\n  [>] Task Routing Preview")
         print(f"  {'-' * 76}")
+        routing_lines = []
         for task in [
             "planner",
             "architect",
@@ -1764,9 +2003,17 @@ class ModelRegistry:
             ranked = self.best_for_task(task, top_k=3)
             if ranked:
                 models_str = " -> ".join(f"{n}({s:.1f})" for n, s in ranked)
-                print(f"  {task:20s}: {models_str}")
+                line = f"  {task:20s}: {models_str}"
+                print(line)
+                routing_lines.append(line)
 
         print("=" * 80)
+
+        # Also log routing preview so it appears in yazbunu logs
+        if routing_lines:
+            logger.info(
+                "Task routing preview:\n" + "\n".join(routing_lines)
+            )
 
 
 # ─── Singleton ───────────────────────────────────────────────────────────────

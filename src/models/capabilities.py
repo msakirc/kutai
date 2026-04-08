@@ -2,8 +2,8 @@
 """
 Capability dimensions, task profiles, and model-task scoring.
 
-Each model gets a 14-dimension capability vector (0.0–10.0).
-Each task/role is a weight vector over the same 14 dimensions.
+Each model gets a 15-dimension capability vector (0.0–10.0).
+Each task/role is a weight vector over the same 15 dimensions.
 Model selection = weighted dot product + hard constraint filtering.
 """
 
@@ -49,12 +49,15 @@ class Cap(str, Enum):
     # ── Interaction ──
     CONVERSATION        = "conversation"         # Multi-turn coherence, persona, memory, empathy
 
+    # ── Language-specific ──
+    TURKISH             = "turkish"              # Turkish fluency, grammar, cultural context, e-commerce terms
+
 
 ALL_CAPABILITIES = [c.value for c in Cap]
 
 # Dimensions where total params matter more than active params (MoE)
 KNOWLEDGE_DIMENSIONS = {
-    Cap.DOMAIN_KNOWLEDGE, Cap.PROSE_QUALITY, Cap.VISION,
+    Cap.DOMAIN_KNOWLEDGE, Cap.PROSE_QUALITY, Cap.VISION, Cap.TURKISH,
 }
 
 # Dimensions where active params dominate (speed of inference doesn't help
@@ -73,7 +76,7 @@ EXECUTION_DIMENSIONS = {
 
 
 # ─── Task Profiles ──────────────────────────────────────────────────────────
-# Each task is a weight vector over the 14 capabilities.
+# Each task is a weight vector over the 15 capabilities.
 # Weights are 0.0–1.0 indicating importance of that dimension for the task.
 
 TASK_PROFILES: dict[str, dict[str, float]] = {
@@ -92,6 +95,7 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.TOOL_USE:              0.1,
         Cap.VISION:                0.0,
         Cap.CONVERSATION:          0.1,
+        Cap.TURKISH:               0.0,
     },
     "architect": {
         Cap.REASONING:             0.8,
@@ -108,6 +112,7 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.TOOL_USE:              0.1,
         Cap.VISION:                0.2,
         Cap.CONVERSATION:          0.1,
+        Cap.TURKISH:               0.0,
     },
     "coder": {
         Cap.REASONING:             0.5,
@@ -124,6 +129,7 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.TOOL_USE:              0.3,
         Cap.VISION:                0.1,
         Cap.CONVERSATION:          0.0,
+        Cap.TURKISH:               0.0,
     },
     "implementer": {
         Cap.REASONING:             0.4,
@@ -140,6 +146,7 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.TOOL_USE:              0.4,
         Cap.VISION:                0.0,
         Cap.CONVERSATION:          0.0,
+        Cap.TURKISH:               0.0,
     },
     "fixer": {
         Cap.REASONING:             0.8,
@@ -156,6 +163,7 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.TOOL_USE:              0.3,
         Cap.VISION:                0.2,
         Cap.CONVERSATION:          0.0,
+        Cap.TURKISH:               0.0,
     },
     "test_generator": {
         Cap.REASONING:             0.6,
@@ -172,6 +180,7 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.TOOL_USE:              0.2,
         Cap.VISION:                0.0,
         Cap.CONVERSATION:          0.0,
+        Cap.TURKISH:               0.0,
     },
     "reviewer": {
         Cap.REASONING:             0.7,
@@ -188,6 +197,7 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.TOOL_USE:              0.1,
         Cap.VISION:                0.3,
         Cap.CONVERSATION:          0.0,
+        Cap.TURKISH:               0.0,
     },
     "researcher": {
         Cap.REASONING:             0.7,
@@ -204,6 +214,7 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.TOOL_USE:              0.5,
         Cap.VISION:                0.3,
         Cap.CONVERSATION:          0.1,
+        Cap.TURKISH:               0.3,
     },
     "writer": {
         Cap.REASONING:             0.3,
@@ -220,6 +231,7 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.TOOL_USE:              0.1,
         Cap.VISION:                0.1,
         Cap.CONVERSATION:          0.3,
+        Cap.TURKISH:               0.4,
     },
     "executor": {
         Cap.REASONING:             0.4,
@@ -236,6 +248,7 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.TOOL_USE:              1.0,
         Cap.VISION:                0.0,
         Cap.CONVERSATION:          0.0,
+        Cap.TURKISH:               0.0,
     },
     "router": {
         Cap.REASONING:             0.5,
@@ -252,6 +265,7 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.TOOL_USE:              0.2,
         Cap.VISION:                0.0,
         Cap.CONVERSATION:          0.0,
+        Cap.TURKISH:               0.0,
     },
     "visual_reviewer": {
         Cap.REASONING:             0.5,
@@ -268,6 +282,7 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.TOOL_USE:              0.1,
         Cap.VISION:                1.0,
         Cap.CONVERSATION:          0.1,
+        Cap.TURKISH:               0.0,
     },
     "assistant": {
         Cap.REASONING:             0.6,
@@ -284,6 +299,7 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.TOOL_USE:              0.5,
         Cap.VISION:                0.3,
         Cap.CONVERSATION:          1.0,
+        Cap.TURKISH:               0.6,
     },
     "summarizer": {
         Cap.REASONING:             0.4,
@@ -300,6 +316,7 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.TOOL_USE:              0.0,
         Cap.VISION:                0.0,
         Cap.CONVERSATION:          0.0,
+        Cap.TURKISH:               0.3,
     },
     "analyst": {
         Cap.REASONING:             0.7,
@@ -316,6 +333,7 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.TOOL_USE:              0.2,
         Cap.VISION:                0.1,
         Cap.CONVERSATION:          0.1,
+        Cap.TURKISH:               0.2,
     },
     "error_recovery": {
         Cap.REASONING:             0.7,
@@ -332,6 +350,7 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.VISION:                0.1,
         Cap.CONVERSATION:          0.1,
         Cap.STRUCTURED_OUTPUT:     0.3,
+        Cap.TURKISH:               0.0,
     },
     "shopping_advisor": {
         Cap.REASONING:             0.7,
@@ -348,6 +367,7 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.TOOL_USE:              0.6,
         Cap.VISION:                0.2,
         Cap.CONVERSATION:          0.5,
+        Cap.TURKISH:               0.9,
     },
 }
 
@@ -389,6 +409,10 @@ def score_model_for_task(
     if requirements.needs_function_calling and not ops.get("supports_function_calling", False):
         return -1.0
     if requirements.needs_vision and model_capabilities.get(Cap.VISION, 0) < 1.0:
+        return -1.0
+    # Exclude vision variants from non-vision tasks — loading mmproj wastes
+    # RAM for no benefit, and the base model is identical otherwise
+    if not requirements.needs_vision and "vision" in ops.get("variant_flags", set()):
         return -1.0
     if requirements.min_context and ops.get("context_length", 0) < requirements.min_context:
         return -1.0

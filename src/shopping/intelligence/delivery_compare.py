@@ -7,6 +7,7 @@ import json
 from datetime import datetime, timedelta
 
 from src.infra.logging_config import get_logger
+from src.infra.times import utc_now
 
 logger = get_logger("shopping.intelligence.delivery_compare")
 
@@ -170,7 +171,7 @@ def _estimate_delivery(product: dict, store_key: str) -> dict:
         else:
             shipping_days = 5
 
-    now = datetime.now()
+    now = utc_now()
     estimated_date = (now + timedelta(days=shipping_days)).strftime("%Y-%m-%d")
 
     carrier = defaults.get("carrier", "Unknown")

@@ -54,6 +54,9 @@ AVAILABLE_KEYS: dict[str, bool] = {
 HERE_API_KEY = os.getenv("HERE_API_KEY", "")
 LOCATIONIQ_API_KEY = os.getenv("LOCATIONIQ_API_KEY", "")
 
+# ─── Benchmark API Keys ────────────────────────────────────────────────────
+ARTIFICIAL_ANALYSIS_API_KEY = os.getenv("ARTIFICIAL_ANALYSIS_API_KEY", "")
+
 # ─── Task Priority Levels ────────────────────────────────────────────────────
 
 TASK_PRIORITY = {
@@ -85,7 +88,7 @@ def get_model_pool() -> dict:
 
         pool = {}
         for name, m in registry.models.items():
-            # Map 14-dimension capabilities back to a simple capability list
+            # Map 15-dimension capabilities back to a simple capability list
             # (top capabilities above threshold 5.0)
             top_caps = [
                 cap for cap, score in sorted(

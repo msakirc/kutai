@@ -17,6 +17,8 @@ import threading
 import time
 from datetime import datetime, timezone
 
+from .times import db_now
+
 import requests
 
 # Import lazily to avoid circular imports at module load time
@@ -70,7 +72,7 @@ def _write_notification_to_file(
 ) -> None:
     """Write a single JSON-line notification to logs/notifications.log."""
     entry = {
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": db_now(),
         "level": level,
         "title": title,
         "message": message,

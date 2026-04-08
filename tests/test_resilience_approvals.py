@@ -220,7 +220,7 @@ async def _run_escalation_logic(db_mod, send_notification):
 
     NOTE: SQLite's datetime('now') is UTC-based.  The production orchestrator
     stores started_at via datetime.now() (local time) and compares against
-    datetime('now') (UTC).  In tests we use datetime.utcnow() for both
+    datetime('now') (UTC).  In tests we use datetime.now(timezone.utc) for both
     to avoid timezone mismatches.
     """
     from src.infra.db import get_db, update_task

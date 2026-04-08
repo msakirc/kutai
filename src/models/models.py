@@ -283,8 +283,9 @@ def validate_task_output(agent_type: str, result) -> list[str]:
     elif category == "research":
         has_url = bool(_re.search(r'https?://', result))
         has_source = any(kw in result.lower() for kw in [
-            "source:", "reference:", "according to",
+            "source", "reference", "according to",
             "documentation", "found that", "article",
+            "based on", "cited", "survey", "review",
         ])
         if not (has_url or has_source):
             errors.append(

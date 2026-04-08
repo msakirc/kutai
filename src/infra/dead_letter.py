@@ -19,8 +19,9 @@ Integration with existing systems:
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Optional
+
+from .times import db_now
 
 from src.infra.logging_config import get_logger
 
@@ -43,7 +44,7 @@ async def _ensure_dlq_table() -> None:
             error TEXT,
             error_category TEXT DEFAULT 'unknown',
             original_agent TEXT,
-            retry_count INTEGER DEFAULT 0,
+            attempts_snapshot INTEGER DEFAULT 0,
             quarantined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             resolved_at TIMESTAMP,
             resolution TEXT,
@@ -52,6 +53,18 @@ async def _ensure_dlq_table() -> None:
     """)
     await db.commit()
 
+    # Rename column if old schema
+    try:
+        cursor = await db.execute("PRAGMA table_info(dead_letter_tasks)")
+        cols = {row[1] for row in await cursor.fetchall()}
+        if "retry_count" in cols and "attempts_snapshot" not in cols:
+            await db.execute(
+                "ALTER TABLE dead_letter_tasks RENAME COLUMN retry_count TO attempts_snapshot"
+            )
+            await db.commit()
+    except Exception:
+        pass
+
 
 async def quarantine_task(
     task_id: int,
@@ -59,7 +72,7 @@ async def quarantine_task(
     error: str,
     error_category: str = "unknown",
     original_agent: str = "executor",
-    retry_count: int = 0,
+    attempts_snapshot: int = 0,
 ) -> int:
     """Move a permanently-failed task into the dead-letter queue.
 
@@ -74,15 +87,15 @@ async def quarantine_task(
         cursor = await db.execute(
             """INSERT OR REPLACE INTO dead_letter_tasks
                (task_id, mission_id, error, error_category, original_agent,
-                retry_count, quarantined_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                attempts_snapshot, quarantined_at, resolved_at, resolution)
+               VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)""",
             (
                 task_id, mission_id,
                 error[:2000],  # cap error text
                 _classify_error(error, error_category),
                 original_agent,
-                retry_count,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                attempts_snapshot,
+                db_now(),
             ),
         )
         await db.commit()
@@ -207,7 +220,7 @@ async def resolve_dlq_task(
         """UPDATE dead_letter_tasks
            SET resolved_at = ?, resolution = ?
            WHERE task_id = ? AND resolved_at IS NULL""",
-        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), resolution, task_id),
+        (db_now(), resolution, task_id),
     )
     await db.commit()
     return cursor.rowcount > 0
@@ -216,13 +229,44 @@ async def resolve_dlq_task(
 async def retry_dlq_task(task_id: int) -> bool:
     """Re-queue a dead-letter task for another attempt.
 
-    Resets the task to 'pending' and marks the DLQ entry as resolved.
+    Phase-aware: restores to the phase where the task failed.
+    Resets exclusions and backoff, preserves attempt counters.
     """
-    from src.infra.db import update_task
+    import json
+    from src.infra.db import get_task, update_task
 
     await resolve_dlq_task(task_id, resolution="retry")
-    await update_task(task_id, status="pending", retry_count=0, error=None)
-    logger.info(f"[DLQ] Task #{task_id} re-queued for retry")
+
+    task = await get_task(task_id)
+    if not task:
+        logger.warning(f"[DLQ] Task #{task_id} not found for retry")
+        return False
+
+    # Phase-aware status
+    failed_phase = task.get("failed_in_phase")
+    new_status = "ungraded" if failed_phase == "grading" else "pending"
+
+    # Reset exclusions and backoff in context
+    ctx = {}
+    try:
+        ctx = json.loads(task.get("context") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    ctx["last_avail_delay"] = 0
+    ctx["failed_models"] = []
+    ctx["excluded_models"] = []
+    ctx["grade_excluded_models"] = []
+    # Keep generating_model (prevents self-grading)
+
+    await update_task(
+        task_id,
+        status=new_status,
+        next_retry_at=None,
+        retry_reason=None,
+        context=json.dumps(ctx),
+    )
+    logger.info(f"[DLQ] Task #{task_id} re-queued → {new_status} (phase={failed_phase})")
     return True
 
 

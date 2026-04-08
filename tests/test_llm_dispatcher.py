@@ -4,10 +4,9 @@ Comprehensive tests for src/core/llm_dispatcher.py
 
 Covers:
   - SwapBudget: allow/block/reset/exempt logic, remaining/exhausted properties
-  - GradeQueue: enqueue, drain (local/cloud), self-grade skip, needs_drain, pending models
-  - LLMDispatcher: OVERHEAD and MAIN_WORK routing, grade deferral, swap notification, stats
+  - LLMDispatcher: OVERHEAD and MAIN_WORK routing, swap notification, stats
   - CallCategory enum values
-  - Integration-style: ensure_model never called for OVERHEAD, on_graded callback fires
+  - Integration-style: ensure_model never called for OVERHEAD
 """
 from __future__ import annotations
 
@@ -134,95 +133,6 @@ class TestSwapBudget(unittest.TestCase):
         self.assertFalse(budget.exhausted)
         budget.record_swap()
         self.assertTrue(budget.exhausted)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# GradeQueue Tests
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestGradeQueue(unittest.TestCase):
-
-    def _make(self, max_pending=20):
-        from src.core.llm_dispatcher import GradeQueue
-        return GradeQueue(max_pending=max_pending)
-
-    def _make_grade(self, task_id="t1", generating_model="model-a", **kwargs):
-        from src.core.llm_dispatcher import PendingGrade
-        return PendingGrade(
-            task_id=task_id,
-            task_title="Test Task",
-            task_description="Do something",
-            response_text="The answer is 42",
-            generating_model=generating_model,
-            task_name="test",
-            priority=kwargs.get("priority", 5),
-            on_graded=kwargs.get("on_graded", None),
-        )
-
-    # 8. enqueue increments depth
-    def test_grade_queue_enqueue(self):
-        q = self._make()
-        self.assertEqual(q.depth, 0)
-        run_async(q.enqueue(self._make_grade("t1")))
-        self.assertEqual(q.depth, 1)
-        run_async(q.enqueue(self._make_grade("t2")))
-        self.assertEqual(q.depth, 2)
-
-    # 9. drain with matching model (available != generating) → processes grade
-    def test_grade_queue_drain_with_matching_model(self):
-        q = self._make()
-        grade = self._make_grade(task_id="t1", generating_model="model-a")
-        run_async(q.enqueue(grade))
-
-        with patch("src.core.router.grade_response", new=AsyncMock(return_value=(0.8, {"score": 4, "reason": "ok"}))):
-            count = run_async(q.drain(available_model="model-b"))
-
-        self.assertEqual(count, 1)
-        self.assertEqual(q.depth, 0)
-
-    # 10. drain skips self-grade (available == generating stays queued)
-    def test_grade_queue_drain_skips_self_grade(self):
-        q = self._make()
-        grade = self._make_grade(task_id="t1", generating_model="model-a")
-        run_async(q.enqueue(grade))
-
-        with patch("src.core.router.grade_response", new=AsyncMock(return_value=(0.8, {"score": 4, "reason": "ok"}))):
-            count = run_async(q.drain(available_model="model-a"))
-
-        self.assertEqual(count, 0)
-        self.assertEqual(q.depth, 1)  # still queued
-
-    # 11. use_cloud=True drains everything regardless of model
-    def test_grade_queue_drain_with_cloud(self):
-        q = self._make()
-        run_async(q.enqueue(self._make_grade("t1", generating_model="model-a")))
-        run_async(q.enqueue(self._make_grade("t2", generating_model="model-b")))
-
-        with patch("src.core.router.grade_response", new=AsyncMock(return_value=(0.7, {"score": 3.5, "reason": "ok"}))):
-            count = run_async(q.drain(available_model="model-a", use_cloud=True))
-
-        self.assertEqual(count, 2)
-        self.assertEqual(q.depth, 0)
-
-    # 12. needs_drain triggers at max_pending
-    def test_grade_queue_needs_drain_threshold(self):
-        q = self._make(max_pending=3)
-        self.assertFalse(q.needs_drain)
-        run_async(q.enqueue(self._make_grade("t1")))
-        run_async(q.enqueue(self._make_grade("t2")))
-        self.assertFalse(q.needs_drain)
-        run_async(q.enqueue(self._make_grade("t3")))
-        self.assertTrue(q.needs_drain)
-
-    # 13. get_pending_models returns set of generating models
-    def test_grade_queue_get_pending_models(self):
-        q = self._make()
-        run_async(q.enqueue(self._make_grade("t1", generating_model="model-x")))
-        run_async(q.enqueue(self._make_grade("t2", generating_model="model-y")))
-        run_async(q.enqueue(self._make_grade("t3", generating_model="model-x")))
-
-        models = run_async(q.get_pending_models())
-        self.assertEqual(models, {"model-x", "model-y"})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -361,109 +271,6 @@ class TestLLMDispatcherRouting(unittest.TestCase):
         first_call_reqs = mock_call.call_args_list[0][0][0]
         self.assertEqual(first_call_reqs.model_override, "openai/model-a")
 
-    # ── Grading ──
-
-    # 18. priority>=8 grades immediately
-    def test_dispatcher_request_grade_immediate_for_urgent(self):
-        dispatcher = self._make_dispatcher()
-        mock_grade = AsyncMock(return_value=(0.9, {"score": 4.5, "reason": "great"}))
-
-        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_litellm_name",
-                   return_value="openai/model-a"), \
-             patch("src.core.router.grade_response", mock_grade):
-
-            score, grader_data = run_async(dispatcher.request_grade(
-                task_id="t1",
-                task_title="Test",
-                task_description="Do X",
-                response_text="Done",
-                generating_model="openai/model-b",
-                priority=8,
-            ))
-
-        mock_grade.assert_called_once()
-        self.assertEqual(score, 0.9)
-        self.assertEqual(grader_data["score"], 4.5)
-        self.assertEqual(dispatcher.grade_queue.depth, 0)  # not deferred
-
-    # 19. loaded != generator → immediate grade
-    def test_dispatcher_request_grade_immediate_when_different_model(self):
-        dispatcher = self._make_dispatcher()
-        mock_grade = AsyncMock(return_value=(0.75, {"score": 3.75, "reason": "decent"}))
-
-        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_litellm_name",
-                   return_value="openai/model-a"), \
-             patch("src.core.router.grade_response", mock_grade):
-
-            score, grader_data = run_async(dispatcher.request_grade(
-                task_id="t1",
-                task_title="Test",
-                task_description="Do X",
-                response_text="Done",
-                generating_model="openai/model-b",  # different from loaded
-                priority=5,
-            ))
-
-        mock_grade.assert_called_once()
-        self.assertEqual(score, 0.75)
-        self.assertEqual(dispatcher.grade_queue.depth, 0)  # not deferred
-
-    # 20. loaded == generator → deferred
-    def test_dispatcher_request_grade_defers_when_same_model(self):
-        dispatcher = self._make_dispatcher()
-        mock_grade = AsyncMock(return_value=(0.8, {"score": 4, "reason": "ok"}))
-
-        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_litellm_name",
-                   return_value="openai/model-a"), \
-             patch("src.core.router.grade_response", mock_grade):
-
-            score, grader_data = run_async(dispatcher.request_grade(
-                task_id="t1",
-                task_title="Test",
-                task_description="Do X",
-                response_text="Done",
-                generating_model="openai/model-a",  # same as loaded
-                priority=5,
-            ))
-
-        # grade_response should NOT have been called (deferred)
-        mock_grade.assert_not_called()
-        self.assertIsNone(score)
-        self.assertEqual(dispatcher.grade_queue.depth, 1)
-
-    # 21. swap notification triggers drain
-    def test_dispatcher_on_model_swap_drains_grades(self):
-        dispatcher = self._make_dispatcher()
-
-        # Enqueue a grade that was generated by "old-model"
-        from src.core.llm_dispatcher import PendingGrade
-        grade = PendingGrade(
-            task_id="t1",
-            task_title="Test",
-            task_description="Do X",
-            response_text="Done",
-            generating_model="old-model",
-            task_name="test",
-            priority=5,
-        )
-        run_async(dispatcher.grade_queue.enqueue(grade))
-        self.assertEqual(dispatcher.grade_queue.depth, 1)
-
-        mock_grade = AsyncMock(return_value=(0.8, {"score": 4, "reason": "ok"}))
-
-        with patch("src.core.router.grade_response", mock_grade):
-            # record_swap is now called by the caller (_do_swap), not on_model_swap
-            dispatcher.swap_budget.record_swap()
-            run_async(dispatcher.on_model_swap(
-                old_model="old-model",
-                new_model="new-model",
-            ))
-
-        # The swap_budget should have the caller-recorded swap
-        self.assertEqual(len(dispatcher.swap_budget._timestamps), 1)
-        # Grade drained: new_model="new-model" != generating_model="old-model" → drained.
-        self.assertEqual(dispatcher.grade_queue.depth, 0)
-
     # 22. get_stats returns correct counters
     def test_dispatcher_stats(self):
         dispatcher = self._make_dispatcher()
@@ -487,7 +294,6 @@ class TestLLMDispatcherRouting(unittest.TestCase):
         self.assertEqual(stats["overhead_calls"], 1)
         self.assertIn("overhead_pct", stats)
         self.assertIn("swap_budget_remaining", stats)
-        self.assertIn("grade_queue_depth", stats)
         # overhead_pct should be ~33.3%
         self.assertIn("33.3%", stats["overhead_pct"])
 
@@ -555,37 +361,6 @@ class TestLLMDispatcherIntegration(unittest.TestCase):
         # ensure_model (which causes swaps) must NOT have been called for OVERHEAD
         mock_ensure.assert_not_called()
 
-    # 25. on_graded callback fires when grade completes
-    def test_grade_callback_invoked_on_drain(self):
-        dispatcher = self._make_dispatcher()
-
-        callback_results = []
-
-        async def on_graded(score: float, grader_data: dict = {}):
-            callback_results.append(score)
-
-        from src.core.llm_dispatcher import PendingGrade
-        grade = PendingGrade(
-            task_id="t1",
-            task_title="Test",
-            task_description="Do X",
-            response_text="Done",
-            generating_model="model-a",
-            task_name="test",
-            priority=5,
-            on_graded=on_graded,
-        )
-        run_async(dispatcher.grade_queue.enqueue(grade))
-
-        mock_grade_fn = AsyncMock(return_value=(0.88, {"score": 4.4, "reason": "good"}))
-
-        with patch("src.core.router.grade_response", mock_grade_fn):
-            # Drain with a different model so it can grade model-a's output
-            count = run_async(dispatcher.grade_queue.drain(available_model="model-b"))
-
-        self.assertEqual(count, 1)
-        self.assertEqual(callback_results, [0.88])
-
     # 26. _exclude_unloaded_local keeps loaded model + cloud
     def test_exclude_unloaded_local_keeps_loaded_model(self):
         dispatcher = self._make_dispatcher()
@@ -650,59 +425,6 @@ class TestLLMDispatcherIntegration(unittest.TestCase):
 
         # All local models excluded (none loaded)
         self.assertIn("openai/model-a", result.exclude_models)
-
-    # 28. grade drain respects max_batch
-    def test_grade_drain_max_batch(self):
-        dispatcher = self._make_dispatcher()
-
-        from src.core.llm_dispatcher import PendingGrade
-        for i in range(10):
-            grade = PendingGrade(
-                task_id=f"t{i}",
-                task_title="Test",
-                task_description="Do X",
-                response_text="Done",
-                generating_model="model-a",
-                task_name="test",
-                priority=5,
-            )
-            run_async(dispatcher.grade_queue.enqueue(grade))
-
-        self.assertEqual(dispatcher.grade_queue.depth, 10)
-
-        mock_grade_fn = AsyncMock(return_value=(0.7, {"score": 3.5, "reason": "ok"}))
-
-        with patch("src.core.router.grade_response", mock_grade_fn):
-            count = run_async(dispatcher.grade_queue.drain(
-                available_model="model-b", max_batch=3,
-            ))
-
-        # Should only process 3, leaving 7
-        self.assertEqual(count, 3)
-        self.assertEqual(dispatcher.grade_queue.depth, 7)
-
-    # 29. grade_response uses priority=1
-    def test_grade_response_uses_low_priority(self):
-        """grade_response should use priority=1 so grading never blocks main work."""
-        captured_reqs = {}
-
-        async def _fake_request(category, reqs, messages, tools=None):
-            captured_reqs["priority"] = reqs.priority
-            return {"content": '{"score": 4, "reason": "ok"}', "model": "m"}
-
-        dispatcher = self._make_dispatcher()
-        with patch("src.core.llm_dispatcher.get_dispatcher", return_value=dispatcher), \
-             patch.object(dispatcher, "request",
-                          side_effect=_fake_request):
-            from src.core.router import grade_response
-            score, grader_data = run_async(grade_response(
-                task_title="Test",
-                task_description="Test desc",
-                response_text="Some response text that is long enough",
-                generating_model="model-x",
-            ))
-
-        self.assertEqual(captured_reqs.get("priority"), 1)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

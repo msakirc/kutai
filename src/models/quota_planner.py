@@ -109,8 +109,8 @@ class QuotaPlanner:
         # Wake sleeping tasks — quota restored means cloud capacity available
         try:
             import asyncio
-            from src.infra.db import wake_sleeping_tasks
-            asyncio.ensure_future(wake_sleeping_tasks("quota_restored"))
+            from src.infra.db import accelerate_retries
+            asyncio.ensure_future(accelerate_retries("quota_restored"))
         except Exception:
             pass
 

@@ -1,0 +1,1943 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#1a1a2e">
+<link rel="manifest" href="/static/manifest.json">
+<title>Yazbunu</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --text: #e0e0e0;
+    --text-dim: #888;
+    --border: #2a2a4a;
+    --accent: #4fc3f7;
+    --error: #ef5350;
+    --warn: #ffa726;
+    --info: #4fc3f7;
+    --debug: #888;
+    --success: #66bb6a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ─── Toolbar ─── */
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    align-items: center;
+    z-index: 10;
+  }
+  .toolbar .group {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  .toolbar .group + .group {
+    margin-left: 2px;
+    padding-left: 8px;
+    border-left: 1px solid var(--border);
+  }
+  .toolbar select, .toolbar input, .toolbar button {
+    font-family: inherit;
+    font-size: 12px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 4px 8px;
+    line-height: 1.4;
+  }
+  .toolbar button {
+    cursor: pointer;
+    font-weight: 600;
+    transition: opacity 0.1s;
+  }
+  .toolbar button:hover { opacity: 0.85; }
+  .toolbar button.primary {
+    background: var(--accent);
+    color: #000;
+    border-color: transparent;
+  }
+  .toolbar button.active {
+    background: var(--error);
+    color: #fff;
+    border-color: transparent;
+  }
+  .toolbar input[type="text"] {
+    flex: 1;
+    min-width: 180px;
+  }
+  .toolbar select { max-width: 160px; }
+  .status {
+    color: var(--text-dim);
+    font-size: 11px;
+    margin-left: auto;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ─── Breadcrumbs ─── */
+  .breadcrumbs {
+    display: flex;
+    gap: 6px;
+    padding: 4px 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: 11px;
+  }
+  .breadcrumbs .crumb {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--border);
+    border-radius: 10px;
+    padding: 2px 8px;
+    color: var(--text);
+    cursor: default;
+  }
+  .breadcrumbs .crumb .remove {
+    cursor: pointer;
+    color: var(--text-dim);
+    font-weight: bold;
+    margin-left: 2px;
+  }
+  .breadcrumbs .crumb .remove:hover { color: var(--error); }
+
+  /* ─── Sparkline ─── */
+  #sparkline {
+    width: 100%;
+    height: 24px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    display: block;
+  }
+
+  /* ─── Main content ─── */
+  .main-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ─── Log wrap (row: log area + minimap) ─── */
+  .log-wrap {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+
+  /* ─── Log area ─── */
+  .log-area {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 4px 0;
+  }
+
+  /* ─── Log line (flow-based, not absolute) ─── */
+  .log-line {
+    display: flex;
+    align-items: baseline;
+    padding: 1px 12px;
+    gap: 8px;
+    word-break: break-word;
+    flex-wrap: wrap;
+    user-select: text;
+    border-left: 3px solid transparent;
+  }
+  .log-line:nth-child(even) { background: rgba(255,255,255,0.015); }
+  .log-line:hover { background: rgba(255,255,255,0.04); }
+  .log-line.selected { background: rgba(79,195,247,0.12); border-left-color: var(--accent); }
+  .log-line.level-ERROR { border-left-color: var(--error); }
+  .log-line.level-WARNING { border-left-color: var(--warn); }
+  .log-line.level-CRITICAL { border-left-color: var(--error); background: rgba(239,83,80,0.06); }
+  .log-line.level-DEBUG { opacity: 0.6; }
+  .log-line.selected.level-ERROR { background: rgba(239,83,80,0.18); border-left-color: var(--error); }
+  .log-line.selected.level-WARNING { background: rgba(255,167,38,0.18); border-left-color: var(--warn); }
+  .log-line.bookmarked { border-left-color: var(--warn); }
+  .ts { color: var(--text-dim); white-space: nowrap; font-size: 11px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .level { font-weight: 700; width: 44px; font-size: 10px; flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.5px; }
+  .level-ERROR .level, .level-CRITICAL .level { color: var(--error); }
+  .level-WARNING .level { color: var(--warn); }
+  .level-INFO .level { color: var(--info); }
+  .level-DEBUG .level { color: var(--debug); }
+  .src { color: var(--accent); white-space: nowrap; flex-shrink: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; opacity: 0.8; }
+  .msg { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; }
+  .log-line.selected .msg { -webkit-line-clamp: unset; overflow: visible; }
+  .extras { color: var(--text-dim); font-size: 11px; flex-shrink: 0; }
+  .exc-inline {
+    width: 100%;
+    color: var(--error);
+    font-size: 11px;
+    white-space: pre-wrap;
+    padding: 2px 0 2px 62px;
+    max-height: 200px;
+    overflow-y: auto;
+    cursor: text;
+  }
+  .pill {
+    display: inline-block;
+    font-size: 10px;
+    padding: 0 5px;
+    border-radius: 3px;
+    background: var(--border);
+    color: var(--text);
+    cursor: pointer;
+    margin-left: 4px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    line-height: 1.6;
+  }
+  .pill:hover { background: var(--accent); color: #000; }
+  .fn-info { color: var(--text-dim); font-size: 10px; white-space: nowrap; flex-shrink: 0; opacity: 0.6; }
+
+  /* ─── Minimap ─── */
+  #minimap {
+    width: 12px;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  /* ─── Detail drawer (bottom) ─── */
+  .detail-panel {
+    flex-shrink: 0;
+    max-height: 40vh;
+    background: var(--surface);
+    border-top: 2px solid var(--accent);
+    overflow-y: auto;
+    padding: 12px 16px;
+  }
+  .detail-panel h3 {
+    margin: 0 0 8px 0;
+    font-size: 13px;
+    color: var(--accent);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .detail-panel .close-btn {
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 16px;
+    background: none;
+    border: none;
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  .detail-panel .close-btn:hover { color: var(--error); background: rgba(239,83,80,0.1); }
+  .detail-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 4px 16px;
+  }
+  .detail-field {
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .detail-field .field-key {
+    color: var(--accent);
+    font-weight: bold;
+  }
+  .detail-field .field-val {
+    color: var(--text);
+    word-break: break-all;
+  }
+  .detail-exc {
+    background: rgba(239,83,80,0.1);
+    border-radius: 4px;
+    padding: 8px;
+    margin-top: 8px;
+    font-size: 11px;
+    white-space: pre-wrap;
+    color: var(--error);
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .detail-related {
+    margin-top: 8px;
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+  }
+  .detail-related .related-line {
+    padding: 2px 0;
+    font-size: 11px;
+    cursor: pointer;
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .detail-related .related-line:hover { color: var(--text); }
+
+  /* ─── Export dropdown ─── */
+  .export-wrapper { position: relative; }
+  .export-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    z-index: 100;
+    display: none;
+    min-width: 140px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  }
+  .export-menu.open { display: block; }
+  .export-menu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    color: var(--text);
+    border: none;
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .export-menu button:hover { background: var(--border); }
+
+  /* ─── Overlays (shared) ─── */
+  .cmd-palette-overlay, .shortcuts-overlay, .bookmarks-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(2px);
+    z-index: 200;
+    display: none;
+    justify-content: center;
+  }
+  .cmd-palette-overlay.open, .shortcuts-overlay.open, .bookmarks-overlay.open { display: flex; }
+  .cmd-palette-overlay { padding-top: 80px; align-items: flex-start; }
+  .shortcuts-overlay { align-items: center; }
+  .bookmarks-overlay { padding-top: 60px; align-items: flex-start; }
+  .cmd-palette, .shortcuts-panel, .bookmarks-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    overflow: hidden;
+  }
+
+  /* ─── Command Palette ─── */
+  .cmd-palette {
+    width: 460px;
+    max-width: 90vw;
+    height: fit-content;
+  }
+  .cmd-palette input {
+    width: 100%;
+    padding: 12px 16px;
+    font-family: inherit;
+    font-size: 15px;
+    background: var(--bg);
+    color: var(--text);
+    border: none;
+    border-bottom: 1px solid var(--border);
+    outline: none;
+  }
+  .cmd-palette .cmd-hint {
+    padding: 8px 16px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  /* ─── Shortcuts Overlay ─── */
+  .shortcuts-panel {
+    padding: 20px 28px;
+    max-width: 500px;
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+  .shortcuts-panel h2 { color: var(--accent); font-size: 15px; margin-bottom: 12px; }
+  .shortcuts-panel table { width: 100%; border-collapse: collapse; }
+  .shortcuts-panel td { padding: 4px 8px; font-size: 12px; border-bottom: 1px solid var(--border); }
+  .shortcuts-panel td:first-child { color: var(--accent); font-weight: bold; white-space: nowrap; width: 80px; }
+
+  /* ─── Bookmarks Panel ─── */
+  .bookmarks-panel {
+    width: 560px;
+    max-width: 90vw;
+    max-height: 70vh;
+    overflow-y: auto;
+    padding: 16px;
+  }
+  .bookmarks-panel h2 { color: var(--accent); font-size: 14px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+  .bookmarks-panel .bm-line {
+    padding: 6px 4px;
+    font-size: 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-dim);
+  }
+  .bookmarks-panel .bm-line:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+
+  /* ─── Visually hidden for a11y ─── */
+  .sr-only {
+    position: absolute;
+    width: 1px; height: 1px;
+    margin: -1px; padding: 0;
+    overflow: hidden;
+    clip: rect(0,0,0,0);
+    border: 0;
+  }
+
+  /* ─── Mobile Responsive ─── */
+  @media (max-width: 600px) {
+    .toolbar { gap: 4px; padding: 6px 8px; }
+    .toolbar .group { flex-wrap: wrap; width: 100%; }
+    .toolbar .group + .group { margin-left: 0; padding-left: 0; border-left: none; border-top: 1px solid var(--border); padding-top: 4px; }
+    .toolbar select, .toolbar input, .toolbar button { padding: 8px; font-size: 14px; }
+    .log-line { font-size: 13px; padding: 2px 8px; }
+    .ts { display: none; }
+    .src { max-width: 60px; }
+    .detail-panel { max-height: 50vh; }
+    #minimap { display: none; }
+    #sparkline { height: 20px; }
+  }
+
+  /* ─── Reduced motion ─── */
+  @media (prefers-reduced-motion: reduce) {
+    .log-line { transition: none; }
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="toolbar" role="toolbar" aria-label="Log viewer controls">
+  <div class="group">
+    <select id="fileSelect" aria-label="Log file"><option value="">Loading...</option></select>
+  </div>
+  <div class="group">
+    <select id="levelFilter" aria-label="Level filter">
+      <option value="">All levels</option>
+      <option value="DEBUG">DEBUG</option>
+      <option value="INFO">INFO</option>
+      <option value="WARNING">WARNING</option>
+      <option value="ERROR">ERROR</option>
+      <option value="CRITICAL">CRITICAL</option>
+    </select>
+    <select id="timeFilter" aria-label="Time range">
+      <option value="">All time</option>
+      <option value="1m">1m</option>
+      <option value="5m" selected>5m</option>
+      <option value="15m">15m</option>
+      <option value="30m">30m</option>
+      <option value="1h">1h</option>
+      <option value="6h">6h</option>
+      <option value="24h">24h</option>
+    </select>
+  </div>
+  <div class="group" style="flex:1">
+    <input type="text" id="searchBox" placeholder="level:ERROR src:db after:&quot;5m ago&quot;" aria-label="Search query">
+  </div>
+  <div class="group">
+    <button id="tailBtn" class="primary" aria-label="Toggle live tail" aria-pressed="false">Tail</button>
+    <div class="export-wrapper">
+      <button id="exportBtn" aria-label="Export logs">Export</button>
+      <div class="export-menu" id="exportMenu" role="menu">
+        <button data-fmt="jsonl" role="menuitem">JSONL</button>
+        <button data-fmt="json" role="menuitem">JSON</button>
+        <button data-fmt="csv" role="menuitem">CSV</button>
+        <button data-fmt="markdown" role="menuitem">Markdown</button>
+        <button data-fmt="text" role="menuitem">Plain Text</button>
+        <button data-fmt="clipboard" role="menuitem">Copy to Clipboard</button>
+        <button data-fmt="share" role="menuitem">Share Link</button>
+      </div>
+    </div>
+    <button id="notifyBtn" aria-label="Enable browser notifications">Notify</button>
+    <select id="themeSelect" aria-label="Color theme"></select>
+  </div>
+  <span class="status" id="status" aria-live="polite">Ready</span>
+</div>
+
+<div class="breadcrumbs" id="breadcrumbs" style="display:none" role="navigation" aria-label="Active filters"></div>
+<canvas id="sparkline" height="24" aria-hidden="true"></canvas>
+
+<div class="main-content">
+  <div class="log-wrap">
+    <div class="log-area" id="logArea" role="log" aria-label="Log entries" aria-live="polite"></div>
+    <canvas id="minimap" width="12" aria-hidden="true"></canvas>
+  </div>
+  <div id="detailPanel" class="detail-panel" style="display:none" role="complementary" aria-label="Log detail"></div>
+</div>
+
+<!-- a11y announcer -->
+<div id="a11yAnnouncer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+
+<!-- Command Palette -->
+<div class="cmd-palette-overlay" id="cmdOverlay">
+  <div class="cmd-palette">
+    <input type="text" id="cmdInput" placeholder=":level error | :theme monokai | :export csv | :task 42" aria-label="Command palette input">
+    <div class="cmd-hint">:level &lt;lvl&gt; | :theme &lt;name&gt; | :export &lt;fmt&gt; | :task &lt;id&gt; | free text = search</div>
+  </div>
+</div>
+
+<!-- Shortcuts Overlay -->
+<div class="shortcuts-overlay" id="shortcutsOverlay">
+  <div class="shortcuts-panel">
+    <h2>Keyboard Shortcuts</h2>
+    <table>
+      <tr><td>j / k</td><td>Move down / up (supports count prefix, e.g. 5j)</td></tr>
+      <tr><td>g / G</td><td>Jump to first / last line</td></tr>
+      <tr><td>Ctrl+d</td><td>Page down</td></tr>
+      <tr><td>Ctrl+u</td><td>Page up</td></tr>
+      <tr><td>/</td><td>Focus search box</td></tr>
+      <tr><td>n / N</td><td>Next / previous search match</td></tr>
+      <tr><td>Enter</td><td>Toggle detail panel for selected line</td></tr>
+      <tr><td>e</td><td>Cycle level filter</td></tr>
+      <tr><td>f</td><td>Toggle live tail</td></tr>
+      <tr><td>b</td><td>Toggle bookmark on selected line</td></tr>
+      <tr><td>B</td><td>Show bookmarks panel</td></tr>
+      <tr><td>:</td><td>Open command palette</td></tr>
+      <tr><td>?</td><td>Show this help</td></tr>
+      <tr><td>Escape</td><td>Close overlay / blur search</td></tr>
+    </table>
+    <p style="margin-top:12px;font-size:11px;color:var(--text-dim)">Press Escape or click anywhere to close</p>
+  </div>
+</div>
+
+<!-- Bookmarks Overlay -->
+<div class="bookmarks-overlay" id="bookmarksOverlay">
+  <div class="bookmarks-panel" id="bookmarksPanel">
+    <h2>Bookmarks <button onclick="exportBookmarksMd()" style="font-size:11px;padding:3px 8px;background:var(--border);color:var(--text);border:none;border-radius:4px;cursor:pointer">Export MD</button></h2>
+    <div id="bookmarksList"></div>
+  </div>
+</div>
+
+<script src="/static/themes.js"></script>
+<script>
+// ═══════════════════════════════════════════════════════════════════════
+// Yazbunu Virtual Scrolling Log Viewer
+// ═══════════════════════════════════════════════════════════════════════
+
+const POLL_MS = 2000;
+const CHUNK_SIZE = 5000;
+const CONTEXT_KEYS = new Set(["ts", "level", "src", "msg", "fn", "ln", "exc", "_file"]);
+const PILL_KEYS = new Set(["task", "mission", "agent", "model"]);
+
+// ─── State ───
+let allDocs = [];
+let filteredIndices = null;  // null = show all, array = filtered subset
+let selectedRow = -1;
+let selectedDocIdx = -1;
+let tailing = false;
+let tailTimer = null;
+let lastTs = "";
+let currentFile = "";
+let ws = null;
+let wsRetryCount = 0;
+let breadcrumbFilters = [];  // [{field, value}]
+let bookmarks = new Set();
+let workerReady = false;
+let notificationsEnabled = false;
+let _tailRenderPending = false;  // throttle re-renders during tail
+
+// ─── DOM refs ───
+const $file = document.getElementById("fileSelect");
+const $level = document.getElementById("levelFilter");
+const $search = document.getElementById("searchBox");
+const $tailBtn = document.getElementById("tailBtn");
+const $area = document.getElementById("logArea");
+const $status = document.getElementById("status");
+const $breadcrumbs = document.getElementById("breadcrumbs");
+const $sparkline = document.getElementById("sparkline");
+const $minimap = document.getElementById("minimap");
+const $detail = document.getElementById("detailPanel");
+const $themeSelect = document.getElementById("themeSelect");
+const $exportBtn = document.getElementById("exportBtn");
+const $exportMenu = document.getElementById("exportMenu");
+const $cmdOverlay = document.getElementById("cmdOverlay");
+const $cmdInput = document.getElementById("cmdInput");
+const $shortcutsOverlay = document.getElementById("shortcutsOverlay");
+const $bookmarksOverlay = document.getElementById("bookmarksOverlay");
+const $bookmarksList = document.getElementById("bookmarksList");
+const $notifyBtn = document.getElementById("notifyBtn");
+const $announcer = document.getElementById("a11yAnnouncer");
+
+// ─── A11y announcer ───
+function announce(msg) {
+  $announcer.textContent = msg;
+}
+
+// ─── Bookmarks ───
+function loadBookmarks() {
+  try {
+    const raw = localStorage.getItem("_yz_bookmarks");
+    if (raw) {
+      const arr = JSON.parse(raw);
+      bookmarks = new Set(arr);
+    }
+  } catch(e) {}
+}
+function saveBookmarks() {
+  localStorage.setItem("_yz_bookmarks", JSON.stringify([...bookmarks]));
+}
+function bookmarkKey(doc) {
+  return (doc.ts || "") + "|" + (doc.src || "") + "|" + (doc.msg || "").slice(0, 80);
+}
+loadBookmarks();
+
+// ─── Web Worker ───
+const worker = new Worker("/static/worker.js");
+
+worker.onmessage = (e) => {
+  const msg = e.data;
+  switch (msg.type) {
+    case "loaded":
+      workerReady = true;
+      $status.textContent = `${msg.totalCount} lines indexed`;
+      break;
+    case "filtered":
+      filteredIndices = msg.indices;
+      selectedRow = -1;
+      selectedDocIdx = -1;
+      render();
+      updateMinimap();
+      $status.textContent = `${msg.indices.length} / ${msg.total} lines`;
+      announce(`Filter: ${msg.indices.length} of ${msg.total} lines`);
+      // Stay at bottom only if user was already there
+      break;
+    case "stats":
+    case "fields":
+      break;
+    case "aggregated":
+      renderSparklineFromBuckets(msg.buckets);
+      break;
+    case "patterns":
+      break;
+    case "related":
+      renderRelated(msg.indices);
+      break;
+  }
+};
+
+// ─── URL Hash State ───
+function loadHash() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  if (p.get("file")) currentFile = p.get("file");
+  if (p.get("level")) $level.value = p.get("level");
+  if (p.get("q")) $search.value = p.get("q");
+  if (p.get("time")) document.getElementById("timeFilter").value = p.get("time");
+  // Theme is applied from hash in the init block below
+}
+
+function saveHash() {
+  const p = new URLSearchParams();
+  if (currentFile) p.set("file", currentFile);
+  if ($level.value) p.set("level", $level.value);
+  if ($search.value) p.set("q", $search.value);
+  const tf = document.getElementById("timeFilter");
+  if (tf && tf.value) p.set("time", tf.value);
+  const curTheme = $themeSelect.value;
+  if (curTheme && curTheme !== "dark") p.set("theme", curTheme);
+  history.replaceState(null, "", "#" + p.toString());
+}
+
+// ─── API ───
+async function fetchFiles() {
+  try {
+    const r = await fetch("/api/files");
+    const d = await r.json();
+    $file.innerHTML = '<option value="__all__">All files</option>' + d.files.map(f =>
+      `<option value="${f.name}">${f.name} (${(f.size / 1024).toFixed(0)}KB)</option>`
+    ).join("");
+    if (currentFile) $file.value = currentFile;
+    else currentFile = $file.value;
+  } catch(e) {
+    $status.textContent = "Failed to load file list";
+  }
+}
+
+async function loadLogs(file, lines = 5000) {
+  $status.textContent = "Loading...";
+  stopTail();
+  worker.postMessage({ type: "clear" });
+  allDocs = [];
+  filteredIndices = null;
+  selectedRow = -1;
+  selectedDocIdx = -1;
+
+  try {
+    if (file === "__all__") {
+      const fr = await fetch("/api/files");
+      const fd = await fr.json();
+      let allRawLines = [];
+      for (const f of fd.files) {
+        const r = await fetch(`/api/logs?file=${encodeURIComponent(f.name)}&lines=${lines}`);
+        if (!r.ok) continue;
+        const d = await r.json();
+        for (const l of d.lines) {
+          try {
+            const doc = JSON.parse(l);
+            doc._file = f.name;
+            allDocs.push(doc);
+            allRawLines.push(JSON.stringify(doc));
+          } catch { allDocs.push(null); allRawLines.push(l); }
+        }
+      }
+      const paired = allDocs.map((doc, i) => ({ doc, raw: allRawLines[i], i }));
+      paired.sort((a, b) => ((a.doc && a.doc.ts) || "").localeCompare((b.doc && b.doc.ts) || ""));
+      allDocs = paired.map(p => p.doc);
+      allRawLines = paired.map(p => p.raw);
+      if (allDocs.length > lines) {
+        allDocs = allDocs.slice(-lines);
+        allRawLines = allRawLines.slice(-lines);
+      }
+      for (let i = 0; i < allRawLines.length; i += CHUNK_SIZE) {
+        const chunk = allRawLines.slice(i, i + CHUNK_SIZE);
+        worker.postMessage({ type: "load", lines: chunk, chunk: Math.floor(i / CHUNK_SIZE) });
+      }
+      lastTs = allDocs.length ? (allDocs[allDocs.length - 1] && allDocs[allDocs.length - 1].ts || "") : "";
+      $status.textContent = `${allDocs.length} lines (all files)`;
+    } else {
+      const r = await fetch(`/api/logs?file=${encodeURIComponent(file)}&lines=${lines}`);
+      if (!r.ok) { $status.textContent = "Error " + r.status; return; }
+      const d = await r.json();
+      const rawLines = d.lines;
+      for (const l of rawLines) {
+        try { allDocs.push(JSON.parse(l)); } catch { allDocs.push(null); }
+      }
+      for (let i = 0; i < rawLines.length; i += CHUNK_SIZE) {
+        const chunk = rawLines.slice(i, i + CHUNK_SIZE);
+        worker.postMessage({ type: "load", lines: chunk, chunk: Math.floor(i / CHUNK_SIZE) });
+      }
+      lastTs = allDocs.length ? (allDocs[allDocs.length - 1] && allDocs[allDocs.length - 1].ts || lastTs) : lastTs;
+      $status.textContent = `${allDocs.length} / ${d.total} lines`;
+    }
+  } catch(e) {
+    $status.textContent = "Load error: " + e.message;
+  }
+
+  render();
+  requestSparkline();
+  updateMinimap();
+
+  // Scroll to bottom (show most recent logs)
+  $area.scrollTop = $area.scrollHeight;
+
+  // Apply time filter if set (default: 5m)
+  if ($timeFilter && $timeFilter.value) {
+    // Delay slightly to let worker finish indexing
+    setTimeout(() => applyFilters(), 100);
+  }
+}
+
+// ─── Rendering (flow-based DOM) ───
+
+function getVisibleCount() {
+  return filteredIndices ? filteredIndices.length : allDocs.length;
+}
+
+function render() {
+  const wasAtBottom = $area.scrollTop + $area.clientHeight >= $area.scrollHeight - 50;
+  const savedScroll = $area.scrollTop;
+  const total = getVisibleCount();
+  const existing = $area.children;
+
+  // Build list of docIdx we need to show
+  const needed = [];
+  for (let vi = 0; vi < total; vi++) {
+    needed.push(filteredIndices ? filteredIndices[vi] : vi);
+  }
+
+  // Fast path: if the set of docIdx hasn't changed, just update selection classes
+  let canReconcile = existing.length === needed.length;
+  if (canReconcile) {
+    for (let i = 0; i < needed.length; i++) {
+      if (parseInt(existing[i].dataset.docIdx, 10) !== needed[i]) {
+        canReconcile = false;
+        break;
+      }
+    }
+  }
+
+  if (canReconcile) {
+    // Just update selection/bookmark state, don't touch DOM structure
+    for (let vi = 0; vi < needed.length; vi++) {
+      const el = existing[vi];
+      const docIdx = needed[vi];
+      const isSelected = docIdx === selectedDocIdx;
+      el.classList.toggle("selected", isSelected);
+      if (isSelected) el.setAttribute("aria-selected", "true");
+      else el.removeAttribute("aria-selected");
+    }
+  } else {
+    // Full rebuild needed — preserve scroll position
+    const frag = document.createDocumentFragment();
+    for (let vi = 0; vi < total; vi++) {
+      const docIdx = needed[vi];
+      const doc = allDocs[docIdx];
+      const row = document.createElement("div");
+      populateRow(row, doc, docIdx, vi);
+      row.addEventListener("click", onRowClick);
+      row.addEventListener("dblclick", onRowDblClick);
+      frag.appendChild(row);
+    }
+    $area.innerHTML = "";
+    $area.appendChild(frag);
+  }
+
+  // Scroll: if was at bottom stay there, otherwise restore exact position
+  if (wasAtBottom) {
+    $area.scrollTop = $area.scrollHeight;
+  } else {
+    $area.scrollTop = savedScroll;
+  }
+}
+
+function updateSelection(oldVisibleIdx, newVisibleIdx) {
+  if (oldVisibleIdx >= 0 && oldVisibleIdx < $area.children.length) {
+    const oldEl = $area.children[oldVisibleIdx];
+    oldEl.classList.remove('selected');
+    oldEl.removeAttribute('aria-selected');
+  }
+  if (newVisibleIdx >= 0 && newVisibleIdx < $area.children.length) {
+    const newEl = $area.children[newVisibleIdx];
+    newEl.classList.add('selected');
+    newEl.setAttribute('aria-selected', 'true');
+  }
+}
+
+function appendNewDocs(startIdx, count) {
+  const wasAtBottom = $area.scrollTop + $area.clientHeight >= $area.scrollHeight - 50;
+  const frag = document.createDocumentFragment();
+  for (let i = startIdx; i < startIdx + count; i++) {
+    const doc = allDocs[i];
+    const row = document.createElement("div");
+    populateRow(row, doc, i, i);
+    row.addEventListener("click", onRowClick);
+    row.addEventListener("dblclick", onRowDblClick);
+    frag.appendChild(row);
+  }
+  $area.appendChild(frag);
+  if (wasAtBottom) {
+    $area.scrollTop = $area.scrollHeight;
+  }
+  $status.textContent = `${allDocs.length} lines (live)`;
+}
+
+function populateRow(row, doc, docIdx, visibleIdx) {
+  row.dataset.docIdx = docIdx;
+  row.dataset.visibleIdx = visibleIdx;
+  row.innerHTML = "";
+
+  // a11y: selected state
+  if (visibleIdx === selectedRow) {
+    row.setAttribute("aria-selected", "true");
+  } else {
+    row.removeAttribute("aria-selected");
+  }
+
+  if (!doc) {
+    row.className = "log-line";
+    row.textContent = "(malformed line)";
+    return;
+  }
+
+  const level = doc.level || "";
+  row.className = "log-line level-" + level;
+  if (docIdx === selectedDocIdx) row.className += " selected";
+  const bk = bookmarkKey(doc);
+  if (bookmarks.has(bk)) row.className += " bookmarked";
+
+  // Timestamp
+  const tsEl = document.createElement("span");
+  tsEl.className = "ts";
+  if (doc.ts) {
+    const d = new Date(doc.ts);
+    tsEl.textContent = d.toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" })
+      + "." + String(d.getMilliseconds()).padStart(3, "0");
+  }
+  row.appendChild(tsEl);
+
+  // Level
+  const lvlEl = document.createElement("span");
+  lvlEl.className = "level";
+  lvlEl.textContent = level;
+  row.appendChild(lvlEl);
+
+  // Source
+  const srcEl = document.createElement("span");
+  srcEl.className = "src";
+  srcEl.textContent = doc.src || "";
+  if (doc._file) srcEl.title = doc._file + " / " + (doc.src || "");
+  row.appendChild(srcEl);
+
+  // Message
+  const msgEl = document.createElement("span");
+  msgEl.className = "msg";
+  msgEl.textContent = doc.msg || "";
+  row.appendChild(msgEl);
+
+  // fn:ln info
+  if (doc.fn) {
+    const fnEl = document.createElement("span");
+    fnEl.className = "fn-info";
+    fnEl.textContent = `(${doc.fn}:${doc.ln || ""})`;
+    row.appendChild(fnEl);
+  }
+
+  // Extra context fields (non-standard keys shown inline)
+  const extras = [];
+  for (const [k, v] of Object.entries(doc)) {
+    if (CONTEXT_KEYS.has(k)) continue;
+    if (PILL_KEYS.has(k)) {
+      const pill = document.createElement("span");
+      pill.className = "pill";
+      pill.textContent = k + "=" + v;
+      pill.dataset.field = k;
+      pill.dataset.value = String(v);
+      pill.addEventListener("click", onPillClick);
+      row.appendChild(pill);
+    } else {
+      extras.push(k + "=" + v);
+    }
+  }
+
+  // Show extra fields inline like v1 did
+  if (extras.length) {
+    const extEl = document.createElement("span");
+    extEl.className = "extras";
+    extEl.textContent = extras.join(", ");
+    extEl.title = extras.join("\n");
+    row.appendChild(extEl);
+  }
+
+  // Exception shown inline (collapsible)
+  if (doc.exc) {
+    const excToggle = document.createElement("details");
+    excToggle.style.width = "100%";
+    excToggle.innerHTML = `<summary style="color:var(--error);font-size:11px;cursor:pointer;user-select:none">Exception</summary><div class="exc-inline">${doc.exc.replace(/</g,"&lt;").replace(/>/g,"&gt;")}</div>`;
+    row.appendChild(excToggle);
+  }
+}
+
+// ─── Row interaction ───
+
+// Track mouse drag to distinguish click from text selection
+let _mouseDownPos = null;
+$area.addEventListener("mousedown", (e) => {
+  _mouseDownPos = { x: e.clientX, y: e.clientY };
+});
+
+function onRowClick(e) {
+  if (e.target.classList.contains("pill")) return;
+  // If mouse moved more than 5px, user was selecting text — don't hijack
+  if (_mouseDownPos) {
+    const dx = Math.abs(e.clientX - _mouseDownPos.x);
+    const dy = Math.abs(e.clientY - _mouseDownPos.y);
+    if (dx > 5 || dy > 5) return;
+  }
+  const row = e.currentTarget;
+  const docIdx = parseInt(row.dataset.docIdx, 10);
+  const visibleIdx = parseInt(row.dataset.visibleIdx, 10);
+  selectRow(docIdx, visibleIdx);
+}
+
+function onRowDblClick(e) {
+  const row = e.currentTarget;
+  const docIdx = parseInt(row.dataset.docIdx, 10);
+  const doc = allDocs[docIdx];
+  if (!doc) return;
+  const bk = bookmarkKey(doc);
+  if (bookmarks.has(bk)) {
+    bookmarks.delete(bk);
+    row.classList.remove('bookmarked');
+  } else {
+    bookmarks.add(bk);
+    row.classList.add('bookmarked');
+  }
+  saveBookmarks();
+}
+
+function onPillClick(e) {
+  e.stopPropagation();
+  const field = e.target.dataset.field;
+  const value = e.target.dataset.value;
+  addBreadcrumb(field, value);
+}
+
+function selectRow(docIdx, visibleIdx) {
+  const oldVisible = selectedRow;
+  selectedDocIdx = docIdx;
+  selectedRow = visibleIdx;
+  updateSelection(oldVisible, visibleIdx);
+}
+
+// ─── Detail panel ───
+
+function showDetail(docIdx) {
+  const doc = allDocs[docIdx];
+  if (!doc) { hideDetail(); return; }
+
+  $detail.style.display = 'block';
+  let html = '<h3>Detail <button class="close-btn" onclick="hideDetail()" title="Escape">&times;</button></h3>';
+  html += '<div class="detail-fields">';
+
+  for (const [k, v] of Object.entries(doc)) {
+    if (k === 'exc') continue;
+    const escaped = String(v).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    html += `<div class="detail-field"><span class="field-key">${k}:</span> <span class="field-val">${escaped}</span></div>`;
+  }
+  html += '</div>';
+
+  const bk = bookmarkKey(doc);
+  const isBookmarked = bookmarks.has(bk);
+  html += `<div style="margin-top:8px"><button onclick="toggleBookmarkIdx(${docIdx})" style="font-size:11px;padding:4px 8px;background:var(--border);color:var(--text);border:none;border-radius:4px;cursor:pointer">${isBookmarked ? 'Unbookmark' : 'Bookmark'}</button></div>`;
+
+  if (doc.exc) {
+    html += `<div class="detail-exc">${doc.exc.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`;
+  }
+
+  html += '<div class="detail-related" id="relatedArea"><em style="color:var(--text-dim);font-size:11px">Loading related...</em></div>';
+  $detail.innerHTML = html;
+
+  worker.postMessage({ type: 'related', lineIndex: docIdx, windowSec: 60 });
+}
+
+function hideDetail() {
+  $detail.style.display = 'none';
+}
+
+function toggleBookmarkIdx(docIdx) {
+  const doc = allDocs[docIdx];
+  if (!doc) return;
+  const bk = bookmarkKey(doc);
+  if (bookmarks.has(bk)) bookmarks.delete(bk);
+  else bookmarks.add(bk);
+  saveBookmarks();
+  showDetail(docIdx);
+  const el = $area.querySelector(`[data-doc-idx="${docIdx}"]`);
+  if (el) {
+    if (bookmarks.has(bk)) el.classList.add('bookmarked');
+    else el.classList.remove('bookmarked');
+  }
+}
+
+function toggleBookmarkSelected(visibleIdx) {
+  const total = getVisibleCount();
+  if (visibleIdx < 0 || visibleIdx >= total) return;
+  const el = $area.children[visibleIdx];
+  if (!el) return;
+  const docIdx = filteredIndices ? filteredIndices[visibleIdx] : visibleIdx;
+  const doc = allDocs[docIdx];
+  if (!doc) return;
+  const bk = bookmarkKey(doc);
+  if (bookmarks.has(bk)) {
+    bookmarks.delete(bk);
+    el.classList.remove('bookmarked');
+  } else {
+    bookmarks.add(bk);
+    el.classList.add('bookmarked');
+  }
+  saveBookmarks();
+}
+
+function renderRelated(indices) {
+  const area = document.getElementById("relatedArea");
+  if (!area) return;
+  if (!indices.length) {
+    area.innerHTML = '<em style="color:var(--text-dim);font-size:11px">No related logs found</em>';
+    return;
+  }
+  let html = '<strong style="font-size:11px;color:var(--accent)">Related (' + indices.length + ')</strong>';
+  const shown = indices.slice(0, 30);
+  for (const idx of shown) {
+    const doc = allDocs[idx];
+    if (!doc) continue;
+    const ts = doc.ts ? new Date(doc.ts).toLocaleTimeString([], { hour12: false }) : "";
+    const msg = (doc.msg || "").slice(0, 80).replace(/</g, "&lt;");
+    html += `<div class="related-line" onclick="jumpToDoc(${idx})">[${ts}] ${doc.level || ""} ${msg}</div>`;
+  }
+  area.innerHTML = html;
+}
+
+function jumpToDoc(docIdx) {
+  let visibleIdx = docIdx;
+  if (filteredIndices) {
+    visibleIdx = filteredIndices.indexOf(docIdx);
+    if (visibleIdx === -1) return;
+  }
+  const el = $area.children[visibleIdx];
+  if (el) el.scrollIntoView({ block: "center" });
+  selectRow(docIdx, visibleIdx);
+}
+
+// ─── Breadcrumb filters ───
+
+function addBreadcrumb(field, value) {
+  if (breadcrumbFilters.some(b => b.field === field && b.value === value)) return;
+  breadcrumbFilters.push({ field, value });
+  applyFilters();
+  renderBreadcrumbs();
+}
+
+function removeBreadcrumb(idx) {
+  breadcrumbFilters.splice(idx, 1);
+  applyFilters();
+  renderBreadcrumbs();
+}
+
+function renderBreadcrumbs() {
+  if (breadcrumbFilters.length === 0) {
+    $breadcrumbs.style.display = "none";
+    return;
+  }
+  $breadcrumbs.style.display = "flex";
+  $breadcrumbs.innerHTML = breadcrumbFilters.map((b, i) =>
+    `<span class="crumb">${b.field}:${b.value} <span class="remove" onclick="removeBreadcrumb(${i})">&times;</span></span>`
+  ).join("") + '<span class="crumb remove" onclick="clearBreadcrumbs()" style="cursor:pointer;color:var(--text-dim)">Clear all</span>';
+}
+
+function clearBreadcrumbs() {
+  breadcrumbFilters = [];
+  applyFilters();
+  renderBreadcrumbs();
+}
+
+// ─── Search / Filter ───
+
+let searchTimer = null;
+
+const $timeFilter = document.getElementById("timeFilter");
+
+function applyFilters() {
+  let parts = [];
+  if ($level.value) parts.push("level:" + $level.value);
+  if ($timeFilter.value) parts.push('after:"' + $timeFilter.value + ' ago"');
+  for (const b of breadcrumbFilters) {
+    parts.push(b.field + ":" + b.value);
+  }
+  if ($search.value.trim()) parts.push($search.value.trim());
+  const q = parts.join(" ");
+  if (!q) {
+    filteredIndices = null;
+    selectedRow = -1;
+    selectedDocIdx = -1;
+    render();
+    updateMinimap();
+    announce(`Showing all ${allDocs.length} lines`);
+    saveHash();
+    return;
+  }
+  worker.postMessage({ type: "filter", query: q });
+  saveHash();
+}
+
+$timeFilter.addEventListener("change", () => {
+  saveHash();
+  applyFilters();
+});
+
+$search.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    applyFilters();
+  }, 150);
+});
+
+$level.addEventListener("change", () => {
+  saveHash();
+  applyFilters();
+});
+
+// ─── WebSocket Tail ───
+
+function startTail() {
+  tailing = true;
+  $tailBtn.textContent = "Pause";
+  $tailBtn.classList.remove('primary');
+  $tailBtn.classList.add("active");
+  $tailBtn.setAttribute("aria-pressed", "true");
+
+  if (currentFile === "__all__") {
+    startHttpPolling();
+    return;
+  }
+
+  try {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(`${proto}//${location.host}/ws/tail?file=${encodeURIComponent(currentFile)}`);
+    ws.onopen = () => {
+      wsRetryCount = 0;
+      $status.textContent = `${allDocs.length} lines (WS live)`;
+    };
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "lines" && msg.lines && msg.lines.length) {
+          const newRawLines = msg.lines;
+          newRawLines.forEach(l => {
+            try {
+              const doc = JSON.parse(l);
+              allDocs.push(doc);
+              notifyLine(doc);
+            } catch { allDocs.push(null); }
+          });
+          worker.postMessage({ type: "load", lines: newRawLines, chunk: -1 });
+          if (filteredIndices === null) {
+            appendNewDocs(allDocs.length - newRawLines.length, newRawLines.length);
+          } else {
+            // Throttle: re-filter at most once per second during tail
+            if (!_tailRenderPending) {
+              _tailRenderPending = true;
+              setTimeout(() => { _tailRenderPending = false; applyFilters(); }, 1000);
+            }
+          }
+          lastTs = allDocs.length ? (allDocs[allDocs.length - 1] && allDocs[allDocs.length - 1].ts || lastTs) : lastTs;
+          $status.textContent = `${allDocs.length} lines (WS live)`;
+        }
+      } catch(err) {}
+    };
+    ws.onerror = () => {
+      ws = null;
+      startHttpPolling();
+    };
+    ws.onclose = () => {
+      ws = null;
+      if (tailing) {
+        wsRetryCount++;
+        if (wsRetryCount < 5) {
+          setTimeout(startTail, 1000 * wsRetryCount);
+        } else {
+          startHttpPolling();
+        }
+      }
+    };
+  } catch(e) {
+    startHttpPolling();
+  }
+}
+
+function startHttpPolling() {
+  if (tailTimer) clearInterval(tailTimer);
+  tailTimer = setInterval(fetchTail, POLL_MS);
+  fetchTail();
+  $status.textContent = `${allDocs.length} lines (HTTP polling)`;
+}
+
+async function fetchTail() {
+  if (!currentFile || !lastTs) return;
+  try {
+    let files = [currentFile];
+    if (currentFile === "__all__") {
+      const fr = await fetch("/api/files");
+      const fd = await fr.json();
+      files = fd.files.map(f => f.name);
+    }
+    let newRawLines = [];
+    let newDocs = [];
+    for (const f of files) {
+      const r = await fetch(`/api/tail?file=${encodeURIComponent(f)}&after=${encodeURIComponent(lastTs)}`);
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (!d.lines || !d.lines.length) continue;
+      for (const l of d.lines) {
+        try {
+          const doc = JSON.parse(l);
+          if (currentFile === "__all__") doc._file = f;
+          newDocs.push(doc);
+          newRawLines.push(currentFile === "__all__" ? JSON.stringify(doc) : l);
+        } catch {
+          newDocs.push(null);
+          newRawLines.push(l);
+        }
+      }
+    }
+    if (!newDocs.length) return;
+    if (currentFile === "__all__") {
+      const paired = newDocs.map((doc, i) => ({ doc, raw: newRawLines[i] }));
+      paired.sort((a, b) => ((a.doc && a.doc.ts) || "").localeCompare((b.doc && b.doc.ts) || ""));
+      newDocs = paired.map(p => p.doc);
+      newRawLines = paired.map(p => p.raw);
+    }
+    const startIdx = allDocs.length;
+    allDocs.push(...newDocs);
+    for (const doc of newDocs) { if (doc) notifyLine(doc); }
+    worker.postMessage({ type: "load", lines: newRawLines, chunk: -1 });
+    lastTs = allDocs[allDocs.length - 1] && allDocs[allDocs.length - 1].ts || lastTs;
+    if (filteredIndices === null) {
+      appendNewDocs(startIdx, newDocs.length);
+    } else {
+      if (!_tailRenderPending) {
+        _tailRenderPending = true;
+        setTimeout(() => { _tailRenderPending = false; applyFilters(); }, 1000);
+      }
+    }
+    $status.textContent = `${allDocs.length} lines (live)`;
+  } catch(e) {}
+}
+
+function stopTail() {
+  tailing = false;
+  $tailBtn.textContent = "Tail";
+  $tailBtn.classList.remove("active");
+  $tailBtn.classList.add('primary');
+  $tailBtn.setAttribute("aria-pressed", "false");
+  if (ws) { try { ws.close(); } catch(e) {} ws = null; }
+  if (tailTimer) { clearInterval(tailTimer); tailTimer = null; }
+}
+
+function toggleTail() {
+  if (tailing) stopTail();
+  else startTail();
+}
+
+$tailBtn.addEventListener("click", toggleTail);
+
+// ─── Browser Notifications ───
+
+function notifyLine(doc) {
+  if (!notificationsEnabled) return;
+  if (!document.hidden || !("Notification" in window) || Notification.permission !== "granted") return;
+  if (doc.level !== "ERROR" && doc.level !== "CRITICAL") return;
+  new Notification("Yazbunu: " + doc.level, { body: (doc.src || "") + ": " + (doc.msg || ""), tag: "yz-" + doc.ts });
+}
+
+$notifyBtn.addEventListener("click", () => {
+  if (!("Notification" in window)) {
+    $notifyBtn.textContent = "N/A";
+    return;
+  }
+  if (Notification.permission === "granted") {
+    notificationsEnabled = !notificationsEnabled;
+    $notifyBtn.classList.toggle("primary", notificationsEnabled);
+    $notifyBtn.textContent = notificationsEnabled ? "Notify ON" : "Notify";
+  } else if (Notification.permission !== "denied") {
+    Notification.requestPermission().then(p => {
+      if (p === "granted") {
+        notificationsEnabled = true;
+        $notifyBtn.classList.add("primary");
+        $notifyBtn.textContent = "Notify ON";
+      }
+    });
+  }
+});
+
+// ─── Sparkline ───
+
+function requestSparkline() {
+  worker.postMessage({ type: "aggregate", field: "level", bucket: "minute" });
+}
+
+function renderSparklineFromBuckets(buckets) {
+  const canvas = $sparkline;
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = canvas.clientWidth * dpr;
+  canvas.height = 24 * dpr;
+  ctx.scale(dpr, dpr);
+  const w = canvas.clientWidth;
+  const h = 24;
+  ctx.clearRect(0, 0, w, h);
+
+  if (!buckets.length) return;
+
+  const maxCount = Math.max(...buckets.map(b => b.count), 1);
+  const barWidth = Math.max(1, w / buckets.length);
+
+  for (let i = 0; i < buckets.length; i++) {
+    const b = buckets[i];
+    const x = (i / buckets.length) * w;
+    const barH = (b.count / maxCount) * (h - 4);
+
+    const errCount = (b.levels.ERROR || 0) + (b.levels.CRITICAL || 0);
+    const warnCount = b.levels.WARNING || 0;
+    if (errCount > 0) ctx.fillStyle = "rgba(239,83,80,0.7)";
+    else if (warnCount > 0) ctx.fillStyle = "rgba(255,167,38,0.5)";
+    else ctx.fillStyle = "rgba(79,195,247,0.4)";
+
+    ctx.fillRect(x, h - barH - 2, Math.max(barWidth - 0.5, 1), barH);
+  }
+}
+
+
+// ─── Minimap ───
+
+function updateMinimap() {
+  const canvas = $minimap;
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  canvas.height = canvas.clientHeight * dpr;
+  canvas.width = 12 * dpr;
+  ctx.scale(dpr, dpr);
+  const h = canvas.clientHeight;
+  ctx.clearRect(0, 0, 12, h);
+
+  const total = getVisibleCount();
+  if (!total) return;
+
+  const colors = {
+    ERROR: "#ef5350",
+    CRITICAL: "#ef5350",
+    WARNING: "#ffa726",
+    INFO: "rgba(79,195,247,0.3)",
+    DEBUG: "rgba(136,136,136,0.2)",
+  };
+
+  for (let i = 0; i < total; i++) {
+    const docIdx = filteredIndices ? filteredIndices[i] : i;
+    const doc = allDocs[docIdx];
+    if (!doc) continue;
+    const y = (i / total) * h;
+    const color = colors[doc.level] || colors.DEBUG;
+    ctx.fillStyle = color;
+    ctx.fillRect(0, y, 12, Math.max(1, h / total));
+  }
+}
+
+$minimap.addEventListener("click", (e) => {
+  const total = getVisibleCount();
+  if (!total) return;
+  const rect = $minimap.getBoundingClientRect();
+  const ratio = (e.clientY - rect.top) / rect.height;
+  const targetRow = Math.floor(ratio * total);
+  const el = $area.children[targetRow];
+  if (el) el.scrollIntoView({ block: "center" });
+});
+
+// ─── Theme ───
+
+function populateThemeSelect() {
+  const names = (typeof getAllThemeNames === "function") ? getAllThemeNames() : ["dark", "light"];
+  $themeSelect.innerHTML = names.map(n => `<option value="${n}">${n}</option>`).join("");
+}
+
+function applyTheme(name) {
+  if (typeof applyThemeFromLib === "function") {
+    applyThemeFromLib(name);
+  } else {
+    // fallback inline themes
+    const THEMES = {
+      dark: { "--bg": "#1a1a2e", "--surface": "#16213e", "--text": "#e0e0e0", "--text-dim": "#888", "--border": "#2a2a4a", "--accent": "#4fc3f7" },
+      light: { "--bg": "#f5f5f5", "--surface": "#ffffff", "--text": "#333", "--text-dim": "#999", "--border": "#ddd", "--accent": "#0288d1" },
+    };
+    const vars = THEMES[name];
+    if (!vars) return;
+    for (const [k, v] of Object.entries(vars)) document.documentElement.style.setProperty(k, v);
+  }
+  $themeSelect.value = name;
+  saveHash();
+}
+
+$themeSelect.addEventListener("change", () => {
+  applyTheme($themeSelect.value);
+});
+
+// ─── Export ───
+
+$exportBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  $exportMenu.classList.toggle("open");
+});
+
+document.addEventListener("click", () => {
+  $exportMenu.classList.remove("open");
+});
+
+$exportMenu.addEventListener("click", (e) => {
+  const fmt = e.target.dataset.fmt;
+  if (!fmt) return;
+  $exportMenu.classList.remove("open");
+  exportLogs(fmt);
+});
+
+function exportLogs(fmt) {
+  const indices = filteredIndices || allDocs.map((_, i) => i);
+  const docs = indices.map(i => allDocs[i]).filter(Boolean);
+  let content, mime, ext;
+
+  if (fmt === "clipboard") {
+    content = docs.map(d =>
+      `[${d.ts || ""}] ${d.level || ""} ${d.src || ""}: ${d.msg || ""}`
+    ).join("\n");
+    navigator.clipboard.writeText(content).then(() => {
+      $status.textContent = "Copied to clipboard!";
+      setTimeout(() => { $status.textContent = `${allDocs.length} lines`; }, 2000);
+    });
+    return;
+  }
+
+  if (fmt === "share") {
+    saveHash();
+    navigator.clipboard.writeText(location.href).then(() => {
+      $status.textContent = "Link copied!";
+      setTimeout(() => { $status.textContent = `${allDocs.length} lines`; }, 2000);
+    });
+    return;
+  }
+
+  if (fmt === "jsonl") {
+    content = docs.map(d => JSON.stringify(d)).join("\n");
+    mime = "application/x-ndjson";
+    ext = "jsonl";
+  } else if (fmt === "json") {
+    content = JSON.stringify(docs, null, 2);
+    mime = "application/json";
+    ext = "json";
+  } else if (fmt === "csv") {
+    const keys = new Set();
+    docs.forEach(d => Object.keys(d).forEach(k => keys.add(k)));
+    const cols = [...keys];
+    const lines = [cols.join(",")];
+    for (const d of docs) {
+      lines.push(cols.map(c => {
+        const v = d[c] == null ? "" : String(d[c]).replace(/"/g, '""');
+        return `"${v}"`;
+      }).join(","));
+    }
+    content = lines.join("\n");
+    mime = "text/csv";
+    ext = "csv";
+  } else if (fmt === "markdown") {
+    const lines = ["| Time | Level | Source | Message |", "|------|-------|--------|---------|"];
+    for (const d of docs) {
+      const ts = d.ts ? new Date(d.ts).toLocaleTimeString([], { hour12: false }) : "";
+      const msg = (d.msg || "").replace(/\|/g, "\\|");
+      lines.push(`| ${ts} | ${d.level || ""} | ${d.src || ""} | ${msg} |`);
+    }
+    content = lines.join("\n");
+    mime = "text/markdown";
+    ext = "md";
+  } else {
+    content = docs.map(d =>
+      `[${d.ts || ""}] ${d.level || ""} ${d.src || ""}: ${d.msg || ""}`
+    ).join("\n");
+    mime = "text/plain";
+    ext = "txt";
+  }
+
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `yazbunu-export.${ext}`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ─── File selector ───
+
+$file.addEventListener("change", () => {
+  currentFile = $file.value;
+  saveHash();
+  loadLogs(currentFile);
+});
+
+// ─── Vim Keyboard Navigation ───
+
+let numPrefix = 0;
+let numPrefixTimeout = null;
+
+function vimMove(delta) {
+  const total = getVisibleCount();
+  if (!total) return;
+  const oldVisible = selectedRow;
+  if (selectedRow < 0) selectedRow = 0;
+  selectedRow = Math.max(0, Math.min(total - 1, selectedRow + delta));
+  const docIdx = filteredIndices ? filteredIndices[selectedRow] : selectedRow;
+  selectedDocIdx = docIdx;
+  updateSelection(oldVisible, selectedRow);
+  scrollToRow(selectedRow);
+  if ($detail.style.display !== 'none') showDetail(docIdx);
+}
+
+function scrollToRow(row) {
+  const el = $area.children[row];
+  if (el) el.scrollIntoView({ block: "nearest" });
+}
+
+
+function cycleLevel() {
+  const levels = ["", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
+  const cur = levels.indexOf($level.value);
+  $level.value = levels[(cur + 1) % levels.length];
+  applyFilters();
+  saveHash();
+}
+
+function nextMatch(dir) {
+  // Navigate through filtered results when search active
+  if (!filteredIndices || !filteredIndices.length) return;
+  const total = filteredIndices.length;
+  const oldVisible = selectedRow;
+  if (selectedRow < 0) {
+    selectedRow = dir > 0 ? 0 : total - 1;
+  } else {
+    selectedRow = (selectedRow + dir + total) % total;
+  }
+  const docIdx = filteredIndices[selectedRow];
+  selectedDocIdx = docIdx;
+  updateSelection(oldVisible, selectedRow);
+  scrollToRow(selectedRow);
+}
+
+function showCommandPalette() {
+  $cmdOverlay.classList.add("open");
+  $cmdInput.value = "";
+  $cmdInput.focus();
+}
+
+function hideCommandPalette() {
+  $cmdOverlay.classList.remove("open");
+  $cmdInput.value = "";
+}
+
+function showShortcutsOverlay() {
+  $shortcutsOverlay.classList.add("open");
+}
+
+function hideShortcutsOverlay() {
+  $shortcutsOverlay.classList.remove("open");
+}
+
+function showBookmarksPanel() {
+  $bookmarksOverlay.classList.add("open");
+  renderBookmarksList();
+}
+
+function hideBookmarksPanel() {
+  $bookmarksOverlay.classList.remove("open");
+}
+
+function renderBookmarksList() {
+  $bookmarksList.innerHTML = "";
+  if (!bookmarks.size) {
+    $bookmarksList.innerHTML = '<em style="color:var(--text-dim);font-size:12px">No bookmarks yet. Double-click or press b to bookmark a line.</em>';
+    return;
+  }
+  const bkArr = [...bookmarks];
+  for (let bi = 0; bi < bkArr.length; bi++) {
+    const bk = bkArr[bi];
+    const parts = bk.split("|");
+    const ts = parts[0] || "";
+    const src = parts[1] || "";
+    const msgSnip = parts.slice(2).join("|");
+    const tsDisp = ts ? new Date(ts).toLocaleTimeString([], { hour12: false }) : "";
+    const div = document.createElement("div");
+    div.className = "bm-line";
+    div.textContent = `[${tsDisp}] ${src}: ${msgSnip}`;
+    div.addEventListener("click", () => jumpToBookmark(bk));
+    $bookmarksList.appendChild(div);
+  }
+}
+
+function jumpToBookmark(bk) {
+  hideBookmarksPanel();
+  for (let i = 0; i < allDocs.length; i++) {
+    const doc = allDocs[i];
+    if (!doc) continue;
+    if (bookmarkKey(doc) === bk) {
+      jumpToDoc(i);
+      return;
+    }
+  }
+}
+
+function exportBookmarksMd() {
+  if (!bookmarks.size) return;
+  let lines = ["# Yazbunu Bookmarks", ""];
+  for (const bk of bookmarks) {
+    // Find matching doc for full info
+    let found = null;
+    for (let i = 0; i < allDocs.length; i++) {
+      const doc = allDocs[i];
+      if (doc && bookmarkKey(doc) === bk) { found = doc; break; }
+    }
+    if (found) {
+      const ts = found.ts ? new Date(found.ts).toISOString() : "";
+      lines.push(`- **[${ts}]** \`${found.level || ""}\` ${found.src || ""}: ${found.msg || ""}`);
+    } else {
+      lines.push(`- ${bk}`);
+    }
+  }
+  const content = lines.join("\n");
+  const blob = new Blob([content], { type: "text/markdown" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "yazbunu-bookmarks.md";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ─── Command Palette handler ───
+
+$cmdInput.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    hideCommandPalette();
+    e.preventDefault();
+    return;
+  }
+  if (e.key === "Enter") {
+    const val = $cmdInput.value.trim();
+    hideCommandPalette();
+    executeCommand(val);
+    e.preventDefault();
+  }
+});
+
+$cmdOverlay.addEventListener("click", (e) => {
+  if (e.target === $cmdOverlay) hideCommandPalette();
+});
+
+function executeCommand(cmd) {
+  if (!cmd) return;
+  // Parse ":command arg" or just "search text"
+  const match = cmd.match(/^:?(\w+)\s+(.*)$/);
+  if (match) {
+    const action = match[1].toLowerCase();
+    const arg = match[2].trim();
+    switch (action) {
+      case "level":
+        const lvl = arg.toUpperCase();
+        if (["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", ""].includes(lvl)) {
+          $level.value = lvl;
+          applyFilters();
+        }
+        return;
+      case "theme":
+        applyTheme(arg);
+        return;
+      case "export":
+        exportLogs(arg);
+        return;
+      case "task":
+        addBreadcrumb("task", arg);
+        return;
+      case "mission":
+        addBreadcrumb("mission", arg);
+        return;
+      case "agent":
+        addBreadcrumb("agent", arg);
+        return;
+      case "src":
+        addBreadcrumb("src", arg);
+        return;
+    }
+  }
+  // Fallback: treat as search
+  $search.value = cmd.replace(/^:/, "");
+  applyFilters();
+}
+
+// ─── Keyboard handler ───
+
+document.addEventListener("keydown", (e) => {
+  // Escape always works: close overlays, blur search
+  if (e.key === "Escape") {
+    if ($cmdOverlay.classList.contains("open")) { hideCommandPalette(); e.preventDefault(); return; }
+    if ($shortcutsOverlay.classList.contains("open")) { hideShortcutsOverlay(); e.preventDefault(); return; }
+    if ($bookmarksOverlay.classList.contains("open")) { hideBookmarksPanel(); e.preventDefault(); return; }
+    if ($detail.style.display !== "none") { hideDetail(); e.preventDefault(); return; }
+    if (document.activeElement === $search) { $search.blur(); e.preventDefault(); return; }
+    numPrefix = 0;
+    return;
+  }
+
+  // Don't capture when in inputs (except Escape handled above)
+  const tag = document.activeElement?.tagName;
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+
+  // Don't capture when overlays are open (command palette has its own handler)
+  if ($cmdOverlay.classList.contains("open")) return;
+
+  // Number prefix for vim motions
+  if (e.key >= "0" && e.key <= "9" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    numPrefix = numPrefix * 10 + parseInt(e.key);
+    clearTimeout(numPrefixTimeout);
+    numPrefixTimeout = setTimeout(() => numPrefix = 0, 1500);
+    return;
+  }
+
+  const count = numPrefix || 1;
+  numPrefix = 0;
+
+  switch (e.key) {
+    case "j": vimMove(count); break;
+    case "k": vimMove(-count); break;
+    case "g": {
+      const total = getVisibleCount();
+      if (total) {
+        const oldVisible = selectedRow;
+        selectedRow = 0;
+        selectedDocIdx = filteredIndices ? filteredIndices[0] : 0;
+        updateSelection(oldVisible, 0);
+        scrollToRow(0);
+      }
+      break;
+    }
+    case "G": {
+      const total = getVisibleCount();
+      if (total) {
+        const oldVisible = selectedRow;
+        const last = total - 1;
+        selectedRow = last;
+        selectedDocIdx = filteredIndices ? filteredIndices[last] : last;
+        updateSelection(oldVisible, last);
+        scrollToRow(last);
+      }
+      break;
+    }
+    case "d":
+      if (e.ctrlKey) {
+        vimMove(20);
+        e.preventDefault();
+      }
+      break;
+    case "u":
+      if (e.ctrlKey) {
+        vimMove(-20);
+        e.preventDefault();
+      }
+      break;
+    case "/":
+      $search.focus();
+      e.preventDefault();
+      break;
+    case "n": nextMatch(1); break;
+    case "N": nextMatch(-1); break;
+    case "Enter":
+      if (selectedRow >= 0) {
+        const docIdx = filteredIndices ? filteredIndices[selectedRow] : selectedRow;
+        if ($detail.style.display !== "none" && selectedDocIdx === docIdx) hideDetail();
+        else { selectedDocIdx = docIdx; showDetail(docIdx); }
+      }
+      e.preventDefault();
+      break;
+    case "e": cycleLevel(); break;
+    case "f": toggleTail(); e.preventDefault(); break;
+    case "b": toggleBookmarkSelected(selectedRow); break;
+    case "B": showBookmarksPanel(); break;
+    case ":": showCommandPalette(); e.preventDefault(); break;
+    case "?": showShortcutsOverlay(); e.preventDefault(); break;
+    // Arrow keys as fallback
+    case "ArrowDown":
+      e.preventDefault();
+      vimMove(1);
+      break;
+    case "ArrowUp":
+      e.preventDefault();
+      vimMove(-1);
+      break;
+  }
+});
+
+// Close shortcuts overlay on click
+$shortcutsOverlay.addEventListener("click", (e) => {
+  if (e.target === $shortcutsOverlay) hideShortcutsOverlay();
+});
+
+$bookmarksOverlay.addEventListener("click", (e) => {
+  if (e.target === $bookmarksOverlay) hideBookmarksPanel();
+});
+
+// ─── Touch Gestures ───
+
+let touchStartX = 0, touchStartY = 0, touchRow = null;
+
+$area.addEventListener("touchstart", (e) => {
+  const t = e.touches[0];
+  touchStartX = t.clientX;
+  touchStartY = t.clientY;
+  // Find which row
+  const el = document.elementFromPoint(t.clientX, t.clientY);
+  touchRow = el ? el.closest(".log-line") : null;
+}, { passive: true });
+
+$area.addEventListener("touchend", (e) => {
+  if (!touchRow) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - touchStartX;
+  const dy = t.clientY - touchStartY;
+  if (Math.abs(dx) < 50 || Math.abs(dy) > Math.abs(dx)) return; // not a horizontal swipe
+
+  const docIdx = parseInt(touchRow.dataset.docIdx, 10);
+  const doc = allDocs[docIdx];
+  if (!doc) return;
+
+  if (dx > 50) {
+    // Swipe right: bookmark
+    const bk = bookmarkKey(doc);
+    if (!bookmarks.has(bk)) {
+      bookmarks.add(bk);
+      saveBookmarks();
+      touchRow.classList.add('bookmarked');
+      announce("Bookmarked");
+    }
+  } else if (dx < -50) {
+    // Swipe left: copy to clipboard
+    const text = `[${doc.ts || ""}] ${doc.level || ""} ${doc.src || ""}: ${doc.msg || ""}`;
+    navigator.clipboard.writeText(text).then(() => {
+      announce("Copied to clipboard");
+    });
+  }
+  touchRow = null;
+}, { passive: true });
+
+// ─── Resize ───
+
+window.addEventListener("resize", () => {
+  updateMinimap();
+});
+
+// ─── Init ───
+
+loadHash();
+populateThemeSelect();
+
+// Apply theme: from hash, or initTheme from themes.js, or default dark
+const hashParams = new URLSearchParams(location.hash.slice(1));
+const hashTheme = hashParams.get("theme");
+if (hashTheme) {
+  applyTheme(hashTheme);
+} else if (typeof initTheme === "function") {
+  const t = initTheme();
+  if (t) $themeSelect.value = t;
+} else {
+  applyTheme("dark");
+}
+
+fetchFiles().then(() => {
+  if ($file.value) loadLogs($file.value).then(() => {
+    // Auto-start live tail so new logs appear immediately
+    startTail();
+  });
+});
+
+// Service worker registration
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/static/sw.js").catch(() => {});
+}
+</script>
+</body>
+</html>

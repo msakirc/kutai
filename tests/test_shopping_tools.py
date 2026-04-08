@@ -243,7 +243,7 @@ class TestScraperRegistry(unittest.TestCase):
         expected = [
             "akakce", "trendyol", "hepsiburada", "amazon_tr",
             "technopat", "donanimhaber", "eksisozluk", "sikayetvar",
-            "getir", "migros", "sahibinden", "koctas", "ikea",
+            "getir", "migros", "koctas", "ikea",
         ]
         for name in expected:
             self.assertIn(name, registry, f"Scraper '{name}' missing from registry")

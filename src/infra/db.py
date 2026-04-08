@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from src.app.config import DB_PATH
 from src.infra.logging_config import get_logger
+from src.infra.times import utc_now, db_now, to_db, DB_FMT
 
 logger = get_logger("infra.db")
 
@@ -142,8 +143,15 @@ async def init_db():
             result TEXT,
             error TEXT,
             context JSON DEFAULT '{}',
-            retry_count INTEGER DEFAULT 0,
-            max_retries INTEGER DEFAULT 3,
+            worker_attempts INTEGER DEFAULT 0,
+            max_worker_attempts INTEGER DEFAULT 6,
+            grade_attempts INTEGER DEFAULT 0,
+            max_grade_attempts INTEGER DEFAULT 3,
+            next_retry_at TIMESTAMP,
+            retry_reason TEXT,
+            failed_in_phase TEXT,
+            infra_resets INTEGER DEFAULT 0,
+            exhaustion_reason TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             started_at TIMESTAMP,
             completed_at TIMESTAMP,
@@ -372,8 +380,8 @@ async def init_db():
             strategies TEXT DEFAULT '[]',
             injection_count INTEGER DEFAULT 0,
             injection_success INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')),
-            updated_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime'))
+            created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
+            updated_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now'))
         )
     """)
 
@@ -416,7 +424,7 @@ async def init_db():
     await db.execute("""
         CREATE TABLE IF NOT EXISTS smart_search_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')),
+            timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
             query TEXT NOT NULL,
             layer INTEGER NOT NULL,
             source TEXT,
@@ -579,6 +587,57 @@ async def init_db():
         except Exception as e:
             logger.debug(f"sleep_state column migration skipped: {e}")
 
+    # Migration: Unified Task Lifecycle — new retry columns
+    if "worker_attempts" not in columns and "attempts" not in columns:
+        for col_sql in [
+            "ALTER TABLE tasks ADD COLUMN worker_attempts INTEGER DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN max_worker_attempts INTEGER DEFAULT 6",
+            "ALTER TABLE tasks ADD COLUMN grade_attempts INTEGER DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN max_grade_attempts INTEGER DEFAULT 3",
+            "ALTER TABLE tasks ADD COLUMN next_retry_at TIMESTAMP",
+            "ALTER TABLE tasks ADD COLUMN retry_reason TEXT",
+            "ALTER TABLE tasks ADD COLUMN failed_in_phase TEXT",
+            "ALTER TABLE tasks ADD COLUMN infra_resets INTEGER DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN exhaustion_reason TEXT",
+        ]:
+            try:
+                await db.execute(col_sql)
+                await db.commit()
+            except Exception:
+                pass  # column may already exist
+        logger.info("Added unified task lifecycle columns")
+
+        # Run data migration
+        await _migrate_task_lifecycle(db)
+
+    # Migration: Retry Pipeline Overhaul — rename columns, add new ones
+    if "attempts" in columns and "worker_attempts" not in columns:
+        for sql in [
+            "ALTER TABLE tasks RENAME COLUMN attempts TO worker_attempts",
+            "ALTER TABLE tasks RENAME COLUMN max_attempts TO max_worker_attempts",
+            "ALTER TABLE tasks ADD COLUMN infra_resets INTEGER DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN exhaustion_reason TEXT",
+        ]:
+            try:
+                await db.execute(sql)
+                await db.commit()
+            except Exception:
+                pass
+        logger.info("Applied retry pipeline overhaul migration")
+
+    # Migration: Add infra_resets/exhaustion_reason if missing (fresh DB with worker_attempts already)
+    if "worker_attempts" in columns and "infra_resets" not in columns:
+        for sql in [
+            "ALTER TABLE tasks ADD COLUMN infra_resets INTEGER DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN exhaustion_reason TEXT",
+        ]:
+            try:
+                await db.execute(sql)
+                await db.commit()
+            except Exception:
+                pass
+        logger.info("Added infra_resets/exhaustion_reason columns")
+
     # Migration: add suggestion columns to todo_items
     for col in ["suggestion", "suggestion_agent", "suggestion_at"]:
         try:
@@ -624,6 +683,46 @@ async def init_db():
 
     await db.commit()
 
+async def _migrate_task_lifecycle(db) -> None:
+    """One-time migration: sleeping/paused/rejected → unified model."""
+    try:
+        # Backfill worker_attempts from retry_count (legacy column)
+        await db.execute(
+            "UPDATE tasks SET worker_attempts = COALESCE(retry_count, 0) "
+            "WHERE worker_attempts = 0 AND COALESCE(retry_count, 0) > 0"
+        )
+        # Backfill max_worker_attempts from max_retries (add 3 for grading headroom)
+        await db.execute(
+            "UPDATE tasks SET max_worker_attempts = COALESCE(max_retries, 3) + 3 "
+            "WHERE max_worker_attempts = 6 AND max_retries IS NOT NULL AND max_retries != 3"
+        )
+        # Convert sleeping → pending with next_retry_at
+        await db.execute(
+            """UPDATE tasks SET status = 'pending',
+               next_retry_at = json_extract(sleep_state, '$.next_timer_wake')
+               WHERE status = 'sleeping'"""
+        )
+        # Convert paused → pending with 10-min delay
+        await db.execute(
+            """UPDATE tasks SET status = 'pending',
+               next_retry_at = datetime('now', '+10 minutes')
+               WHERE status = 'paused'"""
+        )
+        # Rename needs_clarification → waiting_human
+        await db.execute(
+            "UPDATE tasks SET status = 'waiting_human' "
+            "WHERE status = 'needs_clarification'"
+        )
+        # Fix rejected → cancelled
+        await db.execute(
+            "UPDATE tasks SET status = 'cancelled' WHERE status = 'rejected'"
+        )
+        await db.commit()
+        logger.info("Migrated task lifecycle data")
+    except Exception as e:
+        logger.warning(f"Task lifecycle data migration error: {e}")
+
+
 # --- Mission Operations ---
 
 async def add_mission(title, description, priority=5, context=None,
@@ -662,8 +761,12 @@ _MISSION_COLUMNS = frozenset({
 _TASK_COLUMNS = frozenset({
     "title", "description", "agent_type", "status", "tier", "priority",
     "requires_approval", "depends_on", "result", "error", "error_category",
-    "context", "retry_count", "max_retries", "started_at", "completed_at",
+    "context", "worker_attempts", "max_worker_attempts", "started_at", "completed_at",
     "task_hash", "max_cost", "cost", "quality_score", "sleep_state",
+    "next_retry_at", "retry_reason",
+    # Unified lifecycle columns
+    "grade_attempts", "max_grade_attempts",
+    "failed_in_phase", "infra_resets", "exhaustion_reason",
 })
 
 
@@ -747,7 +850,7 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
                     )
                     await db.execute(
                         "UPDATE tasks SET status = 'pending', "
-                        "retry_count = COALESCE(retry_count, 0) + 1 "
+                        "worker_attempts = COALESCE(worker_attempts, 0) + 1 "
                         "WHERE id = ?",
                         (dup["id"],)
                     )
@@ -793,6 +896,7 @@ async def get_ready_tasks(limit=5):
     cursor = await db.execute(
         """SELECT * FROM tasks
            WHERE status = 'pending'
+           AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
            ORDER BY priority DESC, created_at ASC"""
     )
     all_pending = [dict(row) for row in await cursor.fetchall()]
@@ -897,6 +1001,79 @@ async def get_ready_tasks(limit=5):
 
     return ready[:limit]
 
+
+async def get_blocked_task_summary():
+    """Return summary of blocked pending tasks: total count and top blocker task IDs."""
+    db = await get_db()
+
+    # Count all pending tasks
+    cursor = await db.execute(
+        "SELECT COUNT(*) FROM tasks WHERE status = 'pending'"
+    )
+    total_pending = (await cursor.fetchone())[0]
+
+    # Count pending tasks that have unresolved dependencies
+    cursor = await db.execute(
+        """SELECT t.id, t.depends_on FROM tasks t
+           WHERE t.status = 'pending' AND t.depends_on IS NOT NULL
+           AND t.depends_on != '' AND t.depends_on != 'null' AND t.depends_on != '[]'"""
+    )
+    blocked_rows = await cursor.fetchall()
+
+    blocked_count = 0
+    blocker_counts = {}  # task_id -> how many tasks it blocks
+
+    for row in blocked_rows:
+        raw_deps = row[1]
+        try:
+            if isinstance(raw_deps, str):
+                deps = json.loads(raw_deps)
+                if isinstance(deps, int):
+                    deps = [deps]
+                elif not isinstance(deps, list):
+                    deps = []
+            elif isinstance(raw_deps, (list, tuple)):
+                deps = list(raw_deps)
+            elif isinstance(raw_deps, int):
+                deps = [raw_deps]
+            else:
+                deps = []
+        except (json.JSONDecodeError, TypeError):
+            deps = []
+
+        if not deps:
+            continue
+
+        # Check if any dep is NOT completed/skipped
+        placeholders = ",".join("?" * len(deps))
+        dep_cursor = await db.execute(
+            f"""SELECT COUNT(*) FROM tasks
+                WHERE id IN ({placeholders}) AND status IN ('completed', 'skipped')""",
+            deps
+        )
+        resolved = (await dep_cursor.fetchone())[0]
+
+        if resolved < len(deps):
+            blocked_count += 1
+            # Track which unresolved deps are blocking
+            unresolved_cursor = await db.execute(
+                f"""SELECT id FROM tasks
+                    WHERE id IN ({placeholders}) AND status NOT IN ('completed', 'skipped')""",
+                deps
+            )
+            for dep_row in await unresolved_cursor.fetchall():
+                blocker_counts[dep_row[0]] = blocker_counts.get(dep_row[0], 0) + 1
+
+    # Top blockers sorted by how many tasks they block
+    top_blockers = sorted(blocker_counts.items(), key=lambda x: -x[1])[:3]
+
+    return {
+        "blocked_count": blocked_count,
+        "total_pending": total_pending,
+        "top_blockers": top_blockers,  # [(task_id, count), ...]
+    }
+
+
 async def get_task(task_id):
     db = await get_db()
     cursor = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
@@ -935,90 +1112,73 @@ async def update_task(task_id, **kwargs):
     await db.commit()
 
 
-# ─── Sleeping Queue (S11) ──────────────────────────────────────────────────
+async def update_task_by_context_field(
+    mission_id: int, field: str, value: str, **kwargs
+):
+    """Update tasks matching a JSON context field within a mission.
 
-# Timer tiers: 10 min → 30 min → 1 hour → 2 hours (cap)
-_SLEEP_TIER_INTERVALS = [600, 1800, 3600, 7200]
+    Uses SQLite's json_extract to find tasks where
+    ``context->>'$.{field}' = value`` and applies the given updates.
 
-# Max signal-wake failures before signals are ignored for a task
-_MAX_SIGNAL_FAILURES = 3
+    Example::
 
-
-async def get_sleeping_tasks() -> list[dict]:
-    """Fetch all tasks in 'sleeping' status."""
-    db = await get_db()
-    cursor = await db.execute(
-        "SELECT * FROM tasks WHERE status = 'sleeping'"
-    )
-    return [dict(row) for row in await cursor.fetchall()]
-
-
-async def wake_sleeping_tasks(reason: str) -> int:
-    """Wake eligible sleeping tasks by setting them to 'pending'.
-
-    A task is eligible if signal_failures < _MAX_SIGNAL_FAILURES.
-    Each wake increments signal_failures (timer_tier unchanged).
-
-    Returns the number of tasks woken.
-    """
-    import json as _json
-
-    db = await get_db()
-    cursor = await db.execute(
-        "SELECT id, sleep_state FROM tasks WHERE status = 'sleeping'"
-    )
-    rows = await cursor.fetchall()
-
-    woken = 0
-    for row in rows:
-        task_id = row["id"]
-        try:
-            state = _json.loads(row["sleep_state"] or "{}")
-        except (ValueError, TypeError):
-            state = {}
-
-        signal_failures = state.get("signal_failures", 0)
-        if signal_failures >= _MAX_SIGNAL_FAILURES:
-            continue  # this task only wakes on timer now
-
-        state["signal_failures"] = signal_failures + 1
-        await db.execute(
-            "UPDATE tasks SET status = 'pending', sleep_state = ? WHERE id = ?",
-            (_json.dumps(state), task_id),
+        await update_task_by_context_field(
+            mission_id=30,
+            field="workflow_step_id",
+            value="1.3",
+            status="skipped",
         )
-        woken += 1
-
-    if woken:
-        await db.commit()
-        logger.info(f"Woke {woken} sleeping task(s) | reason={reason}")
-
-    return woken
-
-
-def compute_next_timer_wake(tier: int) -> str:
-    """Compute the next timer wake timestamp for a given tier.
-
-    Returns a datetime string in the DB format (space-separated, no T).
     """
-    interval = _SLEEP_TIER_INTERVALS[min(tier, len(_SLEEP_TIER_INTERVALS) - 1)]
-    wake_at = datetime.now(timezone.utc) + timedelta(seconds=interval)
-    return wake_at.strftime("%Y-%m-%d %H:%M:%S")
+    _validate_columns(kwargs, _TASK_COLUMNS, "tasks")
+    db = await get_db()
+    sets = ", ".join(f"{k} = ?" for k in kwargs)
+    values = list(kwargs.values()) + [mission_id, value]
+    await db.execute(
+        f"UPDATE tasks SET {sets} "
+        f"WHERE mission_id = ? AND json_extract(context, '$.{field}') = ?",
+        values,
+    )
+    await db.commit()
 
 
-def make_sleep_state(
-    timer_tier: int = 0,
-    signal_failures: int = 0,
-    error_category: str = "unknown",
-) -> str:
-    """Create a sleep_state JSON string for a task entering the sleeping queue."""
+async def accelerate_retries(reason: str) -> int:
+    """Pull next_retry_at to now for tasks waiting on availability.
+
+    Called from: model_swap, gpu_available, rate_limit_reset,
+    quota_restored, circuit_breaker_reset.
+
+    Resets last_avail_delay in context so backoff starts fresh.
+    Covers both phases: pending (worker) and ungraded (grading).
+
+    Returns number of tasks accelerated.
+    """
     import json as _json
-    return _json.dumps({
-        "timer_tier": timer_tier,
-        "signal_failures": signal_failures,
-        "last_error_category": error_category,
-        "sleeping_since": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-        "next_timer_wake": compute_next_timer_wake(timer_tier),
-    })
+
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT id, context FROM tasks
+           WHERE status IN ('pending', 'ungraded')
+           AND next_retry_at > datetime('now')
+           AND retry_reason IN ('availability', 'quality')"""
+    )
+    rows = [dict(r) for r in await cursor.fetchall()]
+
+    for row in rows:
+        try:
+            ctx = _json.loads(row.get("context") or "{}")
+        except (ValueError, TypeError):
+            ctx = {}
+        ctx["last_avail_delay"] = 0
+        await db.execute(
+            """UPDATE tasks SET next_retry_at = datetime('now'),
+               context = ? WHERE id = ?""",
+            (_json.dumps(ctx), row["id"]),
+        )
+
+    if rows:
+        await db.commit()
+        logger.info(f"Accelerated {len(rows)} task(s) | reason={reason}")
+    return len(rows)
 
 
 # ─── Task Locking (atomic claim) ────────────────────────────────────────────
@@ -1033,7 +1193,7 @@ async def claim_task(task_id: int) -> bool:
     # Use strftime format (space-separated, no TZ) so SQLite datetime()
     # comparisons in the watchdog work correctly.  isoformat() produces
     # a 'T' separator which breaks `started_at < datetime('now', ...)`.
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    now_str = db_now()
     cursor = await db.execute(
         "UPDATE tasks SET status = 'processing', started_at = ? "
         "WHERE id = ? AND status = 'pending'",
@@ -1388,7 +1548,7 @@ async def store_memory(key, value, category="general", mission_id=None):
     if row:
         await db.execute(
             "UPDATE memory SET value = ?, updated_at = ? WHERE id = ?",
-            (value, datetime.now(timezone.utc).isoformat(), row[0])
+            (value, db_now(), row[0])
         )
     else:
         await db.execute(
@@ -1424,7 +1584,7 @@ async def recall_memory(category=None, mission_id=None, limit=20):
         query += " AND category = ?"
         params.append(category)
     if mission_id:
-        query += " AND (mission_id = ? OR mission_id IS NULL)"
+        query += " AND mission_id = ?"
         params.append(mission_id)
     query += " ORDER BY updated_at DESC LIMIT ?"
     params.append(limit)
@@ -1437,11 +1597,12 @@ async def semantic_recall(query_text, category=None, mission_id=None, top_k=5):
     try:
         from src.memory.vector_store import query as vquery
 
-        where_filter = {"source": "memory_table"}
+        conditions = [{"source": {"$eq": "memory_table"}}]
         if category:
-            where_filter["category"] = category
+            conditions.append({"category": {"$eq": category}})
         if mission_id:
-            where_filter["mission_id"] = mission_id
+            conditions.append({"mission_id": {"$eq": mission_id}})
+        where_filter = {"$and": conditions} if len(conditions) > 1 else conditions[0]
 
         results = await vquery(
             text=query_text,
@@ -1541,8 +1702,7 @@ async def add_scheduled_task(
     # Inline minimal cron parse to avoid circular import with orchestrator.
     next_run_str: str | None = None
     try:
-        from datetime import datetime, timedelta, timezone
-        now = datetime.now(timezone.utc)
+        now = utc_now()
         parts = cron_expression.strip().split()
         if len(parts) == 5:
             minute, hour = parts[0], parts[1]
@@ -1674,7 +1834,7 @@ async def toggle_todo(todo_id: int) -> str:
         new_status = "done"
         await db.execute(
             "UPDATE todo_items SET status = 'done', completed_at = ? WHERE id = ?",
-            (datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), todo_id),
+            (db_now(), todo_id),
         )
     await db.commit()
     return new_status
@@ -1920,7 +2080,7 @@ async def set_budget(
     """Create or update a cost budget."""
     db = await get_db()
     existing = await get_budget(scope, scope_id)
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = utc_now().strftime("%Y-%m-%d")
 
     if existing:
         await db.execute(
@@ -1951,7 +2111,7 @@ async def record_cost(
     if not budget:
         return
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = utc_now().strftime("%Y-%m-%d")
     last_reset = budget.get("last_reset_date", "")
 
     # Reset daily spend if new day
@@ -1987,7 +2147,7 @@ async def check_budget(
     if not budget:
         return {"ok": True, "reason": "no budget set", "budget": None}
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = utc_now().strftime("%Y-%m-%d")
     spent_today = budget["spent_today"]
     if budget.get("last_reset_date") != today:
         spent_today = 0.0  # new day, reset hasn't happened yet
@@ -2195,7 +2355,7 @@ async def insert_approval_request(task_id: int, mission_id: int | None,
         """INSERT OR REPLACE INTO approval_requests
            (task_id, mission_id, title, details, status, created_at)
            VALUES (?, ?, ?, ?, 'pending', ?)""",
-        (task_id, mission_id, title, details, datetime.now(timezone.utc).isoformat()),
+        (task_id, mission_id, title, details, db_now()),
     )
     await db.commit()
 
@@ -2207,7 +2367,7 @@ async def update_approval_status(task_id: int, status: str):
         """UPDATE approval_requests
            SET status = ?, resolved_at = ?
            WHERE task_id = ?""",
-        (status, datetime.now(timezone.utc).isoformat(), task_id),
+        (status, db_now(), task_id),
     )
     await db.commit()
 
@@ -2234,8 +2394,6 @@ async def upsert_workflow_checkpoint(
     metadata: dict = None,
 ) -> None:
     """Create or update a workflow checkpoint for the given mission."""
-    from datetime import datetime, timezone
-
     db = await get_db()
     await db.execute(
         """INSERT OR REPLACE INTO workflow_checkpoints
@@ -2248,7 +2406,7 @@ async def upsert_workflow_checkpoint(
             current_phase,
             json.dumps(completed_phases or []),
             failed_step_id,
-            datetime.now(timezone.utc).isoformat(),
+            db_now(),
             json.dumps(metadata or {}),
         ),
     )
@@ -2319,7 +2477,7 @@ async def record_source_quality(
     """Upsert domain quality record, incrementing counts and updating timestamps."""
     try:
         db = await get_db()
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        now = db_now()
 
         # Try to insert first, then update on conflict
         if blocked:
@@ -2589,7 +2747,7 @@ async def upsert_skill(
                description = excluded.description,
                skill_type = excluded.skill_type,
                strategies = excluded.strategies,
-               updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')""",
+               updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now')""",
         (name, description, skill_type, strategies_json),
     )
     await db.commit()
@@ -2621,7 +2779,7 @@ async def increment_skill_injection(name: str) -> None:
     """Increment injection_count for a skill."""
     db = await get_db()
     await db.execute(
-        "UPDATE skills SET injection_count = injection_count + 1, updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime') WHERE name = ?",
+        "UPDATE skills SET injection_count = injection_count + 1, updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now') WHERE name = ?",
         (name,),
     )
     await db.commit()
@@ -2631,7 +2789,7 @@ async def increment_skill_success(name: str) -> None:
     """Increment injection_success for a skill."""
     db = await get_db()
     await db.execute(
-        "UPDATE skills SET injection_success = injection_success + 1, updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime') WHERE name = ?",
+        "UPDATE skills SET injection_success = injection_success + 1, updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now') WHERE name = ?",
         (name,),
     )
     await db.commit()
@@ -2718,7 +2876,7 @@ async def log_smart_search(query: str, layer: int, source: str | None, success: 
 async def record_api_call(api_name: str, success: bool):
     """Update api_reliability counters and auto-demote if needed."""
     db = await get_db()
-    now = "strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')"
+    now = "strftime('%Y-%m-%d %H:%M:%S', 'now')"
     if success:
         await db.execute(
             f"""INSERT INTO api_reliability (api_name, success_count, last_success, consecutive_failures)
@@ -2793,7 +2951,7 @@ async def get_api_reliability_all() -> list[dict]:
 async def get_smart_search_stats(days: int = 7) -> dict:
     """Aggregate smart_search_log for observability menu."""
     db = await get_db()
-    cutoff = f"datetime('now', 'localtime', '-{days} days')"
+    cutoff = f"datetime('now', '-{days} days')"
 
     # Layer breakdown
     cur = await db.execute(
@@ -2811,7 +2969,7 @@ async def get_smart_search_stats(days: int = 7) -> dict:
 
     # Today count
     cur = await db.execute(
-        "SELECT COUNT(*) FROM smart_search_log WHERE date(timestamp) = date('now', 'localtime')"
+        "SELECT COUNT(*) FROM smart_search_log WHERE date(timestamp) = date('now')"
     )
     today = (await cur.fetchone())[0]
 

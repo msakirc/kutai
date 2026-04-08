@@ -312,8 +312,8 @@ class LocalModelManager:
                 async def _wake_on_cooldown():
                     await _aio.sleep(_RESTART_COOLDOWN_S)
                     try:
-                        from src.infra.db import wake_sleeping_tasks
-                        await wake_sleeping_tasks("circuit_breaker_reset")
+                        from src.infra.db import accelerate_retries
+                        await accelerate_retries("circuit_breaker_reset")
                     except Exception:
                         pass
 
@@ -482,9 +482,28 @@ class LocalModelManager:
                     logger.debug(f"Model {model_name} already healthy (resolved under lock)")
                     return True
 
+            # ── Variant swap detection ──
+            from .model_registry import get_registry
+            registry = get_registry()
+            current_info = registry.get(self.current_model) if self.current_model else None
+            target_info = registry.get(model_name)
+            is_variant_swap = False
+            if (current_info and target_info
+                    and current_info.path and target_info.path
+                    and current_info.path == target_info.path):
+                is_variant_swap = True
+                logger.info(
+                    f"⚡ Variant swap (same GGUF): {self.current_model} → {model_name} "
+                    f"(lightweight restart, not counted as swap)"
+                )
+
             self.swap_started_at = time.monotonic()
             try:
-                return await self._do_swap(model_name, reason, enable_thinking, enable_vision)
+                result = await self._do_swap(model_name, reason, enable_thinking, enable_vision)
+                if result and is_variant_swap:
+                    # Don't count variant swaps against the budget
+                    self._total_swaps = max(0, self._total_swaps - 1)
+                return result
             finally:
                 self.swap_started_at = 0.0
 
@@ -546,6 +565,11 @@ class LocalModelManager:
 
         # Stop existing server
         await self._stop_server()
+
+        # CUDA VRAM release lags behind process exit — wait for the driver
+        # to reclaim memory before probing free VRAM for the next model.
+        if old_model:
+            await asyncio.sleep(2)
 
         # ── Recalculate context + gpu_layers with live memory state ──
         # Server is stopped, so readings reflect true free memory.
@@ -678,24 +702,24 @@ class LocalModelManager:
             "--ubatch-size", "512", # micro-batch for generation
         ]
 
-        # Always pass explicit --n-gpu-layers for deterministic VRAM usage.
-        # --fit auto-calculates but allocates fewer layers under runtime VRAM
-        # pressure (e.g. 1013MB baseline vs 760MB in clean benchmark), causing
-        # 12.9 tok/s instead of 25.4 tok/s.  Passing 99 forces maximum offload
-        # — llama-server caps at the model's actual layer count.
+        # Let llama-server's --fit (default-on) auto-calculate optimal GPU
+        # layer allocation based on actual free VRAM.  Only pass explicit
+        # --n-gpu-layers when the user/yaml specifies an override.
+        # --fit correctly handles both small models (full offload) and large
+        # models (partial offload), reserving ~1GB free VRAM headroom.
         if getattr(model, '_gpu_layers_from_override', False) and model.gpu_layers > 0:
             cmd.extend(["--n-gpu-layers", str(model.gpu_layers)])
-        else:
-            cmd.extend(["--n-gpu-layers", "99"])
 
-        # Control thinking via chat_template_kwargs (server-level flag,
-        # not supported per-request by llama-server).
-        if model.thinking_model:
-            import json as _json
-            cmd.extend([
-                "--chat-template-kwargs",
-                _json.dumps({"enable_thinking": enable_thinking}),
-            ])
+        # Control thinking/reasoning mode (server-level, not per-request).
+        # llama.cpp v8668+: --reasoning on/off + --reasoning-budget 0.
+        # --chat-template-kwargs {"enable_thinking": ...} is deprecated.
+        # Skip for --no-jinja models (e.g. Apriel: always-on, incompatible).
+        has_no_jinja = "--no-jinja" in (getattr(model, 'extra_server_flags', None) or [])
+        if model.thinking_model and not has_no_jinja:
+            if enable_thinking:
+                cmd.extend(["--reasoning", "on"])
+            else:
+                cmd.extend(["--reasoning", "off", "--reasoning-budget", "0"])
 
         # Vision projector (mmproj) — only loaded when a vision task needs it.
         # Saves ~876MB VRAM for the 99% of requests that are text-only.
@@ -715,10 +739,14 @@ class LocalModelManager:
             if platform.system() == "Windows":
                 creation_flags = subprocess.CREATE_NO_WINDOW
 
+            import os
+            log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs")
+            stderr_path = os.path.join(log_dir, "llama-server.stderr.log")
+            self._stderr_file = open(stderr_path, "w", encoding="utf-8")
             self.process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=self._stderr_file,
                 creationflags=creation_flags,
             )
             self._assign_to_job(self.process)
@@ -733,13 +761,20 @@ class LocalModelManager:
             return False
 
         # Wait for health endpoint — poll with backoff.
-        # Large models (>20GB) can take 90s+ to load on first start after
-        # reboot when VRAM needs initial allocation. The 2x multiplier on
-        # estimated load time handles most cases, but the ceiling must be
-        # high enough for worst-case cold starts.
-        max_wait = model.load_time_seconds * 2.5  # 2.5x estimated time
-        max_wait = max(max_wait, 30)               # at least 30s
-        max_wait = min(max_wait, 180)              # at most 180s
+        # Load time depends on model weights AND KV cache pre-allocation.
+        # llama-server pre-allocates the full KV cache at startup, which
+        # can take 60-120s for large contexts on partial-VRAM models.
+        # Weight loading: ~500 MB/s from disk to VRAM.
+        # KV cache: scales with context * layers. Models that spill to
+        # RAM (file_size > VRAM) are much slower due to split allocation.
+        weight_time = model.load_time_seconds  # file_size / 500
+        ctx_factor = model.context_length / 8192  # baseline 8K
+        layer_factor = model.total_layers / 32    # baseline 32 layers
+        kv_time = ctx_factor * layer_factor * 15   # ~15s base for 8K/32L
+        estimated_total = weight_time + kv_time
+        max_wait = estimated_total * 2.0          # 2x safety margin
+        max_wait = max(max_wait, 45)               # at least 45s
+        max_wait = min(max_wait, 300)              # at most 5 min
 
         healthy = await self._wait_for_healthy(timeout=max_wait)
 
@@ -786,6 +821,14 @@ class LocalModelManager:
             except Exception:
                 pass
 
+        # Close stderr log file
+        if hasattr(self, '_stderr_file') and self._stderr_file:
+            try:
+                self._stderr_file.close()
+            except Exception:
+                pass
+            self._stderr_file = None
+
         self.process = None
         self.runtime_state = None
         if old_model:
@@ -800,9 +843,25 @@ class LocalModelManager:
             while (time.time() - start) < timeout:
                 # Check if process died
                 if self.process and self.process.poll() is not None:
+                    # Read last lines of stderr for crash diagnostics
+                    stderr_tail = ""
+                    if hasattr(self, '_stderr_file') and self._stderr_file:
+                        try:
+                            self._stderr_file.flush()
+                            import os
+                            stderr_path = os.path.join(
+                                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                                "logs", "llama-server.stderr.log"
+                            )
+                            with open(stderr_path, "r", encoding="utf-8", errors="replace") as f:
+                                lines = f.readlines()
+                                stderr_tail = "".join(lines[-10:]).strip()
+                        except Exception:
+                            pass
                     logger.error(
                         f"llama-server process exited with code "
                         f"{self.process.returncode}"
+                        + (f"\nStderr tail:\n{stderr_tail}" if stderr_tail else "")
                     )
                     return False
 
@@ -941,6 +1000,23 @@ class LocalModelManager:
                 continue
 
             if self.idle_seconds > max_idle:
+                # Don't unload if tasks are actively processing — the agent
+                # may be between LLM calls (tool execution, file I/O, etc.)
+                try:
+                    from src.infra.db import get_db
+                    db = await get_db()
+                    cursor = await db.execute(
+                        "SELECT COUNT(*) FROM tasks WHERE status = 'processing'"
+                    )
+                    processing = (await cursor.fetchone())[0]
+                    if processing > 0:
+                        logger.debug(
+                            f"Idle unload skipped: {processing} task(s) still processing"
+                        )
+                        continue
+                except Exception:
+                    pass  # DB error → safe to proceed with unload
+
                 logger.info(
                     f"Model {self.current_model} idle for "
                     f"{self.idle_seconds:.0f}s (>{max_idle}s), unloading"
@@ -1018,6 +1094,11 @@ class LocalModelManager:
                     # Reset counter — the server is responsive, just occupied.
                     consecutive_health_failures = 0
                 else:
+                    # Re-check idle unload flag — may have started during
+                    # the async /health call above.
+                    if self._idle_unload_in_progress or self.swap_started_at > 0:
+                        consecutive_health_failures = 0
+                        continue
                     consecutive_health_failures += 1
                     logger.warning(
                         f"llama-server /health failed "

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from src.infra.logging_config import get_logger
+from src.infra.times import utc_now
 
 logger = get_logger("shopping.intelligence.timing")
 
@@ -125,7 +126,7 @@ async def advise_timing(category: str, product_name: str = "") -> dict:
     """
     logger.info("Advising timing", category=category, product_name=product_name)
 
-    now = datetime.now()
+    now = utc_now()
     signals: list[dict] = []
 
     # --- Signal 1: upcoming sale events ---

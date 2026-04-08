@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "setupComplete": true,
+  "preferences": {},
+  "personalization": {},
+  "modelProviders": [
+    {
+      "id": "local-openai",
+      "name": "Local LLM",
+      "type": "openai",
+      "chatModels": [
+        {
+          "id": "local-model",
+          "name": "local-model",
+          "key": "local-model",
+          "displayName": "Local Model"
+        }
+      ],
+      "embeddingModels": [],
+      "config": {
+        "apiKey": "not-needed",
+        "baseURL": "http://host.docker.internal:8080/v1"
+      }
+    },
+    {
+      "id": "transformers-local",
+      "name": "Transformers",
+      "type": "transformers",
+      "chatModels": [],
+      "embeddingModels": [
+        {
+          "name": "all-MiniLM-L6-v2",
+          "key": "Xenova/all-MiniLM-L6-v2"
+        },
+        {
+          "name": "mxbai-embed-large-v1",
+          "key": "mixedbread-ai/mxbai-embed-large-v1"
+        },
+        {
+          "name": "nomic-embed-text-v1",
+          "key": "Xenova/nomic-embed-text-v1"
+        }
+      ],
+      "config": {}
+    },
+    {
+      "id": "a48f2442-602b-4553-88ab-95aefe10e18c",
+      "name": "Transformers",
+      "type": "transformers",
+      "chatModels": [],
+      "embeddingModels": [],
+      "config": {},
+      "hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    }
+  ],
+  "search": {
+    "searxngURL": "http://localhost:8080"
+  }
+}

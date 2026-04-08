@@ -6,19 +6,26 @@ Usage:
     python benchmark_cli.py benchmarks        # Fetch/refresh benchmarks
     python benchmark_cli.py enrich            # Enrich registry with benchmarks
     python benchmark_cli.py show              # Show full registry
+    python benchmark_cli.py routing           # Show task routing preview only
     python benchmark_cli.py score <task>      # Show model ranking for a task
     python benchmark_cli.py model <name>      # Show single model details
     python benchmark_cli.py compare <m1> <m2> # Side-by-side comparison
 """
 
 import logging
+import os
 import sys
 
-from src.infra.logging_config import get_logger
-from src.models.benchmark.benchmark_fetcher import \
-    enrich_registry_with_benchmarks, BenchmarkFetcher
-from ..model_registry import reload_registry, get_registry
-from ..capabilities import TASK_PROFILES, Cap
+# Allow running from any directory (e.g. python benchmark_cli.py from src/models/benchmark/)
+_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+from src.models.benchmark.benchmark_fetcher import BenchmarkFetcher, \
+    enrich_registry_with_benchmarks
+from src.models.capabilities import TASK_PROFILES, Cap
+from src.models.model_registry import get_registry, reload_registry
+from yazbunu import get_logger
 
 logger = get_logger("models.benchmark.cli")
 
@@ -54,28 +61,43 @@ def cmd_benchmarks():
         print(f"   {f.source_name:25s}: {count:>4} models")
 
 
-def cmd_enrich():
+def cmd_enrich(force_refresh: bool = False):
     """Enrich registry with benchmark data."""
+    if force_refresh:
+        print("🔄 Force-refreshing benchmark cache...")
+        fetcher = BenchmarkFetcher()
+        fetcher.refresh_cache()
 
     registry = get_registry()
     enriched = enrich_registry_with_benchmarks(registry)
 
     print(f"\n✅ Enriched {len(enriched)} models with benchmark data")
     for name, caps in enriched.items():
+        model = registry.get(name)
+        variant_tag = ""
+        if model and getattr(model, 'is_variant', False):
+            variant_tag = f" [{','.join(sorted(model.variant_flags))}]"
         top = sorted(caps.items(), key=lambda x: x[1], reverse=True)[:3]
         top_str = ", ".join(f"{k}={v:.1f}" for k, v in top)
-        print(f"   {name:40s}: {top_str}")
+        print(f"   {name:45s}{variant_tag:20s}: {top_str}")
+
+    fallback = [n for n in registry.models if n not in enriched]
+    if fallback:
+        print(f"\n⚠️  {len(fallback)} models fell back to family profiles:")
+        for name in sorted(fallback):
+            model = registry.get(name)
+            print(f"   {name:45s} (family={model.family if model else '?'})")
 
 
 def cmd_show():
     """Show full registry summary."""
     registry = get_registry()
+    registry.wait_for_enrichment()
     registry.print_summary()
 
 
 def cmd_score(task_name: str):
     """Show model ranking for a task."""
-
     if task_name not in TASK_PROFILES:
         print(f"Unknown task: {task_name}")
         print(f"Available: {', '.join(sorted(TASK_PROFILES.keys()))}")
@@ -162,7 +184,7 @@ def cmd_model(name: str):
     if model.tokens_per_second > 0:
         print(f"  Speed:       {model.tokens_per_second:.1f} tok/s")
 
-    print(f"\n  📊 Capabilities (14 dimensions):")
+    print(f"\n  📊 Capabilities (15 dimensions):")
     print(f"  {'─' * 50}")
     sorted_caps = sorted(model.capabilities.items(), key=lambda x: x[1], reverse=True)
     for cap_name, score in sorted_caps:
@@ -279,6 +301,56 @@ def cmd_compare(name1: str, name2: str):
         print(f"  {task_name:28s} {s1:>{col_w-1}.1f}  {s2:>{col_w-1}.1f} {indicator}{winner}")
 
 
+def cmd_variants():
+    """Show all model variants and their mode flags."""
+    registry = get_registry()
+
+    print(f"\n🔀 Model Variants ({len(registry.models)} total entries)")
+    print(f"{'═' * 70}")
+
+    bases = {}
+    for name, model in registry.models.items():
+        base = getattr(model, 'base_model_name', '') or name
+        if base not in bases:
+            bases[base] = []
+        bases[base].append(model)
+
+    for base_name, variants in sorted(bases.items()):
+        for v in sorted(variants, key=lambda m: m.name):
+            flags = getattr(v, 'variant_flags', set())
+            mode = "base" if not getattr(v, 'is_variant', False) else ",".join(sorted(flags))
+            thinking = "🧠" if v.thinking_model else "  "
+            vision = "👁️" if v.has_vision else "  "
+            print(f"  {thinking} {vision} {v.name:45s} [{mode:20s}] best={v.best_score():.1f}")
+        print()
+
+
+def cmd_routing():
+    """Show task routing preview — which models are best for each agent role."""
+    registry = get_registry()
+    registry.wait_for_enrichment()
+
+    print(f"\n🎯 Task Routing Preview ({len(registry.models)} models)")
+    print(f"{'═' * 70}")
+
+    tasks = [
+        "planner", "architect", "coder", "implementer", "fixer",
+        "test_generator", "reviewer", "visual_reviewer", "researcher",
+        "analyst", "writer", "summarizer", "assistant", "executor",
+        "error_recovery", "pipeline", "workflow",
+        "shopping_advisor", "classifier", "grader",
+    ]
+    for task in tasks:
+        if task not in TASK_PROFILES:
+            continue
+        ranked = registry.best_for_task(task, top_k=3)
+        if ranked:
+            models_str = " -> ".join(f"{n}({s:.1f})" for n, s in ranked)
+            print(f"  {task:20s}: {models_str}")
+
+    print()
+
+
 def cmd_tasks():
     """List all available tasks and their key capabilities."""
 
@@ -341,7 +413,8 @@ def main():
     elif cmd == "benchmarks":
         cmd_benchmarks()
     elif cmd == "enrich":
-        cmd_enrich()
+        force = "--force-refresh" in sys.argv or "-f" in sys.argv
+        cmd_enrich(force_refresh=force)
     elif cmd == "show":
         cmd_show()
     elif cmd == "score":
@@ -360,6 +433,10 @@ def main():
             print("Usage: benchmark_cli.py compare <model1> <model2>")
             return
         cmd_compare(sys.argv[2], sys.argv[3])
+    elif cmd == "routing":
+        cmd_routing()
+    elif cmd == "variants":
+        cmd_variants()
     elif cmd == "tasks":
         cmd_tasks()
     elif cmd == "export":
@@ -372,5 +449,5 @@ def main():
 
 if __name__ == "__main__":
     from dotenv import load_dotenv
-    load_dotenv()  # loads .env into environment
+    load_dotenv(os.path.join(_project_root, ".env"))
     main()

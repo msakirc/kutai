@@ -1,6 +1,6 @@
 # router.py
 """
-Model Router v2 — 14-dimension task-aware model selection,
+Model Router v2 — 15-dimension task-aware model selection,
 rate limiting, retries, cross-provider fallback, GPU-aware scheduling.
 """
 
@@ -323,7 +323,7 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
     Select models matching requirements, ranked by composite score.
 
     Scoring (all 0-100, then weighted):
-    1. CAPABILITY FIT (35)  — 14-dimension weighted dot product
+    1. CAPABILITY FIT (35)  — 15-dimension weighted dot product
     2. COST EFFICIENCY (25) — local > free cloud > cheap paid > expensive
     3. AVAILABILITY (20)    — rate limit headroom, loaded status
     4. PERFORMANCE (15)     — historical success rate + quality grades
@@ -336,6 +336,7 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
     min_score = reqs.effective_min_score
 
     candidates: list[ScoredModel] = []
+    _time_gated: list[ScoredModel] = []  # models that passed all other filters but are too slow
 
     # Fetch actual runtime state for the currently loaded local model.
     # Used to apply runtime-aware scoring adjustments inside the loop.
@@ -393,6 +394,10 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
         # Only needs_vision stays hard — you can't do vision without it.
         if reqs.needs_vision and not model.has_vision:
             _skip("no_vision"); continue
+        # Exclude vision variants from non-vision tasks — loading mmproj
+        # wastes RAM for no benefit, and the base model is identical.
+        if not reqs.needs_vision and "vision" in getattr(model, "variant_flags", set()):
+            _skip("vision_variant_not_needed"); continue
 
         if reqs.max_cost > 0 and not model.is_free:
             est_cost = model.estimated_cost(
@@ -429,6 +434,33 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
                         _budget_mb = int(_gpu.vram_total_mb * _vram_budget)
                         if _model_vram > _budget_mb:
                             _skip(f"vram_budget({_model_vram}>{_budget_mb}MB)"); continue
+
+        # ── Time gate flag: mark models too slow for the timeout budget ──
+        # Checked after scoring; if ALL candidates would be time-gated,
+        # the least-slow one is rescued so we never return empty.
+        # Uses the dispatcher's hard cap (300s) as ceiling: when TPS is
+        # known, the dispatcher computes min(300, est_gen*2), so generation
+        # can never exceed 300s without timing out.
+        _is_time_gated = False
+        if model.is_local and reqs.estimated_output_tokens > 0:
+            _gate_tps = (
+                _loaded_runtime.measured_tps
+                if (model.is_loaded
+                    and _loaded_runtime is not None
+                    and _loaded_runtime.model_name == name
+                    and _loaded_runtime.measured_tps > 0)
+                else model.tokens_per_second
+            )
+            if _gate_tps > 0:
+                _gate_secs = reqs.estimated_output_tokens / _gate_tps
+                _TIME_BUDGET = 300.0  # dispatcher hard cap
+                if _gate_secs > _TIME_BUDGET:
+                    _is_time_gated = True
+                    reasons.append(
+                        f"time_gated({_gate_tps:.1f}tps×"
+                        f"{reqs.estimated_output_tokens}tok"
+                        f"={_gate_secs:.0f}s>{_TIME_BUDGET:.0f}s)"
+                    )
 
         # ╔══════════════════════════════════════════╗
         # ║  LAYER 2: Capability gate              ║
@@ -737,13 +769,30 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
             composite *= 0.75
             reasons.append("needs_swap")
 
-        candidates.append(ScoredModel(
+        _scored = ScoredModel(
             model=model,
             score=composite,
             capability_score=cap_score_raw,
             composite_score=composite,
             reasons=reasons,
-        ))
+        )
+        if _is_time_gated:
+            _time_gated.append(_scored)
+        else:
+            candidates.append(_scored)
+
+    # ── Rescue: if time gate filtered all candidates, let the fastest through ──
+    if not candidates and _time_gated:
+        _time_gated.sort(key=lambda c: -(c.model.tokens_per_second or 0))
+        rescued = _time_gated[0]
+        rescued.reasons.append("rescued(only_option)")
+        candidates.append(rescued)
+        logger.warning(
+            "time_gate_rescue",
+            model=rescued.model.name,
+            tps=rescued.model.tokens_per_second,
+            msg="all candidates were too slow, rescued fastest",
+        )
 
     candidates.sort(key=lambda c: -c.score)
 
@@ -1400,6 +1449,25 @@ async def call_model(
                             continue
                         break
 
+                    # Local 500 during model swap — wait for swap to finish
+                    is_server_error = "500" in error_str or "internal server error" in error_str
+                    if is_server_error and model.is_local and local_manager:
+                        if local_manager.swap_started_at > 0:
+                            # Swap in progress — brief wait then let outer loop re-select
+                            swap_wait = 0
+                            while local_manager.swap_started_at > 0 and swap_wait < 10:
+                                await asyncio.sleep(2)
+                                swap_wait += 2
+                            if swap_wait > 0:
+                                logger.info(
+                                    "waited for model swap",
+                                    model_name=model.name,
+                                    wait_seconds=swap_wait,
+                                )
+                            # After swap, the model may have changed — break
+                            # to let the outer loop re-select the best model
+                            break
+
                     if attempt < 1:
                         await asyncio.sleep(2)
                         continue
@@ -1461,103 +1529,6 @@ def _extract_thinking(msg) -> str | None:
         content, re.DOTALL,
     )
     return match.group(1).strip() if match else None
-
-
-# ─── Response Grading ────────────────────────────────────────────────────────
-
-GRADING_PROMPT = """Rate this AI response on a scale of 1-5:
-1 = Wrong/useless, 2 = Partially relevant, 3 = Adequate,
-4 = Good and complete, 5 = Excellent
-
-Task: {task_title}
-Response to grade:
-{response}
-
-Respond with ONLY JSON. If score >= 4, also include situation_summary, strategy_summary, and tool_template fields describing what approach worked:
-{{"score": N, "reason": "brief", "situation_summary": "one line describing the type of problem solved", "strategy_summary": "one line describing the approach that worked", "tool_template": ["step1", "step2"]}}
-
-For scores < 4, just: {{"score": N, "reason": "brief"}}"""
-
-
-async def grade_response(
-    task_title: str,
-    task_description: str,
-    response_text: str,
-    generating_model: str = "",
-    task_name: str = "",
-) -> tuple[float | None, dict]:
-    """Grade a response using a DIFFERENT model.
-
-    Returns:
-        (score, grader_data) where grader_data is the full parsed JSON dict
-        from the grading LLM (may include situation_summary, strategy_summary,
-        tool_template for high-quality responses).
-    """
-    if not response_text or len(response_text.strip()) < 10:
-        return (None, {})
-
-    try:
-        grading_reqs = ModelRequirements(
-            task="reviewer",
-            difficulty=3,
-            priority=1,  # lowest priority — never block main work for GPU
-            estimated_input_tokens=800,
-            estimated_output_tokens=50,
-            prefer_speed=True,
-            exclude_models=[generating_model] if generating_model else [],
-        )
-
-        # Route through dispatcher as OVERHEAD — grading must NEVER trigger
-        # model swaps (this was the root cause of the swap storm bug).
-        from src.core.llm_dispatcher import get_dispatcher, CallCategory
-        result = await get_dispatcher().request(
-            CallCategory.OVERHEAD,
-            grading_reqs,
-            messages=[{
-                "role": "user",
-                "content": GRADING_PROMPT.format(
-                    task_title=task_title[:100],
-                    response=response_text[:2000],
-                ),
-            }],
-        )
-
-        raw = result.get("content", "").strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-            raw = raw.rsplit("```", 1)[0]
-
-        parsed = json.loads(raw.strip())
-        score = float(parsed.get("score", 3))
-        grade = max(1.0, min(5.0, score))
-
-        # Feed grade back to registry
-        if generating_model:
-            registry = get_registry()
-            model_name = generating_model.split("/")[-1] if "/" in generating_model else generating_model
-            # Find dominant capability for the grading task context
-            lookup = task_name or result.get("task", "")
-            if lookup and lookup in TASK_PROFILES:
-                profile = TASK_PROFILES[lookup]
-                dominant = max(profile.items(), key=lambda x: x[1])
-                cap_key = dominant[0].value if hasattr(dominant[0], 'value') else dominant[0]
-                # Pass call count so EMA uses lower alpha for early samples
-                call_count = 0
-                if _perf_cache_ready:
-                    for _agent_perf in _perf_cache.values():
-                        mp = _agent_perf.get(generating_model)
-                        if mp:
-                            call_count = mp.get("total_calls", 0)
-                            break
-                registry.update_quality_from_grading(
-                    model_name, cap_key, grade * 2.0, call_count=call_count,
-                )
-
-        return (grade, parsed)
-
-    except Exception as e:
-        logger.debug("response grading failed", error=str(e))
-        return (None, {})
 
 
 # ─── Cost Budget ─────────────────────────────────────────────────────────────

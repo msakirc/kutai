@@ -14,9 +14,10 @@ class WriterAgent(BaseAgent):
     description = "Creates documentation, READMEs, and text content"
     default_tier = "medium"
     min_tier = "cheap"
-    # 3 iterations: (1) read project context, (2) write docs/prose,
-    # (3) verify output.  Writing is primarily generative, not iterative.
-    max_iterations = 3
+    # 5 iterations: (1) read project context, (2-3) write docs/prose,
+    # (4) verify output, (5) fix issues.  Workflow steps with large context
+    # need more room than simple doc generation.
+    max_iterations = 5
     enable_self_reflection = True
 
     allowed_tools = [

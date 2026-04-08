@@ -2,18 +2,19 @@
 """
 Task state machine — validates all status transitions.
 
-States:
-  pending → processing → completed / failed / needs_clarification /
-                          needs_review / needs_subtasks / waiting_subtasks
+9-state unified lifecycle (Unified Task Lifecycle refactor):
+
+  pending → processing → ungraded → completed
+                       ↘ failed   → pending (retry)
+                                  → ungraded (re-grade)
   pending → cancelled
-  processing → cancelled
-  failed → pending  (retry)
-  needs_clarification → pending  (user answered)
-  needs_review → pending
-  waiting_subtasks → completed / failed
-  paused → pending
-  pending → paused
-  processing → paused
+  pending → skipped
+  processing → pending / failed / waiting_subtasks / waiting_human / cancelled
+  waiting_subtasks → completed / failed / cancelled
+  waiting_human → pending / cancelled
+
+Key state: `ungraded` — agent work done, awaiting quality check before
+marking completed or bouncing back to pending/failed.
 
 Error categories attached to failed tasks:
   model_error, tool_error, timeout, budget_exceeded,
@@ -34,15 +35,13 @@ class TaskState(str, Enum):
     """All valid task states."""
     PENDING = "pending"
     PROCESSING = "processing"
+    UNGRADED = "ungraded"
     COMPLETED = "completed"
     FAILED = "failed"
-    CANCELLED = "cancelled"
-    NEEDS_CLARIFICATION = "needs_clarification"
-    NEEDS_REVIEW = "needs_review"
-    NEEDS_SUBTASKS = "needs_subtasks"
     WAITING_SUBTASKS = "waiting_subtasks"
-    PAUSED = "paused"
-    REJECTED = "rejected"
+    WAITING_HUMAN = "waiting_human"
+    CANCELLED = "cancelled"
+    SKIPPED = "skipped"
 
 
 # ─── Error categories ────────────────────────────────────────────────────────
@@ -65,47 +64,38 @@ TRANSITIONS: dict[str, set[str]] = {
     TaskState.PENDING: {
         TaskState.PROCESSING,
         TaskState.CANCELLED,
-        TaskState.PAUSED,
+        TaskState.SKIPPED,
     },
     TaskState.PROCESSING: {
+        TaskState.UNGRADED,
         TaskState.COMPLETED,
+        TaskState.PENDING,   # reset on watchdog stuck-detection
         TaskState.FAILED,
-        TaskState.CANCELLED,
-        TaskState.NEEDS_CLARIFICATION,
-        TaskState.NEEDS_REVIEW,
-        TaskState.NEEDS_SUBTASKS,
         TaskState.WAITING_SUBTASKS,
-        TaskState.PENDING,  # reset on watchdog stuck-detection
-        TaskState.PAUSED,
+        TaskState.WAITING_HUMAN,
+        TaskState.CANCELLED,
+    },
+    TaskState.UNGRADED: {
+        TaskState.COMPLETED,  # grader approved
+        TaskState.PENDING,    # grader: retry from scratch
+        TaskState.FAILED,     # grader: irrecoverable
     },
     TaskState.COMPLETED: set(),  # terminal
     TaskState.FAILED: {
-        TaskState.PENDING,  # retry
-    },
-    TaskState.CANCELLED: set(),  # terminal
-    TaskState.NEEDS_CLARIFICATION: {
-        TaskState.PENDING,  # user responded
-        TaskState.CANCELLED,
-    },
-    TaskState.NEEDS_REVIEW: {
-        TaskState.PENDING,  # reviewer done
-        TaskState.CANCELLED,
-        TaskState.COMPLETED,  # review created a subtask, original done
-    },
-    TaskState.NEEDS_SUBTASKS: {
-        TaskState.WAITING_SUBTASKS,
-        TaskState.CANCELLED,
+        TaskState.PENDING,   # retry
+        TaskState.UNGRADED,  # re-grade after fix
     },
     TaskState.WAITING_SUBTASKS: {
         TaskState.COMPLETED,  # all children done
         TaskState.FAILED,     # a child failed
         TaskState.CANCELLED,
     },
-    TaskState.PAUSED: {
-        TaskState.PENDING,  # resume
+    TaskState.WAITING_HUMAN: {
+        TaskState.PENDING,    # human responded
         TaskState.CANCELLED,
     },
-    TaskState.REJECTED: set(),  # terminal
+    TaskState.CANCELLED: set(),  # terminal
+    TaskState.SKIPPED: set(),    # terminal
 }
 
 
@@ -141,7 +131,7 @@ async def transition_task(
     Loads current state from DB, validates the transition is legal,
     then updates. Raises InvalidTransition if the move is not allowed.
 
-    Additional fields (result, completed_at, retry_count, etc.) can be
+    Additional fields (result, completed_at, worker_attempts, etc.) can be
     passed as **extra_fields and will be included in the DB update.
     """
     # Lazy import to avoid circular dependency

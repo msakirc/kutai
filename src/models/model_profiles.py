@@ -46,12 +46,20 @@ FAMILY_PATTERNS: list[tuple[list[str], str]] = [
     (["python", "coder"],                   "generic_coder"),
     (["coder"],                             "generic_coder"),  # catch-all for *-coder models
 
+    # New model families
+    (["apriel", "thinker"],                 "apriel_thinker"),
+    (["apriel"],                            "apriel"),
+    (["gigachat"],                          "gigachat"),
+    (["gpt-oss"],                           "gpt_oss"),
+
     # Vision models
     (["llava"],                              "llava"),
     (["moondream"],                          "moondream"),
     (["internvl"],                           "internvl"),
     (["minicpm", "v"],                       "minicpm_v"),
     (["qwen2", "vl"],                        "qwen2_vl"),
+    (["gemma-4"],                             "gemma4"),      # gemma4 MoE, vision, thinking
+    (["gemma4"],                              "gemma4"),
     (["gemma3"],                             "gemma3"),      # gemma3 has vision
 
     # GLM models (before base to match flash variant first)
@@ -117,6 +125,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              8.0,
             "vision":                0.0,
             "conversation":          7.5,
+            "turkish":               5.5,
         },
     ),
     "qwen35": FamilyProfile(
@@ -140,6 +149,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              8.5,
             "vision":                0.0,
             "conversation":          8.0,
+            "turkish":               6.0,
         },
     ),
     "qwen3_coder": FamilyProfile(
@@ -163,6 +173,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              7.5,
             "vision":                0.0,
             "conversation":          4.5,
+            "turkish":               3.0,
         },
     ),
     "qwen25": FamilyProfile(
@@ -184,6 +195,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              7.0,
             "vision":                0.0,
             "conversation":          7.0,
+            "turkish":               5.0,
         },
     ),
     "qwen25_coder": FamilyProfile(
@@ -206,6 +218,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              7.0,
             "vision":                0.0,
             "conversation":          4.0,
+            "turkish":               2.5,
         },
     ),
     "qwen2": FamilyProfile(
@@ -227,6 +240,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              6.5,
             "vision":                0.0,
             "conversation":          6.5,
+            "turkish":               4.5,
         },
     ),
     "qwen2_vl": FamilyProfile(
@@ -250,6 +264,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              3.0,
             "vision":                8.0,
             "conversation":          6.0,
+            "turkish":               4.0,
         },
     ),
 
@@ -275,6 +290,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              7.5,
             "vision":                0.0,
             "conversation":          8.0,
+            "turkish":               4.0,
         },
     ),
     "llama32": FamilyProfile(
@@ -296,6 +312,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              4.5,
             "vision":                0.0,
             "conversation":          5.5,
+            "turkish":               3.0,
         },
     ),
     "llama31": FamilyProfile(
@@ -317,6 +334,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              7.0,
             "vision":                0.0,
             "conversation":          7.5,
+            "turkish":               3.5,
         },
     ),
     "llama3": FamilyProfile(
@@ -338,6 +356,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              5.5,
             "vision":                0.0,
             "conversation":          7.0,
+            "turkish":               3.0,
         },
     ),
 
@@ -363,6 +382,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              5.5,
             "vision":                0.0,
             "conversation":          5.5,
+            "turkish":               3.5,
         },
     ),
     "phi4_mini": FamilyProfile(
@@ -384,6 +404,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              4.0,
             "vision":                0.0,
             "conversation":          4.5,
+            "turkish":               2.5,
         },
     ),
     "phi3": FamilyProfile(
@@ -405,12 +426,38 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              3.0,
             "vision":                0.0,
             "conversation":          5.0,
+            "turkish":               2.0,
         },
     ),
 
     # ════════════════════════════════════════════════════════
     # Gemma family
     # ════════════════════════════════════════════════════════
+    "gemma4": FamilyProfile(
+        anchor_params_b=26,
+        specialty="",
+        has_vision=True,
+        function_calling=True,
+        thinking_capable=True,
+        context_default=131072,
+        base_capabilities={
+            "reasoning":             9.0,
+            "planning":              8.5,
+            "analysis":              8.5,
+            "code_generation":       9.0,
+            "code_reasoning":        8.5,
+            "system_design":         8.0,
+            "prose_quality":         8.5,
+            "instruction_adherence": 8.5,
+            "domain_knowledge":      9.0,
+            "context_utilization":   9.0,
+            "structured_output":     8.5,
+            "tool_use":              8.0,
+            "vision":                8.5,
+            "conversation":          8.5,
+            "turkish":               7.0,
+        },
+    ),
     "gemma3": FamilyProfile(
         anchor_params_b=27,
         has_vision=True,
@@ -431,6 +478,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              6.5,
             "vision":                7.0,
             "conversation":          7.0,
+            "turkish":               5.5,
         },
     ),
     "gemma2": FamilyProfile(
@@ -452,6 +500,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              3.5,
             "vision":                0.0,
             "conversation":          6.0,
+            "turkish":               4.0,
         },
     ),
     "gemma": FamilyProfile(
@@ -473,6 +522,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              2.5,
             "vision":                0.0,
             "conversation":          4.5,
+            "turkish":               3.0,
         },
     ),
 
@@ -498,6 +548,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              7.0,
             "vision":                0.0,
             "conversation":          7.5,
+            "turkish":               5.0,
         },
     ),
     "mixtral": FamilyProfile(
@@ -519,6 +570,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              6.5,
             "vision":                0.0,
             "conversation":          7.0,
+            "turkish":               5.0,
         },
     ),
 
@@ -546,6 +598,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              7.0,
             "vision":                0.0,
             "conversation":          7.5,
+            "turkish":               4.0,
         },
     ),
     "glm4_flash": FamilyProfile(
@@ -569,6 +622,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              6.5,
             "vision":                0.0,
             "conversation":          7.0,
+            "turkish":               3.5,
         },
     ),
 
@@ -594,6 +648,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              7.0,
             "vision":                0.0,
             "conversation":          7.0,
+            "turkish":               4.0,
         },
     ),
     "deepseek_r1": FamilyProfile(
@@ -617,6 +672,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              6.0,
             "vision":                0.0,
             "conversation":          5.5,
+            "turkish":               3.5,
         },
     ),
     "deepseek_coder": FamilyProfile(
@@ -639,6 +695,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              5.5,
             "vision":                0.0,
             "conversation":          3.5,
+            "turkish":               2.0,
         },
     ),
     "deepseek": FamilyProfile(
@@ -660,6 +717,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              6.0,
             "vision":                0.0,
             "conversation":          6.0,
+            "turkish":               3.5,
         },
     ),
 
@@ -687,6 +745,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              6.0,
             "vision":                0.0,
             "conversation":          5.5,
+            "turkish":               4.0,
         },
     ),
 
@@ -713,6 +772,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              2.0,
             "vision":                7.5,
             "conversation":          5.5,
+            "turkish":               2.0,
         },
     ),
     "moondream": FamilyProfile(
@@ -735,6 +795,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              1.0,
             "vision":                6.0,
             "conversation":          3.0,
+            "turkish":               1.0,
         },
     ),
     "internvl": FamilyProfile(
@@ -758,6 +819,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              3.0,
             "vision":                8.5,
             "conversation":          5.5,
+            "turkish":               3.0,
         },
     ),
     "minicpm_v": FamilyProfile(
@@ -780,6 +842,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              2.5,
             "vision":                7.5,
             "conversation":          5.0,
+            "turkish":               3.0,
         },
     ),
 
@@ -805,6 +868,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              4.0,
             "vision":                0.0,
             "conversation":          3.0,
+            "turkish":               1.5,
         },
     ),
     "starcoder": FamilyProfile(
@@ -826,6 +890,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              3.0,
             "vision":                0.0,
             "conversation":          2.0,
+            "turkish":               1.0,
         },
     ),
     "generic_coder": FamilyProfile(
@@ -848,6 +913,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              3.5,
             "vision":                0.0,
             "conversation":          2.5,
+            "turkish":               2.0,
         },
     ),
     "command_r": FamilyProfile(
@@ -869,6 +935,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              7.5,
             "vision":                0.0,
             "conversation":          7.5,
+            "turkish":               5.5,
         },
     ),
     "yi": FamilyProfile(
@@ -890,6 +957,7 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              3.5,
             "vision":                0.0,
             "conversation":          6.0,
+            "turkish":               3.5,
         },
     ),
     "internlm": FamilyProfile(
@@ -911,6 +979,112 @@ FAMILY_PROFILES: dict[str, FamilyProfile] = {
             "tool_use":              6.0,
             "vision":                0.0,
             "conversation":          6.0,
+            "turkish":               3.5,
+        },
+    ),
+
+    # ════════════════════════════════════════════════════════
+    # Apriel family (ServiceNow)
+    # ════════════════════════════════════════════════════════
+    "apriel_thinker": FamilyProfile(
+        anchor_params_b=15,
+        specialty="reasoning",
+        has_vision=True,
+        function_calling=True,
+        thinking_capable=True,
+        context_default=131072,
+        base_capabilities={
+            "reasoning":             8.5,
+            "planning":              7.5,
+            "analysis":              8.0,
+            "code_generation":       8.0,
+            "code_reasoning":        8.0,
+            "system_design":         7.0,
+            "prose_quality":         6.5,
+            "instruction_adherence": 7.5,
+            "domain_knowledge":      8.0,
+            "context_utilization":   7.5,
+            "structured_output":     7.0,
+            "tool_use":              6.5,
+            "vision":                7.5,
+            "conversation":          6.0,
+            "turkish":               4.0,
+        },
+    ),
+    "apriel": FamilyProfile(
+        anchor_params_b=15,
+        function_calling=True,
+        context_default=131072,
+        base_capabilities={
+            "reasoning":             7.0,
+            "planning":              6.5,
+            "analysis":              7.0,
+            "code_generation":       7.0,
+            "code_reasoning":        6.5,
+            "system_design":         6.0,
+            "prose_quality":         6.0,
+            "instruction_adherence": 7.0,
+            "domain_knowledge":      7.0,
+            "context_utilization":   7.0,
+            "structured_output":     6.5,
+            "tool_use":              6.0,
+            "vision":                0.0,
+            "conversation":          5.5,
+            "turkish":               3.5,
+        },
+    ),
+
+    # ════════════════════════════════════════════════════════
+    # GigaChat family (Sber)
+    # ════════════════════════════════════════════════════════
+    "gigachat": FamilyProfile(
+        anchor_params_b=10,
+        function_calling=True,
+        thinking_capable=False,
+        context_default=32768,
+        base_capabilities={
+            "reasoning":             5.5,
+            "planning":              5.0,
+            "analysis":              5.5,
+            "code_generation":       6.5,
+            "code_reasoning":        5.5,
+            "system_design":         4.5,
+            "prose_quality":         6.0,
+            "instruction_adherence": 6.0,
+            "domain_knowledge":      6.5,
+            "context_utilization":   5.5,
+            "structured_output":     5.5,
+            "tool_use":              5.5,
+            "vision":                0.0,
+            "conversation":          6.5,
+            "turkish":               3.0,
+        },
+    ),
+
+    # ════════════════════════════════════════════════════════
+    # GPT-OSS family (OpenAI)
+    # ════════════════════════════════════════════════════════
+    "gpt_oss": FamilyProfile(
+        anchor_params_b=21,
+        function_calling=True,
+        thinking_capable=True,
+        context_default=131072,
+        base_capabilities={
+            "reasoning":             8.0,
+            "planning":              7.5,
+            "analysis":              7.5,
+            "code_generation":       8.0,
+            "code_reasoning":        7.5,
+            "system_design":         7.0,
+            "prose_quality":         6.5,
+            "instruction_adherence": 8.0,
+            "domain_knowledge":      7.5,
+            "context_utilization":   8.0,
+            "structured_output":     8.0,
+            "tool_use":              8.5,
+            "vision":                0.0,
+            "conversation":          6.5,
+            "turkish":               5.0,
         },
     ),
 }
@@ -928,6 +1102,7 @@ CLOUD_PROFILES: dict[str, dict] = {
             "domain_knowledge": 9.0, "context_utilization": 9.0,
             "structured_output": 9.0, "tool_use": 9.5,
             "vision": 8.5, "conversation": 9.0,
+            "turkish": 8.0,
         },
         "thinking_model": False,
         "has_vision": True,
@@ -940,6 +1115,7 @@ CLOUD_PROFILES: dict[str, dict] = {
             "domain_knowledge": 8.5, "context_utilization": 8.5,
             "structured_output": 8.5, "tool_use": 9.0,
             "vision": 8.0, "conversation": 8.5,
+            "turkish": 7.5,
         },
         "thinking_model": False,
         "has_vision": True,
@@ -952,6 +1128,7 @@ CLOUD_PROFILES: dict[str, dict] = {
             "domain_knowledge": 9.0, "context_utilization": 8.0,
             "structured_output": 8.5, "tool_use": 9.0,
             "vision": 8.5, "conversation": 9.0,
+            "turkish": 8.0,
         },
         "thinking_model": False,
         "has_vision": True,
@@ -964,6 +1141,7 @@ CLOUD_PROFILES: dict[str, dict] = {
             "domain_knowledge": 7.0, "context_utilization": 6.5,
             "structured_output": 7.5, "tool_use": 7.5,
             "vision": 6.5, "conversation": 7.0,
+            "turkish": 6.5,
         },
         "thinking_model": False,
         "has_vision": True,
@@ -976,6 +1154,7 @@ CLOUD_PROFILES: dict[str, dict] = {
             "domain_knowledge": 8.5, "context_utilization": 7.5,
             "structured_output": 8.0, "tool_use": 8.5,
             "vision": 7.0, "conversation": 6.0,
+            "turkish": 6.0,
         },
         "thinking_model": True,
         "has_vision": True,
@@ -988,6 +1167,7 @@ CLOUD_PROFILES: dict[str, dict] = {
             "domain_knowledge": 8.5, "context_utilization": 9.0,
             "structured_output": 8.5, "tool_use": 8.5,
             "vision": 8.0, "conversation": 8.0,
+            "turkish": 7.5,
         },
         "thinking_model": True,
         "has_vision": True,
@@ -1000,6 +1180,7 @@ CLOUD_PROFILES: dict[str, dict] = {
             "domain_knowledge": 7.5, "context_utilization": 8.5,
             "structured_output": 7.5, "tool_use": 7.5,
             "vision": 7.5, "conversation": 7.5,
+            "turkish": 7.0,
         },
         "thinking_model": False,
         "has_vision": True,
@@ -1012,6 +1193,7 @@ CLOUD_PROFILES: dict[str, dict] = {
             "domain_knowledge": 7.5, "context_utilization": 7.5,
             "structured_output": 7.0, "tool_use": 7.5,
             "vision": 0.0, "conversation": 8.0,
+            "turkish": 5.0,
         },
         "thinking_model": False,
         "has_vision": False,
@@ -1024,6 +1206,7 @@ CLOUD_PROFILES: dict[str, dict] = {
             "domain_knowledge": 5.0, "context_utilization": 5.0,
             "structured_output": 5.0, "tool_use": 5.0,
             "vision": 0.0, "conversation": 5.5,
+            "turkish": 3.0,
         },
         "thinking_model": False,
         "has_vision": False,
@@ -1036,6 +1219,7 @@ CLOUD_PROFILES: dict[str, dict] = {
             "domain_knowledge": 8.0, "context_utilization": 7.5,
             "structured_output": 8.0, "tool_use": 8.0,
             "vision": 0.0, "conversation": 7.5,
+            "turkish": 6.0,
         },
         "thinking_model": True,
         "has_vision": False,
@@ -1048,6 +1232,7 @@ CLOUD_PROFILES: dict[str, dict] = {
             "domain_knowledge": 8.0, "context_utilization": 7.0,
             "structured_output": 6.5, "tool_use": 6.0,
             "vision": 0.0, "conversation": 5.5,
+            "turkish": 4.0,
         },
         "thinking_model": True,
         "has_vision": False,
@@ -1239,6 +1424,7 @@ def get_default_profile() -> FamilyProfile:
             "tool_use":              3.0,
             "vision":                0.0,
             "conversation":          4.0,
+            "turkish":               2.0,
         },
     )
 

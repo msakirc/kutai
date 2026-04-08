@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from dataclasses import dataclass
 import hashlib
 import json
 import re
@@ -58,16 +59,30 @@ SIDE_EFFECT_TOOLS: frozenset[str] = frozenset({
 # agent execution. Cache is invalidated when any SIDE_EFFECT_TOOL runs.
 CACHEABLE_READ_TOOLS: frozenset[str] = frozenset({
     "read_file", "file_tree", "git_status", "git_log", "git_diff",
-    "web_search", "extract_url", "read_pdf", "read_docx",
+    "web_search", "smart_search", "extract_url", "read_pdf", "read_docx",
     "read_spreadsheet", "extract_text",
 })
 
-# Max JSON format-correction retries before falling through to final_answer.
-MAX_FORMAT_RETRIES: int = 2
+# Max JSON format corrections (sub-iteration) before falling through to final_answer.
+MAX_FORMAT_CORRECTIONS: int = 2
 
-# Mid-task escalation: after this many iterations with tool failures,
+
+def _partition_tool_calls(tools: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split tool calls into parallel (read-only) and sequential (side-effect).
+
+    Unknown tools are treated as side-effect (safe default).
+    """
+    parallel, sequential = [], []
+    for tc in tools:
+        if tc.get("tool", "") in CACHEABLE_READ_TOOLS:
+            parallel.append(tc)
+        else:
+            sequential.append(tc)
+    return parallel, sequential
+
+# Model escalation: after this many consecutive tool failures,
 # escalate to the next tier up.
-ESCALATION_THRESHOLD: int = 3
+TOOL_FAILURE_ESCALATION_THRESHOLD: int = 3
 
 
 # Pre-build tool schema lookup by name for O(1) access during arg validation.
@@ -78,6 +93,17 @@ for _ts in TOOL_SCHEMAS:
     if _ts_name:
         _TOOL_SCHEMAS_BY_NAME[_ts_name] = _fn.get("parameters", {})
 del _ts, _fn, _ts_name
+
+
+@dataclass
+class GuardCorrection:
+    """Result from a sub-iteration guard check."""
+    guard_name: str
+    message: str
+
+
+# Max sub-iteration corrections (guards + format) within a single outer iteration.
+MAX_SUB_CORRECTIONS: int = 3
 
 
 class BaseAgent:
@@ -102,6 +128,7 @@ class BaseAgent:
     max_iterations: int = MAX_AGENT_ITERATIONS
 
     can_create_subtasks: bool = False
+    _suppress_clarification: bool = False
 
     # ── Phase 5: Execution pattern ──
     # "react_loop" (default) — multi-turn with tools
@@ -169,6 +196,17 @@ class BaseAgent:
             "}",
             "```",
             "",
+            "You can call MULTIPLE tools at once for efficiency:",
+            "```json",
+            "{",
+            '  "action": "multi_tool_call",',
+            '  "tools": [',
+            '    {"tool": "read_file", "args": {"filepath": "a.py"}},',
+            '    {"tool": "read_file", "args": {"filepath": "b.py"}}',
+            "  ]",
+            "}",
+            "```",
+            "",
             "When you have your FINAL answer, respond with:",
             "```json",
             "{",
@@ -200,16 +238,20 @@ class BaseAgent:
             "",
             "### IMPORTANT RULES:",
             "- EVERY response must be a single JSON block. Nothing else.",
-            "- Use ONE action per response.",
+            "- Use ONE action per response (multi_tool_call counts as one action).",
             "- After using a tool you will see the result and can act again.",
             "- Always inspect the workspace (file_tree) before writing code.",
             "- After writing code, ALWAYS run it to verify it works.",
             "- If you hit an error, read it carefully and fix the code.",
             f"- You have up to {self.max_iterations} iterations — don't waste them.",
             "- When done you MUST respond with the `final_answer` action.",
-            "- If you need more info from the user, use: "
-            '{\"action\": \"clarify\", \"question\": \"...\"}',
         ]
+        # Only offer clarify action if the task allows it
+        if not self._suppress_clarification:
+            lines.append(
+                "- If you need more info from the user, use: "
+                '{\"action\": \"clarify\", \"question\": \"...\"}'
+            )
         return "\n".join(lines)
 
     # ------------------------------------------------------------------ #
@@ -315,6 +357,114 @@ class BaseAgent:
         return cls.get("search_depth", "none") or "none"
 
     # ------------------------------------------------------------------ #
+    #  Sub-iteration guards                                                #
+    # ------------------------------------------------------------------ #
+
+    _DATA_FETCH_TOOLS = frozenset({
+        "web_search", "api_call", "api_lookup", "http_request",
+        "shopping_search", "read_file", "read_blackboard",
+    })
+
+    def _check_sub_iteration_guards(
+        self,
+        parsed: dict,
+        iteration: int,
+        tools_used: bool,
+        tools_used_names: set[str],
+        task: dict,
+        search_depth: str,
+        suppress_guards: bool,
+    ) -> GuardCorrection | None:
+        """Check Category-A guards that should not burn an outer iteration.
+
+        Returns a ``GuardCorrection`` if a guard fires, or ``None`` if all pass.
+        """
+        if suppress_guards:
+            return None
+
+        action_type = parsed.get("action", "final_answer")
+
+        # 1. Blocked clarification guard
+        if action_type == "clarify" and self._suppress_clarification:
+            return GuardCorrection(
+                guard_name="blocked_clarification",
+                message=(
+                    "You cannot ask for clarification on this task. "
+                    "Work with the information you have and provide "
+                    "your best answer using final_answer."
+                ),
+            )
+
+        # 2. Hallucination guard (action tasks)
+        has_tools = (
+            self.allowed_tools is None or len(self.allowed_tools) > 0
+        )
+        if (
+            action_type == "final_answer"
+            and not tools_used
+            and has_tools
+            and self._is_action_task(task)
+            and iteration < 2
+        ):
+            available = (
+                list(TOOL_REGISTRY.keys())[:6]
+                if self.allowed_tools is None
+                else self.allowed_tools[:6]
+            )
+            tool_list = ", ".join(available)
+            task_title = task.get("title", "")
+            return GuardCorrection(
+                guard_name="hallucination",
+                message=(
+                    "STOP. You did NOT actually perform this task. "
+                    "You just described what you would do, but nothing "
+                    "was executed.\n\n"
+                    f"Your task: {task_title}\n\n"
+                    "You MUST call a tool to take real action. "
+                    f"Available tools: {tool_list}\n\n"
+                    "Example — to run a shell command:\n"
+                    "```json\n"
+                    '{"action": "tool_call", "tool": "shell", '
+                    '"args": {"command": "ls -la"}}\n'
+                    "```\n\n"
+                    "Respond with ONLY the JSON block. No explanation."
+                ),
+            )
+
+        # 3. Search-required guard
+        _has_web_search = (
+            self.allowed_tools is None
+            or "web_search" in (self.allowed_tools or [])
+        )
+        _data_fetched = bool(tools_used_names & self._DATA_FETCH_TOOLS)
+        if (
+            action_type == "final_answer"
+            and _has_web_search
+            and search_depth in ("quick", "standard", "deep")
+            and not _data_fetched
+            and iteration < 3
+        ):
+            task_title = task.get("title", "")
+            return GuardCorrection(
+                guard_name="search_required",
+                message=(
+                    "STOP. This task requires a web search but you "
+                    "answered without searching. Your answer may contain "
+                    "fabricated information.\n\n"
+                    f"Task: {task_title}\n\n"
+                    "You MUST call web_search or api_call first to get "
+                    "real, up-to-date information. Example:\n"
+                    "```json\n"
+                    '{"action": "tool_call", "tool": "web_search", '
+                    '"args": {"query": "your search query here"}}\n'
+                    "```\n\n"
+                    "Respond with ONLY the JSON block. No explanation."
+                ),
+            )
+
+        return None
+
+    # ------------------------------------------------------------------ #
     #  Tier helpers                                                       #
     # ------------------------------------------------------------------ #
 
@@ -329,6 +479,70 @@ class BaseAgent:
             logger.warning(f"Permission check failed for {self.name}/{tool_name}: {exc}")
             return False  # Fail-closed on runtime errors
 
+    def _trim_for_escalation(
+        self, messages: list[dict], iteration: int, max_iterations: int,
+    ) -> list[dict]:
+        """Trim message history on model escalation.
+
+        Keeps: system prompt, task description, successful tool results,
+        most recent error. Strips: old model's reasoning, failed retries,
+        format corrections, guard rejections.
+        """
+        trimmed: list[dict] = []
+        last_error: dict | None = None
+
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            # Always keep system prompt
+            if role == "system":
+                trimmed.append(msg)
+                continue
+
+            # Keep original task (first user message after system)
+            if role == "user" and len(trimmed) <= 1 and "## Tool Result" not in content:
+                trimmed.append(msg)
+                continue
+
+            # Keep successful tool results
+            if (
+                role == "user"
+                and "## Tool Result" in content
+                and not content.lstrip().startswith("\u274c")
+                and not content.lstrip().startswith("\U0001f6ab")
+            ):
+                trimmed.append(msg)
+                continue
+
+            # Track last error for context
+            if role == "user" and (
+                content.lstrip().startswith("\u274c")
+                or content.lstrip().startswith("\U0001f6ab")
+            ):
+                last_error = msg
+
+            # Everything else (assistant reasoning, guard corrections,
+            # format retries) is stripped
+
+        # Include last error if found and not already in trimmed
+        if last_error and last_error not in trimmed:
+            trimmed.append(last_error)
+
+        # Inject escalation context
+        remaining = max_iterations - iteration - 1
+        trimmed.append({
+            "role": "user",
+            "content": (
+                "A previous attempt at this task encountered difficulties. "
+                "The tool results above are from that attempt \u2014 they contain valid data. "
+                "You have a fresh start with better capabilities. "
+                f"Iterations remaining: {remaining}."
+            ),
+        })
+
+        return trimmed
+
     def _escalate_requirements(self, reqs: ModelRequirements) -> ModelRequirements:
         """
         Escalate model requirements — increase quality floor.
@@ -341,19 +555,23 @@ class BaseAgent:
     # ------------------------------------------------------------------ #
     async def _build_context(self, task: dict) -> str:
         """
-        Assemble the user message with task info, dependency results,
-        inline prior-step data, and recalled memories.
+        Assemble the user message with task info and policy-gated context layers.
+        Each layer respects its allocated token budget.
         """
+        from ..memory.context_policy import (
+            get_context_policy, apply_heuristics, compute_layer_budgets,
+        )
+
         parts: list[str] = []
 
-        # ── Task description (primary instruction — overrides any retrieved context) ──
+        # ── Task description (PRIMARY — always injected) ──
         parts.append(
             f"## Task (PRIMARY — this is what you must do)\n"
             f"**{task.get('title', 'Untitled')}**\n"
             f"{task.get('description', '')}"
         )
 
-        # ── Parse task.context (may be str or dict) ──
+        # ── Parse task.context ──
         task_context = task.get("context")
         if isinstance(task_context, str):
             try:
@@ -363,7 +581,7 @@ class BaseAgent:
         if not isinstance(task_context, dict):
             task_context = {}
 
-        # Specific known keys
+        # ── Task context fields (always injected if present) ──
         if "workspace_snapshot" in task_context:
             parts.append(
                 f"## Current Workspace State\n{task_context['workspace_snapshot']}"
@@ -372,8 +590,6 @@ class BaseAgent:
             parts.append(
                 f"## Prior Tool Result\n{task_context['tool_result']}"
             )
-
-        # ── User clarification (answer to a previous needs_clarification) ──
         if "user_clarification" in task_context:
             answer = task_context["user_clarification"]
             history = task_context.get("clarification_history", [])
@@ -385,192 +601,231 @@ class BaseAgent:
             if len(history) > 1:
                 parts.append(f"Previous answers: {history}")
 
-        # Remaining context (exclude internal / already-handled keys)
         _skip = {"workspace_snapshot", "tool_result", "prior_steps", "tool_depth",
                  "recent_conversation", "user_clarification", "clarification_history"}
-        extra = {k: v for k, v in task_context.items() if k not in _skip}
+        extra = {k: v for k, v in task_context.items() if k not in _skip and not k.startswith("_")}
         if extra:
             parts.append(
                 f"## Additional Context\n{json.dumps(extra, indent=2)}"
             )
 
-        # ── Dependency results from DB ──
+        # ── Determine active layers and budgets ──
+        agent_type = task.get("agent_type") or self.name
+        policy = get_context_policy(agent_type)
+        policy = apply_heuristics(task, policy)
+
+        # Get model context window — try dispatcher's loaded model, fall back to 4096
+        model_ctx = 4096
+        try:
+            from ..core.llm_dispatcher import get_dispatcher
+            dispatcher = get_dispatcher()
+            loaded = dispatcher._get_loaded_litellm_name()
+            if loaded:
+                model_ctx = self._get_context_window(loaded) or 4096
+        except Exception:
+            pass
+        budgets = compute_layer_budgets(model_ctx, policy)
+
+        mission_id = task.get("mission_id")
+
+        # ── Gated layers ──
+
+        if "deps" in policy:
+            block = await self._fetch_deps(task, max_tokens=budgets.get("deps", 2000))
+            if block:
+                parts.append(block)
+
+        if "prior" in policy:
+            block = self._format_prior_steps(task_context, max_tokens=budgets.get("prior", 1500))
+            if block:
+                parts.append(block)
+
+        if "convo" in policy:
+            block = self._format_conversation(task_context, max_tokens=budgets.get("convo", 800))
+            if block:
+                parts.append(block)
+
+        if "ambient" in policy:
+            try:
+                from ..context.assembler import assemble_ambient_context
+                ambient = await assemble_ambient_context(
+                    mission_id=mission_id,
+                    max_tokens=min(budgets.get("ambient", 400), 400),
+                )
+                if ambient:
+                    parts.append(ambient)
+            except Exception as exc:
+                logger.debug(f"Ambient context failed: {exc}")
+
+        if "profile" in policy:
+            try:
+                project_profile = await get_project_profile_for_task(task)
+                profile_block = format_project_profile(project_profile) if project_profile else ""
+                if profile_block:
+                    parts.append(self._truncate_to_tokens(profile_block, budgets.get("profile", 500)))
+            except Exception as exc:
+                logger.debug(f"Project profile failed: {exc}")
+
+        if "board" in policy and mission_id:
+            try:
+                board = await get_or_create_blackboard(mission_id)
+                bb_block = format_blackboard_for_prompt(board)
+                if bb_block:
+                    parts.append(self._truncate_to_tokens(bb_block, budgets.get("board", 500)))
+            except Exception as exc:
+                logger.debug(f"Blackboard failed: {exc}")
+
+        if "skills" in policy:
+            try:
+                from ..memory.skills import (
+                    find_relevant_skills, format_skills_for_prompt,
+                    get_tools_to_inject, record_injection,
+                )
+                task_text = f"{task.get('title', '')} {task.get('description', '')}"
+                budget = budgets.get("skills", 800)
+                relevant_skills = await find_relevant_skills(task_text, limit=3)
+                if relevant_skills:
+                    skills_block = format_skills_for_prompt(relevant_skills, budget)
+                    if skills_block:
+                        parts.append(skills_block)
+
+                    extra_tools = get_tools_to_inject(relevant_skills)
+                    if extra_tools and self.allowed_tools is not None:
+                        for tool in extra_tools:
+                            if tool not in self.allowed_tools:
+                                self.allowed_tools.append(tool)
+                                logger.info("Skill-injected tool: %s", tool)
+
+                    skill_names = [s["name"] for s in relevant_skills]
+                    await record_injection(skill_names)
+                    try:
+                        _ctx = json.loads(task.get("context", "{}"))
+                        _ctx["injected_skills"] = skill_names
+                        task["context"] = json.dumps(_ctx)
+                    except Exception:
+                        pass
+
+                    logger.info("Skills injected: %s", skill_names)
+            except Exception as exc:
+                logger.debug("Skill injection failed: %s", exc)
+
+        if "api" in policy:
+            try:
+                api_enrichment = task_context.get("api_enrichment")
+                if api_enrichment:
+                    parts.append(self._truncate_to_tokens(api_enrichment, budgets.get("api", 300)))
+            except Exception as exc:
+                logger.debug("API enrichment failed: %s", exc)
+
+        if "rag" in policy:
+            try:
+                rag_block = await retrieve_context(
+                    task=task, agent_type=self.name,
+                    max_tokens=budgets.get("rag", 2000),
+                )
+                if rag_block:
+                    parts.append(rag_block)
+            except Exception as exc:
+                logger.debug(f"RAG retrieval failed: {exc}")
+
+        if "prefs" in policy:
+            try:
+                prefs = await get_user_preferences()
+                pref_block = format_preferences(prefs)
+                if pref_block:
+                    parts.append(self._truncate_to_tokens(pref_block, budgets.get("prefs", 200)))
+            except Exception as exc:
+                logger.debug(f"Preference retrieval failed: {exc}")
+
+        if "memory" in policy:
+            try:
+                memories = await recall_memory(mission_id=mission_id, limit=10)
+                if memories:
+                    mem_parts = ["## Project Memory"]
+                    for mem in memories:
+                        mem_value = mem.get('value', '')
+                        if not isinstance(mem_value, str):
+                            mem_value = str(mem_value)
+                        mem_parts.append(f"- **{mem.get('key', 'unknown')}**: {mem_value[:300]}")
+                    mem_block = "\n".join(mem_parts)
+                    parts.append(self._truncate_to_tokens(mem_block, budgets.get("memory", 500)))
+            except Exception as exc:
+                logger.debug(f"Memory recall failed: {exc}")
+
+        return "\n\n".join(parts)
+
+    def _truncate_to_tokens(self, text: str, max_tokens: int) -> str:
+        """Rough truncation: ~4 chars per token."""
+        max_chars = max_tokens * 4
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars] + "\n... [truncated to budget]"
+
+    async def _fetch_deps(self, task: dict, max_tokens: int) -> str:
+        """Fetch dependency results, truncated to budget."""
         depends_on = task.get("depends_on")
         if isinstance(depends_on, str):
             try:
                 depends_on = json.loads(depends_on)
             except (json.JSONDecodeError, TypeError):
                 depends_on = []
-        if depends_on:
-            try:
-                dep_results = await get_completed_dependency_results(depends_on)
-            except Exception as exc:
-                logger.warning(f"Failed to fetch dependency results: {exc}")
-                dep_results = {}
-            if dep_results:
-                parts.append("## Results from Previous Steps")
-                for dep_id, dep in dep_results.items():
-                    text = dep.get("result") or "(no result)"
-                    if len(text) > 4000:
-                        text = text[:4000] + "\n... (truncated)"
-                    parts.append(
-                        f"### Step #{dep_id}: "
-                        f"{dep.get('title', 'Unknown')}\n{text}"
-                    )
+        if not depends_on:
+            return ""
+        try:
+            dep_results = await get_completed_dependency_results(depends_on)
+        except Exception as exc:
+            logger.warning(f"Failed to fetch dependency results: {exc}")
+            return ""
+        if not dep_results:
+            return ""
 
-        # ── Inline prior_steps (orchestrator-injected fallback) ──
-        if "prior_steps" in task_context:
-            parts.append("## Results from Prior Steps (Inline)")
-            for step in task_context["prior_steps"]:
-                result = step.get("result", "")
-                if len(result) > 2000:
-                    result = result[:2000] + "\n... [truncated]"
-                parts.append(
-                    f"### Step: {step.get('title', 'Unknown')} "
-                    f"(Status: {step.get('status', '?')})\n{result}"
-                )
+        parts = ["## Results from Previous Steps"]
+        budget_chars = max_tokens * 4
+        used = len(parts[0])
+        per_dep = max(500, (budget_chars - used) // max(len(dep_results), 1))
 
-        # ── Recalled memories ──
-        mission_id = task.get("mission_id")
-
-        # ── Recent conversation (for follow-up understanding) ──
-        if "recent_conversation" in task_context:
-            parts.append("## Recent Conversation (for context)")
-            for entry in task_context["recent_conversation"]:
-                user_q = entry.get("user_asked", "?")
-                result = entry.get("result", "")
-                if len(result) > 600:
-                    result = result[:600] + "... [truncated]"
-                parts.append(
-                    f"**User asked:** {user_q}\n**Result:** {result}\n"
-                )
+        for dep_id, dep in dep_results.items():
+            text = dep.get("result") or "(no result)"
+            if len(text) > per_dep:
+                text = text[:per_dep] + "\n... (truncated)"
             parts.append(
-                "_Use this context to understand follow-up references "
-                "like 'list them', 'the names', 'do it again', etc._"
+                f"### Step #{dep_id}: {dep.get('title', 'Unknown')}\n{text}"
             )
-        # ── Phase 6.4: Ambient context injection ──
-        try:
-            from ..context.assembler import assemble_ambient_context
-            ambient = await assemble_ambient_context(mission_id=mission_id, max_tokens=400)
-            if ambient:
-                parts.append(ambient)
-        except Exception as exc:
-            logger.debug(f"Ambient context injection failed (non-critical): {exc}")
 
-        # ── Phase 12.6: Project profile injection ──
-        try:
-            project_profile = await get_project_profile_for_task(task)
-            profile_block = format_project_profile(project_profile) if project_profile else ""
-            if profile_block:
-                parts.append(profile_block)
-        except Exception as exc:
-            logger.debug(f"Project profile injection failed (non-critical): {exc}")
+        return self._truncate_to_tokens("\n".join(parts), max_tokens)
 
-        # ── Phase 13.1: Blackboard injection ──
-        if mission_id:
-            try:
-                board = await get_or_create_blackboard(mission_id)
-                bb_block = format_blackboard_for_prompt(board)
-                if bb_block:
-                    parts.append(bb_block)
-            except Exception as exc:
-                logger.debug(f"Blackboard injection failed (non-critical): {exc}")
-
-        # ── Skill library injection (v2 — execution recipes) ──
-        try:
-            from ..memory.skills import (
-                find_relevant_skills, format_skills_for_prompt,
-                get_tools_to_inject, record_injection,
+    def _format_prior_steps(self, task_context: dict, max_tokens: int) -> str:
+        """Format inline prior steps, truncated to budget."""
+        if "prior_steps" not in task_context:
+            return ""
+        parts = ["## Results from Prior Steps (Inline)"]
+        per_step = max(400, (max_tokens * 4) // max(len(task_context["prior_steps"]), 1))
+        for step in task_context["prior_steps"]:
+            result = step.get("result", "")
+            if len(result) > per_step:
+                result = result[:per_step] + "\n... [truncated]"
+            parts.append(
+                f"### Step: {step.get('title', 'Unknown')} "
+                f"(Status: {step.get('status', '?')})\n{result}"
             )
-            task_text = f"{task.get('title', '')} {task.get('description', '')}"
-            relevant_skills = await find_relevant_skills(task_text, limit=5)
-            if relevant_skills:
-                # Estimate context budget from model info
-                model_ctx = task.get("context", "{}")
-                if isinstance(model_ctx, str):
-                    try:
-                        model_ctx = json.loads(model_ctx)
-                    except (json.JSONDecodeError, TypeError):
-                        model_ctx = {}
-                if not isinstance(model_ctx, dict):
-                    model_ctx = {}
-                context_budget = model_ctx.get("model_context_length", 4096)
+        return self._truncate_to_tokens("\n".join(parts), max_tokens)
 
-                skills_block = format_skills_for_prompt(relevant_skills, context_budget)
-                if skills_block:
-                    parts.append(skills_block)
-
-                # Tool injection for high-confidence skills
-                extra_tools = get_tools_to_inject(relevant_skills)
-                if extra_tools and self.allowed_tools is not None:
-                    for tool in extra_tools:
-                        if tool not in self.allowed_tools:
-                            self.allowed_tools.append(tool)
-                            logger.info("Skill-injected tool: %s", tool)
-
-                # Track injections
-                skill_names = [s["name"] for s in relevant_skills]
-                await record_injection(skill_names)
-
-                # Store for success tracking after task completes
-                try:
-                    _ctx = json.loads(task.get("context", "{}"))
-                    _ctx["injected_skills"] = skill_names
-                    task["context"] = json.dumps(_ctx)
-                except Exception:
-                    pass
-
-                logger.info("Skills injected: %s", skill_names)
-        except Exception as exc:
-            logger.debug("Skill injection failed (non-critical): %s", exc)
-
-        # ── Smart Resource Integration: Layer 1 API enrichment ──
-        try:
-            _task_ctx_raw = task.get("context", "{}")
-            if isinstance(_task_ctx_raw, str):
-                _task_ctx_parsed = json.loads(_task_ctx_raw)
-            else:
-                _task_ctx_parsed = _task_ctx_raw or {}
-            api_enrichment = _task_ctx_parsed.get("api_enrichment")
-            if api_enrichment:
-                parts.append(api_enrichment)
-        except Exception as exc:
-            logger.debug("API enrichment injection failed (non-critical): %s", exc)
-
-        # ── Phase 11.3: RAG context injection ──
-        try:
-            rag_block = await retrieve_context(
-                task=task, agent_type=self.name,
-            )
-            if rag_block:
-                parts.append(rag_block)
-        except Exception as exc:
-            logger.debug(f"RAG retrieval failed (non-critical): {exc}")
-
-        # ── Phase 11.7: User preference injection ──
-        try:
-            prefs = await get_user_preferences()
-            pref_block = format_preferences(prefs)
-            if pref_block:
-                parts.append(pref_block)
-        except Exception as exc:
-            logger.debug(f"Preference retrieval failed (non-critical): {exc}")
-
-        try:
-            memories = await recall_memory(mission_id=mission_id, limit=15)
-        except Exception as exc:
-            logger.warning(f"Failed to recall memory: {exc}")
-            memories = []
-        if memories:
-            parts.append("## Project Memory")
-            for mem in memories:
-                mem_value = mem.get('value', '')
-                # Ensure mem_value is a string before slicing
-                if not isinstance(mem_value, str):
-                    mem_value = str(mem_value)
-                parts.append(f"- **{mem.get('key', 'unknown')}**: {mem_value[:300]}")
-
-        return "\n\n".join(parts)
+    def _format_conversation(self, task_context: dict, max_tokens: int) -> str:
+        """Format recent conversation, truncated to budget."""
+        if "recent_conversation" not in task_context:
+            return ""
+        parts = ["## Recent Conversation (for context)"]
+        for entry in task_context["recent_conversation"]:
+            user_q = entry.get("user_asked", "?")
+            result = entry.get("result", "")
+            if len(result) > 600:
+                result = result[:600] + "... [truncated]"
+            parts.append(f"**User asked:** {user_q}\n**Result:** {result}\n")
+        parts.append(
+            "_Use this context to understand follow-up references "
+            "like 'list them', 'the names', 'do it again', etc._"
+        )
+        return self._truncate_to_tokens("\n".join(parts), max_tokens)
 
     # ------------------------------------------------------------------ #
     #  JSON parsing & normalisation                                       #
@@ -668,6 +923,10 @@ class BaseAgent:
         """
         action = parsed.get("action")
 
+        # ── multi_tool_call passthrough ──
+        if action == "multi_tool_call" and "tools" in parsed:
+            return parsed
+
         # ── alias mapping for action field ──
         _aliases = {
             # → tool_call
@@ -708,7 +967,7 @@ class BaseAgent:
 
         # ── Tool name used as action, OR wrong action but "tool" key present ──
         if action and action not in (
-            "tool_call", "final_answer", "clarify", "decompose",
+            "tool_call", "multi_tool_call", "final_answer", "clarify", "decompose",
             "ask_agent",
             "think", "thinking", "reasoning", "analyze",
             "observation", "reflect", "consider",
@@ -921,37 +1180,52 @@ class BaseAgent:
         """
         Convert LiteLLM tool_calls into the canonical action dict.
 
-        Returns the first valid action found, or None if none could
-        be parsed.
+        Returns a single tool_call for one tool, multi_tool_call for
+        multiple concurrent tools, or a pseudo-action (final_answer/clarify).
+        Returns None when nothing could be parsed.
         """
         if not tool_calls:
             return None
 
-        tc = tool_calls[0]  # use the first tool call
-        name = tc.get("name", "")
-        args = tc.get("arguments", {})
+        first = tool_calls[0]
+        first_name = first.get("name", "")
+        first_args = first.get("arguments", {})
 
-        # Pseudo-tool: final_answer
-        if name == "final_answer":
+        # Pseudo-tools always take priority (checked on first call only)
+        if first_name == "final_answer":
             return {
                 "action": "final_answer",
-                "result": args.get("result", ""),
-                "memories": args.get("memories", {}),
+                "result": first_args.get("result", ""),
+                "memories": first_args.get("memories", {}),
             }
-
-        # Pseudo-tool: clarify
-        if name == "clarify":
+        if first_name == "clarify":
             return {
                 "action": "clarify",
-                "question": args.get("question", ""),
+                "question": first_args.get("question", ""),
             }
 
-        # Real tool call
-        return {
-            "action": "tool_call",
-            "tool": name,
-            "args": args,
-        }
+        # Single tool call — backwards compatible
+        if len(tool_calls) == 1:
+            return {
+                "action": "tool_call",
+                "tool": first_name,
+                "args": first_args,
+            }
+
+        # Multiple → multi_tool_call (filter out pseudo-tools)
+        tools = []
+        for tc in tool_calls:
+            name = tc.get("name", "")
+            args = tc.get("arguments", {})
+            if name in ("final_answer", "clarify"):
+                continue
+            tools.append({"tool": name, "args": args})
+
+        if len(tools) == 1:
+            return {"action": "tool_call", "tool": tools[0]["tool"], "args": tools[0]["args"]}
+        if not tools:
+            return None
+        return {"action": "multi_tool_call", "tools": tools}
 
     # ------------------------------------------------------------------ #
     #  Output validation                                                   #
@@ -1033,6 +1307,9 @@ class BaseAgent:
             self._original_allowed_tools = self.allowed_tools
             self.allowed_tools = tools_hint
 
+        # Suppress clarification if task explicitly disallows it
+        self._suppress_clarification = _task_ctx.get("may_need_clarification") is False
+
         try:
             # ── Phase 5: execution pattern routing ──
             if self.execution_pattern == "single_shot":
@@ -1088,7 +1365,8 @@ class BaseAgent:
             _compat_retried = checkpoint.get("validation_retried", False)
             custom_validation_retried = _compat_retried
             task_type_validation_retried = _compat_retried
-            format_retries = checkpoint.get("format_retries", 0)
+            format_corrections = checkpoint.get("format_corrections",
+                                                checkpoint.get("format_retries", 0))
             completed_tool_ops: dict[str, str] = checkpoint.get(
                 "completed_tool_ops", {}
             )
@@ -1117,6 +1395,15 @@ class BaseAgent:
             system_prompt = self._build_full_system_prompt(task)
             context = await self._build_context(task)
 
+            logger.info(
+                f"[Task #{task_id}] System prompt ({len(system_prompt)} chars):\n"
+                f"{system_prompt}"
+            )
+            logger.info(
+                f"[Task #{task_id}] User context ({len(context)} chars):\n"
+                f"{context}"
+            )
+
             messages: list[dict[str, str]] = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": context},
@@ -1128,15 +1415,31 @@ class BaseAgent:
             tools_used_names: set[str] = set()
             custom_validation_retried = False
             task_type_validation_retried = False
-            format_retries = 0
+            format_corrections = 0
             completed_tool_ops: dict[str, str] = {}
 
         consecutive_tool_failures = 0
-        escalated = False
+        model_escalated = False
 
         _progress_last_sent = time.time()
+        _search_depth = self._get_search_depth(task)
+        _suppress_guards = _task_ctx.get("suppress_guards", False)
 
-        for iteration in range(start_iteration, self.max_iterations):
+        # Dynamic iteration budget (retry boost from exhaustion handler)
+        effective_max_iterations = self.max_iterations
+        _boost = _task_ctx.get("iteration_budget_boost", 1.0)
+        if _boost > 1.0:
+            effective_max_iterations = min(int(self.max_iterations * _boost), 12)
+            logger.info(
+                f"[Task #{task_id}] Iteration budget boosted: "
+                f"{self.max_iterations} → {effective_max_iterations}"
+            )
+
+        # Exhaustion tracking counters
+        guard_burns = 0
+        useful_iterations = 0
+
+        for iteration in range(start_iteration, effective_max_iterations):
             # ── Check if task was cancelled while running ──
             if iteration > 0 and iteration % 2 == 0:
                 try:
@@ -1150,7 +1453,7 @@ class BaseAgent:
 
             logger.info(
                 f"[Task #{task_id}] Agent '{self.name}' iteration "
-                f"{iteration + 1}/{self.max_iterations}"
+                f"{iteration + 1}/{effective_max_iterations}"
             )
 
             # ── Phase 4.6: Progress streaming ──
@@ -1199,288 +1502,247 @@ class BaseAgent:
                 except Exception:
                     pass
 
-            # ── Update token estimates ──
-            estimation_model = used_model if used_model != "unknown" else "gpt-4o-mini"
-            reqs.estimated_input_tokens = self._count_tokens(
-                messages, estimation_model
-            )
-            reqs.estimated_output_tokens = min(
-                reqs.estimated_output_tokens, 4096,
-            )
+            # ── Inner correction loop ──
+            # Guards and format corrections are handled as sub-iterations
+            # within the SAME outer iteration, so they don't burn iteration budget.
+            sub_corrections = 0
 
-            # ── Trim context ── (now accepts reqs directly)
-            messages = self._trim_messages_if_needed(
-                messages, estimation_model, reqs,
-            )
-
-            # ── Tools ──
-            # Hard guardrail: on the LAST iteration, strip all tools so the
-            # LLM is forced to produce a text response (final_answer).
-            # Small models ignore "LAST ITERATION" text warnings — this makes
-            # it physically impossible to call tools on the final turn.
-            is_last_iteration = (iteration + 1 >= self.max_iterations)
-            if is_last_iteration:
-                litellm_tools = None
-                # Inject a system reminder that tools are gone
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "FINAL ITERATION — no tools available. You MUST produce your "
-                        "final answer NOW as plain text or JSON. Summarize everything "
-                        "you have gathered so far."
-                    ),
-                })
-            else:
-                litellm_tools = self._build_litellm_tools()
-            if litellm_tools:
-                reqs.needs_function_calling = True
-
-            # ── Call LLM ──
-            try:
-                from src.core.llm_dispatcher import get_dispatcher, CallCategory
-                response = await get_dispatcher().request(
-                    CallCategory.MAIN_WORK,
-                    reqs,
-                    messages,
-                    tools=litellm_tools,
+            while sub_corrections <= MAX_SUB_CORRECTIONS:
+                # ── Update token estimates ──
+                estimation_model = used_model if used_model != "unknown" else "gpt-4o-mini"
+                reqs.estimated_input_tokens = self._count_tokens(
+                    messages, estimation_model
                 )
-            except Exception as exc:
-                logger.error(f"[Task #{task_id}] Model call failed: {exc}")
-                return {
-                    "status": "failed",
-                    "result": f"Agent failed after {iteration} iteration(s): {exc}",
-                    "error": str(exc),
-                    "model": used_model,
-                    "cost": total_cost,
-                    "iterations": iteration,
-                    "difficulty": reqs.difficulty,
-                }
-
-            content    = response.get("content", "")
-            used_model = response.get("model", used_model)
-            step_cost  = response.get("cost", 0)
-            step_latency = response.get("latency", 0)
-            total_cost += step_cost
-
-            try:
-                await record_model_call(
-                    model=used_model,
-                    agent_type=self.name,
-                    success=True,
-                    cost=step_cost,
-                    latency=step_latency,
+                reqs.estimated_output_tokens = min(
+                    reqs.estimated_output_tokens, 4096,
                 )
-            except Exception:
-                pass
 
-            if step_cost > 0:
+                # ── Trim context ── (now accepts reqs directly)
+                messages = self._trim_messages_if_needed(
+                    messages, estimation_model, reqs,
+                )
+
+                # ── Tools ──
+                # Hard guardrail: on the LAST iteration, strip all tools so the
+                # LLM is forced to produce a text response (final_answer).
+                # Small models ignore "LAST ITERATION" text warnings — this makes
+                # it physically impossible to call tools on the final turn.
+                #
+                # Also strip tools when running low on time — local LLMs need
+                # 120+ seconds to generate a full analysis.  Without this, the
+                # agent wastes iterations on tool calls and then the task-level
+                # timeout kills the final-answer LLM call mid-generation.
+                is_last_iteration = (iteration + 1 >= effective_max_iterations)
+                _elapsed = time.time() - _start_time
+                _time_budget = getattr(self, '_task_timeout', 300)
+                _remaining = _time_budget - _elapsed
+                if not is_last_iteration and _remaining < 120 and iteration > 0:
+                    logger.warning(
+                        f"[Task #{task_id}] Forcing final answer: "
+                        f"only {_remaining:.0f}s remaining (need 120s for answer)"
+                    )
+                    is_last_iteration = True
+                if is_last_iteration:
+                    litellm_tools = None
+                    # Inject a system reminder that tools are gone
+                    # (only on first sub-correction pass to avoid duplicates)
+                    if sub_corrections == 0:
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "FINAL ITERATION — no tools available. You MUST produce your "
+                                "final answer NOW as plain text or JSON. Summarize everything "
+                                "you have gathered so far."
+                            ),
+                        })
+                else:
+                    litellm_tools = self._build_litellm_tools()
+                if litellm_tools:
+                    reqs.needs_function_calling = True
+
+                # ── Call LLM ──
                 try:
-                    await record_cost(step_cost)
+                    from src.core.llm_dispatcher import get_dispatcher, CallCategory
+                    response = await get_dispatcher().request(
+                        CallCategory.MAIN_WORK,
+                        reqs,
+                        messages,
+                        tools=litellm_tools,
+                    )
+                except Exception as exc:
+                    logger.error(f"[Task #{task_id}] Model call failed: {exc}")
+                    return {
+                        "status": "failed",
+                        "result": f"Agent failed after {iteration} iteration(s): {exc}",
+                        "error": str(exc),
+                        "model": used_model,
+                        "cost": total_cost,
+                        "iterations": iteration,
+                        "difficulty": reqs.difficulty,
+                    }
+
+                content    = response.get("content", "")
+                used_model = response.get("model", used_model)
+                step_cost  = response.get("cost", 0)
+                step_latency = response.get("latency", 0)
+                total_cost += step_cost
+
+                try:
+                    await record_model_call(
+                        model=used_model,
+                        agent_type=self.name,
+                        success=True,
+                        cost=step_cost,
+                        latency=step_latency,
+                    )
                 except Exception:
                     pass
 
-            logger.debug(f"[Task #{task_id}] Raw response: {content[:200]}...")
-            await self._safe_log(
-                task_id, "assistant", content, used_model, step_cost
-            )
+                if step_cost > 0:
+                    try:
+                        await record_cost(step_cost)
+                    except Exception:
+                        pass
 
-            # ── Parse response ──
-            fc_tool_calls = response.get("tool_calls")
-            parsed = None
-            if fc_tool_calls:
-                parsed = self._parse_function_call_response(fc_tool_calls)
-            if parsed is None:
-                parsed = self._parse_agent_response(content)
+                logger.info(f"[Task #{task_id}] Raw response ({len(content)} chars):\n{content}")
+                await self._safe_log(
+                    task_id, "assistant", content, used_model, step_cost
+                )
 
-            # ── FORMAT RETRY ──
-            if parsed is None:
-                if format_retries < MAX_FORMAT_RETRIES:
-                    format_retries += 1
+                # ── Parse response ──
+                fc_tool_calls = response.get("tool_calls")
+                parsed = None
+                if fc_tool_calls:
+                    parsed = self._parse_function_call_response(fc_tool_calls)
+                if parsed is None:
+                    parsed = self._parse_agent_response(content)
+
+                # ── FORMAT CORRECTION (sub-iteration) ──
+                if parsed is None:
+                    # If the response is substantial but just missing the JSON
+                    # wrapper, accept it as a final answer rather than wasting
+                    # a correction on format.
+                    if len(content) > 200:
+                        logger.info(
+                            f"[Task #{task_id}] Accepting unparsed response "
+                            f"as final answer ({len(content)} chars)"
+                        )
+                        parsed = {"action": "final_answer", "result": content}
+                    elif format_corrections < MAX_FORMAT_CORRECTIONS and sub_corrections < MAX_SUB_CORRECTIONS:
+                        format_corrections += 1
+                        sub_corrections += 1
+                        logger.warning(
+                            f"[Task #{task_id}] JSON parse failed — "
+                            f"format-correction {format_corrections}/{MAX_FORMAT_CORRECTIONS}"
+                        )
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "Your response could not be parsed as valid JSON. "
+                                "Please fix the formatting and try again.\n\n"
+                                "You MUST respond with ONLY a valid JSON block:\n"
+                                "```json\n"
+                                '{"action": "tool_call", "tool": "...", "args": {...}}\n'
+                                "```\nor:\n```json\n"
+                                '{"action": "final_answer", "result": "..."}\n'
+                                "```\nNo text before or after the JSON block."
+                            ),
+                        })
+                        continue  # inner loop — re-prompt LLM
+                    else:
+                        parsed = {
+                            "action": "final_answer",
+                            "result": (
+                                f"[Parse failure] Agent could not produce valid "
+                                f"JSON after {MAX_FORMAT_CORRECTIONS} format corrections. "
+                                f"Raw output:\n{content[:2000]}"
+                            ),
+                        }
+
+                try:
+                    parsed = validate_action(parsed)
+                except ValueError as exc:
+                    logger.warning(f"[Task #{task_id}] Action validation warning: {exc}")
+
+                # ── SUB-ITERATION GUARD CHECK ──
+                correction = self._check_sub_iteration_guards(
+                    parsed=parsed,
+                    iteration=iteration,
+                    tools_used=tools_used,
+                    tools_used_names=tools_used_names,
+                    task=task,
+                    search_depth=_search_depth,
+                    suppress_guards=_suppress_guards,
+                )
+                if correction and sub_corrections < MAX_SUB_CORRECTIONS:
+                    guard_burns += 1
                     logger.warning(
-                        f"[Task #{task_id}] JSON parse failed — "
-                        f"retry {format_retries}/{MAX_FORMAT_RETRIES}"
+                        f"[Task #{task_id}] [{correction.guard_name}] "
+                        f"sub-correction {sub_corrections + 1}/{MAX_SUB_CORRECTIONS}"
+                    )
+                    await self._safe_log(
+                        task_id, "system",
+                        f"[{correction.guard_name}] sub-correction",
+                        None, 0,
                     )
                     messages.append({"role": "assistant", "content": content})
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "Your response could not be parsed as valid JSON. "
-                            "Please fix the formatting and try again.\n\n"
-                            "You MUST respond with ONLY a valid JSON block:\n"
-                            "```json\n"
-                            '{"action": "tool_call", "tool": "...", "args": {...}}\n'
-                            "```\nor:\n```json\n"
-                            '{"action": "final_answer", "result": "..."}\n'
-                            "```\nNo text before or after the JSON block."
-                        ),
-                    })
-                    await self._save_checkpoint(
-                        task_id, iteration + 1, messages, total_cost,
-                        used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
-                        completed_tool_ops, format_retries,
-                        tools_used_names,
-                    )
-                    continue
-                else:
-                    parsed = {
-                        "action": "final_answer",
-                        "result": (
-                            f"[Parse failure] Agent could not produce valid "
-                            f"JSON after {MAX_FORMAT_RETRIES} retries. "
-                            f"Raw output:\n{content[:2000]}"
-                        ),
-                    }
+                    messages.append({"role": "user", "content": correction.message})
+                    sub_corrections += 1
+                    continue  # inner loop — re-prompt LLM
 
-            try:
-                parsed = validate_action(parsed)
-            except ValueError as exc:
-                logger.warning(f"[Task #{task_id}] Action validation warning: {exc}")
+                # ── CUSTOM VALIDATION (sub-iteration) ──
+                action_type = parsed.get("action", "final_answer")
+                if action_type == "final_answer":
+                    result = parsed.get("result", content)
+                    if not isinstance(result, str):
+                        result = json.dumps(result, ensure_ascii=False, indent=2)
+
+                    if not custom_validation_retried and sub_corrections < MAX_SUB_CORRECTIONS:
+                        validation_error = self._validate_response(result, task)
+                        if validation_error:
+                            custom_validation_retried = True
+                            sub_corrections += 1
+                            messages.append({"role": "assistant", "content": content})
+                            messages.append({
+                                "role": "user",
+                                "content": f"{validation_error}\n\nPlease try again.",
+                            })
+                            continue  # inner loop — re-prompt LLM
+
+                    # ── TASK-TYPE VALIDATION (sub-iteration) ──
+                    task_type_errors = validate_task_output(self.name, result)
+                    if task_type_errors and not task_type_validation_retried and sub_corrections < MAX_SUB_CORRECTIONS:
+                        task_type_validation_retried = True
+                        err_msg = "; ".join(task_type_errors)
+                        sub_corrections += 1
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({
+                            "role": "user",
+                            "content": f"Output quality issue: {err_msg}\n\nPlease revise.",
+                        })
+                        continue  # inner loop — re-prompt LLM
+
+                break  # No guard/correction fired → proceed to action handling
+
+            # Save checkpoint after inner loop completes
+            await self._save_checkpoint(
+                task_id, iteration + 1, messages, total_cost,
+                used_model, reqs, tools_used,
+                custom_validation_retried or task_type_validation_retried,
+                completed_tool_ops, format_corrections,
+                tools_used_names,
+            )
 
             action_type = parsed.get("action", "final_answer")
-
-            # ── HALLUCINATION GUARD (action tasks) ──
-            has_tools = (
-                self.allowed_tools is None or len(self.allowed_tools) > 0
-            )
-            if (
-                action_type == "final_answer"
-                and not tools_used
-                and has_tools
-                and self._is_action_task(task)
-                and iteration < 2
-            ):
-                available = (
-                    list(TOOL_REGISTRY.keys())[:6]
-                    if self.allowed_tools is None
-                    else self.allowed_tools[:6]
-                )
-                tool_list = ", ".join(available)
-                task_title = task.get("title", "")
-
-                logger.warning(
-                    f"[Task #{task_id}] ⚠️ Hallucination guard triggered"
-                )
-                messages.append({"role": "assistant", "content": content})
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "STOP. You did NOT actually perform this task. "
-                        "You just described what you would do, but nothing "
-                        "was executed.\n\n"
-                        f"Your task: {task_title}\n\n"
-                        "You MUST call a tool to take real action. "
-                        f"Available tools: {tool_list}\n\n"
-                        "Example — to run a shell command:\n"
-                        "```json\n"
-                        '{"action": "tool_call", "tool": "shell", '
-                        '"args": {"command": "ls -la"}}\n'
-                        "```\n\n"
-                        "Respond with ONLY the JSON block. No explanation."
-                    ),
-                })
-                await self._safe_log(
-                    task_id, "system",
-                    f"[hallucination_guard] Rejected premature final_answer",
-                    None, 0,
-                )
-                await self._save_checkpoint(
-                    task_id, iteration + 1, messages, total_cost,
-                    used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
-                    completed_tool_ops, format_retries,
-                )
-                continue
-
-            # ── SEARCH-REQUIRED GUARD ──
-            # The classifier already decided this task needs web search
-            # (search_depth != "none"). If the LLM jumps to final_answer
-            # without calling any data-fetching tool, reject and force a search.
-            _DATA_FETCH_TOOLS = {"web_search", "api_call", "api_lookup", "http_request", "shopping_search"}
-            _has_web_search = (
-                self.allowed_tools is None
-                or "web_search" in (self.allowed_tools or [])
-            )
-            _search_depth = self._get_search_depth(task)
-            _data_fetched = bool(tools_used_names & _DATA_FETCH_TOOLS)
-            if (
-                action_type == "final_answer"
-                and _has_web_search
-                and _search_depth in ("quick", "standard", "deep")
-                and not _data_fetched
-                and iteration < 3
-            ):
-                task_title = task.get("title", "")
-                logger.warning(
-                    f"[Task #{task_id}] ⚠️ Search-required guard triggered "
-                    f"(search_depth={_search_depth}, iter={iteration})"
-                )
-                messages.append({"role": "assistant", "content": content})
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "STOP. This task requires a web search but you "
-                        "answered without searching. Your answer may contain "
-                        "fabricated information.\n\n"
-                        f"Task: {task_title}\n\n"
-                        "You MUST call web_search or api_call first to get "
-                        "real, up-to-date information. Example:\n"
-                        "```json\n"
-                        '{"action": "tool_call", "tool": "web_search", '
-                        '"args": {"query": "your search query here"}}\n'
-                        "```\n\n"
-                        "Respond with ONLY the JSON block. No explanation."
-                    ),
-                })
-                await self._safe_log(
-                    task_id, "system",
-                    f"[search_guard] Rejected final_answer without data-fetching tool "
-                    f"(depth={_search_depth})",
-                    None, 0,
-                )
-                await self._save_checkpoint(
-                    task_id, iteration + 1, messages, total_cost,
-                    used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
-                    completed_tool_ops, format_retries,
-                )
-                continue
 
             # ── FINAL ANSWER ──
             if action_type == "final_answer":
                 result = parsed.get("result", content)
-
-                if not custom_validation_retried:
-                    validation_error = self._validate_response(result, task)
-                    if validation_error:
-                        custom_validation_retried = True
-                        messages.append({"role": "assistant", "content": content})
-                        messages.append({
-                            "role": "user",
-                            "content": f"{validation_error}\n\nPlease try again.",
-                        })
-                        await self._save_checkpoint(
-                            task_id, iteration + 1, messages, total_cost,
-                            used_model, reqs, tools_used,
-                            custom_validation_retried or task_type_validation_retried,
-                            completed_tool_ops, format_retries,
-                        )
-                        continue
-
-                task_type_errors = validate_task_output(self.name, result)
-                if task_type_errors and not task_type_validation_retried:
-                    task_type_validation_retried = True
-                    err_msg = "; ".join(task_type_errors)
-                    messages.append({"role": "assistant", "content": content})
-                    messages.append({
-                        "role": "user",
-                        "content": f"Output quality issue: {err_msg}\n\nPlease revise.",
-                    })
-                    await self._save_checkpoint(
-                        task_id, iteration + 1, messages, total_cost,
-                        used_model, reqs, tools_used,
-                        custom_validation_retried or task_type_validation_retried,
-                        completed_tool_ops, format_retries,
-                        tools_used_names,
-                    )
-                    continue
+                # Ensure result is always a string — LLMs sometimes return
+                # a dict/list as the result value instead of text.
+                if not isinstance(result, str):
+                    result = json.dumps(result, ensure_ascii=False, indent=2)
 
                 # Memories
                 raw_memories = parsed.get("memories", {})
@@ -1573,45 +1835,70 @@ class BaseAgent:
                         "difficulty":  reqs.difficulty,
                     }
 
-                # Grading (skip trivial tasks) — uses dispatcher for deferred grading
-                quality_score = None
-                grader_data = {}
-                if reqs.difficulty >= 4:
-                    try:
-                        from src.core.llm_dispatcher import get_dispatcher
+                # ── Grade or defer grading ──
+                try:
+                    from src.core.llm_dispatcher import get_dispatcher
+                    from src.core.grading import grade_task, apply_grade_result, GradeResult
 
-                        async def _apply_grade(score: float, gdata: dict = {}):
-                            """Callback to apply deferred grade."""
-                            if task_id != "?":
-                                await update_task(task_id, quality_score=score)
-                                await record_model_call(
-                                    model=used_model,
-                                    agent_type=self.name,
-                                    success=True,
-                                    grade=score,
-                                )
+                    dispatcher = get_dispatcher()
+                    loaded = dispatcher._get_loaded_litellm_name()
+                    generating = used_model
 
-                        quality_score, grader_data = await get_dispatcher().request_grade(
-                            task_id=str(task_id),
-                            task_title=task.get("title", ""),
-                            task_description=task.get("description", ""),
-                            response_text=result,
-                            generating_model=used_model,
-                            task_name=reqs.task,
-                            priority=reqs.priority,
-                            on_graded=_apply_grade,
+                    # Can we grade immediately? (loaded model != generating, or high priority)
+                    can_grade_now = (
+                        loaded and generating != loaded
+                    ) or reqs.priority >= 8
+
+                    if can_grade_now and task_id != "?":
+                        try:
+                            # Inject actual result so grade_task sees it
+                            task["result"] = result
+                            verdict = await grade_task(task, loaded or "")
+                            if not verdict.passed:
+                                # Grade FAIL — apply immediately, return retry signal
+                                await apply_grade_result(task_id, verdict)
+                                await self._clear_checkpoint_safe(task_id)
+                                return {
+                                    "status": "pending",
+                                    "result": result,
+                                    "model": used_model,
+                                }
+                        except Exception:
+                            # Grading failed — defer instead
+                            can_grade_now = False
+
+                    if not can_grade_now and task_id != "?":
+                        # Defer grading — set to ungraded
+                        import json as _json
+                        from datetime import datetime as _dt
+                        _ctx = task.get("context", "{}")
+                        if isinstance(_ctx, str):
+                            try:
+                                _ctx = _json.loads(_ctx)
+                            except (ValueError, TypeError):
+                                _ctx = {}
+                        _ctx["generating_model"] = used_model
+                        _ctx["worker_completed_at"] = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+                        _ctx["tools_used_names"] = sorted(tools_used_names)
+
+                        from src.core.state_machine import transition_task
+                        await transition_task(
+                            task_id, "ungraded",
+                            context=_json.dumps(_ctx),
                         )
-                        # quality_score may be None if grading was deferred
-                        if quality_score is not None and task_id != "?":
-                            await update_task(task_id, quality_score=quality_score)
-                            await record_model_call(
-                                model=used_model,
-                                agent_type=self.name,
-                                success=True,
-                                grade=quality_score,
-                            )
-                    except Exception as exc:
-                        logger.debug(f"Response grading failed: {exc}")
+                        await self._clear_checkpoint_safe(task_id)
+                        return {
+                            "status": "ungraded",
+                            "result": result,
+                            "model": used_model,
+                            "cost": total_cost,
+                            "difficulty": reqs.difficulty,
+                            "iterations": iteration + 1,
+                            "tools_used_names": sorted(tools_used_names),
+                        }
+
+                except Exception as exc:
+                    logger.warning(f"grading failed | task_id={task_id} error={exc}")
 
                 await self._clear_checkpoint_safe(task_id)
                 return {
@@ -1621,8 +1908,6 @@ class BaseAgent:
                     "cost":          total_cost,
                     "difficulty":    reqs.difficulty,
                     "iterations":    iteration + 1,
-                    "quality_score": quality_score,
-                    "grader_data":   grader_data,
                     "tools_used_names": sorted(tools_used_names),
                 }
 
@@ -1675,7 +1960,7 @@ class BaseAgent:
                                 task_id, iteration + 1, messages, total_cost,
                                 used_model, reqs, tools_used,
                                 custom_validation_retried or task_type_validation_retried,
-                                completed_tool_ops, format_retries,
+                                completed_tool_ops, format_corrections,
                             )
                             continue
 
@@ -1799,28 +2084,33 @@ class BaseAgent:
                     consecutive_tool_failures += 1
                 else:
                     consecutive_tool_failures = 0
+                    useful_iterations += 1
 
                 # ── Mid-task escalation ── (NOW uses reqs.escalate())
                 if (
-                    not escalated
-                    and consecutive_tool_failures >= ESCALATION_THRESHOLD
-                    and iteration >= ESCALATION_THRESHOLD
+                    not model_escalated
+                    and consecutive_tool_failures >= TOOL_FAILURE_ESCALATION_THRESHOLD
+                    and iteration >= TOOL_FAILURE_ESCALATION_THRESHOLD
                 ):
                     old_tier = reqs.difficulty
                     reqs = self._escalate_requirements(reqs)
                     new_tier = reqs.difficulty
                     if new_tier != old_tier:
                         logger.warning(
-                            f"[Task #{task_id}] ⬆️ Escalating: "
+                            f"[Task #{task_id}] ⬆️ model-escalation: "
                             f"'{old_tier}' → '{new_tier}' after "
                             f"{consecutive_tool_failures} consecutive failures"
                         )
-                        escalated = True
+                        model_escalated = True
                         await self._safe_log(
                             task_id, "system",
                             f"[escalation] Upgraded quality after "
                             f"{consecutive_tool_failures} failures",
                             None, 0,
+                        )
+                        # Reset context for the better model
+                        messages = self._trim_for_escalation(
+                            messages, iteration, effective_max_iterations,
                         )
 
                 if tool_failed:
@@ -1828,13 +2118,13 @@ class BaseAgent:
                         f"## Tool Result (`{tool_name}`) — ERROR:\n\n"
                         f"```\n{tool_output}\n```\n\n"
                         f"The tool call failed. Try a DIFFERENT approach.\n"
-                        f"Iteration {iteration + 2}/{self.max_iterations}."
+                        f"Iteration {iteration + 2}/{effective_max_iterations}."
                     )
                 else:
                     recovery_guidance = (
                         f"## Tool Result (`{tool_name}`):\n\n"
                         f"```\n{tool_output}\n```\n\n"
-                        f"{'LAST ITERATION — you MUST respond with final_answer now. Do NOT call any more tools.' if iteration + 2 >= self.max_iterations else 'Continue working.'} Iteration {iteration + 2}/{self.max_iterations}."
+                        f"{'LAST ITERATION — you MUST respond with final_answer now. Do NOT call any more tools.' if iteration + 2 >= effective_max_iterations else 'Continue working.'} Iteration {iteration + 2}/{effective_max_iterations}."
                     )
 
                 messages.append({"role": "assistant", "content": content})
@@ -1848,7 +2138,178 @@ class BaseAgent:
                 await self._save_checkpoint(
                     task_id, iteration + 1, messages, total_cost,
                     used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
-                    completed_tool_ops, format_retries,
+                    completed_tool_ops, format_corrections,
+                )
+                continue
+
+            # ── MULTI TOOL CALL (parallel read-only, sequential side-effect) ──
+            if action_type == "multi_tool_call":
+                tools_used = True
+                tool_list = parsed.get("tools", [])
+
+                # Validate each tool call
+                validated: list[tuple[str, dict, str | None]] = []
+                for tc in tool_list:
+                    t_name = tc.get("tool", "")
+                    t_args = tc.get("args", {})
+                    if not isinstance(t_args, dict):
+                        t_args = {}
+                    tools_used_names.add(t_name)
+
+                    if self.allowed_tools is not None and t_name not in self.allowed_tools:
+                        validated.append((t_name, t_args, f"❌ Tool '{t_name}' not available."))
+                    elif not self._check_tool_permission(t_name):
+                        validated.append((t_name, t_args, f"🚫 Tool '{t_name}' not permitted."))
+                    elif t_name not in TOOL_REGISTRY:
+                        validated.append((t_name, t_args, f"❌ Unknown tool '{t_name}'."))
+                    else:
+                        validated.append((t_name, t_args, None))
+
+                to_execute = [(n, a) for n, a, err in validated if err is None]
+                errors = [(n, err) for n, _, err in validated if err is not None]
+
+                parallel_group, sequential_group = _partition_tool_calls(
+                    [{"tool": n, "args": a} for n, a in to_execute]
+                )
+
+                results: list[tuple[str, dict, str]] = []
+
+                # --- Parallel group (read-only) ---
+                if parallel_group:
+                    async def _exec_one(tc_item: dict) -> tuple[str, dict, str]:
+                        _tn, _ta = tc_item["tool"], tc_item["args"]
+                        _timeout = 120 if _tn in ("shell", "shell_stdin", "shell_sequential") else 60
+                        _hints = {
+                            "agent_type": self.name,
+                            "search_depth": _search_depth,
+                            "shopping_sub_intent": task.get("shopping_sub_intent"),
+                            "workspace_path": _task_ctx.get("workspace_path", ""),
+                        }
+                        try:
+                            out = await asyncio.wait_for(
+                                execute_tool(_tn, agent_type=self.name, task_hints=_hints, **_ta),
+                                timeout=_timeout,
+                            )
+                        except asyncio.TimeoutError:
+                            out = f"❌ Tool '{_tn}' timed out after {_timeout}s"
+                        except Exception as exc:
+                            out = f"❌ Tool execution error: {exc}"
+                        return _tn, _ta, out
+
+                    par_results = await asyncio.gather(
+                        *[_exec_one(tc_item) for tc_item in parallel_group],
+                        return_exceptions=True,
+                    )
+                    for r in par_results:
+                        if isinstance(r, Exception):
+                            results.append(("unknown", {}, f"❌ Parallel error: {r}"))
+                        else:
+                            results.append(r)
+
+                # --- Sequential group (side-effect) ---
+                for tc_item in sequential_group:
+                    _tn, _ta = tc_item["tool"], tc_item["args"]
+                    _timeout = 120 if _tn in ("shell", "shell_stdin", "shell_sequential") else 60
+                    _hints = {
+                        "agent_type": self.name,
+                        "search_depth": _search_depth,
+                        "shopping_sub_intent": task.get("shopping_sub_intent"),
+                        "workspace_path": _task_ctx.get("workspace_path", ""),
+                    }
+                    try:
+                        out = await asyncio.wait_for(
+                            execute_tool(_tn, agent_type=self.name, task_hints=_hints, **_ta),
+                            timeout=_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        out = f"❌ Tool '{_tn}' timed out after {_timeout}s"
+                    except Exception as exc:
+                        out = f"❌ Tool execution error: {exc}"
+                    results.append((_tn, _ta, out))
+
+                # Add pre-validation errors
+                for n, err in errors:
+                    results.append((n, {}, err))
+
+                # Audit, metrics, caching per tool result
+                for t_name, t_args, t_output in results:
+                    # Audit log
+                    try:
+                        from ..infra.audit import audit, ACTOR_AGENT, ACTION_TOOL_EXEC
+                        _tid = int(task_id) if str(task_id).isdigit() else None
+                        await audit(
+                            actor=f"{ACTOR_AGENT}:{self.name}",
+                            action=ACTION_TOOL_EXEC,
+                            target=t_name,
+                            details=str(t_args)[:500],
+                            task_id=_tid,
+                            mission_id=mission_id,
+                        )
+                    except Exception:
+                        pass
+
+                    # Metrics
+                    try:
+                        from ..infra.metrics import record_tool_call
+                        record_tool_call(tool=t_name)
+                    except Exception:
+                        pass
+
+                    # Cache results
+                    if t_name in SIDE_EFFECT_TOOLS:
+                        idem_key = self._tool_idempotency_key(t_name, t_args)
+                        completed_tool_ops[idem_key] = t_output
+                        _to_remove = [k for k in completed_tool_ops if k.startswith("rc:")]
+                        for k in _to_remove:
+                            del completed_tool_ops[k]
+                    elif t_name in CACHEABLE_READ_TOOLS:
+                        idem_key = self._tool_idempotency_key(t_name, t_args)
+                        completed_tool_ops[f"rc:{idem_key}"] = t_output
+
+                # Build combined result message
+                result_parts = []
+                tool_failures = 0
+                for t_name, t_args, t_output in results:
+                    if len(t_output) > MAX_TOOL_OUTPUT_LENGTH:
+                        t_output = (
+                            t_output[:MAX_TOOL_OUTPUT_LENGTH]
+                            + f"\n\n... [{len(t_output)} chars total]"
+                        )
+                    key_arg = next(iter(t_args.values()), "") if t_args else ""
+                    if isinstance(key_arg, str) and len(key_arg) > 60:
+                        key_arg = key_arg[:60]
+                    result_parts.append(
+                        f"## Tool Result (`{t_name}` → {key_arg}):\n\n"
+                        f"```\n{t_output}\n```"
+                    )
+                    if t_output.startswith("❌") or t_output.startswith("🚫"):
+                        tool_failures += 1
+
+                if tool_failures > 0:
+                    consecutive_tool_failures += tool_failures
+                else:
+                    consecutive_tool_failures = 0
+                    useful_iterations += 1
+
+                is_next_last = (iteration + 2 >= effective_max_iterations)
+                combined = "\n\n".join(result_parts)
+                combined += (
+                    f"\n\n{'LAST ITERATION — you MUST respond with final_answer now.' if is_next_last else 'Continue working.'}"
+                    f" Iteration {iteration + 2}/{effective_max_iterations}."
+                )
+
+                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "user", "content": combined})
+
+                await self._safe_log(
+                    task_id, "tool",
+                    f"[multi:{len(results)} tools] {', '.join(n for n, _, _ in results)}",
+                    None, 0,
+                )
+                await self._save_checkpoint(
+                    task_id, iteration + 1, messages, total_cost,
+                    used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
+                    completed_tool_ops, format_corrections,
                 )
                 continue
 
@@ -1896,18 +2357,21 @@ class BaseAgent:
                     "role": "user",
                     "content": (
                         f"{tool_output}\n\n"
-                        f"{'LAST ITERATION — you MUST respond with final_answer now. Do NOT call any more tools.' if iteration + 2 >= self.max_iterations else 'Continue working.'} Iteration {iteration + 2}/{self.max_iterations}."
+                        f"{'LAST ITERATION — you MUST respond with final_answer now. Do NOT call any more tools.' if iteration + 2 >= effective_max_iterations else 'Continue working.'} Iteration {iteration + 2}/{effective_max_iterations}."
                     ),
                 })
                 await self._save_checkpoint(
                     task_id, iteration + 1, messages, total_cost,
                     used_model, reqs, tools_used,
                     custom_validation_retried or task_type_validation_retried,
-                    completed_tool_ops, format_retries,
+                    completed_tool_ops, format_corrections,
                 )
                 continue
 
-            # ── CLARIFY / DECOMPOSE / UNKNOWN (unchanged) ──
+            # ── CLARIFY / DECOMPOSE / UNKNOWN ──
+            # NOTE: Blocked clarification (suppress_clarification=True) is now
+            # handled as a sub-iteration guard — see _check_sub_iteration_guards.
+            # Only the non-suppressed return path remains here.
             if action_type == "clarify":
                 await self._clear_checkpoint_safe(task_id)
                 return {
@@ -1942,16 +2406,26 @@ class BaseAgent:
             await self._save_checkpoint(
                 task_id, iteration + 1, messages, total_cost,
                 used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
-                completed_tool_ops, format_retries,
+                completed_tool_ops, format_corrections,
             )
 
         # ── Exhausted iterations ──
         await self._clear_checkpoint_safe(task_id)
-        # Extract last meaningful assistant response for the result
+
+        # Classify exhaustion reason
+        if guard_burns >= effective_max_iterations * 0.5:
+            exhaustion_reason = "guards"
+        elif consecutive_tool_failures >= TOOL_FAILURE_ESCALATION_THRESHOLD:
+            exhaustion_reason = "tool_failures"
+        else:
+            exhaustion_reason = "budget"
+
+        # Extract last meaningful assistant response for the result.
+        # Do NOT truncate before unwrapping — truncation breaks JSON parsing.
         last_assistant = ""
         for msg in reversed(messages):
             if msg.get("role") == "assistant" and msg.get("content"):
-                last_assistant = msg["content"][:3000]
+                last_assistant = msg["content"]
                 break
         # Try to parse as JSON and extract "result" field — the LLM often
         # wraps its answer in {"action": "final_answer", "result": "..."}
@@ -1959,13 +2433,38 @@ class BaseAgent:
             parsed_final = self._parse_agent_response(last_assistant)
             if parsed_final and parsed_final.get("result"):
                 last_assistant = parsed_final["result"]
+            elif '"result"' in last_assistant and '"final_answer"' in last_assistant:
+                # JSON parse failed (truncated by context trimming?) — regex fallback
+                import re as _re
+                m = _re.search(r'"result"\s*:\s*"((?:[^"\\]|\\.)*)', last_assistant)
+                if m:
+                    try:
+                        last_assistant = m.group(1).encode().decode('unicode_escape')
+                    except Exception:
+                        last_assistant = m.group(1)
+        # Truncate AFTER unwrapping — preserve the actual content.
+        # 8000 chars is well above _SUMMARY_THRESHOLD (3000) so the post-hook
+        # will always create a summary for large artifacts.
+        if len(last_assistant) > 8000:
+            last_assistant = last_assistant[:8000]
+
+        logger.warning(
+            f"[Task #{task_id}] Exhausted iterations | "
+            f"reason={exhaustion_reason} "
+            f"guard_burns={guard_burns} "
+            f"useful={useful_iterations}/{effective_max_iterations}"
+        )
+
         return {
-            "status": "completed",
-            "result": last_assistant or "Task completed but could not produce a final answer.",
+            "status": "exhausted",
+            "result": last_assistant or "",
+            "exhaustion_reason": exhaustion_reason,
+            "guard_burns": guard_burns,
+            "useful_iterations": useful_iterations,
             "model": used_model,
             "cost": total_cost,
             "difficulty": reqs.difficulty,
-            "iterations": self.max_iterations,
+            "iterations": effective_max_iterations,
             "tools_used_names": sorted(tools_used_names),
         }
 
@@ -2039,6 +2538,17 @@ class BaseAgent:
         exclude = task_ctx.get("exclude_models", [])
         if exclude:
             reqs.exclude_models = exclude
+
+        # ── Retry-based model exclusion and difficulty escalation ──
+        task_attempts = task.get("worker_attempts", 0) or 0
+        if task_attempts >= 3:
+            from src.core.retry import get_model_constraints
+            retry_excluded, difficulty_bump = get_model_constraints(task_ctx, task_attempts)
+            if retry_excluded:
+                existing = list(reqs.exclude_models) if reqs.exclude_models else []
+                reqs.exclude_models = list(set(existing + retry_excluded))
+            if difficulty_bump > 0:
+                reqs.difficulty = min(10, reqs.difficulty + difficulty_bump)
 
         # ── Estimate context size ──
         desc_len = len(task.get("description", ""))
@@ -2236,7 +2746,7 @@ class BaseAgent:
         tools_used: bool,
         validation_retried: bool,
         completed_tool_ops: dict[str, str] | None = None,
-        format_retries: int = 0,
+        format_corrections: int = 0,
         tools_used_names: set[str] | None = None,
     ) -> None:
         """Persist agent loop state so execution can resume after a crash."""
@@ -2252,7 +2762,7 @@ class BaseAgent:
                 "tools_used": tools_used,
                 "tools_used_names": list(tools_used_names or []),
                 "validation_retried": validation_retried,
-                "format_retries": format_retries,
+                "format_corrections": format_corrections,
                 "completed_tool_ops": completed_tool_ops or {},
             }
             await save_task_checkpoint(task_id, state)

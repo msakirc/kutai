@@ -2340,7 +2340,7 @@ class TelegramInterface:
         if arg == "failed":
             db = await get_db()
             cursor = await db.execute(
-                """UPDATE tasks SET status = 'pending', retry_count = 0, error = NULL
+                """UPDATE tasks SET status = 'pending', worker_attempts = 0, error = NULL
                    WHERE status = 'failed'"""
             )
             count = cursor.rowcount

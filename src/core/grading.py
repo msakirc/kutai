@@ -182,9 +182,7 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
     import json
     from src.infra.db import get_task, update_task
     from src.core.state_machine import transition_task
-    from src.core.retry import (
-        compute_retry_timing, update_exclusions_on_failure,
-    )
+    from src.core.retry import compute_retry_timing
 
     task = await get_task(task_id)
     if not task:
@@ -278,28 +276,26 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
     else:
         # VERDICT=FAIL — worker quality failure
         generating_model = ctx.get("generating_model", "")
-        attempts = (task.get("worker_attempts") or 0) + 1
-        max_attempts = task.get("max_worker_attempts") or 6
-
-        update_exclusions_on_failure(ctx, generating_model, attempts)
-        decision = compute_retry_timing("quality", attempts=attempts, max_attempts=max_attempts)
+        from src.core.retry import RetryContext
+        retry_ctx = RetryContext.from_task(task)
+        decision = retry_ctx.record_failure("quality", model=generating_model)
 
         if decision.action == "terminal":
+            ctx.update(retry_ctx.to_context_patch())
             await transition_task(
                 task_id, "failed",
-                failed_in_phase="worker",
-                worker_attempts=attempts,
                 context=json.dumps(ctx),
+                **retry_ctx.to_db_fields(),
             )
             try:
                 from src.infra.dead_letter import quarantine_task
                 await quarantine_task(
                     task_id=task_id,
                     mission_id=task.get("mission_id"),
-                    error=f"Quality gate failed after {attempts} attempts",
+                    error=f"Quality gate failed after {retry_ctx.worker_attempts} attempts",
                     error_category="quality",
                     original_agent=task.get("agent_type", "executor"),
-                    attempts_snapshot=attempts,
+                    attempts_snapshot=retry_ctx.worker_attempts,
                 )
             except Exception as e:
                 logger.warning(f"DLQ quarantine failed: {e}")
@@ -317,20 +313,20 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
             except Exception:
                 pass
 
-            logger.warning(f"grade FAIL terminal | task_id={task_id} attempts={attempts}")
+            logger.warning(f"grade FAIL terminal | task_id={task_id} attempts={retry_ctx.worker_attempts}")
         else:
             next_retry = None
             if decision.action == "delayed":
                 from datetime import timedelta
                 next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
 
+            retry_ctx.next_retry_at = next_retry
+            retry_ctx.grade_attempts = 0  # reset grade attempts on worker retry
+            ctx.update(retry_ctx.to_context_patch())
             await transition_task(
                 task_id, "pending",
-                worker_attempts=attempts,
-                grade_attempts=0,
-                next_retry_at=next_retry,
-                retry_reason="quality",
                 context=json.dumps(ctx),
+                **retry_ctx.to_db_fields(),
             )
 
             # Notify on retry

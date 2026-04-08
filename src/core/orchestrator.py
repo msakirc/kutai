@@ -1696,37 +1696,34 @@ class Orchestrator:
                     except (json.JSONDecodeError, TypeError):
                         task_ctx = {}
 
-                attempts = (task.get("worker_attempts") or 0) + 1
-                max_attempts = task.get("max_worker_attempts") or 6
-
-                from src.core.retry import compute_retry_timing, update_exclusions_on_failure
-                update_exclusions_on_failure(task_ctx, "", attempts)
-                decision = compute_retry_timing("quality", attempts=attempts, max_attempts=max_attempts)
+                from src.core.retry import RetryContext
+                retry_ctx = RetryContext.from_task(task)
+                decision = retry_ctx.record_failure("timeout")
 
                 if decision.action == "terminal":
+                    task_ctx.update(retry_ctx.to_context_patch())
                     await update_task(
                         task_id, status="failed",
-                        worker_attempts=attempts,
-                        failed_in_phase="worker",
                         error=timeout_err,
                         context=json.dumps(task_ctx),
+                        **retry_ctx.to_db_fields(),
                     )
                     try:
                         from src.infra.dead_letter import quarantine_task
                         await quarantine_task(
                             task_id=task_id,
                             mission_id=task.get("mission_id"),
-                            error=f"Timeout after {attempts} attempts: {timeout_err}",
+                            error=f"Timeout after {retry_ctx.worker_attempts} attempts: {timeout_err}",
                             error_category="timeout",
                             original_agent=agent_type,
-                            attempts_snapshot=attempts,
+                            attempts_snapshot=retry_ctx.worker_attempts,
                         )
                     except Exception:
                         pass
                     await self.telegram.send_notification(
                         f"❌ Task #{task_id} timeout → DLQ\n"
                         f"**{title[:60]}**\n"
-                        f"Failed {attempts} times"
+                        f"Failed {retry_ctx.worker_attempts} times"
                     )
                 else:
                     next_retry = None
@@ -1734,16 +1731,16 @@ class Orchestrator:
                         next_retry = to_db(
                             utc_now() + timedelta(seconds=decision.delay_seconds)
                         )
+                    retry_ctx.next_retry_at = next_retry
+                    task_ctx.update(retry_ctx.to_context_patch())
                     await update_task(
                         task_id, status="pending",
-                        worker_attempts=attempts,
                         error=timeout_err,
-                        next_retry_at=next_retry,
-                        retry_reason="timeout",
                         context=json.dumps(task_ctx),
+                        **retry_ctx.to_db_fields(),
                     )
                     await self.telegram.send_error(task_id, title,
-                        f"{timeout_err} (retry {attempts}/{max_attempts})")
+                        f"{timeout_err} (retry {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts})")
 
                 # Spawn error recovery for timeouts too
                 await self._spawn_error_recovery(task, timeout_err)
@@ -1790,30 +1787,27 @@ class Orchestrator:
                         return
                     if result.get("status") == "failed":
                         error_msg = result.get("error", "Disguised failure detected")
-                        attempts = (task.get("worker_attempts") or 0) + 1
-                        max_attempts = task.get("max_worker_attempts") or 6
-
-                        from src.core.retry import compute_retry_timing, update_exclusions_on_failure
-                        update_exclusions_on_failure(task_ctx, result.get("model", ""), attempts)
-                        decision = compute_retry_timing("quality", attempts=attempts, max_attempts=max_attempts)
+                        from src.core.retry import RetryContext
+                        retry_ctx = RetryContext.from_task(task)
+                        decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
 
                         if decision.action == "terminal":
+                            task_ctx.update(retry_ctx.to_context_patch())
                             await update_task(
                                 task_id, status="failed",
-                                worker_attempts=attempts,
-                                failed_in_phase="worker",
                                 error=f"Disguised failure exhausted: {error_msg[:300]}",
                                 context=json.dumps(task_ctx),
+                                **retry_ctx.to_db_fields(),
                             )
                             try:
                                 from src.infra.dead_letter import quarantine_task
                                 await quarantine_task(
                                     task_id=task_id,
                                     mission_id=task.get("mission_id"),
-                                    error=f"Disguised failure after {attempts} attempts: {error_msg[:300]}",
+                                    error=f"Disguised failure after {retry_ctx.worker_attempts} attempts: {error_msg[:300]}",
                                     error_category="quality",
                                     original_agent=task.get("agent_type", "executor"),
-                                    attempts_snapshot=attempts,
+                                    attempts_snapshot=retry_ctx.worker_attempts,
                                 )
                             except Exception:
                                 pass
@@ -1825,7 +1819,7 @@ class Orchestrator:
                             logger.warning(
                                 "disguised failure terminal",
                                 task_id=task_id,
-                                attempts=attempts,
+                                attempts=retry_ctx.worker_attempts,
                             )
                         else:
                             next_retry = None
@@ -1833,17 +1827,17 @@ class Orchestrator:
                                 next_retry = to_db(
                                     utc_now() + timedelta(seconds=decision.delay_seconds)
                                 )
+                            retry_ctx.next_retry_at = next_retry
+                            task_ctx.update(retry_ctx.to_context_patch())
                             await update_task(
                                 task_id, status="pending",
-                                worker_attempts=attempts,
                                 error=error_msg[:500],
-                                next_retry_at=next_retry,
-                                retry_reason="quality",
                                 context=json.dumps(task_ctx),
+                                **retry_ctx.to_db_fields(),
                             )
                             logger.warning(
                                 f"disguised failure, retrying"
-                                f"{attempts}/{max_attempts}",
+                                f"{retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts}",
                                 task_id=task_id,
                             )
                         return
@@ -1862,27 +1856,26 @@ class Orchestrator:
                         return
                     if result.get("status") == "failed":
                         error_msg = result.get("error", "Disguised failure detected")
-                        attempts = (task.get("worker_attempts") or 0) + 1
-                        max_attempts = task.get("max_worker_attempts") or 6
-                        from src.core.retry import compute_retry_timing, update_exclusions_on_failure
-                        update_exclusions_on_failure(task_ctx, result.get("model", ""), attempts)
-                        decision = compute_retry_timing("quality", attempts=attempts, max_attempts=max_attempts)
+                        from src.core.retry import RetryContext
+                        retry_ctx = RetryContext.from_task(task)
+                        decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
                         if decision.action == "terminal":
+                            task_ctx.update(retry_ctx.to_context_patch())
                             await update_task(
-                                task_id, status="failed", worker_attempts=attempts,
-                                failed_in_phase="worker",
+                                task_id, status="failed",
                                 error=f"Disguised failure exhausted: {error_msg[:300]}",
                                 context=json.dumps(task_ctx),
+                                **retry_ctx.to_db_fields(),
                             )
                             try:
                                 from src.infra.dead_letter import quarantine_task
                                 await quarantine_task(
                                     task_id=task_id,
                                     mission_id=task.get("mission_id"),
-                                    error=f"Disguised failure after {attempts} attempts: {error_msg[:300]}",
+                                    error=f"Disguised failure after {retry_ctx.worker_attempts} attempts: {error_msg[:300]}",
                                     error_category="quality",
                                     original_agent=task.get("agent_type", "executor"),
-                                    attempts_snapshot=attempts,
+                                    attempts_snapshot=retry_ctx.worker_attempts,
                                 )
                             except Exception:
                                 pass
@@ -1895,10 +1888,13 @@ class Orchestrator:
                             next_retry = None
                             if decision.action == "delayed":
                                 next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
+                            retry_ctx.next_retry_at = next_retry
+                            task_ctx.update(retry_ctx.to_context_patch())
                             await update_task(
-                                task_id, status="pending", worker_attempts=attempts,
-                                error=error_msg[:500], next_retry_at=next_retry,
-                                retry_reason="quality", context=json.dumps(task_ctx),
+                                task_id, status="pending",
+                                error=error_msg[:500],
+                                context=json.dumps(task_ctx),
+                                **retry_ctx.to_db_fields(),
                             )
                         return
 
@@ -1942,22 +1938,21 @@ class Orchestrator:
                         f"[Task #{task_id}] Suppressed clarification "
                         f"(may_need_clarification=false), retrying"
                     )
-                    attempts = (task.get("worker_attempts") or 0) + 1
-                    max_attempts = task.get("max_worker_attempts") or 6
-                    from src.core.retry import compute_retry_timing
-                    decision = compute_retry_timing("quality", attempts=attempts, max_attempts=max_attempts)
-                    next_retry = None
-                    if decision.action == "delayed":
-                        next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
+                    from src.core.retry import RetryContext
+                    retry_ctx = RetryContext.from_task(task)
+                    decision = retry_ctx.record_failure("quality")
                     if decision.action == "terminal":
                         await update_task(task_id, status="failed",
                                           error="Agent requested clarification on no-clarification step",
-                                          worker_attempts=attempts, failed_in_phase="worker")
+                                          **retry_ctx.to_db_fields())
                     else:
+                        next_retry = None
+                        if decision.action == "delayed":
+                            next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
+                        retry_ctx.next_retry_at = next_retry
                         await update_task(task_id, status="pending",
-                                          worker_attempts=attempts, next_retry_at=next_retry,
-                                          retry_reason="quality",
-                                          error="Suppressed clarification, retrying")
+                                          error="Suppressed clarification, retrying",
+                                          **retry_ctx.to_db_fields())
                 elif task_ctx.get("clarification_history"):
                     # Agent tried to clarify again despite having answers —
                     # treat as completed (answers are already in context).
@@ -2065,20 +2060,17 @@ class Orchestrator:
 
             elif status == "failed":
                 error_str = result.get("error", result.get("result", "Unknown error"))
-                attempts = (task.get("worker_attempts") or 0) + 1
-                max_attempts = task.get("max_worker_attempts") or 6
-
-                from src.core.retry import compute_retry_timing, update_exclusions_on_failure
-                update_exclusions_on_failure(task_ctx, result.get("model", ""), attempts)
-                decision = compute_retry_timing("quality", attempts=attempts, max_attempts=max_attempts)
+                from src.core.retry import RetryContext
+                retry_ctx = RetryContext.from_task(task)
+                decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
 
                 if decision.action == "terminal":
+                    task_ctx.update(retry_ctx.to_context_patch())
                     await update_task(
                         task_id, status="failed",
                         error=error_str[:500],
-                        worker_attempts=attempts,
-                        failed_in_phase="worker",
                         context=json.dumps(task_ctx),
+                        **retry_ctx.to_db_fields(),
                     )
                     logger.error("agent failure terminal", task_id=task_id,
                                  error=error_str[:200])
@@ -2091,7 +2083,7 @@ class Orchestrator:
                             error=error_str[:500],
                             error_category="quality",
                             original_agent=task.get("agent_type", "executor"),
-                            attempts_snapshot=attempts,
+                            attempts_snapshot=retry_ctx.worker_attempts,
                         )
                     except Exception:
                         pass
@@ -2101,15 +2093,15 @@ class Orchestrator:
                         next_retry = to_db(
                             utc_now() + timedelta(seconds=decision.delay_seconds)
                         )
+                    retry_ctx.next_retry_at = next_retry
+                    task_ctx.update(retry_ctx.to_context_patch())
                     await update_task(
                         task_id, status="pending",
-                        worker_attempts=attempts,
                         error=error_str[:500],
-                        next_retry_at=next_retry,
-                        retry_reason="quality",
                         context=json.dumps(task_ctx),
+                        **retry_ctx.to_db_fields(),
                     )
-                    logger.warning(f"agent failed, retrying {attempts}/{max_attempts}",
+                    logger.warning(f"agent failed, retrying {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts}",
                                    task_id=task_id, error=error_str[:200])
             else:
                 logger.warning("unknown task status", task_id=task_id, status=status)
@@ -2186,14 +2178,11 @@ class Orchestrator:
             except Exception:
                 pass
             error_str = f"{type(e).__name__}: {str(e)[:500]}"
-            attempts = (task.get("worker_attempts") or 0) + 1
-            max_attempts = task.get("max_worker_attempts") or 6
-
-            from src.core.retry import compute_retry_timing, update_exclusions_on_failure
             failed_model = result.get("model", "unknown") if isinstance(result, dict) else "unknown"
-            if isinstance(task_ctx, dict):
-                update_exclusions_on_failure(task_ctx, failed_model, attempts)
-            decision = compute_retry_timing("quality", attempts=attempts, max_attempts=max_attempts)
+
+            from src.core.retry import RetryContext
+            retry_ctx = RetryContext.from_task(task)
+            decision = retry_ctx.record_failure("quality", model=failed_model)
 
             if decision.action == "terminal":
                 try:
@@ -2201,11 +2190,12 @@ class Orchestrator:
                     error_cat = _classify_error(error_str, "unknown")
                 except Exception:
                     error_cat = "unknown"
+                if isinstance(task_ctx, dict):
+                    task_ctx.update(retry_ctx.to_context_patch())
                 await update_task(
                     task_id, status="failed", error=error_str,
                     error_category=error_cat,
-                    worker_attempts=attempts,
-                    failed_in_phase="worker",
+                    **retry_ctx.to_db_fields(),
                 )
                 await self.telegram.send_error(task_id, title, error_str)
 
@@ -2241,7 +2231,7 @@ class Orchestrator:
                             mission_id=task.get("mission_id"),
                             error=error_str,
                             original_agent=task.get("agent_type", "executor"),
-                            attempts_snapshot=attempts,
+                            attempts_snapshot=retry_ctx.worker_attempts,
                         )
                     except Exception as dlq_err:
                         logger.error("dlq quarantine failed", task_id=task_id, error=str(dlq_err))
@@ -2263,15 +2253,16 @@ class Orchestrator:
                     next_retry = to_db(
                         utc_now() + timedelta(seconds=decision.delay_seconds)
                     )
+                retry_ctx.next_retry_at = next_retry
+                if isinstance(task_ctx, dict):
+                    task_ctx.update(retry_ctx.to_context_patch())
                 await update_task(
                     task_id, status="pending",
-                    worker_attempts=attempts,
                     error=error_str,
-                    next_retry_at=next_retry,
-                    retry_reason="quality",
+                    **retry_ctx.to_db_fields(),
                 )
                 logger.info("task will retry", task_id=task_id,
-                            attempts=attempts, max_attempts=max_attempts)
+                            attempts=retry_ctx.worker_attempts, max_attempts=retry_ctx.max_worker_attempts)
 
     # ─── Result Handlers ─────────────────────────────────────────────────
 

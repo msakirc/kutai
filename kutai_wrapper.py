@@ -1319,7 +1319,7 @@ class KutAIWrapper:
                     # Restart requested via /kutai_restart
                     # Do NOT start Telegram poller during restart — it steals updates
                     await self._send_telegram("♻️ *Kutay yeniden başlatılıyor...*")
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(1)  # brief pause before restart
                     await self.start_kutai()
                     if self.running:
                         await self._notify_started()

@@ -110,6 +110,7 @@
   }
   .pill:hover { background: var(--accent); color: #000; }
   .fn-info { color: var(--text-dim); font-size: 11px; }
+  mark { background: #ffa726; color: #000; border-radius: 2px; padding: 0 1px; }
 
   /* ─── Mobile ─── */
   @media (max-width: 600px) {
@@ -148,6 +149,7 @@ const CONTEXT_KEYS = new Set(["ts", "level", "src", "msg", "fn", "ln", "exc"]);
 let allLines = [];
 let tailing = false;
 let tailTimer = null;
+let tailWs = null;
 let lastTs = "";
 let currentFile = "";
 
@@ -195,18 +197,48 @@ async function fetchLogs(file, lines = 2000) {
   render();
 }
 
-async function fetchTail() {
-  if (!currentFile || !lastTs) return;
-  const r = await fetch(`/api/tail?file=${encodeURIComponent(currentFile)}&after=${encodeURIComponent(lastTs)}`);
-  if (!r.ok) return;
-  const d = await r.json();
-  if (!d.lines.length) return;
-  const newDocs = d.lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+function appendTailLines(rawLines) {
+  const newDocs = rawLines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  if (!newDocs.length) return;
   allLines.push(...newDocs);
   lastTs = allLines[allLines.length - 1].ts;
   $status.textContent = `${allLines.length} lines (live)`;
   render();
   $area.scrollTop = $area.scrollHeight;
+}
+
+function startWsTail() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const url = `${proto}//${location.host}/ws/tail?file=${encodeURIComponent(currentFile)}`;
+  tailWs = new WebSocket(url);
+  tailWs.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === "lines") appendTailLines(msg.lines);
+  };
+  tailWs.onerror = () => {
+    // Fallback to HTTP polling if WebSocket fails
+    if (tailing && !tailTimer) {
+      tailTimer = setInterval(fetchTailHttp, POLL_MS);
+    }
+  };
+  tailWs.onclose = () => {
+    if (tailing && !tailTimer) {
+      tailTimer = setInterval(fetchTailHttp, POLL_MS);
+    }
+  };
+}
+
+async function fetchTailHttp() {
+  if (!currentFile || !lastTs) return;
+  const r = await fetch(`/api/tail?file=${encodeURIComponent(currentFile)}&after=${encodeURIComponent(lastTs)}`);
+  if (!r.ok) return;
+  const d = await r.json();
+  if (d.lines.length) appendTailLines(d.lines);
+}
+
+function stopTail() {
+  if (tailWs) { tailWs.close(); tailWs = null; }
+  if (tailTimer) { clearInterval(tailTimer); tailTimer = null; }
 }
 
 // ─── Rendering ───
@@ -247,7 +279,12 @@ function render() {
     // Message
     const msg = document.createElement("span");
     msg.className = "msg";
-    msg.textContent = doc.msg || "";
+    const msgText = doc.msg || "";
+    if (regex) {
+      msg.innerHTML = msgText.replace(/</g, "&lt;").replace(regex, m => `<mark>${m}</mark>`);
+    } else {
+      msg.textContent = msgText;
+    }
 
     // fn/ln info
     if (doc.fn) {
@@ -299,10 +336,9 @@ $tailBtn.onclick = () => {
   $tailBtn.textContent = tailing ? "Pause" : "Live Tail";
   $tailBtn.classList.toggle("active", tailing);
   if (tailing) {
-    tailTimer = setInterval(fetchTail, POLL_MS);
-    fetchTail();
+    startWsTail();
   } else {
-    clearInterval(tailTimer);
+    stopTail();
   }
 };
 

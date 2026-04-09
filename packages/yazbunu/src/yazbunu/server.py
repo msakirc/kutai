@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -93,10 +94,59 @@ def create_app(log_dir: str) -> web.Application:
 
         return web.json_response({"lines": result})
 
+    async def handle_health(request: web.Request) -> web.Response:
+        ld = request.app["log_dir"]
+        file_count = len(list(Path(ld).glob("*.jsonl")))
+        return web.json_response({"status": "ok", "files": file_count})
+
+    async def handle_ws_tail(request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+
+        ld = request.app["log_dir"]
+        filename = request.query.get("file", "")
+        path = _safe_filename(ld, filename)
+        if path is None:
+            await ws.send_json({"type": "error", "error": "file not found"})
+            await ws.close()
+            return ws
+
+        try:
+            offset = os.stat(path).st_size
+        except OSError:
+            await ws.send_json({"type": "error", "error": "cannot stat file"})
+            await ws.close()
+            return ws
+
+        try:
+            while not ws.closed:
+                await asyncio.sleep(2)
+                try:
+                    new_size = os.stat(path).st_size
+                except OSError:
+                    break
+                if new_size > offset:
+                    with open(path, encoding="utf-8") as fh:
+                        fh.seek(offset)
+                        new_data = fh.read(new_size - offset)
+                    offset = new_size
+                    lines = [l for l in new_data.split("\n") if l.strip()]
+                    if lines:
+                        await ws.send_json({"type": "lines", "lines": lines})
+        except (asyncio.CancelledError, ConnectionResetError):
+            pass
+        finally:
+            if not ws.closed:
+                await ws.close()
+
+        return ws
+
     app.router.add_get("/", handle_index)
+    app.router.add_get("/health", handle_health)
     app.router.add_get("/api/files", handle_list_files)
     app.router.add_get("/api/logs", handle_get_logs)
     app.router.add_get("/api/tail", handle_tail)
+    app.router.add_get("/ws/tail", handle_ws_tail)
 
     # Serve static files (manifest.json, etc.)
     if STATIC_DIR.is_dir():

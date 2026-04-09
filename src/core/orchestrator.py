@@ -3526,6 +3526,19 @@ class Orchestrator:
                     except Exception as e:
                         logger.warning(f"Error stopping llama-server: {e}")
 
-                await close_db()
-                await self.telegram.app.updater.stop()
-                await self.telegram.app.stop()
+                # Skip WAL checkpoint on restarts (next instance uses WAL anyway)
+                is_clean_stop = self.shutdown_event.is_set()
+                await close_db(checkpoint=is_clean_stop)
+
+                try:
+                    await asyncio.wait_for(
+                        self.telegram.app.updater.stop(), timeout=5
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Telegram updater.stop() timed out (5s)")
+                try:
+                    await asyncio.wait_for(
+                        self.telegram.app.stop(), timeout=5
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Telegram app.stop() timed out (5s)")

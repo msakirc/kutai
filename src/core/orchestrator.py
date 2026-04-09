@@ -54,7 +54,7 @@ AGENT_TIMEOUTS: dict[str, int] = {
     "visual_reviewer":180,  # was 120
     "researcher":     300,
     "analyst":        300,
-    "writer":         240,  # was 180
+    "writer":         300,  # was 240 — report tasks read many artifacts + long output
     "summarizer":     180,  # was 120
     "assistant":      180,  # was 120
     "executor":       240,  # was 180
@@ -577,6 +577,21 @@ class Orchestrator:
             total_non_skipped = (await total_cursor.fetchone())[0]
 
             if failed_count == total_non_skipped and total_non_skipped > 0:
+                # Don't cascade if any failed dep is in DLQ (recoverable).
+                # The human may retry it via /dlq retry.
+                try:
+                    dlq_cursor = await db.execute(
+                        f"""SELECT COUNT(*) FROM dead_letter_tasks
+                            WHERE task_id IN ({placeholders})
+                            AND resolved_at IS NULL""",
+                        deps
+                    )
+                    dlq_count = (await dlq_cursor.fetchone())[0]
+                except Exception:
+                    dlq_count = 0
+                if dlq_count > 0:
+                    continue  # dep is in DLQ, don't cascade yet
+
                 logger.warning(
                     f"[Watchdog] Task #{task['id']} all deps failed, cascading failure"
                 )
@@ -1578,11 +1593,14 @@ class Orchestrator:
                 # Phase 4.6: Wire progress streaming
                 _task_start_time = time.time()
 
+                _attempt_num = (task.get("worker_attempts") or 0) + 1
+
                 async def _progress_cb(tid, iteration, max_iter, summary):
                     if self.telegram:
                         elapsed = int(time.time() - _task_start_time)
+                        attempt_tag = f" | attempt {_attempt_num}" if _attempt_num > 1 else ""
                         msg = (
-                            f"\U0001f504 *Task #{tid}* — iteration {iteration}/{max_iter} ({elapsed}s elapsed)\n"
+                            f"\U0001f504 *Task #{tid}* — iteration {iteration}/{max_iter} ({elapsed}s elapsed{attempt_tag})\n"
                             f"{summary[:200]}"
                         )
                         try:
@@ -1741,6 +1759,7 @@ class Orchestrator:
                     )
                     await self.telegram.send_error(task_id, title,
                         f"{timeout_err} (worker-retry {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts})")
+                return  # timeout fully handled above — don't fall through
 
             status = result.get("status", "completed")
 
@@ -1777,10 +1796,30 @@ class Orchestrator:
                 # Workflow step post-hook: store output artifacts
                 if is_workflow_step(task_ctx):
                     await post_execute_workflow_step(task, result)
+                    # Re-read context from DB — the post-hook may have
+                    # stored _schema_error or other fields.  Without this,
+                    # the retry update below overwrites them with the stale
+                    # task_ctx snapshot from the start of process_task.
+                    try:
+                        _fresh = await get_task(task_id)
+                        if _fresh:
+                            _fc = _fresh.get("context", "{}")
+                            if isinstance(_fc, str):
+                                _fc = json.loads(_fc)
+                            if isinstance(_fc, dict):
+                                task_ctx.update(_fc)
+                    except Exception:
+                        pass
                     # Post-hook may override status
                     if result.get("status") == "needs_clarification":
-                        await self._handle_clarification(task, result)
-                        return
+                        if not await self._validate_clarification(
+                            task_id, task, task_ctx, result
+                        ):
+                            # Validation failed — fall through to retry
+                            result["status"] = "failed"
+                        else:
+                            await self._handle_clarification(task, result)
+                            return
                     if result.get("status") == "failed":
                         error_msg = result.get("error", "Disguised failure detected")
                         from src.core.retry import RetryContext
@@ -1846,10 +1885,26 @@ class Orchestrator:
                 # whether the output artifacts should be persisted.
                 if is_workflow_step(task_ctx):
                     await post_execute_workflow_step(task, result)
+                    # Re-read context — post-hook may have stored _schema_error.
+                    try:
+                        _fresh = await get_task(task_id)
+                        if _fresh:
+                            _fc = _fresh.get("context", "{}")
+                            if isinstance(_fc, str):
+                                _fc = json.loads(_fc)
+                            if isinstance(_fc, dict):
+                                task_ctx.update(_fc)
+                    except Exception:
+                        pass
                     # Post-hook may override status
                     if result.get("status") == "needs_clarification":
-                        await self._handle_clarification(task, result)
-                        return
+                        if not await self._validate_clarification(
+                            task_id, task, task_ctx, result
+                        ):
+                            result["status"] = "failed"
+                        else:
+                            await self._handle_clarification(task, result)
+                            return
                     if result.get("status") == "failed":
                         error_msg = result.get("error", "Disguised failure detected")
                         from src.core.retry import RetryContext
@@ -1951,16 +2006,55 @@ class Orchestrator:
                                           **retry_ctx.to_db_fields())
                 elif task_ctx.get("clarification_history"):
                     # Agent tried to clarify again despite having answers —
-                    # treat as completed (answers are already in context).
+                    # treat as completed, using the Q&A exchange as the result
+                    # so downstream artifacts capture the human's input.
                     logger.info(f"[Task #{task_id}] Suppressed repeat clarification "
                                 f"(clarification_history already exists)")
+                    history = task_ctx["clarification_history"]
+                    # Build a readable Q&A result from the clarification exchange
+                    qa_parts = []
+                    for entry in history:
+                        q = entry.get("question", "")
+                        a = entry.get("answer", "")
+                        if q or a:
+                            qa_parts.append(f"**Q:** {q}\n**A:** {a}")
+                    qa_result = "\n\n".join(qa_parts) if qa_parts else task_ctx.get("user_clarification", "")
                     result["status"] = "completed"
+                    result["result"] = qa_result or result.get("result", "")
                     # Run post-hook if this is a workflow step
                     if is_workflow_step(task_ctx):
                         await post_execute_workflow_step(task, result)
                     await self._handle_complete(task, result)
                 else:
-                    await self._handle_clarification(task, result)
+                    if is_workflow_step(task_ctx) and not await self._validate_clarification(
+                        task_id, task, task_ctx, result
+                    ):
+                        # Validation failed — retry via the standard pipeline
+                        from src.core.retry import RetryContext
+                        retry_ctx = RetryContext.from_task(task)
+                        decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
+                        if decision.action == "terminal":
+                            task_ctx.update(retry_ctx.to_context_patch())
+                            await update_task(
+                                task_id, status="failed",
+                                error=f"Clarification schema failed: {result.get('error', '')[:300]}",
+                                context=json.dumps(task_ctx),
+                                **retry_ctx.to_db_fields(),
+                            )
+                        else:
+                            next_retry = None
+                            if decision.action == "delayed":
+                                next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
+                            retry_ctx.next_retry_at = next_retry
+                            task_ctx.update(retry_ctx.to_context_patch())
+                            await update_task(
+                                task_id, status="pending",
+                                error=f"Clarification schema failed: {result.get('error', '')[:200]}",
+                                context=json.dumps(task_ctx),
+                                **retry_ctx.to_db_fields(),
+                            )
+                    else:
+                        await self._handle_clarification(task, result)
             elif status == "needs_review":
                 await self._handle_review(task, result)
             elif status == "exhausted":
@@ -2569,6 +2663,38 @@ class Orchestrator:
         )
 
         logger.info(f"[Task #{task_id}] Decomposed into {len(subtasks)} subtasks")
+
+    async def _validate_clarification(
+        self, task_id, task, task_ctx, result
+    ) -> bool:
+        """Validate clarification content for triggers_clarification steps.
+
+        Returns True if valid (or no schema to check), False if rejected.
+        On rejection, sets result["error"] for the retry path.
+        """
+        artifact_schema = task_ctx.get("artifact_schema")
+        if not artifact_schema or not task_ctx.get("triggers_clarification"):
+            return True
+
+        question_text = result.get("clarification", "")
+        from src.workflows.engine.hooks import validate_artifact_schema
+        is_valid, err = validate_artifact_schema(question_text, artifact_schema)
+        if is_valid:
+            return True
+
+        logger.warning(
+            f"[Task #{task_id}] Clarification rejected by schema: {err}"
+        )
+        result["error"] = f"Schema validation: {err}"
+
+        # Store _schema_error so the retry prompt shows validation feedback
+        try:
+            new_ctx = dict(task_ctx)
+            new_ctx["_schema_error"] = err
+            await update_task(task_id, context=json.dumps(new_ctx))
+        except Exception:
+            pass
+        return False
 
     async def _handle_clarification(self, task, result):
         task_id = task["id"]
@@ -3276,9 +3402,11 @@ class Orchestrator:
             from ..shopping.cache import init_cache_db
             from ..shopping.request_tracker import init_request_db
             from ..shopping.memory import init_memory_db
-            await init_cache_db()
-            await init_request_db()
-            await init_memory_db()
+            await asyncio.gather(
+                init_cache_db(),
+                init_request_db(),
+                init_memory_db(),
+            )
             logger.info("Shopping DB schemas initialised")
         except Exception as e:
             logger.warning(f"Shopping DB init failed (non-fatal): {e}")

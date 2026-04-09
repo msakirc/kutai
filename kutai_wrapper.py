@@ -315,19 +315,18 @@ class KutAIWrapper:
         self._stop_requested = False
 
         # Stop wrapper's Telegram poller before starting KutAI.
-        # Skip if called from within the poller itself (it will exit after return).
+        # Only sleep if the poller was actually running — it needs time for
+        # its in-flight getUpdates long-poll to finish before the orchestrator
+        # starts its own polling.  On initial start or restart (exit 42),
+        # the poller is already stopped so no wait is needed.
         if not _from_poller:
-            await self._stop_telegram_poller()
+            if self._telegram_poller is not None:
+                await self._stop_telegram_poller()
+                await asyncio.sleep(2)  # let in-flight long-poll drain
         else:
             # Clear the poller reference — the poller task is about to return
             self._telegram_poller = None
-
-        # Brief pause to ensure any in-flight getUpdates long-poll request
-        # from the wrapper has fully completed before the orchestrator starts
-        # its own polling.  Without this, both pollers can race.
-        # 3s gives the wrapper's short-timeout poll (5s) time to finish and
-        # release the Telegram connection before the orchestrator claims it.
-        await asyncio.sleep(3)
+            await asyncio.sleep(2)  # poller was active, let it drain
 
         venv_python = self._find_python()
         _wlog(f"Starting orchestrator (python={venv_python})")

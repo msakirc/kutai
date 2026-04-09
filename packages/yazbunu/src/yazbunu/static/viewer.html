@@ -97,7 +97,17 @@
   .level-DEBUG .level { color: var(--debug); }
   .level-CRITICAL .level { color: var(--error); }
   .src { color: var(--accent); white-space: nowrap; }
-  .msg { flex: 1; }
+  .msg {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .msg.expanded {
+    white-space: pre-wrap;
+    overflow: visible;
+  }
   .pill {
     display: inline-block;
     font-size: 10px;
@@ -195,6 +205,7 @@ async function fetchLogs(file, lines = 2000) {
   lastTs = allLines.length ? allLines[allLines.length - 1].ts : "";
   $status.textContent = `${allLines.length} / ${d.total} lines`;
   render();
+  $area.scrollTop = $area.scrollHeight;
 }
 
 function appendTailLines(rawLines) {
@@ -304,6 +315,7 @@ function render() {
       msg.appendChild(pill);
     }
 
+    msg.onclick = () => msg.classList.toggle("expanded");
     row.appendChild(msg);
 
     // Exception (collapsible)

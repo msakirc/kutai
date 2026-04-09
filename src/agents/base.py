@@ -67,6 +67,50 @@ CACHEABLE_READ_TOOLS: frozenset[str] = frozenset({
 MAX_FORMAT_CORRECTIONS: int = 2
 
 
+def _unwrap_final_answer(content: str) -> str:
+    """Extract the 'result' value from a final_answer JSON envelope.
+
+    LLMs often wrap their response in ``{"action": "final_answer", "result": "..."}``
+    inside a markdown code block.  When the result string contains unescaped
+    quotes, ``json.loads`` fails.  This helper uses a regex to pull out the
+    result value so the downstream artifact pipeline gets clean text instead of
+    the raw envelope.
+
+    Returns the extracted result text, or the original content unchanged.
+    """
+    if '"final_answer"' not in content and '"result"' not in content:
+        return content
+
+    # Strip markdown code fences so we work on the JSON body.
+    stripped = content.strip()
+    if stripped.startswith("```"):
+        stripped = stripped.split("\n", 1)[1] if "\n" in stripped else stripped[3:]
+        stripped = stripped.rsplit("```", 1)[0].strip()
+
+    # Try clean JSON parse first — fastest path.
+    try:
+        obj = json.loads(stripped)
+        if isinstance(obj, dict) and "result" in obj:
+            return obj["result"]
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Regex fallback: grab everything between "result": " and the last "
+    # before the closing brace.  The result field is always the longest
+    # string value so we use a greedy match anchored to the key.
+    m = re.search(
+        r'"result"\s*:\s*"(.*)",?\s*(?:"memories"|"subtasks"|\})',
+        stripped,
+        re.DOTALL,
+    )
+    if m:
+        raw = m.group(1)
+        # Un-escape JSON string escapes that survived the regex.
+        return raw.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+
+    return content
+
+
 def _partition_tool_calls(tools: list[dict]) -> tuple[list[dict], list[dict]]:
     """Split tool calls into parallel (read-only) and sequential (side-effect).
 
@@ -1311,6 +1355,19 @@ class BaseAgent:
             self._original_allowed_tools = self.allowed_tools
             self.allowed_tools = tools_hint
 
+        # Strip file tools when all input artifacts are already in context.
+        # Prevents wasting iterations re-reading data that's in the prompt.
+        _FILE_TOOLS = {"read_file", "file_tree", "project_info"}
+        if _task_ctx.get("_strip_file_tools") and self.allowed_tools is not None:
+            if not hasattr(self, '_original_allowed_tools'):
+                self._original_allowed_tools = self.allowed_tools
+            self.allowed_tools = [t for t in self.allowed_tools if t not in _FILE_TOOLS]
+        elif _task_ctx.get("_strip_file_tools") and self.allowed_tools is None:
+            # Agent has no explicit tool list — build one without file tools
+            from src.tools import list_tool_names
+            self._original_allowed_tools = self.allowed_tools
+            self.allowed_tools = [t for t in list_tool_names() if t not in _FILE_TOOLS]
+
         # Suppress clarification if task explicitly disallows it
         self._suppress_clarification = _task_ctx.get("may_need_clarification") is False
 
@@ -1443,7 +1500,8 @@ class BaseAgent:
         guard_burns = 0
         useful_iterations = 0
 
-        for iteration in range(start_iteration, effective_max_iterations):
+        try:
+          for iteration in range(start_iteration, effective_max_iterations):
             # ── Check if task was cancelled while running ──
             if iteration > 0 and iteration % 2 == 0:
                 try:
@@ -1565,6 +1623,7 @@ class BaseAgent:
                     reqs.needs_function_calling = True
 
                 # ── Call LLM ──
+                self._partial_content = ""
                 try:
                     from src.core.llm_dispatcher import get_dispatcher, CallCategory
                     response = await get_dispatcher().request(
@@ -1572,6 +1631,7 @@ class BaseAgent:
                         reqs,
                         messages,
                         tools=litellm_tools,
+                        partial_buf=self,
                     )
                 except Exception as exc:
                     logger.error(f"[Task #{task_id}] Model call failed: {exc}")
@@ -1627,11 +1687,12 @@ class BaseAgent:
                     # wrapper, accept it as a final answer rather than wasting
                     # a correction on format.
                     if len(content) > 200:
+                        result_text = _unwrap_final_answer(content)
                         logger.info(
                             f"[Task #{task_id}] Accepting unparsed response "
                             f"as final answer ({len(content)} chars)"
                         )
-                        parsed = {"action": "final_answer", "result": content}
+                        parsed = {"action": "final_answer", "result": result_text}
                     elif format_corrections < MAX_FORMAT_CORRECTIONS and sub_corrections < MAX_SUB_CORRECTIONS:
                         format_corrections += 1
                         sub_corrections += 1
@@ -2423,6 +2484,30 @@ class BaseAgent:
                 used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
                 completed_tool_ops, format_corrections,
             )
+
+        except asyncio.CancelledError:
+            # Timeout — save checkpoint so previous work survives for retry.
+            # Include any partial LLM output captured via streaming.
+            try:
+                partial = getattr(self, "_partial_content", "")
+                if partial and len(partial) > 50:
+                    messages.append({"role": "assistant", "content": partial})
+                    logger.info(
+                        f"[Task #{task_id}] Saved {len(partial)} chars of "
+                        f"partial LLM output from interrupted generation"
+                    )
+                await self._save_checkpoint(
+                    task_id, iteration, messages, total_cost,
+                    used_model, reqs, tools_used,
+                    False, completed_tool_ops, format_corrections,
+                    tools_used_names,
+                )
+                logger.info(
+                    f"[Task #{task_id}] Timeout checkpoint saved at iteration {iteration}"
+                )
+            except Exception:
+                pass
+            raise  # re-raise so orchestrator's TimeoutError handler fires
 
         # ── Exhausted iterations ──
         await self._clear_checkpoint_safe(task_id)

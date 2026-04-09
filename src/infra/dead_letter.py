@@ -270,13 +270,49 @@ async def retry_dlq_task(task_id: int) -> bool:
     ctx["grade_excluded_models"] = []
     # Keep generating_model (prevents self-grading)
 
+    # Reset checkpoint iteration counter so the agent doesn't immediately
+    # exhaust on resume, but keep the checkpoint data (tool results, messages)
+    # so previous work isn't lost.
+    try:
+        from src.infra.db import load_task_checkpoint, save_task_checkpoint
+        cp = await load_task_checkpoint(task_id)
+        if cp:
+            cp["iteration"] = 0
+            cp["format_corrections"] = 0
+            cp["consecutive_tool_failures"] = 0
+            await save_task_checkpoint(task_id, cp)
+    except Exception:
+        pass
+
     await update_task(
         task_id,
         status=new_status,
+        worker_attempts=0,
         next_retry_at=None,
         retry_reason=None,
         context=json.dumps(ctx),
     )
+
+    # Reset downstream tasks that were cascade-failed due to this task's DLQ.
+    # Without this, dependents stay permanently failed even after DLQ retry.
+    try:
+        from src.infra.db import get_db
+        db = await get_db()
+        cascade_cursor = await db.execute(
+            """UPDATE tasks SET status = 'pending', error = NULL,
+                   started_at = NULL, completed_at = NULL, worker_attempts = 0
+               WHERE status = 'failed'
+                 AND error = 'All dependencies failed'
+                 AND depends_on LIKE ?""",
+            (f"%{task_id}%",),
+        )
+        cascade_count = cascade_cursor.rowcount
+        if cascade_count > 0:
+            await db.commit()
+            logger.info(f"[DLQ] Reset {cascade_count} cascade-failed dependents of task #{task_id}")
+    except Exception as e:
+        logger.debug(f"[DLQ] Cascade reset failed: {e}")
+
     logger.info(f"[DLQ] Task #{task_id} re-queued → {new_status} (phase={failed_phase})")
     return True
 

@@ -4,17 +4,15 @@ Singleton runtime state populated during startup health checks.
 
 Import and read flags before using optional services:
     from src.infra.runtime_state import runtime_state
-    if runtime_state["web_search_available"]:
+    if runtime_state["telegram_available"]:
         ...
 """
 
 from datetime import datetime, timezone
 
 runtime_state: dict = {
-    "web_search_available":  False,
     "sandbox_available":     False,
     "telegram_available":    False,
-    "frontail_available":    False,
     "llm_available":         False,
     "degraded_capabilities": [],   # list[str] of capability names that are down
     "boot_time":             datetime.now(tz=timezone.utc).isoformat(),

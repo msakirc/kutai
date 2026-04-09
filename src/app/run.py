@@ -191,19 +191,6 @@ async def _noncritical_health_checks():
             async with s.get(url, timeout=aiohttp.ClientTimeout(total=5)) as r:
                 return r.status == 200, f"HTTP {r.status}"
 
-    async def _perplexica():
-        url = os.getenv("PERPLEXICA_URL", "")
-        if not url:
-            return False, "PERPLEXICA_URL not set"
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url, timeout=aiohttp.ClientTimeout(total=5)) as r:
-                return r.status < 500, f"HTTP {r.status}"
-
-    async def _frontail():
-        async with aiohttp.ClientSession() as s:
-            async with s.get("http://localhost:9001", timeout=aiohttp.ClientTimeout(total=3)) as r:
-                return r.status < 500, f"HTTP {r.status}"
-
     async def _docker_check():
         try:
             r = subprocess.run(
@@ -252,8 +239,6 @@ async def _noncritical_health_checks():
 
     await asyncio.gather(
         _async_check("telegram", _telegram, "telegram_available"),
-        _async_check("perplexica", _perplexica, "web_search_available"),
-        _async_check("frontail", _frontail, "frontail_available"),
         _async_check("docker_sandbox", _docker_check),
         _async_check("python_deps", _check_deps),
     )

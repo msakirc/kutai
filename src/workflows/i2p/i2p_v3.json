@@ -826,8 +826,8 @@
       "done_when": "clarification_request has been sent to the human via the clarify action.",
       "artifact_schema": {
         "clarification_request": {
-          "type": "string",
-          "min_length": 50
+          "type": "array",
+          "min_items": 3
         }
       }
     },
@@ -1416,13 +1416,13 @@
       "output_artifacts": [
         "research_review_result"
       ],
-      "instruction": "Review market_research_report for: 1) Claims without evidence, 2) Logical gaps, 3) Missing data, 4) Bias, 5) Internal contradictions, 6) Feature matrix and pricing completeness, 7) Gap analysis quality. Output: status (approved/needs_revision), issues list.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching â€” use what you found. Your response text IS the artifact.",
+      "instruction": "Review market_research_report for: 1) Claims without evidence, 2) Logical gaps, 3) Missing data, 4) Bias, 5) Internal contradictions, 6) Feature matrix and pricing completeness, 7) Gap analysis quality. Output: verdict (pass/fail/needs_minor_fixes), issues list.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching â€” use what you found. Your response text IS the artifact.",
       "done_when": "research_review_result exists with clear quality assessment.",
       "artifact_schema": {
         "research_review_result": {
           "type": "object",
           "required_fields": [
-            "status",
+            "verdict",
             "issues"
           ]
         }

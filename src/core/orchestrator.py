@@ -1718,6 +1718,32 @@ class Orchestrator:
                 retry_ctx = RetryContext.from_task(task)
                 decision = retry_ctx.record_failure("timeout")
 
+                # ── Bonus attempt: if terminal but task made real progress,
+                # grant one more try instead of DLQ.  The timeout is a safety
+                # net, not a quality judgment — if the agent was productive
+                # (wrote files, completed iterations), let it finish.
+                _MAX_BONUS_ATTEMPTS = 2  # hard cap on bonus attempts per task lifetime
+                if decision.action == "terminal":
+                    bonus_granted = False
+                    bonus_count = task_ctx.get("_bonus_count", 0)
+                    if bonus_count < _MAX_BONUS_ATTEMPTS:
+                        try:
+                            progress = await self._assess_timeout_progress(
+                                task_id, task_ctx
+                            )
+                            if progress >= 0.5:
+                                bonus_granted = True
+                                task_ctx["_bonus_count"] = bonus_count + 1
+                                retry_ctx.max_worker_attempts += 1
+                                decision = retry_ctx.record_failure("timeout")
+                                logger.info(
+                                    f"[Task #{task_id}] Bonus attempt granted "
+                                    f"({bonus_count + 1}/{_MAX_BONUS_ATTEMPTS}, "
+                                    f"progress={progress:.0%})"
+                                )
+                        except Exception:
+                            pass
+
                 if decision.action == "terminal":
                     task_ctx.update(retry_ctx.to_context_patch())
                     await update_task(
@@ -2663,6 +2689,52 @@ class Orchestrator:
         )
 
         logger.info(f"[Task #{task_id}] Decomposed into {len(subtasks)} subtasks")
+
+    async def _assess_timeout_progress(
+        self, task_id: int, task_ctx: dict
+    ) -> float:
+        """Estimate how much progress a timed-out task made (0.0–1.0).
+
+        Checks: checkpoint iteration ratio, workspace files written,
+        partial content length.  Used to decide bonus attempts.
+        """
+        score = 0.0
+
+        # 1. Checkpoint iteration progress
+        try:
+            checkpoint = await load_task_checkpoint(task_id)
+            if checkpoint:
+                iteration = checkpoint.get("iteration", 0)
+                max_iter = checkpoint.get("max_iterations", 7)
+                if max_iter > 0:
+                    score = max(score, iteration / max_iter)
+                # Partial content from streaming
+                msgs = checkpoint.get("messages", [])
+                for msg in reversed(msgs):
+                    if msg.get("role") == "assistant" and len(msg.get("content", "")) > 500:
+                        score = max(score, 0.6)
+                        break
+        except Exception:
+            pass
+
+        # 2. Workspace files written by this task's mission
+        mission_id = task_ctx.get("mission_id")
+        output_names = task_ctx.get("output_artifacts", [])
+        if mission_id and output_names:
+            try:
+                import os
+                from ..tools.workspace import WORKSPACE_DIR
+                artifact_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+                for name in output_names:
+                    for ext in (".md", ".json", ".txt"):
+                        fpath = os.path.join(artifact_dir, f"{name}{ext}")
+                        if os.path.isfile(fpath) and os.path.getsize(fpath) > 200:
+                            score = max(score, 0.8)
+                            break
+            except Exception:
+                pass
+
+        return score
 
     async def _validate_clarification(
         self, task_id, task, task_ctx, result

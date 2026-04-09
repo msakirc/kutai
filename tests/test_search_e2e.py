@@ -495,29 +495,7 @@ class TestPerplexicaCircuitBreaker(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 8. NTFY URL STRIPPING — path removed before sending
-# ---------------------------------------------------------------------------
-class TestNtfyURLStripping(unittest.TestCase):
-    """Verify ntfy URL path is stripped so topics route correctly."""
-
-    def test_path_stripped_from_url(self):
-        """NTFY_URL with path should be stripped to base."""
-        from urllib.parse import urlparse, urlunparse
-        base_url = "http://localhost:8083/kutai"
-        parsed = urlparse(base_url)
-        clean = urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
-        self.assertEqual(clean, "http://localhost:8083")
-
-    def test_clean_url_unchanged(self):
-        from urllib.parse import urlparse, urlunparse
-        base_url = "http://localhost:8083"
-        parsed = urlparse(base_url)
-        clean = urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
-        self.assertEqual(clean, "http://localhost:8083")
-
-
-# ---------------------------------------------------------------------------
-# 9. WORKFLOW RUNNER — constructor takes no args
+# 8. WORKFLOW RUNNER — constructor takes no args
 # ---------------------------------------------------------------------------
 class TestWorkflowRunner(unittest.TestCase):
     """Verify WorkflowRunner can be instantiated without args."""

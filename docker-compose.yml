@@ -21,33 +21,6 @@ services:
           memory: 256M
     restart: unless-stopped
 
-  vane:
-    image: itzcrazykns1337/vane:latest
-    container_name: vane
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-      - "3002:8080"  # SearXNG direct access (bypasses Vane LLM)
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - ${VANE_DATA_DIR:-./docker/data/vane}:/home/vane/data
-
-  frontail:
-    image: mthenw/frontail
-    container_name: orchestrator-frontail
-    volumes:
-      - ./logs:/logs:ro
-    ports:
-      - "9001:9001"
-    command: --ui-highlight --number 1000 /logs/orchestrator.jsonl
-    deploy:
-      resources:
-        limits:
-          memory: 50M
-    mem_limit: 50m
-    restart: unless-stopped
-
   # ─── Monitoring: Prometheus ─────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:latest

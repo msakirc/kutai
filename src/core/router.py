@@ -39,6 +39,52 @@ litellm.return_response_headers = True
 # server dies mid-inference (e.g. during a model swap).
 litellm.request_timeout = 120
 
+
+async def _stream_with_accumulator(
+    completion_kwargs: dict,
+    partial_buf: object,
+) -> "litellm.ModelResponse":
+    """Call litellm with streaming, accumulate content into partial_buf.
+
+    Writes each chunk to ``partial_buf._partial_content`` so the agent's
+    CancelledError handler can save whatever was generated before timeout.
+    Returns a synthetic ModelResponse with the full accumulated content.
+    """
+    completion_kwargs["stream"] = True
+    chunks = []
+    accumulated = ""
+    role = "assistant"
+    finish_reason = None
+
+    async for chunk in await litellm.acompletion(**completion_kwargs):
+        delta = chunk.choices[0].delta if chunk.choices else None
+        if delta:
+            if delta.content:
+                accumulated += delta.content
+                partial_buf._partial_content = accumulated
+            if delta.role:
+                role = delta.role
+            if chunk.choices[0].finish_reason:
+                finish_reason = chunk.choices[0].finish_reason
+        chunks.append(chunk)
+
+    # Build a synthetic non-streaming response
+    last = chunks[-1] if chunks else None
+    resp = litellm.ModelResponse(
+        id=last.id if last else "stream",
+        model=last.model if last else completion_kwargs.get("model", ""),
+        choices=[{
+            "message": {"role": role, "content": accumulated},
+            "finish_reason": finish_reason or "stop",
+            "index": 0,
+        }],
+    )
+    # Copy usage from the last chunk if available
+    if last and hasattr(last, "usage") and last.usage:
+        resp.usage = last.usage
+
+    return resp
+
 from src.infra.logging_config import get_logger
 from src.models.rate_limiter import get_rate_limit_manager
 from src.models.header_parser import parse_rate_limit_headers
@@ -153,7 +199,11 @@ class ModelRequirements:
     def effective_context_needed(self) -> int:
         if self.min_context_length > 0:
             return self.min_context_length
-        return int((self.estimated_input_tokens + self.estimated_output_tokens) * 1.3)
+        # 1.3× covers tokenizer variance; extra 512 tokens headroom for
+        # tool results that grow the context during multi-iteration execution.
+        # Without this, a model that barely fits the initial prompt gets
+        # filtered after one tool call (e.g. ctx 8192 < 8217 after read_file).
+        return int((self.estimated_input_tokens + self.estimated_output_tokens) * 1.3) + 512
 
     @property
     def effective_min_score(self) -> float:
@@ -788,10 +838,9 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
         rescued.reasons.append("rescued(only_option)")
         candidates.append(rescued)
         logger.warning(
-            "time_gate_rescue",
+            "time_gate_rescue: all candidates were too slow, rescued fastest",
             model=rescued.model.name,
             tps=rescued.model.tokens_per_second,
-            msg="all candidates were too slow, rescued fastest",
         )
 
     candidates.sort(key=lambda c: -c.score)
@@ -941,6 +990,7 @@ async def call_model(
     messages: list[dict],
     tools: list[dict] | None = None,
     timeout_override: float | None = None,
+    partial_buf: object | None = None,
 ) -> dict:
     """
     Call the best available model matching requirements.
@@ -1227,6 +1277,13 @@ async def call_model(
 
         max_retries = 2 if model.is_local else 3
 
+        # Disable OpenAI SDK internal retries for local models.
+        # A 500 from llama-server is structural (slot error, bad model
+        # state) — retrying the same request wastes 40-50s.  Our own
+        # router loop and dispatcher handle failover to other models.
+        if model.is_local and model.location != "ollama":
+            completion_kwargs["num_retries"] = 0
+
         try:
             for attempt in range(max_retries):
                 try:
@@ -1244,10 +1301,27 @@ async def call_model(
                         vision=model.has_vision,
                     )
 
-                    response = await asyncio.wait_for(
-                        litellm.acompletion(**completion_kwargs),
-                        timeout=timeout_val,
+                    # Stream local models when partial_buf provided so
+                    # partial output survives timeouts.
+                    use_stream = (
+                        partial_buf is not None
+                        and model.is_local
+                        and model.location != "ollama"
+                        and not use_tools  # tool calls need full response
                     )
+
+                    if use_stream:
+                        response = await asyncio.wait_for(
+                            _stream_with_accumulator(
+                                completion_kwargs, partial_buf,
+                            ),
+                            timeout=timeout_val,
+                        )
+                    else:
+                        response = await asyncio.wait_for(
+                            litellm.acompletion(**completion_kwargs),
+                            timeout=timeout_val,
+                        )
 
                     call_latency = time.time() - call_start
 
@@ -1294,6 +1368,13 @@ async def call_model(
                                 registry.update_measured_speed(model.name, tok_per_sec)
                             except Exception:
                                 pass  # non-critical
+                            # Also update runtime_state so dispatcher timeout
+                            # calculations use fresh data (not stale seed or 0).
+                            try:
+                                if local_manager and local_manager.runtime_state:
+                                    local_manager.runtime_state.measured_tps = tok_per_sec
+                            except Exception:
+                                pass
 
                     # Extract tool calls
                     msg = response.choices[0].message

@@ -162,12 +162,20 @@ async def send_todo_reminder(telegram):
         if not text:
             return
 
-        await telegram.app.bot.send_message(
-            chat_id=_get_admin_chat_id(),
-            text=text,
-            parse_mode="Markdown",
-            reply_markup=markup,
-        )
+        try:
+            await telegram.app.bot.send_message(
+                chat_id=_get_admin_chat_id(),
+                text=text,
+                parse_mode="Markdown",
+                reply_markup=markup,
+            )
+        except Exception:
+            # Markdown parse failure (unescaped chars) — retry plain
+            await telegram.app.bot.send_message(
+                chat_id=_get_admin_chat_id(),
+                text=text,
+                reply_markup=markup,
+            )
         logger.info("todo reminder sent")
 
     except Exception as e:

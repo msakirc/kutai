@@ -63,13 +63,14 @@ def check_env():
         import glob
         has_llama = bool(glob.glob(os.path.join(model_dir, "**", "*.gguf"), recursive=True))
 
-    # Check for Ollama
+    # Check for Ollama (skip if explicitly disabled or llama models found)
     has_ollama = False
-    try:
-        result = subprocess.run(["ollama", "list"], capture_output=True, timeout=3)
-        has_ollama = result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    if not os.getenv("OLLAMA_DISABLED") and not has_llama:
+        try:
+            result = subprocess.run(["ollama", "list"], capture_output=True, timeout=3)
+            has_ollama = result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
 
     has_local = has_llama or has_ollama
 

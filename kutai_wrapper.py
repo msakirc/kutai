@@ -1185,49 +1185,42 @@ class KutAIWrapper:
     # ── Post-exit Cleanup ──────────────────────────────────────────────────
 
     @staticmethod
-    def _kill_orphan_processes():
+    def _kill_orphan_processes(force: bool = True):
         """Kill orphaned llama-server (and optionally Ollama) after orchestrator exits.
 
-        This is the ultimate safety net — the wrapper always survives the
-        orchestrator, so this covers crashes, taskkill, os._exit(), etc.
+        Args:
+            force: If True, kill found processes. If False, only log if running.
         """
         import subprocess as sp
 
-        # Kill llama-server
-        try:
-            result = sp.run(
-                ["taskkill", "/F", "/IM", "llama-server.exe"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode == 0:
-                _wlog(f"Killed orphaned llama-server: {result.stdout.strip()}")
-            # returncode != 0 means no matching process — that's fine
-        except Exception as e:
-            _wlog(f"llama-server cleanup error: {e}", level="WARNING")
+        targets = [
+            ("llama-server.exe", "llama-server"),
+            ("ollama.exe", "Ollama"),
+            ("ollama_llama_server.exe", "Ollama runner"),
+        ]
 
-        # Stop Ollama if it's running (it auto-restarts via Windows startup,
-        # but we don't want it hogging VRAM between orchestrator restarts).
-        try:
-            result = sp.run(
-                ["taskkill", "/F", "/IM", "ollama.exe"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode == 0:
-                _wlog(f"Stopped Ollama: {result.stdout.strip()}")
-        except Exception as e:
-            _wlog(f"Ollama cleanup error: {e}", level="WARNING")
+        for exe, label in targets:
+            try:
+                # Check if process exists first (fast, no timeout issues)
+                check = sp.run(
+                    ["tasklist", "/FI", f"IMAGENAME eq {exe}", "/NH"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if exe.lower() not in check.stdout.lower():
+                    continue  # not running, skip
 
-        # Also kill ollama runner processes (ollama_llama_server.exe) that
-        # Ollama spawns for model inference — these hold VRAM.
-        try:
-            result = sp.run(
-                ["taskkill", "/F", "/IM", "ollama_llama_server.exe"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode == 0:
-                _wlog(f"Stopped Ollama runner: {result.stdout.strip()}")
-        except Exception:
-            pass
+                if not force:
+                    _wlog(f"{label} still running (not killing — clean exit)")
+                    continue
+
+                result = sp.run(
+                    ["taskkill", "/F", "/IM", exe],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if result.returncode == 0:
+                    _wlog(f"Killed orphaned {label}: {result.stdout.strip()}")
+            except Exception as e:
+                _wlog(f"{label} cleanup error: {e}", level="WARNING")
 
     # ── Python Discovery ──────────────────────────────────────────────────
 
@@ -1278,7 +1271,7 @@ class KutAIWrapper:
                 exit_code = await self.wait_for_exit()
                 await self._ensure_yazbunu()
                 await self._stop_signal_watcher()
-                self._kill_orphan_processes()
+                self._kill_orphan_processes(force=(exit_code != RESTART_EXIT_CODE))
                 self._maybe_reset_backoff()
 
                 if exit_code == -1:

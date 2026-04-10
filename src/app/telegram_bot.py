@@ -542,7 +542,10 @@ class TelegramInterface:
             # Auto-print dashboard
             self._kb_state[chat_id] = "sistem"
             dashboard = await self._build_system_dashboard()
-            await update.message.reply_text(dashboard, parse_mode="Markdown")
+            try:
+                await update.message.reply_text(dashboard, parse_mode="Markdown")
+            except Exception:
+                await update.message.reply_text(dashboard)
             await update.message.reply_text("⌨️", reply_markup=KB_SISTEM)
             return
 
@@ -3337,6 +3340,21 @@ class TelegramInterface:
 
         args = context.args or []
 
+        if args and args[0] == "unpause":
+            try:
+                from src.core.orchestrator import get_orchestrator
+                orch = get_orchestrator()
+                if orch and hasattr(orch, "paused_patterns") and orch.paused_patterns:
+                    cleared = list(orch.paused_patterns)
+                    orch.paused_patterns.clear()
+                    await self._reply(update, f"Unpaused {len(cleared)} patterns:\n" +
+                                      "\n".join(f"- {p}" for p in cleared))
+                else:
+                    await self._reply(update, "No patterns currently paused.")
+            except Exception as e:
+                await self._reply(update, f"Error: {e}")
+            return
+
         try:
             if len(args) >= 2 and args[0] == "retry":
                 task_id = int(args[1])
@@ -5335,6 +5353,59 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 await query.message.reply_text(f"🔄 Görev #{task_id} kuyruğa geri eklendi.")
             except Exception as e:
                 await query.message.reply_text(f"❌ {e}")
+            return
+
+        # ── DLQ Analyst actions ──
+        if data.startswith("dlqa:"):
+            parts = data.split(":", 2)
+            if len(parts) < 3:
+                await query.answer("Invalid action")
+                return
+
+            action = parts[1]
+            payload = parts[2]
+
+            if action == "retry":
+                task_ids = [int(t) for t in payload.split(",") if t.isdigit()]
+                from src.infra.dead_letter import retry_dlq_task
+                retried = 0
+                for tid in task_ids:
+                    if await retry_dlq_task(tid):
+                        retried += 1
+                await query.answer(f"Retried {retried}/{len(task_ids)} tasks")
+                await query.edit_message_text(
+                    query.message.text + f"\n\nRetried {retried} tasks.",
+                )
+
+            elif action == "drop":
+                task_ids = [int(t) for t in payload.split(",") if t.isdigit()]
+                from src.infra.dead_letter import resolve_dlq_task
+                dropped = 0
+                for tid in task_ids:
+                    if await resolve_dlq_task(tid, resolution="discarded"):
+                        dropped += 1
+                await query.answer(f"Dropped {dropped}/{len(task_ids)} tasks")
+                await query.edit_message_text(
+                    query.message.text + f"\n\nDropped {dropped} tasks.",
+                )
+
+            elif action == "pause":
+                pattern_key = payload
+                # Store pause in orchestrator's pause set
+                try:
+                    from src.core.orchestrator import get_orchestrator
+                    orch = get_orchestrator()
+                    if orch and hasattr(orch, "paused_patterns"):
+                        orch.paused_patterns.add(pattern_key)
+                        await query.answer(f"Paused: {pattern_key}")
+                        await query.edit_message_text(
+                            query.message.text + f"\n\nPaused pattern: {pattern_key}. Use /dlq unpause to lift.",
+                        )
+                    else:
+                        await query.answer("Orchestrator not available")
+                except Exception as e:
+                    await query.answer(f"Pause failed: {e}")
+
             return
 
         # ── Process Management Callbacks ──────────────────────────

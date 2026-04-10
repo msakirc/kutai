@@ -63,13 +63,14 @@ def check_env():
         import glob
         has_llama = bool(glob.glob(os.path.join(model_dir, "**", "*.gguf"), recursive=True))
 
-    # Check for Ollama
+    # Check for Ollama (skip if explicitly disabled or llama models found)
     has_ollama = False
-    try:
-        result = subprocess.run(["ollama", "list"], capture_output=True, timeout=3)
-        has_ollama = result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    if not os.getenv("OLLAMA_DISABLED") and not has_llama:
+        try:
+            result = subprocess.run(["ollama", "list"], capture_output=True, timeout=3)
+            has_ollama = result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
 
     has_local = has_llama or has_ollama
 
@@ -108,19 +109,16 @@ def _check(name: str, fn, critical: bool) -> bool:
         return False
 
 
-async def startup_health_check() -> bool:
+async def _critical_health_checks() -> bool:
     """
-    Run all startup checks. Returns False if any critical check failed.
-    Non-critical failures set degradation flags and continue.
+    Run critical startup checks (logs writable + DB accessible).
+    Returns False if any critical check failed — caller should abort.
     """
-    import aiohttp
     from src.infra import db as _db
 
     critical_ok = True
 
-    # 1. .env required vars already checked by check_env() — skip
-
-    # 2. logs/ directory writable
+    # 1. logs/ directory writable
     def _logs_writable():
         os.makedirs("logs", exist_ok=True)
         test = "logs/.health_check_write"
@@ -132,7 +130,7 @@ async def startup_health_check() -> bool:
     if not _check("logs_writable", _logs_writable, critical=True):
         critical_ok = False
 
-    # 3. DB writable (retry — old process may still hold the lock during restart)
+    # 2. DB writable (retry — old process may still hold the lock during restart)
     async def _db_writable():
         await _db.init_db()
         return True, "DB accessible"
@@ -146,17 +144,25 @@ async def startup_health_check() -> bool:
             break
         except Exception as exc:
             if attempt < 2:
-                _log.warning("DB locked, retrying in 2s...",
+                _log.warning("DB locked, retrying in 1s...",
                              check="db_writable", attempt=attempt + 1)
                 await _db.close_db()  # release partial connection
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
             else:
                 _log.critical("Health check raised (critical)",
                               check="db_writable", error=str(exc))
     if not db_ok:
         critical_ok = False
 
-    # ── Non-critical checks: run concurrently (saves ~20s vs sequential) ──
+    return critical_ok
+
+
+async def _noncritical_health_checks():
+    """
+    Run non-critical health checks concurrently.
+    Failures set degradation flags but do not abort startup.
+    """
+    import aiohttp
 
     async def _async_check(name, coro, state_key=None):
         """Run one async health check with timeout, log result."""
@@ -184,19 +190,6 @@ async def startup_health_check() -> bool:
         async with aiohttp.ClientSession() as s:
             async with s.get(url, timeout=aiohttp.ClientTimeout(total=5)) as r:
                 return r.status == 200, f"HTTP {r.status}"
-
-    async def _perplexica():
-        url = os.getenv("PERPLEXICA_URL", "")
-        if not url:
-            return False, "PERPLEXICA_URL not set"
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url, timeout=aiohttp.ClientTimeout(total=5)) as r:
-                return r.status < 500, f"HTTP {r.status}"
-
-    async def _frontail():
-        async with aiohttp.ClientSession() as s:
-            async with s.get("http://localhost:9001", timeout=aiohttp.ClientTimeout(total=3)) as r:
-                return r.status < 500, f"HTTP {r.status}"
 
     async def _docker_check():
         try:
@@ -246,8 +239,6 @@ async def startup_health_check() -> bool:
 
     await asyncio.gather(
         _async_check("telegram", _telegram, "telegram_available"),
-        _async_check("perplexica", _perplexica, "web_search_available"),
-        _async_check("frontail", _frontail, "frontail_available"),
         _async_check("docker_sandbox", _docker_check),
         _async_check("python_deps", _check_deps),
     )
@@ -259,12 +250,10 @@ async def startup_health_check() -> bool:
     else:
         _log.info("All health checks passed — system nominal")
 
-    return critical_ok
-
 
 # ─── Docker Services ─────────────────────────────────────────────────────────
 
-def start_docker_services():
+async def start_docker_services():
     """Bring up all services defined in docker-compose.yml."""
     compose_file = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "../../docker-compose.yml")
@@ -274,10 +263,14 @@ def start_docker_services():
         return False
 
     _log.info("Starting Docker Compose services")
+    loop = asyncio.get_running_loop()
     try:
-        result = subprocess.run(
-            ["docker", "compose", "-f", compose_file, "up", "-d"],
-            capture_output=True, text=True, timeout=15,
+        result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                ["docker", "compose", "-f", compose_file, "up", "-d"],
+                capture_output=True, text=True, timeout=15,
+            ),
         )
         if result.returncode == 0:
             _log.info("Docker Compose services started")
@@ -293,7 +286,7 @@ def start_docker_services():
         _log.warning("Docker not found — services will be unavailable")
         return False
     except subprocess.TimeoutExpired:
-        _log.warning("Docker Compose up timed out (120s)")
+        _log.warning("Docker Compose up timed out (15s)")
         return False
 
 
@@ -338,34 +331,43 @@ async def main():
     check_env()
     _log.info("check_env done, running print_config...")
     print_config()
-    _log.info("Checking Docker services...")
-    docker_ok = start_docker_services()
-    _log.info("Docker check done", docker_ok=docker_ok)
-    if not docker_ok:
-        _log.warning("Docker services unavailable — sandbox, monitoring will not work")
 
-    critical_ok = await startup_health_check()
+    # Phase 1: Critical health checks (gate — abort if fails)
+    critical_ok = await _critical_health_checks()
     if not critical_ok:
         _log.critical("Critical health checks failed — aborting")
         sys.exit(1)
 
-    # Seed routing skills (idempotent — only adds new ones)
-    try:
-        from src.memory.seed_skills import seed_skills
-        added = await seed_skills()
-        if added:
-            _log.info(f"Seeded {added} new routing skills")
-    except Exception as e:
-        _log.warning(f"Skill seeding failed (non-critical): {e}")
+    # Phase 2: Docker, non-critical checks, and seeding ALL in parallel
+    async def _docker_phase():
+        docker_ok = await start_docker_services()
+        if not docker_ok:
+            _log.warning("Docker services unavailable — sandbox, monitoring will not work")
 
-    # Seed API keyword index + Turkish patterns (fast, idempotent)
-    try:
-        from src.tools.free_apis import seed_registry, build_keyword_index, seed_category_patterns
-        await seed_registry()
-        await build_keyword_index()
-        await seed_category_patterns()
-    except Exception as exc:
-        _log.warning("API keyword index seeding failed (non-critical): %s", exc)
+    async def _seed_skills():
+        try:
+            from src.memory.seed_skills import seed_skills
+            added = await seed_skills()
+            if added:
+                _log.info(f"Seeded {added} new routing skills")
+        except Exception as e:
+            _log.warning(f"Skill seeding failed (non-critical): {e}")
+
+    async def _seed_api_index():
+        try:
+            from src.tools.free_apis import seed_registry, build_keyword_index, seed_category_patterns
+            await seed_registry()
+            await build_keyword_index()
+            await seed_category_patterns()
+        except Exception as exc:
+            _log.warning("API keyword index seeding failed (non-critical): %s", exc)
+
+    await asyncio.gather(
+        _docker_phase(),
+        _noncritical_health_checks(),
+        _seed_skills(),
+        _seed_api_index(),
+    )
 
     _log.info("Starting orchestrator")
 

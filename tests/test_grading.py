@@ -180,6 +180,21 @@ class TestPreferenceField:
         result = GradeResult(passed=True)
         assert result.preference == ""
 
+    def test_preference_na_becomes_empty(self):
+        raw = "VERDICT: PASS\nPREFERENCE: N/A"
+        result = parse_grade_response(raw)
+        assert result.preference == ""
+
+    def test_preference_no_prefix_becomes_empty(self):
+        raw = "VERDICT: PASS\nPREFERENCE: No preference observed"
+        result = parse_grade_response(raw)
+        assert result.preference == ""
+
+    def test_insight_not_applicable_becomes_empty(self):
+        raw = "VERDICT: PASS\nINSIGHT: Not applicable."
+        result = parse_grade_response(raw)
+        assert result.insight == ""
+
 
 class TestInsightField:
     def test_insight_parsed(self):

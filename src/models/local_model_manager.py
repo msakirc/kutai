@@ -99,6 +99,11 @@ class LocalModelManager:
         # if swap_started_at changed between their read and their action, the
         # state they read is stale.
         self.swap_started_at: float = 0.0
+        # Event that callers can await — cleared during swap, set when ready.
+        # This lets inference requests wait for the swap to finish instead of
+        # timing out against the GPU scheduler.
+        self._swap_ready = asyncio.Event()
+        self._swap_ready.set()  # starts ready (no swap in progress)
         self._last_request_time: float = 0.0
         self._started_at: float = 0.0
         self._total_swaps: int = 0
@@ -498,6 +503,7 @@ class LocalModelManager:
                 )
 
             self.swap_started_at = time.monotonic()
+            self._swap_ready.clear()
             try:
                 result = await self._do_swap(model_name, reason, enable_thinking, enable_vision)
                 if result and is_variant_swap:
@@ -506,6 +512,7 @@ class LocalModelManager:
                 return result
             finally:
                 self.swap_started_at = 0.0
+                self._swap_ready.set()
 
     async def _do_swap(self, model_name: str, reason: str = "",
                        enable_thinking: bool = False, enable_vision: bool = False) -> bool:
@@ -619,11 +626,17 @@ class LocalModelManager:
             self._thinking_enabled = enable_thinking
             self._vision_enabled = enable_vision
             self._started_at = time.time()
+            self._last_request_time = time.time()  # reset idle timer for new model
+            # Seed measured_tps from persisted speed cache so the first
+            # LLM call after swap gets a realistic timeout instead of
+            # falling back to the blind difficulty heuristic.
+            _seed_tps = model_info.tokens_per_second if model_info.tokens_per_second > 0 else 0.0
             self.runtime_state = ModelRuntimeState(
                 model_name=model_name,
                 thinking_enabled=enable_thinking,
                 context_length=model_info.context_length,
                 gpu_layers=model_info.gpu_layers,
+                measured_tps=_seed_tps,
             )
             registry.mark_loaded(model_name, self.api_base)
             logger.info(
@@ -701,6 +714,12 @@ class LocalModelManager:
             "--batch-size", "2048", # prompt processing batch size (higher = faster prefill)
             "--ubatch-size", "512", # micro-batch for generation
         ]
+
+        # Enable jinja templating (required for function calling / tools param)
+        # unless the model explicitly opts out via --no-jinja in extra_server_flags.
+        has_no_jinja = "--no-jinja" in (getattr(model, 'extra_server_flags', None) or [])
+        if not has_no_jinja:
+            cmd.append("--jinja")
 
         # Let llama-server's --fit (default-on) auto-calculate optimal GPU
         # layer allocation based on actual free VRAM.  Only pass explicit

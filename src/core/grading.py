@@ -16,12 +16,18 @@ from src.infra.times import utc_now, db_now, to_db
 
 logger = get_logger("core.grading")
 
+GRADING_SYSTEM = (
+    "You are a strict evaluator. Reply ONLY with the requested fields, "
+    "one per line. Do not add explanation or commentary."
+)
+
 GRADING_PROMPT = """Evaluate this task result.
 
 Task: {title}
 Description: {description}
 Result: {response}
 
+Reply with EXACTLY these fields, one per line:
 RELEVANT: YES or NO
 COMPLETE: YES or NO
 VERDICT: PASS or FAIL
@@ -53,6 +59,17 @@ def _parse_yes_no(text: str, key: str) -> Optional[bool]:
         return None
     val = match.group(1).upper()
     return val in ("YES", "PASS")
+
+
+_NONE_VARIANTS = frozenset({"none", "n/a", "na", "no", "nil", "null", "-", "not applicable"})
+
+
+def _is_none_value(val: str) -> bool:
+    """Check if a parsed field value is a 'none' variant from the LLM."""
+    if not val:
+        return True
+    normalized = val.strip().rstrip(".").lower()
+    return normalized in _NONE_VARIANTS or normalized.startswith("no ")
 
 
 def _parse_text_field(text: str, key: str) -> str:
@@ -93,10 +110,10 @@ def parse_grade_response(raw: str) -> GradeResult:
 
     # Piggybacked learning fields (optional)
     preference = _parse_text_field(raw, "PREFERENCE")
-    if preference.upper() == "NONE":
+    if _is_none_value(preference):
         preference = ""
     insight = _parse_text_field(raw, "INSIGHT")
-    if insight.upper() == "NONE":
+    if _is_none_value(insight):
         insight = ""
 
     # Cascade 1: VERDICT present
@@ -176,14 +193,17 @@ async def grade_task(task: dict, grader_model: str) -> GradeResult:
     response = await dispatcher.request(
         CallCategory.OVERHEAD,
         reqs,
-        messages=[{
-            "role": "user",
-            "content": GRADING_PROMPT.format(
-                title=task.get("title", "")[:100],
-                description=task.get("description", "")[:500],
-                response=str(result_text)[:4000],
-            ),
-        }],
+        messages=[
+            {"role": "system", "content": GRADING_SYSTEM},
+            {
+                "role": "user",
+                "content": GRADING_PROMPT.format(
+                    title=task.get("title", "")[:100],
+                    description=task.get("description", "")[:500],
+                    response=str(result_text)[:4000],
+                ),
+            },
+        ],
     )
 
     raw_content = response.get("content", "")
@@ -193,7 +213,13 @@ async def grade_task(task: dict, grader_model: str) -> GradeResult:
             for block in raw_content
         )
 
-    return parse_grade_response(str(raw_content))
+    raw_str = str(raw_content)
+    logger.debug(
+        f"grader raw response ({len(raw_str)} chars): {raw_str[:300]}",
+        task_id=task.get("id"),
+        grader_model=grader_model,
+    )
+    return parse_grade_response(raw_str)
 
 
 async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
@@ -329,6 +355,38 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
         retry_ctx = RetryContext.from_task(task)
         decision = retry_ctx.record_failure("quality", model=generating_model)
 
+        # Bonus attempt: if terminal but task made real progress,
+        # grant extra attempts instead of DLQ (same logic as orchestrator).
+        _MAX_BONUS = 2
+        if decision.action == "terminal":
+            bonus_count = ctx.get("_bonus_count", 0)
+            if bonus_count < _MAX_BONUS:
+                try:
+                    # Check workspace files for progress
+                    output_names = ctx.get("output_artifacts", [])
+                    mission_id = ctx.get("mission_id") or task.get("mission_id")
+                    has_progress = False
+                    if mission_id and output_names:
+                        import os
+                        from src.tools.workspace import WORKSPACE_DIR
+                        artifact_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+                        for name in output_names:
+                            for ext in (".md", ".json", ".txt"):
+                                fpath = os.path.join(artifact_dir, f"{name}{ext}")
+                                if os.path.isfile(fpath) and os.path.getsize(fpath) > 200:
+                                    has_progress = True
+                                    break
+                    if has_progress:
+                        ctx["_bonus_count"] = bonus_count + 1
+                        retry_ctx.max_worker_attempts += 1
+                        decision = retry_ctx.record_failure("quality", model=generating_model)
+                        logger.info(
+                            f"grade bonus attempt | task_id={task_id} "
+                            f"bonus={bonus_count + 1}/{_MAX_BONUS}"
+                        )
+                except Exception:
+                    pass
+
         if decision.action == "terminal":
             ctx.update(retry_ctx.to_context_patch())
             await transition_task(
@@ -434,6 +492,12 @@ async def drain_ungraded_tasks(new_model: str) -> int:
             continue  # this grader already failed for this task
 
         task_id = task["id"]
+
+        # Re-check status — another drain may have graded this task
+        from src.infra.db import get_task as _get_task
+        fresh = await _get_task(task_id)
+        if not fresh or fresh.get("status") != "ungraded":
+            continue
 
         try:
             verdict = await grade_task(task, new_model)

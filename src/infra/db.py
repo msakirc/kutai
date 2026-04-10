@@ -31,18 +31,24 @@ async def get_db() -> aiosqlite.Connection:
     return _db_connection
 
 
-async def close_db() -> None:
-    """Close the shared connection (call on shutdown)."""
+async def close_db(checkpoint: bool = True) -> None:
+    """Close the shared connection (call on shutdown).
+
+    Args:
+        checkpoint: If True, run WAL checkpoint before closing (for clean
+                    stop). If False, skip it (for restarts — next instance
+                    will use WAL mode anyway).
+    """
     global _db_connection
     if _db_connection is not None:
-        # Phase 9: checkpoint WAL before closing to consolidate writes
-        try:
-            await _db_connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except Exception:
-            pass
+        if checkpoint:
+            try:
+                await _db_connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
         await _db_connection.close()
         _db_connection = None
-        logger.info("Database connection closed")
+        logger.info("Database connection closed", checkpoint=checkpoint)
 
 
 async def init_db():

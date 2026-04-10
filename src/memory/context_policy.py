@@ -23,7 +23,6 @@ CONTEXT_POLICIES: dict[str, set[str]] = {
     "reviewer":         set(),
     "summarizer":       {"deps"},
     "analyst":          {"deps", "rag", "board"},
-    "error_recovery":   {"deps", "rag", "skills"},
     "router":           set(),
     "visual_reviewer":  set(),
     "test_generator":   {"deps", "skills", "profile"},

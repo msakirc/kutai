@@ -115,8 +115,8 @@ class RetryContext:
 
     @property
     def effective_difficulty_bump(self) -> int:
-        if self.worker_attempts >= 4:
-            return max(0, (self.worker_attempts - 3) * 2)
+        if self.worker_attempts >= 3:
+            return max(0, (self.worker_attempts - 2) * 2)
         return 0
 
     @property
@@ -229,9 +229,9 @@ def compute_retry_timing(
     if failure_type == "quality":
         if attempts >= max_attempts:
             return RetryDecision.terminal()
-        if attempts < 3:
-            return RetryDecision.immediate()
-        return RetryDecision.delayed(600)
+        # Quality failures retry immediately with model exclusion/escalation.
+        # No backoff — the next attempt uses a different model anyway.
+        return RetryDecision.immediate()
     elif failure_type == "availability":
         if last_avail_delay >= 7200:
             return RetryDecision.terminal()
@@ -249,5 +249,5 @@ def update_exclusions_on_failure(task_context: dict, failed_model: str, attempts
 def get_model_constraints(task_context: dict, attempts: int) -> tuple[list[str], int]:
     failed = task_context.get("failed_models", [])
     excluded = list(failed) if attempts >= 3 else []
-    difficulty_bump = max(0, (attempts - 3) * 2) if attempts >= 4 else 0
+    difficulty_bump = max(0, (attempts - 2) * 2) if attempts >= 3 else 0
     return excluded, difficulty_bump

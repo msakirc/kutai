@@ -74,7 +74,6 @@ AGENT_PERMISSIONS: dict[str, Optional[set[str]]] = {
     # General agents
     "assistant": None,  # full access
     "executor": None,   # full access
-    "error_recovery": None,  # needs full access for recovery
 }
 
 

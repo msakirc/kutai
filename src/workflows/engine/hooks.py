@@ -17,6 +17,45 @@ from .quality_gates import evaluate_gate, format_gate_result
 logger = get_logger("workflows.engine.hooks")
 
 
+def _unwrap_envelope(text: str) -> str:
+    """Strip final_answer JSON envelope and/or markdown code fences.
+
+    Agents sometimes return their result wrapped in:
+        ```json
+        {"action": "final_answer", "result": "...actual content..."}
+        ```
+    When the inner string contains unescaped quotes, json.loads fails.
+    This helper extracts the clean result text using a regex fallback.
+    """
+    import re as _re
+
+    if '"final_answer"' not in text and '"result"' not in text:
+        return text
+
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = stripped.split("\n", 1)[1] if "\n" in stripped else stripped[3:]
+        stripped = stripped.rsplit("```", 1)[0].strip()
+
+    try:
+        obj = json.loads(stripped)
+        if isinstance(obj, dict) and "result" in obj:
+            return obj["result"]
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    m = _re.search(
+        r'"result"\s*:\s*"(.*)",?\s*(?:"memories"|"subtasks"|\})',
+        stripped,
+        _re.DOTALL,
+    )
+    if m:
+        raw = m.group(1)
+        return raw.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+
+    return text
+
+
 def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str]:
     """Validate an artifact output against its schema definition.
 
@@ -27,13 +66,9 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
 
     # Unwrap final_answer JSON envelope if present — agents sometimes
     # wrap their results in {"action": "final_answer", "result": "..."}
-    if isinstance(output_value, str) and '"final_answer"' in output_value:
-        try:
-            _envelope = json.loads(output_value)
-            if isinstance(_envelope, dict) and "result" in _envelope:
-                output_value = _envelope["result"]
-        except (json.JSONDecodeError, TypeError):
-            pass
+    # Uses _unwrap_envelope which handles malformed JSON (unescaped quotes).
+    if isinstance(output_value, str):
+        output_value = _unwrap_envelope(output_value)
 
     for artifact_name, rules in schema.items():
         schema_type = rules.get("type", "string")
@@ -457,15 +492,47 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
             f"{user_clarification}"
         )
 
-    # Append schema validation error from previous retry
+    # Append schema validation error and previous output from failed retry
     schema_error = ctx.get("_schema_error")
     if schema_error:
         retry_count = task.get("worker_attempts", 0)
         parts.append(
             f"\n\n## IMPORTANT: Previous Output Was Invalid (retry {retry_count})\n"
             f"Your previous output failed validation: **{schema_error}**\n"
-            f"Fix your output to match the required format."
+            f"Fix your output to match the required format.\n"
+            f"Do NOT re-read files you already wrote — they are shown below."
         )
+
+        # Inject previous output so agent doesn't waste iterations re-reading
+        prev_output = ctx.get("_prev_output")
+        if prev_output:
+            parts.append(
+                f"\n\n## Your Previous Output (fix this, don't start over)\n"
+                f"```\n{prev_output[:4000]}\n```"
+            )
+
+        # Inject workspace files the agent wrote in previous attempts
+        mission_id = ctx.get("mission_id")
+        output_names = ctx.get("output_artifacts", [])
+        if mission_id and output_names:
+            try:
+                import os
+                from ...tools.workspace import WORKSPACE_DIR
+                artifact_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+                for name in output_names:
+                    for ext in (".md", ".json", ".txt"):
+                        fpath = os.path.join(artifact_dir, f"{name}{ext}")
+                        if os.path.isfile(fpath):
+                            with open(fpath, "r", encoding="utf-8") as f:
+                                content = f.read()
+                            if content and len(content) > 100:
+                                parts.append(
+                                    f"\n\n## Already Written: {name}{ext}\n"
+                                    f"```\n{content[:3000]}\n```"
+                                )
+                            break
+            except Exception:
+                pass
 
     # Append done_when section if present
     if done_when:
@@ -549,6 +616,25 @@ async def pre_execute_workflow_step(task: dict) -> dict:
         f"artifact(s) into task description"
     )
 
+    # ── Strip file tools when all data is already in context ──
+    # If all input artifacts were injected and the step has no tools_hint
+    # (meaning it doesn't need file access for its work), remove read_file
+    # and file_tree to prevent the agent from wasting iterations re-reading
+    # artifacts that are already in its prompt.
+    _tools_hint = ctx.get("tools_hint")
+    if _tools_hint is None or _tools_hint == []:
+        # Check if all input artifacts were successfully injected
+        _all_injected = (
+            input_artifact_names
+            and all(artifact_contents.get(n) is not None for n in input_artifact_names)
+        )
+        if _all_injected:
+            ctx["_strip_file_tools"] = True
+            if isinstance(task.get("context"), str):
+                task["context"] = json.dumps(ctx)
+            elif isinstance(task.get("context"), dict):
+                task["context"]["_strip_file_tools"] = True
+
     # ── Enrich from api_hints ──
     task_ctx = task.get("context", "{}")
     if isinstance(task_ctx, str):
@@ -611,28 +697,40 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
         return
     output_value = result.get("result", "")
 
+    # ── Unwrap envelope from the agent result ──
+    output_value = _unwrap_envelope(output_value)
+
     # ── Recover artifact content from workspace files ──
-    # If the agent wrote its output to files (via write_file) instead of
-    # returning it in final_answer, the result text will be a short summary.
-    # Check workspace files for richer content matching artifact names.
+    # If the agent wrote output to files (via write_file), the result text
+    # may be a short summary.  Collect ALL matching workspace files and
+    # combine them with the result — this ensures schema validation sees
+    # the full content even when multiple output artifacts exist.
     if mission_id and output_names:
         try:
             import os
             from ...tools.workspace import WORKSPACE_DIR
             artifact_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+            file_parts = []
             for name in output_names:
-                for ext in (".md", ".json", ".txt"):
+                for ext in (".json", ".md", ".txt"):
                     fpath = os.path.join(artifact_dir, f"{name}{ext}")
                     if os.path.isfile(fpath):
                         with open(fpath, "r", encoding="utf-8") as f:
                             file_content = f.read()
-                        if len(file_content) > len(output_value):
-                            output_value = file_content
+                        file_content = _unwrap_envelope(file_content)
+                        if len(file_content) > 200:
+                            file_parts.append(file_content)
                             logger.info(
-                                f"[Workflow Hook] Recovered artifact '{name}' "
-                                f"from workspace file ({len(file_content)} chars)"
+                                f"[Workflow Hook] Found artifact '{name}' "
+                                f"in workspace ({len(file_content)} chars)"
                             )
                         break
+            if file_parts:
+                # Combine result + file contents for validation.
+                # Use the richest source as output_value.
+                combined = output_value + "\n\n" + "\n\n".join(file_parts)
+                if len(combined) > len(output_value):
+                    output_value = combined
         except Exception as e:
             logger.debug(f"[Workflow Hook] Workspace artifact recovery failed: {e}")
 
@@ -695,12 +793,15 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
                 f"[Workflow Hook] Artifact schema validation failed for step "
                 f"'{step_id}': {error_msg}. Attempt {attempts}"
             )
-            # Store the error in context so the enriched prompt on next attempt
-            # can show the validation feedback to the agent.
+            # Store the error AND the previous output in context so the
+            # enriched prompt on next attempt shows what went wrong and what
+            # was already produced — preventing the agent from burning
+            # iterations re-reading files it already wrote.
             try:
                 from ...infra.db import update_task
                 new_ctx = dict(ctx)
                 new_ctx["_schema_error"] = error_msg
+                new_ctx["_prev_output"] = output_value[:6000]
                 await update_task(
                     task.get("id"),
                     context=json.dumps(new_ctx),

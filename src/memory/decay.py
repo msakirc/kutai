@@ -40,7 +40,7 @@ COLLECTION_CAPS: dict[str, int] = {
 RELEVANCE_THRESHOLD = 0.05
 
 # Types that are protected from decay (high importance floor)
-PROTECTED_TYPES = {"user_preference", "error_recovery"}
+PROTECTED_TYPES = {"user_preference"}
 
 # How aggressively to prune when over cap (fraction of excess to remove)
 PRUNE_FRACTION = 0.2

@@ -34,7 +34,7 @@ class FinalAnswerAction(BaseModel):
     """Agent is providing its final response."""
     action: Literal["final_answer"] = "final_answer"
     result: str = Field(..., description="The complete answer / result")
-    memories: dict[str, str] = Field(
+    memories: dict[str, Any] = Field(
         default_factory=dict,
         description="Key-value pairs to remember for future tasks",
     )
@@ -232,7 +232,6 @@ _AGENT_TYPE_CATEGORY: dict[str, str] = {
     "test_generator":  "code",
     "reviewer":        "code",
     "visual_reviewer": "code",
-    "error_recovery":  "code",
     "analyst":         "research",
     "researcher":      "research",
     "planner":         "planner",

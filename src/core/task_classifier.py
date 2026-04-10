@@ -68,7 +68,6 @@ Available agent types:
 - "assistant": general conversation, Q&A, personal assistance
 - "summarizer": condensing long content, extracting key points
 - "analyst": data analysis, feasibility studies, structured evaluation, risk assessment
-- "error_recovery": recovering from failures, retrying operations, fallback strategies
 - "shopping_advisor": product research, price checks, deal finding, purchase advice, comparisons
 
 Determine:
@@ -328,7 +327,6 @@ _KEYWORD_RULES: list[tuple[str, int, list[str]]] = [
         "hediye", "gift", "tavsiye", "recommendation", "öneri",
     ]),
     ("fixer",          5, ["fix", "bug", "error", "debug", "traceback", "crash"]),
-    ("error_recovery", 5, ["recover", "retry", "fallback", "roll back", "revert failure"]),
     ("architect",      6, ["architect", "system design", "api design", "scalability"]),
     ("coder",          5, ["implement", "create", "build", "write code", "refactor"]),
     ("implementer",    5, ["follow plan", "implement plan", "step by step", "execute plan"]),
@@ -354,7 +352,7 @@ def _classify_by_keywords(title: str, description: str) -> TaskClassification:
         if any(kw in text for kw in keywords):
             needs_tools = agent_type in (
                 "fixer", "coder", "implementer", "test_generator",
-                "executor", "researcher", "error_recovery",
+                "executor", "researcher",
             )
             return TaskClassification(
                 agent_type=agent_type,

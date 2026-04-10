@@ -1318,6 +1318,7 @@ class ModelRegistry:
 
             # Determine per-model server flags
             extra_server_flags = list(model_overrides.get("extra_server_flags", []))
+            fc_supported = raw["function_calling"]
             if not extra_server_flags:
                 # Family-based defaults
                 family = raw.get("family_key", "") or ""
@@ -1329,6 +1330,10 @@ class ModelRegistry:
                 if "apriel" in name_lower:
                     extra_server_flags = ["--no-jinja", "--chat-template", "chatml"]
 
+            # --no-jinja means llama-server rejects tools param
+            if "--no-jinja" in extra_server_flags:
+                fc_supported = False
+
             model = ModelInfo(
                 name=name,
                 location="local",
@@ -1337,7 +1342,7 @@ class ModelRegistry:
                 capabilities=capabilities,
                 context_length=context_length,
                 max_tokens=max_tokens,
-                supports_function_calling=raw["function_calling"],
+                supports_function_calling=fc_supported,
                 supports_json_mode=True,
                 thinking_model=raw["thinking"],
                 has_vision=raw["has_vision"],
@@ -1996,7 +2001,6 @@ class ModelRegistry:
             "summarizer",
             "assistant",
             "executor",
-            "error_recovery",
             "pipeline",
             "workflow"
         ]:

@@ -39,6 +39,52 @@ litellm.return_response_headers = True
 # server dies mid-inference (e.g. during a model swap).
 litellm.request_timeout = 120
 
+
+async def _stream_with_accumulator(
+    completion_kwargs: dict,
+    partial_buf: object,
+) -> "litellm.ModelResponse":
+    """Call litellm with streaming, accumulate content into partial_buf.
+
+    Writes each chunk to ``partial_buf._partial_content`` so the agent's
+    CancelledError handler can save whatever was generated before timeout.
+    Returns a synthetic ModelResponse with the full accumulated content.
+    """
+    completion_kwargs["stream"] = True
+    chunks = []
+    accumulated = ""
+    role = "assistant"
+    finish_reason = None
+
+    async for chunk in await litellm.acompletion(**completion_kwargs):
+        delta = chunk.choices[0].delta if chunk.choices else None
+        if delta:
+            if delta.content:
+                accumulated += delta.content
+                partial_buf._partial_content = accumulated
+            if delta.role:
+                role = delta.role
+            if chunk.choices[0].finish_reason:
+                finish_reason = chunk.choices[0].finish_reason
+        chunks.append(chunk)
+
+    # Build a synthetic non-streaming response
+    last = chunks[-1] if chunks else None
+    resp = litellm.ModelResponse(
+        id=last.id if last else "stream",
+        model=last.model if last else completion_kwargs.get("model", ""),
+        choices=[{
+            "message": {"role": role, "content": accumulated},
+            "finish_reason": finish_reason or "stop",
+            "index": 0,
+        }],
+    )
+    # Copy usage from the last chunk if available
+    if last and hasattr(last, "usage") and last.usage:
+        resp.usage = last.usage
+
+    return resp
+
 from src.infra.logging_config import get_logger
 from src.models.rate_limiter import get_rate_limit_manager
 from src.models.header_parser import parse_rate_limit_headers
@@ -153,7 +199,11 @@ class ModelRequirements:
     def effective_context_needed(self) -> int:
         if self.min_context_length > 0:
             return self.min_context_length
-        return int((self.estimated_input_tokens + self.estimated_output_tokens) * 1.3)
+        # 1.3× covers tokenizer variance; extra 512 tokens headroom for
+        # tool results that grow the context during multi-iteration execution.
+        # Without this, a model that barely fits the initial prompt gets
+        # filtered after one tool call (e.g. ctx 8192 < 8217 after read_file).
+        return int((self.estimated_input_tokens + self.estimated_output_tokens) * 1.3) + 512
 
     @property
     def effective_min_score(self) -> float:
@@ -788,10 +838,9 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
         rescued.reasons.append("rescued(only_option)")
         candidates.append(rescued)
         logger.warning(
-            "time_gate_rescue",
+            "time_gate_rescue: all candidates were too slow, rescued fastest",
             model=rescued.model.name,
             tps=rescued.model.tokens_per_second,
-            msg="all candidates were too slow, rescued fastest",
         )
 
     candidates.sort(key=lambda c: -c.score)
@@ -941,6 +990,7 @@ async def call_model(
     messages: list[dict],
     tools: list[dict] | None = None,
     timeout_override: float | None = None,
+    partial_buf: object | None = None,
 ) -> dict:
     """
     Call the best available model matching requirements.
@@ -1227,6 +1277,13 @@ async def call_model(
 
         max_retries = 2 if model.is_local else 3
 
+        # Disable OpenAI SDK internal retries for local models.
+        # A 500 from llama-server is structural (slot error, bad model
+        # state) — retrying the same request wastes 40-50s.  Our own
+        # router loop and dispatcher handle failover to other models.
+        if model.is_local and model.location != "ollama":
+            completion_kwargs["num_retries"] = 0
+
         try:
             for attempt in range(max_retries):
                 try:
@@ -1244,10 +1301,27 @@ async def call_model(
                         vision=model.has_vision,
                     )
 
-                    response = await asyncio.wait_for(
-                        litellm.acompletion(**completion_kwargs),
-                        timeout=timeout_val,
+                    # Stream local models when partial_buf provided so
+                    # partial output survives timeouts.
+                    use_stream = (
+                        partial_buf is not None
+                        and model.is_local
+                        and model.location != "ollama"
+                        and not use_tools  # tool calls need full response
                     )
+
+                    if use_stream:
+                        response = await asyncio.wait_for(
+                            _stream_with_accumulator(
+                                completion_kwargs, partial_buf,
+                            ),
+                            timeout=timeout_val,
+                        )
+                    else:
+                        response = await asyncio.wait_for(
+                            litellm.acompletion(**completion_kwargs),
+                            timeout=timeout_val,
+                        )
 
                     call_latency = time.time() - call_start
 
@@ -1294,6 +1368,13 @@ async def call_model(
                                 registry.update_measured_speed(model.name, tok_per_sec)
                             except Exception:
                                 pass  # non-critical
+                            # Also update runtime_state so dispatcher timeout
+                            # calculations use fresh data (not stale seed or 0).
+                            try:
+                                if local_manager and local_manager.runtime_state:
+                                    local_manager.runtime_state.measured_tps = tok_per_sec
+                            except Exception:
+                                pass
 
                     # Extract tool calls
                     msg = response.choices[0].message
@@ -1314,6 +1395,15 @@ async def call_model(
 
                     thinking_content = _extract_thinking(msg) if is_thinking else None
 
+                    # When thinking wasn't requested but the model still
+                    # produced reasoning_content (server ran with thinking
+                    # enabled, or model template emits it regardless),
+                    # rescue the content so callers don't get empty output.
+                    if not is_thinking and not (msg.content or "").strip():
+                        _rc = getattr(msg, "reasoning_content", None) or ""
+                        if _rc.strip():
+                            msg.content = re.sub(r"</?think>", "", _rc).strip()
+
                     # Strip <think>…</think> blocks when thinking wasn't
                     # requested.  This covers two cases:
                     #  1. thinking_model with enable_thinking=false (llama-
@@ -1321,7 +1411,10 @@ async def call_model(
                     #  2. Non-thinking models (e.g. Qwen 9B) that still emit
                     #     <think> tokens despite enable_thinking=false
                     # Also strip orphaned/unclosed <think> tags.
+                    # If stripping would leave nothing (model put ALL content
+                    # in <think>), preserve the think content instead.
                     if not is_thinking and msg.content and "<think>" in msg.content:
+                        original = msg.content
                         msg.content = re.sub(
                             r"<think>.*?</think>", "", msg.content, flags=re.DOTALL
                         )
@@ -1331,6 +1424,9 @@ async def call_model(
                         )
                         msg.content = re.sub(r"</?think>", "", msg.content)
                         msg.content = msg.content.strip()
+                        if not msg.content:
+                            # Model put everything in <think> — extract it
+                            msg.content = re.sub(r"</?think>", "", original).strip()
 
                     if not model.is_local:
                         _get_circuit_breaker(model.provider).record_success()
@@ -1553,7 +1649,6 @@ AGENT_REQUIREMENTS: dict[str, ModelRequirements] = {
     "fixer":          ModelRequirements(task="fixer",          difficulty=6, estimated_output_tokens=3000, needs_function_calling=True),
     "reviewer":       ModelRequirements(task="reviewer",       difficulty=6, estimated_output_tokens=2000),
     "analyst":        ModelRequirements(task="analyst",        difficulty=6, estimated_output_tokens=3000, needs_function_calling=True),
-    "error_recovery": ModelRequirements(task="error_recovery", difficulty=6, estimated_output_tokens=2000, needs_function_calling=True),
     # ── Moderate → let the scorer decide (local if free, cloud if rate OK) ──
     "implementer":    ModelRequirements(task="implementer",    difficulty=5, estimated_output_tokens=4000, needs_function_calling=True),
     "test_generator": ModelRequirements(task="test_generator", difficulty=5, estimated_output_tokens=3000, needs_function_calling=True),

@@ -119,6 +119,7 @@ class LLMDispatcher:
         reqs: "ModelRequirements",
         messages: list[dict],
         tools: list[dict] | None = None,
+        partial_buf: object | None = None,
     ) -> dict:
         """Route an LLM call through the dispatcher.
 
@@ -127,6 +128,9 @@ class LLMDispatcher:
             reqs: ModelRequirements describing what the call needs
             messages: Chat messages
             tools: Optional tool definitions
+            partial_buf: Object with ``_partial_content`` attribute for
+                streaming accumulation.  When set and the model is local,
+                the call uses streaming so partial output survives timeouts.
 
         Returns:
             dict with response content, model info, cost, etc.
@@ -140,7 +144,7 @@ class LLMDispatcher:
             self._overhead_calls += 1
             return await self._route_overhead(reqs, messages, tools)
         else:
-            return await self._route_main_work(reqs, messages, tools)
+            return await self._route_main_work(reqs, messages, tools, partial_buf=partial_buf)
 
     def _compute_timeout(
         self,
@@ -159,12 +163,12 @@ class LLMDispatcher:
         which uses it for both the litellm HTTP timeout (override − 5s) and
         for outer asyncio cancellation should the HTTP layer not fire in time.
         """
-        # ── OVERHEAD: 20s default, 60s for grading ────────────────────────
+        # ── OVERHEAD: 20s default, 60s for grading/summarization ─────────
         if category == CallCategory.OVERHEAD:
-            # Grading generates ~100 tokens of structured output and may
-            # run on slower models (MoE, large dense).  Classifiers and
-            # other overhead are short-context, low-output → 20s is fine.
-            if reqs.task == "reviewer":
+            # Grading and summarization generate structured output on
+            # potentially slow models (MoE, large dense) → 60s.
+            # Classifiers and other overhead are short-context → 20s.
+            if reqs.task in ("reviewer", "summarizer"):
                 return 60.0
             return 20.0
 
@@ -178,12 +182,12 @@ class LLMDispatcher:
             runtime = get_runtime_state()
             if runtime is not None and runtime.measured_tps > 0.0:
                 tps = runtime.measured_tps
-                # Thinking models: /metrics reports TPS including thinking
-                # tokens, which are much faster than content tokens.  The
-                # effective content-only speed is ~3-4x slower, so halve
-                # the measured TPS to avoid timeouts that are too aggressive.
+                # Thinking models generate thinking_tokens + content_tokens,
+                # but estimated_output_tokens only covers content.  Thinking
+                # tokens are typically 3-5x the content, so divide TPS by 5
+                # to account for the total generation budget.
                 if runtime.thinking_enabled:
-                    tps = tps * 0.5
+                    tps = tps * 0.2
                 est_gen_secs = reqs.estimated_output_tokens / tps
                 return max(_MAIN_WORK_MIN, min(_MAIN_WORK_MAX, est_gen_secs * 2.0))
         except Exception:
@@ -207,6 +211,7 @@ class LLMDispatcher:
         reqs: "ModelRequirements",
         messages: list[dict],
         tools: list[dict] | None,
+        partial_buf: object | None = None,
     ) -> dict:
         """Route a MAIN_WORK call. Can trigger model swaps.
 
@@ -235,7 +240,8 @@ class LLMDispatcher:
                     reqs_copy.model_override = loaded
                     try:
                         result = await call_model(reqs_copy, messages, tools,
-                                                  timeout_override=timeout)
+                                                  timeout_override=timeout,
+                                                  partial_buf=partial_buf)
                         return result
                     except Exception as e:
                         # Loaded model failed — fall through to normal routing
@@ -249,7 +255,8 @@ class LLMDispatcher:
             # handle it (will likely pick cloud since budget is exhausted
             # and we can't swap)
 
-        result = await call_model(reqs, messages, tools, timeout_override=timeout)
+        result = await call_model(reqs, messages, tools, timeout_override=timeout,
+                                 partial_buf=partial_buf)
         return result
 
     async def _route_overhead(

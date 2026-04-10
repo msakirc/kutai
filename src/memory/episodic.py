@@ -7,7 +7,6 @@ agents can learn from past experience.
 
 Public API:
     await store_task_result(task, result, model, cost, duration)
-    await store_error_recovery(task, error, fix, hint)
     await recall_similar_tasks(title, description, top_k=3)
 """
 import time
@@ -88,69 +87,6 @@ async def store_task_result(
     )
 
     return stored
-
-
-# ─── Store Error Recovery ────────────────────────────────────────────────────
-
-async def store_error_recovery(
-    task: dict,
-    error_signature: str,
-    root_cause: str,
-    fix_applied: str,
-    prevention_hint: str = "",
-) -> str | None:
-    """
-    Store a recovery pattern after a failed task is fixed.
-
-    These entries help agents avoid known pitfalls.
-
-    Args:
-        task:             The task that originally failed.
-        error_signature:  Short error identifier (e.g., "ImportError: no module X").
-        root_cause:       What caused the failure.
-        fix_applied:      What was done to fix it.
-        prevention_hint:  How to prevent this in the future.
-
-    Returns:
-        Document ID if stored, None otherwise.
-    """
-    if not is_ready():
-        return None
-
-    title = task.get("title", "Untitled")
-    agent_type = task.get("agent_type", "unknown")
-    task_id = task.get("id", "?")
-
-    text = (
-        f"Error in task: {title}\n"
-        f"Agent: {agent_type}\n"
-        f"Error: {error_signature}\n"
-        f"Root cause: {root_cause}\n"
-        f"Fix: {fix_applied}\n"
-        f"Prevention: {prevention_hint}"
-    )
-
-    metadata = {
-        "task_id": str(task_id),
-        "title": title[:200],
-        "agent_type": agent_type,
-        "error_signature": error_signature[:200],
-        "root_cause": root_cause[:200],
-        "fix_applied": fix_applied[:200],
-        "prevention_hint": prevention_hint[:200],
-        "timestamp": time.time(),
-        "type": "error_recovery",
-        "importance": 8,  # error patterns are high importance
-    }
-
-    doc_id = f"err-{task_id}-{int(time.time())}"
-
-    return await embed_and_store(
-        text=text,
-        metadata=metadata,
-        collection="errors",
-        doc_id=doc_id,
-    )
 
 
 # ─── Recall Similar Tasks ───────────────────────────────────────────────────

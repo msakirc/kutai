@@ -1,7 +1,7 @@
 """Shopping resilience modules.
 
 Provides graceful degradation, rate budgeting, circuit breaking,
-error recovery, cache fallback, and anti-detection monitoring for
+scraper failure handling, cache fallback, and anti-detection monitoring for
 the shopping system.
 """
 
@@ -24,7 +24,7 @@ from src.shopping.resilience.circuit_breaker import (
     record_failure,
     get_circuit_status,
 )
-from src.shopping.resilience.error_recovery import (
+from src.shopping.resilience.scraper_failure_handler import (
     handle_scraper_error,
     handle_llm_error,
     classify_error,

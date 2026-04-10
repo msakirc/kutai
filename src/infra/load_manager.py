@@ -105,6 +105,24 @@ async def set_load_mode(mode: str, source: str = "user") -> str:
     except Exception:
         pass
 
+    # Invalidate measured_tps when VRAM budget changes — the cached speed
+    # reflects the old GPU layer allocation and will cause wildly wrong
+    # timeout calculations (e.g. 21 tok/s from full mode used to set a
+    # 90s timeout when actual speed in shared mode is 5 tok/s).
+    if prev != mode:
+        try:
+            from src.models.local_model_manager import get_local_manager
+            mgr = get_local_manager()
+            if mgr.runtime_state and mgr.runtime_state.measured_tps > 0:
+                logger.info(
+                    "invalidating measured_tps on mode change",
+                    old_tps=mgr.runtime_state.measured_tps,
+                    old_mode=prev, new_mode=mode,
+                )
+                mgr.runtime_state.measured_tps = 0.0
+        except Exception:
+            pass
+
     return f"Load mode set to *{mode}*: {DESCRIPTIONS[mode]}"
 
 

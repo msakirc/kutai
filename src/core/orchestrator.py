@@ -54,11 +54,10 @@ AGENT_TIMEOUTS: dict[str, int] = {
     "visual_reviewer":180,  # was 120
     "researcher":     300,
     "analyst":        300,
-    "writer":         240,  # was 180
+    "writer":         300,  # was 240 — report tasks read many artifacts + long output
     "summarizer":     180,  # was 120
     "assistant":      180,  # was 120
     "executor":       240,  # was 180
-    "error_recovery": 300,  # was 240
     "pipeline":       600,
     "workflow":       900,
     "shopping_advisor":    600,
@@ -329,6 +328,7 @@ class Orchestrator:
         self._current_task_future = None
         self._running_futures: list[asyncio.Task] = []
         self._model_manager_tasks: list[asyncio.Task] = []
+        self.paused_patterns: set[str] = set()
 
 
     # ─── NEW: Context Chaining ───────────────────────────────────────────
@@ -577,6 +577,21 @@ class Orchestrator:
             total_non_skipped = (await total_cursor.fetchone())[0]
 
             if failed_count == total_non_skipped and total_non_skipped > 0:
+                # Don't cascade if any failed dep is in DLQ (recoverable).
+                # The human may retry it via /dlq retry.
+                try:
+                    dlq_cursor = await db.execute(
+                        f"""SELECT COUNT(*) FROM dead_letter_tasks
+                            WHERE task_id IN ({placeholders})
+                            AND resolved_at IS NULL""",
+                        deps
+                    )
+                    dlq_count = (await dlq_cursor.fetchone())[0]
+                except Exception:
+                    dlq_count = 0
+                if dlq_count > 0:
+                    continue  # dep is in DLQ, don't cascade yet
+
                 logger.warning(
                     f"[Watchdog] Task #{task['id']} all deps failed, cascading failure"
                 )
@@ -1392,7 +1407,7 @@ class Orchestrator:
             if not isinstance(task_ctx, dict):
                 task_ctx = {}
 
-            if "classification" not in task_ctx:
+            if "classification" not in task_ctx and agent_type == "executor":
                 from .task_classifier import classify_task as classify
                 classification = await classify(
                     task["title"], task.get("description", ""),
@@ -1578,11 +1593,14 @@ class Orchestrator:
                 # Phase 4.6: Wire progress streaming
                 _task_start_time = time.time()
 
+                _attempt_num = (task.get("worker_attempts") or 0) + 1
+
                 async def _progress_cb(tid, iteration, max_iter, summary):
                     if self.telegram:
                         elapsed = int(time.time() - _task_start_time)
+                        attempt_tag = f" | attempt {_attempt_num}" if _attempt_num > 1 else ""
                         msg = (
-                            f"\U0001f504 *Task #{tid}* — iteration {iteration}/{max_iter} ({elapsed}s elapsed)\n"
+                            f"\U0001f504 *Task #{tid}* — iteration {iteration}/{max_iter} ({elapsed}s elapsed{attempt_tag})\n"
                             f"{summary[:200]}"
                         )
                         try:
@@ -1700,6 +1718,32 @@ class Orchestrator:
                 retry_ctx = RetryContext.from_task(task)
                 decision = retry_ctx.record_failure("timeout")
 
+                # ── Bonus attempt: if terminal but task made real progress,
+                # grant one more try instead of DLQ.  The timeout is a safety
+                # net, not a quality judgment — if the agent was productive
+                # (wrote files, completed iterations), let it finish.
+                _MAX_BONUS_ATTEMPTS = 2  # hard cap on bonus attempts per task lifetime
+                if decision.action == "terminal":
+                    bonus_granted = False
+                    bonus_count = task_ctx.get("_bonus_count", 0)
+                    if bonus_count < _MAX_BONUS_ATTEMPTS:
+                        try:
+                            progress = await self._assess_timeout_progress(
+                                task_id, task_ctx
+                            )
+                            if progress >= 0.5:
+                                bonus_granted = True
+                                task_ctx["_bonus_count"] = bonus_count + 1
+                                retry_ctx.max_worker_attempts += 1
+                                decision = retry_ctx.record_failure("timeout")
+                                logger.info(
+                                    f"[Task #{task_id}] Bonus attempt granted "
+                                    f"({bonus_count + 1}/{_MAX_BONUS_ATTEMPTS}, "
+                                    f"progress={progress:.0%})"
+                                )
+                        except Exception:
+                            pass
+
                 if decision.action == "terminal":
                     task_ctx.update(retry_ctx.to_context_patch())
                     await update_task(
@@ -1741,10 +1785,7 @@ class Orchestrator:
                     )
                     await self.telegram.send_error(task_id, title,
                         f"{timeout_err} (worker-retry {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts})")
-
-                # Spawn error recovery for timeouts too
-                await self._spawn_error_recovery(task, timeout_err)
-                return
+                return  # timeout fully handled above — don't fall through
 
             status = result.get("status", "completed")
 
@@ -1781,15 +1822,57 @@ class Orchestrator:
                 # Workflow step post-hook: store output artifacts
                 if is_workflow_step(task_ctx):
                     await post_execute_workflow_step(task, result)
+                    # Re-read context from DB — the post-hook may have
+                    # stored _schema_error or other fields.  Without this,
+                    # the retry update below overwrites them with the stale
+                    # task_ctx snapshot from the start of process_task.
+                    try:
+                        _fresh = await get_task(task_id)
+                        if _fresh:
+                            _fc = _fresh.get("context", "{}")
+                            if isinstance(_fc, str):
+                                _fc = json.loads(_fc)
+                            if isinstance(_fc, dict):
+                                task_ctx.update(_fc)
+                    except Exception:
+                        pass
                     # Post-hook may override status
                     if result.get("status") == "needs_clarification":
-                        await self._handle_clarification(task, result)
-                        return
+                        if not await self._validate_clarification(
+                            task_id, task, task_ctx, result
+                        ):
+                            # Validation failed — fall through to retry
+                            result["status"] = "failed"
+                        else:
+                            await self._handle_clarification(task, result)
+                            return
                     if result.get("status") == "failed":
                         error_msg = result.get("error", "Disguised failure detected")
                         from src.core.retry import RetryContext
                         retry_ctx = RetryContext.from_task(task)
                         decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
+
+                        # Bonus attempt for quality failures with real progress
+                        _MAX_BONUS = 2
+                        if decision.action == "terminal":
+                            bonus_count = task_ctx.get("_bonus_count", 0)
+                            if bonus_count < _MAX_BONUS:
+                                try:
+                                    progress = await self._assess_timeout_progress(
+                                        task_id, task_ctx
+                                    )
+                                    if progress >= 0.5:
+                                        task_ctx["_bonus_count"] = bonus_count + 1
+                                        retry_ctx.max_worker_attempts += 1
+                                        decision = retry_ctx.record_failure("quality",
+                                            model=result.get("model", ""))
+                                        logger.info(
+                                            f"[Task #{task_id}] Quality bonus attempt "
+                                            f"({bonus_count + 1}/{_MAX_BONUS}, "
+                                            f"progress={progress:.0%})"
+                                        )
+                                except Exception:
+                                    pass
 
                         if decision.action == "terminal":
                             task_ctx.update(retry_ctx.to_context_patch())
@@ -1850,15 +1933,54 @@ class Orchestrator:
                 # whether the output artifacts should be persisted.
                 if is_workflow_step(task_ctx):
                     await post_execute_workflow_step(task, result)
+                    # Re-read context — post-hook may have stored _schema_error.
+                    try:
+                        _fresh = await get_task(task_id)
+                        if _fresh:
+                            _fc = _fresh.get("context", "{}")
+                            if isinstance(_fc, str):
+                                _fc = json.loads(_fc)
+                            if isinstance(_fc, dict):
+                                task_ctx.update(_fc)
+                    except Exception:
+                        pass
                     # Post-hook may override status
                     if result.get("status") == "needs_clarification":
-                        await self._handle_clarification(task, result)
-                        return
+                        if not await self._validate_clarification(
+                            task_id, task, task_ctx, result
+                        ):
+                            result["status"] = "failed"
+                        else:
+                            await self._handle_clarification(task, result)
+                            return
                     if result.get("status") == "failed":
                         error_msg = result.get("error", "Disguised failure detected")
                         from src.core.retry import RetryContext
                         retry_ctx = RetryContext.from_task(task)
                         decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
+
+                        # Bonus attempt for quality failures with real progress
+                        _MAX_BONUS = 2
+                        if decision.action == "terminal":
+                            bonus_count = task_ctx.get("_bonus_count", 0)
+                            if bonus_count < _MAX_BONUS:
+                                try:
+                                    progress = await self._assess_timeout_progress(
+                                        task_id, task_ctx
+                                    )
+                                    if progress >= 0.5:
+                                        task_ctx["_bonus_count"] = bonus_count + 1
+                                        retry_ctx.max_worker_attempts += 1
+                                        decision = retry_ctx.record_failure("quality",
+                                            model=result.get("model", ""))
+                                        logger.info(
+                                            f"[Task #{task_id}] Quality bonus attempt "
+                                            f"({bonus_count + 1}/{_MAX_BONUS}, "
+                                            f"progress={progress:.0%})"
+                                        )
+                                except Exception:
+                                    pass
+
                         if decision.action == "terminal":
                             task_ctx.update(retry_ctx.to_context_patch())
                             await update_task(
@@ -1955,16 +2077,55 @@ class Orchestrator:
                                           **retry_ctx.to_db_fields())
                 elif task_ctx.get("clarification_history"):
                     # Agent tried to clarify again despite having answers —
-                    # treat as completed (answers are already in context).
+                    # treat as completed, using the Q&A exchange as the result
+                    # so downstream artifacts capture the human's input.
                     logger.info(f"[Task #{task_id}] Suppressed repeat clarification "
                                 f"(clarification_history already exists)")
+                    history = task_ctx["clarification_history"]
+                    # Build a readable Q&A result from the clarification exchange
+                    qa_parts = []
+                    for entry in history:
+                        q = entry.get("question", "")
+                        a = entry.get("answer", "")
+                        if q or a:
+                            qa_parts.append(f"**Q:** {q}\n**A:** {a}")
+                    qa_result = "\n\n".join(qa_parts) if qa_parts else task_ctx.get("user_clarification", "")
                     result["status"] = "completed"
+                    result["result"] = qa_result or result.get("result", "")
                     # Run post-hook if this is a workflow step
                     if is_workflow_step(task_ctx):
                         await post_execute_workflow_step(task, result)
                     await self._handle_complete(task, result)
                 else:
-                    await self._handle_clarification(task, result)
+                    if is_workflow_step(task_ctx) and not await self._validate_clarification(
+                        task_id, task, task_ctx, result
+                    ):
+                        # Validation failed — retry via the standard pipeline
+                        from src.core.retry import RetryContext
+                        retry_ctx = RetryContext.from_task(task)
+                        decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
+                        if decision.action == "terminal":
+                            task_ctx.update(retry_ctx.to_context_patch())
+                            await update_task(
+                                task_id, status="failed",
+                                error=f"Clarification schema failed: {result.get('error', '')[:300]}",
+                                context=json.dumps(task_ctx),
+                                **retry_ctx.to_db_fields(),
+                            )
+                        else:
+                            next_retry = None
+                            if decision.action == "delayed":
+                                next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
+                            retry_ctx.next_retry_at = next_retry
+                            task_ctx.update(retry_ctx.to_context_patch())
+                            await update_task(
+                                task_id, status="pending",
+                                error=f"Clarification schema failed: {result.get('error', '')[:200]}",
+                                context=json.dumps(task_ctx),
+                                **retry_ctx.to_db_fields(),
+                            )
+                    else:
+                        await self._handle_clarification(task, result)
             elif status == "needs_review":
                 await self._handle_review(task, result)
             elif status == "exhausted":
@@ -2221,20 +2382,18 @@ class Orchestrator:
                 except Exception:
                     pass
 
-                # Error recovery
-                recovery_spawned = await self._spawn_error_recovery(task, error_str)
-                if not recovery_spawned:
-                    try:
-                        from ..infra.dead_letter import quarantine_task
-                        await quarantine_task(
-                            task_id=task_id,
-                            mission_id=task.get("mission_id"),
-                            error=error_str,
-                            original_agent=task.get("agent_type", "executor"),
-                            attempts_snapshot=retry_ctx.worker_attempts,
-                        )
-                    except Exception as dlq_err:
-                        logger.error("dlq quarantine failed", task_id=task_id, error=str(dlq_err))
+                # DLQ fallback
+                try:
+                    from ..infra.dead_letter import quarantine_task
+                    await quarantine_task(
+                        task_id=task_id,
+                        mission_id=task.get("mission_id"),
+                        error=error_str,
+                        original_agent=task.get("agent_type", "executor"),
+                        attempts_snapshot=retry_ctx.worker_attempts,
+                    )
+                except Exception as dlq_err:
+                    logger.error("dlq quarantine failed", task_id=task_id, error=str(dlq_err))
 
                 # Model health
                 try:
@@ -2443,14 +2602,6 @@ class Orchestrator:
         except Exception as e:
             logger.debug(f"Preference feedback failed (non-critical): {e}")
 
-        # ── Error recovery: extract and store diagnosis ──
-        agent_type = task.get("agent_type", "")
-        if agent_type == "error_recovery":
-            try:
-                await self._process_recovery_result(task, result_text)
-            except Exception as e:
-                logger.warning(f"[Task #{task_id}] Recovery result processing failed: {e}")
-
         # Record model performance for health monitoring and routing
         try:
             from ..infra.db import update_model_stats
@@ -2584,6 +2735,84 @@ class Orchestrator:
 
         logger.info(f"[Task #{task_id}] Decomposed into {len(subtasks)} subtasks")
 
+    async def _assess_timeout_progress(
+        self, task_id: int, task_ctx: dict
+    ) -> float:
+        """Estimate how much progress a timed-out task made (0.0–1.0).
+
+        Checks: checkpoint iteration ratio, workspace files written,
+        partial content length.  Used to decide bonus attempts.
+        """
+        score = 0.0
+
+        # 1. Checkpoint iteration progress
+        try:
+            checkpoint = await load_task_checkpoint(task_id)
+            if checkpoint:
+                iteration = checkpoint.get("iteration", 0)
+                max_iter = checkpoint.get("max_iterations", 7)
+                if max_iter > 0:
+                    score = max(score, iteration / max_iter)
+                # Partial content from streaming
+                msgs = checkpoint.get("messages", [])
+                for msg in reversed(msgs):
+                    if msg.get("role") == "assistant" and len(msg.get("content", "")) > 500:
+                        score = max(score, 0.6)
+                        break
+        except Exception:
+            pass
+
+        # 2. Workspace files written by this task's mission
+        mission_id = task_ctx.get("mission_id")
+        output_names = task_ctx.get("output_artifacts", [])
+        if mission_id and output_names:
+            try:
+                import os
+                from ..tools.workspace import WORKSPACE_DIR
+                artifact_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+                for name in output_names:
+                    for ext in (".md", ".json", ".txt"):
+                        fpath = os.path.join(artifact_dir, f"{name}{ext}")
+                        if os.path.isfile(fpath) and os.path.getsize(fpath) > 200:
+                            score = max(score, 0.8)
+                            break
+            except Exception:
+                pass
+
+        return score
+
+    async def _validate_clarification(
+        self, task_id, task, task_ctx, result
+    ) -> bool:
+        """Validate clarification content for triggers_clarification steps.
+
+        Returns True if valid (or no schema to check), False if rejected.
+        On rejection, sets result["error"] for the retry path.
+        """
+        artifact_schema = task_ctx.get("artifact_schema")
+        if not artifact_schema or not task_ctx.get("triggers_clarification"):
+            return True
+
+        question_text = result.get("clarification", "")
+        from src.workflows.engine.hooks import validate_artifact_schema
+        is_valid, err = validate_artifact_schema(question_text, artifact_schema)
+        if is_valid:
+            return True
+
+        logger.warning(
+            f"[Task #{task_id}] Clarification rejected by schema: {err}"
+        )
+        result["error"] = f"Schema validation: {err}"
+
+        # Store _schema_error so the retry prompt shows validation feedback
+        try:
+            new_ctx = dict(task_ctx)
+            new_ctx["_schema_error"] = err
+            await update_task(task_id, context=json.dumps(new_ctx))
+        except Exception:
+            pass
+        return False
+
     async def _handle_clarification(self, task, result):
         task_id = task["id"]
         question = result.get("clarification", "Need more information")
@@ -2612,189 +2841,6 @@ class Orchestrator:
             logger.info(f"[Task #{task_id}] Sent to reviewer (Task #{review_task_id})")
         else:
             logger.info(f"[Task #{task_id}] Review task deduped, skipping")
-
-    # ─── Error Recovery ─────────────────────────────────────────────────
-
-    async def _spawn_error_recovery(self, failed_task: dict, error_str: str) -> bool:
-        """Spawn an error_recovery agent to diagnose and learn from a failed task.
-
-        Returns True if a recovery task was spawned, False otherwise.
-
-        Skips if:
-          - The failed task is itself an error_recovery task (prevent loops)
-          - The failed task is low-priority background work (not worth diagnosing)
-        """
-        task_id = failed_task["id"]
-        agent_type = failed_task.get("agent_type", "")
-
-        # Never spawn recovery for recovery tasks — prevent infinite loops
-        if agent_type == "error_recovery":
-            logger.debug(f"[Task #{task_id}] Skipping error recovery for error_recovery task")
-            return False
-
-        # Skip for very low priority tasks (background noise)
-        if failed_task.get("priority", 5) <= 1:
-            logger.debug(f"[Task #{task_id}] Skipping error recovery for low-priority task")
-            return False
-
-        title = failed_task.get("title", "Unknown")
-        description = failed_task.get("description", "")
-        mission_id = failed_task.get("mission_id")
-
-        recovery_description = (
-            f"## Failed Task Diagnosis\n\n"
-            f"**Original Task:** {title}\n"
-            f"**Agent:** {agent_type}\n"
-            f"**Task ID:** {task_id}\n"
-            f"**Retries exhausted:** {failed_task.get('max_retries', 3)}\n\n"
-            f"**Error:**\n```\n{error_str}\n```\n\n"
-            f"**Task Description:**\n{description[:1000]}\n\n"
-            f"Diagnose the root cause of this failure. If you can fix the "
-            f"underlying issue (missing file, bad config, etc.), do so. "
-            f"Report what went wrong and how to prevent it."
-        )
-
-        # Use a stable title for dedup — error text varies between retries
-        # but we only want ONE recovery task per failed task
-        stable_title = f"Error recovery: task#{task_id}"
-
-        # If the failure was a timeout, the local model is likely the problem.
-        # Route error recovery to cloud/fast models to avoid repeating the timeout.
-        is_timeout = "timed out" in error_str.lower() or "timeout" in error_str.lower()
-
-        # Find which model the failed task used — exclude it from recovery routing
-        failed_model = None
-        try:
-            from ..infra.db import get_last_model_for_task
-            failed_model = await get_last_model_for_task(task_id)
-            if failed_model:
-                logger.info(
-                    f"[Task #{task_id}] Error recovery will exclude model: {failed_model}"
-                )
-        except Exception as e:
-            logger.debug(f"[Task #{task_id}] Could not look up failed model: {e}")
-
-        try:
-            error_ctx = {
-                "failed_task_id": task_id,
-                "failed_agent_type": agent_type,
-                "error": error_str,
-                "original_title": title,
-                "prefer_speed": is_timeout,
-                "exclude_models": [failed_model] if failed_model else [],
-            }
-
-            # Inherit user-provided context from the failed task so the
-            # recovery agent (or any retry it spawns) doesn't re-ask the user
-            # for information they already provided.
-            failed_ctx = failed_task.get("context", {})
-            if isinstance(failed_ctx, str):
-                try:
-                    failed_ctx = json.loads(failed_ctx)
-                except (json.JSONDecodeError, TypeError):
-                    failed_ctx = {}
-            _INHERIT_KEYS = (
-                "chat_id", "user_clarification", "clarification_history",
-                "classification", "shopping_query", "shopping_sub_intent",
-                "mission_id", "silent",
-            )
-            for _key in _INHERIT_KEYS:
-                if _key in failed_ctx:
-                    error_ctx[_key] = failed_ctx[_key]
-
-            recovery_task_id = await add_task(
-                title=stable_title,
-                description=recovery_description,
-                mission_id=mission_id,
-                parent_task_id=task_id,
-                agent_type="error_recovery",
-                tier="medium",
-                priority=max(failed_task.get("priority", 5), 7),
-                context=error_ctx,
-            )
-            if recovery_task_id:
-                logger.info(
-                    f"[Task #{task_id}] Spawned error recovery → Task #{recovery_task_id}"
-                )
-                return True
-            else:
-                logger.info(f"[Task #{task_id}] Error recovery task deduped, skipping")
-                return False
-        except Exception as e:
-            logger.warning(f"[Task #{task_id}] Failed to spawn error recovery: {e}")
-            return False
-
-    async def _process_recovery_result(self, task: dict, result_text: str):
-        """Extract diagnosis from error recovery result and store in episodic memory."""
-        ctx = task.get("context")
-        if isinstance(ctx, str):
-            try:
-                ctx = json.loads(ctx)
-            except (json.JSONDecodeError, TypeError):
-                ctx = {}
-        ctx = ctx or {}
-
-        failed_task_id = ctx.get("failed_task_id")
-        failed_agent_type = ctx.get("failed_agent_type", "unknown")
-        original_title = ctx.get("original_title", task.get("title", ""))
-        error_str = ctx.get("error", "unknown error")
-
-        # Parse structured fields from the recovery report
-        root_cause = ""
-        category = ""
-        fix_applied = ""
-
-        for line in result_text.split("\n"):
-            line_lower = line.strip().lower()
-            if line_lower.startswith("**root cause:**"):
-                root_cause = line.split(":", 1)[-1].strip().strip("*")
-            elif line_lower.startswith("**category:**"):
-                category = line.split(":", 1)[-1].strip().strip("*")
-            elif line_lower.startswith("**fix applied:**"):
-                fix_applied = line.split(":", 1)[-1].strip().strip("*")
-
-        # Fallback: use the full result if parsing didn't find fields
-        if not root_cause:
-            root_cause = result_text[:300]
-
-        # Build a concise error signature
-        error_sig = error_str.split("\n")[0][:150]
-        if category:
-            error_sig = f"[{category}] {error_sig}"
-
-        # Store the recovery pattern for future tasks
-        try:
-            from ..memory.episodic import store_error_recovery
-            await store_error_recovery(
-                task={
-                    "id": failed_task_id or task["id"],
-                    "title": original_title,
-                    "agent_type": failed_agent_type,
-                },
-                error_signature=error_sig,
-                root_cause=root_cause,
-                fix_applied=fix_applied or "No fix applied — diagnosis only",
-                prevention_hint=f"Agent: {failed_agent_type}. {root_cause[:100]}",
-            )
-            logger.info(
-                f"[ErrorRecovery] Stored pattern for task #{failed_task_id}: "
-                f"{error_sig[:80]}"
-            )
-        except Exception as e:
-            logger.warning(f"[ErrorRecovery] Failed to store recovery pattern: {e}")
-
-        # Notify about the recovery outcome
-        fixed = bool(fix_applied and "no fix" not in fix_applied.lower())
-        emoji = "🔧" if fixed else "🔍"
-        try:
-            await self.telegram.send_notification(
-                f"{emoji} *Error Recovery — Task #{failed_task_id}*\n\n"
-                f"**Task:** {original_title[:60]}\n"
-                f"**Root Cause:** {root_cause[:150]}\n"
-                f"**Fix:** {fix_applied[:150] if fix_applied else 'Diagnosis only'}"
-            )
-        except Exception:
-            pass
 
     # ─── Mission Completion ───────────────────────────────────────────────
 
@@ -3046,6 +3092,18 @@ class Orchestrator:
                             _t["_effective_priority"] = _t.get("priority", 5)
                     else:
                         _t["_effective_priority"] = _t.get("priority", 5)
+
+                # ── Skip tasks matching paused DLQ patterns ──
+                if self.paused_patterns:
+                    filtered = []
+                    for _t in candidate_tasks:
+                        if _t.get("error_category"):
+                            pattern_key = f"category:{_t['error_category']}"
+                            if pattern_key in self.paused_patterns:
+                                logger.debug(f"[Task #{_t['id']}] Skipped — pattern {pattern_key} paused")
+                                continue
+                        filtered.append(_t)
+                    candidate_tasks = filtered
 
                 # ── Swap-aware: defer tasks that will reject the loaded model ──
                 loaded_model = ""
@@ -3461,9 +3519,11 @@ class Orchestrator:
             from ..shopping.cache import init_cache_db
             from ..shopping.request_tracker import init_request_db
             from ..shopping.memory import init_memory_db
-            await init_cache_db()
-            await init_request_db()
-            await init_memory_db()
+            await asyncio.gather(
+                init_cache_db(),
+                init_request_db(),
+                init_memory_db(),
+            )
             logger.info("Shopping DB schemas initialised")
         except Exception as e:
             logger.warning(f"Shopping DB init failed (non-fatal): {e}")
@@ -3583,6 +3643,19 @@ class Orchestrator:
                     except Exception as e:
                         logger.warning(f"Error stopping llama-server: {e}")
 
-                await close_db()
-                await self.telegram.app.updater.stop()
-                await self.telegram.app.stop()
+                # Skip WAL checkpoint on restarts (next instance uses WAL anyway)
+                is_clean_stop = self.shutdown_event.is_set()
+                await close_db(checkpoint=is_clean_stop)
+
+                try:
+                    await asyncio.wait_for(
+                        self.telegram.app.updater.stop(), timeout=5
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Telegram updater.stop() timed out (5s)")
+                try:
+                    await asyncio.wait_for(
+                        self.telegram.app.stop(), timeout=5
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Telegram app.stop() timed out (5s)")

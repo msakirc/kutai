@@ -2,19 +2,20 @@
 """
 Dead-letter queue for permanently failed tasks.
 
-When a task exhausts all retries and the error_recovery agent also fails
-(or the task is non-recoverable), it enters the dead-letter queue.
+When a task exhausts all retries (worker attempts, infrastructure resets,
+or grading attempts), it enters the dead-letter queue.
 
 The DLQ:
 - Quarantines tasks so they don't block downstream work
 - Notifies via Telegram
 - Provides `/dlq` command to inspect / retry / discard
 - Auto-pauses a workflow mission if too many tasks land here
+- Feeds the DLQ Analyst for pattern detection and proactive alerts
 
 Integration with existing systems:
-- BackpressureQueue handles *transient* model call failures (rate limits)
-- _spawn_error_recovery handles *individual* task failures (bugs, bad prompts)
-- DeadLetterQueue handles *permanent* failures that survive both layers
+- RetryContext handles in-flight failure recovery (model rotation, difficulty bumps)
+- BackpressureQueue handles transient model call failures (rate limits)
+- DLQAnalyst detects cross-task failure patterns after quarantine
 """
 
 from __future__ import annotations
@@ -26,6 +27,10 @@ from .times import db_now
 from src.infra.logging_config import get_logger
 
 logger = get_logger("infra.dead_letter")
+
+from src.infra.dlq_analyst import DLQAnalyst
+
+_analyst = DLQAnalyst()
 
 # If this many tasks from the same mission enter the DLQ, pause the mission
 MISSION_DLQ_THRESHOLD = 3
@@ -112,6 +117,12 @@ async def quarantine_task(
     # Check if mission should be auto-paused
     if mission_id:
         await _check_mission_health(mission_id)
+
+    # Run DLQ pattern analysis
+    try:
+        await _run_pattern_analysis(task_id, error_category)
+    except Exception as e:
+        logger.debug(f"[DLQ] Pattern analysis failed (non-critical): {e}")
 
     return dlq_id
 
@@ -259,13 +270,49 @@ async def retry_dlq_task(task_id: int) -> bool:
     ctx["grade_excluded_models"] = []
     # Keep generating_model (prevents self-grading)
 
+    # Reset checkpoint iteration counter so the agent doesn't immediately
+    # exhaust on resume, but keep the checkpoint data (tool results, messages)
+    # so previous work isn't lost.
+    try:
+        from src.infra.db import load_task_checkpoint, save_task_checkpoint
+        cp = await load_task_checkpoint(task_id)
+        if cp:
+            cp["iteration"] = 0
+            cp["format_corrections"] = 0
+            cp["consecutive_tool_failures"] = 0
+            await save_task_checkpoint(task_id, cp)
+    except Exception:
+        pass
+
     await update_task(
         task_id,
         status=new_status,
+        worker_attempts=0,
         next_retry_at=None,
         retry_reason=None,
         context=json.dumps(ctx),
     )
+
+    # Reset downstream tasks that were cascade-failed due to this task's DLQ.
+    # Without this, dependents stay permanently failed even after DLQ retry.
+    try:
+        from src.infra.db import get_db
+        db = await get_db()
+        cascade_cursor = await db.execute(
+            """UPDATE tasks SET status = 'pending', error = NULL,
+                   started_at = NULL, completed_at = NULL, worker_attempts = 0
+               WHERE status = 'failed'
+                 AND error = 'All dependencies failed'
+                 AND depends_on LIKE ?""",
+            (f"%{task_id}%",),
+        )
+        cascade_count = cascade_cursor.rowcount
+        if cascade_count > 0:
+            await db.commit()
+            logger.info(f"[DLQ] Reset {cascade_count} cascade-failed dependents of task #{task_id}")
+    except Exception as e:
+        logger.debug(f"[DLQ] Cascade reset failed: {e}")
+
     logger.info(f"[DLQ] Task #{task_id} re-queued → {new_status} (phase={failed_phase})")
     return True
 
@@ -302,3 +349,80 @@ async def get_dlq_summary() -> dict:
         "resolved": row[2] or 0,
         "categories": categories,
     }
+
+
+async def _run_pattern_analysis(task_id: int, error_category: str) -> None:
+    """Check for failure patterns and send Telegram alert if detected."""
+    from src.infra.db import get_db
+
+    db = await get_db()
+    await _ensure_dlq_table()
+
+    # Fetch recent unresolved DLQ entries within the window
+    cursor = await db.execute(
+        """SELECT task_id, mission_id, error, error_category, original_agent,
+                  quarantined_at
+           FROM dead_letter_tasks
+           WHERE resolved_at IS NULL
+             AND quarantined_at >= datetime('now', ?)
+           ORDER BY quarantined_at DESC""",
+        (f"-{DLQAnalyst.WINDOW_HOURS} hours",),
+    )
+    rows = await cursor.fetchall()
+    entries = [dict(r) for r in rows]
+
+    if len(entries) < 3:
+        return
+
+    patterns = _analyst.detect_patterns(entries)
+
+    for pattern in patterns:
+        key = pattern["group_key"]
+        if _analyst.is_deduped(key):
+            continue
+
+        # Run diagnostic check
+        diagnostic = await _analyst.run_diagnostic(key, pattern["entries"])
+        pattern["diagnostic"] = diagnostic
+
+        # Format and send alert
+        message = _analyst.format_alert(pattern)
+        task_ids = [e["task_id"] for e in pattern["entries"]]
+        await _send_dlq_alert(message, key, task_ids)
+        _analyst.record_alert(key)
+
+
+async def _send_dlq_alert(message: str, pattern_key: str, task_ids: list[int]) -> None:
+    """Send a DLQ pattern alert via Telegram with inline action buttons."""
+    try:
+        from src.app.telegram_bot import get_bot
+        bot = get_bot()
+        if not bot:
+            return
+
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        # Encode task IDs as comma-separated in callback data
+        ids_str = ",".join(str(t) for t in task_ids[:20])  # cap at 20
+        buttons = [
+            [
+                InlineKeyboardButton(
+                    f"Retry All ({len(task_ids)})",
+                    callback_data=f"dlqa:retry:{ids_str}",
+                ),
+                InlineKeyboardButton(
+                    f"Drop All ({len(task_ids)})",
+                    callback_data=f"dlqa:drop:{ids_str}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "Pause Similar",
+                    callback_data=f"dlqa:pause:{pattern_key}",
+                ),
+            ],
+        ]
+        markup = InlineKeyboardMarkup(buttons)
+        await bot.send_notification(message, reply_markup=markup)
+    except Exception as e:
+        logger.debug(f"[DLQ] Failed to send pattern alert: {e}")

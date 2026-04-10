@@ -43,9 +43,11 @@ class _ContextLogger:
         self.name = name
 
     def _emit(self, level: int, msg: str, args: tuple, ctx: dict):
+        if args:
+            msg = msg % args
         safe = {k: v for k, v in ctx.items() if k not in _RESERVED}
         extra = {**safe, "_yaz_extra": safe}
-        self._log.log(level, msg, *args, extra=extra)
+        self._log.log(level, msg, extra=extra)
 
     def debug(self, msg: str, *args, **ctx):
         self._emit(logging.DEBUG, msg, args, ctx)
@@ -63,9 +65,11 @@ class _ContextLogger:
         self._emit(logging.CRITICAL, msg, args, ctx)
 
     def exception(self, msg: str, *args, **ctx):
+        if args:
+            msg = msg % args
         safe = {k: v for k, v in ctx.items() if k not in _RESERVED}
         extra = {**safe, "_yaz_extra": safe}
-        self._log.exception(msg, *args, extra=extra)
+        self._log.exception(msg, extra=extra)
 
     def bind(self, **ctx) -> "_BoundLogger":
         return _BoundLogger(self, ctx)

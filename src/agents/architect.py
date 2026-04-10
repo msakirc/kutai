@@ -14,9 +14,8 @@ class ArchitectAgent(BaseAgent):
     description = "Designs system architecture and creates file-level implementation plans."
     default_tier = "medium"
     min_tier = "medium"
-    # 4 iterations: (1) read project structure, (2) analyze dependencies,
-    # (3) draft architecture, (4) refine.  Mostly reasoning, few tools.
-    max_iterations = 4
+    # 6 iterations: workflow steps read 3-5 input artifacts + produce output.
+    max_iterations = 6
 
     allowed_tools = [
         "file_tree",

@@ -14,9 +14,8 @@ class ResearcherAgent(BaseAgent):
     description = "Researches topics, gathers information, synthesizes findings"
     default_tier = "medium"
     min_tier = "cheap"
-    # 4 iterations max. Perplexica results include a hint to finalize
-    # immediately, so most tasks complete in 2 iterations.
-    max_iterations = 4
+    # 6 iterations: web search + read artifacts + synthesize.
+    max_iterations = 6
     enable_self_reflection = True
     min_confidence = 3
 

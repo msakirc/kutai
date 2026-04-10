@@ -14,9 +14,9 @@ class PlannerAgent(BaseAgent):
     description = "Breaks down missions into concrete, ordered subtasks"
     default_tier = "medium"
     min_tier = "medium"
-    # 3 iterations: (1) inspect workspace/file tree, (2) read key files,
-    # (3) produce the plan.  Planning is mostly reasoning, not tool-heavy.
-    max_iterations = 3
+    # 5 iterations: workflow steps need 2-3 reads (input artifacts) + write + answer.
+    # 3 was too tight — agent burned all iterations on reads with no time to produce output.
+    max_iterations = 5
     can_create_subtasks = True
 
     allowed_tools = ["file_tree", "project_info", "read_file", "web_search"]

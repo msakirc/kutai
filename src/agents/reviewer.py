@@ -14,10 +14,8 @@ class ReviewerAgent(BaseAgent):
     description = "Reviews code and content for quality"
     default_tier = "medium"
     min_tier = "medium"
-    # 4 iterations: (1) read changed files, (2) run tests/linters,
-    # (3) cross-reference with requirements, (4) compile verdict JSON.
-    # Kept low because review should be fast and focused.
-    max_iterations = 4
+    # 5 iterations: read artifacts + cross-reference + verdict.
+    max_iterations = 5
 
     allowed_tools = [
         "read_file",

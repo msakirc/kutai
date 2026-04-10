@@ -44,20 +44,20 @@ logger = get_logger("core.orchestrator")
     # Timeouts include model load time (up to 60s for first swap).
     # Don't set below 180s for any agent that triggers LLM calls.
 AGENT_TIMEOUTS: dict[str, int] = {
-    "planner":        300,
-    "architect":      300,  # was 180 — too tight when model swap needed
-    "coder":          300,
-    "implementer":    300,
-    "fixer":          300,  # was 240
-    "test_generator": 240,  # was 180
-    "reviewer":       180,  # was 120 — model swap alone takes 60s
-    "visual_reviewer":180,  # was 120
-    "researcher":     300,
-    "analyst":        300,
-    "writer":         300,  # was 240 — report tasks read many artifacts + long output
-    "summarizer":     180,  # was 120
-    "assistant":      180,  # was 120
-    "executor":       240,  # was 180
+    "planner":        420,  # was 300 — workflow steps read 3+ artifacts + produce output
+    "architect":      420,  # was 300 — same: multi-artifact reads + design output
+    "coder":          420,  # was 300
+    "implementer":    420,  # was 300
+    "fixer":          420,  # was 300
+    "test_generator": 300,  # was 240
+    "reviewer":       300,  # was 180 — reviews read multiple artifacts
+    "visual_reviewer":180,
+    "researcher":     420,  # was 300 — web search + artifact reads + synthesis
+    "analyst":        420,  # was 300
+    "writer":         420,  # was 300 — report tasks read many artifacts + long output
+    "summarizer":     180,
+    "assistant":      180,
+    "executor":       300,  # was 240
     "pipeline":       600,
     "workflow":       900,
     "shopping_advisor":    600,

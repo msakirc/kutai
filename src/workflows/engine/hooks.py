@@ -91,11 +91,16 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
             # "per_competitor" matches if both "per" and "competitor"
             # appear anywhere in the text, since LLMs rephrase freely.
             if required:
-                text_lower = str(output_value).lower().replace("_", " ").replace("-", " ")
+                import re as _re_obj
+                # Normalize: remove apostrophes, replace dashes/underscores with space
+                def _norm(s):
+                    s = s.lower().replace("'", "").replace("\u2019", "")
+                    return _re_obj.sub(r"[\u2010-\u2015\u2212\-_]", " ", s)
+                text_norm = _norm(str(output_value))
                 missing = []
                 for f in required:
-                    words = f.lower().replace("_", " ").replace("-", " ").split()
-                    if not all(w in text_lower for w in words):
+                    words = _norm(f).split()
+                    if not all(w in text_norm for w in words):
                         missing.append(f)
                 if missing:
                     return False, f"'{artifact_name}' missing content about: {missing}"

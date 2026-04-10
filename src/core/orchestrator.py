@@ -2038,7 +2038,26 @@ class Orchestrator:
                 else:
                     logger.info("task grade-failed, retrying", task_id=task_id)
             elif status == "needs_subtasks":
-                await self._handle_subtasks(task, result)
+                if is_workflow_step(task_ctx):
+                    # Workflow steps must not decompose — they should produce
+                    # their artifact directly.  Treat subtask plan as a
+                    # quality failure so the task retries with a different model.
+                    logger.warning(
+                        f"[Task #{task_id}] Blocked subtask creation for "
+                        f"workflow step — retrying"
+                    )
+                    from src.core.retry import RetryContext
+                    retry_ctx = RetryContext.from_task(task)
+                    retry_ctx.record_failure("quality", model=result.get("model", ""))
+                    task_ctx.update(retry_ctx.to_context_patch())
+                    await update_task(
+                        task_id, status="pending",
+                        error="Workflow step tried to decompose instead of producing artifact",
+                        context=json.dumps(task_ctx),
+                        **retry_ctx.to_db_fields(),
+                    )
+                else:
+                    await self._handle_subtasks(task, result)
             elif status == "needs_clarification":
                 # Silent/background tasks must not ask the user for clarification
                 task_ctx = task.get("context") or {}

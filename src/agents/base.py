@@ -445,13 +445,19 @@ class BaseAgent:
         has_tools = (
             self.allowed_tools is None or len(self.allowed_tools) > 0
         )
-        has_subtasks = bool(parsed.get("subtasks")) and self.can_create_subtasks
         _task_ctx = task.get("context") or {}
         if isinstance(_task_ctx, str):
             try:
                 _task_ctx = json.loads(_task_ctx)
             except (json.JSONDecodeError, TypeError):
                 _task_ctx = {}
+        # Subtask plans are valid for non-workflow planners only
+        is_wf_step = bool(_task_ctx.get("is_workflow_step"))
+        has_subtasks = (
+            bool(parsed.get("subtasks"))
+            and self.can_create_subtasks
+            and not is_wf_step
+        )
         has_retry_context = bool(_task_ctx.get("_prev_output") or _task_ctx.get("_schema_error"))
         if (
             action_type == "final_answer"

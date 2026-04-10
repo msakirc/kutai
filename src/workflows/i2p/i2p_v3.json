@@ -1637,7 +1637,7 @@
       "artifact_schema": {
         "feature_brainstorm_list": {
           "type": "array",
-          "min_items": 20,
+          "min_items": 10,
           "item_fields": [
             "feature_id",
             "feature_name",

@@ -701,16 +701,16 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
     output_value = _unwrap_envelope(output_value)
 
     # ── Recover artifact content from workspace files ──
-    # If the agent wrote its output to files (via write_file) instead of
-    # returning it in final_answer, the result text will be a short summary.
-    # Only recover when the current result looks like a short summary —
-    # don't replace an already-good result with a stale file from a
-    # previous retry attempt.
-    if mission_id and output_names and len(output_value) < 500:
+    # If the agent wrote output to files (via write_file), the result text
+    # may be a short summary.  Collect ALL matching workspace files and
+    # combine them with the result — this ensures schema validation sees
+    # the full content even when multiple output artifacts exist.
+    if mission_id and output_names:
         try:
             import os
             from ...tools.workspace import WORKSPACE_DIR
             artifact_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+            file_parts = []
             for name in output_names:
                 for ext in (".json", ".md", ".txt"):
                     fpath = os.path.join(artifact_dir, f"{name}{ext}")
@@ -718,13 +718,19 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
                         with open(fpath, "r", encoding="utf-8") as f:
                             file_content = f.read()
                         file_content = _unwrap_envelope(file_content)
-                        if len(file_content) > len(output_value):
-                            output_value = file_content
+                        if len(file_content) > 200:
+                            file_parts.append(file_content)
                             logger.info(
-                                f"[Workflow Hook] Recovered artifact '{name}' "
-                                f"from workspace file ({len(file_content)} chars)"
+                                f"[Workflow Hook] Found artifact '{name}' "
+                                f"in workspace ({len(file_content)} chars)"
                             )
                         break
+            if file_parts:
+                # Combine result + file contents for validation.
+                # Use the richest source as output_value.
+                combined = output_value + "\n\n" + "\n\n".join(file_parts)
+                if len(combined) > len(output_value):
+                    output_value = combined
         except Exception as e:
             logger.debug(f"[Workflow Hook] Workspace artifact recovery failed: {e}")
 

@@ -1,21 +1,21 @@
 {
   "gemma-4-26B-A4B-it-UD-IQ4_NL": {
-    "tps": 11.7,
+    "tps": 18.4,
     "demoted": false,
     "updated": "2026-04-10"
   },
   "gemma-4-26B-A4B-it-UD-IQ4_NL-thinking": {
-    "tps": 2.5,
+    "tps": 8.6,
     "demoted": false,
     "updated": "2026-04-10"
   },
   "GigaChat3.1-Lightning-Uncensored.i1-Q4_K_M": {
-    "tps": 80.7,
+    "tps": 70.4,
     "demoted": false,
     "updated": "2026-04-10"
   },
   "GLM-4.7-Flash-UD-Q4_K_XL": {
-    "tps": 12.9,
+    "tps": 16.1,
     "demoted": false,
     "updated": "2026-04-10"
   },
@@ -30,7 +30,7 @@
     "updated": "2026-04-10"
   },
   "gpt-oss-20b-UD-Q4_K_XL-thinking": {
-    "tps": 21.0,
+    "tps": 25.7,
     "demoted": false,
     "updated": "2026-04-10"
   },
@@ -45,7 +45,7 @@
     "updated": "2026-04-10"
   },
   "Qwen3.5-35B-A3B-UD-Q4_K_XL": {
-    "tps": 21.2,
+    "tps": 23.4,
     "demoted": false,
     "updated": "2026-04-10"
   },
@@ -55,12 +55,12 @@
     "updated": "2026-04-10"
   },
   "Qwen3.5-9B-UD-Q4_K_XL": {
-    "tps": 15.3,
+    "tps": 22.4,
     "demoted": false,
     "updated": "2026-04-10"
   },
   "Qwen3.5-9B-UD-Q4_K_XL-thinking": {
-    "tps": 13.8,
+    "tps": 18.4,
     "demoted": false,
     "updated": "2026-04-10"
   },

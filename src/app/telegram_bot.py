@@ -542,7 +542,10 @@ class TelegramInterface:
             # Auto-print dashboard
             self._kb_state[chat_id] = "sistem"
             dashboard = await self._build_system_dashboard()
-            await update.message.reply_text(dashboard, parse_mode="Markdown")
+            try:
+                await update.message.reply_text(dashboard, parse_mode="Markdown")
+            except Exception:
+                await update.message.reply_text(dashboard)
             await update.message.reply_text("⌨️", reply_markup=KB_SISTEM)
             return
 

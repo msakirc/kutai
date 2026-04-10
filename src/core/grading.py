@@ -355,6 +355,38 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
         retry_ctx = RetryContext.from_task(task)
         decision = retry_ctx.record_failure("quality", model=generating_model)
 
+        # Bonus attempt: if terminal but task made real progress,
+        # grant extra attempts instead of DLQ (same logic as orchestrator).
+        _MAX_BONUS = 2
+        if decision.action == "terminal":
+            bonus_count = ctx.get("_bonus_count", 0)
+            if bonus_count < _MAX_BONUS:
+                try:
+                    # Check workspace files for progress
+                    output_names = ctx.get("output_artifacts", [])
+                    mission_id = ctx.get("mission_id") or task.get("mission_id")
+                    has_progress = False
+                    if mission_id and output_names:
+                        import os
+                        from src.tools.workspace import WORKSPACE_DIR
+                        artifact_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+                        for name in output_names:
+                            for ext in (".md", ".json", ".txt"):
+                                fpath = os.path.join(artifact_dir, f"{name}{ext}")
+                                if os.path.isfile(fpath) and os.path.getsize(fpath) > 200:
+                                    has_progress = True
+                                    break
+                    if has_progress:
+                        ctx["_bonus_count"] = bonus_count + 1
+                        retry_ctx.max_worker_attempts += 1
+                        decision = retry_ctx.record_failure("quality", model=generating_model)
+                        logger.info(
+                            f"grade bonus attempt | task_id={task_id} "
+                            f"bonus={bonus_count + 1}/{_MAX_BONUS}"
+                        )
+                except Exception:
+                    pass
+
         if decision.action == "terminal":
             ctx.update(retry_ctx.to_context_patch())
             await transition_task(

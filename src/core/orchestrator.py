@@ -1852,6 +1852,28 @@ class Orchestrator:
                         retry_ctx = RetryContext.from_task(task)
                         decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
 
+                        # Bonus attempt for quality failures with real progress
+                        _MAX_BONUS = 2
+                        if decision.action == "terminal":
+                            bonus_count = task_ctx.get("_bonus_count", 0)
+                            if bonus_count < _MAX_BONUS:
+                                try:
+                                    progress = await self._assess_timeout_progress(
+                                        task_id, task_ctx
+                                    )
+                                    if progress >= 0.5:
+                                        task_ctx["_bonus_count"] = bonus_count + 1
+                                        retry_ctx.max_worker_attempts += 1
+                                        decision = retry_ctx.record_failure("quality",
+                                            model=result.get("model", ""))
+                                        logger.info(
+                                            f"[Task #{task_id}] Quality bonus attempt "
+                                            f"({bonus_count + 1}/{_MAX_BONUS}, "
+                                            f"progress={progress:.0%})"
+                                        )
+                                except Exception:
+                                    pass
+
                         if decision.action == "terminal":
                             task_ctx.update(retry_ctx.to_context_patch())
                             await update_task(
@@ -1936,6 +1958,29 @@ class Orchestrator:
                         from src.core.retry import RetryContext
                         retry_ctx = RetryContext.from_task(task)
                         decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
+
+                        # Bonus attempt for quality failures with real progress
+                        _MAX_BONUS = 2
+                        if decision.action == "terminal":
+                            bonus_count = task_ctx.get("_bonus_count", 0)
+                            if bonus_count < _MAX_BONUS:
+                                try:
+                                    progress = await self._assess_timeout_progress(
+                                        task_id, task_ctx
+                                    )
+                                    if progress >= 0.5:
+                                        task_ctx["_bonus_count"] = bonus_count + 1
+                                        retry_ctx.max_worker_attempts += 1
+                                        decision = retry_ctx.record_failure("quality",
+                                            model=result.get("model", ""))
+                                        logger.info(
+                                            f"[Task #{task_id}] Quality bonus attempt "
+                                            f"({bonus_count + 1}/{_MAX_BONUS}, "
+                                            f"progress={progress:.0%})"
+                                        )
+                                except Exception:
+                                    pass
+
                         if decision.action == "terminal":
                             task_ctx.update(retry_ctx.to_context_patch())
                             await update_task(

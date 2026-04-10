@@ -466,7 +466,6 @@ class BaseAgent:
             and not has_retry_context
             and has_tools
             and self._is_action_task(task)
-            and iteration < 2
         ):
             available = (
                 list(TOOL_REGISTRY.keys())[:6]
@@ -494,17 +493,21 @@ class BaseAgent:
             )
 
         # 3. Search-required guard
+        _WEB_TOOLS = {"web_search", "smart_search", "api_call", "http_request"}
         _has_web_search = (
             self.allowed_tools is None
             or "web_search" in (self.allowed_tools or [])
         )
         _data_fetched = bool(tools_used_names & self._DATA_FETCH_TOOLS)
+        _web_searched = bool(tools_used_names & _WEB_TOOLS)
+        # Researcher agents must use actual web tools, not just read_file.
+        # Other agents: any data fetch tool satisfies the guard.
+        _search_satisfied = _web_searched if self.name == "researcher" else _data_fetched
         if (
             action_type == "final_answer"
             and _has_web_search
-            and search_depth in ("quick", "standard", "deep")
-            and not _data_fetched
-            and iteration < 3
+            and (search_depth in ("quick", "standard", "deep") or self.name == "researcher")
+            and not _search_satisfied
         ):
             task_title = task.get("title", "")
             return GuardCorrection(

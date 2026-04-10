@@ -440,12 +440,24 @@ class BaseAgent:
             )
 
         # 2. Hallucination guard (action tasks)
+        # Skip when: agent returned subtasks (planner's job), or the task
+        # has retry context with previous output (no need to re-do tools).
         has_tools = (
             self.allowed_tools is None or len(self.allowed_tools) > 0
         )
+        has_subtasks = bool(parsed.get("subtasks")) and self.can_create_subtasks
+        _task_ctx = task.get("context") or {}
+        if isinstance(_task_ctx, str):
+            try:
+                _task_ctx = json.loads(_task_ctx)
+            except (json.JSONDecodeError, TypeError):
+                _task_ctx = {}
+        has_retry_context = bool(_task_ctx.get("_prev_output") or _task_ctx.get("_schema_error"))
         if (
             action_type == "final_answer"
             and not tools_used
+            and not has_subtasks
+            and not has_retry_context
             and has_tools
             and self._is_action_task(task)
             and iteration < 2

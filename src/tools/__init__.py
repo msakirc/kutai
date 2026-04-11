@@ -437,27 +437,43 @@ try:
     from ..shopping.memory.price_watch import add_price_watch as _add_price_watch, get_active_watches as _get_active_watches, remove_watch as _remove_watch
 
     async def _tool_shopping_search(query: str) -> str:
-        """Search Turkish e-commerce scrapers for products matching the query."""
+        """Search Turkish e-commerce and community sites for products, reviews, and discussions."""
         import asyncio as _asyncio
         try:
-            from ..shopping.resilience.fallback_chain import get_product_with_fallback
+            from ..shopping.resilience.fallback_chain import get_product_with_fallback, get_community_data
 
-            # Search directly — the fallback chain tries default scrapers
-            # (akakce, trendyol, hepsiburada, amazon_tr, epey) then Google CSE.
+            # Run product search and community search in parallel
+            product_task = _asyncio.ensure_future(
+                _asyncio.wait_for(get_product_with_fallback(query), timeout=30)
+            )
+            community_task = _asyncio.ensure_future(
+                _asyncio.wait_for(get_community_data(query), timeout=20)
+            )
+
+            products: list = []
+            community: list = []
             try:
-                products = await _asyncio.wait_for(
-                    get_product_with_fallback(query),
-                    timeout=30,
-                )
-            except _asyncio.TimeoutError:
+                products = await product_task
+            except (_asyncio.TimeoutError, Exception):
                 products = []
+            try:
+                community = await community_task
+            except (_asyncio.TimeoutError, Exception):
+                community = []
 
             if not isinstance(products, list):
                 products = []
+            if not isinstance(community, list):
+                community = []
+
             products_dicts = [_dataclasses.asdict(p) if _dataclasses.is_dataclass(p) else p for p in products]
+            community_dicts = [_dataclasses.asdict(p) if _dataclasses.is_dataclass(p) else p for p in community]
+
             return _json_shopping.dumps({
                 "products": products_dicts,
                 "product_count": len(products_dicts),
+                "community": community_dicts,
+                "community_count": len(community_dicts),
             }, indent=2, default=str)
         except Exception as exc:
             return _json_shopping.dumps({"error": f"{type(exc).__name__}: {exc}"})

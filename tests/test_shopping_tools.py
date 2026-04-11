@@ -30,18 +30,25 @@ def _make_product(**overrides) -> Product:
 class TestShoppingSearchSerialization(unittest.TestCase):
     """_tool_shopping_search must return JSON with a 'products' list of dicts."""
 
-    def test_returns_json_with_products_list(self):
-        """Mock get_product_with_fallback to return Product instances.
-        Verify the tool result is valid JSON containing a list of dicts."""
+    def test_returns_json_with_products_and_community(self):
+        """Mock get_product_with_fallback and get_community_data.
+        Verify the tool result contains both products and community data."""
         products = [
             _make_product(name="Product A", original_price=500),
             _make_product(name="Product B", original_price=700),
+        ]
+        community = [
+            _make_product(name="Technopat thread", url="https://technopat.net/t/1", source="technopat"),
         ]
 
         with patch(
             "src.shopping.resilience.fallback_chain.get_product_with_fallback",
             new_callable=AsyncMock,
             return_value=products,
+        ), patch(
+            "src.shopping.resilience.fallback_chain.get_community_data",
+            new_callable=AsyncMock,
+            return_value=community,
         ):
             from src.tools import _optional_tools
             tool_fn = _optional_tools["shopping_search"]["function"]
@@ -49,18 +56,22 @@ class TestShoppingSearchSerialization(unittest.TestCase):
 
         parsed = json.loads(result)
         self.assertIn("products", parsed)
-        self.assertIsInstance(parsed["products"], list)
         self.assertEqual(len(parsed["products"]), 2)
-        # Each product must be a dict, not a repr string
         for p in parsed["products"]:
             self.assertIsInstance(p, dict, f"Expected dict, got {type(p)}: {p!r}")
             self.assertIn("name", p)
-            self.assertIn("url", p)
+        self.assertIn("community", parsed)
+        self.assertEqual(len(parsed["community"]), 1)
+        self.assertEqual(parsed["community_count"], 1)
 
     def test_empty_results(self):
         """When no products are found, products list should be empty."""
         with patch(
             "src.shopping.resilience.fallback_chain.get_product_with_fallback",
+            new_callable=AsyncMock,
+            return_value=[],
+        ), patch(
+            "src.shopping.resilience.fallback_chain.get_community_data",
             new_callable=AsyncMock,
             return_value=[],
         ):
@@ -71,6 +82,8 @@ class TestShoppingSearchSerialization(unittest.TestCase):
         parsed = json.loads(result)
         self.assertEqual(parsed["products"], [])
         self.assertEqual(parsed["product_count"], 0)
+        self.assertEqual(parsed["community"], [])
+        self.assertEqual(parsed["community_count"], 0)
 
 
 class TestShoppingCompareSerialization(unittest.TestCase):

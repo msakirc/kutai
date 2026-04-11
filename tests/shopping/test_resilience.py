@@ -485,5 +485,59 @@ class TestGetProductWithFallback(unittest.TestCase):
         self.assertNotIn("akakce", called)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 6. TestGetCommunityData
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestGetCommunityData(unittest.TestCase):
+    """Test get_community_data searches all community sources."""
+
+    def test_searches_all_community_sources(self):
+        from src.shopping.resilience.fallback_chain import get_community_data, _COMMUNITY_SOURCES
+
+        called: list[str] = []
+
+        def tracking(source):
+            called.append(source)
+            mock_cls = MagicMock()
+            mock_cls.return_value.search = AsyncMock(return_value=[])
+            return mock_cls
+
+        async def _run():
+            with patch("src.shopping.scrapers.get_scraper", side_effect=tracking):
+                return await get_community_data("siemens s100")
+
+        run_async(_run())
+
+        self.assertEqual(sorted(called), sorted(_COMMUNITY_SOURCES))
+
+    def test_collects_all_results(self):
+        """Community data should merge results from all sources, not first-wins."""
+        from src.shopping.resilience.fallback_chain import get_community_data
+
+        fake_a = MagicMock()
+        fake_b = MagicMock()
+
+        def tracking(source):
+            mock_cls = MagicMock()
+            if source == "technopat":
+                mock_cls.return_value.search = AsyncMock(return_value=[fake_a])
+            elif source == "sikayetvar":
+                mock_cls.return_value.search = AsyncMock(return_value=[fake_b])
+            else:
+                mock_cls.return_value.search = AsyncMock(return_value=[])
+            return mock_cls
+
+        async def _run():
+            with patch("src.shopping.scrapers.get_scraper", side_effect=tracking):
+                return await get_community_data("siemens s100")
+
+        result = run_async(_run())
+
+        self.assertEqual(len(result), 2)
+        self.assertIn(fake_a, result)
+        self.assertIn(fake_b, result)
+
+
 if __name__ == "__main__":
     unittest.main()

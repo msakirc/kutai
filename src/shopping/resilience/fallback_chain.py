@@ -103,7 +103,29 @@ _SPECIALTY_RETAILERS = [
     "kitapyurdu", "dr", "decathlon", "direnc",
     "koctas", "ikea", "migros", "getir",
 ]
-# Forum/review sites excluded — they don't return product/price data.
+# Community sources — forums, complaints, discussions (not product/price data)
+_COMMUNITY_SOURCES = ["technopat", "sikayetvar", "donanimhaber", "eksisozluk"]
+
+
+async def get_community_data(query: str) -> list:
+    """Search forum/complaint/discussion sites for community feedback.
+
+    Runs all community scrapers in parallel and collects all results
+    (not first-wins like product search — we want breadth here).
+    """
+    tasks = [
+        asyncio.create_task(_search_scraper(s, query))
+        for s in _COMMUNITY_SOURCES
+    ]
+    all_results: list = []
+    for coro in asyncio.as_completed(tasks):
+        try:
+            result = await coro
+            if result:
+                all_results.extend(result)
+        except Exception:
+            pass
+    return all_results
 
 
 async def get_product_with_fallback(

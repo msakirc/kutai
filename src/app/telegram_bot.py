@@ -5455,7 +5455,10 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                         text, parse_mode="Markdown",
                         reply_markup=InlineKeyboardMarkup(btn_rows))
                 except Exception as e:
-                    await query.answer(f"Refresh failed: {e}")
+                    if "not modified" in str(e).lower():
+                        await query.answer("No changes")
+                    else:
+                        await query.answer(f"Refresh failed: {e}")
                 return
 
             if action == "restart_yazbunu":

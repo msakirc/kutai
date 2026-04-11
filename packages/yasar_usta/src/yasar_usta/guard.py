@@ -261,13 +261,13 @@ class ProcessGuard:
                             await self.telegram.answer_callback(cb["id"])
                             cb_data = cb.get("data", "")
                             cb_msg_id = cb.get("message", {}).get("message_id")
-                            if cb_data == "restart_guard":
+                            if cb_data in ("restart_guard", "restart_usta"):
                                 offset = max_uid + 1
                                 await self._restart_self()
                                 return
-                            elif cb_data == "guard_refresh":
+                            elif cb_data in ("guard_refresh", "usta_refresh"):
                                 await self._send_status(edit_message_id=cb_msg_id)
-                            elif cb_data == "restart_sidecar" and self.sidecar:
+                            elif cb_data in ("restart_sidecar", "restart_yazbunu") and self.sidecar:
                                 await self.sidecar.stop()
                                 await self.sidecar.start()
                                 await self._send_status(edit_message_id=cb_msg_id)
@@ -281,15 +281,20 @@ class ProcessGuard:
                         continue
 
                     # Built-in commands
-                    if text == self.msgs.btn_start or text.startswith("/start"):
+                    if (text == self.msgs.btn_start
+                            or text.startswith("/start")
+                            or text.startswith("/kutai_start")):
                         await self._send(self.msgs.starting.format(app_name=self.cfg.app_name))
                         await self._start_app_from_poller()
                         return
 
-                    elif text == self.msgs.btn_status or text.startswith("/status"):
+                    elif (text == self.msgs.btn_status
+                          or text.startswith("/status")
+                          or text.startswith("/kutai_status")):
                         await self._send_status()
 
-                    elif text.startswith("/restart_guard"):
+                    elif (text.startswith("/restart_guard")
+                          or text.startswith("/restart_usta")):
                         await self._restart_self()
                         return
 

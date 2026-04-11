@@ -31,6 +31,8 @@ Reply with EXACTLY these fields, one per line:
 RELEVANT: YES or NO
 COMPLETE: YES or NO
 VERDICT: PASS or FAIL
+WELL_FORMED: PASS or FAIL (no repeated sections, no garbage, structurally sound)
+COHERENT: PASS or FAIL (output makes logical sense end-to-end)
 SITUATION: one line, what type of problem was solved
 STRATEGY: one line, what approach worked
 TOOLS: comma-separated list of tools used effectively
@@ -43,6 +45,8 @@ class GradeResult:
     passed: bool
     relevant: Optional[bool] = None
     complete: Optional[bool] = None
+    well_formed: Optional[bool] = None
+    coherent: Optional[bool] = None
     situation: str = ""
     strategy: str = ""
     tools: list[str] = field(default_factory=list)
@@ -101,6 +105,8 @@ def parse_grade_response(raw: str) -> GradeResult:
     relevant = _parse_yes_no(raw, "RELEVANT")
     complete = _parse_yes_no(raw, "COMPLETE")
     verdict = _parse_yes_no(raw, "VERDICT")
+    well_formed = _parse_yes_no(raw, "WELL_FORMED")
+    coherent = _parse_yes_no(raw, "COHERENT")
 
     # Skill extraction fields (optional — never block grading)
     situation = _parse_text_field(raw, "SITUATION")
@@ -118,28 +124,36 @@ def parse_grade_response(raw: str) -> GradeResult:
 
     # Cascade 1: VERDICT present
     if verdict is not None:
+        effective_passed = verdict if well_formed is not False else False
         return GradeResult(
-            passed=verdict, relevant=relevant, complete=complete,
+            passed=effective_passed, relevant=relevant, complete=complete,
+            well_formed=well_formed, coherent=coherent,
             situation=situation, strategy=strategy, tools=tools,
             preference=preference, insight=insight, raw=raw,
         )
 
     # Cascade 2: derive from RELEVANT + COMPLETE
     if relevant is not None and complete is not None:
+        derived = relevant and complete
+        effective_passed = derived if well_formed is not False else False
         return GradeResult(
-            passed=(relevant and complete), relevant=relevant, complete=complete,
+            passed=effective_passed, relevant=relevant, complete=complete,
+            well_formed=well_formed, coherent=coherent,
             situation=situation, strategy=strategy, tools=tools,
             preference=preference, insight=insight, raw=raw,
         )
 
-    # Cascade 3: bare PASS/FAIL keyword anywhere
+    # Cascade 3: bare PASS/FAIL keyword anywhere (last resort — VERDICT/RELEVANT/COMPLETE not found)
     bare = re.search(r'\bPASS\b', raw, re.IGNORECASE)
     if bare:
-        return GradeResult(passed=True, situation=situation, strategy=strategy, tools=tools,
+        effective_passed = True if well_formed is not False else False
+        return GradeResult(passed=effective_passed, well_formed=well_formed, coherent=coherent,
+                           situation=situation, strategy=strategy, tools=tools,
                            preference=preference, insight=insight, raw=raw)
     bare_fail = re.search(r'\bFAIL\b', raw, re.IGNORECASE)
     if bare_fail:
-        return GradeResult(passed=False, situation=situation, strategy=strategy, tools=tools,
+        return GradeResult(passed=False, well_formed=well_formed, coherent=coherent,
+                           situation=situation, strategy=strategy, tools=tools,
                            preference=preference, insight=insight, raw=raw)
 
     raise ValueError(f"grader incapable: could not parse VERDICT, RELEVANT, or COMPLETE from output: {raw[:150]}")
@@ -188,6 +202,11 @@ async def grade_task(task: dict, grader_model: str) -> GradeResult:
     result_text = task.get("result", "")
     if not result_text or len(str(result_text).strip()) < 10:
         return GradeResult(passed=False, raw="auto-fail: trivial/empty output")
+
+    from content_quality import assess as cq_assess
+    _grade_cq = cq_assess(str(result_text))
+    if _grade_cq.is_degenerate:
+        return GradeResult(passed=False, raw=f"auto-fail: {_grade_cq.summary}")
 
     dispatcher = get_dispatcher()
     response = await dispatcher.request(
@@ -263,7 +282,7 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
             pass
 
         # Skill extraction — uses verdict fields when available, mechanical fallback otherwise
-        iterations = task.get("iterations", 1) or 1
+        iterations = ctx.get("iterations", 1) or 1
         tools_used = ctx.get("tools_used_names", [])
         if iterations >= 2 and tools_used:
             try:

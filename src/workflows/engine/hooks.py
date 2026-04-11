@@ -867,11 +867,12 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
                             )
                         break
             if file_parts:
-                # Combine result + file contents for validation.
-                # Use the richest source as output_value.
-                combined = output_value + "\n\n" + "\n\n".join(file_parts)
-                if len(combined) > len(output_value):
-                    output_value = combined
+                # Use the richest single source — don't concatenate.
+                # Concatenation caused 6K result + 50K garbage file = 56K
+                # stored as the artifact, poisoning downstream tasks.
+                best_file = max(file_parts, key=len)
+                if len(best_file) > len(output_value):
+                    output_value = best_file
         except Exception as e:
             logger.debug(f"[Workflow Hook] Workspace artifact recovery failed: {e}")
 

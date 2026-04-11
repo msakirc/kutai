@@ -90,8 +90,10 @@ telegram~=0.0.1
 sentence-transformers>=2.2.0
 chromadb>=0.4.0
 
+# External packages (own repos)
+yazbunu @ git+https://github.com/msakirc/yazbunu.git
+
 # Local packages
--e ./packages/yazbunu
 -e ./packages/vecihi
 
 # Test dependencies

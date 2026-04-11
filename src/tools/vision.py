@@ -50,7 +50,13 @@ async def analyze_image(filepath: str, question: str = "Describe what you see in
             reqs=reqs,
             messages=messages,
         )
-        return result.get("content", "")
+        analysis = result.get("content", "")
+        from content_quality import assess as cq_assess
+        _vis_cq = cq_assess(analysis)
+        if _vis_cq.is_degenerate:
+            logger.warning("vision analysis degenerate", summary=_vis_cq.summary)
+            return f"Error: vision analysis produced degenerate output ({_vis_cq.summary})"
+        return analysis
     except Exception as e:
         logger.error("vision analysis failed", filepath=filepath, error=str(e))
         return f"Error analyzing image: {e}"

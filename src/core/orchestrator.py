@@ -2837,10 +2837,20 @@ class Orchestrator:
         # We need a two-pass approach because depends_on_step references
         # IDs that are created during insertion.
         processed: list[dict] = []
+        from content_quality import assess as cq_assess
         for i, st in enumerate(subtasks):
+            _st_title = st.get("title", f"Subtask {i+1}")[:80]
+            _st_desc = st.get("description", "")[:2000]
+            _st_cq = cq_assess(f"{_st_title} {_st_desc}")
+            if _st_cq.is_degenerate:
+                logger.warning(
+                    f"[Orchestrator] Skipping degenerate subtask {i+1}: "
+                    f"{_st_cq.summary}"
+                )
+                continue
             processed.append({
-                "title": st.get("title", f"Subtask {i+1}")[:80],
-                "description": st.get("description", "")[:2000],
+                "title": _st_title,
+                "description": _st_desc,
                 "agent_type": st.get("agent_type", "executor"),
                 "tier": st.get("tier", "auto"),
                 "priority": st.get("priority", task.get("priority", 5)),

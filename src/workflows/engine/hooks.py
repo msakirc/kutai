@@ -1025,6 +1025,19 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
     if (ctx.get("triggers_clarification")
             and output_value
             and not ctx.get("clarification_history")):
+        from content_quality import assess as cq_assess
+        _clar_cq = cq_assess(output_value)
+        if _clar_cq.is_degenerate:
+            result["status"] = "failed"
+            result["error"] = (
+                f"Clarification question was degenerate ({_clar_cq.summary}), "
+                f"retrying instead of sending garbled text to human"
+            )
+            logger.warning(
+                f"[Workflow Hook] Step '{step_id}' clarification rejected: "
+                f"{_clar_cq.summary}"
+            )
+            return
         result["status"] = "needs_clarification"
         result["clarification"] = output_value
         logger.info(

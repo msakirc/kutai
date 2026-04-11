@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vecihi"
+version = "0.1.0"
+description = "Auto-escalating web scraper: HTTP -> TLS fingerprint -> Stealth -> Browser"
+requires-python = ">=3.10"
+dependencies = ["aiohttp>=3.9.0"]
+
+[project.optional-dependencies]
+tls = ["curl_cffi>=0.7.0"]
+stealth = ["scrapling>=0.2.0"]
+all = ["curl_cffi>=0.7.0", "scrapling>=0.2.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

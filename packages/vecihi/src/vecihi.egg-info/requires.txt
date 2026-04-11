@@ -1,0 +1,11 @@
+aiohttp>=3.9.0
+
+[all]
+curl_cffi>=0.7.0
+scrapling>=0.2.0
+
+[stealth]
+scrapling>=0.2.0
+
+[tls]
+curl_cffi>=0.7.0

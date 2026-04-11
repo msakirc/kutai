@@ -1,0 +1,9 @@
+pyproject.toml
+src/vecihi/__init__.py
+src/vecihi/core.py
+src/vecihi/fetchers.py
+src/vecihi.egg-info/PKG-INFO
+src/vecihi.egg-info/SOURCES.txt
+src/vecihi.egg-info/dependency_links.txt
+src/vecihi.egg-info/requires.txt
+src/vecihi.egg-info/top_level.txt

@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: vecihi
+Version: 0.1.0
+Summary: Auto-escalating web scraper: HTTP -> TLS fingerprint -> Stealth -> Browser
+Requires-Python: >=3.10
+Requires-Dist: aiohttp>=3.9.0
+Provides-Extra: tls
+Requires-Dist: curl_cffi>=0.7.0; extra == "tls"
+Provides-Extra: stealth
+Requires-Dist: scrapling>=0.2.0; extra == "stealth"
+Provides-Extra: all
+Requires-Dist: curl_cffi>=0.7.0; extra == "all"
+Requires-Dist: scrapling>=0.2.0; extra == "all"

@@ -1065,9 +1065,19 @@ async def call_model(
             from ..models.local_model_manager import get_local_manager
             manager = get_local_manager()
             needs_vision = reqs.needs_vision and model.has_vision
+            # Only reload for thinking if we NEED thinking but it's OFF.
+            # Never reload just to turn thinking off — the <think> tag
+            # stripping (line ~1416) handles unwanted thinking output.
+            # Reloading to toggle thinking causes swap thrashing when the
+            # router alternates between thinking and non-thinking tasks.
+            needs_thinking_reload = (
+                model.thinking_model
+                and is_thinking
+                and not manager._thinking_enabled
+            )
             needs_reload = (
                 not model.is_loaded
-                or (model.thinking_model and manager._thinking_enabled != is_thinking)
+                or needs_thinking_reload
                 or (needs_vision and not manager._vision_enabled)
             )
             if needs_reload:
@@ -1138,6 +1148,22 @@ async def call_model(
         # Thinking is now controlled at llama-server startup via
         # --chat-template-kwargs (see local_model_manager._start_server).
         # No per-request override needed.
+
+        # Thinking models reject assistant prefills (trailing assistant
+        # message) even when thinking is disabled for this request —
+        # the server-level chat template still enforces the constraint.
+        # Convert the trailing assistant message to a user message so the
+        # model sees its prior work as context without it being a prefill.
+        if model.thinking_model and _messages and _messages[-1].get("role") == "assistant":
+            last = _messages[-1]
+            _messages = _messages[:-1]
+            _messages.append({
+                "role": "user",
+                "content": (
+                    "Your previous response (continue from here, "
+                    "do NOT repeat this):\n\n" + last["content"]
+                ),
+            })
 
         _max_tokens = min(reqs.estimated_output_tokens * 2, model.max_tokens)
 

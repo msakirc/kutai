@@ -18,42 +18,98 @@ logger = get_logger("workflows.engine.hooks")
 
 
 def _unwrap_envelope(text: str) -> str:
-    """Strip final_answer JSON envelope and/or markdown code fences.
+    """Strip JSON envelopes, model tokens, and degenerate repetition.
 
-    Agents sometimes return their result wrapped in:
-        ```json
-        {"action": "final_answer", "result": "...actual content..."}
-        ```
-    When the inner string contains unescaped quotes, json.loads fails.
-    This helper extracts the clean result text using a regex fallback.
+    Handles:
+      - final_answer envelopes: {"action": "final_answer", "result": "..."}
+      - tool_call envelopes: {"action": "tool_call", "tool": "write_file",
+        "args": {"content": "..."}}
+      - Model-specific tokens: <|function_call|>, <|function_result|>
+      - Markdown code fences
+      - Degenerate repetition (same section repeated 3+ times)
     """
     import re as _re
 
-    if '"final_answer"' not in text and '"result"' not in text:
-        return text
-
+    # ── Strip model-specific tokens ──
     stripped = text.strip()
+    for token in ("<|function_call|>", "<|function_result|>",
+                  "<|im_start|>", "<|im_end|>"):
+        stripped = stripped.replace(token, "")
+    stripped = stripped.strip()
+
+    # ── Strip markdown code fences ──
     if stripped.startswith("```"):
         stripped = stripped.split("\n", 1)[1] if "\n" in stripped else stripped[3:]
         stripped = stripped.rsplit("```", 1)[0].strip()
 
+    # ── Try JSON parse for known envelope types ──
     try:
         obj = json.loads(stripped)
-        if isinstance(obj, dict) and "result" in obj:
-            return obj["result"]
+        if isinstance(obj, dict):
+            # final_answer envelope
+            if "result" in obj:
+                stripped = obj["result"]
+            # write_file tool_call envelope — extract the file content
+            elif obj.get("action") == "tool_call" and obj.get("tool") == "write_file":
+                args = obj.get("args", {})
+                if isinstance(args, dict) and "content" in args:
+                    stripped = args["content"]
     except (json.JSONDecodeError, TypeError):
         pass
 
-    m = _re.search(
-        r'"result"\s*:\s*"(.*)",?\s*(?:"memories"|"subtasks"|\})',
-        stripped,
-        _re.DOTALL,
-    )
-    if m:
-        raw = m.group(1)
-        return raw.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+    # ── Regex fallback for broken JSON ──
+    if '"result"' in stripped and '"final_answer"' in stripped:
+        m = _re.search(
+            r'"result"\s*:\s*"(.*)",?\s*(?:"memories"|"subtasks"|\})',
+            stripped,
+            _re.DOTALL,
+        )
+        if m:
+            raw = m.group(1)
+            stripped = raw.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
 
-    return text
+    # Fallback: extract content from write_file in broken/truncated JSON
+    if '"write_file"' in stripped and '"content"' in stripped:
+        m = _re.search(
+            r'"content"\s*:\s*"(.*)',
+            stripped,
+            _re.DOTALL,
+        )
+        if m:
+            raw = m.group(1)
+            # Trim trailing JSON closure if present
+            raw = _re.sub(r'"\s*\}\s*\}\s*$', '', raw)
+            stripped = raw.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+
+    return stripped
+
+
+def _detect_repetition_ratio(text: str) -> float:
+    """Return 0.0–1.0 indicating how much of the text is repetitive.
+
+    Splits into ## sections, normalizes headers, and counts how many
+    sections share a normalized header with at least one other section.
+    Does NOT modify the text — purely a signal.
+    """
+    import re as _re2
+
+    sections = text.split("\n## ")
+    if len(sections) < 5:
+        return 0.0
+
+    norm_headers: list[str] = []
+    for sec in sections[1:]:  # skip content before first ##
+        header = sec.split("\n", 1)[0].strip()
+        norm = _re2.sub(
+            r'\s+(summary|examples?|notes|details)\s*$', '',
+            header.lower(),
+        ).strip()
+        norm_headers.append(norm)
+
+    from collections import Counter
+    counts = Counter(norm_headers)
+    duplicated = sum(c - 1 for c in counts.values() if c > 1)
+    return duplicated / len(norm_headers) if norm_headers else 0.0
 
 
 def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str]:
@@ -90,6 +146,7 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
             # Check each word of multi-word fields independently — e.g.
             # "per_competitor" matches if both "per" and "competitor"
             # appear anywhere in the text, since LLMs rephrase freely.
+            # Also checks common synonyms — LLMs rephrase field names.
             if required:
                 import re as _re_obj
                 # Normalize: remove apostrophes, replace dashes/underscores with space
@@ -486,7 +543,13 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
                 max_total=max_artifact_chars,
             )
             if formatted:
-                parts.append(f"\n\n## Context Artifacts\n\n{formatted}")
+                names = ", ".join(filtered.keys())
+                parts.append(
+                    f"\n\n## Context Artifacts\n"
+                    f"**The following artifacts are ALREADY included below. "
+                    f"Do NOT call read_file for them — use them directly: "
+                    f"{names}**\n\n{formatted}"
+                )
 
     # Append human clarification answers if available
     user_clarification = ctx.get("user_clarification")
@@ -496,6 +559,22 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
             f"The human has answered your questions. Use these answers to complete the task:\n\n"
             f"{user_clarification}"
         )
+
+    # ── Sanitize _prev_output before injection ──
+    # If previous output is degenerate (>40% repeated sections), discard
+    # it entirely — building on garbage just produces more garbage.
+    _prev = ctx.get("_prev_output")
+    if _prev:
+        _prev = _unwrap_envelope(_prev)
+        if _detect_repetition_ratio(_prev) > 0.4:
+            logger.warning(
+                f"[Workflow Hook] Discarding degenerate _prev_output "
+                f"({len(_prev)} chars, "
+                f"{_detect_repetition_ratio(_prev):.0%} repetition)"
+            )
+            _prev = None
+        else:
+            ctx["_prev_output"] = _prev  # store cleaned version
 
     # Append schema validation error and previous output from failed retry
     schema_error = ctx.get("_schema_error")
@@ -509,11 +588,10 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
         )
 
         # Inject previous output so agent doesn't waste iterations re-reading
-        prev_output = ctx.get("_prev_output")
-        if prev_output:
+        if _prev:
             parts.append(
                 f"\n\n## Your Previous Output (fix this, don't start over)\n"
-                f"```\n{prev_output[:4000]}\n```"
+                f"```\n{_prev[:4000]}\n```"
             )
 
         # Inject workspace files the agent wrote in previous attempts
@@ -530,14 +608,72 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
                         if os.path.isfile(fpath):
                             with open(fpath, "r", encoding="utf-8") as f:
                                 content = f.read()
+                            content = _unwrap_envelope(content)
                             if content and len(content) > 100:
-                                parts.append(
-                                    f"\n\n## Already Written: {name}{ext}\n"
-                                    f"```\n{content[:3000]}\n```"
-                                )
+                                if _detect_repetition_ratio(content) > 0.4:
+                                    logger.warning(
+                                        f"[Workflow Hook] Skipping degenerate "
+                                        f"workspace file {name}{ext}"
+                                    )
+                                else:
+                                    parts.append(
+                                        f"\n\n## Already Written: {name}{ext}\n"
+                                        f"```\n{content[:3000]}\n```"
+                                    )
                             break
             except Exception:
                 pass
+
+    # Inject previous output from timeout recovery (no schema error)
+    if not schema_error and _prev:
+        timeout_hint = ctx.get("_timeout_hint", "")
+        retry_count = task.get("worker_attempts", 0)
+        parts.append(
+            f"\n\n## IMPORTANT: Previous Attempt Timed Out (retry {retry_count})\n"
+            f"{timeout_hint}\n"
+            f"Your partial output from the previous attempt:"
+        )
+        parts.append(
+            f"\n```\n{_prev[:4000]}\n```"
+        )
+
+    # Append output format hint from artifact schema.
+    # Always present — the model needs to know the exact field names
+    # both on first attempt and retries.
+    artifact_schema = ctx.get("artifact_schema")
+    if artifact_schema:
+        hints = []
+        for art_name, rules in artifact_schema.items():
+            schema_type = rules.get("type", "string")
+            if schema_type == "object":
+                fields = rules.get("required_fields", [])
+                if fields:
+                    field_list = ", ".join(f'"{f}"' for f in fields)
+                    hints.append(
+                        f"**{art_name}**: Your final_answer result MUST "
+                        f"contain these exact words: {field_list}"
+                    )
+            elif schema_type == "array":
+                item_fields = rules.get("item_fields", [])
+                min_items = rules.get("min_items", 0)
+                hint = f"**{art_name}** must be a list"
+                if min_items:
+                    hint += f" with at least {min_items} items"
+                if item_fields:
+                    hint += f", each containing: `{', '.join(item_fields)}`"
+                hints.append(hint)
+            elif schema_type == "markdown":
+                sections = rules.get("required_sections", [])
+                if sections:
+                    hints.append(
+                        f"**{art_name}** must include these sections: "
+                        f"{', '.join(sections)}"
+                    )
+        if hints:
+            parts.append(
+                "\n\n## Required Output Format\n"
+                + "\n".join(f"- {h}" for h in hints)
+            )
 
     # Append done_when section if present
     if done_when:

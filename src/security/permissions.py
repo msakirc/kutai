@@ -28,7 +28,7 @@ AGENT_PERMISSIONS: dict[str, Optional[set[str]]] = {
     "coder": {
         "file_tree", "read_file", "write_file", "edit_file", "patch_file",
         "apply_diff", "shell", "shell_stdin", "shell_sequential",
-        "run_code", "lint", "verify_deps",
+        "run_code", "lint", "verify_deps", "scaffold", "recommend_stack",
         "git_log", "git_commit", "git_branch", "git_init", "git_rollback",
         "read_blackboard", "write_blackboard", "list_workspace",
     },

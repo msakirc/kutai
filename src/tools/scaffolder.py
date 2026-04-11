@@ -46,6 +46,20 @@ STACKS = {
             ".gitignore": "node_modules/\n.expo/\n*.jks\n*.p8\n*.p12\n*.key\n*.mobileprovision\n",
         },
     },
+    "fastify": {
+        "description": "Fastify + TypeScript + Prisma + Docker",
+        "files": {
+            "package.json": '{{\n  "name": "{project_name}",\n  "scripts": {{\n    "dev": "tsx watch src/server.ts",\n    "build": "tsc",\n    "start": "node dist/server.js"\n  }},\n  "dependencies": {{\n    "fastify": "^4.26.0",\n    "@fastify/cors": "^9.0.0",\n    "@fastify/helmet": "^11.0.0",\n    "@prisma/client": "^5.10.0",\n    "dotenv": "^16.4.0"\n  }},\n  "devDependencies": {{\n    "typescript": "^5.3.0",\n    "tsx": "^4.7.0",\n    "@types/node": "^20.11.0",\n    "prisma": "^5.10.0"\n  }}\n}}\n',
+            "tsconfig.json": '{{\n  "compilerOptions": {{\n    "target": "ES2022",\n    "module": "NodeNext",\n    "moduleResolution": "NodeNext",\n    "outDir": "dist",\n    "rootDir": "src",\n    "strict": true,\n    "esModuleInterop": true,\n    "skipLibCheck": true\n  }},\n  "include": ["src/**/*"]\n}}\n',
+            "src/server.ts": 'import Fastify from "fastify";\nimport cors from "@fastify/cors";\nimport helmet from "@fastify/helmet";\nimport "dotenv/config";\n\nconst app = Fastify({{ logger: true }});\n\napp.register(cors);\napp.register(helmet);\n\napp.get("/health", async () => ({{ status: "ok" }}));\n\nconst start = async () => {{\n  const port = Number(process.env.PORT) || 3000;\n  await app.listen({{ port, host: "0.0.0.0" }});\n  console.log(`Server running on port ${{port}}`);\n}};\n\nstart();\n',
+            "src/plugins/.gitkeep": "",
+            "src/routes/.gitkeep": "",
+            "prisma/schema.prisma": 'generator client {{\n  provider = "prisma-client-js"\n}}\n\ndatasource db {{\n  provider = "postgresql"\n  url      = env("DATABASE_URL")\n}}\n',
+            "Dockerfile": "FROM node:20-slim\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci --production=false\nCOPY . .\nRUN npx prisma generate\nRUN npm run build\nCMD [\"node\", \"dist/server.js\"]\n",
+            ".env.example": 'PORT=3000\nDATABASE_URL="postgresql://user:pass@localhost:5432/mydb"\n',
+            ".gitignore": "node_modules/\ndist/\n.env\n",
+        },
+    },
     "flask": {
         "description": "Flask + SQLAlchemy + Docker",
         "files": {

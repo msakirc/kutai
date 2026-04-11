@@ -438,7 +438,118 @@ class Orchestrator:
         except Exception as e:
             logger.debug(f"Auto-commit skipped: {e}")
 
-    # ─── Watchdog ────────────────────────────────────────────
+    # ─── Independent stuck-task watchdog ────────────────────
+
+    async def _run_stuck_task_watchdog(self):
+        """Independent periodic check for tasks stuck in 'processing'.
+
+        Runs as a separate asyncio task so it fires even when the main
+        loop is blocked (e.g. all concurrent tasks hung on a dead
+        llama-server).  Uses per-task timeouts + grace period instead
+        of a hardcoded 5-minute threshold.
+        """
+        GRACE_SECONDS = 60  # buffer for graceful shutdown / slow finalization
+        INTERVAL = 30       # check every 30 seconds
+
+        while not self.shutdown_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self.shutdown_event.wait(), timeout=INTERVAL
+                )
+                break  # shutdown requested
+            except asyncio.TimeoutError:
+                pass  # normal tick
+
+            try:
+                db = await get_db()
+                cursor = await db.execute(
+                    """SELECT id, title, agent_type, timeout_seconds,
+                              started_at, infra_resets
+                       FROM tasks WHERE status = 'processing'"""
+                )
+                rows = [dict(r) for r in await cursor.fetchall()]
+                if not rows:
+                    continue
+
+                now = utc_now()
+                reset_tasks = []
+
+                for task in rows:
+                    started = task.get("started_at")
+                    if not started:
+                        continue
+                    try:
+                        started_dt = from_db(str(started))
+                    except (ValueError, TypeError):
+                        continue
+
+                    timeout_sec = (
+                        task.get("timeout_seconds")
+                        or AGENT_TIMEOUTS.get(task.get("agent_type", "executor"), 240)
+                    )
+                    elapsed = (now - started_dt).total_seconds()
+                    if elapsed > timeout_sec + GRACE_SECONDS:
+                        reset_tasks.append((task, elapsed, timeout_sec))
+
+                for task, elapsed, timeout_sec in reset_tasks:
+                    infra_resets = (task.get("infra_resets") or 0) + 1
+                    if infra_resets >= 3:
+                        logger.warning(
+                            "stuck task exhausted infra resets",
+                            task_id=task["id"],
+                            elapsed=int(elapsed),
+                            timeout=timeout_sec,
+                            resets=infra_resets,
+                        )
+                        await db.execute(
+                            "UPDATE tasks SET status = 'failed', "
+                            "error = 'Stuck in processing — infra resets "
+                            "exhausted (stuck-task watchdog)', "
+                            "failed_in_phase = 'infrastructure', "
+                            "infra_resets = ? WHERE id = ?",
+                            (infra_resets, task["id"]),
+                        )
+                        try:
+                            from src.infra.dead_letter import quarantine_task
+                            await quarantine_task(
+                                task_id=task["id"],
+                                mission_id=None,
+                                error=f"Stuck in processing {int(elapsed)}s "
+                                      f"(timeout={timeout_sec}s, "
+                                      f"infra resets exhausted)",
+                                error_category="infrastructure",
+                                original_agent=task.get("agent_type", "executor"),
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        logger.warning(
+                            "stuck task reset to pending",
+                            task_id=task["id"],
+                            elapsed=int(elapsed),
+                            timeout=timeout_sec,
+                            infra_reset=f"{infra_resets}/3",
+                        )
+                        await db.execute(
+                            "UPDATE tasks SET status = 'pending', "
+                            "infra_resets = ?, "
+                            "retry_reason = 'infrastructure' "
+                            "WHERE id = ?",
+                            (infra_resets, task["id"]),
+                        )
+
+                if reset_tasks:
+                    await db.commit()
+                    # Cancel hung futures in the main loop so they don't
+                    # keep consuming resources after we reset the task.
+                    for f in getattr(self, "_running_futures", []):
+                        if not f.done():
+                            f.cancel()
+
+            except Exception as e:
+                logger.debug(f"Stuck-task watchdog error: {e}")
+
+    # ─── Watchdog (inline, runs every 10 cycles) ─────────────
 
     async def watchdog(self):
         """
@@ -1706,6 +1817,27 @@ class Orchestrator:
                 except Exception as recovery_err:
                     logger.debug(f"[Task #{task_id}] Checkpoint recovery failed: {recovery_err}")
 
+                # Roll back the checkpoint iteration counter so the retry
+                # gets more than 1 shot.  Keep messages intact — the partial
+                # output from the interrupted generation is valuable (often
+                # 6-7k of 8k chars done) and the next attempt can finish it
+                # quickly instead of regenerating from scratch.
+                try:
+                    from src.infra.db import load_task_checkpoint, save_task_checkpoint
+                    cp = await load_task_checkpoint(task_id)
+                    if cp:
+                        old_iter = cp.get("iteration", 0)
+                        new_iter = max(old_iter - 2, 0)
+                        cp["iteration"] = new_iter
+                        await save_task_checkpoint(task_id, cp)
+                        logger.info(
+                            f"[Task #{task_id}] Timeout: rolled back checkpoint "
+                            f"iteration {old_iter}→{new_iter}, "
+                            f"{len(cp.get('messages', []))} messages preserved"
+                        )
+                except Exception:
+                    pass
+
                 # Use the same retry/DLQ pipeline as other failure paths
                 task_ctx = task.get("context", {})
                 if isinstance(task_ctx, str):
@@ -1713,6 +1845,17 @@ class Orchestrator:
                         task_ctx = json.loads(task_ctx)
                     except (json.JSONDecodeError, TypeError):
                         task_ctx = {}
+
+                # Inject partial output so next attempt can continue
+                if partial_result:
+                    task_ctx["_prev_output"] = partial_result[:6000]
+                    task_ctx["_timeout_hint"] = (
+                        "Your previous attempt timed out while generating "
+                        "a large output. Your partial work is shown in the "
+                        "context. CONTINUE from where you left off — do NOT "
+                        "start over. If the output is too large for one "
+                        "write_file call, break it into sections."
+                    )
 
                 from src.core.retry import RetryContext
                 retry_ctx = RetryContext.from_task(task)
@@ -3522,6 +3665,7 @@ class Orchestrator:
             asyncio.create_task(manager.run_idle_unloader()),
             asyncio.create_task(manager.run_health_watchdog()),
             asyncio.create_task(self._heartbeat_loop()),
+            asyncio.create_task(self._run_stuck_task_watchdog()),
         ]
 
         # Phase 13.1: Seed prompt versions from hardcoded prompts on first run

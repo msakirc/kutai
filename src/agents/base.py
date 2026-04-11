@@ -1704,10 +1704,17 @@ class BaseAgent:
 
                 # ── FORMAT CORRECTION (sub-iteration) ──
                 if parsed is None:
-                    # If the response is substantial but just missing the JSON
-                    # wrapper, accept it as a final answer rather than wasting
-                    # a correction on format.
-                    if len(content) > 200:
+                    # If the response is substantial natural-language text
+                    # (not a raw tool call or envelope), accept as final
+                    # answer rather than wasting a correction on format.
+                    _looks_like_tool = any(
+                        marker in content[:100]
+                        for marker in (
+                            '"tool_call"', '"tool":', "<|function_call|>",
+                            "```tool_code", '"write_file"', '"read_file"',
+                        )
+                    )
+                    if len(content) > 200 and not _looks_like_tool:
                         result_text = _unwrap_final_answer(content)
                         logger.info(
                             f"[Task #{task_id}] Accepting unparsed response "
@@ -1977,6 +1984,7 @@ class BaseAgent:
                         _ctx["generating_model"] = used_model
                         _ctx["worker_completed_at"] = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
                         _ctx["tools_used_names"] = sorted(tools_used_names)
+                        _ctx["iterations"] = iteration + 1
 
                         from src.core.state_machine import transition_task
                         await transition_task(
@@ -2016,6 +2024,36 @@ class BaseAgent:
                 tool_args = parsed.get("args", {})
                 if not isinstance(tool_args, dict):
                     tool_args = {}
+
+                # ── Intercept read_file for artifacts already in context ──
+                # Workflow steps inject input artifacts into the prompt.
+                # If the model tries to read_file for one of them, short-
+                # circuit with a nudge — saves an iteration + tool call.
+                if tool_name == "read_file" and _task_ctx.get("is_workflow_step"):
+                    _input_arts = _task_ctx.get("input_artifacts", [])
+                    _filepath = tool_args.get("filepath", "")
+                    _matched = any(
+                        art in _filepath for art in _input_arts
+                    ) if _input_arts and _filepath else False
+                    if _matched:
+                        tool_output = (
+                            "This artifact is already included in your "
+                            "context above under '## Context Artifacts'. "
+                            "Use it directly — do NOT call read_file for it."
+                        )
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({
+                            "role": "user",
+                            "content": f"Tool Result ({tool_name}):\n{tool_output}",
+                        })
+                        await self._save_checkpoint(
+                            task_id, iteration + 1, messages, total_cost,
+                            used_model, reqs, tools_used,
+                            custom_validation_retried or task_type_validation_retried,
+                            completed_tool_ops, format_corrections,
+                            tools_used_names,
+                        )
+                        continue
 
                 if (
                     self.allowed_tools is not None

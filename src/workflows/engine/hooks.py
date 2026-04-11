@@ -937,15 +937,16 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
 
     # ── Final quality gate before storing ──
     if output_value:
-        rep = _detect_repetition_ratio(output_value)
-        if rep > 0.4:
+        from content_quality import assess as cq_assess
+        _artifact_schema = ctx.get("artifact_schema", {})
+        _step_max = _artifact_schema.get("max_output_chars", 20_000)
+        cq = cq_assess(output_value, max_size=_step_max)
+        if cq.is_degenerate:
             result["status"] = "failed"
-            result["error"] = (
-                f"Output is {rep:.0%} repetitive — degenerate content rejected"
-            )
+            result["error"] = f"Degenerate content rejected: {cq.summary}"
             logger.warning(
                 f"[Workflow Hook] Step '{step_id}' output rejected: "
-                f"{rep:.0%} repetition ({len(output_value)} chars)"
+                f"{cq.summary} ({len(output_value)} chars)"
             )
             return
 

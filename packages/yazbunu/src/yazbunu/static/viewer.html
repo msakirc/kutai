@@ -119,6 +119,9 @@
     margin-left: 4px;
   }
   .pill:hover { background: var(--accent); color: #000; }
+  .pill.trace-key { background: #7c4dff; color: #fff; }
+  .pill.trace-key:hover { background: #b388ff; color: #000; }
+  .pill.trace-active { background: var(--accent); color: #000; }
   .fn-info { color: var(--text-dim); font-size: 11px; }
   mark { background: #ffa726; color: #000; border-radius: 2px; padding: 0 1px; }
 
@@ -154,6 +157,10 @@
   </select>
   <input type="text" id="searchBox" placeholder="Search src/msg (regex)...">
   <button id="tailBtn">Live Tail</button>
+  <span id="traceInfo" style="display:none;font-size:11px;color:var(--accent);">
+    Trace: <span id="traceLabel"></span>
+    <button id="traceClear" style="font-size:10px;padding:2px 6px;margin-left:4px;">✕</button>
+  </span>
   <span class="status" id="status">Ready</span>
 </div>
 
@@ -163,6 +170,7 @@
 const LEVEL_ORDER = {DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4};
 const POLL_MS = 2000;
 const CONTEXT_KEYS = new Set(["ts", "level", "src", "msg", "fn", "ln", "exc"]);
+const TRACE_KEYS = new Set(["task", "mission_id", "agent_type"]);
 
 let allLines = [];
 let tailing = false;
@@ -170,6 +178,7 @@ let tailTimer = null;
 let tailWs = null;
 let lastTs = "";
 let currentFile = "";
+let traceFilter = null; // {key: "task", value: "123"}
 
 const $file = document.getElementById("fileSelect");
 const $level = document.getElementById("levelFilter");
@@ -178,6 +187,9 @@ const $search = document.getElementById("searchBox");
 const $tailBtn = document.getElementById("tailBtn");
 const $area = document.getElementById("logArea");
 const $status = document.getElementById("status");
+const $traceInfo = document.getElementById("traceInfo");
+const $traceLabel = document.getElementById("traceLabel");
+const $traceClear = document.getElementById("traceClear");
 
 // ─── State from URL hash ───
 function loadHash() {
@@ -186,6 +198,12 @@ function loadHash() {
   if (p.get("level")) $level.value = p.get("level");
   if (p.get("time")) $time.value = p.get("time");
   if (p.get("q")) $search.value = p.get("q");
+  if (p.get("trace")) {
+    const [k, ...rest] = p.get("trace").split("=");
+    traceFilter = {key: k, value: rest.join("=")};
+    $traceInfo.style.display = "";
+    $traceLabel.textContent = p.get("trace");
+  }
 }
 function saveHash() {
   const p = new URLSearchParams();
@@ -193,6 +211,7 @@ function saveHash() {
   if ($level.value) p.set("level", $level.value);
   if ($time.value) p.set("time", $time.value);
   if ($search.value) p.set("q", $search.value);
+  if (traceFilter) p.set("trace", `${traceFilter.key}=${traceFilter.value}`);
   location.hash = p.toString();
 }
 
@@ -279,11 +298,16 @@ function render() {
   const timeCutoff = timeMins ? new Date(Date.now() - timeMins * 60000).toISOString() : "";
 
   const frag = document.createDocumentFragment();
+  const counts = {DEBUG: 0, INFO: 0, WARNING: 0, ERROR: 0, CRITICAL: 0};
+  let shown = 0;
 
   for (const doc of allLines) {
     if ((LEVEL_ORDER[doc.level] ?? 0) < levelMin) continue;
     if (timeCutoff && (doc.ts || "") < timeCutoff) continue;
+    if (traceFilter && String(doc[traceFilter.key] ?? "") !== traceFilter.value) continue;
     if (regex && !regex.test(doc.src || "") && !regex.test(doc.msg || "")) continue;
+    counts[doc.level] = (counts[doc.level] || 0) + 1;
+    shown++;
 
     const row = document.createElement("div");
     row.className = `log-line level-${doc.level}`;
@@ -328,9 +352,18 @@ function render() {
     for (const [k, v] of Object.entries(doc)) {
       if (CONTEXT_KEYS.has(k)) continue;
       const pill = document.createElement("span");
-      pill.className = "pill";
+      const isTrace = TRACE_KEYS.has(k);
+      const isActive = traceFilter && traceFilter.key === k && traceFilter.value === String(v);
+      pill.className = `pill${isTrace ? " trace-key" : ""}${isActive ? " trace-active" : ""}`;
       pill.textContent = `${k}=${v}`;
-      pill.onclick = () => { $search.value = String(v); saveHash(); render(); };
+      pill.onclick = (e) => {
+        e.stopPropagation();
+        if (isTrace) {
+          setTrace(k, String(v));
+        } else {
+          $search.value = String(v); saveHash(); render();
+        }
+      };
       msg.appendChild(pill);
     }
 
@@ -350,7 +383,39 @@ function render() {
 
   $area.innerHTML = "";
   $area.appendChild(frag);
+
+  // Level counts in status
+  const parts = [];
+  if (counts.ERROR) parts.push(`${counts.ERROR} ERR`);
+  if (counts.WARNING) parts.push(`${counts.WARNING} WARN`);
+  parts.unshift(`${shown} lines`);
+  $status.textContent = parts.join(" · ");
 }
+
+// ─── Trace ───
+function setTrace(key, value) {
+  // Switch to "All files" when tracing to see cross-component flow
+  if (currentFile !== "__all__") {
+    currentFile = "__all__";
+    $file.value = "__all__";
+    $tailBtn.disabled = true;
+    if (tailing) { stopTail(); tailing = false; $tailBtn.textContent = "Live Tail"; $tailBtn.classList.remove("active"); }
+  }
+  traceFilter = {key, value};
+  $traceInfo.style.display = "";
+  $traceLabel.textContent = `${key}=${value}`;
+  saveHash();
+  fetchLogs("__all__").then(() => { $area.scrollTop = 0; });
+}
+
+function clearTrace() {
+  traceFilter = null;
+  $traceInfo.style.display = "none";
+  saveHash();
+  render();
+}
+
+$traceClear.onclick = clearTrace;
 
 // ─── Event handlers ───
 $file.onchange = () => {

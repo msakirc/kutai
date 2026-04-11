@@ -855,6 +855,11 @@ class BaseAgent:
 
         for dep_id, dep in dep_results.items():
             text = dep.get("result") or "(no result)"
+            from content_quality import assess as cq_assess, salvage as cq_salvage
+            _dep_cq = cq_assess(text)
+            if _dep_cq.is_degenerate:
+                cleaned = cq_salvage(text)
+                text = cleaned if cleaned else "(dependency output was degenerate — skipped)"
             if len(text) > per_dep:
                 text = text[:per_dep] + "\n... (truncated)"
             parts.append(
@@ -1476,6 +1481,22 @@ class BaseAgent:
                 f"{len(messages)} messages, ${total_cost:.4f} spent, "
                 f"{len(completed_tool_ops)} cached tool ops)"
             )
+
+            # Validate recovered _prev_output from checkpoint context
+            _recovered_prev = _task_ctx.get("_prev_output")
+            if _recovered_prev:
+                from content_quality import assess as cq_assess, salvage as cq_salvage
+                _rec_cq = cq_assess(_recovered_prev)
+                if _rec_cq.is_degenerate:
+                    cleaned = cq_salvage(_recovered_prev)
+                    if cleaned:
+                        _task_ctx["_prev_output"] = cleaned
+                    else:
+                        _task_ctx.pop("_prev_output", None)
+                    logger.info(
+                        f"[Task #{task_id}] Checkpoint _prev_output was degenerate, "
+                        f"{'salvaged' if cleaned else 'discarded'}"
+                    )
         else:
             system_prompt = self._build_full_system_prompt(task)
             context = await self._build_context(task)
@@ -2875,6 +2896,16 @@ class BaseAgent:
             raw = response.get("content", "").strip()
             parsed = self._try_parse_json(raw)
             if parsed and parsed.get("verdict") == "fix":
+                corrected = parsed.get("corrected_result")
+                if corrected:
+                    from content_quality import assess as cq_assess
+                    _reflect_cq = cq_assess(corrected)
+                    if _reflect_cq.is_degenerate:
+                        logger.warning(
+                            f"Self-reflection produced degenerate corrected_result "
+                            f"({_reflect_cq.summary}), keeping original"
+                        )
+                        return None
                 return parsed
         except Exception as exc:
             logger.debug(f"Self-reflection failed: {exc}")

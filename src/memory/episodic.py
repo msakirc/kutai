@@ -54,6 +54,18 @@ async def store_task_result(
 
     # Text to embed — combines title + description + result summary
     result_summary = (result or "")[:500]
+
+    # Don't memorize degenerate output — it poisons future RAG retrieval
+    if result_summary and success:
+        from content_quality import assess as cq_assess
+        _ep_cq = cq_assess(result_summary)
+        if _ep_cq.is_degenerate:
+            logger.info(
+                f"[Episodic] Skipping storage for task #{task_id}: "
+                f"degenerate result ({_ep_cq.summary})"
+            )
+            return None
+
     text = (
         f"Task: {title}\n"
         f"Description: {description[:300]}\n"

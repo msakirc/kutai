@@ -12,7 +12,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 
 class ModelCallFailed(RuntimeError):
@@ -43,6 +43,7 @@ litellm.request_timeout = 120
 async def _stream_with_accumulator(
     completion_kwargs: dict,
     partial_buf: object,
+    on_chunk: "Callable[[str], bool] | None" = None,
 ) -> "litellm.ModelResponse":
     """Call litellm with streaming, accumulate content into partial_buf.
 
@@ -62,6 +63,12 @@ async def _stream_with_accumulator(
             if delta.content:
                 accumulated += delta.content
                 partial_buf._partial_content = accumulated
+                if on_chunk and on_chunk(accumulated):
+                    logger.info(
+                        "[Router] Streaming aborted by quality callback "
+                        f"at {len(accumulated)} chars"
+                    )
+                    break
             if delta.role:
                 role = delta.role
             if chunk.choices[0].finish_reason:
@@ -991,6 +998,7 @@ async def call_model(
     tools: list[dict] | None = None,
     timeout_override: float | None = None,
     partial_buf: object | None = None,
+    on_chunk: "Callable[[str], bool] | None" = None,
 ) -> dict:
     """
     Call the best available model matching requirements.
@@ -1339,7 +1347,7 @@ async def call_model(
                     if use_stream:
                         response = await asyncio.wait_for(
                             _stream_with_accumulator(
-                                completion_kwargs, partial_buf,
+                                completion_kwargs, partial_buf, on_chunk=on_chunk,
                             ),
                             timeout=timeout_val,
                         )

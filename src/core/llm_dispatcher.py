@@ -26,7 +26,7 @@ import asyncio
 import copy
 import time
 from enum import Enum
-from typing import Any
+from typing import Any, Callable
 
 from src.infra.logging_config import get_logger
 
@@ -120,6 +120,7 @@ class LLMDispatcher:
         messages: list[dict],
         tools: list[dict] | None = None,
         partial_buf: object | None = None,
+        on_chunk: "Callable[[str], bool] | None" = None,
     ) -> dict:
         """Route an LLM call through the dispatcher.
 
@@ -144,7 +145,7 @@ class LLMDispatcher:
             self._overhead_calls += 1
             return await self._route_overhead(reqs, messages, tools)
         else:
-            return await self._route_main_work(reqs, messages, tools, partial_buf=partial_buf)
+            return await self._route_main_work(reqs, messages, tools, partial_buf=partial_buf, on_chunk=on_chunk)
 
     def _compute_timeout(
         self,
@@ -212,6 +213,7 @@ class LLMDispatcher:
         messages: list[dict],
         tools: list[dict] | None,
         partial_buf: object | None = None,
+        on_chunk: "Callable[[str], bool] | None" = None,
     ) -> dict:
         """Route a MAIN_WORK call. Can trigger model swaps.
 
@@ -241,7 +243,8 @@ class LLMDispatcher:
                     try:
                         result = await call_model(reqs_copy, messages, tools,
                                                   timeout_override=timeout,
-                                                  partial_buf=partial_buf)
+                                                  partial_buf=partial_buf,
+                                                  on_chunk=on_chunk)
                         return result
                     except Exception as e:
                         # Loaded model failed — fall through to normal routing
@@ -256,7 +259,7 @@ class LLMDispatcher:
             # and we can't swap)
 
         result = await call_model(reqs, messages, tools, timeout_override=timeout,
-                                 partial_buf=partial_buf)
+                                 partial_buf=partial_buf, on_chunk=on_chunk)
         return result
 
     async def _route_overhead(

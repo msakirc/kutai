@@ -71,7 +71,7 @@ Open `http://localhost:9880` to view logs with:
 
 ### Custom trace keys
 
-By default, the viewer highlights `task`, `mission_id`, and `agent_type` as trace keys. Override for your project:
+By default, the viewer highlights `task_id` and `mission_id` as trace keys. Override for your project:
 
 ```bash
 yazbunu-server --log-dir ./logs --trace-keys request_id,user_id,trace_id

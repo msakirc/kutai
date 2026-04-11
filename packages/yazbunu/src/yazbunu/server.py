@@ -31,7 +31,7 @@ def _safe_filename(log_dir: str, filename: str) -> Path | None:
     return path
 
 
-DEFAULT_TRACE_KEYS = ["task", "mission_id", "agent_type"]
+DEFAULT_TRACE_KEYS = ["task_id", "mission_id"]
 
 
 def create_app(log_dir: str, trace_keys: list[str] | None = None) -> web.Application:
@@ -189,7 +189,7 @@ def main():
     parser.add_argument("--port", type=int, default=9880, help="Port to listen on")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--trace-keys", default=None,
-                        help="Comma-separated context keys for cross-component tracing (default: task,mission_id,agent_type)")
+                        help="Comma-separated context keys for cross-component tracing (default: task_id,mission_id)")
     args = parser.parse_args()
 
     trace_keys = args.trace_keys.split(",") if args.trace_keys else None

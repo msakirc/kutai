@@ -170,7 +170,7 @@
 const LEVEL_ORDER = {DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4};
 const POLL_MS = 2000;
 const CONTEXT_KEYS = new Set(["ts", "level", "src", "msg", "fn", "ln", "exc"]);
-let TRACE_KEYS = new Set(["task", "mission_id", "agent_type"]);
+let TRACE_KEYS = new Set(["task_id", "mission_id"]);
 
 let allLines = [];
 let tailing = false;

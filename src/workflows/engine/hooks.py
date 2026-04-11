@@ -859,6 +859,21 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
                         with open(fpath, "r", encoding="utf-8") as f:
                             file_content = f.read()
                         file_content = _unwrap_envelope(file_content)
+                        # Quality gate: delete garbage files so next
+                        # attempt starts clean instead of building on them
+                        rep_ratio = _detect_repetition_ratio(file_content)
+                        if rep_ratio > 0.4:
+                            logger.warning(
+                                f"[Workflow Hook] Deleting degenerate "
+                                f"workspace file '{name}{ext}' "
+                                f"({len(file_content)} chars, "
+                                f"{rep_ratio:.0%} repetition)"
+                            )
+                            try:
+                                os.remove(fpath)
+                            except OSError:
+                                pass
+                            break
                         if len(file_content) > 200:
                             file_parts.append(file_content)
                             logger.info(
@@ -886,6 +901,20 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
             f"overriding to failed for retry"
         )
         return  # Don't store garbage artifacts
+
+    # ── Final quality gate before storing ──
+    if output_value:
+        rep = _detect_repetition_ratio(output_value)
+        if rep > 0.4:
+            result["status"] = "failed"
+            result["error"] = (
+                f"Output is {rep:.0%} repetitive — degenerate content rejected"
+            )
+            logger.warning(
+                f"[Workflow Hook] Step '{step_id}' output rejected: "
+                f"{rep:.0%} repetition ({len(output_value)} chars)"
+            )
+            return
 
     for name in output_names:
         await store.store(mission_id, name, output_value)

@@ -87,6 +87,10 @@ def _unwrap_envelope(text: str) -> str:
 def _detect_repetition_ratio(text: str) -> float:
     """Return 0.0–1.0 indicating how much of the text is repetitive.
 
+    .. deprecated::
+        Use ``content_quality.assess()`` instead. All callsites now use
+        the content_quality package. Kept for reference.
+
     Splits into ## sections, normalizes headers, and counts how many
     sections share a normalized header with at least one other section.
     Does NOT modify the text — purely a signal.
@@ -431,7 +435,15 @@ async def _llm_summarize(text: str, artifact_name: str) -> Optional[str]:
         )
         summary = response.get("content", "").strip()
         if summary and len(summary) > 50:
-            return summary
+            from content_quality import assess as cq_assess
+            _sum_cq = cq_assess(summary)
+            if _sum_cq.is_degenerate:
+                logger.warning(
+                    f"[Workflow Hook] LLM summary degenerate ({_sum_cq.summary}), "
+                    f"falling back to structural summary"
+                )
+            else:
+                return summary
 
     except Exception as e:
         logger.debug(f"[Workflow Hook] LLM summarization failed: {e}")
@@ -561,18 +573,25 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
         )
 
     # ── Sanitize _prev_output before injection ──
-    # If previous output is degenerate (>40% repeated sections), discard
-    # it entirely — building on garbage just produces more garbage.
     _prev = ctx.get("_prev_output")
     if _prev:
         _prev = _unwrap_envelope(_prev)
-        if _detect_repetition_ratio(_prev) > 0.4:
-            logger.warning(
-                f"[Workflow Hook] Discarding degenerate _prev_output "
-                f"({len(_prev)} chars, "
-                f"{_detect_repetition_ratio(_prev):.0%} repetition)"
-            )
-            _prev = None
+        from content_quality import assess as cq_assess, salvage as cq_salvage
+        _prev_cq = cq_assess(_prev)
+        if _prev_cq.is_degenerate:
+            cleaned = cq_salvage(_prev)
+            if cleaned:
+                logger.info(
+                    f"[Workflow Hook] Salvaged degenerate _prev_output "
+                    f"({len(_prev)} -> {len(cleaned)} chars)"
+                )
+                _prev = cleaned
+            else:
+                logger.warning(
+                    f"[Workflow Hook] Discarding unsalvageable _prev_output "
+                    f"({len(_prev)} chars, {_prev_cq.summary})"
+                )
+                _prev = None
         else:
             ctx["_prev_output"] = _prev  # store cleaned version
 
@@ -610,10 +629,12 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
                                 content = f.read()
                             content = _unwrap_envelope(content)
                             if content and len(content) > 100:
-                                if _detect_repetition_ratio(content) > 0.4:
+                                from content_quality import assess as cq_assess
+                                _file_cq = cq_assess(content)
+                                if _file_cq.is_degenerate:
                                     logger.warning(
                                         f"[Workflow Hook] Skipping degenerate "
-                                        f"workspace file {name}{ext}"
+                                        f"workspace file {name}{ext} ({_file_cq.summary})"
                                     )
                                 else:
                                     parts.append(
@@ -859,20 +880,32 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
                         with open(fpath, "r", encoding="utf-8") as f:
                             file_content = f.read()
                         file_content = _unwrap_envelope(file_content)
-                        # Quality gate: delete garbage files so next
-                        # attempt starts clean instead of building on them
-                        rep_ratio = _detect_repetition_ratio(file_content)
-                        if rep_ratio > 0.4:
-                            logger.warning(
-                                f"[Workflow Hook] Deleting degenerate "
-                                f"workspace file '{name}{ext}' "
-                                f"({len(file_content)} chars, "
-                                f"{rep_ratio:.0%} repetition)"
-                            )
-                            try:
-                                os.remove(fpath)
-                            except OSError:
-                                pass
+                        from content_quality import assess as cq_assess, salvage as cq_salvage
+                        cq = cq_assess(file_content)
+                        if cq.is_degenerate:
+                            cleaned = cq_salvage(file_content)
+                            if cleaned:
+                                logger.info(
+                                    f"[Workflow Hook] Salvaged degenerate "
+                                    f"workspace file '{name}{ext}' "
+                                    f"({len(file_content)} -> {len(cleaned)} chars)"
+                                )
+                                try:
+                                    with open(fpath, "w", encoding="utf-8") as wf:
+                                        wf.write(cleaned)
+                                except OSError:
+                                    pass
+                                file_parts.append(cleaned)
+                            else:
+                                logger.warning(
+                                    f"[Workflow Hook] Deleting unsalvageable "
+                                    f"workspace file '{name}{ext}' "
+                                    f"({len(file_content)} chars, {cq.summary})"
+                                )
+                                try:
+                                    os.remove(fpath)
+                                except OSError:
+                                    pass
                             break
                         if len(file_content) > 200:
                             file_parts.append(file_content)
@@ -1192,6 +1225,15 @@ async def _generate_phase_summary(
         lines.append("")
 
     summary_text = "\n".join(lines).rstrip()
+
+    from content_quality import assess as cq_assess
+    _phase_cq = cq_assess(summary_text)
+    if _phase_cq.is_degenerate:
+        logger.warning(
+            f"[Workflow Hook] Phase summary degenerate ({_phase_cq.summary}), "
+            f"using structural fallback"
+        )
+        summary_text = _structural_summary(summary_text)
 
     summary_artifact_name = f"phase_{phase_num}_summary"
     await store.store(mission_id, summary_artifact_name, summary_text)

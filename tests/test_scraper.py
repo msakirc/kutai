@@ -1,5 +1,5 @@
 # tests/test_scraper.py
-"""Tests for the tiered scraper module."""
+"""Tests for the tiered scraper — verifies KutAI shim re-exports work."""
 
 import asyncio
 import os
@@ -79,7 +79,7 @@ class TestScrapeResult(unittest.TestCase):
     def test_result_not_ok_on_403(self):
         r = ScrapeResult(html="Forbidden", status=403, tier=ScrapeTier.HTTP,
                          url="https://example.com")
-        self.assertFalse(r.ok)  # status != 200
+        self.assertFalse(r.ok)
 
     def test_result_not_ok_with_error(self):
         r = ScrapeResult(html="<html>test</html>", status=200,
@@ -150,8 +150,8 @@ class TestScrapeUrlAutoEscalation(unittest.TestCase):
                               status=200, tier=ScrapeTier.TLS,
                               url="https://example.com")
 
-        with patch("src.tools.scraper._fetch_http", new_callable=AsyncMock, return_value=blocked):
-            with patch("src.tools.scraper._fetch_tls", new_callable=AsyncMock, return_value=tls_ok):
+        with patch("vecihi.fetchers.fetch_http", new_callable=AsyncMock, return_value=blocked):
+            with patch("vecihi.fetchers.fetch_tls", new_callable=AsyncMock, return_value=tls_ok):
                 result = run_async(scrape_url("https://example.com", max_tier=ScrapeTier.TLS))
                 self.assertTrue(result.ok)
                 self.assertEqual(result.tier, ScrapeTier.TLS)
@@ -162,8 +162,8 @@ class TestScrapeUrlAutoEscalation(unittest.TestCase):
         timeout_result = ScrapeResult(html="", status=0, tier=ScrapeTier.HTTP,
                                       url="https://example.com", error="timeout")
 
-        with patch("src.tools.scraper._fetch_http", new_callable=AsyncMock, return_value=timeout_result):
-            with patch("src.tools.scraper._fetch_tls", new_callable=AsyncMock) as mock_tls:
+        with patch("vecihi.fetchers.fetch_http", new_callable=AsyncMock, return_value=timeout_result):
+            with patch("vecihi.fetchers.fetch_tls", new_callable=AsyncMock) as mock_tls:
                 result = run_async(scrape_url("https://example.com", max_tier=ScrapeTier.TLS))
                 self.assertFalse(result.ok)
                 mock_tls.assert_not_called()
@@ -173,8 +173,8 @@ class TestScrapeUrlAutoEscalation(unittest.TestCase):
         blocked = ScrapeResult(html="", status=403, tier=ScrapeTier.HTTP,
                                url="https://example.com", error="blocked")
 
-        with patch("src.tools.scraper._fetch_http", new_callable=AsyncMock, return_value=blocked):
-            with patch("src.tools.scraper._fetch_tls", new_callable=AsyncMock) as mock_tls:
+        with patch("vecihi.fetchers.fetch_http", new_callable=AsyncMock, return_value=blocked):
+            with patch("vecihi.fetchers.fetch_tls", new_callable=AsyncMock) as mock_tls:
                 result = run_async(scrape_url("https://example.com", max_tier=ScrapeTier.HTTP))
                 self.assertFalse(result.ok)
                 mock_tls.assert_not_called()
@@ -186,9 +186,9 @@ class TestScrapeUrlAutoEscalation(unittest.TestCase):
         stealth_ok = ScrapeResult(html="<html>Stealth</html>", status=200,
                                   tier=ScrapeTier.STEALTH, url="https://example.com")
 
-        with patch("src.tools.scraper._fetch_http", new_callable=AsyncMock, return_value=blocked):
-            with patch("src.tools.scraper._fetch_tls", new_callable=AsyncMock, return_value=blocked):
-                with patch("src.tools.scraper._fetch_stealth", new_callable=AsyncMock, return_value=stealth_ok):
+        with patch("vecihi.fetchers.fetch_http", new_callable=AsyncMock, return_value=blocked):
+            with patch("vecihi.fetchers.fetch_tls", new_callable=AsyncMock, return_value=blocked):
+                with patch("vecihi.fetchers.fetch_stealth", new_callable=AsyncMock, return_value=stealth_ok):
                     result = run_async(scrape_url("https://example.com", max_tier=ScrapeTier.STEALTH))
                     self.assertTrue(result.ok)
                     self.assertEqual(result.tier, ScrapeTier.STEALTH)
@@ -214,7 +214,7 @@ class TestScrapeUrls(unittest.TestCase):
         ok_result = ScrapeResult(html="<html>OK</html>", status=200,
                                  tier=ScrapeTier.HTTP, url="")
 
-        with patch("src.tools.scraper.scrape_url", new_callable=AsyncMock, return_value=ok_result):
+        with patch("vecihi.fetchers.scrape_url", new_callable=AsyncMock, return_value=ok_result):
             results = run_async(scrape_urls(
                 ["https://a.com", "https://b.com"],
                 max_tier=ScrapeTier.HTTP,
@@ -225,7 +225,7 @@ class TestScrapeUrls(unittest.TestCase):
         ok_result = ScrapeResult(html="<html>OK</html>", status=200,
                                  tier=ScrapeTier.HTTP, url="")
 
-        with patch("src.tools.scraper.scrape_url", new_callable=AsyncMock, return_value=ok_result):
+        with patch("vecihi.fetchers.scrape_url", new_callable=AsyncMock, return_value=ok_result):
             results = run_async(scrape_urls(
                 ["https://a.com", "ftp://b.com", "not-a-url"],
                 max_tier=ScrapeTier.HTTP,

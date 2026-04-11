@@ -92,6 +92,7 @@ chromadb>=0.4.0
 
 # Local packages
 -e ./packages/yazbunu
+-e ./packages/vecihi
 
 # Test dependencies
 pytest-aiohttp>=1.0.0

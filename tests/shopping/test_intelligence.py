@@ -219,6 +219,7 @@ class TestSearchPlanner(unittest.TestCase):
         self.assertLessEqual(len(plan), MAX_SEARCHES_PER_SESSION)
 
 
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 3. TestAlternatives
 # ═══════════════════════════════════════════════════════════════════════════

@@ -64,13 +64,60 @@ async def execute_with_fallback(
     )
 
 
+async def _search_scraper(source: str, query: str) -> list:
+    """Run a single scraper, return results or empty list on failure."""
+    try:
+        from src.shopping.scrapers import get_scraper
+        scraper_cls = get_scraper(source)
+        if scraper_cls is None:
+            return []
+        scraper = scraper_cls()
+        results = await scraper.search(query)
+        if results and isinstance(results, list):
+            return results
+    except Exception as exc:
+        logger.warning("Scraper %s failed for '%s': %s", source, query, exc)
+    return []
+
+
+async def _search_parallel(sources: list[str], query: str) -> list:
+    """Search multiple scrapers in parallel, return first non-empty result."""
+    tasks = [asyncio.create_task(_search_scraper(s, query)) for s in sources]
+    for coro in asyncio.as_completed(tasks):
+        result = await coro
+        if result:
+            # Cancel remaining tasks
+            for t in tasks:
+                t.cancel()
+            return result
+    return []
+
+
+# Scraper tiers — ordered by breadth and likelihood of having results.
+# Tier 1: aggregators (search across many retailers)
+_AGGREGATORS = ["akakce", "epey"]
+# Tier 2: major retailers (large catalogues)
+_MAJOR_RETAILERS = ["trendyol", "hepsiburada", "amazon_tr"]
+# Tier 3: specialty retailers (narrower catalogues, still worth trying)
+_SPECIALTY_RETAILERS = [
+    "kitapyurdu", "dr", "decathlon", "direnc",
+    "koctas", "ikea", "migros", "getir",
+]
+# Forum/review sites excluded — they don't return product/price data.
+
+
 async def get_product_with_fallback(
     product_query: str,
     sources: list[str] | None = None,
 ) -> list:
-    """Search for products using a degradation chain.
+    """Search for products using a tiered parallel strategy.
 
-    Order: dedicated scraper(s) for each source -> Google CSE -> cache.
+    Order:
+      1. Aggregators in parallel (akakce, epey)
+      2. Major retailers in parallel (trendyol, hepsiburada, amazon_tr)
+      3. Specialty retailers in parallel
+      4. Google CSE
+      5. Stale cache
 
     Parameters
     ----------
@@ -78,50 +125,47 @@ async def get_product_with_fallback(
         User search string.
     sources:
         Optional list of preferred source names (e.g. ``["akakce", "trendyol"]``).
-        When ``None``, the default chain is used.
+        When ``None``, all tiers are searched.
 
     Returns
     -------
-    List of Product dataclass instances from the first source that yields results.
+    List of Product dataclass instances from the first tier that yields results.
     """
     from src.shopping.resilience.cache_fallback import get_stale_product
 
-    # Default general-purpose scrapers tried when caller provides no sources.
-    # These cover the major Turkish e-commerce sites with broad product catalogues.
-    DEFAULT_GENERAL_SOURCES = ["akakce", "trendyol", "hepsiburada", "amazon_tr", "epey"]
-
-    # Phase 1: Try each source's dedicated scraper
-    effective_sources = [s for s in (sources or []) if s != "default"]
-    if not effective_sources:
-        effective_sources = DEFAULT_GENERAL_SOURCES
-    for source in effective_sources:
-        try:
-            from src.shopping.scrapers import get_scraper
-            scraper_cls = get_scraper(source)
-            if scraper_cls is not None:
-                scraper = scraper_cls()
-                results = await scraper.search(product_query)
-                if results and isinstance(results, list):
-                    return results
-        except Exception as exc:
-            logger.warning("Scraper %s failed for '%s': %s", source, product_query, exc)
-
-    # Phase 2: Shared fallbacks (Google CSE — Perplexica skipped because it
-    # returns synthesis text, not structured product data)
-    shared_chain = build_fallback_chain("default")
-    for fn in shared_chain:
-        try:
-            if asyncio.iscoroutinefunction(fn):
-                results = await fn(product_query)
-            else:
-                results = fn(product_query)
+    if sources:
+        effective = [s for s in sources if s != "default"]
+        if effective:
+            results = await _search_parallel(effective, product_query)
             if results:
                 return results
-        except Exception as exc:
-            logger.warning("Fallback step %s failed for '%s': %s",
-                           getattr(fn, "__name__", "?"), product_query, exc)
 
-    # Last resort: stale cache
+    # Tier 1: aggregators (parallel)
+    results = await _search_parallel(_AGGREGATORS, product_query)
+    if results:
+        return results
+
+    # Tier 2: major retailers (parallel)
+    results = await _search_parallel(_MAJOR_RETAILERS, product_query)
+    if results:
+        return results
+
+    # Tier 3: specialty retailers (parallel)
+    results = await _search_parallel(_SPECIALTY_RETAILERS, product_query)
+    if results:
+        return results
+
+    # Tier 4: Google CSE
+    try:
+        from src.shopping.scrapers.google_cse import GoogleCSEScraper
+        cse = GoogleCSEScraper()
+        results = await cse.search(product_query)
+        if results:
+            return results
+    except Exception as exc:
+        logger.warning("Google CSE failed for '%s': %s", product_query, exc)
+
+    # Tier 5: stale cache
     stale = await get_stale_product(product_query, max_age_hours=72)
     if stale:
         logger.info("Serving stale cache for '%s'", product_query)

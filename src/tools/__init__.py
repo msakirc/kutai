@@ -426,8 +426,6 @@ try:
     import dataclasses as _dataclasses
 
     from ..shopping.models import Product as _Product
-    from ..shopping.intelligence.query_analyzer import analyze_query as _analyze_query
-    from ..shopping.intelligence.search_planner import generate_search_plan as _generate_search_plan
     from ..shopping.intelligence.product_matcher import match_products as _match_products
     from ..shopping.intelligence.value_scorer import score_products as _score_products
     from ..shopping.intelligence.delivery_compare import compare_delivery as _compare_delivery
@@ -439,36 +437,16 @@ try:
     from ..shopping.memory.price_watch import add_price_watch as _add_price_watch, get_active_watches as _get_active_watches, remove_watch as _remove_watch
 
     async def _tool_shopping_search(query: str) -> str:
-        """Analyze a shopping query, then execute searches via scrapers and return actual product results."""
+        """Search Turkish e-commerce scrapers for products matching the query."""
         import asyncio as _asyncio
         try:
             from ..shopping.resilience.fallback_chain import get_product_with_fallback
 
-            # Run query analysis with a timeout — fall back to empty analysis if LLM is slow
-            analyzed = {}
-            plan = []
-            try:
-                analyzed = await _asyncio.wait_for(_analyze_query(query), timeout=15)
-                plan = await _asyncio.wait_for(_generate_search_plan(analyzed), timeout=15)
-            except (_asyncio.TimeoutError, Exception):
-                pass  # proceed with direct search using query as-is
-
-            # Extract sources from the plan (flat list of task dicts with "phase" key)
-            sources: list[str] = []
-            if plan:
-                phase_1_tasks = [t for t in plan if isinstance(t, dict) and t.get("phase") == 1] if isinstance(plan, list) else plan.get("phase_1", plan.get("tasks", []))
-                for task in phase_1_tasks:
-                    for src in task.get("sources", []):
-                        if src and src not in sources:
-                            sources.append(src)
-
-            # Execute actual product search via fallback chain (30s cap)
+            # Search directly — the fallback chain tries default scrapers
+            # (akakce, trendyol, hepsiburada, amazon_tr, epey) then Google CSE.
             try:
                 products = await _asyncio.wait_for(
-                    get_product_with_fallback(
-                        query,
-                        sources=sources if sources else None,
-                    ),
+                    get_product_with_fallback(query),
                     timeout=30,
                 )
             except _asyncio.TimeoutError:
@@ -478,8 +456,6 @@ try:
                 products = []
             products_dicts = [_dataclasses.asdict(p) if _dataclasses.is_dataclass(p) else p for p in products]
             return _json_shopping.dumps({
-                "analysis": analyzed,
-                "search_plan": plan,
                 "products": products_dicts,
                 "product_count": len(products_dicts),
             }, indent=2, default=str)

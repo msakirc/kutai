@@ -400,5 +400,90 @@ class TestFallbackChain(unittest.TestCase):
         self.assertTrue(len(chain) >= 1)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 5. TestGetProductWithFallback
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestGetProductWithFallback(unittest.TestCase):
+    """Test get_product_with_fallback tiered search strategy."""
+
+    def _mock_get_scraper(self, called_sources, results_for=None):
+        """Return a tracking get_scraper that returns mock scrapers.
+        results_for: dict mapping source name -> list of results."""
+        results_for = results_for or {}
+
+        def tracking(source):
+            called_sources.append(source)
+            mock_cls = MagicMock()
+            mock_cls.return_value.search = AsyncMock(
+                return_value=results_for.get(source, [])
+            )
+            return mock_cls
+
+        return tracking
+
+    def test_no_sources_tries_all_tiers(self):
+        """Without explicit sources, all tiers (aggregators, major, specialty) are tried."""
+        from src.shopping.resilience.fallback_chain import (
+            get_product_with_fallback, _AGGREGATORS, _MAJOR_RETAILERS, _SPECIALTY_RETAILERS,
+        )
+
+        called: list[str] = []
+
+        async def _run():
+            with patch("src.shopping.scrapers.get_scraper", side_effect=self._mock_get_scraper(called)), \
+                 patch("src.shopping.resilience.cache_fallback.get_stale_product", new_callable=AsyncMock, return_value=None):
+                return await get_product_with_fallback("siemens s100")
+
+        run_async(_run())
+
+        all_expected = set(_AGGREGATORS + _MAJOR_RETAILERS + _SPECIALTY_RETAILERS)
+        tried = set(called)
+        self.assertTrue(
+            all_expected.issubset(tried),
+            f"Expected all tiers {all_expected} to be tried, "
+            f"but only tried: {tried}",
+        )
+
+    def test_aggregator_hit_skips_later_tiers(self):
+        """If an aggregator returns results, major/specialty tiers are not tried."""
+        from src.shopping.resilience.fallback_chain import get_product_with_fallback
+
+        called: list[str] = []
+        fake_product = MagicMock()
+
+        async def _run():
+            with patch("src.shopping.scrapers.get_scraper",
+                       side_effect=self._mock_get_scraper(called, {"akakce": [fake_product]})), \
+                 patch("src.shopping.resilience.cache_fallback.get_stale_product", new_callable=AsyncMock, return_value=None):
+                return await get_product_with_fallback("iphone 15")
+
+        result = run_async(_run())
+
+        self.assertEqual(result, [fake_product])
+        # Only aggregator tier should have been tried
+        self.assertNotIn("trendyol", called)
+        self.assertNotIn("kitapyurdu", called)
+
+    def test_explicit_sources_tried_first(self):
+        """When explicit sources are given, they're tried before default tiers."""
+        from src.shopping.resilience.fallback_chain import get_product_with_fallback
+
+        called: list[str] = []
+        fake_product = MagicMock()
+
+        async def _run():
+            with patch("src.shopping.scrapers.get_scraper",
+                       side_effect=self._mock_get_scraper(called, {"migros": [fake_product]})), \
+                 patch("src.shopping.resilience.cache_fallback.get_stale_product", new_callable=AsyncMock, return_value=None):
+                return await get_product_with_fallback("süt", sources=["migros", "getir"])
+
+        result = run_async(_run())
+
+        self.assertEqual(result, [fake_product])
+        # migros found results, so no other tiers needed
+        self.assertNotIn("akakce", called)
+
+
 if __name__ == "__main__":
     unittest.main()

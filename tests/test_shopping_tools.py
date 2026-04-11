@@ -42,14 +42,6 @@ class TestShoppingSearchSerialization(unittest.TestCase):
             "src.shopping.resilience.fallback_chain.get_product_with_fallback",
             new_callable=AsyncMock,
             return_value=products,
-        ), patch(
-            "src.shopping.intelligence.query_analyzer.analyze_query",
-            new_callable=AsyncMock,
-            return_value={"intent": "explore", "raw_query": "test"},
-        ), patch(
-            "src.shopping.intelligence.search_planner.generate_search_plan",
-            new_callable=AsyncMock,
-            return_value=[],
         ):
             from src.tools import _optional_tools
             tool_fn = _optional_tools["shopping_search"]["function"]
@@ -69,14 +61,6 @@ class TestShoppingSearchSerialization(unittest.TestCase):
         """When no products are found, products list should be empty."""
         with patch(
             "src.shopping.resilience.fallback_chain.get_product_with_fallback",
-            new_callable=AsyncMock,
-            return_value=[],
-        ), patch(
-            "src.shopping.intelligence.query_analyzer.analyze_query",
-            new_callable=AsyncMock,
-            return_value={},
-        ), patch(
-            "src.shopping.intelligence.search_planner.generate_search_plan",
             new_callable=AsyncMock,
             return_value=[],
         ):

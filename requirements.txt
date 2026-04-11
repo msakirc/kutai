@@ -95,6 +95,7 @@ yazbunu @ git+https://github.com/msakirc/yazbunu.git
 
 # Local packages
 -e ./packages/vecihi
+-e ./packages/yasar_usta
 
 # Test dependencies
 pytest-aiohttp>=1.0.0

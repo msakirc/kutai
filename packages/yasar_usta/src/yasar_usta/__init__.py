@@ -11,8 +11,10 @@ Manages any subprocess with:
 """
 
 from .config import GuardConfig, Messages, SidecarConfig
+from .guard import ProcessGuard
 
 __all__ = [
+    "ProcessGuard",
     "GuardConfig",
     "Messages",
     "SidecarConfig",

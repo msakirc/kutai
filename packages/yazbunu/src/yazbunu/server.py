@@ -31,9 +31,13 @@ def _safe_filename(log_dir: str, filename: str) -> Path | None:
     return path
 
 
-def create_app(log_dir: str) -> web.Application:
+DEFAULT_TRACE_KEYS = ["task", "mission_id", "agent_type"]
+
+
+def create_app(log_dir: str, trace_keys: list[str] | None = None) -> web.Application:
     app = web.Application()
     app["log_dir"] = log_dir
+    app["trace_keys"] = trace_keys if trace_keys is not None else DEFAULT_TRACE_KEYS
 
     async def handle_index(request: web.Request) -> web.Response:
         viewer_path = STATIC_DIR / "viewer.html"
@@ -160,8 +164,12 @@ def create_app(log_dir: str) -> web.Application:
 
         return ws
 
+    async def handle_config(request: web.Request) -> web.Response:
+        return web.json_response({"trace_keys": request.app["trace_keys"]})
+
     app.router.add_get("/", handle_index)
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/api/config", handle_config)
     app.router.add_get("/api/files", handle_list_files)
     app.router.add_get("/api/logs", handle_get_logs)
     app.router.add_get("/api/logs/all", handle_get_all_logs)
@@ -180,11 +188,14 @@ def main():
     parser.add_argument("--log-dir", default="./logs", help="Directory containing .jsonl log files")
     parser.add_argument("--port", type=int, default=9880, help="Port to listen on")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--trace-keys", default=None,
+                        help="Comma-separated context keys for cross-component tracing (default: task,mission_id,agent_type)")
     args = parser.parse_args()
 
+    trace_keys = args.trace_keys.split(",") if args.trace_keys else None
     print(f"Yazbunu server starting on http://{args.host}:{args.port}")
     print(f"Log directory: {os.path.abspath(args.log_dir)}")
-    app = create_app(args.log_dir)
+    app = create_app(args.log_dir, trace_keys=trace_keys)
     web.run_app(app, host=args.host, port=args.port, print=None)
 
 

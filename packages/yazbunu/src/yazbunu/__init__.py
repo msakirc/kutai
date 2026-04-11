@@ -1,12 +1,12 @@
 """
-Yazbunu — structured JSONL logging for the KutAI ecosystem.
+Yazbunu — structured JSONL logging with a web viewer.
 
 Usage:
     from yazbunu import get_logger, init_logging
 
-    init_logging(log_dir="./logs", project="kutai")
+    init_logging(log_dir="./logs", project="myapp")
     logger = get_logger("core.orchestrator")
-    logger.info("task dispatched", task="42", mission="m-7")
+    logger.info("task dispatched", task="42", request_id="r-7")
 """
 
 import logging
@@ -16,7 +16,7 @@ import sys
 
 from yazbunu.formatter import YazFormatter
 
-__all__ = ["get_logger", "init_logging", "YazFormatter"]
+__all__ = ["get_logger", "init_logging", "YazFormatter", "DEFAULT_QUIET_LIBS"]
 
 _project_prefix: str = ""
 _initialized_projects: set[str] = set()
@@ -105,6 +105,12 @@ def get_logger(component: str) -> _ContextLogger:
     return _ContextLogger(name)
 
 
+DEFAULT_QUIET_LIBS = (
+    "httpcore", "httpx", "aiosqlite", "asyncio", "urllib3",
+    "aiohttp.access",
+)
+
+
 def init_logging(
     log_dir: str = "./logs",
     project: str = "app",
@@ -112,6 +118,7 @@ def init_logging(
     level: str = "DEBUG",
     max_bytes: int = 50_000_000,
     backup_count: int = 5,
+    quiet_libs: tuple[str, ...] | None = None,
 ) -> None:
     """
     Configure logging sinks for a project.
@@ -123,6 +130,8 @@ def init_logging(
         level: Minimum log level.
         max_bytes: Max size per log file before rotation.
         backup_count: Number of rotated backup files to keep.
+        quiet_libs: Library loggers to silence to WARNING. Defaults to common
+            HTTP/async libraries. Pass () to disable.
     """
     global _project_prefix
 
@@ -159,6 +168,5 @@ def init_logging(
         root.addHandler(console_handler)
 
     # Quiet noisy libraries
-    for lib in ("httpcore", "httpx", "aiosqlite", "asyncio", "urllib3",
-                "telegram.ext", "aiohttp.access"):
+    for lib in (DEFAULT_QUIET_LIBS if quiet_libs is None else quiet_libs):
         logging.getLogger(lib).setLevel(logging.WARNING)

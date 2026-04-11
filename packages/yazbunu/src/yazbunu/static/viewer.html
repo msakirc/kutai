@@ -170,7 +170,7 @@
 const LEVEL_ORDER = {DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4};
 const POLL_MS = 2000;
 const CONTEXT_KEYS = new Set(["ts", "level", "src", "msg", "fn", "ln", "exc"]);
-const TRACE_KEYS = new Set(["task", "mission_id", "agent_type"]);
+let TRACE_KEYS = new Set(["task", "mission_id", "agent_type"]);
 
 let allLines = [];
 let tailing = false;
@@ -443,6 +443,9 @@ $tailBtn.onclick = () => {
 
 // ─── Init ───
 loadHash();
+fetch("/api/config").then(r => r.json()).then(c => {
+  TRACE_KEYS = new Set(c.trace_keys || []);
+}).catch(() => {});
 fetchFiles().then(() => {
   if ($file.value) fetchLogs($file.value);
 });

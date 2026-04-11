@@ -4,8 +4,9 @@ import json
 import logging
 from datetime import datetime, timezone
 
-# Context fields that get promoted to top-level JSON keys
-CONTEXT_FIELDS = frozenset({
+# Default context fields promoted to top-level JSON keys.
+# Override via YazFormatter(context_fields={"your", "fields"}).
+DEFAULT_CONTEXT_FIELDS = frozenset({
     "task", "mission", "agent", "model", "duration_ms",
 })
 
@@ -17,7 +18,15 @@ class YazFormatter(logging.Formatter):
     Required: ts, level, src, msg
     WARNING+: fn, ln (auto-populated from LogRecord)
     Optional: any extra context fields set on the record
+
+    Args:
+        context_fields: Fields to promote from LogRecord attributes to
+            top-level JSON keys. Defaults to task/mission/agent/model/duration_ms.
     """
+
+    def __init__(self, *args, context_fields: frozenset[str] | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.context_fields = context_fields if context_fields is not None else DEFAULT_CONTEXT_FIELDS
 
     def format(self, record: logging.LogRecord) -> str:
         doc: dict = {
@@ -35,7 +44,7 @@ class YazFormatter(logging.Formatter):
             doc["ln"] = record.lineno
 
         # Known context fields
-        for field in CONTEXT_FIELDS:
+        for field in self.context_fields:
             val = getattr(record, field, None)
             if val is not None:
                 doc[field] = val

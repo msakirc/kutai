@@ -144,6 +144,14 @@
     <option value="ERROR">ERROR</option>
     <option value="CRITICAL">CRITICAL</option>
   </select>
+  <select id="timeRange">
+    <option value="">All time</option>
+    <option value="5">Last 5m</option>
+    <option value="15">Last 15m</option>
+    <option value="60">Last 1h</option>
+    <option value="360">Last 6h</option>
+    <option value="1440">Last 24h</option>
+  </select>
   <input type="text" id="searchBox" placeholder="Search src/msg (regex)...">
   <button id="tailBtn">Live Tail</button>
   <span class="status" id="status">Ready</span>
@@ -165,6 +173,7 @@ let currentFile = "";
 
 const $file = document.getElementById("fileSelect");
 const $level = document.getElementById("levelFilter");
+const $time = document.getElementById("timeRange");
 const $search = document.getElementById("searchBox");
 const $tailBtn = document.getElementById("tailBtn");
 const $area = document.getElementById("logArea");
@@ -175,12 +184,14 @@ function loadHash() {
   const p = new URLSearchParams(location.hash.slice(1));
   if (p.get("file")) currentFile = p.get("file");
   if (p.get("level")) $level.value = p.get("level");
+  if (p.get("time")) $time.value = p.get("time");
   if (p.get("q")) $search.value = p.get("q");
 }
 function saveHash() {
   const p = new URLSearchParams();
   if (currentFile) p.set("file", currentFile);
   if ($level.value) p.set("level", $level.value);
+  if ($time.value) p.set("time", $time.value);
   if ($search.value) p.set("q", $search.value);
   location.hash = p.toString();
 }
@@ -189,16 +200,21 @@ function saveHash() {
 async function fetchFiles() {
   const r = await fetch("/api/files");
   const d = await r.json();
-  $file.innerHTML = d.files.map(f =>
-    `<option value="${f.name}">${f.name} (${(f.size/1024).toFixed(0)}KB)</option>`
-  ).join("");
+  const opts = [`<option value="__all__">All files</option>`];
+  for (const f of d.files) {
+    opts.push(`<option value="${f.name}">${f.name} (${(f.size/1024).toFixed(0)}KB)</option>`);
+  }
+  $file.innerHTML = opts.join("");
   if (currentFile) $file.value = currentFile;
   else currentFile = $file.value;
 }
 
 async function fetchLogs(file, lines = 2000) {
   $status.textContent = "Loading...";
-  const r = await fetch(`/api/logs?file=${encodeURIComponent(file)}&lines=${lines}`);
+  const url = file === "__all__"
+    ? `/api/logs/all?lines=${lines}`
+    : `/api/logs?file=${encodeURIComponent(file)}&lines=${lines}`;
+  const r = await fetch(url);
   if (!r.ok) { $status.textContent = "Error " + r.status; return; }
   const d = await r.json();
   allLines = d.lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
@@ -259,11 +275,14 @@ function render() {
   if ($search.value) {
     try { regex = new RegExp($search.value, "i"); } catch { regex = null; }
   }
+  const timeMins = parseInt($time.value) || 0;
+  const timeCutoff = timeMins ? new Date(Date.now() - timeMins * 60000).toISOString() : "";
 
   const frag = document.createDocumentFragment();
 
   for (const doc of allLines) {
     if ((LEVEL_ORDER[doc.level] ?? 0) < levelMin) continue;
+    if (timeCutoff && (doc.ts || "") < timeCutoff) continue;
     if (regex && !regex.test(doc.src || "") && !regex.test(doc.msg || "")) continue;
 
     const row = document.createElement("div");
@@ -336,11 +355,14 @@ function render() {
 // ─── Event handlers ───
 $file.onchange = () => {
   currentFile = $file.value;
+  if (tailing) { stopTail(); tailing = false; $tailBtn.textContent = "Live Tail"; $tailBtn.classList.remove("active"); }
+  $tailBtn.disabled = currentFile === "__all__";
   saveHash();
   fetchLogs(currentFile);
 };
 
 $level.onchange = () => { saveHash(); render(); };
+$time.onchange = () => { saveHash(); render(); };
 $search.oninput = () => { saveHash(); render(); };
 
 $tailBtn.onclick = () => {

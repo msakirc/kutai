@@ -69,6 +69,25 @@ def create_app(log_dir: str) -> web.Application:
 
         return web.json_response({"lines": tail, "total": len(all_lines)})
 
+    async def handle_get_all_logs(request: web.Request) -> web.Response:
+        """Load last N lines merged from all JSONL files, sorted by timestamp."""
+        ld = request.app["log_dir"]
+        lines_count = int(request.query.get("lines", "2000"))
+        all_lines = []
+        for f in Path(ld).glob("*.jsonl"):
+            raw = f.read_text(encoding="utf-8").strip()
+            if raw:
+                all_lines.extend(raw.split("\n"))
+        # Sort by timestamp (ts field is first in JSONL, string sort works for ISO)
+        def ts_key(line):
+            try:
+                return json.loads(line).get("ts", "")
+            except (json.JSONDecodeError, AttributeError):
+                return ""
+        all_lines.sort(key=ts_key)
+        tail = all_lines[-lines_count:] if lines_count < len(all_lines) else all_lines
+        return web.json_response({"lines": tail, "total": len(all_lines)})
+
     async def handle_tail(request: web.Request) -> web.Response:
         ld = request.app["log_dir"]
         filename = request.query.get("file", "")
@@ -145,6 +164,7 @@ def create_app(log_dir: str) -> web.Application:
     app.router.add_get("/health", handle_health)
     app.router.add_get("/api/files", handle_list_files)
     app.router.add_get("/api/logs", handle_get_logs)
+    app.router.add_get("/api/logs/all", handle_get_all_logs)
     app.router.add_get("/api/tail", handle_tail)
     app.router.add_get("/ws/tail", handle_ws_tail)
 

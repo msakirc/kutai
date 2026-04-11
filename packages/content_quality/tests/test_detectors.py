@@ -102,7 +102,7 @@ class TestCheckParagraphRepetition:
         unique = "This paragraph is unique and different from the others."
         text = "\n\n".join([block, block, unique, block, block])
         ratio, breached, reason = check_paragraph_repetition(text)
-        assert ratio > 0.3
+        assert ratio > 0.4
         assert breached is True
         assert reason == "paragraph_repetition"
 

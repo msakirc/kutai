@@ -592,8 +592,7 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
                     f"({len(_prev)} chars, {_prev_cq.summary})"
                 )
                 _prev = None
-        else:
-            ctx["_prev_output"] = _prev  # store cleaned version
+        # else: _prev is clean and used directly below for injection
 
     # Append schema validation error and previous output from failed retry
     schema_error = ctx.get("_schema_error")

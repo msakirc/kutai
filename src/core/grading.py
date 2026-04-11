@@ -143,14 +143,19 @@ def parse_grade_response(raw: str) -> GradeResult:
             preference=preference, insight=insight, raw=raw,
         )
 
-    # Cascade 3: bare PASS/FAIL keyword anywhere (last resort — VERDICT/RELEVANT/COMPLETE not found)
-    bare = re.search(r'\bPASS\b', raw, re.IGNORECASE)
+    # Cascade 3: bare PASS/FAIL keyword anywhere (last resort)
+    # Strip WELL_FORMED/COHERENT lines first — their PASS/FAIL values
+    # must not be mistaken for a verdict on the task itself.
+    _stripped = re.sub(
+        r'(?:WELL_FORMED|COHERENT)\s*:\s*(?:PASS|FAIL)\b', '', raw, flags=re.IGNORECASE,
+    )
+    bare = re.search(r'\bPASS\b', _stripped, re.IGNORECASE)
     if bare:
         effective_passed = True if well_formed is not False else False
         return GradeResult(passed=effective_passed, well_formed=well_formed, coherent=coherent,
                            situation=situation, strategy=strategy, tools=tools,
                            preference=preference, insight=insight, raw=raw)
-    bare_fail = re.search(r'\bFAIL\b', raw, re.IGNORECASE)
+    bare_fail = re.search(r'\bFAIL\b', _stripped, re.IGNORECASE)
     if bare_fail:
         return GradeResult(passed=False, well_formed=well_formed, coherent=coherent,
                            situation=situation, strategy=strategy, tools=tools,

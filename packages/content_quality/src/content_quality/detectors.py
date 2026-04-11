@@ -60,7 +60,7 @@ def check_paragraph_repetition(text: str) -> tuple[float, bool, str | None]:
     """Detect repeated paragraph blocks.
 
     Splits by double-newlines, normalizes whitespace, hashes blocks,
-    counts blocks sharing hash with 2+ others.
+    counts blocks that appear 2+ times (duplicated = count - 1 per block).
     """
     blocks = [b.strip() for b in re.split(r'\n\s*\n', text) if b.strip()]
     if len(blocks) < MIN_PARAGRAPHS_FOR_CHECK:
@@ -71,7 +71,7 @@ def check_paragraph_repetition(text: str) -> tuple[float, bool, str | None]:
     duplicated = sum(c - 1 for c in counts.values() if c > 1)
     ratio = duplicated / len(normalized)
 
-    if ratio > 0.3:
+    if ratio > 0.4:
         return ratio, True, "paragraph_repetition"
     return ratio, False, None
 

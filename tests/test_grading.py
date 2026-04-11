@@ -96,6 +96,24 @@ class TestParseGradeResponse:
         result = parse_grade_response(raw)
         assert result.passed is True
 
+    def test_well_formed_pass_does_not_trigger_bare_cascade(self):
+        """WELL_FORMED: PASS must not be mistaken for a bare PASS verdict."""
+        raw = "WELL_FORMED: PASS\nCOHERENT: PASS"
+        with pytest.raises(ValueError, match="grader incapable"):
+            parse_grade_response(raw)
+
+    def test_well_formed_fail_does_not_trigger_bare_cascade(self):
+        """WELL_FORMED: FAIL must not be mistaken for a bare FAIL verdict."""
+        raw = "WELL_FORMED: FAIL\nCOHERENT: FAIL"
+        with pytest.raises(ValueError, match="grader incapable"):
+            parse_grade_response(raw)
+
+    def test_well_formed_overrides_verdict_pass(self):
+        raw = "RELEVANT: YES\nCOMPLETE: YES\nVERDICT: PASS\nWELL_FORMED: FAIL\nCOHERENT: PASS"
+        result = parse_grade_response(raw)
+        assert result.passed is False  # WELL_FORMED: FAIL overrides VERDICT: PASS
+        assert result.well_formed is False
+
     def test_unparseable_raises(self):
         with pytest.raises(ValueError, match="grader incapable"):
             parse_grade_response("Here is my analysis of the task response quality metrics")
@@ -291,8 +309,8 @@ class TestApplyGradeResultPass:
     ):
         mock_get.return_value = {
             "id": 42, "title": "Compare laptop prices",
-            "agent_type": "shopping_advisor", "iterations": 3,
-            "context": '{"generating_model": "test-model", "tools_used_names": ["smart_search", "web_search"], "chat_id": "12345"}',
+            "agent_type": "shopping_advisor",
+            "context": '{"generating_model": "test-model", "tools_used_names": ["smart_search", "web_search"], "chat_id": "12345", "iterations": 3}',
         }
         verdict = GradeResult(
             passed=True,
@@ -322,8 +340,8 @@ class TestApplyGradeResultPass:
     ):
         mock_get.return_value = {
             "id": 43, "title": "Check weather",
-            "agent_type": "executor", "iterations": 2,
-            "context": '{"generating_model": "test-model", "tools_used_names": ["api_call"]}',
+            "agent_type": "executor",
+            "context": '{"generating_model": "test-model", "tools_used_names": ["api_call"], "iterations": 2}',
         }
         verdict = GradeResult(passed=True)
 
@@ -347,8 +365,8 @@ class TestApplyGradeResultPass:
     ):
         mock_get.return_value = {
             "id": 44, "title": "Simple lookup",
-            "agent_type": "executor", "iterations": 1,
-            "context": '{"generating_model": "test-model", "tools_used_names": ["api_call"]}',
+            "agent_type": "executor",
+            "context": '{"generating_model": "test-model", "tools_used_names": ["api_call"], "iterations": 1}',
         }
         verdict = GradeResult(passed=True, situation="Simple API call")
 
@@ -367,8 +385,8 @@ class TestApplyGradeResultPass:
     ):
         mock_get.return_value = {
             "id": 45, "title": "Think about it",
-            "agent_type": "executor", "iterations": 5,
-            "context": '{"generating_model": "test-model"}',
+            "agent_type": "executor",
+            "context": '{"generating_model": "test-model", "iterations": 5}',
         }
         verdict = GradeResult(passed=True, situation="Deep thinking task")
 

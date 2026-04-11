@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import re
 
-_HEADER_SUFFIX_RE = re.compile(
-    r'\s+(summary|examples?|notes|details)\s*$', re.IGNORECASE,
-)
+from .detectors import _HEADER_SUFFIX_RE
 
 
 def salvage(text: str) -> str:

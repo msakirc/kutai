@@ -48,6 +48,8 @@ AGENT_PERMISSIONS: dict[str, Optional[set[str]]] = {
     "reviewer": {
         "file_tree", "read_file", "shell", "lint", "run_code",
         "git_log", "read_blackboard", "list_workspace",
+        "index_workspace", "query_codebase", "codebase_map",
+        "project_info", "write_file",
     },
     "visual_reviewer": {
         "file_tree", "read_file", "analyze_image",

@@ -1,41 +1,5 @@
-# Virtual environments
-venv/
-
-# Python cache
+node_modules/
+.next/
+.env
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-
-# Logs
-logs/
-
-# Packaging
-*.egg-info/
-dist/
-build/
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# IDE
-.idea/
-
-# Environment (keep .env.example)
-.env
-!.env.example
-
-# Database
-*.db
-*.db-shm
-*.db-wal
-
-# Vector store
-data/chroma/
-src/chroma_data/
-
-# Runtime
-workspace/
-.benchmark_cache/
-monitoring/

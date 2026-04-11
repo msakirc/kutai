@@ -285,7 +285,7 @@ class ProcessGuard:
                             or text.startswith("/start")
                             or text.startswith("/kutai_start")):
                         await self._send(self.msgs.starting.format(app_name=self.cfg.app_name))
-                        await self._start_app_from_poller()
+                        await self._start_app(from_poller=True)
                         return
 
                     elif (text == self.msgs.btn_status
@@ -339,10 +339,19 @@ class ProcessGuard:
                 logger.error("Telegram poll error: %s", e)
                 await asyncio.sleep(5)
 
-    async def _start_app_from_poller(self) -> None:
-        """Start the managed app from the Telegram poller context."""
-        self._telegram_poller = None
-        await asyncio.sleep(2)
+    async def _start_app(self, from_poller: bool = False) -> None:
+        """Stop the Telegram poller (if running) and start the managed app.
+
+        Must always go through this method to avoid dual-polling where both
+        the guard's poll loop and the managed app's Telegram bot consume
+        updates simultaneously.
+        """
+        if from_poller:
+            # Poller task is about to return — just clear reference
+            self._telegram_poller = None
+        else:
+            await self._stop_telegram_poller()
+        await asyncio.sleep(2)  # let any in-flight long-poll drain
         await self.subprocess.start()
 
     async def _restart_self(self) -> None:
@@ -447,7 +456,7 @@ class ProcessGuard:
                             break
                         await asyncio.sleep(1)
                     if not self.subprocess.running and not self._shutdown:
-                        await self.subprocess.start()
+                        await self._start_app()
                         if self.subprocess.running:
                             self.backoff.mark_started()
                             await self._notify_started()
@@ -458,8 +467,7 @@ class ProcessGuard:
 
                 if exit_code == self.cfg.restart_exit_code:
                     await self._send(self.msgs.restarting.format(app_name=self.cfg.app_name))
-                    await asyncio.sleep(1)
-                    await self.subprocess.start()
+                    await self._start_app()
                     if self.subprocess.running:
                         self.backoff.mark_started()
                         await self._notify_started()
@@ -500,7 +508,7 @@ class ProcessGuard:
                         await asyncio.sleep(1)
 
                     if not self.subprocess.running and not self._shutdown:
-                        await self.subprocess.start()
+                        await self._start_app()
                         if self.subprocess.running:
                             self.backoff.mark_started()
                             await self._notify_started()

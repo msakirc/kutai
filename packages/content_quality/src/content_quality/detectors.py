@@ -8,12 +8,15 @@ Each function returns (score, breached, reason_tag).
 
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter
 
 HARD_CAP = 50_000
 
 MIN_SECTIONS_FOR_HEADER_CHECK = 5
+MIN_PARAGRAPHS_FOR_CHECK = 4
+MIN_WORDS_FOR_ENTROPY = 20
 
 _HEADER_SUFFIX_RE = re.compile(
     r'\s+(summary|examples?|notes|details)\s*$', re.IGNORECASE,
@@ -51,3 +54,44 @@ def check_header_repetition(text: str) -> tuple[float, bool, str | None]:
     if ratio > 0.4:
         return ratio, True, "header_repetition"
     return ratio, False, None
+
+
+def check_paragraph_repetition(text: str) -> tuple[float, bool, str | None]:
+    """Detect repeated paragraph blocks.
+
+    Splits by double-newlines, normalizes whitespace, hashes blocks,
+    counts blocks sharing hash with 2+ others.
+    """
+    blocks = [b.strip() for b in re.split(r'\n\s*\n', text) if b.strip()]
+    if len(blocks) < MIN_PARAGRAPHS_FOR_CHECK:
+        return 0.0, False, None
+
+    normalized = [re.sub(r'\s+', ' ', b).lower() for b in blocks]
+    counts = Counter(normalized)
+    duplicated = sum(c - 1 for c in counts.values() if c > 1)
+    ratio = duplicated / len(normalized)
+
+    if ratio > 0.3:
+        return ratio, True, "paragraph_repetition"
+    return ratio, False, None
+
+
+def check_token_entropy(text: str) -> tuple[float, bool, str | None]:
+    """Measure Shannon entropy of whitespace-split tokens.
+
+    Natural English ~9-10 bits. Repetitive garbage < 3 bits.
+    """
+    tokens = text.split()
+    if len(tokens) < MIN_WORDS_FOR_ENTROPY:
+        return 0.0, False, None
+
+    total = len(tokens)
+    counts = Counter(tokens)
+    entropy = -sum(
+        (c / total) * math.log2(c / total)
+        for c in counts.values()
+    )
+
+    if entropy < 3.0:
+        return entropy, True, "low_entropy"
+    return entropy, False, None

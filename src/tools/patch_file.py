@@ -95,7 +95,7 @@ async def patch_file(
 
         # Auto-lint Python files
         if full_path.endswith(".py"):
-            from linting import auto_lint
+            from .linting import auto_lint
             lint_res = await auto_lint(filepath)
             res += f"\n\n--- Auto-Linting ---\n{lint_res}"
 

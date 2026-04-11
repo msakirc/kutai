@@ -359,7 +359,7 @@ class BaseAgent:
             "stop ", "restart", "compile", "test ", "debug",
             "setup", "set up", "configure", "scan", "scrape",
             "crawl", "ping", "ssh ", "curl ", "grep ", "find ",
-            "launch", "migrate", "import ", "export ",
+            "launch", "migrate", "import ", "export ", "research",
         ]
         if any(v in text for v in strong_verbs):
             return True
@@ -378,6 +378,9 @@ class BaseAgent:
             "service", "script", "code", "project", "workspace",
             "branch", "commit", "log ", "logs", "port", "process",
             "module", "dependency", "dependencies", "config",
+            # Shopping / research targets
+            "product", "price", "review", "shop", "store",
+            "compare", "alternative", "spec",
         ]
 
         has_verb = any(v in text for v in context_verbs)

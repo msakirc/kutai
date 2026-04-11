@@ -2406,14 +2406,15 @@ class TelegramInterface:
         Uses a hard exit after a short delay as a fallback in case the
         graceful shutdown path is blocked (e.g. stuck LLM call).
         """
+        from yasar_usta import EXIT_RESTART
         await self._reply(update,"🔄 Kutay yeniden başlatılıyor...")
         if self.orchestrator:
-            self.orchestrator.requested_exit_code = 42
+            self.orchestrator.requested_exit_code = EXIT_RESTART
             self.orchestrator.shutdown_event.set()
         # Hard exit fallback — fires only if graceful shutdown is truly stuck.
         # 45s allows: task drain (30s) + DB close + Telegram stop + llama stop.
         import threading
-        threading.Timer(45.0, lambda: os._exit(42)).start()
+        threading.Timer(45.0, lambda: os._exit(EXIT_RESTART)).start()
 
     async def cmd_kutai_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Stop KutAI via the wrapper (exit code 0). Requires confirmation."""
@@ -2429,8 +2430,9 @@ class TelegramInterface:
 
     async def _do_kutai_stop(self):
         """Actually perform the KutAI stop after confirmation."""
+        from yasar_usta import EXIT_STOP
         if self.orchestrator:
-            self.orchestrator.requested_exit_code = 0
+            self.orchestrator.requested_exit_code = EXIT_STOP
             self.orchestrator.shutdown_event.set()
         import threading
         threading.Timer(45.0, lambda: os._exit(0)).start()

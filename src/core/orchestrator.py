@@ -324,7 +324,7 @@ class Orchestrator:
         self.last_scheduler_check = datetime.min.replace(tzinfo=timezone.utc)
         self.last_decay_check = datetime.min.replace(tzinfo=timezone.utc)
         self.shutdown_event = shutdown_event or asyncio.Event()
-        self.requested_exit_code: int | None = None  # Set by /kutai_restart (42) or /kutai_stop (0)
+        self.requested_exit_code: int | None = None  # Set via yasar_usta.EXIT_RESTART or EXIT_STOP
         self._current_task_future = None
         self._running_futures: list[asyncio.Task] = []
         self._model_manager_tasks: list[asyncio.Task] = []
@@ -3558,17 +3558,10 @@ class Orchestrator:
         in the main loop).  If the event loop itself is blocked (e.g. sync I/O),
         this task also stops — which is the correct signal for 'hung'.
         """
-        import time as _hb_time
-        while True:
-            try:
-                ts = str(_hb_time.time())
-                with open("logs/orchestrator.heartbeat", "w") as f:
-                    f.write(ts)
-                with open("logs/heartbeat", "w") as f:
-                    f.write(ts)
-            except Exception:
-                pass
-            await asyncio.sleep(15)
+        from yasar_usta import HeartbeatWriter
+        writer = HeartbeatWriter(
+            "logs/orchestrator.heartbeat", "logs/heartbeat", interval=15.0)
+        await writer.run()
 
     async def _startup_recovery(self):
         """One-time recovery after restart: wake stuck/sleeping tasks.

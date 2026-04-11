@@ -12,10 +12,15 @@ Manages any subprocess with:
 
 from .config import GuardConfig, Messages, SidecarConfig
 from .guard import ProcessGuard
+from .heartbeat import EXIT_RESTART, EXIT_STOP, HeartbeatWriter, write_heartbeat
 
 __all__ = [
     "ProcessGuard",
     "GuardConfig",
     "Messages",
     "SidecarConfig",
+    "EXIT_RESTART",
+    "EXIT_STOP",
+    "HeartbeatWriter",
+    "write_heartbeat",
 ]

@@ -305,27 +305,11 @@ async def main():
     # The old heartbeat file may be >120s stale from a previous hung
     # instance.  Startup (docker, health checks, model load) can take
     # 60-120s — without periodic heartbeats the wrapper kills us.
-    def _write_heartbeat():
-        try:
-            os.makedirs("logs", exist_ok=True)
-            _ts = str(time.time())
-            with open("logs/orchestrator.heartbeat", "w") as _f:
-                _f.write(_ts)
-            with open("logs/heartbeat", "w") as _f:
-                _f.write(_ts)
-        except Exception:
-            pass
-
-    _write_heartbeat()
-
-    # Background task that writes heartbeat every 15s during startup,
-    # mirroring the orchestrator's own _heartbeat_loop.
-    async def _startup_heartbeat():
-        while True:
-            await asyncio.sleep(15)
-            _write_heartbeat()
-
-    _hb_task = asyncio.create_task(_startup_heartbeat())
+    from yasar_usta import HeartbeatWriter, write_heartbeat
+    _hb_paths = ("logs/orchestrator.heartbeat", "logs/heartbeat")
+    write_heartbeat(*_hb_paths)
+    _hb_writer = HeartbeatWriter(*_hb_paths, interval=15.0)
+    _hb_task = asyncio.create_task(_hb_writer.run())
 
     _log.info("Running check_env...")
     check_env()
@@ -453,7 +437,7 @@ async def main():
     if gpu_detect_task and not gpu_detect_task.done():
         gpu_detect_task.cancel()
 
-    # Propagate exit code to wrapper (42 = restart, 0 = stop).
+    # Propagate exit code to wrapper (EXIT_RESTART=42, EXIT_STOP=0).
     # Use sys.exit() so that atexit handlers (llama-server cleanup) still run.
     # The orchestrator's finally block has already stopped llama-server by this
     # point, but atexit provides a second safety net.

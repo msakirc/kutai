@@ -1462,9 +1462,13 @@ async def execute_tool(tool_name: str, agent_type: str | None = None, task_hints
         if tool_name == "file_tree" and not kwargs.get("path"):
             kwargs["path"] = ws_prefix
 
-        # Scaffold: set path to mission directory
-        if tool_name == "scaffold" and not kwargs.get("path"):
-            kwargs["path"] = ws_prefix
+        # Scaffold: prepend mission workspace to output_dir
+        if tool_name == "scaffold":
+            _out = kwargs.get("output_dir", "")
+            if _out and not _out.startswith(ws_prefix):
+                kwargs["output_dir"] = os.path.join(ws_prefix, _out)
+            elif not _out:
+                kwargs["output_dir"] = ws_prefix
 
         # Codebase tools: set path to mission directory
         _CODEBASE_TOOLS = {"index_workspace", "query_codebase", "codebase_map"}

@@ -246,6 +246,17 @@ async def write_file(
     Returns:
         Confirmation message.
     """
+    # Reject bare filenames (no extension) — these are always a mistake
+    # (model writing artifact fields as a file instead of final_answer).
+    # They also conflict with directories of the same name.
+    basename = os.path.basename(filepath)
+    if basename and "." not in basename:
+        return (
+            f"❌ Filename '{basename}' has no extension. "
+            f"Use .md, .json, .py, .ts, etc. "
+            f"If you meant to produce an artifact, put it in your final_answer result instead."
+        )
+
     # We need the parent directory to exist, so resolve it separately.
     # _safe_resolve may fail if the file doesn't exist yet, so we resolve
     # the *parent* and ensure it's inside the workspace.

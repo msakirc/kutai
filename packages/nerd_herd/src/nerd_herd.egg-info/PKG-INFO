@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: nerd-herd
+Version: 0.1.0
+Summary: Standalone observability: GPU, VRAM budget, health, inference metrics, Prometheus exposition
+Requires-Python: >=3.10
+Requires-Dist: yazbunu>=0.2.0
+Requires-Dist: pynvml>=11.0.0
+Requires-Dist: psutil>=5.9.0
+Requires-Dist: prometheus_client>=0.20.0
+Requires-Dist: aiohttp>=3.9.0

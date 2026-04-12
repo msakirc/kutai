@@ -1,0 +1,9 @@
+pyproject.toml
+src/dallama/__init__.py
+src/dallama/config.py
+src/dallama.egg-info/PKG-INFO
+src/dallama.egg-info/SOURCES.txt
+src/dallama.egg-info/dependency_links.txt
+src/dallama.egg-info/requires.txt
+src/dallama.egg-info/top_level.txt
+tests/test_config.py

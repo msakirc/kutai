@@ -259,11 +259,11 @@ class ProcessGuard:
                 if not updates:
                     continue
 
-                max_uid = 0
+                max_uid = max(u["update_id"] for u in updates)
+                offset = max_uid + 1  # advance BEFORE processing
+
                 for update in updates:
                     uid = update["update_id"]
-                    if uid > max_uid:
-                        max_uid = uid
 
                     # Callback queries
                     cb = update.get("callback_query")
@@ -274,7 +274,6 @@ class ProcessGuard:
                             cb_msg_id = cb.get("message", {}).get("message_id")
                             if cb_data in ("restart_guard", "restart_usta"):
                                 await self.telegram.answer_callback(cb["id"], "♻️ Yeniden başlatılıyor...")
-                                offset = max_uid + 1
                                 await self._restart_self()
                                 return
                             elif cb_data in ("guard_refresh", "usta_refresh"):
@@ -378,8 +377,6 @@ class ProcessGuard:
                             last_down_reply = now
                             await self._send_start_prompt(
                                 self.msgs.down_reply.format(app_name=self.cfg.app_name))
-
-                offset = max_uid + 1
 
             except asyncio.CancelledError:
                 return

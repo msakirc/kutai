@@ -11,11 +11,15 @@ from .config import Messages
 logger = logging.getLogger("yasar_usta.commands")
 
 
-def build_start_keyboard(messages: Messages) -> dict:
-    """Build the reply keyboard shown when the app is down."""
+def build_start_keyboard(messages: Messages, app_name: str = "App") -> dict:
+    """Build the persistent reply keyboard for the wrapper bot."""
     return {
         "keyboard": [
-            [{"text": messages.btn_start}, {"text": messages.btn_status}],
+            [{"text": messages.btn_start.format(app_name=app_name)},
+             {"text": messages.btn_status}],
+            [{"text": messages.btn_restart.format(app_name=app_name)},
+             {"text": messages.btn_stop.format(app_name=app_name)}],
+            [{"text": messages.btn_logs}, {"text": messages.btn_remote}],
         ],
         "resize_keyboard": True,
         "one_time_keyboard": False,
@@ -37,8 +41,15 @@ def build_status_inline_keyboard(messages: Messages, name: str, sidecar_name: st
     return {"inline_keyboard": buttons}
 
 
-def format_log_entries(log_path: str | Path, n: int = 20) -> str | None:
-    """Read and format the last N lines of a JSONL log file.
+def _escape_md(text: str) -> str:
+    """Escape Markdown special characters in log messages."""
+    for ch in ("*", "_", "`", "[", "]"):
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
+def format_log_entries(log_path: str | Path, n: int = 15) -> str | None:
+    """Read and format the last N non-DEBUG lines of a JSONL log file.
 
     Returns formatted text or None if no entries found.
     """
@@ -50,37 +61,42 @@ def format_log_entries(log_path: str | Path, n: int = 20) -> str | None:
         with open(log_path, "r", encoding="utf-8") as f:
             f.seek(0, 2)
             size = f.tell()
-            f.seek(max(0, size - 100_000))
+            f.seek(max(0, size - 200_000))
             chunk = f.read()
             lines = chunk.strip().split("\n")
 
-        last_n = lines[-n:]
+        # Walk backwards, skip DEBUG, collect up to n entries
         formatted = []
-        for line in last_n:
+        for line in reversed(lines):
+            if len(formatted) >= n:
+                break
             line = line.strip()
             if not line:
                 continue
             try:
                 entry = json.loads(line)
+                level = entry.get("level", "?")[:4]
+                if level == "DEBU":
+                    continue
                 ts = entry.get("ts", "?")
                 if "T" in ts:
                     ts = ts.split("T")[1][:8]
                 elif " " in ts:
                     ts = ts.split(" ")[1][:8]
-                level = entry.get("level", "?")[:4]
                 comp = entry.get("src", "?").split(".")[-1]
-                msg = entry.get("msg", "")[:120]
+                msg = _escape_md(entry.get("msg", "")[:120])
                 icon = {
                     "ERRO": "🔴", "CRIT": "🔴", "WARN": "🟡",
-                    "INFO": "⚪", "DEBU": "⚫",
+                    "INFO": "⚪",
                 }.get(level, "⚪")
                 formatted.append(f"{icon} `{ts}` *{comp}*: {msg}")
             except (ValueError, KeyError):
-                formatted.append(f"⚫ {line[:120]}")
+                continue
 
         if not formatted:
             return None
 
+        formatted.reverse()  # back to chronological order
         msg = "\n".join(formatted)
         if len(msg) > 4000:
             msg = msg[-4000:]

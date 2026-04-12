@@ -86,16 +86,19 @@ class TelegramAPI:
             logger.warning("Telegram edit failed: %s", e)
             return None
 
-    async def answer_callback(self, callback_query_id: str) -> None:
-        """Answer a callback query (removes loading spinner)."""
+    async def answer_callback(self, callback_query_id: str, text: str | None = None) -> None:
+        """Answer a callback query (removes loading spinner, optionally shows toast)."""
         if not self.enabled:
             return
         import aiohttp
+        payload: dict[str, Any] = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
         try:
             async with aiohttp.ClientSession() as session:
                 await session.post(
                     f"{self._base_url}/answerCallbackQuery",
-                    json={"callback_query_id": callback_query_id},
+                    json=payload,
                     timeout=aiohttp.ClientTimeout(total=5),
                 )
         except Exception:

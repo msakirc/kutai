@@ -105,13 +105,10 @@ class SubprocessManager:
         timeout = timeout or self.stop_timeout
         logger.info("Sending shutdown signal...")
         try:
-            if sys.platform == "win32":
-                # send_signal(SIGINT) raises ValueError on Windows with
-                # CREATE_NEW_PROCESS_GROUP. Use os.kill with CTRL_C_EVENT
-                # which sends a graceful Ctrl+C to the process.
-                os.kill(self.process.pid, signal.CTRL_C_EVENT)
-            else:
-                self.process.send_signal(signal.SIGINT)
+            # send_signal(SIGINT) works on both platforms — on Windows it
+            # delivers CTRL_C_EVENT via the asyncio transport, which the
+            # Python child process handles as KeyboardInterrupt.
+            self.process.send_signal(signal.SIGINT)
             await asyncio.wait_for(self.process.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning("Graceful shutdown timed out, killing...")

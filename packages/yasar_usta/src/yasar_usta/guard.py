@@ -78,7 +78,7 @@ class ProcessGuard:
     # ── Telegram helpers ──────────────────────────────────────────────
 
     def _kb(self) -> dict:
-        return build_start_keyboard(self.msgs)
+        return build_start_keyboard(self.msgs, app_name=self.cfg.app_name)
 
     async def _send(self, text: str, reply_markup: dict | None = None) -> None:
         await self.telegram.send(text, reply_markup=reply_markup)
@@ -166,9 +166,9 @@ class ProcessGuard:
             return
 
         if self.sidecar and self.sidecar.health_url:
-            pid = self.sidecar.pid_alive()
-            if pid:
-                formatted += f"\n\n📊 Full viewer: {self.sidecar.health_url}"
+            if await self.sidecar.http_alive():
+                url = self.sidecar.health_url.replace("/health", "/")
+                formatted += f"\n\n📊 [Yazbunu Log Viewer]({url})"
         await self._send(formatted)
 
     # ── Claude remote ─────────────────────────────────────────────────
@@ -270,19 +270,24 @@ class ProcessGuard:
                     if cb:
                         cb_chat = str(cb.get("message", {}).get("chat", {}).get("id", ""))
                         if cb_chat == str(self.cfg.telegram_chat_id):
-                            await self.telegram.answer_callback(cb["id"])
                             cb_data = cb.get("data", "")
                             cb_msg_id = cb.get("message", {}).get("message_id")
                             if cb_data in ("restart_guard", "restart_usta"):
+                                await self.telegram.answer_callback(cb["id"], "♻️ Yeniden başlatılıyor...")
                                 offset = max_uid + 1
                                 await self._restart_self()
                                 return
                             elif cb_data in ("guard_refresh", "usta_refresh"):
+                                await self.telegram.answer_callback(cb["id"])
                                 await self._send_status(edit_message_id=cb_msg_id)
                             elif cb_data in ("restart_sidecar", "restart_yazbunu") and self.sidecar:
+                                sc_name = self.sidecar.name
+                                await self.telegram.answer_callback(cb["id"], f"📊 {sc_name} yeniden başlatılıyor...")
                                 await self.sidecar.stop()
                                 await self.sidecar.start()
                                 await self._send_status(edit_message_id=cb_msg_id)
+                            else:
+                                await self.telegram.answer_callback(cb["id"])
                         continue
 
                     msg = update.get("message", {})
@@ -292,12 +297,18 @@ class ProcessGuard:
                     if chat_id != str(self.cfg.telegram_chat_id):
                         continue
 
+                    # Button labels (formatted with app_name)
+                    _app = self.cfg.app_name
+                    _btn_start = self.msgs.btn_start.format(app_name=_app)
+                    _btn_restart = self.msgs.btn_restart.format(app_name=_app)
+                    _btn_stop = self.msgs.btn_stop.format(app_name=_app)
+
                     # Built-in commands
-                    if (text == self.msgs.btn_start
+                    if (text == _btn_start
                             or text.startswith("/start")
                             or text.startswith("/kutai_start")):
                         if not self.subprocess.running:
-                            await self._send(self.msgs.starting.format(app_name=self.cfg.app_name))
+                            await self._send(self.msgs.starting.format(app_name=_app))
                             await self._start_app()
                         else:
                             await self._send_status()
@@ -307,16 +318,20 @@ class ProcessGuard:
                           or text.startswith("/kutai_status")):
                         await self._send_status()
 
-                    elif text.startswith("/restart") and not text.startswith("/restart_guard") and not text.startswith("/restart_usta"):
+                    elif (text == _btn_restart
+                          or (text.startswith("/restart")
+                              and not text.startswith("/restart_guard")
+                              and not text.startswith("/restart_usta"))):
                         if self.subprocess.running:
-                            await self._send(self.msgs.restarting.format(app_name=self.cfg.app_name))
+                            await self._send(self.msgs.restarting.format(app_name=_app))
                             self._restart_requested = True
                             await self.subprocess.stop()
                         else:
-                            await self._send(self.msgs.starting.format(app_name=self.cfg.app_name))
+                            await self._send(self.msgs.starting.format(app_name=_app))
                             await self._start_app()
 
-                    elif text.startswith("/stop"):
+                    elif (text == _btn_stop
+                          or text.startswith("/stop")):
                         if self.subprocess.running:
                             await self._send(self.msgs.stopped.format(app_name=self.cfg.app_name))
                             self._stop_requested = True
@@ -329,10 +344,12 @@ class ProcessGuard:
                         await self._restart_self()
                         return
 
-                    elif text.startswith("/logs"):
+                    elif (text == self.msgs.btn_logs
+                          or text.startswith("/logs")):
                         await self._send_logs(text)
 
-                    elif text.startswith("/remote"):
+                    elif (text == self.msgs.btn_remote
+                          or text.startswith("/remote")):
                         await self._handle_remote()
 
                     elif text == self.msgs.btn_system:
@@ -382,6 +399,9 @@ class ProcessGuard:
         if self.subprocess.running:
             await self.subprocess.stop()
         await self._stop_telegram_poller()
+        # Flush pending updates so the new guard doesn't reprocess
+        # the same callback that triggered this restart.
+        await self.telegram.flush_updates()
 
         import subprocess as _sp
         python = self.subprocess.command[0] if self.subprocess.command else sys.executable
@@ -411,6 +431,14 @@ class ProcessGuard:
         """Main guard loop."""
         log_dir = Path(self.cfg.log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Set up file logging for the guard itself
+        fh = logging.FileHandler(
+            str(log_dir / "wrapper_meta.log"), encoding="utf-8")
+        fh.setFormatter(logging.Formatter(
+            "[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+        fh.setLevel(logging.INFO)
+        logger.addHandler(fh)
 
         acquire_lock(self.cfg.log_dir, name="guard")
         logger.info("%s started (auto_restart=%s)", self.cfg.name, self.cfg.auto_restart)
@@ -488,6 +516,7 @@ class ProcessGuard:
                 if self._restart_requested:
                     self._restart_requested = False
                     logger.info("Restart requested via Telegram — restarting app")
+                    await asyncio.sleep(1)  # brief pause before restart
                     await self._start_app()
                     if self.subprocess.running:
                         self.backoff.mark_started()
@@ -509,6 +538,7 @@ class ProcessGuard:
 
                 if exit_code == self.cfg.restart_exit_code:
                     await self._send(self.msgs.restarting.format(app_name=self.cfg.app_name))
+                    await asyncio.sleep(1)  # brief pause before restart
                     await self._start_app()
                     if self.subprocess.running:
                         self.backoff.mark_started()

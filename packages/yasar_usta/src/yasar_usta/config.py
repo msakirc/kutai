@@ -32,9 +32,13 @@ class Messages:
     starting: str = "🚀 Starting {app_name}..."
 
     # Keyboard
-    btn_start: str = "▶️ Start"
+    btn_start: str = "▶️ Start {app_name}"
     btn_status: str = "🔧 Status"
     btn_system: str = "⚙️ System"
+    btn_restart: str = "🔄 Restart {app_name}"
+    btn_stop: str = "⏹ Stop {app_name}"
+    btn_logs: str = "📋 Logs"
+    btn_remote: str = "🖥️ Claude Code"
     btn_refresh: str = "🔄 Refresh"
     btn_restart_guard: str = "♻️ Restart {name}"
     btn_restart_sidecar: str = "📊 Restart {sidecar_name}"

@@ -63,6 +63,7 @@ AGENT_TIMEOUTS: dict[str, int] = {
     "shopping_advisor":    600,
     "product_researcher":  300,
     "deal_analyst":        240,
+    "shopping_pipeline":   60,   # mechanical Python steps — no LLM
     "shopping_clarifier":  120,
 }
 
@@ -1690,6 +1691,11 @@ class Orchestrator:
                 from ..workflows.pipeline import CodingPipeline
                 pipeline = CodingPipeline()
                 logger.info("delegating to pipeline", task_id=task_id)
+                coro = pipeline.run(task)
+            elif agent_type == "shopping_pipeline":
+                from ..workflows.shopping.pipeline import ShoppingPipeline
+                pipeline = ShoppingPipeline()
+                logger.info("delegating to shopping pipeline", task_id=task_id)
                 coro = pipeline.run(task)
             else:
                 agent = get_agent(agent_type)

@@ -1,7 +1,7 @@
 # KutAI Package Extraction Report v2
 
-**Date:** 2026-04-12
-**Status:** 3 packages extracted (yazbunu, vecihi, yasar_usta), 2 candidates remaining
+**Date:** 2026-04-13 (updated from 2026-04-12)
+**Status:** 5 packages extracted, 1 candidate remaining
 
 ---
 
@@ -74,27 +74,26 @@ ProcessGuard (guard.py)
 
 ---
 
-## Remaining Extraction Candidates
+### 4. DaLLaMa (COMPLETED 2026-04-13)
+- **Package:** `packages/dallama/` with src layout
+- **Install:** `-e ./packages/dallama` in requirements.txt
+- **KutAI shim:** `src/models/local_model_manager.py` (449-line backward-compatible wrapper)
+- **What it does:** Async llama-server process manager — start/stop/swap, health watchdog, idle unload, circuit breaker, inference drain, Windows Job Objects
+- **Public API:** `DaLLaMa`, `DaLLaMaConfig`, `ServerConfig`, `ServerStatus`, `InferenceSession`, `DaLLaMaLoadError`
+- **Dependencies:** httpx (only)
+- **Tests:** 54 package tests + 7 shim tests
+- **Internal modules:** config.py, server.py, swap.py, watchdog.py, metrics.py, platform.py
+- **Key design decisions:**
+  - DaLLaMa does NOT own swap budget (dispatcher decides), GPU scheduling (removed), or model selection (registry/router)
+  - Single `on_ready(model, reason)` callback replaces 6 old KutAI callbacks
+  - VRAM check via injected `get_vram_free_mb()` — no pynvml dependency
+  - `swap.py` designed for future llama-server hot-swap migration
+  - `gpu_scheduler.py` deprecated — dispatcher checks `dallama.status.busy` instead
+- **What was removed:** GPU priority queue (233 LOC deleted from direct imports; file kept for shim compat)
+- **Spec:** `docs/superpowers/specs/2026-04-12-dallama-design.md`
+- **Architecture doc:** `docs/architecture-modularization.md`
 
-### 4. Local LLM Manager (NOT YET STARTED)
-- **Source files:** `src/models/local_model_manager.py` (1,194 lines), `src/models/gpu_monitor.py` (251 lines), `src/models/gpu_scheduler.py` (234 lines)
-- **What it does:** llama-server process lifecycle (start/stop/swap models), GPU VRAM monitoring, priority-based inference queue, circuit breaker for restart failures, dynamic context window calculation
-- **Why it's valuable:** Nothing on PyPI does programmatic llama-server management. Ollama hides process control. LM Studio is GUI-only. This fills a real gap.
-- **Estimated effort:** 3-4 days
-- **Coupling analysis:**
-  - `local_model_manager.py` — Moderate coupling. Imports: `get_registry()` (model metadata), `get_dispatcher().swap_budget` (swap tracking), `get_db()` (task counts), `accelerate_retries()`. Needs ~5 abstract interfaces.
-  - `gpu_monitor.py` — **Zero coupling.** Only imports `get_logger`. Uses pynvml for NVIDIA GPU stats, psutil for system stats. Can extract as-is.
-  - `gpu_scheduler.py` — Minimal coupling. Only imports `get_logger` + one optional DB hook (`accelerate_retries`). Priority-based async queue with preemption logging.
-- **Extractable bundle:** These three form a coherent "local LLM toolkit":
-  - GPU monitoring (VRAM, utilization, temp, external process detection)
-  - Inference queue (priority-based, timeout-aware, preemption-logged)
-  - Server lifecycle (start, stop, swap, health check, circuit breaker)
-- **Key capabilities that don't exist elsewhere:**
-  - Model swapping orchestration (atomicity under load, inference drain before kill, dynamic context recalculation)
-  - Health watchdog (dual-mode: crash + hang detection, auto-restart with circuit breaker)
-  - External GPU usage detection (identifies non-orchestrator GPU processes, VRAM tracking)
-  - Measured throughput tracking (tokens/sec from actual inference, not benchmarks)
-- **Model registry** (`src/models/model_registry.py`) could pair with this but is more tightly coupled to KutAI's 14-dimension capability scoring. Consider extracting just the GGUF scanning + metadata reading part.
+## Remaining Extraction Candidates
 
 ### 5. Turkish Shopping Scrapers (NOT YET STARTED)
 - **Source files:** `src/shopping/scrapers/` (19 scrapers, ~8,500 LOC), `src/shopping/models.py`, `src/shopping/text_utils.py`, `src/shopping/cache.py`, `src/shopping/request_tracker.py`

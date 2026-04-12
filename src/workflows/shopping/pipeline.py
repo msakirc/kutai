@@ -262,12 +262,30 @@ async def _step_format(task: dict, artifacts: dict) -> str:
     return formatted
 
 
+async def _step_analyze_query(task: dict, artifacts: dict) -> str:
+    """Analyze the shopping query — intent, category, constraints, vagueness."""
+    from src.shopping.intelligence.query_analyzer import _fallback_analyze
+
+    query = artifacts.get("user_query", "") or task.get("description", "")
+    if isinstance(query, str) and query.startswith("{"):
+        try:
+            query = json.loads(query).get("user_query", query)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    analysis = _fallback_analyze(query)
+    # Output must match artifact_schema: requires "query" and "needs_clarification"
+    analysis["query"] = query
+    return json.dumps(analysis, ensure_ascii=False, default=str)
+
+
 # ── Step registry ────────────────────────────────────────────────────────────
 
 _STEP_HANDLERS = {
     "execute_product_search": _step_search,
     "format_and_deliver": _step_format,
     "search_and_collect_reviews": _step_search_and_reviews,
+    "understand_query_check_clarity": _step_analyze_query,
 }
 
 

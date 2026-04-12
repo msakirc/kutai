@@ -52,7 +52,7 @@ class TestShoppingWorkflow(unittest.TestCase):
         from src.workflows.engine.loader import load_workflow
         wf = load_workflow("shopping")
         step_agents = {s["id"]: s.get("agent") for s in wf.steps}
-        self.assertEqual(step_agents["0.1"], "shopping_advisor")
+        self.assertEqual(step_agents["0.1"], "shopping_pipeline")
         self.assertEqual(step_agents["1.1"], "shopping_clarifier")
         self.assertEqual(step_agents["2.1"], "shopping_pipeline")
         self.assertEqual(step_agents["3.1"], "deal_analyst")

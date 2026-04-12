@@ -1018,22 +1018,15 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"[Watchdog] GPU health check failed: {e}")
 
-        # 6. Check GPU scheduler queue depth
+        # 6. Check local model status
         try:
-            from ..models.gpu_scheduler import get_gpu_scheduler
+            from ..models.local_model_manager import get_local_manager
 
-            sched = get_gpu_scheduler()
-            sched_status = sched.get_status()
-
-            if sched_status["queue_depth"] > 5:
-                resource_issues.append(
-                    f"GPU scheduler queue deep: "
-                    f"{sched_status['queue_depth']} waiting"
-                )
-                logger.warning(
-                    f"[Watchdog] GPU queue depth: "
-                    f"{sched_status['queue_depth']} tasks waiting"
-                )
+            mgr = get_local_manager()
+            mgr_status = mgr.get_status()
+            if not mgr_status.get("healthy", True) and mgr_status.get("loaded_model"):
+                resource_issues.append("Local model unhealthy")
+                logger.warning("[Watchdog] Local model unhealthy")
 
         except Exception as e:
             logger.warning(f"[Watchdog] GPU scheduler check failed: {e}")
@@ -2253,8 +2246,12 @@ class Orchestrator:
                     # Build a readable Q&A result from the clarification exchange
                     qa_parts = []
                     for entry in history:
-                        q = entry.get("question", "")
-                        a = entry.get("answer", "")
+                        if isinstance(entry, dict):
+                            q = entry.get("question", "")
+                            a = entry.get("answer", "")
+                        else:
+                            # Legacy: plain string entries (answer only)
+                            q, a = "", str(entry)
                         if q or a:
                             qa_parts.append(f"**Q:** {q}\n**A:** {a}")
                     qa_result = "\n\n".join(qa_parts) if qa_parts else task_ctx.get("user_clarification", "")

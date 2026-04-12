@@ -6,7 +6,7 @@ GPU load mode manager. Four modes:
   shared  — cap at ~50% VRAM; prefer smaller models or cloud
   minimal — zero local GPU; all inference offloaded to cloud
 
-Mode is persisted in the DB and applied to gpu_scheduler on change.
+Mode is persisted in the DB and applied to model management on change.
 Auto-detection can dynamically switch modes based on external GPU usage.
 """
 

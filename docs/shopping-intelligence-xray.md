@@ -38,36 +38,25 @@ Telegram Bot                     Orchestrator
               (LLMDispatcher)         (fallback chain, cache)
 ```
 
-### Data Flow: `/shop coffee machine`
+### Data Flow: `/shop siemens s100`
 
 ```
 1. telegram_bot.py:cmd_shop()
-   -> add_task(agent_type="shopping_advisor", priority=8)
+   -> _is_complex_shopping_query(query)?
+      YES -> _create_shopping_mission(query, chat_id)
+             -> WorkflowRunner.start("shopping") [6-step workflow]
+      NO  -> _create_shopping_mission(query, chat_id, sub_intent="quick_search")
+             -> WorkflowRunner.start("quick_search") [2-step workflow]
 
-2. orchestrator.py:process_task()
-   -> claims task, skips classifier (agent_type already set)
-   -> get_agent("shopping_advisor")
+2. WorkflowRunner creates mission, expands steps to tasks with dependencies
 
-3. base.py:execute() -- ReAct loop (max 8 iterations)
-   -> _build_model_requirements() looks up AGENT_REQUIREMENTS["shopping_advisor"]
-   -> LLMDispatcher.request(MAIN_WORK, reqs, messages)
+3. Orchestrator picks up tasks in dependency order:
+   [quick_search] 0.1 product_researcher: shopping_search → 1.1 shopping_advisor: format
+   [shopping]     0.1 → 1.1 → 2.1 → 3.1 → 4.1 → 5.1
 
-4. Agent calls shopping_search tool (iteration 1)
-   -> tools/__init__.py:_tool_shopping_search()
-   -> query_analyzer.analyze_query("coffee machine")        [LLM + keyword fallback]
-   -> search_planner.generate_search_plan(analyzed)          [LLM + rule fallback]
-   -> fallback_chain.get_product_with_fallback(query, sources)
-      -> try: source-specific scraper (e.g. akakce)
-      -> try: Perplexica
-      -> try: Google CSE
-      -> try: stale cache (72h)
-   -> returns JSON: {analysis, search_plan, products, product_count}
+4. Each step: pre_hook (inject artifacts) → agent executes → post_hook (validate + store)
 
-5. Agent calls shopping_compare, shopping_reviews, etc. (iterations 2-7)
-
-6. Agent returns final_answer with product recommendations
-
-7. orchestrator.py:_handle_complete() -> telegram.send_result()
+5. Final step result → telegram.send_result()
 ```
 
 ---
@@ -114,7 +103,7 @@ Agents share state via blackboard keys:
 
 | Tool | Function | Dependencies |
 |------|----------|-------------|
-| `shopping_search` | Query analysis + search plan + scraper execution | query_analyzer, search_planner, fallback_chain |
+| `shopping_search` | Full automated pipeline: 16 e-commerce scrapers (parallel tiers) + 4 community sources → products + community data | fallback_chain.py |
 | `shopping_compare` | Value scoring + delivery comparison | value_scorer, delivery_compare |
 | `shopping_reviews` | Review aggregation with temporal weighting | review_synthesizer |
 | `shopping_constraints` | Filter by budget/dimensions/brand | constraints |
@@ -395,6 +384,7 @@ Turkish-specific text processing: normalization (İ/ı, Ö/ö, Ç/ç, Ş/ş, Ğ/
 | # | Component | Issue | Impact |
 |---|-----------|-------|--------|
 | ~~W1~~ | ~~`fallback_chain.py`~~ | ~~Only uses `sources[0]`~~ | **FIXED**: Now tries all source scrapers, then shared fallbacks (Perplexica, Google CSE) |
+| ~~W0~~ | ~~Shopping workflow~~ | ~~15-step single-agent workflow~~ | **FIXED**: Shopping now uses 6-step WorkflowRunner workflow (complex) or 2-step quick_search path |
 | W2 | Hepsiburada scraper | Bot detection (Akamai/Datadome) blocks standard requests | Second-largest Turkish retailer is inaccessible |
 | W3 | Rate limits | Trendyol 100/day, Hepsiburada 50/day | Real sessions exhaust budgets quickly |
 | W4 | Price watch | Watches stored but no notification mechanism | Users set watches that never alert |
@@ -405,7 +395,7 @@ Turkish-specific text processing: normalization (İ/ı, Ö/ö, Ç/ç, Ş/ş, Ğ/
 | # | Component | Issue | Impact |
 |---|-----------|-------|--------|
 | W5 | `_llm.py` | Uses `MAIN_WORK` for analysis overhead | Can trigger unnecessary model swaps during tool execution |
-| W6 | Search planner | Phase-2 templates (`{top_product}`) never filled | Phase-2 searches are unusable |
+| ~~W6~~ | ~~Search planner~~ | ~~Phase-2 templates (`{top_product}`) never filled~~ | **FIXED**: `shopping_search` now bypasses LLM planner, searches all scrapers directly |
 | W7 | Query analyzer fallback | Missing fields vs LLM path (language, source, experience_level) | Downstream code may get KeyError or wrong defaults |
 | W8 | Scraper User-Agents | Dated (Chrome 120, Firefox 121 -- early 2024) | Increasing bot detection risk |
 
@@ -457,9 +447,11 @@ The 24-hour price cache means flash sales, limited-time offers, and competitor p
 
 ### P0 -- Fix for Production
 
-1. **Fix fallback chain to try all sources** -- iterate `sources` list, not just `sources[0]`
+> **Note**: Shopping commands are now wired to `WorkflowRunner` — complex queries use a 6-step workflow, simple queries use a 2-step quick_search workflow. Agent collaboration is now driven by workflow dependency graph, not LLM-decided subtask creation.
+
+1. ~~**Fix fallback chain to try all sources**~~ -- **DONE**: fallback_chain now iterates all sources
 2. **Add price watch notifications** -- wire watch triggers to Telegram alerts
-3. **Increase Trendyol/Hepsiburada daily budgets** or implement user-level metering
+3. ~~**Increase Trendyol/Hepsiburada daily budgets**~~ -- **DONE**: `shopping_search` now hits 16 scrapers in parallel tiers, reducing per-scraper load
 4. **Disable Hepsiburada scraper** until proxy/browser solution is in place (saves error budget)
 
 ### P1 -- High Value

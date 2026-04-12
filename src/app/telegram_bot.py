@@ -1164,17 +1164,26 @@ class TelegramInterface:
             await self._reply(update, f"❌ {_friendly_error(str(e))}")
 
     @staticmethod
-    async def _check_yazbunu_health() -> str:
-        """Check yazbunu health via HTTP and PID file."""
+    async def _check_yazbunu_health() -> tuple[str, str | None]:
+        """Check yazbunu health via /health endpoint and PID file.
+
+        Returns (status_line, viewer_url_or_None).
+        """
         import aiohttp
         yz_responding = False
+        yz_url: str | None = None
+        yz_version: str | None = None
         try:
             async with aiohttp.ClientSession() as s:
                 async with s.get(
-                    "http://127.0.0.1:9880/",
+                    "http://127.0.0.1:9880/health",
                     timeout=aiohttp.ClientTimeout(total=3),
                 ) as r:
-                    yz_responding = r.status == 200
+                    if r.status == 200:
+                        yz_responding = True
+                        data = await r.json()
+                        yz_url = data.get("url") or "http://127.0.0.1:9880/"
+                        yz_version = data.get("version")
         except Exception:
             pass
         yz_pid = None
@@ -1192,11 +1201,12 @@ class TelegramInterface:
             pass
         if yz_responding:
             pid_str = f", PID {yz_pid}" if yz_pid else ""
-            return f"📊 yazbunu: çalışıyor (port 9880{pid_str})"
+            ver_str = f" v{yz_version}" if yz_version else ""
+            return (f"📊 yazbunu{ver_str}: çalışıyor (port 9880{pid_str})", yz_url)
         elif yz_pid:
-            return f"🟠 yazbunu: süreç var ama yanıt yok (PID {yz_pid})"
+            return (f"🟠 yazbunu: süreç var ama yanıt yok (PID {yz_pid})", None)
         else:
-            return "⚫ yazbunu: çalışmıyor"
+            return ("⚫ yazbunu: çalışmıyor", None)
 
     async def _build_proc_panel(self) -> tuple[str, list[list[InlineKeyboardButton]]]:
         """Build the Yaşar Usta status text and inline buttons."""
@@ -1280,7 +1290,7 @@ class TelegramInterface:
             llama_line = "⚫ llama-server: çalışmıyor"
 
         # ── Health: yazbunu ──
-        yz_line = await self._check_yazbunu_health()
+        yz_line, yz_url = await self._check_yazbunu_health()
 
         ts = _time.strftime("%H:%M:%S")
         text = (
@@ -4746,82 +4756,28 @@ Or: {{"type": "task", "confidence": 0.8}}"""
     async def _create_shopping_mission(
         self, query: str, chat_id: int, sub_intent: str | None = None,
     ) -> int:
-        """Create a shopping mission with researcher -> analyst -> advisor pipeline."""
-        mission_id = await add_mission(
+        """Create a shopping mission via the workflow runner."""
+        from src.workflows.engine.runner import WorkflowRunner
+
+        # Map sub_intents to workflow names
+        wf_map = {
+            "deep_research": "shopping",
+            "research": "shopping",
+            "compare": "combo_research",
+            "gift": "gift_recommendation",
+            "deals": "exploration",
+            "quick_search": "quick_search",
+        }
+        workflow_name = wf_map.get(sub_intent or "shopping", "shopping")
+
+        runner = WorkflowRunner()
+        mission_id = await runner.start(
+            workflow_name=workflow_name,
+            initial_input={
+                "user_query": query,
+                "chat_id": chat_id,
+            },
             title=f"Shopping: {query[:60]}",
-            description=query,
-            priority=8,
-            context={"chat_id": chat_id, "shopping_query": query, "sub_intent": sub_intent or "research"},
-        )
-
-        # Task 1: Product research (no dependencies)
-        task1_id = await add_task(
-            title=f"Research: {query[:50]}",
-            description=(
-                f"Research products for: {query}\n\n"
-                "Use shopping_search to find products across sources. "
-                f"Write findings to blackboard key 'shopping_top_products' (mission_id={mission_id}). "
-                f"Write price comparisons to blackboard key 'shopping_price_comparisons' (mission_id={mission_id})."
-            ),
-            agent_type="product_researcher",
-            priority=8,
-            mission_id=mission_id,
-            context={
-                "chat_id": chat_id,
-                "silent": True,
-                "mission_id": mission_id,
-                "shopping_query": query,
-            },
-        )
-
-        # Task 2: Deal analysis (depends on research)
-        task2_id = await add_task(
-            title=f"Analyze deals: {query[:50]}",
-            description=(
-                f"Analyze deals and timing for: {query}\n\n"
-                f"Read blackboard keys 'shopping_top_products' and 'shopping_price_comparisons' (mission_id={mission_id}). "
-                "Evaluate value, detect fake discounts, check timing. "
-                f"Write findings to blackboard key 'shopping_deal_verdicts' (mission_id={mission_id})."
-            ),
-            agent_type="deal_analyst",
-            priority=8,
-            depends_on=[task1_id],
-            mission_id=mission_id,
-            context={
-                "chat_id": chat_id,
-                "silent": True,
-                "mission_id": mission_id,
-                "shopping_query": query,
-            },
-        )
-
-        # Task 3: Synthesis & recommendation (depends on both)
-        task3_id = await add_task(
-            title=f"Recommend: {query[:50]}",
-            description=(
-                f"Final shopping recommendation for: {query}\n\n"
-                f"Read ALL blackboard keys: 'shopping_top_products', "
-                f"'shopping_price_comparisons', 'shopping_deal_verdicts' (mission_id={mission_id}). "
-                "Synthesize into a clear recommendation with top pick, budget option, "
-                "alternatives, warnings, and timing advice."
-            ),
-            agent_type="shopping_advisor",
-            priority=7,
-            depends_on=[task1_id, task2_id],
-            mission_id=mission_id,
-            context={
-                "chat_id": chat_id,
-                "mission_id": mission_id,
-                "shopping_query": query,
-                "is_synthesis": True,
-            },
-        )
-
-        logger.info(
-            "shopping mission created",
-            mission_id=mission_id,
-            tasks=[task1_id, task2_id, task3_id],
-            query=query[:80],
         )
         return mission_id
 
@@ -4844,27 +4800,16 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 "I'll research products, analyze deals, and send you a "
                 "recommendation. This may take a few minutes.",
             )
-            return
-
-        # Simple query: single shopping_advisor task (existing flow)
-        task_id = await add_task(
-            title=query[:80],
-            description=query,
-            tier="auto",
-            priority=TASK_PRIORITY.get("high", 8),
-            agent_type="shopping_advisor",
-            context={"chat_id": chat_id},
-        )
-        if task_id is None:
-            await self._reply(update,
-                "🛒 A shopping search for this is already in progress.",
+        else:
+            # Simple query → quick_search workflow
+            mission_id = await self._create_shopping_mission(
+                query, chat_id, sub_intent="quick_search"
             )
-            return
-        self.user_last_task_id[chat_id] = task_id
-        await self._reply(update,
-            f"🛒 Shopping task #{task_id} queued.\n"
-            f"I'll search prices and compare options for you.",
-        )
+            await self._reply(
+                update,
+                f"🛒 Searching for *{query}*... (mission #{mission_id})",
+                parse_mode="Markdown",
+            )
 
     async def cmd_research_product(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Deep product research. /research_product <product>"""
@@ -4875,21 +4820,12 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             return
         product = " ".join(context.args)
         chat_id = update.effective_chat.id
-        task_id = await add_task(
-            title=f"Research: {product[:60]}",
-            description=f"Deep research on: {product}. "
-                        f"Compare options, check reviews, analyze value, "
-                        f"check for fakes/grey market, suggest alternatives.",
-            tier="auto",
-            priority=TASK_PRIORITY.get("high", 8),
-            agent_type="product_researcher",
-            context={"shopping_sub_intent": "deep_research", "chat_id": chat_id},
+        mission_id = await self._create_shopping_mission(
+            product, chat_id, sub_intent="deep_research"
         )
-        if task_id is None:
-            await self._reply(update, "🔬 A research task for this product is already in progress.")
-            return
-        await self._reply(update,
-            f"🔬 Deep research queued for *{product}* (task #{task_id})",
+        await self._reply(
+            update,
+            f"🔬 Deep research started for *{product}* (mission #{mission_id})",
             parse_mode="Markdown",
         )
 

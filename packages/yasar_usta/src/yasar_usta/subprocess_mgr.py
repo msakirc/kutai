@@ -98,17 +98,21 @@ class SubprocessManager:
         asyncio.create_task(self._pipe_output(self.process.stderr, "stderr"))
 
     async def stop(self, timeout: int | None = None) -> None:
-        """Send SIGINT and wait for graceful shutdown."""
+        """Send graceful shutdown signal and wait."""
         if not self.process or self.process.returncode is not None:
             return
         self._stop_requested = True
         timeout = timeout or self.stop_timeout
         logger.info("Sending shutdown signal...")
         try:
-            # send_signal(SIGINT) works on both platforms — on Windows it
-            # delivers CTRL_C_EVENT via the asyncio transport, which the
-            # Python child process handles as KeyboardInterrupt.
-            self.process.send_signal(signal.SIGINT)
+            if sys.platform == "win32":
+                # On Windows, send_signal(SIGINT) raises ValueError with
+                # CREATE_NEW_PROCESS_GROUP.  Use CTRL_BREAK_EVENT which
+                # is delivered to the process group and triggers
+                # KeyboardInterrupt in the Python child.
+                os.kill(self.process.pid, signal.CTRL_BREAK_EVENT)
+            else:
+                self.process.send_signal(signal.SIGINT)
             await asyncio.wait_for(self.process.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning("Graceful shutdown timed out, killing...")

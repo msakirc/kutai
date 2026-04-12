@@ -98,17 +98,14 @@ class SubprocessManager:
         asyncio.create_task(self._pipe_output(self.process.stderr, "stderr"))
 
     async def stop(self, timeout: int | None = None) -> None:
-        """Send SIGINT (or CTRL_BREAK on Windows) and wait for graceful shutdown."""
+        """Send SIGINT and wait for graceful shutdown."""
         if not self.process or self.process.returncode is not None:
             return
         self._stop_requested = True
         timeout = timeout or self.stop_timeout
         logger.info("Sending shutdown signal...")
         try:
-            if sys.platform == "win32":
-                self.process.send_signal(signal.CTRL_BREAK_EVENT)
-            else:
-                self.process.send_signal(signal.SIGINT)
+            self.process.send_signal(signal.SIGINT)
             await asyncio.wait_for(self.process.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning("Graceful shutdown timed out, killing...")

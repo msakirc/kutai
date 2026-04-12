@@ -5471,12 +5471,23 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                         pid_file.unlink(missing_ok=True)
                     except Exception:
                         pass
-                    # Signal wrapper to start a new one via ensure_yazbunu
-                    # (wrapper checks on each loop iteration)
                     await query.answer("📊 Yazbunu yeniden başlatılıyor...")
-                    # Wait briefly for old process to die, then refresh
+                    # Restart yazbunu directly (don't rely on wrapper loop)
                     import asyncio as _aio
                     await _aio.sleep(2)
+                    import subprocess as _sp
+                    venv = Path(__file__).resolve().parent.parent.parent / ".venv"
+                    python = str(venv / "Scripts" / "python.exe") if sys.platform == "win32" else str(venv / "bin" / "python")
+                    _sp.Popen(
+                        [python, "-m", "yazbunu.server",
+                         "--log-dir", "./logs", "--port", "9880", "--host", "0.0.0.0"],
+                        stdout=open("logs/yazbunu.log", "a"),
+                        stderr=open("logs/yazbunu.log", "a"),
+                        cwd=str(Path(__file__).resolve().parent.parent.parent),
+                        creationflags=_sp.CREATE_NEW_PROCESS_GROUP | _sp.DETACHED_PROCESS,
+                        close_fds=True,
+                    )
+                    await _aio.sleep(1)
                     text, btn_rows = await self._build_proc_panel()
                     await query.edit_message_text(
                         text, parse_mode="Markdown",

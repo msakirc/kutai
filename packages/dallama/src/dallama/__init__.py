@@ -2,4 +2,9 @@
 from .config import (
     DaLLaMaConfig, DaLLaMaLoadError, InferenceSession, ServerConfig, ServerStatus,
 )
-__all__ = ["DaLLaMaConfig", "DaLLaMaLoadError", "InferenceSession", "ServerConfig", "ServerStatus"]
+from .dallama import DaLLaMa
+
+__all__ = [
+    "DaLLaMa", "DaLLaMaConfig", "DaLLaMaLoadError",
+    "InferenceSession", "ServerConfig", "ServerStatus",
+]

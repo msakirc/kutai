@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 # Import the keyboard/action data structures (no Telegram connection needed)
 from src.app.telegram_bot import (
     REPLY_KEYBOARD, KB_HIZMET, KB_ALISVERIS, KB_LISTEM, KB_GOREVLER,
-    KB_WORKFLOW_SELECT, KB_SISTEM, KB_YUK_MODU, KB_BASLAT,
+    KB_WORKFLOW_SELECT, KB_SISTEM, KB_YUK_MODU,
     _BUTTON_ACTIONS, _KB_PARENT, _CMD_ARG_PROMPTS, _PENDING_ACTION_TIMEOUT,
 )
 
@@ -23,7 +23,6 @@ ALL_KEYBOARDS = {
     "workflow_select": KB_WORKFLOW_SELECT,
     "sistem": KB_SISTEM,
     "yuk_modu": KB_YUK_MODU,
-    "baslat": KB_BASLAT,
 }
 
 SUB_KEYBOARDS = {k: v for k, v in ALL_KEYBOARDS.items() if k != "main"}
@@ -108,10 +107,6 @@ class TestKeyboardIntegrity:
         for kb in sub_kbs:
             texts = _get_all_button_texts(kb)
             assert "🔙 Geri" in texts, f"Missing back button in {kb}"
-
-    def test_baslat_keyboard_has_start_button(self):
-        texts = _get_all_button_texts(KB_BASLAT)
-        assert "▶️ Başlat" in texts
 
     def test_back_button_mapped_to_special_back(self):
         assert _BUTTON_ACTIONS["🔙 Geri"] == ("special", "back")

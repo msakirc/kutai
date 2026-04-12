@@ -161,8 +161,7 @@ KB_WORKFLOW_SELECT = _make_keyboard([
 
 KB_SISTEM = _make_keyboard([
     ["🖥 Yük Modu", "🐛 Debug", "📭 DLQ", "📋 Loglar"],
-    ["🖥️ Claude Code", "🔧 Yaşar Usta", "🗑 Reset Tasks", "☢️ Reset All"],
-    ["🔄 Yeniden Başlat", "⏹ Durdur"],
+    ["🗑 Reset Tasks", "☢️ Reset All"],
     ["🔙 Geri"],
 ])
 
@@ -170,10 +169,6 @@ KB_YUK_MODU = _make_keyboard([
     ["⚡ Full", "🔋 Heavy", "⚖️ Shared"],
     ["🔻 Minimal", "🤖 Otomatik"],
     ["🔙 Geri"],
-])
-
-KB_BASLAT = _make_keyboard([
-    ["▶️ Başlat"],
 ])
 
 # ── Keyboard State Management ────────────────────────────────────────────
@@ -235,19 +230,13 @@ _BUTTON_ACTIONS: dict[str, tuple[str, str]] = {
     "🐛 Debug": ("special", "debug"),
     "📭 DLQ": ("special", "dlq"),
     "📋 Loglar": ("cmd", "logs"),
-    "🖥️ Claude Code": ("special", "claude_code"),
-    "🔧 Yaşar Usta": ("special", "processes"),
     "🗑 Reset Tasks": ("special", "reset_tasks"),
     "☢️ Reset All": ("cmd", "reset_all"),
-    "🔄 Yeniden Başlat": ("special", "restart"),
-    "⏹ Durdur": ("special", "stop"),
     # ── Yük Modu sub-buttons ──
     "⚡ Full": ("special", "load_full"),
     "🔋 Heavy": ("special", "load_heavy"),
     "⚖️ Shared": ("special", "load_shared"),
     "🔻 Minimal": ("special", "load_minimal"),
-    # ── Wrapper start ──
-    "▶️ Başlat": ("special", "start_kutai"),
     # ── Back ──
     "🔙 Geri": ("special", "back"),
 }
@@ -650,11 +639,6 @@ class TelegramInterface:
                 await self._start_location_setup(update, None)
             return
 
-        # ── Processes ──
-        if action == "processes":
-            await self._show_processes(update, context)
-            return
-
         # ── Reset Tasks ──
         if action == "reset_tasks":
             keyboard = InlineKeyboardMarkup([[
@@ -675,37 +659,6 @@ class TelegramInterface:
             else:
                 context.args = [mode]
             await self.cmd_load(update, context)
-            return
-
-        # ── Restart / Stop ──
-        if action == "restart":
-            await update.message.reply_text(
-                "⚠️ Kutay yeniden başlatılsın mı?",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ Evet", callback_data="m:confirm:restart"),
-                     InlineKeyboardButton("❌ Hayır", callback_data="m:confirm:cancel")],
-                ]),
-            )
-            return
-
-        if action == "stop":
-            await update.message.reply_text(
-                "⚠️ Kutay durdurulsun mu?",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ Evet", callback_data="m:confirm:stop"),
-                     InlineKeyboardButton("❌ Hayır", callback_data="m:confirm:cancel")],
-                ]),
-            )
-            return
-
-        if action == "claude_code":
-            context.args = []
-            await self.cmd_claude(update, context)
-            return
-
-        if action == "start_kutai":
-            # Handled by wrapper — just send the text so wrapper picks it up
-            await update.message.reply_text("▶️ Başlatılıyor...")
             return
 
         # ── Reminder (one-shot) ──
@@ -1161,173 +1114,6 @@ class TelegramInterface:
             )
         except Exception as e:
             logger.error("DLQ listing failed", error=str(e))
-            await self._reply(update, f"❌ {_friendly_error(str(e))}")
-
-    @staticmethod
-    async def _check_yazbunu_health() -> tuple[str, str | None]:
-        """Check yazbunu health via /health endpoint and PID file.
-
-        Returns (status_line, viewer_url_or_None).
-        """
-        import aiohttp
-        yz_responding = False
-        yz_url: str | None = None
-        yz_version: str | None = None
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.get(
-                    "http://127.0.0.1:9880/health",
-                    timeout=aiohttp.ClientTimeout(total=3),
-                ) as r:
-                    if r.status == 200:
-                        yz_responding = True
-                        data = await r.json()
-                        yz_url = data.get("url") or "http://127.0.0.1:9880/"
-                        yz_version = data.get("version")
-        except Exception:
-            pass
-        yz_pid = None
-        try:
-            pid_file = Path("logs/yazbunu.pid")
-            pid = int(pid_file.read_text().strip())
-            # Check alive
-            import ctypes
-            k32 = ctypes.windll.kernel32
-            h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-            if h:
-                k32.CloseHandle(h)
-                yz_pid = pid
-        except Exception:
-            pass
-        if yz_responding:
-            pid_str = f", PID {yz_pid}" if yz_pid else ""
-            ver_str = f" v{yz_version}" if yz_version else ""
-            return (f"📊 yazbunu{ver_str}: çalışıyor (port 9880{pid_str})", yz_url)
-        elif yz_pid:
-            return (f"🟠 yazbunu: süreç var ama yanıt yok (PID {yz_pid})", None)
-        else:
-            return ("⚫ yazbunu: çalışmıyor", None)
-
-    async def _build_proc_panel(self) -> tuple[str, list[list[InlineKeyboardButton]]]:
-        """Build the Yaşar Usta status text and inline buttons."""
-        import subprocess as _sp
-        import time as _time
-
-        lines = []
-        wrappers = []
-        orchestrators = []
-        llama_pids = []
-
-        # Python processes
-        try:
-            raw = _sp.check_output(
-                ['wmic', 'process', 'where', "name='python.exe'",
-                 'get', 'ProcessId,CommandLine'],
-                text=True, timeout=5,
-            )
-            for line in raw.strip().splitlines():
-                line = line.strip()
-                if not line or line.startswith("CommandLine"):
-                    continue
-                pid = line.split()[-1] if line.split() else ""
-                if "wrapper" in line.lower():
-                    wrappers.append(pid)
-                elif "run.py" in line:
-                    orchestrators.append(pid)
-        except Exception as e:
-            lines.append(f"⚠️ Süreç listesi alınamadı: {e}")
-
-        # llama-server
-        try:
-            llama_raw = _sp.check_output(
-                ['tasklist', '/FI', 'IMAGENAME eq llama-server.exe'],
-                text=True, timeout=5,
-            )
-            for ll in llama_raw.splitlines():
-                if 'llama-server' in ll.lower():
-                    parts = ll.split()
-                    if len(parts) >= 2:
-                        llama_pids.append(parts[1])
-        except Exception:
-            pass
-
-        # Dedup: Windows venv stub + real Python show as 2 PIDs per process
-        n_wrappers = (len(wrappers) + 1) // 2
-        n_orchestrators = (len(orchestrators) + 1) // 2
-
-        # ── Health: Yaşar Usta ──
-        usta_line = f"🔵 Yaşar Usta: {n_wrappers} süreç"
-        if n_wrappers > 1:
-            usta_line += " ⚠️ duplicate!"
-
-        # ── Health: Kutay ──
-        kutay_healthy = False
-        heartbeat_age = None
-        for hb_path in ["logs/orchestrator.heartbeat", "logs/heartbeat"]:
-            try:
-                with open(hb_path, "r") as f:
-                    last_beat = float(f.read().strip())
-                heartbeat_age = _time.time() - last_beat
-                kutay_healthy = heartbeat_age < 60
-                break
-            except (FileNotFoundError, ValueError):
-                continue
-
-        if n_orchestrators == 0:
-            kutay_line = "💀 Kutay: çalışmıyor"
-        elif kutay_healthy:
-            age_str = f"{int(heartbeat_age)}sn önce" if heartbeat_age else ""
-            kutay_line = f"💚 Kutay: sağlıklı (heartbeat {age_str})"
-        elif heartbeat_age is not None:
-            kutay_line = f"🔴 Kutay: YANIT VERMİYOR ({int(heartbeat_age)}sn sessiz)"
-        else:
-            kutay_line = "⚪ Kutay: heartbeat dosyası yok"
-
-        # ── Health: llama-server ──
-        if llama_pids:
-            llama_line = f"🟡 llama-server: çalışıyor (PID {', '.join(llama_pids)})"
-        else:
-            llama_line = "⚫ llama-server: çalışmıyor"
-
-        # ── Health: yazbunu ──
-        yz_line, yz_url = await self._check_yazbunu_health()
-
-        ts = _time.strftime("%H:%M:%S")
-        text = (
-            f"🔧 *Yaşar Usta*\n\n"
-            f"{usta_line}\n"
-            f"{kutay_line}\n"
-            f"{llama_line}\n"
-            f"{yz_line}\n"
-            f"\n_Son güncelleme: {ts}_"
-        )
-
-        # ── Buttons ──
-        btn_rows = []
-        if n_orchestrators > 0 and not kutay_healthy and heartbeat_age and heartbeat_age > 30:
-            btn_rows.append([InlineKeyboardButton(
-                f"☠️ Kutay'ı öldür ({int(heartbeat_age)}sn yanıtsız)",
-                callback_data="m:proc:kill_kutai_only")])
-        btn_rows.append([
-            InlineKeyboardButton("♻️ Usta'yı Yeniden Başlat", callback_data="m:proc:kill_wrapper"),
-            InlineKeyboardButton("📊 Yazbunu Yeniden Başlat", callback_data="m:proc:restart_yazbunu"),
-        ])
-        btn_rows.append([
-            InlineKeyboardButton("🔃 Yenile", callback_data="m:proc:refresh"),
-            InlineKeyboardButton("🔙 Geri", callback_data="m:proc:back"),
-        ])
-
-        return text, btn_rows
-
-    async def _show_processes(self, update, context):
-        """Show running processes, Kutay health, and management buttons."""
-        try:
-            text, btn_rows = await self._build_proc_panel()
-            await update.message.reply_text(
-                text, parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(btn_rows))
-        except Exception as e:
-            logger.error("Process check failed", error=str(e))
             await self._reply(update, f"❌ {_friendly_error(str(e))}")
 
     async def _handle_quick_service(self, update, context, service: str):
@@ -2027,13 +1813,6 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("smartsearch", self.cmd_smartsearch))
         self.app.add_handler(CommandHandler("trace", self.cmd_trace))
         self.app.add_handler(CommandHandler("logs", self.cmd_logs))
-        # Wrapper control commands
-        self.app.add_handler(CommandHandler("kutai_restart", self.cmd_kutai_restart))
-        self.app.add_handler(CommandHandler("usta", self.cmd_usta))
-        self.app.add_handler(CommandHandler("restart", self.cmd_kutai_restart))
-        self.app.add_handler(CommandHandler("kutai_stop", self.cmd_kutai_stop))
-        self.app.add_handler(CommandHandler("stop", self.cmd_kutai_stop))
-        self.app.add_handler(CommandHandler("claude", self.cmd_claude))
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(filters.LOCATION, self.handle_location))
         self.app.add_handler(MessageHandler(
@@ -2403,57 +2182,6 @@ class TelegramInterface:
             "Are you sure?",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
-
-    # ─── Wrapper Control Commands ─────────────────────────────────────
-
-    async def cmd_usta(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show Yaşar Usta process management panel via /usta command."""
-        await self._show_processes(update, context)
-
-    async def cmd_kutai_restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Restart KutAI via the wrapper (exit code 42).
-
-        Uses a hard exit after a short delay as a fallback in case the
-        graceful shutdown path is blocked (e.g. stuck LLM call).
-        """
-        from yasar_usta import EXIT_RESTART
-        await self._reply(update,"🔄 Kutay yeniden başlatılıyor...")
-        if self.orchestrator:
-            self.orchestrator.requested_exit_code = EXIT_RESTART
-            self.orchestrator.shutdown_event.set()
-        # Hard exit fallback — fires only if graceful shutdown is truly stuck.
-        # 45s allows: task drain (30s) + DB close + Telegram stop + llama stop.
-        import threading
-        threading.Timer(45.0, lambda: os._exit(EXIT_RESTART)).start()
-
-    async def cmd_kutai_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Stop KutAI via the wrapper (exit code 0). Requires confirmation."""
-        keyboard = [[
-            InlineKeyboardButton("⏹ Evet, durdur", callback_data="stop_confirm"),
-            InlineKeyboardButton("Cancel", callback_data="stop_cancel"),
-        ]]
-        await self._reply(update,
-            "⚠️ *Kutay durdurulsun mu?*\nManuel olarak yeniden başlatmanız gerekecek.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-    async def _do_kutai_stop(self):
-        """Actually perform the KutAI stop after confirmation."""
-        from yasar_usta import EXIT_STOP
-        if self.orchestrator:
-            self.orchestrator.requested_exit_code = EXIT_STOP
-            self.orchestrator.shutdown_event.set()
-        import threading
-        threading.Timer(45.0, lambda: os._exit(0)).start()
-
-    # ─── Claude Code Remote Control ─────────────────────────────────────
-
-    async def cmd_claude(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Request the wrapper to start a Claude Code remote-control session."""
-        signal_file = Path("logs/claude_remote.signal")
-        signal_file.write_text(utc_now().isoformat(), encoding="utf-8")
-        await self._reply(update, "🖥️ Claude Code remote-control session requested.\nYaşar Usta will start it shortly.")
 
     # ─── Result Command ─────────────────────────────────────────────────
 
@@ -5346,224 +5074,6 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
             return
 
-        # ── Process Management Callbacks ──────────────────────────
-        if data.startswith("m:proc:"):
-            action = data.split(":")[-1]
-            if action == "back":
-                try:
-                    await query.delete_message()
-                except Exception:
-                    pass
-                return
-
-            # Confirmation prompts (same pattern as restart/stop)
-            if action == "kill_wrapper":
-                await query.edit_message_text(
-                    "💀 Tüm süreçleri kapatıp Yaşar Usta'yı yeniden başlatmak istediğinden emin misin?",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("✅ Evet", callback_data="m:confirm:proc_kill_wrapper"),
-                         InlineKeyboardButton("❌ Hayır", callback_data="m:confirm:cancel")],
-                    ]))
-                return
-            if action == "kill_kutai":
-                await query.edit_message_text(
-                    "🔄 Tüm süreçleri kapatmak istediğinden emin misin?\n"
-                    "Yaşar Usta otomatik yeniden başlatacak.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("✅ Evet", callback_data="m:confirm:proc_kill_kutai"),
-                         InlineKeyboardButton("❌ Hayır", callback_data="m:confirm:cancel")],
-                    ]))
-                return
-            if action == "kill_kutai_only":
-                await query.edit_message_text(
-                    "☠️ Kutay'ı öldürmek istediğinden emin misin?\n"
-                    "Yaşar Usta otomatik yeniden başlatacak.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("✅ Evet", callback_data="m:confirm:proc_kill_kutai_only"),
-                         InlineKeyboardButton("❌ Hayır", callback_data="m:confirm:cancel")],
-                    ]))
-                return
-
-            if action == "refresh":
-                try:
-                    text, btn_rows = await self._build_proc_panel()
-                    await query.edit_message_text(
-                        text, parse_mode="Markdown",
-                        reply_markup=InlineKeyboardMarkup(btn_rows))
-                except Exception as e:
-                    if "not modified" in str(e).lower():
-                        await query.answer("No changes")
-                    else:
-                        await query.answer(f"Refresh failed: {e}")
-                return
-
-            if action == "restart_yazbunu":
-                try:
-                    # Kill yazbunu — the wrapper's sidecar health check
-                    # will notice it's dead and restart it automatically.
-                    pid_file = Path("logs/yazbunu.pid")
-                    try:
-                        pid = int(pid_file.read_text().strip())
-                        os.kill(pid, signal.SIGTERM)
-                        pid_file.unlink(missing_ok=True)
-                    except Exception:
-                        pass
-                    await query.answer("📊 Yazbunu yeniden başlatılıyor...")
-                    import asyncio as _aio
-                    await _aio.sleep(5)  # wait for wrapper to restart it
-                    text, btn_rows = await self._build_proc_panel()
-                    await query.edit_message_text(
-                        text, parse_mode="Markdown",
-                        reply_markup=InlineKeyboardMarkup(btn_rows))
-                except Exception as e:
-                    await query.answer(f"Restart failed: {e}")
-                return
-
-            return
-
-        # ── Lifecycle Confirmation Callbacks ──────────────────────
-        if data == "m:confirm:restart":
-            try:
-                handler = getattr(self, 'cmd_kutai_restart', None)
-                if handler:
-                    context.args = []
-                    class _ConfirmUpdate:
-                        def __init__(self, message):
-                            self.message = message
-                            self.effective_chat = message.chat
-                    await handler(_ConfirmUpdate(query.message), context)
-                else:
-                    await query.message.reply_text("❌ Restart handler bulunamadı.")
-            except Exception as e:
-                await query.message.reply_text(f"❌ {e}")
-            return
-
-        if data == "m:confirm:stop":
-            try:
-                handler = getattr(self, 'cmd_kutai_stop', None)
-                if handler:
-                    context.args = ["--force"]
-                    class _ConfirmUpdate:
-                        def __init__(self, message):
-                            self.message = message
-                            self.effective_chat = message.chat
-                    await handler(_ConfirmUpdate(query.message), context)
-                else:
-                    await query.message.reply_text("❌ Stop handler bulunamadı.")
-            except Exception as e:
-                await query.message.reply_text(f"❌ {e}")
-            return
-
-        if data == "m:confirm:proc_kill_kutai_only":
-            import subprocess as _sp
-            try:
-                raw = _sp.check_output(
-                    ['wmic', 'process', 'where', "name='python.exe'",
-                     'get', 'ProcessId,CommandLine'],
-                    text=True, timeout=5,
-                )
-                killed = []
-                for line in raw.strip().splitlines():
-                    line = line.strip()
-                    if not line or line.startswith("CommandLine"):
-                        continue
-                    pid = line.split()[-1]
-                    if "run.py" in line:
-                        try:
-                            _sp.run(['taskkill', '/F', '/PID', pid],
-                                    capture_output=True, timeout=5)
-                            killed.append(pid)
-                        except Exception:
-                            pass
-                msg = (f"☠️ Kutay killed: PID {', '.join(killed) if killed else 'none'}\n"
-                       f"⏳ Yaşar Usta otomatik yeniden başlatacak...")
-            except Exception as e:
-                msg = f"❌ Kill failed: {e}"
-            try:
-                await query.edit_message_text(msg)
-            except Exception:
-                await query.message.reply_text(msg)
-            return
-
-        if data in ("m:confirm:proc_kill_wrapper", "m:confirm:proc_kill_kutai"):
-            import subprocess as _sp
-            start_wrapper = data.endswith("kill_wrapper")
-            try:
-                raw = _sp.check_output(
-                    ['wmic', 'process', 'where', "name='python.exe'",
-                     'get', 'ProcessId,CommandLine'],
-                    text=True, timeout=5,
-                )
-                # Collect PIDs to kill — wrappers first, then orchestrators
-                wrapper_pids = []
-                orch_pids = []
-                my_pid = os.getpid()
-                for line in raw.strip().splitlines():
-                    line = line.strip()
-                    if not line or line.startswith("CommandLine"):
-                        continue
-                    pid = line.split()[-1]
-                    try:
-                        pid_int = int(pid)
-                    except ValueError:
-                        continue
-                    if pid_int == my_pid:
-                        continue
-                    if "wrapper" in line.lower():
-                        wrapper_pids.append(pid)
-                    elif "run.py" in line:
-                        orch_pids.append(pid)
-
-                # Spawn new wrapper BEFORE killing (it will wait on lock until old one dies)
-                if start_wrapper:
-                    import sys
-                    _sp.Popen(
-                        [sys.executable, "kutai_wrapper.py"],
-                        cwd=os.path.dirname(os.path.dirname(os.path.dirname(
-                            os.path.abspath(__file__)))),
-                        creationflags=0x00000008,  # DETACHED_PROCESS
-                    )
-
-                # Kill wrappers first (releases lock for the new one)
-                killed = []
-                for pid in wrapper_pids:
-                    try:
-                        _sp.run(['taskkill', '/F', '/PID', pid],
-                                capture_output=True, timeout=5)
-                        killed.append(pid)
-                    except Exception:
-                        pass
-                # Clean lock files so new wrapper can start
-                for lf in ["logs/wrapper.lock", "logs/wrapper.lk"]:
-                    try:
-                        os.remove(lf)
-                    except Exception:
-                        pass
-                # Kill orchestrators (including self — do this LAST)
-                for pid in orch_pids:
-                    try:
-                        _sp.run(['taskkill', '/F', '/PID', pid],
-                                capture_output=True, timeout=5)
-                        killed.append(pid)
-                    except Exception:
-                        pass
-
-                if start_wrapper:
-                    msg = (f"💀 Killed: PID {', '.join(killed) if killed else 'none'}\n"
-                           f"✅ Yaşar Usta başlatıldı.")
-                else:
-                    msg = (f"💀 Killed: PID {', '.join(killed) if killed else 'none'}\n"
-                           f"⏳ /kutai\\_start gönderin.")
-            except Exception as e:
-                msg = f"❌ Kill failed: {e}"
-            # This message may not arrive if we kill ourselves first,
-            # but the new wrapper's "Bennn Yaşar Usta" will confirm success
-            try:
-                await query.edit_message_text(msg, parse_mode="Markdown")
-            except Exception:
-                pass
-            return
-
         if data == "m:confirm:cancel":
             try:
                 await query.edit_message_text("❌ İptal edildi.")
@@ -5867,14 +5377,6 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             return
         elif data == "resetall_cancel":
             await query.edit_message_text("Cancelled.")
-            return
-
-        if data == "stop_confirm":
-            await query.edit_message_text("⏹ Kutay durduruluyor...")
-            await self._do_kutai_stop()
-            return
-        elif data == "stop_cancel":
-            await query.edit_message_text("İptal edildi. Kutay çalışmaya devam ediyor.")
             return
 
         # Approval/rejection buttons (approve_<id>, reject_<id>)

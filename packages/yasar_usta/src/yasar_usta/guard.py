@@ -71,6 +71,8 @@ class ProcessGuard:
         self._telegram_poller: asyncio.Task | None = None
         self._signal_watcher: asyncio.Task | None = None
         self._shutdown = False
+        self._restart_requested = False
+        self._stop_requested = False
         self._guard_start_time = time.time()
 
     # ── Telegram helpers ──────────────────────────────────────────────
@@ -294,14 +296,33 @@ class ProcessGuard:
                     if (text == self.msgs.btn_start
                             or text.startswith("/start")
                             or text.startswith("/kutai_start")):
-                        await self._send(self.msgs.starting.format(app_name=self.cfg.app_name))
-                        await self._start_app(from_poller=True)
-                        return
+                        if not self.subprocess.running:
+                            await self._send(self.msgs.starting.format(app_name=self.cfg.app_name))
+                            await self._start_app()
+                        else:
+                            await self._send_status()
 
                     elif (text == self.msgs.btn_status
                           or text.startswith("/status")
                           or text.startswith("/kutai_status")):
                         await self._send_status()
+
+                    elif text.startswith("/restart") and not text.startswith("/restart_guard") and not text.startswith("/restart_usta"):
+                        if self.subprocess.running:
+                            await self._send(self.msgs.restarting.format(app_name=self.cfg.app_name))
+                            self._restart_requested = True
+                            await self.subprocess.stop()
+                        else:
+                            await self._send(self.msgs.starting.format(app_name=self.cfg.app_name))
+                            await self._start_app()
+
+                    elif text.startswith("/stop"):
+                        if self.subprocess.running:
+                            await self._send(self.msgs.stopped.format(app_name=self.cfg.app_name))
+                            self._stop_requested = True
+                            await self.subprocess.stop()
+                        else:
+                            await self._send_status()
 
                     elif (text.startswith("/restart_guard")
                           or text.startswith("/restart_usta")):
@@ -334,7 +355,7 @@ class ProcessGuard:
                         if asyncio.iscoroutine(result):
                             await result
 
-                    elif text:
+                    elif text and not self.subprocess.running:
                         now = time.time()
                         if now - last_down_reply > DOWN_REPLY_COOLDOWN:
                             last_down_reply = now
@@ -349,19 +370,8 @@ class ProcessGuard:
                 logger.error("Telegram poll error: %s", e)
                 await asyncio.sleep(5)
 
-    async def _start_app(self, from_poller: bool = False) -> None:
-        """Stop the Telegram poller (if running) and start the managed app.
-
-        Must always go through this method to avoid dual-polling where both
-        the guard's poll loop and the managed app's Telegram bot consume
-        updates simultaneously.
-        """
-        if from_poller:
-            # Poller task is about to return — just clear reference
-            self._telegram_poller = None
-        else:
-            await self._stop_telegram_poller()
-        await asyncio.sleep(2)  # let any in-flight long-poll drain
+    async def _start_app(self) -> None:
+        """Start the managed app subprocess."""
         await self.subprocess.start()
 
     async def _restart_self(self) -> None:
@@ -372,7 +382,6 @@ class ProcessGuard:
         if self.subprocess.running:
             await self.subprocess.stop()
         await self._stop_telegram_poller()
-        await self.telegram.flush_updates()
 
         import subprocess as _sp
         python = self.subprocess.command[0] if self.subprocess.command else sys.executable
@@ -422,15 +431,17 @@ class ProcessGuard:
             reply_markup=self._kb(),
         )
 
+        # Always-on Telegram poller — runs for the entire lifetime of the guard
+        await self._start_telegram_poller()
+
         # Start app
-        await self.subprocess.start()
+        await self._start_app()
         if self.subprocess.running:
             self.backoff.mark_started()
             await self._notify_started()
             await self._start_signal_watcher()
         else:
-            logger.info("Initial start failed — entering Telegram poll mode")
-            await self._start_telegram_poller()
+            logger.info("Initial start failed — waiting for /start command via Telegram")
 
         while not self._shutdown:
             try:
@@ -446,8 +457,7 @@ class ProcessGuard:
                 if exit_code == -1:
                     if (self.backoff.last_crash_time
                             and (time.time() - self.backoff.last_crash_time) < 10):
-                        logger.info("No process — entering Telegram poll mode")
-                        await self._start_telegram_poller()
+                        logger.info("No process — waiting for /start command via Telegram")
                         while not self._shutdown and not self.subprocess.running:
                             await asyncio.sleep(1)
                         if self.subprocess.running:
@@ -460,7 +470,6 @@ class ProcessGuard:
                     logger.error("App hung — restarting after 5s")
                     await self._send(self.msgs.hung.format(
                         app_name=self.cfg.app_name, delay=5))
-                    await self._start_telegram_poller()
                     for _ in range(5):
                         if self._shutdown or self.subprocess.running:
                             break
@@ -475,6 +484,29 @@ class ProcessGuard:
 
                 logger.info("App exited with code %d", exit_code)
 
+                # Check intent flags set by the Telegram poller
+                if self._restart_requested:
+                    self._restart_requested = False
+                    logger.info("Restart requested via Telegram — restarting app")
+                    await self._start_app()
+                    if self.subprocess.running:
+                        self.backoff.mark_started()
+                        await self._notify_started()
+                        await self._start_signal_watcher()
+                    continue
+
+                if self._stop_requested:
+                    self._stop_requested = False
+                    logger.info("Stop requested via Telegram — app stopped cleanly")
+                    # Already notified in poller; just wait for /start
+                    while not self._shutdown and not self.subprocess.running:
+                        await asyncio.sleep(1)
+                    if self.subprocess.running:
+                        self.backoff.mark_started()
+                        await self._notify_started()
+                        await self._start_signal_watcher()
+                    continue
+
                 if exit_code == self.cfg.restart_exit_code:
                     await self._send(self.msgs.restarting.format(app_name=self.cfg.app_name))
                     await self._start_app()
@@ -487,7 +519,6 @@ class ProcessGuard:
                 elif exit_code == 0:
                     logger.info("App stopped cleanly")
                     await self._notify_stopped()
-                    await self._start_telegram_poller()
                     while not self._shutdown and not self.subprocess.running:
                         await asyncio.sleep(1)
                     if self.subprocess.running:
@@ -506,12 +537,10 @@ class ProcessGuard:
                     await self._notify_crash(exit_code)
 
                     if not self.cfg.auto_restart:
-                        await self._start_telegram_poller()
                         while not self._shutdown and not self.subprocess.running:
                             await asyncio.sleep(1)
                         continue
 
-                    await self._start_telegram_poller()
                     for _ in range(backoff_delay):
                         if self._shutdown or self.subprocess.running:
                             break
@@ -533,7 +562,6 @@ class ProcessGuard:
                     await self._send(self.msgs.wrapper_error.format(error=repr(exc)))
                 except Exception:
                     pass
-                await self._start_telegram_poller()
                 while not self._shutdown and not self.subprocess.running:
                     await asyncio.sleep(5)
 

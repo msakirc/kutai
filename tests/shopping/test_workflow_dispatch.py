@@ -30,8 +30,8 @@ class TestQuickSearchWorkflow(unittest.TestCase):
         from src.workflows.engine.loader import load_workflow
         wf = load_workflow("quick_search")
         step_agents = {s["id"]: s.get("agent") for s in wf.steps}
-        self.assertEqual(step_agents["0.1"], "product_researcher")
-        self.assertEqual(step_agents["1.1"], "shopping_advisor")
+        self.assertEqual(step_agents["0.1"], "shopping_pipeline")
+        self.assertEqual(step_agents["1.1"], "shopping_pipeline")
 
 
 class TestShoppingWorkflow(unittest.TestCase):
@@ -54,18 +54,19 @@ class TestShoppingWorkflow(unittest.TestCase):
         step_agents = {s["id"]: s.get("agent") for s in wf.steps}
         self.assertEqual(step_agents["0.1"], "shopping_advisor")
         self.assertEqual(step_agents["1.1"], "shopping_clarifier")
-        self.assertEqual(step_agents["2.1"], "product_researcher")
+        self.assertEqual(step_agents["2.1"], "shopping_pipeline")
         self.assertEqual(step_agents["3.1"], "deal_analyst")
         self.assertEqual(step_agents["4.1"], "shopping_advisor")
-        self.assertEqual(step_agents["5.1"], "shopping_advisor")
+        self.assertEqual(step_agents["5.1"], "shopping_pipeline")
 
-    def test_search_step_tools_hint(self):
+    def test_pipeline_steps_have_no_tools_hint(self):
+        """Pipeline steps don't need tools_hint — they run Python directly."""
         from src.workflows.engine.loader import load_workflow
         wf = load_workflow("shopping")
-        search_step = next(s for s in wf.steps if s["id"] == "2.1")
-        tools_hint = search_step.get("tools_hint", [])
-        self.assertIn("shopping_search", tools_hint)
-        self.assertIn("shopping_fetch_reviews", tools_hint)
+        for s in wf.steps:
+            if s.get("agent") == "shopping_pipeline":
+                self.assertEqual(s.get("tools_hint", []), [],
+                    f"Step {s['id']} should have empty tools_hint")
 
 
 class TestSubIntentMapping(unittest.TestCase):

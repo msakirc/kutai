@@ -99,7 +99,7 @@ config = GuardConfig(
         name="yazbunu",
         command=[venv_python, "-m", "yazbunu.server",
                  "--log-dir", "./logs", "--port", "9880", "--host", "0.0.0.0"],
-        health_url="http://127.0.0.1:9880/",
+        health_url="http://127.0.0.1:9880/health",
         pid_file=str(PROJECT_ROOT / "logs" / "yazbunu.pid"),
         detached=True,
         auto_start=True,

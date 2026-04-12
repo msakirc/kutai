@@ -4,8 +4,7 @@
   "metadata": {
     "description": "Lightweight 2-step shopping search pipeline. Calls shopping_search (16 Turkish e-commerce sites + 4 community sources in parallel), then formats and delivers results. Designed to complete in under 60 seconds. Escalates to the full shopping workflow if zero products are returned.",
     "agents_required": [
-      "product_researcher",
-      "shopping_advisor"
+      "shopping_pipeline"
     ],
     "performance_target": {
       "max_duration_seconds": 60,
@@ -34,9 +33,9 @@
       "phase": "phase_0",
       "name": "execute_product_search",
       "title": "Execute Product Search",
-      "agent": "product_researcher",
+      "agent": "shopping_pipeline",
       "difficulty": "easy",
-      "tools_hint": ["shopping_search"],
+      "tools_hint": [],
       "depends_on": [],
       "input_artifacts": ["user_query"],
       "output_artifacts": ["search_results"],
@@ -54,7 +53,7 @@
       "phase": "phase_1",
       "name": "format_and_deliver",
       "title": "Format & Deliver Response",
-      "agent": "shopping_advisor",
+      "agent": "shopping_pipeline",
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": ["0.1"],

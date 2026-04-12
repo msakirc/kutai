@@ -5463,7 +5463,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
             if action == "restart_yazbunu":
                 try:
-                    # Kill existing yazbunu by PID file
+                    # Kill yazbunu — the wrapper's sidecar health check
+                    # will notice it's dead and restart it automatically.
                     pid_file = Path("logs/yazbunu.pid")
                     try:
                         pid = int(pid_file.read_text().strip())
@@ -5472,22 +5473,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     except Exception:
                         pass
                     await query.answer("📊 Yazbunu yeniden başlatılıyor...")
-                    # Restart yazbunu directly (don't rely on wrapper loop)
                     import asyncio as _aio
-                    await _aio.sleep(2)
-                    import subprocess as _sp
-                    venv = Path(__file__).resolve().parent.parent.parent / ".venv"
-                    python = str(venv / "Scripts" / "python.exe") if sys.platform == "win32" else str(venv / "bin" / "python")
-                    _sp.Popen(
-                        [python, "-m", "yazbunu.server",
-                         "--log-dir", "./logs", "--port", "9880", "--host", "0.0.0.0"],
-                        stdout=open("logs/yazbunu.log", "a"),
-                        stderr=open("logs/yazbunu.log", "a"),
-                        cwd=str(Path(__file__).resolve().parent.parent.parent),
-                        creationflags=_sp.CREATE_NEW_PROCESS_GROUP | _sp.DETACHED_PROCESS,
-                        close_fds=True,
-                    )
-                    await _aio.sleep(1)
+                    await _aio.sleep(5)  # wait for wrapper to restart it
                     text, btn_rows = await self._build_proc_panel()
                     await query.edit_message_text(
                         text, parse_mode="Markdown",

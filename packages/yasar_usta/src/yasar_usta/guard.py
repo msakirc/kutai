@@ -192,7 +192,10 @@ class ProcessGuard:
     # ── Signal file watcher ───────────────────────────────────────────
 
     async def _start_signal_watcher(self) -> None:
-        if self._signal_watcher or not self.cfg.claude_signal_file:
+        if self._signal_watcher:
+            return
+        # Watcher runs if we have a signal file to watch OR a sidecar to monitor
+        if not self.cfg.claude_signal_file and not self.sidecar:
             return
         self._signal_watcher = asyncio.create_task(self._signal_watch_loop())
 
@@ -206,13 +209,20 @@ class ProcessGuard:
             self._signal_watcher = None
 
     async def _signal_watch_loop(self) -> None:
-        signal_file = Path(self.cfg.claude_signal_file)
+        signal_file = Path(self.cfg.claude_signal_file) if self.cfg.claude_signal_file else None
+        sidecar_check_counter = 0
         while True:
             try:
                 await asyncio.sleep(3)
-                if signal_file.exists():
+                # Check for Claude remote signal
+                if signal_file and signal_file.exists():
                     signal_file.unlink()
                     await self._handle_remote()
+                # Check sidecar health every ~30s (10 iterations * 3s)
+                sidecar_check_counter += 1
+                if self.sidecar and sidecar_check_counter >= 10:
+                    sidecar_check_counter = 0
+                    await self.sidecar.ensure()
             except asyncio.CancelledError:
                 return
             except Exception as e:

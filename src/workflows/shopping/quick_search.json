@@ -1,67 +1,67 @@
 {
   "plan_id": "quick_search",
-  "version": "1.0",
+  "version": "2.0",
   "metadata": {
-    "description": "Lightweight quick shopping search pipeline. Designed for fast product lookups that can be answered in under 30 seconds. Runs a single web search via Perplexica, summarizes results with prices using an LLM, and returns immediately. If the results are insufficient or the query is complex, escalates to the full shopping workflow.",
+    "description": "Lightweight 2-step shopping search pipeline. Calls shopping_search (16 Turkish e-commerce sites + 4 community sources in parallel), then formats and delivers results. Designed to complete in under 60 seconds. Escalates to the full shopping workflow if zero products are returned.",
     "agents_required": [
-      "researcher"
+      "product_researcher",
+      "shopping_advisor"
     ],
     "performance_target": {
-      "max_duration_seconds": 30,
-      "escalation_trigger": "insufficient_results or complex_query_detected"
+      "max_duration_seconds": 60,
+      "escalation_trigger": "insufficient_results"
     },
-    "escalation_target": "shopping"
+    "escalation_target": "shopping",
+    "timeout_hours": 1
   },
   "phases": [
     {
-      "phase_id": "phase_0",
-      "title": "Parse Query",
-      "steps": [
-        {
-          "step_id": "0.1",
-          "title": "Quick Intent Classification",
-          "agent": "researcher",
-          "input_artifacts": ["user_query"],
-          "output_artifacts": ["quick_intent"],
-          "instructions": "Rapidly classify the user query. Determine if this is a simple lookup (specific product price check, basic product info) that can be handled by quick_search, or a complex request (comparison, multi-product, vague need) that should escalate to the full shopping workflow. Extract the core search terms. If the query involves multiple products, budget optimization, or subjective criteria like 'best', flag for potential escalation after search."
-        }
-      ]
+      "id": "phase_0",
+      "name": "Execute Search",
+      "goal": "Call shopping_search and capture structured results.",
+      "depends_on_phases": []
     },
     {
-      "phase_id": "phase_1",
-      "title": "Web Search",
-      "steps": [
-        {
-          "step_id": "1.1",
-          "title": "Execute Perplexica Search",
-          "agent": "researcher",
-          "input_artifacts": ["quick_intent"],
-          "output_artifacts": ["search_results"],
-          "instructions": "Execute a single focused web search via Perplexica using the extracted search terms. Use the 'shopping' or 'product' focus mode if available. Capture the top 5-10 results with titles, URLs, snippets, and any structured price data. Time-box this step to 10 seconds maximum."
+      "id": "phase_1",
+      "name": "Format & Deliver",
+      "goal": "Turn raw search results into a user-facing response.",
+      "depends_on_phases": ["phase_0"]
+    }
+  ],
+  "steps": [
+    {
+      "id": "0.1",
+      "phase": "phase_0",
+      "name": "execute_product_search",
+      "title": "Execute Product Search",
+      "agent": "product_researcher",
+      "difficulty": "easy",
+      "tools_hint": ["shopping_search"],
+      "depends_on": [],
+      "input_artifacts": ["user_query"],
+      "output_artifacts": ["search_results"],
+      "instruction": "Call the shopping_search tool with the user's query from user_query artifact. The tool automatically searches 16 Turkish e-commerce sites (Trendyol, Hepsiburada, Amazon TR, etc.) and 4 community sources (Technopat, Şikayetvar, DonanımHaber, Ekşi Sözlük) in parallel, returning structured products with prices, ratings, and community opinions. Do NOT fabricate any product names, prices, or availability data — only report what the tool returns. If the tool returns at least one product with a price, capture the full tool output in search_results. If the tool returns zero products, set escalation_needed=true in search_results with reason='no_products_found'.",
+      "done_when": "shopping_search has been called and its output is captured in search_results, OR escalation_needed is set to true.",
+      "artifact_schema": {
+        "search_results": {
+          "type": "object",
+          "required_fields": ["formatted_text"]
         }
-      ]
+      }
     },
     {
-      "phase_id": "phase_2",
-      "title": "Summarize with Prices",
-      "steps": [
-        {
-          "step_id": "2.1",
-          "title": "LLM Summarize Results",
-          "agent": "researcher",
-          "input_artifacts": ["search_results", "quick_intent"],
-          "output_artifacts": ["quick_summary"],
-          "instructions": "Summarize the search results into a concise shopping response. Extract and highlight: product names, prices (with currency), retailer names, availability status, and any notable deals. Format as a brief, scannable answer. If price data is found from at least one source, include it. If the results are too thin (no prices found, irrelevant results, or ambiguous products), set escalation_needed=true with a reason."
-        },
-        {
-          "step_id": "2.2",
-          "title": "Evaluate Sufficiency",
-          "agent": "researcher",
-          "input_artifacts": ["quick_summary", "quick_intent"],
-          "output_artifacts": ["final_response"],
-          "instructions": "Check if the quick_summary adequately answers the user's query. Criteria: at least 1 product with a price, relevance to the query, and no major ambiguity. If sufficient, deliver the quick_summary as the final_response. If insufficient (escalation_needed=true), return a brief interim message to the user ('Let me do a deeper search...') and trigger escalation to the full shopping workflow, passing along the quick_intent and any partial results as context."
-        }
-      ]
+      "id": "1.1",
+      "phase": "phase_1",
+      "name": "format_and_deliver",
+      "title": "Format & Deliver Response",
+      "agent": "shopping_advisor",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": ["0.1"],
+      "input_artifacts": ["search_results", "user_query"],
+      "output_artifacts": ["shopping_response"],
+      "instruction": "Read the search_results artifact. If search_results has a formatted_text field, use it as the basis for the response. Enhance with: a brief one-sentence intro referencing the user's query, a highlight of the best-value option (lowest price for adequate specs, or highest-rated), and any notable warnings (e.g. suspiciously low prices, mixed reviews). Keep the response concise and scannable — bullet points for products, bold for prices. If search_results has escalation_needed=true, respond with a short message such as 'Derin arama başlatılıyorum...' ('Let me do a deeper search...') and set escalation=true in shopping_response.",
+      "done_when": "shopping_response contains a user-facing answer with real prices and source names, or escalation=true is set."
     }
   ]
 }

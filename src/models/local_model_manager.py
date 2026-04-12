@@ -1,48 +1,33 @@
 # local_model_manager.py
 """
-Local Model Manager — controls llama-server lifecycle on a single GPU.
+Backward-compatible shim wrapping the DaLLaMa package.
 
-Responsibilities:
-  - Start/stop llama-server with specific GGUF models
-  - Model swapping with minimal downtime
-  - Health checking and auto-restart
-  - Work queue batching (minimize swaps)
-  - Mutex: only one model loaded at a time
+All existing import paths and function signatures are preserved.
+Consumers see the same `get_local_manager()`, `get_runtime_state()`,
+`LocalModelManager`, `ModelRuntimeState`, and `ModelSwapRequest`
+they've always used — the implementation delegates to DaLLaMa.
 """
-
 from __future__ import annotations
 
-import os
 import asyncio
-import subprocess
+import atexit
+import logging
+import os
 import time
 from dataclasses import dataclass, field
-
-from src.infra.logging_config import get_logger
-from pathlib import Path
 from typing import Optional
 
-import httpx
+logger = logging.getLogger("models.local_model_manager")
 
-from .gpu_monitor import get_gpu_monitor
-from .model_registry import ModelInfo, get_registry
-from .gpu_scheduler import get_gpu_scheduler
 
-logger = get_logger("models.local_model_manager")
-
-# Path to llama-server executable — set via env var or auto-detect
-LLAMA_SERVER_PATH = Path(
-    os.environ.get("LLAMA_SERVER_PATH", "llama-server")
-)
-LLAMA_SERVER_PORT = int(os.environ.get("LLAMA_SERVER_PORT", "8080"))
-
+# ── Preserved dataclasses ────────────────────────────────────────────────────
 
 @dataclass
 class ModelSwapRequest:
-    """A request to load a specific model, with an event to signal completion."""
+    """Kept for backward compatibility (some tests import it)."""
     model_name: str
     reason: str
-    priority: int = 5              # higher = more urgent
+    priority: int = 5
     event: asyncio.Event = field(default_factory=asyncio.Event)
     success: bool = False
 
@@ -69,284 +54,75 @@ class ModelRuntimeState:
     loaded_at: float = field(default_factory=time.time)
 
 
-# Restart circuit breaker thresholds
-_RESTART_FAIL_THRESHOLD: int = 2   # failures before cooldown
-_RESTART_COOLDOWN_S: float = 300.0  # 5 minutes
-
+# ── Shim class ───────────────────────────────────────────────────────────────
 
 class LocalModelManager:
-    """
-    Manages a single llama-server process.
+    """Thin wrapper around DaLLaMa that preserves the old public surface."""
 
-    Key design choices:
-    - asyncio.Lock ensures only one swap happens at a time
-    - Swap requests are queued and deduplicated
-    - Health checks run periodically
-    - If the process dies, auto-restart with the same model
-    - Circuit breaker prevents restart loops on persistent failures
-    """
+    def __init__(self) -> None:
+        from dallama import DaLLaMa, DaLLaMaConfig
 
-    def __init__(self):
-        self.current_model: Optional[str] = None
-        self.process: Optional[subprocess.Popen] = None
-        self.port: int = LLAMA_SERVER_PORT
-        self.api_base: str = f"http://127.0.0.1:{self.port}"
+        port = int(os.environ.get("LLAMA_SERVER_PORT", "8080"))
+        llama_path = os.environ.get("LLAMA_SERVER_PATH", "llama-server")
+        log_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs"
+        )
+        os.environ.setdefault("DALLAMA_LOG_DIR", log_dir)
 
-        self._swap_lock = asyncio.Lock()
-        self._swap_queue: asyncio.Queue[ModelSwapRequest] = asyncio.Queue()
-        # Swap state: 0.0 = no swap in progress, >0 = monotonic time swap started.
-        # Using a timestamp instead of a boolean lets callers detect stale reads:
-        # if swap_started_at changed between their read and their action, the
-        # state they read is stale.
+        config = DaLLaMaConfig(
+            llama_server_path=llama_path,
+            port=port,
+            on_ready=self._on_ready,
+            get_vram_free_mb=self._get_vram_free_mb,
+        )
+        self._dallama = DaLLaMa(config)
+        self._port = port
+        self.api_base: str = f"http://127.0.0.1:{port}"
+
+        # State that consumers read directly
         self.swap_started_at: float = 0.0
-        # Event that callers can await — cleared during swap, set when ready.
-        # This lets inference requests wait for the swap to finish instead of
-        # timing out against the GPU scheduler.
         self._swap_ready = asyncio.Event()
-        self._swap_ready.set()  # starts ready (no swap in progress)
+        self._swap_ready.set()
+        self.runtime_state: ModelRuntimeState | None = None
+
         self._last_request_time: float = 0.0
-        self._started_at: float = 0.0
         self._total_swaps: int = 0
-        self._thinking_enabled: bool = False  # tracks server-side thinking state
-        self._vision_enabled: bool = False    # tracks whether --mmproj is loaded
+        self._started = False
 
-        # Tracks how many inference requests are currently in-flight.
-        # Model swaps wait for this to reach zero before killing the server.
-        self._active_inference_count: int = 0
-        self._inference_idle = asyncio.Event()
-        self._inference_idle.set()  # starts idle
-        # Generation counter — bumped on force-swap so orphaned inferences
-        # from pre-swap generations don't corrupt the count when they finish.
-        self._inference_generation: int = 0
-
-        self.runtime_state: ModelRuntimeState | None = None  # populated after successful swap
-
-        # ── Restart circuit breaker ──────────────────────────────
-        # Prevents restart loops when a model consistently fails to load.
-        # After _RESTART_FAIL_THRESHOLD consecutive failures for the SAME
-        # model, further load attempts are refused for _RESTART_COOLDOWN_S.
-        self._restart_fail_count: int = 0
-        self._restart_fail_model: str | None = None
-        self._restart_cooldown_until: float = 0.0
-
-        # Set by idle unloader before stopping, cleared after.
-        # Prevents the health watchdog from misinterpreting a deliberate
-        # idle unload as a crash.
-        self._idle_unload_in_progress: bool = False
-
+        # GPU scheduler for acquire/release — same as before
+        from .gpu_scheduler import get_gpu_scheduler
         self._scheduler = get_gpu_scheduler()
-        self._job_object = self._create_job_object()
 
-        # Kill any orphaned llama-server processes from prior runs
-        self._kill_orphaned_servers()
+    # ── Lazy start (called once from first ensure_model) ──────────────────
+
+    async def _ensure_started(self) -> None:
+        if not self._started:
+            await self._dallama.start()
+            self._started = True
+
+    # ── Callbacks for DaLLaMa ─────────────────────────────────────────────
 
     @staticmethod
-    def _create_job_object():
-        """Create a Windows Job Object with KILL_ON_JOB_CLOSE.
-
-        When the parent process dies (even ungracefully), Windows closes
-        all handles — including this job — which auto-kills every process
-        assigned to it.  Returns None on non-Windows or on failure.
-        """
-        import platform
-        if platform.system() != "Windows":
-            return None
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            kernel32 = ctypes.windll.kernel32
-
-            # CreateJobObjectW(lpJobAttributes, lpName)
-            handle = kernel32.CreateJobObjectW(None, None)
-            if not handle:
-                logger.debug("Failed to create Job Object")
-                return None
-
-            # JOBOBJECT_EXTENDED_LIMIT_INFORMATION
-            # Affinity is ULONG_PTR (pointer-width integer), not a pointer.
-            # Using c_size_t which is the correct width on both 32- and 64-bit.
-            class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-                _fields_ = [
-                    ("PerProcessUserTimeLimit", ctypes.c_int64),
-                    ("PerJobUserTimeLimit", ctypes.c_int64),
-                    ("LimitFlags", wintypes.DWORD),
-                    ("MinimumWorkingSetSize", ctypes.c_size_t),
-                    ("MaximumWorkingSetSize", ctypes.c_size_t),
-                    ("ActiveProcessLimit", wintypes.DWORD),
-                    ("Affinity", ctypes.c_size_t),
-                    ("PriorityClass", wintypes.DWORD),
-                    ("SchedulingClass", wintypes.DWORD),
-                ]
-
-            class IO_COUNTERS(ctypes.Structure):
-                _fields_ = [
-                    ("ReadOperationCount", ctypes.c_uint64),
-                    ("WriteOperationCount", ctypes.c_uint64),
-                    ("OtherOperationCount", ctypes.c_uint64),
-                    ("ReadTransferCount", ctypes.c_uint64),
-                    ("WriteTransferCount", ctypes.c_uint64),
-                    ("OtherTransferCount", ctypes.c_uint64),
-                ]
-
-            class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-                _fields_ = [
-                    ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
-                    ("IoInfo", IO_COUNTERS),
-                    ("ProcessMemoryLimit", ctypes.c_size_t),
-                    ("JobMemoryLimit", ctypes.c_size_t),
-                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                    ("PeakJobMemoryUsed", ctypes.c_size_t),
-                ]
-
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
-            JobObjectExtendedLimitInformation = 9
-
-            info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-
-            ok = kernel32.SetInformationJobObject(
-                handle,
-                JobObjectExtendedLimitInformation,
-                ctypes.byref(info),
-                ctypes.sizeof(info),
-            )
-            if not ok:
-                logger.debug("Failed to set KILL_ON_JOB_CLOSE on Job Object")
-                kernel32.CloseHandle(handle)
-                return None
-
-            logger.info("Windows Job Object created (KILL_ON_JOB_CLOSE)")
-            return handle
-        except Exception as e:
-            logger.debug(f"Job Object setup failed: {e}")
-            return None
-
-    def _assign_to_job(self, process: subprocess.Popen) -> None:
-        """Assign a child process to the Job Object so it dies with us."""
-        if self._job_object is None:
-            return
-        try:
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            h_process = kernel32.OpenProcess(0x1F0FFF, False, process.pid)  # PROCESS_ALL_ACCESS
-            if h_process:
-                ok = kernel32.AssignProcessToJobObject(self._job_object, h_process)
-                kernel32.CloseHandle(h_process)
-                if ok:
-                    logger.info(f"llama-server (PID {process.pid}) assigned to Job Object")
-                else:
-                    logger.warning(f"Failed to assign PID {process.pid} to Job Object")
-        except Exception as e:
-            logger.debug(f"Job assignment failed: {e}")
-
-    def _kill_orphaned_servers(self) -> None:
-        """Kill leftover llama-server processes that survived a prior crash/restart."""
-        import platform
-        try:
-            if platform.system() == "Windows":
-                result = subprocess.run(
-                    ["taskkill", "/F", "/IM", "llama-server.exe"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                if result.returncode == 0:
-                    logger.warning(
-                        f"Killed orphaned llama-server(s): "
-                        f"{result.stdout.strip()}"
-                    )
-            else:
-                result = subprocess.run(
-                    ["pkill", "-f", "llama-server"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                if result.returncode == 0:
-                    logger.warning("Killed orphaned llama-server process(es)")
-        except Exception as e:
-            logger.debug(f"Orphan cleanup skipped: {e}")
-
-    # ── Inference tracking ─────────────────────────────────────
-
-    def mark_inference_start(self) -> int:
-        """Mark that an inference request is starting against the current server.
-
-        Returns the current inference generation. Callers MUST pass this value
-        back to mark_inference_end() so that orphaned inferences from a
-        pre-force-swap generation don't corrupt the counter.
-        """
-        self._active_inference_count += 1
-        self._inference_idle.clear()
-        return self._inference_generation
-
-    def mark_inference_end(self, generation: int) -> None:
-        """Mark that an inference request has finished.
-
-        Args:
-            generation: The generation returned by mark_inference_start().
-                        If the generation doesn't match the current one
-                        (a force-swap happened), the decrement is skipped
-                        because the counter was already reset.
-        """
-        if generation != self._inference_generation:
-            # This inference started before a force-swap — the counter was
-            # already reset when the generation was bumped. Decrementing
-            # would make the counter go negative (or undercount new inferences).
-            return
-        self._active_inference_count = max(0, self._active_inference_count - 1)
-        if self._active_inference_count == 0:
-            self._inference_idle.set()
-
-    # ── Restart circuit breaker ─────────────────────────────────
-
-    def _record_restart_failure(self, model_name: str) -> None:
-        """Record a failed load attempt. Triggers cooldown after threshold."""
-        if self._restart_fail_model != model_name:
-            # Different model — reset counter
-            self._restart_fail_model = model_name
-            self._restart_fail_count = 0
-        self._restart_fail_count += 1
-        if self._restart_fail_count >= _RESTART_FAIL_THRESHOLD:
-            self._restart_cooldown_until = time.time() + _RESTART_COOLDOWN_S
-            logger.error(
-                f"Circuit breaker: {model_name} failed {self._restart_fail_count} "
-                f"times — refusing loads for {_RESTART_COOLDOWN_S:.0f}s"
-            )
-            # Schedule sleeping queue wake when cooldown expires
+    def _on_ready(model_name: str | None, reason: str) -> None:
+        """Fired by DaLLaMa after every swap attempt."""
+        if model_name is not None:
             try:
-                import asyncio as _aio
+                from src.infra.db import accelerate_retries
+                loop = asyncio.get_running_loop()
+                loop.create_task(accelerate_retries(f"model_loaded:{model_name}"))
+            except Exception:
+                pass
 
-                async def _wake_on_cooldown():
-                    await _aio.sleep(_RESTART_COOLDOWN_S)
-                    try:
-                        from src.infra.db import accelerate_retries
-                        await accelerate_retries("circuit_breaker_reset")
-                    except Exception:
-                        pass
+    @staticmethod
+    def _get_vram_free_mb() -> int:
+        try:
+            from .gpu_monitor import get_gpu_monitor
+            state = get_gpu_monitor().get_state()
+            return state.gpu.vram_free_mb
+        except Exception:
+            return 99999  # assume enough if monitor unavailable
 
-                _aio.ensure_future(_wake_on_cooldown())
-            except RuntimeError:
-                pass  # no running loop
-
-    def _record_restart_success(self, model_name: str) -> None:
-        """Record a successful load. Resets the circuit breaker."""
-        self._restart_fail_count = 0
-        self._restart_fail_model = None
-        self._restart_cooldown_until = 0.0
-
-    def _is_restart_blocked(self, model_name: str) -> bool:
-        """Check if the circuit breaker blocks loading this model."""
-        if self._restart_cooldown_until <= 0:
-            return False
-        if time.time() >= self._restart_cooldown_until:
-            # Cooldown expired — reset
-            self._restart_fail_count = 0
-            self._restart_cooldown_until = 0.0
-            return False
-        if self._restart_fail_model == model_name:
-            return True
-        # Different model — not blocked
-        return False
-
-    # ── Public API ──────────────────────────────────────────────
+    # ── Public API (same signatures as old LocalModelManager) ─────────────
 
     async def ensure_model(
         self,
@@ -355,306 +131,115 @@ class LocalModelManager:
         enable_thinking: bool = False,
         enable_vision: bool = False,
     ) -> bool:
-        """
-        Ensure the specified model is loaded and healthy.
-        If already loaded with the same thinking state, returns immediately.
-        If different model or thinking state differs, swaps (blocks until ready).
-        Returns False if the circuit breaker is blocking this model.
+        """Load a model by name, translating to DaLLaMa ServerConfig."""
+        await self._ensure_started()
 
-        enable_vision: if True AND the model has an mmproj file, restart
-            the server with --mmproj. Vision is off by default to save
-            ~876MB VRAM. Only toggled on for actual vision tasks.
-        """
-        # ── Circuit breaker: refuse loads of a model that keeps failing ──
-        if self._is_restart_blocked(model_name):
-            logger.warning(
-                f"Circuit breaker active — refusing to load {model_name} "
-                f"(cooldown until {self._restart_cooldown_until - time.time():.0f}s)"
-            )
-            return False
+        # Check if already loaded with same config
+        status = self._dallama.status
+        if status.model_name == model_name and status.healthy:
+            self._dallama.keep_alive()
+            return True
 
-        if self.current_model == model_name:
-            if await self._health_check():
-                # Vision toggle: restart needed if vision requested but not loaded
-                if enable_vision and not self._vision_enabled:
-                    logger.info(
-                        f"Restarting {model_name} with vision projector "
-                        f"(mmproj) for vision task"
-                    )
-                    # Fall through to _swap_model which will restart with mmproj
-                else:
-                    # Model is loaded and healthy — skip restart even if thinking
-                    # state differs.  Restarting the server just to toggle thinking
-                    # causes swap storms that freeze the entire system.
-                    if self._thinking_enabled != enable_thinking:
-                        logger.debug(
-                            f"Ignoring thinking state change "
-                            f"{self._thinking_enabled} -> {enable_thinking} "
-                            f"for {model_name} (avoiding swap storm)"
-                        )
-                    return True
-            else:
-                # Loaded but unhealthy — restart
-                logger.warning(f"Model {model_name} unhealthy, restarting")
-
-        return await self._swap_model(
-            model_name, reason,
-            enable_thinking=enable_thinking,
-            enable_vision=enable_vision,
-        )
-
-    async def acquire_inference_slot(
-        self,
-        priority: int = 5,
-        task_id: str = "?",
-        agent_type: str = "",
-        timeout: float = 120,
-    ) -> bool:
-        """
-        Acquire GPU inference slot via priority scheduler.
-
-        Returns True if granted, False if timed out.
-        Callers MUST call release_inference_slot() in a finally block.
-        """
-        from .gpu_scheduler import GPURequest, get_gpu_scheduler
-
-        scheduler = get_gpu_scheduler()
-
-        # Adjust timeout for high-priority tasks
-        if priority >= 10:
-            timeout = min(timeout, 30)  # critical tasks fail fast to try cloud
-
-        request = GPURequest.make(
-            priority=priority,
-            task_id=task_id,
-            agent_type=agent_type,
-            model_needed=self.current_model or "",
-        )
-
-        granted = await scheduler.acquire(request, timeout=timeout)
-
-        if granted:
-            self._last_request_time = time.time()
-
-        return granted
-
-    def release_inference_slot(self) -> None:
-        """Release GPU slot — grants to next highest-priority waiter."""
-        from .gpu_scheduler import get_gpu_scheduler
-        scheduler = get_gpu_scheduler()
-        scheduler.release()
-
-    @property
-    def is_loaded(self) -> bool:
-        return self.current_model is not None and self.process is not None
-
-    @property
-    def idle_seconds(self) -> float:
-        if self._last_request_time == 0:
-            return 0.0
-        return time.time() - self._last_request_time
-
-    def get_status(self) -> dict:
-        """Return status dict for diagnostics / Telegram reporting."""
+        # Look up ModelInfo from registry
+        from .model_registry import get_registry
         registry = get_registry()
-        model_info = registry.get(self.current_model) if self.current_model else None
-        return {
-            "loaded_model": self.current_model,
-            "model_type": model_info.model_type if model_info else None,
-            "healthy": self.process is not None and self.process.poll() is None,
-            "port": self.port,
-            "idle_seconds": round(self.idle_seconds, 1),
-            "total_swaps": self._total_swaps,
-            "uptime_seconds": round(time.time() - self._started_at, 1) if self._started_at else 0,
-            "inference_busy": self._scheduler.is_busy,
-        }
-
-    # ── Model Swapping ─────────────────────────────────────────
-
-    async def _swap_model(self, model_name: str, reason: str = "",
-                          enable_thinking: bool = False, enable_vision: bool = False) -> bool:
-        """
-        Stop current model, start new one. Protected by lock.
-        Returns True if the new model is healthy.
-        """
-        async with self._swap_lock:
-            # Re-check after acquiring lock — another task may have already
-            # loaded the model while we were waiting.
-            if self.current_model == model_name and await self._health_check():
-                # Still need to check vision state — we may have been called
-                # specifically to add mmproj
-                if not (enable_vision and not self._vision_enabled):
-                    logger.debug(f"Model {model_name} already healthy (resolved under lock)")
-                    return True
-
-            # ── Variant swap detection ──
-            from .model_registry import get_registry
-            registry = get_registry()
-            current_info = registry.get(self.current_model) if self.current_model else None
-            target_info = registry.get(model_name)
-            is_variant_swap = False
-            if (current_info and target_info
-                    and current_info.path and target_info.path
-                    and current_info.path == target_info.path):
-                is_variant_swap = True
-                logger.info(
-                    f"⚡ Variant swap (same GGUF): {self.current_model} → {model_name} "
-                    f"(lightweight restart, not counted as swap)"
-                )
-
-            self.swap_started_at = time.monotonic()
-            self._swap_ready.clear()
-            try:
-                result = await self._do_swap(model_name, reason, enable_thinking, enable_vision)
-                if result and is_variant_swap:
-                    # Don't count variant swaps against the budget
-                    self._total_swaps = max(0, self._total_swaps - 1)
-                return result
-            finally:
-                self.swap_started_at = 0.0
-                self._swap_ready.set()
-
-    async def _do_swap(self, model_name: str, reason: str = "",
-                       enable_thinking: bool = False, enable_vision: bool = False) -> bool:
-        """Inner swap logic, called under _swap_lock with swap_started_at set."""
-        # ── Wait for in-flight inference to finish before killing server ──
-        # This prevents killing llama-server while an HTTP request is mid-stream,
-        # which causes the HTTP client to hang on a dead TCP connection.
-        if self._active_inference_count > 0:
-            logger.info(
-                f"Waiting for {self._active_inference_count} in-flight inference(s) "
-                f"to drain before swap to {model_name}..."
-            )
-            try:
-                await asyncio.wait_for(self._inference_idle.wait(), timeout=30)
-                logger.info("Inference drained, proceeding with swap")
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"Inference drain timed out after 30s "
-                    f"({self._active_inference_count} still active). "
-                    f"Force-swapping — active requests will receive errors."
-                )
-                # Bump the generation so orphaned mark_inference_end() calls
-                # from pre-swap inferences are ignored. Then reset the counter
-                # cleanly — any future decrements from the old generation will
-                # see a mismatched generation and skip.
-                self._inference_generation += 1
-                self._active_inference_count = 0
-                self._inference_idle.set()
-
-        registry = get_registry()
-        model_info = registry.get(model_name)
-
-        if not model_info or not model_info.is_local:
-            logger.error(f"Model '{model_name}' not found in registry or not local")
+        info = registry.get(model_name)
+        if not info or not info.is_local:
+            logger.error("Model '%s' not found in registry or not local", model_name)
             return False
 
-        if not model_info.path or not Path(model_info.path).is_file():
-            logger.error(f"GGUF file not found: {model_info.path}")
-            return False
-
-        # Pre-swap checks
-        gpu_monitor = get_gpu_monitor()
-        state = gpu_monitor.get_state()
-        if not state.can_load_model:
-            logger.error(
-                f"Insufficient RAM to load {model_name}: "
-                f"{state.ram_available_mb}MB available, need >4096MB free"
-            )
-            return False
-
-        old_model = self.current_model
-        logger.info(
-            f"🔄 Model swap: {old_model or '(none)'} → {model_name} "
-            f"(reason: {reason})"
-        )
-        swap_start = time.time()
-
-        # Stop existing server
-        await self._stop_server()
-
-        # CUDA VRAM release lags behind process exit — wait for the driver
-        # to reclaim memory before probing free VRAM for the next model.
-        if old_model:
-            await asyncio.sleep(2)
-
-        # ── Recalculate context + gpu_layers with live memory state ──
-        # Server is stopped, so readings reflect true free memory.
-        gpu_monitor.invalidate_cache()  # force fresh reading
-        fresh_state = gpu_monitor.get_state()
-
+        # Dynamic context recalculation
         from .model_registry import calculate_dynamic_context
-
-        # Check for user override in models.yaml
         registry_overrides = registry.get_overrides(model_name)
 
         if "context_length" not in registry_overrides:
+            from .gpu_monitor import get_gpu_monitor
+            gpu_monitor = get_gpu_monitor()
+            gpu_monitor.invalidate_cache()
+            fresh_state = gpu_monitor.get_state()
             new_ctx = calculate_dynamic_context(
-                file_size_mb=model_info.file_size_mb,
-                n_layers=model_info.total_layers,
-                gpu_layers=model_info.gpu_layers,
+                file_size_mb=info.file_size_mb,
+                n_layers=info.total_layers,
+                gpu_layers=info.gpu_layers,
                 available_ram_mb=fresh_state.ram_available_mb,
                 available_vram_mb=fresh_state.gpu.vram_free_mb,
-                family_key=model_info.family,
+                family_key=info.family,
             )
-            if new_ctx != model_info.context_length:
+            if new_ctx != info.context_length:
                 logger.info(
-                    f"📐 Dynamic context: {model_info.context_length} → {new_ctx} "
-                    f"(RAM free: {fresh_state.ram_available_mb}MB, "
-                    f"VRAM free: {fresh_state.gpu.vram_free_mb}MB)"
+                    "Dynamic context: %d -> %d (RAM free: %dMB, VRAM free: %dMB)",
+                    info.context_length, new_ctx,
+                    fresh_state.ram_available_mb, fresh_state.gpu.vram_free_mb,
                 )
-                model_info.context_length = new_ctx
+                info.context_length = new_ctx
 
-        # Only apply gpu_layers if user explicitly overrides in models.yaml.
-        # Otherwise, llama-server --fit auto-calculates optimal layers.
+        # gpu_layers override handling
         if "gpu_layers" in registry_overrides:
-            model_info.gpu_layers = registry_overrides["gpu_layers"]
-            model_info._gpu_layers_from_override = True
+            info.gpu_layers = registry_overrides["gpu_layers"]
+            info._gpu_layers_from_override = True
         else:
-            model_info._gpu_layers_from_override = False
+            info._gpu_layers_from_override = False
 
-        # Start new server
-        success = await self._start_server(model_info, enable_thinking=enable_thinking,
-                                           enable_vision=enable_vision)
+        # Build ServerConfig
+        from dallama import ServerConfig
+        extra = []
+        if hasattr(info, 'extra_server_flags') and info.extra_server_flags:
+            extra = list(info.extra_server_flags)
 
-        swap_duration = time.time() - swap_start
-        self._total_swaps += 1
+        # Only pass gpu_layers if explicitly overridden
+        if getattr(info, '_gpu_layers_from_override', False) and info.gpu_layers > 0:
+            extra.extend(["--n-gpu-layers", str(info.gpu_layers)])
+
+        sc = ServerConfig(
+            model_path=info.path,
+            model_name=model_name,
+            context_length=info.context_length,
+            thinking=enable_thinking if info.thinking_model else False,
+            vision_projector=(info.mmproj_path or "") if enable_vision and info.has_vision else "",
+            extra_flags=extra,
+        )
+
+        # Signal swap in progress
+        old_model = self._dallama.status.model_name
+        self.swap_started_at = time.monotonic()
+        self._swap_ready.clear()
+        try:
+            success = await self._dallama._swap.swap(self._dallama._server, sc)
+            if success:
+                self._dallama._current_config = sc
+        finally:
+            self.swap_started_at = 0.0
+            self._swap_ready.set()
 
         if success:
-            self._record_restart_success(model_name)
-            self.current_model = model_name
-            self._thinking_enabled = enable_thinking
-            self._vision_enabled = enable_vision
+            self._total_swaps += 1
             self._started_at = time.time()
-            self._last_request_time = time.time()  # reset idle timer for new model
-            # Seed measured_tps from persisted speed cache so the first
-            # LLM call after swap gets a realistic timeout instead of
-            # falling back to the blind difficulty heuristic.
-            _seed_tps = model_info.tokens_per_second if model_info.tokens_per_second > 0 else 0.0
+            self._last_request_time = time.time()
+
+            # Seed measured_tps from persisted speed cache
+            _seed_tps = info.tokens_per_second if info.tokens_per_second > 0 else 0.0
             self.runtime_state = ModelRuntimeState(
                 model_name=model_name,
                 thinking_enabled=enable_thinking,
-                context_length=model_info.context_length,
-                gpu_layers=model_info.gpu_layers,
+                context_length=info.context_length,
+                gpu_layers=info.gpu_layers,
                 measured_tps=_seed_tps,
             )
             registry.mark_loaded(model_name, self.api_base)
             logger.info(
-                f"✅ Model {model_name} loaded in {swap_duration:.1f}s "
-                f"(swap #{self._total_swaps})"
+                "Model %s loaded (swap #%d)", model_name, self._total_swaps
             )
-            # Record swap in budget SYNCHRONOUSLY — this must never be
-            # lost even if the async notification below fails to schedule.
-            # Grade draining and sleeping queue signaling happen asynchronously
-            # via on_model_swap, but the budget record is critical.
+
+            # Record swap in budget
             try:
                 from src.core.llm_dispatcher import get_dispatcher
                 get_dispatcher().swap_budget.record_swap()
             except Exception as _e:
-                logger.warning(f"Failed to record swap in budget: {_e}")
+                logger.warning("Failed to record swap in budget: %s", _e)
 
-            # Notify dispatcher for deferred grade draining & sleeping queue wake
+            # Notify dispatcher for deferred grade draining
             try:
+                from src.core.llm_dispatcher import get_dispatcher
                 old_litellm = None
                 new_litellm = None
                 if old_model:
@@ -666,252 +251,78 @@ class LocalModelManager:
                     get_dispatcher().on_model_swap(old_litellm, new_litellm)
                 )
             except Exception as _e:
-                logger.debug(f"Dispatcher swap notification failed: {_e}")
+                logger.debug("Dispatcher swap notification failed: %s", _e)
+
             return True
         else:
-            self._record_restart_failure(model_name)
-            self.current_model = None
+            self.runtime_state = None
+            if old_model:
+                registry.mark_unloaded(old_model)
             registry.mark_unloaded(model_name)
-            # Demote failed model so the router skips it on retry
             registry.demote_model(model_name, duration=300)
-            logger.error(
-                f"❌ Failed to load {model_name} after {swap_duration:.1f}s "
-                f"(demoted for 5 min, circuit_breaker={self._restart_fail_count}/"
-                f"{_RESTART_FAIL_THRESHOLD})"
-            )
+            logger.error("Failed to load %s (demoted for 5 min)", model_name)
             return False
 
-    @staticmethod
-    def _get_inference_threads() -> int:
-        """Use physical core count for inference threads (not hyperthreads)."""
-        try:
-            import psutil
-            # physical cores only — hyperthreads hurt llama.cpp performance
-            physical = psutil.cpu_count(logical=False) or 4
-            # Reserve 2 cores for the orchestrator + OS
-            return max(2, physical - 2)
-        except ImportError:
-            import os
-            # Fallback: logical cores / 2 as rough estimate of physical
-            return max(2, (os.cpu_count() or 4) // 2 - 1)
+    async def acquire_inference_slot(
+        self,
+        priority: int = 5,
+        task_id: str = "?",
+        agent_type: str = "",
+        timeout: float = 120,
+    ) -> bool:
+        """Acquire GPU inference slot via priority scheduler."""
+        from .gpu_scheduler import GPURequest, get_gpu_scheduler
 
-    async def _start_server(self, model: ModelInfo, enable_thinking: bool = False,
-                            enable_vision: bool = False) -> bool:
-        """
-        Launch llama-server process and wait for it to become healthy.
-        """
-        cmd = [
-            str(LLAMA_SERVER_PATH),
-            "--model", model.path,
-            "--alias", "local-model",  # stable name for Perplexica/Vane integration
-            "--port", str(self.port),
-            "--host", "127.0.0.1",
-            "--ctx-size", str(model.context_length),
-            "--flash-attn", "auto",
-            "--metrics",
-            # ── Performance flags ──
-            "--threads", str(self._get_inference_threads()),
-            "--batch-size", "2048", # prompt processing batch size (higher = faster prefill)
-            "--ubatch-size", "512", # micro-batch for generation
-        ]
+        scheduler = get_gpu_scheduler()
+        if priority >= 10:
+            timeout = min(timeout, 30)
 
-        # Enable jinja templating (required for function calling / tools param)
-        # unless the model explicitly opts out via --no-jinja in extra_server_flags.
-        has_no_jinja = "--no-jinja" in (getattr(model, 'extra_server_flags', None) or [])
-        if not has_no_jinja:
-            cmd.append("--jinja")
+        request = GPURequest.make(
+            priority=priority,
+            task_id=task_id,
+            agent_type=agent_type,
+            model_needed=self.current_model or "",
+        )
+        granted = await scheduler.acquire(request, timeout=timeout)
+        if granted:
+            self._last_request_time = time.time()
+        return granted
 
-        # Let llama-server's --fit (default-on) auto-calculate optimal GPU
-        # layer allocation based on actual free VRAM.  Only pass explicit
-        # --n-gpu-layers when the user/yaml specifies an override.
-        # --fit correctly handles both small models (full offload) and large
-        # models (partial offload), reserving ~1GB free VRAM headroom.
-        if getattr(model, '_gpu_layers_from_override', False) and model.gpu_layers > 0:
-            cmd.extend(["--n-gpu-layers", str(model.gpu_layers)])
+    def release_inference_slot(self) -> None:
+        """Release GPU slot."""
+        from .gpu_scheduler import get_gpu_scheduler
+        get_gpu_scheduler().release()
 
-        # Control thinking/reasoning mode (server-level, not per-request).
-        # llama.cpp v8668+: --reasoning on/off + --reasoning-budget 0.
-        # --chat-template-kwargs {"enable_thinking": ...} is deprecated.
-        # Skip for --no-jinja models (e.g. Apriel: always-on, incompatible).
-        has_no_jinja = "--no-jinja" in (getattr(model, 'extra_server_flags', None) or [])
-        if model.thinking_model and not has_no_jinja:
-            if enable_thinking:
-                cmd.extend(["--reasoning", "on"])
-            else:
-                cmd.extend(["--reasoning", "off", "--reasoning-budget", "0"])
+    def mark_inference_start(self) -> int:
+        """Delegate to DaLLaMa swap manager."""
+        return self._dallama._swap.mark_inference_start()
 
-        # Vision projector (mmproj) — only loaded when a vision task needs it.
-        # Saves ~876MB VRAM for the 99% of requests that are text-only.
-        if enable_vision and model.has_vision and getattr(model, 'mmproj_path', None):
-            cmd.extend(["--mmproj", model.mmproj_path])
+    def mark_inference_end(self, generation: int) -> None:
+        """Delegate to DaLLaMa swap manager."""
+        self._dallama._swap.mark_inference_end(generation)
 
-        # Per-model server flags (MoE override-kv, Apriel --no-jinja, etc.)
-        if hasattr(model, 'extra_server_flags') and model.extra_server_flags:
-            cmd.extend(model.extra_server_flags)
-
-        logger.info(f"Starting llama-server: {' '.join(cmd)}...")
-
-        try:
-            # Use CREATE_NO_WINDOW on Windows to hide the console
-            import platform
-            creation_flags = 0
-            if platform.system() == "Windows":
-                creation_flags = subprocess.CREATE_NO_WINDOW
-
-            import os
-            log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs")
-            stderr_path = os.path.join(log_dir, "llama-server.stderr.log")
-            self._stderr_file = open(stderr_path, "w", encoding="utf-8")
-            self.process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=self._stderr_file,
-                creationflags=creation_flags,
-            )
-            self._assign_to_job(self.process)
-        except FileNotFoundError:
-            logger.error(
-                f"llama-server not found at '{LLAMA_SERVER_PATH}'. "
-                f"Set LLAMA_SERVER_PATH environment variable."
-            )
-            return False
-        except Exception as e:
-            logger.error(f"Failed to start llama-server: {e}")
-            return False
-
-        # Wait for health endpoint — poll with backoff.
-        # Load time depends on model weights AND KV cache pre-allocation.
-        # llama-server pre-allocates the full KV cache at startup, which
-        # can take 60-120s for large contexts on partial-VRAM models.
-        # Weight loading: ~500 MB/s from disk to VRAM.
-        # KV cache: scales with context * layers. Models that spill to
-        # RAM (file_size > VRAM) are much slower due to split allocation.
-        weight_time = model.load_time_seconds  # file_size / 500
-        ctx_factor = model.context_length / 8192  # baseline 8K
-        layer_factor = model.total_layers / 32    # baseline 32 layers
-        kv_time = ctx_factor * layer_factor * 15   # ~15s base for 8K/32L
-        estimated_total = weight_time + kv_time
-        max_wait = estimated_total * 2.0          # 2x safety margin
-        max_wait = max(max_wait, 45)               # at least 45s
-        max_wait = min(max_wait, 300)              # at most 5 min
-
-        healthy = await self._wait_for_healthy(timeout=max_wait)
-
-        if not healthy:
-            logger.error(f"llama-server failed to become healthy within {max_wait}s")
-            await self._stop_server()
-            return False
-
-        return True
-
-    async def _stop_server(self) -> None:
-        """Gracefully stop the llama-server process (fully async — never blocks the event loop)."""
-        if self.process is None:
-            return
-
-        old_model = self.current_model
-        logger.info(f"Stopping llama-server (model: {old_model})...")
-
-        loop = asyncio.get_running_loop()
-
-        try:
-            self.process.terminate()
-            # Wait up to 10s for graceful shutdown (poll is non-blocking)
-            for _ in range(20):
-                if self.process.poll() is not None:
-                    break
-                await asyncio.sleep(0.5)
-            else:
-                # Force kill if still running — use run_in_executor so
-                # the synchronous process.wait() never blocks the event loop.
-                logger.warning("llama-server didn't stop gracefully, killing...")
-                self.process.kill()
-                try:
-                    await asyncio.wait_for(
-                        loop.run_in_executor(None, self.process.wait),
-                        timeout=5,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning("llama-server did not exit within 5s after kill")
-        except Exception as e:
-            logger.warning(f"Error stopping llama-server: {e}")
-            try:
-                self.process.kill()
-            except Exception:
-                pass
-
-        # Close stderr log file
-        if hasattr(self, '_stderr_file') and self._stderr_file:
-            try:
-                self._stderr_file.close()
-            except Exception:
-                pass
-            self._stderr_file = None
-
-        self.process = None
-        self.runtime_state = None
-        if old_model:
-            get_registry().mark_unloaded(old_model)
-
-    async def _wait_for_healthy(self, timeout: float = 60) -> bool:
-        """Poll /health endpoint until server is ready."""
-        start = time.time()
-        check_interval = 1.0
-
-        async with httpx.AsyncClient() as client:
-            while (time.time() - start) < timeout:
-                # Check if process died
-                if self.process and self.process.poll() is not None:
-                    # Read last lines of stderr for crash diagnostics
-                    stderr_tail = ""
-                    if hasattr(self, '_stderr_file') and self._stderr_file:
-                        try:
-                            self._stderr_file.flush()
-                            import os
-                            stderr_path = os.path.join(
-                                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                                "logs", "llama-server.stderr.log"
-                            )
-                            with open(stderr_path, "r", encoding="utf-8", errors="replace") as f:
-                                lines = f.readlines()
-                                stderr_tail = "".join(lines[-10:]).strip()
-                        except Exception:
-                            pass
-                    logger.error(
-                        f"llama-server process exited with code "
-                        f"{self.process.returncode}"
-                        + (f"\nStderr tail:\n{stderr_tail}" if stderr_tail else "")
-                    )
-                    return False
-
-                try:
-                    resp = await client.get(
-                        f"{self.api_base}/health",
-                        timeout=5.0,
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        status = data.get("status", "")
-                        if status == "ok" or status == "no slot available":
-                            # "no slot available" means loaded but busy = healthy
-                            return True
-                except (httpx.ConnectError, httpx.TimeoutException):
-                    pass  # server still starting
-                except Exception as e:
-                    logger.debug(f"Health check error: {e}")
-
-                await asyncio.sleep(check_interval)
-                # Increase interval after first few checks
-                if check_interval < 3.0:
-                    check_interval += 0.5
-
-        return False
+    def get_status(self) -> dict:
+        """Return status dict for diagnostics / Telegram reporting."""
+        from .model_registry import get_registry
+        registry = get_registry()
+        model = self.current_model
+        model_info = registry.get(model) if model else None
+        status = self._dallama.status
+        return {
+            "loaded_model": model,
+            "model_type": model_info.model_type if model_info else None,
+            "healthy": status.healthy,
+            "port": self._port,
+            "idle_seconds": round(self.idle_seconds, 1),
+            "total_swaps": self._total_swaps,
+            "uptime_seconds": round(
+                time.time() - self._started_at, 1
+            ) if hasattr(self, '_started_at') and self._started_at else 0,
+            "inference_busy": self._scheduler.is_busy,
+        }
 
     async def get_metrics(self) -> dict:
-        """
-        Fetch live metrics from llama-server's /metrics (Prometheus format).
-        Returns parsed dict with key performance indicators.
-        """
+        """Fetch live metrics from llama-server."""
         result = {
             **self.get_status(),
             "prompt_tokens_total": 0,
@@ -928,249 +339,94 @@ class LocalModelManager:
             return result
 
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(f"{self.api_base}/metrics", timeout=3.0)
-                if resp.status_code != 200:
-                    return result
+            snap = await self._dallama._metrics.fetch(
+                self._dallama._server.api_base
+            )
+            result["prompt_tokens_per_second"] = snap.prompt_tokens_per_second
+            result["generation_tokens_per_second"] = snap.generation_tokens_per_second
+            result["kv_cache_usage_percent"] = snap.kv_cache_usage_percent
+            result["requests_processing"] = snap.requests_processing
+            result["requests_pending"] = snap.requests_pending
+            result["prompt_tokens_total"] = snap.prompt_tokens_total
+            result["generation_tokens_total"] = snap.generation_tokens_total
 
-                for line in resp.text.splitlines():
-                    if line.startswith("#"):
-                        continue
-                    # Parse Prometheus lines: metric_name{labels} value
-                    parts = line.split()
-                    if len(parts) < 2:
-                        continue
-                    metric = parts[0].split("{")[0]
-                    try:
-                        val = float(parts[-1])
-                    except ValueError:
-                        continue
-
-                    # Normalize metric name: llama.cpp uses either colons or
-                    # underscores depending on version (e.g., llamacpp:foo or llamacpp_foo)
-                    m = metric.replace(":", "_")
-
-                    if m == "llamacpp_prompt_tokens_total":
-                        result["prompt_tokens_total"] = int(val)
-                    elif m == "llamacpp_tokens_predicted_total":
-                        result["generation_tokens_total"] = int(val)
-                    elif m == "llamacpp_prompt_seconds_total":
-                        result["prompt_seconds_total"] = round(val, 2)
-                    elif m == "llamacpp_tokens_predicted_seconds_total":
-                        result["generation_seconds_total"] = round(val, 2)
-                    elif m == "llamacpp_prompt_tokens_seconds":
-                        result["prompt_tokens_per_second"] = round(val, 1)
-                    elif m == "llamacpp_tokens_predicted_seconds":
-                        result["generation_tokens_per_second"] = round(val, 1)
-                    elif m == "llamacpp_requests_processing":
-                        result["requests_processing"] = int(val)
-                    elif m == "llamacpp_requests_pending":
-                        result["requests_pending"] = int(val)
-                    elif m == "llamacpp_kv_cache_usage_ratio":
-                        result["kv_cache_usage_percent"] = round(val * 100, 1)
-
-                # Update runtime_state.measured_tps from live /metrics so
-                # router.py can use actual tok/s for speed scoring.
-                tps = result.get("generation_tokens_per_second", 0.0)
-                if tps > 0 and self.runtime_state is not None:
-                    self.runtime_state.measured_tps = tps
-
+            # Update runtime_state.measured_tps from live /metrics
+            tps = snap.generation_tokens_per_second
+            if tps > 0 and self.runtime_state is not None:
+                self.runtime_state.measured_tps = tps
         except Exception as e:
-            logger.debug(f"Failed to fetch llama-server metrics: {e}")
+            logger.debug("Failed to fetch llama-server metrics: %s", e)
 
         return result
 
-    async def _health_check(self) -> bool:
-        """Quick health check — is the server responding?"""
-        return (await self._health_check_status()) == 200
+    @property
+    def current_model(self) -> Optional[str]:
+        return self._dallama.status.model_name
 
-    async def _health_check_status(self) -> int:
-        """Health check returning HTTP status code. Returns 0 on connection failure."""
-        if self.process is None or self.process.poll() is not None:
-            return 0
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(
-                    f"{self.api_base}/health",
-                    timeout=3.0,
-                )
-                return resp.status_code
-        except Exception:
-            return 0
+    @current_model.setter
+    def current_model(self, value: Optional[str]) -> None:
+        # Some old code sets current_model = None on failure.
+        # DaLLaMa tracks this internally via _current_config; the setter
+        # is a no-op since DaLLaMa is the source of truth.
+        pass
 
-    # ── Background Tasks ────────────────────────────────────────
+    @property
+    def is_loaded(self) -> bool:
+        s = self._dallama.status
+        return s.model_name is not None and s.healthy
+
+    @property
+    def idle_seconds(self) -> float:
+        if self._last_request_time == 0:
+            return 0.0
+        return time.time() - self._last_request_time
 
     async def run_idle_unloader(
         self,
         check_interval: float = 30,
         max_idle_minutes: float = 1,
     ) -> None:
-        """
-        Background task: unload model if idle for too long.
-        Frees VRAM when no inference requests arrive within the idle window.
-        Run as: asyncio.create_task(manager.run_idle_unloader())
-        """
-        max_idle = max_idle_minutes * 60
-
-        while True:
-            await asyncio.sleep(check_interval)
-
-            if not self.is_loaded:
-                continue
-
-            if self.idle_seconds > max_idle:
-                # Don't unload if tasks are actively processing — the agent
-                # may be between LLM calls (tool execution, file I/O, etc.)
-                try:
-                    from src.infra.db import get_db
-                    db = await get_db()
-                    cursor = await db.execute(
-                        "SELECT COUNT(*) FROM tasks WHERE status = 'processing'"
-                    )
-                    processing = (await cursor.fetchone())[0]
-                    if processing > 0:
-                        logger.debug(
-                            f"Idle unload skipped: {processing} task(s) still processing"
-                        )
-                        continue
-                except Exception:
-                    pass  # DB error → safe to proceed with unload
-
-                logger.info(
-                    f"Model {self.current_model} idle for "
-                    f"{self.idle_seconds:.0f}s (>{max_idle}s), unloading"
-                )
-                self._idle_unload_in_progress = True
-                try:
-                    async with self._swap_lock:
-                        await self._stop_server()
-                        self.current_model = None
-                finally:
-                    self._idle_unload_in_progress = False
+        """No-op — DaLLaMa runs its own idle unloader internally."""
+        # Block forever so create_task() callers don't get a completed task
+        await asyncio.Event().wait()
 
     async def run_health_watchdog(self, check_interval: float = 30) -> None:
-        """
-        Background task: detect crashed *or hung* server and restart.
+        """No-op — DaLLaMa runs its own watchdog internally."""
+        await asyncio.Event().wait()
 
-        Detects two failure modes:
-          1. Process exit (crash) — via process.poll()
-          2. Process alive but unresponsive (hang) — via /health HTTP check.
-             Three consecutive /health failures trigger a restart.
-
-        Run as: asyncio.create_task(manager.run_health_watchdog())
-        """
-        consecutive_health_failures = 0
-        HEALTH_FAIL_THRESHOLD = 3  # restart after this many consecutive failures
-
-        while True:
-            await asyncio.sleep(check_interval)
-
-            if not self.current_model:
-                consecutive_health_failures = 0
-                continue
-
-            # ── Crash detection (process exited) ──
-            if self.process and self.process.poll() is not None:
-                # If the idle unloader is deliberately stopping the server,
-                # don't treat it as a crash — it will clear current_model itself.
-                if self._idle_unload_in_progress:
-                    logger.debug(
-                        "Watchdog: process exited during idle unload, not a crash"
-                    )
-                    consecutive_health_failures = 0
-                    continue
-
-                model_name = self.current_model
-                logger.error(
-                    f"llama-server crashed! Restarting {model_name}..."
-                )
-                # Close pipes before discarding the process reference
-                self.process = None
-                self.current_model = None
-                consecutive_health_failures = 0
-                if self._is_restart_blocked(model_name):
-                    logger.warning(
-                        f"Watchdog: circuit breaker active for {model_name} "
-                        f"— skipping crash recovery"
-                    )
-                    continue
-                await self._swap_model(model_name, reason="crash recovery")
-                continue
-
-            # ── Hang detection (process alive but /health unresponsive) ──
-            if self.process and self.process.poll() is None:
-                # Skip if idle unloader or swap is in progress — server
-                # may be stopping or restarting, not hung.
-                if self._idle_unload_in_progress or self.swap_started_at > 0:
-                    consecutive_health_failures = 0
-                    continue
-
-                status = await self._health_check_status()
-                if status == 200:
-                    consecutive_health_failures = 0
-                elif status == 503:
-                    # 503 = server alive but busy loading model. NOT a hang.
-                    # Reset counter — the server is responsive, just occupied.
-                    consecutive_health_failures = 0
-                else:
-                    # Re-check idle unload flag — may have started during
-                    # the async /health call above.
-                    if self._idle_unload_in_progress or self.swap_started_at > 0:
-                        consecutive_health_failures = 0
-                        continue
-                    consecutive_health_failures += 1
-                    logger.warning(
-                        f"llama-server /health failed "
-                        f"({consecutive_health_failures}/{HEALTH_FAIL_THRESHOLD})"
-                    )
-                    if consecutive_health_failures >= HEALTH_FAIL_THRESHOLD:
-                        model_name = self.current_model
-                        logger.error(
-                            f"llama-server hung ({HEALTH_FAIL_THRESHOLD} "
-                            f"consecutive /health failures). Restarting "
-                            f"{model_name}..."
-                        )
-                        consecutive_health_failures = 0
-                        if self._is_restart_blocked(model_name):
-                            logger.warning(
-                                f"Watchdog: circuit breaker active for "
-                                f"{model_name} — skipping hang recovery"
-                            )
-                        else:
-                            await self._stop_server()
-                            await self._swap_model(model_name, reason="hang recovery")
+    async def shutdown(self) -> None:
+        """Graceful shutdown — called from atexit or orchestrator."""
+        if self._started:
+            await self._dallama.stop()
+            self._started = False
 
 
-# ─── Singleton ───────────────────────────────────────────────
-import os
-import atexit
+# ── Singleton ────────────────────────────────────────────────────────────────
 
 _manager: LocalModelManager | None = None
 
 
-def _atexit_kill_llama_server():
-    """Last-resort cleanup: kill llama-server when the Python process exits.
-
-    This runs even on sys.exit() and unhandled exceptions (but NOT os._exit()).
-    It uses synchronous subprocess calls because the event loop is gone by now.
-    """
+def _atexit_cleanup() -> None:
+    """Last-resort cleanup when the Python process exits."""
     global _manager
     if _manager is None:
         return
-
-    proc = _manager.process
+    # DaLLaMa's server process is managed by platform helper with
+    # Windows Job Object — it will be auto-killed. But try graceful
+    # stop if an event loop is available.
+    proc = _manager._dallama._server.process
     if proc is not None and proc.poll() is None:
         logger.info("atexit: killing llama-server (PID %d)", proc.pid)
         try:
             proc.terminate()
             try:
                 proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
+            except Exception:
                 proc.kill()
                 proc.wait(timeout=3)
         except Exception as e:
             logger.warning("atexit: llama-server kill failed: %s", e)
-            # Fallback: taskkill by name
+            import subprocess
             try:
                 subprocess.run(
                     ["taskkill", "/F", "/IM", "llama-server.exe"],
@@ -1184,7 +440,7 @@ def get_local_manager() -> LocalModelManager:
     global _manager
     if _manager is None:
         _manager = LocalModelManager()
-        atexit.register(_atexit_kill_llama_server)
+        atexit.register(_atexit_cleanup)
     return _manager
 
 

@@ -1,6 +1,6 @@
-"""Tests for content_quality.streaming."""
+"""Tests for dogru_mu_samet.streaming."""
 
-from content_quality.streaming import make_stream_callback
+from dogru_mu_samet.streaming import make_stream_callback
 
 
 class TestMakeStreamCallback:

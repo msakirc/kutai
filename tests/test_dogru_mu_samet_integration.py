@@ -1,6 +1,6 @@
-"""Integration tests for content_quality wiring in KutAI."""
+"""Integration tests for dogru_mu_samet (content quality) wiring in KutAI."""
 
-from content_quality import assess, salvage
+from dogru_mu_samet import assess, salvage
 
 
 class TestHooksIntegration:

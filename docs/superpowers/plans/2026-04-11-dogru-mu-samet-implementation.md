@@ -4,11 +4,11 @@
 
 **Goal:** Build a standalone content quality assessment package and wire it into KutAI at 13 integration points, replacing scattered inline checks with a unified assess/salvage API.
 
-**Architecture:** Standalone `packages/content_quality/` package with zero external dependencies (pure stdlib). Four heuristic detectors (size, header repetition, paragraph repetition, token entropy) compose into a single `assess()` call returning a structured result. KutAI integration is surgical — each callsite replaces one inline check with one `assess()` call. Streaming abort via callback pattern keeps the router decoupled.
+**Architecture:** Standalone `packages/dogru_mu_samet/` package with zero external dependencies (pure stdlib). Four heuristic detectors (size, header repetition, paragraph repetition, token entropy) compose into a single `assess()` call returning a structured result. KutAI integration is surgical — each callsite replaces one inline check with one `assess()` call. Streaming abort via callback pattern keeps the router decoupled.
 
 **Tech Stack:** Python 3.10, stdlib only (`re`, `collections`, `math`, `dataclasses`). pytest for testing.
 
-**Design spec:** `docs/superpowers/specs/2026-04-11-content-quality-design.md`
+**Design spec:** `docs/superpowers/specs/2026-04-11-dogru-mu-samet-design.md`
 
 ---
 
@@ -18,23 +18,23 @@
 
 | File | Responsibility |
 |------|---------------|
-| `packages/content_quality/pyproject.toml` | Package metadata, zero deps |
-| `packages/content_quality/src/content_quality/__init__.py` | Public API re-exports: assess, salvage, make_stream_callback, ContentQualityResult |
-| `packages/content_quality/src/content_quality/assessor.py` | ContentQualityResult dataclass + assess() orchestrator |
-| `packages/content_quality/src/content_quality/detectors.py` | Four pure detection functions |
-| `packages/content_quality/src/content_quality/salvager.py` | Section deduplication |
-| `packages/content_quality/src/content_quality/streaming.py` | Streaming callback factory |
+| `packages/dogru_mu_samet/pyproject.toml` | Package metadata, zero deps |
+| `packages/dogru_mu_samet/src/dogru_mu_samet/__init__.py` | Public API re-exports: assess, salvage, make_stream_callback, ContentQualityResult |
+| `packages/dogru_mu_samet/src/dogru_mu_samet/assessor.py` | ContentQualityResult dataclass + assess() orchestrator |
+| `packages/dogru_mu_samet/src/dogru_mu_samet/detectors.py` | Four pure detection functions |
+| `packages/dogru_mu_samet/src/dogru_mu_samet/salvager.py` | Section deduplication |
+| `packages/dogru_mu_samet/src/dogru_mu_samet/streaming.py` | Streaming callback factory |
 
 ### New files (tests)
 
 | File | Responsibility |
 |------|---------------|
-| `packages/content_quality/tests/__init__.py` | Test package marker |
-| `packages/content_quality/tests/test_detectors.py` | Unit tests for each detector |
-| `packages/content_quality/tests/test_assessor.py` | Unit tests for assess() |
-| `packages/content_quality/tests/test_salvager.py` | Unit tests for salvage() |
-| `packages/content_quality/tests/test_streaming.py` | Unit tests for streaming callback |
-| `tests/test_content_quality_integration.py` | Integration tests for KutAI wiring |
+| `packages/dogru_mu_samet/tests/__init__.py` | Test package marker |
+| `packages/dogru_mu_samet/tests/test_detectors.py` | Unit tests for each detector |
+| `packages/dogru_mu_samet/tests/test_assessor.py` | Unit tests for assess() |
+| `packages/dogru_mu_samet/tests/test_salvager.py` | Unit tests for salvage() |
+| `packages/dogru_mu_samet/tests/test_streaming.py` | Unit tests for streaming callback |
+| `tests/test_dogru_mu_samet_integration.py` | Integration tests for KutAI wiring |
 
 ### Modified files (KutAI integration)
 
@@ -52,8 +52,8 @@
 ## Task 1: Package Skeleton
 
 **Files:**
-- Create: `packages/content_quality/pyproject.toml`
-- Create: `packages/content_quality/src/content_quality/__init__.py`
+- Create: `packages/dogru_mu_samet/pyproject.toml`
+- Create: `packages/dogru_mu_samet/src/dogru_mu_samet/__init__.py`
 
 - [ ] **Step 1: Create pyproject.toml**
 
@@ -63,7 +63,7 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
-name = "content-quality"
+name = "dogru-mu-samet"
 version = "0.1.0"
 description = "Heuristic content quality assessment — detect degenerate, repetitive, or oversized LLM output"
 requires-python = ">=3.10"
@@ -90,8 +90,8 @@ This will fail to import until we create the modules — that's expected.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add packages/content_quality/pyproject.toml packages/content_quality/src/content_quality/__init__.py
-git commit -m "feat(content-quality): package skeleton with public API stubs"
+git add packages/dogru_mu_samet/pyproject.toml packages/dogru_mu_samet/src/dogru_mu_samet/__init__.py
+git commit -m "feat(dogru-mu-samet): package skeleton with public API stubs"
 ```
 
 ---
@@ -99,16 +99,16 @@ git commit -m "feat(content-quality): package skeleton with public API stubs"
 ## Task 2: Detectors — Size and Header Repetition
 
 **Files:**
-- Create: `packages/content_quality/src/content_quality/detectors.py`
-- Create: `packages/content_quality/tests/__init__.py`
-- Create: `packages/content_quality/tests/test_detectors.py`
+- Create: `packages/dogru_mu_samet/src/dogru_mu_samet/detectors.py`
+- Create: `packages/dogru_mu_samet/tests/__init__.py`
+- Create: `packages/dogru_mu_samet/tests/test_detectors.py`
 
 - [ ] **Step 1: Write failing tests for check_size**
 
 ```python
-"""Tests for content_quality.detectors."""
+"""Tests for dogru_mu_samet.detectors."""
 
-from content_quality.detectors import (
+from dogru_mu_samet.detectors import (
     check_size,
     check_header_repetition,
 )
@@ -203,7 +203,7 @@ class TestCheckHeaderRepetition:
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `cd packages/content_quality && python -m pytest tests/test_detectors.py -v`
+Run: `cd packages/dogru_mu_samet && python -m pytest tests/test_detectors.py -v`
 Expected: ImportError — detectors module doesn't exist yet.
 
 - [ ] **Step 4: Implement check_size and check_header_repetition**
@@ -292,14 +292,14 @@ def check_header_repetition(text: str) -> tuple[float, bool, str | None]:
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cd packages/content_quality && python -m pytest tests/test_detectors.py::TestCheckSize tests/test_detectors.py::TestCheckHeaderRepetition -v`
+Run: `cd packages/dogru_mu_samet && python -m pytest tests/test_detectors.py::TestCheckSize tests/test_detectors.py::TestCheckHeaderRepetition -v`
 Expected: All PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/content_quality/src/content_quality/detectors.py packages/content_quality/tests/
-git commit -m "feat(content-quality): size and header repetition detectors with tests"
+git add packages/dogru_mu_samet/src/dogru_mu_samet/detectors.py packages/dogru_mu_samet/tests/
+git commit -m "feat(dogru-mu-samet): size and header repetition detectors with tests"
 ```
 
 ---
@@ -307,15 +307,15 @@ git commit -m "feat(content-quality): size and header repetition detectors with 
 ## Task 3: Detectors — Paragraph Repetition and Token Entropy
 
 **Files:**
-- Modify: `packages/content_quality/src/content_quality/detectors.py`
-- Modify: `packages/content_quality/tests/test_detectors.py`
+- Modify: `packages/dogru_mu_samet/src/dogru_mu_samet/detectors.py`
+- Modify: `packages/dogru_mu_samet/tests/test_detectors.py`
 
 - [ ] **Step 1: Write failing tests for check_paragraph_repetition**
 
 Add to `test_detectors.py`:
 
 ```python
-from content_quality.detectors import (
+from dogru_mu_samet.detectors import (
     check_size,
     check_header_repetition,
     check_paragraph_repetition,
@@ -403,7 +403,7 @@ class TestCheckTokenEntropy:
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `cd packages/content_quality && python -m pytest tests/test_detectors.py::TestCheckParagraphRepetition tests/test_detectors.py::TestCheckTokenEntropy -v`
+Run: `cd packages/dogru_mu_samet && python -m pytest tests/test_detectors.py::TestCheckParagraphRepetition tests/test_detectors.py::TestCheckTokenEntropy -v`
 Expected: ImportError — functions not defined yet.
 
 - [ ] **Step 4: Implement check_paragraph_repetition and check_token_entropy**
@@ -471,14 +471,14 @@ def check_token_entropy(text: str) -> tuple[float, bool, str | None]:
 
 - [ ] **Step 5: Run all detector tests**
 
-Run: `cd packages/content_quality && python -m pytest tests/test_detectors.py -v`
+Run: `cd packages/dogru_mu_samet && python -m pytest tests/test_detectors.py -v`
 Expected: All PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/content_quality/src/content_quality/detectors.py packages/content_quality/tests/test_detectors.py
-git commit -m "feat(content-quality): paragraph repetition and token entropy detectors"
+git add packages/dogru_mu_samet/src/dogru_mu_samet/detectors.py packages/dogru_mu_samet/tests/test_detectors.py
+git commit -m "feat(dogru-mu-samet): paragraph repetition and token entropy detectors"
 ```
 
 ---
@@ -486,15 +486,15 @@ git commit -m "feat(content-quality): paragraph repetition and token entropy det
 ## Task 4: Assessor — ContentQualityResult and assess()
 
 **Files:**
-- Create: `packages/content_quality/src/content_quality/assessor.py`
-- Create: `packages/content_quality/tests/test_assessor.py`
+- Create: `packages/dogru_mu_samet/src/dogru_mu_samet/assessor.py`
+- Create: `packages/dogru_mu_samet/tests/test_assessor.py`
 
 - [ ] **Step 1: Write failing tests**
 
 ```python
-"""Tests for content_quality.assessor."""
+"""Tests for dogru_mu_samet.assessor."""
 
-from content_quality.assessor import ContentQualityResult, assess
+from dogru_mu_samet.assessor import ContentQualityResult, assess
 
 
 class TestContentQualityResult:
@@ -578,7 +578,7 @@ class TestAssess:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd packages/content_quality && python -m pytest tests/test_assessor.py -v`
+Run: `cd packages/dogru_mu_samet && python -m pytest tests/test_assessor.py -v`
 Expected: ImportError — assessor module doesn't exist yet.
 
 - [ ] **Step 3: Implement assessor.py**
@@ -675,14 +675,14 @@ def assess(text: str, max_size: int = 20_000) -> ContentQualityResult:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd packages/content_quality && python -m pytest tests/test_assessor.py -v`
+Run: `cd packages/dogru_mu_samet && python -m pytest tests/test_assessor.py -v`
 Expected: All PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/content_quality/src/content_quality/assessor.py packages/content_quality/tests/test_assessor.py
-git commit -m "feat(content-quality): assess() orchestrator with ContentQualityResult"
+git add packages/dogru_mu_samet/src/dogru_mu_samet/assessor.py packages/dogru_mu_samet/tests/test_assessor.py
+git commit -m "feat(dogru-mu-samet): assess() orchestrator with ContentQualityResult"
 ```
 
 ---
@@ -690,15 +690,15 @@ git commit -m "feat(content-quality): assess() orchestrator with ContentQualityR
 ## Task 5: Salvager
 
 **Files:**
-- Create: `packages/content_quality/src/content_quality/salvager.py`
-- Create: `packages/content_quality/tests/test_salvager.py`
+- Create: `packages/dogru_mu_samet/src/dogru_mu_samet/salvager.py`
+- Create: `packages/dogru_mu_samet/tests/test_salvager.py`
 
 - [ ] **Step 1: Write failing tests**
 
 ```python
-"""Tests for content_quality.salvager."""
+"""Tests for dogru_mu_samet.salvager."""
 
-from content_quality.salvager import salvage
+from dogru_mu_samet.salvager import salvage
 
 
 class TestSalvage:
@@ -772,7 +772,7 @@ class TestSalvage:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd packages/content_quality && python -m pytest tests/test_salvager.py -v`
+Run: `cd packages/dogru_mu_samet && python -m pytest tests/test_salvager.py -v`
 Expected: ImportError.
 
 - [ ] **Step 3: Implement salvager.py**
@@ -847,14 +847,14 @@ def salvage(text: str) -> str:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd packages/content_quality && python -m pytest tests/test_salvager.py -v`
+Run: `cd packages/dogru_mu_samet && python -m pytest tests/test_salvager.py -v`
 Expected: All PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/content_quality/src/content_quality/salvager.py packages/content_quality/tests/test_salvager.py
-git commit -m "feat(content-quality): salvage() section deduplication"
+git add packages/dogru_mu_samet/src/dogru_mu_samet/salvager.py packages/dogru_mu_samet/tests/test_salvager.py
+git commit -m "feat(dogru-mu-samet): salvage() section deduplication"
 ```
 
 ---
@@ -862,15 +862,15 @@ git commit -m "feat(content-quality): salvage() section deduplication"
 ## Task 6: Streaming Callback
 
 **Files:**
-- Create: `packages/content_quality/src/content_quality/streaming.py`
-- Create: `packages/content_quality/tests/test_streaming.py`
+- Create: `packages/dogru_mu_samet/src/dogru_mu_samet/streaming.py`
+- Create: `packages/dogru_mu_samet/tests/test_streaming.py`
 
 - [ ] **Step 1: Write failing tests**
 
 ```python
-"""Tests for content_quality.streaming."""
+"""Tests for dogru_mu_samet.streaming."""
 
-from content_quality.streaming import make_stream_callback
+from dogru_mu_samet.streaming import make_stream_callback
 
 
 class TestMakeStreamCallback:
@@ -920,7 +920,7 @@ class TestMakeStreamCallback:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd packages/content_quality && python -m pytest tests/test_streaming.py -v`
+Run: `cd packages/dogru_mu_samet && python -m pytest tests/test_streaming.py -v`
 Expected: ImportError.
 
 - [ ] **Step 3: Implement streaming.py**
@@ -976,19 +976,19 @@ def make_stream_callback(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd packages/content_quality && python -m pytest tests/test_streaming.py -v`
+Run: `cd packages/dogru_mu_samet && python -m pytest tests/test_streaming.py -v`
 Expected: All PASS.
 
 - [ ] **Step 5: Run full package test suite**
 
-Run: `cd packages/content_quality && python -m pytest tests/ -v`
+Run: `cd packages/dogru_mu_samet && python -m pytest tests/ -v`
 Expected: All tests PASS. Package is complete.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/content_quality/src/content_quality/streaming.py packages/content_quality/tests/test_streaming.py
-git commit -m "feat(content-quality): streaming abort callback with interval checks"
+git add packages/dogru_mu_samet/src/dogru_mu_samet/streaming.py packages/dogru_mu_samet/tests/test_streaming.py
+git commit -m "feat(dogru-mu-samet): streaming abort callback with interval checks"
 ```
 
 ---
@@ -997,17 +997,17 @@ git commit -m "feat(content-quality): streaming abort callback with interval che
 
 **Files:**
 - Modify: `src/workflows/engine/hooks.py:862-876,905-917`
-- Modify: `tests/test_content_quality_integration.py` (create)
+- Modify: `tests/test_dogru_mu_samet_integration.py` (create)
 
 - [ ] **Step 1: Write failing integration tests**
 
-Create `tests/test_content_quality_integration.py`:
+Create `tests/test_dogru_mu_samet_integration.py`:
 
 ```python
-"""Integration tests for content_quality wiring in KutAI."""
+"""Integration tests for dogru_mu_samet wiring in KutAI."""
 
 import pytest
-from content_quality import assess, salvage
+from dogru_mu_samet import assess, salvage
 
 
 class TestHooksIntegration:
@@ -1078,7 +1078,7 @@ class TestHooksIntegration:
 
 - [ ] **Step 2: Run tests to verify they pass**
 
-Run: `python -m pytest tests/test_content_quality_integration.py -v`
+Run: `python -m pytest tests/test_dogru_mu_samet_integration.py -v`
 Expected: All PASS (these test the package API, not the hooks.py wiring yet).
 
 - [ ] **Step 3: Replace final quality gate in hooks.py (lines 905-917)**
@@ -1106,7 +1106,7 @@ New code:
 ```python
     # ── Final quality gate before storing ──
     if output_value:
-        from content_quality import assess as cq_assess
+        from dogru_mu_samet import assess as cq_assess
         _artifact_schema = ctx.get("artifact_schema", {})
         _step_max = _artifact_schema.get("max_output_chars", 20_000)
         cq = cq_assess(output_value, max_size=_step_max)
@@ -1143,7 +1143,7 @@ Old code (lines 862-876):
 
 New code:
 ```python
-                        from content_quality import assess as cq_assess, salvage as cq_salvage
+                        from dogru_mu_samet import assess as cq_assess, salvage as cq_salvage
                         cq = cq_assess(file_content)
                         if cq.is_degenerate:
                             cleaned = cq_salvage(file_content)
@@ -1180,8 +1180,8 @@ Expected: `OK`
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/workflows/engine/hooks.py tests/test_content_quality_integration.py
-git commit -m "feat(hooks): replace inline repetition checks with content_quality.assess/salvage"
+git add src/workflows/engine/hooks.py tests/test_dogru_mu_samet_integration.py
+git commit -m "feat(hooks): replace inline repetition checks with dogru_mu_samet.assess/salvage"
 ```
 
 ---
@@ -1218,7 +1218,7 @@ New code:
     _prev = ctx.get("_prev_output")
     if _prev:
         _prev = _unwrap_envelope(_prev)
-        from content_quality import assess as cq_assess, salvage as cq_salvage
+        from dogru_mu_samet import assess as cq_assess, salvage as cq_salvage
         _prev_cq = cq_assess(_prev)
         if _prev_cq.is_degenerate:
             cleaned = cq_salvage(_prev)
@@ -1260,7 +1260,7 @@ New code:
 ```python
                             content = _unwrap_envelope(content)
                             if content and len(content) > 100:
-                                from content_quality import assess as cq_assess
+                                from dogru_mu_samet import assess as cq_assess
                                 _file_cq = cq_assess(content)
                                 if _file_cq.is_degenerate:
                                     logger.warning(
@@ -1289,7 +1289,7 @@ New code:
 ```python
         summary = response.get("content", "").strip()
         if summary and len(summary) > 50:
-            from content_quality import assess as cq_assess
+            from dogru_mu_samet import assess as cq_assess
             _sum_cq = cq_assess(summary)
             if _sum_cq.is_degenerate:
                 logger.warning(
@@ -1318,7 +1318,7 @@ New code:
 ```python
     summary_text = "\n".join(lines).rstrip()
 
-    from content_quality import assess as cq_assess
+    from dogru_mu_samet import assess as cq_assess
     _phase_cq = cq_assess(summary_text)
     if _phase_cq.is_degenerate:
         logger.warning(
@@ -1340,8 +1340,8 @@ def _detect_repetition_ratio(text: str) -> float:
     """Return 0.0-1.0 indicating how much of the text is repetitive.
 
     .. deprecated::
-        Use ``content_quality.assess()`` instead. This function is kept
-        for reference but all callsites now use the content_quality package.
+        Use ``dogru_mu_samet.assess()`` instead. This function is kept
+        for reference but all callsites now use the dogru_mu_samet package.
     ...
 ```
 
@@ -1354,7 +1354,7 @@ Expected: `OK`
 
 ```bash
 git add src/workflows/engine/hooks.py
-git commit -m "feat(hooks): complete content_quality integration — prev_output, injection, summaries"
+git commit -m "feat(hooks): complete dogru_mu_samet integration — prev_output, injection, summaries"
 ```
 
 ---
@@ -1379,7 +1379,7 @@ New code:
     if not result_text or len(str(result_text).strip()) < 10:
         return GradeResult(passed=False, raw="auto-fail: trivial/empty output")
 
-    from content_quality import assess as cq_assess
+    from dogru_mu_samet import assess as cq_assess
     _grade_cq = cq_assess(str(result_text))
     if _grade_cq.is_degenerate:
         return GradeResult(passed=False, raw=f"auto-fail: {_grade_cq.summary}")
@@ -1546,7 +1546,7 @@ Expected: `OK`
 
 ```bash
 git add src/core/grading.py tests/test_grading.py
-git commit -m "feat(grading): add WELL_FORMED/COHERENT fields and content_quality pre-check"
+git commit -m "feat(grading): add WELL_FORMED/COHERENT fields and dogru_mu_samet pre-check"
 ```
 
 ---
@@ -1724,7 +1724,7 @@ New:
 ```python
                     _on_chunk = None
                     if _task_ctx.get("is_workflow_step"):
-                        from content_quality import make_stream_callback
+                        from dogru_mu_samet import make_stream_callback
                         _step_max = _task_ctx.get("artifact_schema", {}).get(
                             "max_output_chars", 20_000
                         )
@@ -1776,7 +1776,7 @@ Old code:
 New code:
 ```python
             text = dep.get("result") or "(no result)"
-            from content_quality import assess as cq_assess, salvage as cq_salvage
+            from dogru_mu_samet import assess as cq_assess, salvage as cq_salvage
             _dep_cq = cq_assess(text)
             if _dep_cq.is_degenerate:
                 cleaned = cq_salvage(text)
@@ -1796,7 +1796,7 @@ After the existing checkpoint restoration block (line 1478), add validation of r
             # Validate recovered _prev_output from checkpoint context
             _recovered_prev = _task_ctx.get("_prev_output")
             if _recovered_prev:
-                from content_quality import assess as cq_assess, salvage as cq_salvage
+                from dogru_mu_samet import assess as cq_assess, salvage as cq_salvage
                 _rec_cq = cq_assess(_recovered_prev)
                 if _rec_cq.is_degenerate:
                     cleaned = cq_salvage(_recovered_prev)
@@ -1825,7 +1825,7 @@ New code:
             if parsed and parsed.get("verdict") == "fix":
                 corrected = parsed.get("corrected_result")
                 if corrected:
-                    from content_quality import assess as cq_assess
+                    from dogru_mu_samet import assess as cq_assess
                     _reflect_cq = cq_assess(corrected)
                     if _reflect_cq.is_degenerate:
                         logger.warning(
@@ -1845,7 +1845,7 @@ Expected: `OK`
 
 ```bash
 git add src/agents/base.py
-git commit -m "feat(base): content_quality checks for deps, checkpoint, self-reflect"
+git commit -m "feat(base): dogru_mu_samet checks for deps, checkpoint, self-reflect"
 ```
 
 ---
@@ -1879,7 +1879,7 @@ New code:
 
     # Don't memorize degenerate output — it poisons future RAG retrieval
     if result_summary and success:
-        from content_quality import assess as cq_assess
+        from dogru_mu_samet import assess as cq_assess
         _ep_cq = cq_assess(result_summary)
         if _ep_cq.is_degenerate:
             logger.info(
@@ -1927,12 +1927,12 @@ git commit -m "feat(episodic): gate memory storage on content quality assessment
 
 - [ ] **Step 1: Run full package test suite**
 
-Run: `cd packages/content_quality && python -m pytest tests/ -v`
+Run: `cd packages/dogru_mu_samet && python -m pytest tests/ -v`
 Expected: All PASS.
 
 - [ ] **Step 2: Run integration tests**
 
-Run: `python -m pytest tests/test_content_quality_integration.py -v`
+Run: `python -m pytest tests/test_dogru_mu_samet_integration.py -v`
 Expected: All PASS.
 
 - [ ] **Step 3: Run existing grading tests**
@@ -1950,7 +1950,7 @@ Expected: All PASS.
 Run:
 ```bash
 python -c "
-from content_quality import assess, salvage, make_stream_callback
+from dogru_mu_samet import assess, salvage, make_stream_callback
 from src.workflows.engine.hooks import post_execute_workflow_step, enrich_task_description
 from src.core.grading import grade_task, parse_grade_response, GradeResult
 from src.core.router import call_model
@@ -1966,5 +1966,5 @@ Expected: `All imports OK`
 
 ```bash
 git add -A
-git commit -m "test: verify content_quality integration across all 13 points"
+git commit -m "test: verify dogru_mu_samet integration across all 13 points"
 ```

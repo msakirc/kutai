@@ -1,6 +1,6 @@
-"""Tests for content_quality.detectors."""
+"""Tests for dogru_mu_samet.detectors."""
 
-from content_quality.detectors import (
+from dogru_mu_samet.detectors import (
     check_size,
     check_header_repetition,
     check_paragraph_repetition,

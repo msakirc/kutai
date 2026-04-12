@@ -51,7 +51,7 @@ async def analyze_image(filepath: str, question: str = "Describe what you see in
             messages=messages,
         )
         analysis = result.get("content", "")
-        from content_quality import assess as cq_assess
+        from dogru_mu_samet import assess as cq_assess
         _vis_cq = cq_assess(analysis)
         if _vis_cq.is_degenerate:
             logger.warning("vision analysis degenerate", summary=_vis_cq.summary)

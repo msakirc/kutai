@@ -57,7 +57,7 @@ async def store_task_result(
 
     # Don't memorize degenerate output — it poisons future RAG retrieval
     if result_summary and success:
-        from content_quality import assess as cq_assess
+        from dogru_mu_samet import assess as cq_assess
         _ep_cq = cq_assess(result_summary)
         if _ep_cq.is_degenerate:
             logger.info(

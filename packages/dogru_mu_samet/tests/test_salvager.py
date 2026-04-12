@@ -1,6 +1,6 @@
-"""Tests for content_quality.salvager."""
+"""Tests for dogru_mu_samet.salvager."""
 
-from content_quality.salvager import salvage
+from dogru_mu_samet.salvager import salvage
 
 
 class TestSalvage:

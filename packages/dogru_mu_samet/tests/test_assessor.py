@@ -1,6 +1,6 @@
-"""Tests for content_quality.assessor."""
+"""Tests for dogru_mu_samet.assessor."""
 
-from content_quality.assessor import ContentQualityResult, assess
+from dogru_mu_samet.assessor import ContentQualityResult, assess
 
 
 class TestContentQualityResult:

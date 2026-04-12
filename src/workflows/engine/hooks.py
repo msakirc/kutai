@@ -88,8 +88,8 @@ def _detect_repetition_ratio(text: str) -> float:
     """Return 0.0–1.0 indicating how much of the text is repetitive.
 
     .. deprecated::
-        Use ``content_quality.assess()`` instead. All callsites now use
-        the content_quality package. Kept for reference.
+        Use ``dogru_mu_samet.assess()`` instead. All callsites now use
+        the dogru_mu_samet package. Kept for reference.
 
     Splits into ## sections, normalizes headers, and counts how many
     sections share a normalized header with at least one other section.
@@ -150,7 +150,6 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
             # Check each word of multi-word fields independently — e.g.
             # "per_competitor" matches if both "per" and "competitor"
             # appear anywhere in the text, since LLMs rephrase freely.
-            # Also checks common synonyms — LLMs rephrase field names.
             if required:
                 import re as _re_obj
                 # Normalize: remove apostrophes, replace dashes/underscores with space
@@ -435,7 +434,7 @@ async def _llm_summarize(text: str, artifact_name: str) -> Optional[str]:
         )
         summary = response.get("content", "").strip()
         if summary and len(summary) > 50:
-            from content_quality import assess as cq_assess
+            from dogru_mu_samet import assess as cq_assess
             _sum_cq = cq_assess(summary)
             if _sum_cq.is_degenerate:
                 logger.warning(
@@ -576,7 +575,7 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
     _prev = ctx.get("_prev_output")
     if _prev:
         _prev = _unwrap_envelope(_prev)
-        from content_quality import assess as cq_assess, salvage as cq_salvage
+        from dogru_mu_samet import assess as cq_assess, salvage as cq_salvage
         _prev_cq = cq_assess(_prev)
         if _prev_cq.is_degenerate:
             cleaned = cq_salvage(_prev)
@@ -628,7 +627,7 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
                                 content = f.read()
                             content = _unwrap_envelope(content)
                             if content and len(content) > 100:
-                                from content_quality import assess as cq_assess
+                                from dogru_mu_samet import assess as cq_assess
                                 _file_cq = cq_assess(content)
                                 if _file_cq.is_degenerate:
                                     logger.warning(
@@ -879,7 +878,7 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
                         with open(fpath, "r", encoding="utf-8") as f:
                             file_content = f.read()
                         file_content = _unwrap_envelope(file_content)
-                        from content_quality import assess as cq_assess, salvage as cq_salvage
+                        from dogru_mu_samet import assess as cq_assess, salvage as cq_salvage
                         cq = cq_assess(file_content)
                         if cq.is_degenerate:
                             cleaned = cq_salvage(file_content)
@@ -936,7 +935,7 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
 
     # ── Final quality gate before storing ──
     if output_value:
-        from content_quality import assess as cq_assess
+        from dogru_mu_samet import assess as cq_assess
         _artifact_schema = ctx.get("artifact_schema", {})
         _step_max = _artifact_schema.get("max_output_chars", 20_000)
         cq = cq_assess(output_value, max_size=_step_max)
@@ -1024,7 +1023,7 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
     if (ctx.get("triggers_clarification")
             and output_value
             and not ctx.get("clarification_history")):
-        from content_quality import assess as cq_assess
+        from dogru_mu_samet import assess as cq_assess
         _clar_cq = cq_assess(output_value)
         if _clar_cq.is_degenerate:
             result["status"] = "failed"
@@ -1239,7 +1238,7 @@ async def _generate_phase_summary(
 
     summary_text = "\n".join(lines).rstrip()
 
-    from content_quality import assess as cq_assess
+    from dogru_mu_samet import assess as cq_assess
     _phase_cq = cq_assess(summary_text)
     if _phase_cq.is_degenerate:
         logger.warning(

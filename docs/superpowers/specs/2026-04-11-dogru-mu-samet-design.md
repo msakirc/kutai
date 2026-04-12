@@ -6,16 +6,16 @@ Local LLMs (9B models) produce degenerate output: repeated markdown sections, ov
 
 ## Solution
 
-A standalone, zero-dependency content quality package (`packages/content_quality/`) that assesses any text — agent answers, file content, streaming buffers, summaries, memories — and returns a structured quality result. KutAI integrates it at 13 surgical points across the execution chain.
+A standalone, zero-dependency content quality package (`packages/dogru_mu_samet/`) that assesses any text — agent answers, file content, streaming buffers, summaries, memories — and returns a structured quality result. KutAI integrates it at 13 surgical points across the execution chain.
 
-## Package: `packages/content_quality/`
+## Package: `packages/dogru_mu_samet/`
 
 ### Structure
 
 ```
-packages/content_quality/
+packages/dogru_mu_samet/
   pyproject.toml
-  src/content_quality/
+  src/dogru_mu_samet/
     __init__.py          # re-exports: assess, salvage, make_stream_callback, ContentQualityResult
     assessor.py          # ContentQualityResult dataclass + assess() orchestrator
     salvager.py          # salvage() — section deduplication
@@ -145,7 +145,7 @@ if rep > 0.4:
 
 With:
 ```python
-from content_quality import assess
+from dogru_mu_samet import assess
 step_max = ctx.get("artifact_schema", {}).get("max_output_chars", 20_000)
 cq = assess(output_value, max_size=step_max)
 if cq.is_degenerate:
@@ -220,7 +220,7 @@ if cq.is_degenerate:
 
 Add below existing `len < 10` check:
 ```python
-from content_quality import assess
+from dogru_mu_samet import assess
 cq = assess(str(result_text))
 if cq.is_degenerate:
     return GradeResult(passed=False, raw=f"auto-fail: {cq.summary}")
@@ -260,9 +260,9 @@ async def _stream_with_partial_buf(completion_kwargs, partial_buf, on_chunk=None
             break  # callback said abort
 ```
 
-Router does NOT import content_quality. The callback is created upstream by the caller:
+Router does NOT import dogru_mu_samet. The callback is created upstream by the caller:
 ```python
-from content_quality import make_stream_callback
+from dogru_mu_samet import make_stream_callback
 callback = make_stream_callback(max_size=20_000)
 ```
 
@@ -274,7 +274,7 @@ The callback is threaded through the existing call chain: `LLMDispatcher.request
 
 After recovering partial output from timeout checkpoint, before injecting as `_prev_output`:
 ```python
-from content_quality import assess, salvage
+from dogru_mu_samet import assess, salvage
 cq = assess(recovered_output)
 if cq.is_degenerate:
     recovered_output = salvage(recovered_output) or None
@@ -306,7 +306,7 @@ if corrected_result:
 
 In `store_task_result()` (line ~82), before storing the result snippet:
 ```python
-from content_quality import assess
+from dogru_mu_samet import assess
 cq = assess(result_snippet)
 if cq.is_degenerate:
     logger.info("Skipping episodic storage for degenerate result")
@@ -334,8 +334,8 @@ Default: 20,000. Hard cap: 50,000 (enforced in `assess()` — `max_size = min(ma
 
 `_detect_repetition_ratio()` in hooks.py gets a deprecation comment:
 ```python
-# DEPRECATED: Use content_quality.assess() instead. Kept for reference.
-# Replaced by content_quality.detectors.check_header_repetition()
+# DEPRECATED: Use dogru_mu_samet.assess() instead. Kept for reference.
+# Replaced by dogru_mu_samet.detectors.check_header_repetition()
 ```
 
 All 4 callsites in hooks.py switch to `assess()`. Function body preserved but unused.
@@ -350,11 +350,11 @@ All 4 callsites in hooks.py switch to `assess()`. Function body preserved but un
 - Skill extraction (reads SITUATION/STRATEGY/TOOLS, independent path) — unchanged
 - Preference/insight extraction from grading — unchanged
 - All existing control flow, status routing, and error handling — unchanged
-- `_unwrap_envelope()` — unchanged (content_quality operates on already-unwrapped text)
+- `_unwrap_envelope()` — unchanged (dogru_mu_samet operates on already-unwrapped text)
 
 ## Testing Strategy
 
-### Package unit tests (`packages/content_quality/tests/`)
+### Package unit tests (`packages/dogru_mu_samet/tests/`)
 
 - `test_detectors.py`: Each detector with known-good and known-bad inputs
   - Header repetition: text with 3x `## Component Usage` sections
@@ -367,7 +367,7 @@ All 4 callsites in hooks.py switch to `assess()`. Function body preserved but un
 
 ### Integration tests (`tests/`)
 
-- `test_content_quality_integration.py`: Verify each of the 13 integration points with mocked `assess()` returning degenerate result, confirm the callsite acts correctly (rejects/salvages/skips)
+- `test_dogru_mu_samet_integration.py`: Verify each of the 13 integration points with mocked `assess()` returning degenerate result, confirm the callsite acts correctly (rejects/salvages/skips)
 
 ## Rollout
 

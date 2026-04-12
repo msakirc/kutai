@@ -1,4 +1,4 @@
-"""Content quality assessment — detect degenerate LLM output."""
+"""Doğru mu Samet — detect degenerate LLM output."""
 
 from .assessor import ContentQualityResult, assess
 from .salvager import salvage

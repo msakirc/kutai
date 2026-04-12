@@ -2840,7 +2840,7 @@ class Orchestrator:
         # We need a two-pass approach because depends_on_step references
         # IDs that are created during insertion.
         processed: list[dict] = []
-        from content_quality import assess as cq_assess
+        from dogru_mu_samet import assess as cq_assess
         for i, st in enumerate(subtasks):
             _st_title = st.get("title", f"Subtask {i+1}")[:80]
             _st_desc = st.get("description", "")[:2000]

@@ -669,8 +669,50 @@ class BaseAgent:
             if len(history) > 1:
                 parts.append(f"Previous answers: {history}")
 
+        # ── Artifact schema → explicit output format instructions ──
+        artifact_schema = task_context.get("artifact_schema")
+        if artifact_schema and isinstance(artifact_schema, dict):
+            fmt_lines = ["## Required Output Format",
+                         "Your final answer MUST be a JSON object with these keys:"]
+            for art_name, rules in artifact_schema.items():
+                schema_type = rules.get("type", "string")
+                if schema_type == "object":
+                    fields = rules.get("required_fields", [])
+                    example = {f: f"<{f}>" for f in fields}
+                    fmt_lines.append(
+                        f"- **{art_name}**: object with fields: "
+                        + ", ".join(f"`{f}`" for f in fields)
+                    )
+                elif schema_type == "array":
+                    min_items = rules.get("min_items", 1)
+                    item_fields = rules.get("item_fields", [])
+                    fmt_lines.append(
+                        f"- **{art_name}**: array (min {min_items} items)"
+                        + (f" each with: {', '.join(f'`{f}`' for f in item_fields)}" if item_fields else "")
+                    )
+                elif schema_type == "markdown":
+                    sections = rules.get("required_sections", [])
+                    fmt_lines.append(
+                        f"- **{art_name}**: markdown with sections: "
+                        + ", ".join(f"`{s}`" for s in sections)
+                    )
+                else:
+                    fmt_lines.append(f"- **{art_name}**: {schema_type}")
+            fmt_lines.append(
+                "\nExample structure:\n```json\n"
+                + json.dumps(
+                    {art: {f: "..." for f in rules.get("required_fields", [])}
+                     for art, rules in artifact_schema.items()
+                     if rules.get("type") == "object"},
+                    indent=2,
+                )
+                + "\n```"
+            )
+            parts.append("\n".join(fmt_lines))
+
         _skip = {"workspace_snapshot", "tool_result", "prior_steps", "tool_depth",
-                 "recent_conversation", "user_clarification", "clarification_history"}
+                 "recent_conversation", "user_clarification", "clarification_history",
+                 "artifact_schema"}
         extra = {k: v for k, v in task_context.items() if k not in _skip and not k.startswith("_")}
         if extra:
             parts.append(
@@ -855,7 +897,7 @@ class BaseAgent:
 
         for dep_id, dep in dep_results.items():
             text = dep.get("result") or "(no result)"
-            from content_quality import assess as cq_assess, salvage as cq_salvage
+            from dogru_mu_samet import assess as cq_assess, salvage as cq_salvage
             _dep_cq = cq_assess(text)
             if _dep_cq.is_degenerate:
                 cleaned = cq_salvage(text)
@@ -1485,7 +1527,7 @@ class BaseAgent:
             # Validate recovered _prev_output from checkpoint context
             _recovered_prev = _task_ctx.get("_prev_output")
             if _recovered_prev:
-                from content_quality import assess as cq_assess, salvage as cq_salvage
+                from dogru_mu_samet import assess as cq_assess, salvage as cq_salvage
                 _rec_cq = cq_assess(_recovered_prev)
                 if _rec_cq.is_degenerate:
                     cleaned = cq_salvage(_recovered_prev)
@@ -1673,7 +1715,7 @@ class BaseAgent:
                     from src.core.llm_dispatcher import get_dispatcher, CallCategory
                     _on_chunk = None
                     if _task_ctx.get("is_workflow_step"):
-                        from content_quality import make_stream_callback
+                        from dogru_mu_samet import make_stream_callback
                         _step_max = _task_ctx.get("artifact_schema", {}).get(
                             "max_output_chars", 20_000
                         )
@@ -2907,7 +2949,7 @@ class BaseAgent:
             if parsed and parsed.get("verdict") == "fix":
                 corrected = parsed.get("corrected_result")
                 if corrected:
-                    from content_quality import assess as cq_assess
+                    from dogru_mu_samet import assess as cq_assess
                     _reflect_cq = cq_assess(corrected)
                     if _reflect_cq.is_degenerate:
                         logger.warning(

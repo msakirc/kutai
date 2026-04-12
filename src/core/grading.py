@@ -208,7 +208,7 @@ async def grade_task(task: dict, grader_model: str) -> GradeResult:
     if not result_text or len(str(result_text).strip()) < 10:
         return GradeResult(passed=False, raw="auto-fail: trivial/empty output")
 
-    from content_quality import assess as cq_assess
+    from dogru_mu_samet import assess as cq_assess
     _grade_cq = cq_assess(str(result_text))
     if _grade_cq.is_degenerate:
         return GradeResult(passed=False, raw=f"auto-fail: {_grade_cq.summary}")

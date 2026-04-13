@@ -47,7 +47,8 @@ class MetricsServer:
         text = build_metrics_text(self._registry)
         return web.Response(
             text=text,
-            content_type="text/plain; version=0.0.4; charset=utf-8",
+            content_type="text/plain; version=0.0.4",
+            charset="utf-8",
         )
 
     async def _handle_health(self, request: web.Request) -> web.Response:

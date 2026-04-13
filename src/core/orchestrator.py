@@ -3226,8 +3226,24 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"Workspace/git init: {e}")
 
+        _shutdown_signal = Path("logs") / "shutdown.signal"
+
         while self.running and not self.shutdown_event.is_set():
             try:
+                # ── Check for external shutdown signal file ──
+                if _shutdown_signal.exists():
+                    try:
+                        intent = _shutdown_signal.read_text().strip()
+                        _shutdown_signal.unlink()
+                        logger.info("External shutdown signal: %s", intent)
+                        if intent == "restart":
+                            self.requested_exit_code = 42
+                        else:
+                            self.requested_exit_code = 0
+                        self.shutdown_event.set()
+                    except Exception as e:
+                        logger.warning("Failed to read shutdown signal: %s", e)
+
                 # ── Graceful shutdown: stop accepting new tasks ──
                 if self._shutting_down:
                     logger.info(

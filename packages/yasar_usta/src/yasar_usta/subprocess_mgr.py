@@ -3,15 +3,37 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import logging.handlers
 import os
+import shutil
 import signal
 import sys
 import time
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger("yasar_usta.subprocess")
+
+
+def _safe_rotator(source: str, dest: str) -> None:
+    """Rename with retry — survives Dropbox/antivirus holding the file on Windows."""
+    for attempt in range(5):
+        try:
+            if os.path.exists(dest):
+                os.remove(dest)
+            os.rename(source, dest)
+            return
+        except PermissionError:
+            time.sleep(0.1 * (attempt + 1))
+    try:
+        shutil.copy2(source, dest)
+        with open(source, "w"):
+            pass
+    except Exception:
+        pass
 
 
 class SubprocessManager:
@@ -48,6 +70,32 @@ class SubprocessManager:
         self.last_exit_code: int | None = None
         self.stderr_tail: deque[str] = deque(maxlen=50)
         self._stop_requested: bool = False
+        self._output_log: logging.Logger | None = None
+
+    def _ensure_output_log(self) -> logging.Logger:
+        """Lazy-init rotating JSONL sink for subprocess stdout/stderr."""
+        if self._output_log is None:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+            lg = logging.getLogger(f"yasar_usta.output.{id(self)}")
+            lg.propagate = False
+            lg.setLevel(logging.DEBUG)
+            oh = logging.handlers.RotatingFileHandler(
+                str(self.log_dir / "guard.jsonl"),
+                maxBytes=50_000_000, backupCount=3, encoding="utf-8",
+            )
+            oh.rotator = _safe_rotator
+            oh.setFormatter(logging.Formatter("%(message)s"))
+            lg.addHandler(oh)
+            self._output_log = lg
+        return self._output_log
+
+    def close(self) -> None:
+        """Release file handles held by the output logger."""
+        if self._output_log:
+            for h in self._output_log.handlers[:]:
+                h.close()
+                self._output_log.removeHandler(h)
+            self._output_log = None
 
     async def start(self) -> None:
         """Launch the subprocess."""
@@ -103,17 +151,26 @@ class SubprocessManager:
             return
         self._stop_requested = True
         timeout = timeout or self.stop_timeout
-        logger.info("Sending shutdown signal...")
+        logger.info("Sending shutdown signal (pid=%s)...", self.process.pid)
         try:
             if sys.platform == "win32":
-                # On Windows, send_signal(SIGINT) raises ValueError with
-                # CREATE_NEW_PROCESS_GROUP.  Use CTRL_BREAK_EVENT which
-                # is delivered to the process group and triggers
-                # KeyboardInterrupt in the Python child.
-                os.kill(self.process.pid, signal.CTRL_BREAK_EVENT)
+                # CTRL_BREAK_EVENT only works if the child has a console
+                # (CREATE_NO_WINDOW means no console → signal is lost).
+                # Try it first (5s), then escalate to TerminateProcess.
+                try:
+                    os.kill(self.process.pid, signal.CTRL_BREAK_EVENT)
+                except OSError:
+                    pass
+                try:
+                    await asyncio.wait_for(self.process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    # Signal didn't reach — terminate directly
+                    logger.info("CTRL_BREAK not received, terminating...")
+                    self.process.terminate()
+                    await asyncio.wait_for(self.process.wait(), timeout=timeout)
             else:
                 self.process.send_signal(signal.SIGINT)
-            await asyncio.wait_for(self.process.wait(), timeout=timeout)
+                await asyncio.wait_for(self.process.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning("Graceful shutdown timed out, killing...")
             self.process.kill()
@@ -187,7 +244,6 @@ class SubprocessManager:
 
     async def _pipe_output(self, stream, name: str) -> None:
         """Read subprocess output line by line, print to console and save."""
-        log_file = self.log_dir / "guard.log"
         while True:
             try:
                 line_bytes = await stream.readline()
@@ -216,7 +272,10 @@ class SubprocessManager:
             if name == "stderr":
                 self.stderr_tail.append(line)
             try:
-                with open(log_file, "a", encoding="utf-8") as f:
-                    f.write(f"[{name}] {line}\n")
+                self._ensure_output_log().info(json.dumps({
+                    "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                    "stream": name,
+                    "msg": line,
+                }, ensure_ascii=False))
             except Exception:
                 pass

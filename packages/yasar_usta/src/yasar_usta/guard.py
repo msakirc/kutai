@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import logging.handlers
 import os
+import shutil
 import signal
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .backoff import BackoffTracker
@@ -74,6 +78,21 @@ class ProcessGuard:
         self._restart_requested = False
         self._stop_requested = False
         self._guard_start_time = time.time()
+
+    # ── Shutdown signal ────────────────────────────────────────────────
+
+    def _write_shutdown_signal(self, intent: str) -> None:
+        """Write a shutdown signal file for the managed app to read.
+
+        The app checks for this file in its main loop and shuts down
+        gracefully — much more reliable than OS signals on Windows.
+        """
+        try:
+            signal_path = Path(self.cfg.log_dir) / "shutdown.signal"
+            signal_path.write_text(intent, encoding="utf-8")
+            logger.info("Wrote shutdown signal: %s", intent)
+        except Exception as e:
+            logger.error("Failed to write shutdown signal: %s", e)
 
     # ── Telegram helpers ──────────────────────────────────────────────
 
@@ -324,6 +343,7 @@ class ProcessGuard:
                         if self.subprocess.running:
                             await self._send(self.msgs.restarting.format(app_name=_app))
                             self._restart_requested = True
+                            self._write_shutdown_signal("restart")
                             await self.subprocess.stop()
                         else:
                             await self._send(self.msgs.starting.format(app_name=_app))
@@ -334,6 +354,7 @@ class ProcessGuard:
                         if self.subprocess.running:
                             await self._send(self.msgs.stopped.format(app_name=self.cfg.app_name))
                             self._stop_requested = True
+                            self._write_shutdown_signal("stop")
                             await self.subprocess.stop()
                         else:
                             await self._send_status()
@@ -429,11 +450,37 @@ class ProcessGuard:
         log_dir = Path(self.cfg.log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
 
-        # Set up file logging for the guard itself
-        fh = logging.FileHandler(
-            str(log_dir / "wrapper_meta.log"), encoding="utf-8")
-        fh.setFormatter(logging.Formatter(
-            "[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+        # Set up file logging for the guard itself (rotating JSONL)
+        class _JsonlFmt(logging.Formatter):
+            def format(self, record):
+                return json.dumps({
+                    "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                    "level": record.levelname,
+                    "src": record.name,
+                    "msg": record.getMessage(),
+                }, ensure_ascii=False)
+
+        def _safe_rotator(source: str, dest: str) -> None:
+            for attempt in range(5):
+                try:
+                    if os.path.exists(dest):
+                        os.remove(dest)
+                    os.rename(source, dest)
+                    return
+                except PermissionError:
+                    time.sleep(0.1 * (attempt + 1))
+            try:
+                shutil.copy2(source, dest)
+                with open(source, "w"):
+                    pass
+            except Exception:
+                pass
+
+        fh = logging.handlers.RotatingFileHandler(
+            str(log_dir / "wrapper_meta.jsonl"),
+            maxBytes=10_000_000, backupCount=3, encoding="utf-8")
+        fh.rotator = _safe_rotator
+        fh.setFormatter(_JsonlFmt())
         fh.setLevel(logging.INFO)
         logger.addHandler(fh)
 

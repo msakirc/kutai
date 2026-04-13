@@ -134,16 +134,20 @@ class ServerProcess:
 
     async def health_check(self) -> bool:
         """Return True if /health returns HTTP 200, False otherwise."""
+        return (await self._health_check_status()) == 200
+
+    async def _health_check_status(self) -> int:
+        """Return the HTTP status code from /health, or 0 on failure."""
         if not self.is_alive():
-            return False
+            return 0
 
         try:
             import httpx
             async with httpx.AsyncClient(timeout=3.0) as client:
                 resp = await client.get(f"{self.api_base}/health")
-                return resp.status_code == 200
+                return resp.status_code
         except Exception:
-            return False
+            return 0
 
     def is_alive(self) -> bool:
         """Return True if the subprocess is running (poll() is None)."""

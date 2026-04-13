@@ -1,0 +1,9 @@
+pyproject.toml
+src/talking_layer/__init__.py
+src/talking_layer/types.py
+src/talking_layer.egg-info/PKG-INFO
+src/talking_layer.egg-info/SOURCES.txt
+src/talking_layer.egg-info/dependency_links.txt
+src/talking_layer.egg-info/requires.txt
+src/talking_layer.egg-info/top_level.txt
+tests/test_types.py

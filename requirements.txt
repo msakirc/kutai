@@ -99,6 +99,7 @@ yazbunu @ git+https://github.com/msakirc/yazbunu.git
 -e ./packages/dallama
 -e ./packages/nerd_herd
 -e ./packages/kuleden_donen_var
+-e ./packages/talking_layer
 
 # Test dependencies
 pytest-aiohttp>=1.0.0

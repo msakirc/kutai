@@ -1613,7 +1613,7 @@
       "id": "2.5",
       "phase": "phase_2",
       "name": "feature_brainstorm",
-      "agent": "planner",
+      "agent": "writer",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [

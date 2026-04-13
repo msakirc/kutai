@@ -281,11 +281,43 @@ async def _step_analyze_query(task: dict, artifacts: dict) -> str:
 
 # ── Step registry ────────────────────────────────────────────────────────────
 
+async def _step_clarify(task: dict, artifacts: dict) -> str:
+    """Check if clarification is needed. If not, pass the query through."""
+    parsed = artifacts.get("parsed_intent", "{}")
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except (json.JSONDecodeError, ValueError):
+            parsed = {}
+
+    needs_clarification = parsed.get("needs_clarification", False)
+
+    if not needs_clarification:
+        # Specific query — skip clarification, pass query through
+        query = parsed.get("query", "") or artifacts.get("user_query", "")
+        return json.dumps({
+            "clarified_query": query,
+            "skipped": True,
+        }, ensure_ascii=False)
+
+    # Vague query — for now, pass through with defaults
+    # (True interactive clarification via Telegram would need
+    # the may_need_clarification workflow hook, which pauses the
+    # mission and waits for user input. That's a separate feature.)
+    query = parsed.get("query", "") or artifacts.get("user_query", "")
+    return json.dumps({
+        "clarified_query": query,
+        "skipped": False,
+        "note": "Query was vague but clarification not yet interactive — proceeding with defaults",
+    }, ensure_ascii=False)
+
+
 _STEP_HANDLERS = {
     "execute_product_search": _step_search,
     "format_and_deliver": _step_format,
     "search_and_collect_reviews": _step_search_and_reviews,
     "understand_query_check_clarity": _step_analyze_query,
+    "ask_clarifying_questions": _step_clarify,
 }
 
 
@@ -316,7 +348,14 @@ class ShoppingPipeline:
             except (json.JSONDecodeError, ValueError):
                 context = {}
 
-        step_name = context.get("step_name", "") or context.get("workflow_step_id", "")
+        step_name = context.get("step_name", "")
+        if not step_name:
+            # Fallback: parse from title "[0.1] step_name_here"
+            title = task.get("title", "")
+            if "] " in title:
+                step_name = title.split("] ", 1)[1]
+        if not step_name:
+            step_name = context.get("workflow_step_id", "")
         mission_id = task.get("mission_id")
         input_artifacts = context.get("input_artifacts", [])
 

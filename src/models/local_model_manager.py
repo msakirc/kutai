@@ -88,6 +88,8 @@ class LocalModelManager:
         self._last_request_time: float = 0.0
         self._total_swaps: int = 0
         self._started = False
+        self._thinking_enabled: bool = False
+        self._vision_enabled: bool = False
 
         # GPU scheduler for acquire/release — same as before
         from .gpu_scheduler import get_gpu_scheduler
@@ -130,8 +132,15 @@ class LocalModelManager:
         reason: str = "",
         enable_thinking: bool = False,
         enable_vision: bool = False,
+        min_context: int = 0,
     ) -> bool:
-        """Load a model by name, translating to DaLLaMa ServerConfig."""
+        """Load a model by name, translating to DaLLaMa ServerConfig.
+
+        Args:
+            min_context: Minimum context window the task requires. Used as
+                a floor — if dynamic calculation yields less, context is
+                bumped up to this value.
+        """
         await self._ensure_started()
 
         # Check if already loaded with same config
@@ -148,37 +157,74 @@ class LocalModelManager:
             logger.error("Model '%s' not found in registry or not local", model_name)
             return False
 
-        # Dynamic context recalculation
+        # Dynamic context recalculation — use a LOCAL variable so we never
+        # mutate the shared ModelInfo in the registry.  Previous code did
+        # `info.context_length = new_ctx` which permanently poisoned the
+        # registry entry with a stale dynamic value.
         from .model_registry import calculate_dynamic_context
         registry_overrides = registry.get_overrides(model_name)
+        context_length = info.context_length  # start from registry default
 
         if "context_length" not in registry_overrides:
             from .gpu_monitor import get_gpu_monitor
             gpu_monitor = get_gpu_monitor()
             gpu_monitor.invalidate_cache()
             fresh_state = gpu_monitor.get_state()
+
+            current_model_name = self._dallama.status.model_name
+            if current_model_name is not None and fresh_state.gpu.available:
+                # A model IS loaded — VRAM reading is polluted by its footprint.
+                # Best estimate: total VRAM minus ~700MB baseline (CUDA + desktop).
+                # Everything else currently used belongs to the loaded model and
+                # will be reclaimed after stop().
+                baseline_vram_mb = 700
+                projected_vram_free = max(
+                    fresh_state.gpu.vram_free_mb,
+                    fresh_state.gpu.vram_total_mb - baseline_vram_mb,
+                )
+                logger.debug(
+                    "VRAM projection: total=%dMB - baseline=%dMB = projected_free=%dMB "
+                    "(current_free=%dMB)",
+                    fresh_state.gpu.vram_total_mb, baseline_vram_mb,
+                    projected_vram_free, fresh_state.gpu.vram_free_mb,
+                )
+            else:
+                # No model loaded → VRAM reading is accurate as-is
+                projected_vram_free = fresh_state.gpu.vram_free_mb
+
             new_ctx = calculate_dynamic_context(
                 file_size_mb=info.file_size_mb,
                 n_layers=info.total_layers,
                 gpu_layers=info.gpu_layers,
                 available_ram_mb=fresh_state.ram_available_mb,
-                available_vram_mb=fresh_state.gpu.vram_free_mb,
+                available_vram_mb=projected_vram_free,
                 family_key=info.family,
             )
-            if new_ctx != info.context_length:
+            if new_ctx != context_length:
                 logger.info(
-                    "Dynamic context: %d -> %d (RAM free: %dMB, VRAM free: %dMB)",
-                    info.context_length, new_ctx,
-                    fresh_state.ram_available_mb, fresh_state.gpu.vram_free_mb,
+                    "Dynamic context: %d -> %d (RAM free: %dMB, VRAM projected free: %dMB)",
+                    context_length, new_ctx,
+                    fresh_state.ram_available_mb, projected_vram_free,
                 )
-                info.context_length = new_ctx
+                context_length = new_ctx
 
-        # gpu_layers override handling
+        # Use task's min_context as a floor — if dynamic calc returned less
+        # than the task needs, bump up.  llama-server will try to fit it;
+        # if VRAM is truly insufficient it OOMs and the circuit breaker
+        # handles it, same outcome as refusing but with a chance of success.
+        if min_context > 0 and context_length < min_context:
+            logger.info(
+                "Bumping context %d -> %d to meet task min_context",
+                context_length, min_context,
+            )
+            context_length = min_context
+
+        # gpu_layers override handling — local var, don't mutate registry
+        gpu_layers = info.gpu_layers
+        gpu_layers_overridden = False
         if "gpu_layers" in registry_overrides:
-            info.gpu_layers = registry_overrides["gpu_layers"]
-            info._gpu_layers_from_override = True
-        else:
-            info._gpu_layers_from_override = False
+            gpu_layers = registry_overrides["gpu_layers"]
+            gpu_layers_overridden = True
 
         # Build ServerConfig
         from dallama import ServerConfig
@@ -187,13 +233,13 @@ class LocalModelManager:
             extra = list(info.extra_server_flags)
 
         # Only pass gpu_layers if explicitly overridden
-        if getattr(info, '_gpu_layers_from_override', False) and info.gpu_layers > 0:
-            extra.extend(["--n-gpu-layers", str(info.gpu_layers)])
+        if gpu_layers_overridden and gpu_layers > 0:
+            extra.extend(["--n-gpu-layers", str(gpu_layers)])
 
         sc = ServerConfig(
             model_path=info.path,
             model_name=model_name,
-            context_length=info.context_length,
+            context_length=context_length,
             thinking=enable_thinking if info.thinking_model else False,
             vision_projector=(info.mmproj_path or "") if enable_vision and info.has_vision else "",
             extra_flags=extra,
@@ -215,14 +261,16 @@ class LocalModelManager:
             self._total_swaps += 1
             self._started_at = time.time()
             self._last_request_time = time.time()
+            self._thinking_enabled = sc.thinking
+            self._vision_enabled = bool(sc.vision_projector)
 
             # Seed measured_tps from persisted speed cache
             _seed_tps = info.tokens_per_second if info.tokens_per_second > 0 else 0.0
             self.runtime_state = ModelRuntimeState(
                 model_name=model_name,
                 thinking_enabled=enable_thinking,
-                context_length=info.context_length,
-                gpu_layers=info.gpu_layers,
+                context_length=context_length,
+                gpu_layers=gpu_layers,
                 measured_tps=_seed_tps,
             )
             registry.mark_loaded(model_name, self.api_base)

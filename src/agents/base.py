@@ -672,42 +672,59 @@ class BaseAgent:
         # ── Artifact schema → explicit output format instructions ──
         artifact_schema = task_context.get("artifact_schema")
         if artifact_schema and isinstance(artifact_schema, dict):
-            fmt_lines = ["## Required Output Format",
-                         "Your final answer MUST be a JSON object with these keys:"]
+            multi = len(artifact_schema) > 1
+            fmt_lines = ["## Required Output Format"]
+            if multi:
+                fmt_lines.append(
+                    "Your final answer MUST be a JSON object with these keys: "
+                    + ", ".join(f"`{n}`" for n in artifact_schema)
+                )
+            example = {}
             for art_name, rules in artifact_schema.items():
                 schema_type = rules.get("type", "string")
                 if schema_type == "object":
                     fields = rules.get("required_fields", [])
-                    example = {f: f"<{f}>" for f in fields}
-                    fmt_lines.append(
-                        f"- **{art_name}**: object with fields: "
-                        + ", ".join(f"`{f}`" for f in fields)
-                    )
+                    desc = "object with fields: " + ", ".join(f"`{f}`" for f in fields)
+                    obj_ex = {f: "..." for f in fields}
+                    if multi:
+                        fmt_lines.append(f"- `{art_name}`: {desc}")
+                        example[art_name] = obj_ex
+                    else:
+                        fmt_lines.append(f"Your final answer MUST be a JSON {desc}")
+                        example = obj_ex
                 elif schema_type == "array":
                     min_items = rules.get("min_items", 1)
                     item_fields = rules.get("item_fields", [])
-                    fmt_lines.append(
-                        f"- **{art_name}**: array (min {min_items} items)"
-                        + (f" each with: {', '.join(f'`{f}`' for f in item_fields)}" if item_fields else "")
-                    )
+                    desc = f"array (min {min_items} items)"
+                    if item_fields:
+                        desc += f" each with: {', '.join(f'`{f}`' for f in item_fields)}"
+                    arr_ex = [{f: "..." for f in item_fields}] if item_fields else ["..."]
+                    if multi:
+                        fmt_lines.append(f"- `{art_name}`: {desc}")
+                        example[art_name] = arr_ex
+                    else:
+                        fmt_lines.append(f"Your final answer MUST be a JSON {desc}")
+                        example = arr_ex
                 elif schema_type == "markdown":
                     sections = rules.get("required_sections", [])
-                    fmt_lines.append(
-                        f"- **{art_name}**: markdown with sections: "
-                        + ", ".join(f"`{s}`" for s in sections)
-                    )
+                    desc = "markdown with sections: " + ", ".join(f"`{s}`" for s in sections)
+                    if multi:
+                        fmt_lines.append(f"- `{art_name}`: {desc}")
+                    else:
+                        fmt_lines.append(f"Your final answer MUST be {desc}")
+                    continue
                 else:
-                    fmt_lines.append(f"- **{art_name}**: {schema_type}")
-            fmt_lines.append(
-                "\nExample structure:\n```json\n"
-                + json.dumps(
-                    {art: {f: "..." for f in rules.get("required_fields", [])}
-                     for art, rules in artifact_schema.items()
-                     if rules.get("type") == "object"},
-                    indent=2,
+                    if multi:
+                        fmt_lines.append(f"- `{art_name}`: {schema_type}")
+                    else:
+                        fmt_lines.append(f"Your final answer type: {schema_type}")
+                    continue
+            if example:
+                fmt_lines.append(
+                    "\nExample:\n```json\n"
+                    + json.dumps(example, indent=2)
+                    + "\n```"
                 )
-                + "\n```"
-            )
             parts.append("\n".join(fmt_lines))
 
         _skip = {"workspace_snapshot", "tool_result", "prior_steps", "tool_depth",

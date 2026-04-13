@@ -21,13 +21,18 @@ def _suppress_browser_errors(loop, context):
     """Suppress orphaned patchright/playwright Future exceptions.
 
     When asyncio.wait_for cancels a browser fetch, patchright's internal
-    navigation Future raises TargetClosedError after the browser context
-    is cleaned up.  These are harmless — swallow them instead of letting
-    asyncio log "Future exception was never retrieved".
+    navigation Future raises after the browser context is cleaned up.
+    These are harmless — swallow them instead of letting asyncio log
+    "Future exception was never retrieved".
     """
     exc = context.get("exception")
-    if exc and "TargetClosedError" in type(exc).__name__:
-        return  # swallow
+    if exc:
+        exc_type = type(exc).__module__ + "." + type(exc).__qualname__
+        # Patchright/playwright errors from cancelled navigations
+        if "patchright" in exc_type or "playwright" in exc_type:
+            return  # swallow
+        if "TargetClosedError" in type(exc).__name__:
+            return  # swallow
     loop.default_exception_handler(context)
 
 

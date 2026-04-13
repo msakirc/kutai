@@ -19,7 +19,7 @@ from ..infra.db import (
     save_workspace_snapshot, release_task_locks, release_mission_locks,
 )
 from src.infra.logging_config import get_logger
-from .router import _circuit_breakers, ModelCallFailed
+from .router import ModelCallFailed, get_kdv
 from ..agents import get_agent
 from ..tools import execute_tool
 from ..tools.workspace import (
@@ -1033,9 +1033,10 @@ class Orchestrator:
 
         # 7. Check circuit breakers — are ALL cloud providers down?
         try:
+            kdv_status = get_kdv().status
             degraded_providers = [
-                p for p, cb in _circuit_breakers.items()
-                if cb.is_degraded
+                p for p, prov_status in kdv_status.items()
+                if prov_status.circuit_breaker_open
             ]
             if degraded_providers:
                 resource_issues.append(

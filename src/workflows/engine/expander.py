@@ -100,6 +100,7 @@ def expand_steps_to_tasks(
 
         context: dict = {
             "workflow_step_id": step_id,
+            "step_name": step.get("name", ""),
             "workflow_phase": phase,
             "input_artifacts": step.get("input_artifacts", []),
             "output_artifacts": step.get("output_artifacts", []),

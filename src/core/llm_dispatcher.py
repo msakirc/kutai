@@ -177,6 +177,19 @@ class LLMDispatcher:
         _MAIN_WORK_MIN = 20.0
         _MAIN_WORK_MAX = 300.0
 
+        # Difficulty-based floor — TPS estimate should never go below this
+        d = reqs.difficulty
+        if d <= 2:
+            difficulty_floor = 25.0
+        elif d <= 4:
+            difficulty_floor = 60.0
+        elif d <= 6:
+            difficulty_floor = 120.0
+        elif d <= 8:
+            difficulty_floor = 200.0
+        else:
+            difficulty_floor = _MAIN_WORK_MAX
+
         # Try runtime measured_tps first (most accurate)
         try:
             from src.models.local_model_manager import get_runtime_state
@@ -190,22 +203,16 @@ class LLMDispatcher:
                 if runtime.thinking_enabled:
                     tps = tps * 0.2
                 est_gen_secs = reqs.estimated_output_tokens / tps
-                return max(_MAIN_WORK_MIN, min(_MAIN_WORK_MAX, est_gen_secs * 2.0))
+                tps_timeout = max(_MAIN_WORK_MIN, min(_MAIN_WORK_MAX, est_gen_secs * 2.0))
+                # Use the higher of TPS-based and difficulty-based — the TPS
+                # estimate can be too low when estimated_output_tokens
+                # underestimates actual generation (e.g. "50-200 features").
+                return max(tps_timeout, difficulty_floor)
         except Exception:
             pass
 
         # Fallback: difficulty heuristic (no TPS data yet)
-        d = reqs.difficulty
-        if d <= 2:
-            return 25.0
-        elif d <= 4:
-            return 60.0
-        elif d <= 6:
-            return 120.0
-        elif d <= 8:
-            return 200.0
-        else:
-            return _MAIN_WORK_MAX
+        return difficulty_floor
 
     async def _route_main_work(
         self,

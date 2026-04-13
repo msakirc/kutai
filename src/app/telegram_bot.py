@@ -4152,8 +4152,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
             # Append clarification to context
             ctx["user_clarification"] = answer
+            question = ctx.get("_clarification_question", "")
             clarifications = ctx.get("clarification_history", [])
-            clarifications.append(answer)
+            clarifications.append({"question": question, "answer": answer})
             ctx["clarification_history"] = clarifications
             # Clean up persisted clarification state
             ctx.pop("_clarification_queue", None)

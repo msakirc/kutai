@@ -93,14 +93,57 @@ async def _stream_with_accumulator(
     return resp
 
 from src.infra.logging_config import get_logger
-from src.models.rate_limiter import get_rate_limit_manager
-from src.models.header_parser import parse_rate_limit_headers
+from kuleden_donen_var import KuledenDonenVar, KuledenConfig, CapacityEvent
 from src.models.quota_planner import get_quota_planner
 from src.models.capabilities import ALL_CAPABILITIES, Cap, TASK_PROFILES, \
   TaskRequirements as CapabilityTaskReqs, score_model_for_task
 from src.models.model_registry import ModelInfo, get_registry
 
 logger = get_logger("core.router")
+
+
+_kdv: KuledenDonenVar | None = None
+
+
+def get_kdv() -> KuledenDonenVar:
+    global _kdv
+    if _kdv is None:
+        from src.models.rate_limiter import _INITIAL_PROVIDER_LIMITS
+        from src.models.model_registry import get_registry as _get_registry
+
+        def _on_capacity_change(evt: CapacityEvent) -> None:
+            planner = get_quota_planner()
+            snap = evt.snapshot
+            if snap.utilization_pct > 0:
+                reset_in = snap.reset_in_seconds or 3600
+                planner.update_paid_utilization(evt.provider, snap.utilization_pct, reset_in)
+
+            if evt.event_type in ("capacity_restored", "circuit_breaker_reset"):
+                try:
+                    import asyncio
+                    from src.infra.db import accelerate_retries
+                    asyncio.ensure_future(accelerate_retries("capacity_restored"))
+                except Exception:
+                    pass
+
+        cfg = KuledenConfig(on_capacity_change=_on_capacity_change)
+        _kdv = KuledenDonenVar(cfg)
+
+        try:
+            registry = _get_registry()
+            for model in registry.cloud_models():
+                agg = _INITIAL_PROVIDER_LIMITS.get(model.provider, {})
+                _kdv.register(
+                    model_id=model.litellm_name,
+                    provider=model.provider,
+                    rpm=model.rate_limit_rpm,
+                    tpm=model.rate_limit_tpm,
+                    provider_aggregate_rpm=agg.get("rpm"),
+                    provider_aggregate_tpm=agg.get("tpm"),
+                )
+        except Exception:
+            pass
+    return _kdv
 
 
 # ─── Capability ↔ Task Mapping ───────────────────────────────────────────────
@@ -280,52 +323,6 @@ class RateLimiter:
         self._token_log = [(t, c) for t, c in self._token_log if now - t < 60]
 
 
-class CircuitBreaker:
-    """Track failures per provider and temporarily disable."""
-
-    def __init__(
-        self,
-        failure_threshold: int = 3,
-        window_seconds: float = 300,
-        cooldown_seconds: float = 600,
-    ):
-        self.failure_threshold = failure_threshold
-        self.window_seconds = window_seconds
-        self.cooldown_seconds = cooldown_seconds
-        self.failures: list[float] = []
-        self.degraded_until: float = 0.0
-
-    def record_failure(self) -> None:
-        now = time.time()
-        self.failures.append(now)
-        self.failures = [t for t in self.failures if now - t < self.window_seconds]
-        if len(self.failures) >= self.failure_threshold:
-            self.degraded_until = now + self.cooldown_seconds
-            logger.warning("circuit breaker tripped", cooldown_seconds=self.cooldown_seconds)
-
-    def record_success(self) -> None:
-        self.failures.clear()
-        self.degraded_until = 0.0
-
-    @property
-    def is_degraded(self) -> bool:
-        if time.time() >= self.degraded_until:
-            if self.degraded_until > 0:
-                self.degraded_until = 0.0
-                self.failures.clear()
-            return False
-        return True
-
-
-_circuit_breakers: dict[str, CircuitBreaker] = {}
-
-
-def _get_circuit_breaker(provider: str) -> CircuitBreaker:
-    if provider not in _circuit_breakers:
-        _circuit_breakers[provider] = CircuitBreaker()
-    return _circuit_breakers[provider]
-
-
 _limiters_initialized = False
 
 
@@ -472,8 +469,9 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
             _skip(f"coding_specialty_mismatch(task={effective_task})"); continue
 
         if not model.is_local:
-            cb = _get_circuit_breaker(model.provider)
-            if cb.is_degraded:
+            kdv = get_kdv()
+            prov_status = kdv.status.get(model.provider)
+            if prov_status and prov_status.circuit_breaker_open:
                 _skip(f"circuit_breaker({model.provider})"); continue
 
         # ── Load mode enforcement ──
@@ -601,26 +599,20 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
                 avail_score = 75 if swap_time < 10 else (55 if swap_time < 30 else 35)
                 reasons.append(f"swap_{swap_time:.0f}s")
         else:
-            rl_manager = get_rate_limit_manager()
-            total_tokens = (
-                reqs.estimated_input_tokens + reqs.estimated_output_tokens
-            )
-
             # ── Graduated headroom scoring (S3b) ──
             # Replaced binary has_capacity() gate with continuous scoring.
             # Uses utilization percentage to compute a smooth availability
             # score so models near their limit gracefully degrade rather
             # than cliff-dropping from 50→25 when they cross the capacity
             # threshold.
-            model_util = rl_manager.get_utilization(model.litellm_name)
-            provider_util = rl_manager.get_provider_utilization(
-                model.provider,
-            )
+            kdv = get_kdv()
+            prov_status = kdv.status.get(model.provider)
+            model_status = prov_status.models.get(model.litellm_name) if prov_status else None
+            model_util = model_status.utilization_pct if model_status else 0.0
+            provider_util = prov_status.utilization_pct if prov_status else 0.0
             # Check daily limit exhaustion (hard gate — no graduated
             # fallback; if daily limit is gone, the model is useless).
-            _daily_exhausted = rl_manager.is_daily_exhausted(
-                model.litellm_name,
-            )
+            _daily_exhausted = model_status.daily_exhausted if model_status else False
             if _daily_exhausted:
                 avail_score = 0
                 reasons.append("daily_exhausted")
@@ -862,7 +854,7 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
     # Only applies to cloud models (local models have a single GPU slot, so
     # sibling rebalancing is irrelevant there).
     try:
-        _rl_mgr_s7 = get_rate_limit_manager()
+        _kdv_s7 = get_kdv()
         _prov_groups: dict[str, list[ScoredModel]] = {}
         for _c in candidates:
             if not _c.model.is_local:
@@ -874,8 +866,16 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
             if len(_group) < 2:
                 continue
             # Compute utilization for every model in this provider group once
+            _prov_s7 = _kdv_s7.status.get(_provider)
             _group_utils = [
-                (_sc, _rl_mgr_s7.get_utilization(_sc.model.litellm_name))
+                (
+                    _sc,
+                    (
+                        _prov_s7.models.get(_sc.model.litellm_name).utilization_pct
+                        if (_prov_s7 and _prov_s7.models.get(_sc.model.litellm_name))
+                        else 0.0
+                    ),
+                )
                 for _sc in _group
             ]
             # Is there at least one heavily-congested model in this group?
@@ -950,44 +950,6 @@ def select_for_task(task: str, **kwargs) -> list[ScoredModel]:
     """Simplified selection by task name."""
     return select_model(ModelRequirements(task=task, **kwargs))
 
-
-
-def _update_limits_from_response(
-    response,
-    model: ModelInfo,
-    rl_manager,
-) -> None:
-    """Parse rate limit headers from a litellm response and update state."""
-    try:
-        hidden = getattr(response, "_hidden_params", None)
-        if not hidden:
-            return
-        headers = hidden.get("additional_headers") or hidden.get("headers")
-        if not headers:
-            return
-
-        snapshot = parse_rate_limit_headers(model.provider, dict(headers))
-        if snapshot is None:
-            return
-
-        rl_manager.update_from_headers(
-            model.litellm_name, model.provider, snapshot,
-        )
-
-        # Update quota planner utilization from header data
-        planner = get_quota_planner()
-        if snapshot.rpm_limit and snapshot.rpm_remaining is not None:
-            util_pct = (1.0 - snapshot.rpm_remaining / snapshot.rpm_limit) * 100
-            reset_in = (snapshot.rpm_reset_at - time.time()) if snapshot.rpm_reset_at else 3600
-            planner.update_paid_utilization(model.provider, util_pct, max(0, reset_in))
-
-            # Detect quota restoration
-            prev_util = planner._paid_utilization.get(model.provider, 100.0)
-            if prev_util > 80 and util_pct < 30:
-                planner.on_quota_restored(model.provider, snapshot.rpm_remaining / snapshot.rpm_limit * 100)
-
-    except Exception as e:
-        logger.debug("header parsing failed", model_name=model.name, error=str(e))
 
 
 # ─── Main API: call_model ────────────────────────────────────────────────────
@@ -1094,6 +1056,7 @@ async def call_model(
                     reason=f"{reqs.agent_type}:{reqs.effective_task or reqs.primary_capability}",
                     enable_thinking=is_thinking,
                     enable_vision=needs_vision,
+                    min_context=reqs.effective_context_needed,
                 )
                 if not success:
                     last_error = f"Failed to load local model {model.name}"
@@ -1210,28 +1173,26 @@ async def call_model(
 
         # ── Rate limiting (two-tier) ──
         if not model.is_local:
-            rl_manager = get_rate_limit_manager()
+            kdv = get_kdv()
             estimated_tokens = (
                 reqs.estimated_input_tokens + reqs.estimated_output_tokens
             )
-            wait_time = await rl_manager.wait_and_acquire(
-                litellm_name=model.litellm_name,
-                provider=model.provider,
-                estimated_tokens=estimated_tokens,
-            )
-            if wait_time < 0:
-                logger.warning(
-                    "daily limit exhausted",
-                    model_name=model.name,
-                )
+            pre = kdv.pre_call(model.litellm_name, model.provider, estimated_tokens)
+            if pre.daily_exhausted:
+                logger.warning("daily limit exhausted", model_name=model.name)
                 last_error = f"Daily limit exhausted for {model.name}"
                 continue
-            if wait_time > 0:
-                logger.info(
-                    "rate limiter waited",
-                    model_name=model.name,
-                    wait_time_seconds=wait_time,
-                )
+            if not pre.allowed:
+                if pre.wait_seconds > 0:
+                    logger.info(
+                        "rate limiter waiting",
+                        model_name=model.name,
+                        wait_time_seconds=pre.wait_seconds,
+                    )
+                    await asyncio.sleep(pre.wait_seconds)
+                else:
+                    last_error = f"Rate limited for {model.name}"
+                    continue
 
         # ── GPU semaphore ──
         local_manager = None
@@ -1366,21 +1327,22 @@ async def call_model(
                     if model.is_local:
                         cost = 0.0
 
-                    # Record actual token usage
-                    if not model.is_local and response.usage:
+                    # Record actual token usage and update rate limit state
+                    if not model.is_local:
                         total_tokens = (
                             (response.usage.prompt_tokens or 0)
                             + (response.usage.completion_tokens or 0)
-                        )
-                        rl_manager.record_tokens(
+                        ) if response.usage else 0
+                        hidden = getattr(response, "_hidden_params", None)
+                        headers = {}
+                        if hidden:
+                            headers = dict(hidden.get("additional_headers") or hidden.get("headers") or {})
+                        get_kdv().post_call(
                             model.litellm_name,
                             model.provider,
-                            total_tokens,
+                            headers=headers,
+                            token_count=total_tokens,
                         )
-
-                    # Update rate limits from response headers
-                    if not model.is_local:
-                        _update_limits_from_response(response, model, rl_manager)
 
                     # Update measured speed + log performance
                     if model.is_local and response.usage:
@@ -1462,9 +1424,6 @@ async def call_model(
                             # Model put everything in <think> — extract it
                             msg.content = re.sub(r"</?think>", "", original).strip()
 
-                    if not model.is_local:
-                        _get_circuit_breaker(model.provider).record_success()
-
                     # Record metrics for Prometheus
                     try:
                         from src.infra.metrics import track_model_call_metrics
@@ -1525,7 +1484,7 @@ async def call_model(
 
                 except asyncio.TimeoutError:
                     if not model.is_local:
-                        _get_circuit_breaker(model.provider).record_failure()
+                        get_kdv().record_failure(model.litellm_name, model.provider, "timeout")
                     last_error = f"Timeout on {model.name}"
                     logger.warning("model timeout", model_name=model.name, attempt=attempt + 1,
                                    timeout_seconds=timeout_val)
@@ -1546,7 +1505,7 @@ async def call_model(
                     last_error = str(e)
 
                     if not model.is_local:
-                        _get_circuit_breaker(model.provider).record_failure()
+                        get_kdv().record_failure(model.litellm_name, model.provider, "server_error")
 
                     if any(kw in error_str for kw in [
                         "api key", "authentication", "unauthorized",
@@ -1562,10 +1521,7 @@ async def call_model(
                     ])
                     if is_rate_limit:
                         if not model.is_local:
-                            rl_manager.record_429(
-                                model.litellm_name,
-                                model.provider,
-                            )
+                            get_kdv().record_failure(model.litellm_name, model.provider, "rate_limit")
                             if not model.is_free:
                                 get_quota_planner().record_429(model.provider)
                         if attempt < max_retries - 1:
@@ -1578,6 +1534,25 @@ async def call_model(
                             await asyncio.sleep(wait_time)
                             continue
                         break
+
+                    # Local model still loading — wait up to 30s then retry
+                    is_loading = "loading model" in error_str
+                    if is_loading and model.is_local and local_manager:
+                        load_wait = 0
+                        while load_wait < 30:
+                            await asyncio.sleep(5)
+                            load_wait += 5
+                            if await local_manager._health_check():
+                                break
+                        if load_wait > 0:
+                            logger.info(
+                                "waited for model loading",
+                                model_name=model.name,
+                                wait_seconds=load_wait,
+                            )
+                        if await local_manager._health_check():
+                            continue  # model ready — retry
+                        break  # still not ready — try other candidates
 
                     # Local 500 during model swap — wait for swap to finish
                     is_server_error = "500" in error_str or "internal server error" in error_str
@@ -1633,6 +1608,8 @@ def _classify_error_category(error: str) -> str:
         return "rate_limited"
     if "daily limit exhausted" in e:
         return "daily_exhausted"
+    if "loading model" in e:
+        return "availability"
     if "circuit breaker" in e or "failed to load local model" in e:
         return "circuit_breaker"
     if "no models available" in e or "no models matched" in e:

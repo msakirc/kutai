@@ -139,6 +139,9 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
             try:
                 data = json.loads(output_value) if isinstance(output_value, str) else output_value
                 if isinstance(data, dict):
+                    # If agent wrapped output in the artifact name, unwrap
+                    if artifact_name in data and isinstance(data[artifact_name], dict):
+                        data = data[artifact_name]
                     missing = [f for f in required if f not in data]
                     if missing:
                         return False, f"Missing required fields in '{artifact_name}': {missing}"

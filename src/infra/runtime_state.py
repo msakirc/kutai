@@ -25,7 +25,12 @@ def mark_degraded(capability: str) -> None:
         from src.app.run import get_nerd_herd
         nh = get_nerd_herd()
         if nh is not None:
-            nh.mark_degraded(capability)
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(nh.mark_degraded(capability))
+            except RuntimeError:
+                pass
     except Exception:
         pass
 

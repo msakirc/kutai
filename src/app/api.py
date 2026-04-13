@@ -246,7 +246,7 @@ def create_app() -> Any:
             from src.app.run import get_nerd_herd
             nh = get_nerd_herd()
             if nh is not None:
-                return nh.prometheus_lines()
+                return await nh.prometheus_lines()
             return ""
         except Exception as e:
             logger.warning("NerdHerd metrics unavailable", error=str(e))

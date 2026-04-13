@@ -39,11 +39,11 @@ except Exception as e:
     _log = get_logger("app.run")
     _log.warning("Could not attach TelegramAlertHandler", error=str(e))
 
-from nerd_herd import NerdHerd
+from nerd_herd.client import NerdHerdClient
 
-_nerd_herd: NerdHerd | None = None
+_nerd_herd: NerdHerdClient | None = None
 
-def get_nerd_herd() -> NerdHerd | None:
+def get_nerd_herd() -> NerdHerdClient | None:
     return _nerd_herd
 
 from src.core.orchestrator import Orchestrator
@@ -401,82 +401,17 @@ async def main():
     except Exception as exc:
         _log.debug("Monitoring loop not started", reason=str(exc))
 
-    # Phase 3: Start NerdHerd observability
-    async def _notify_gpu_change(msg: str):
-        try:
-            from src.app.config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID
-            if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_CHAT_ID:
-                return
-            import aiohttp
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            async with aiohttp.ClientSession() as s:
-                await s.post(url, json={
-                    "chat_id": TELEGRAM_ADMIN_CHAT_ID,
-                    "text": msg,
-                    "parse_mode": "Markdown",
-                }, timeout=aiohttp.ClientTimeout(total=5))
-        except Exception:
-            pass
-
+    # Phase 3: Connect to NerdHerd sidecar (managed by Yaşar Usta)
     try:
         global _nerd_herd
-        # Restore persisted load mode from DB (if any)
-        _initial_mode = "full"
-        try:
-            from src.infra.db import get_db
-            _db = await get_db()
-            _cur = await _db.execute("SELECT mode FROM load_mode WHERE id = 1")
-            _row = await _cur.fetchone()
-            if _row and _row["mode"] in ("full", "heavy", "shared", "minimal"):
-                _initial_mode = _row["mode"]
-        except Exception:
-            pass
-        _nerd_herd = NerdHerd(
-            metrics_port=9881,
-            llama_server_url="http://127.0.0.1:8080",
-            initial_load_mode=_initial_mode,
-        )
-        await _nerd_herd.start()
-        _log.info("NerdHerd metrics server started on port 9881",
-                   load_mode=_initial_mode)
-
-        # Register orchestrator metrics collector
-        from src.infra.metrics import OrchestratorCollector
-        _nerd_herd.register_collector("orchestrator", OrchestratorCollector())
-
-        # Wire mode change callback
-        async def _handle_mode_change(old, new, source):
-            try:
-                from src.infra.db import get_db
-                db = await get_db()
-                await db.execute(
-                    "INSERT OR REPLACE INTO load_mode (id, mode, auto_managed, updated_at) "
-                    "VALUES (1, ?, ?, CURRENT_TIMESTAMP)",
-                    (new, int(_nerd_herd._load.is_auto_managed()))
-                )
-                await db.commit()
-            except Exception:
-                pass
-            if old != new:
-                try:
-                    from src.models.local_model_manager import get_local_manager
-                    mgr = get_local_manager()
-                    if mgr.runtime_state and mgr.runtime_state.measured_tps > 0:
-                        _log.info("invalidating measured_tps on mode change",
-                                  old_tps=mgr.runtime_state.measured_tps)
-                        mgr.runtime_state.measured_tps = 0.0
-                except Exception:
-                    pass
-
-        _nerd_herd.on_mode_change(lambda old, new, src: asyncio.create_task(
-            _handle_mode_change(old, new, src)
-        ))
-
-        # Start auto-detect with Telegram notification
-        await _nerd_herd.start_auto_detect(notify_fn=_notify_gpu_change)
-        _log.info("GPU auto-detect loop started via NerdHerd")
+        _nerd_herd = NerdHerdClient(port=9881)
+        # Verify sidecar is reachable
+        _mode = await _nerd_herd.get_load_mode()
+        _log.info("Connected to NerdHerd sidecar", load_mode=_mode)
     except Exception as exc:
-        _log.warning("NerdHerd startup failed", error=str(exc))
+        _log.warning("NerdHerd client init failed — running without GPU monitoring",
+                     error=str(exc))
+        _nerd_herd = None
 
     # Cancel startup heartbeat — the orchestrator's own _heartbeat_loop
     # takes over once start() creates its background tasks.
@@ -490,7 +425,7 @@ async def main():
     if monitor_task and not monitor_task.done():
         monitor_task.cancel()
     if _nerd_herd:
-        await _nerd_herd.stop()
+        await _nerd_herd.close()
 
     # Propagate exit code to wrapper (EXIT_RESTART=42, EXIT_STOP=0).
     # Use sys.exit() so that atexit handlers (llama-server cleanup) still run.

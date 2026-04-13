@@ -48,7 +48,7 @@ class NerdHerd:
             )
             self.registry.register("inference", self._inference)
 
-        self._server = MetricsServer(self.registry, port=metrics_port)
+        self._server = MetricsServer(self.registry, port=metrics_port, nerd_herd=self)
 
     async def start(self) -> None:
         await self._server.start()

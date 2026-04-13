@@ -1530,9 +1530,11 @@ class Orchestrator:
                 task["context"] = json.dumps(task_ctx)
 
             # ── Layer 0: Fast-path resolution via API registry ──
+            # Skip for pipeline agent types — they have their own execution.
+            _skip_fast_path = agent_type in ("pipeline", "shopping_pipeline")
             try:
                 from ..core.fast_resolver import try_resolve
-                fast_result = await try_resolve(task)
+                fast_result = None if _skip_fast_path else await try_resolve(task)
                 if fast_result:
                     logger.info("task resolved via fast-path", task_id=task_id)
                     await update_task(task_id, status="completed", result=fast_result,
@@ -1581,9 +1583,10 @@ class Orchestrator:
                     logger.info("workflow step delegated to pipeline", task_id=task_id)
 
             # ── Layer 1: Enrich context with pre-fetched API data ──
+            # Skip for pipeline agent types — they don't need API enrichment.
             try:
                 from ..core.fast_resolver import enrich_context
-                enrichment = await enrich_context(task)
+                enrichment = None if _skip_fast_path else await enrich_context(task)
                 if enrichment:
                     task_ctx["api_enrichment"] = enrichment
                     task["context"] = json.dumps(task_ctx)

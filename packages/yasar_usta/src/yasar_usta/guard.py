@@ -323,6 +323,13 @@ class ProcessGuard:
                                     await self._send_status(edit_message_id=cb_msg_id)
                                 else:
                                     await self.telegram.answer_callback(cb["id"])
+                            elif cb_data == "confirm_restart":
+                                _app = self.cfg.app_name
+                                await self.telegram.answer_callback(cb["id"], f"🔄 {_app} yeniden başlatılıyor...")
+                                await self.telegram.edit(cb_msg_id, f"♻️ *{_app} yeniden başlatılıyor...*")
+                                self._restart_requested = True
+                                self._write_shutdown_signal("restart")
+                                await self.subprocess.stop()
                             elif cb_data == "confirm_stop":
                                 _app = self.cfg.app_name
                                 await self.telegram.answer_callback(cb["id"], f"⏹ {_app} durduruluyor...")
@@ -370,10 +377,13 @@ class ProcessGuard:
                               and not text.startswith("/restart_guard")
                               and not text.startswith("/restart_usta"))):
                         if self.subprocess.running:
-                            await self._send(self.msgs.restarting.format(app_name=_app))
-                            self._restart_requested = True
-                            self._write_shutdown_signal("restart")
-                            await self.subprocess.stop()
+                            await self.telegram.send(
+                                f"🔄 *{_app} yeniden başlatılsın mı?*",
+                                reply_markup={"inline_keyboard": [[
+                                    {"text": "🔄 Evet", "callback_data": "confirm_restart"},
+                                    {"text": "❌ Vazgeç", "callback_data": "confirm_cancel"},
+                                ]]},
+                            )
                         else:
                             await self._send(self.msgs.starting.format(app_name=_app))
                             await self._start_app()

@@ -53,7 +53,7 @@ class TestShoppingWorkflow(unittest.TestCase):
         wf = load_workflow("shopping")
         step_agents = {s["id"]: s.get("agent") for s in wf.steps}
         self.assertEqual(step_agents["0.1"], "shopping_pipeline")
-        self.assertEqual(step_agents["1.1"], "shopping_pipeline")
+        self.assertEqual(step_agents["1.1"], "shopping_clarifier")
         self.assertEqual(step_agents["2.1"], "shopping_pipeline")
         self.assertEqual(step_agents["3.1"], "deal_analyst")
         self.assertEqual(step_agents["4.1"], "shopping_advisor")

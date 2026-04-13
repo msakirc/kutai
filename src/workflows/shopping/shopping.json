@@ -86,14 +86,14 @@
       "phase": "phase_1",
       "name": "ask_clarifying_questions",
       "title": "Ask Clarifying Questions",
-      "agent": "shopping_pipeline",
+      "agent": "shopping_clarifier",
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": ["0.1"],
       "input_artifacts": ["parsed_intent", "user_query"],
       "output_artifacts": ["clarified_query"],
-      "instruction": "If parsed_intent has needs_clarification=true, ask the user the questions listed. Keep to max 3 questions. If needs_clarification=false, pass user_query through as clarified_query unchanged.",
-      "done_when": "clarified_query is ready for search.",
+      "instruction": "Read parsed_intent and user_query. Decide: is this query specific enough to research directly, or would 2-3 questions help narrow the search?\n\nSPECIFIC (research directly): brand+model ('siemens s100'), exact product ('dyson v15'), specific comparison ('iphone 15 vs samsung s24'). Return the query as clarified_query immediately.\n\nNEEDS CLARIFICATION: generic category ('coffee machines', '3d printers', 'laptop'), broad brand ('samsung phones'). Ask 2-3 questions about budget, use case, and key constraint. Use the needs_clarification response to pause and ask the user via Telegram.\n\nIMPORTANT: If the query is specific, do NOT ask questions. Just return it.",
+      "done_when": "clarified_query is ready for search — either the original specific query or the user's answers incorporated.",
       "may_need_clarification": true
     },
     {

@@ -354,7 +354,6 @@ _STEP_HANDLERS = {
     "format_and_deliver": _step_format,
     "search_and_collect_reviews": _step_search_and_reviews,
     "understand_query_check_clarity": _step_analyze_query,
-    "ask_clarifying_questions": _step_clarify,
 }
 
 

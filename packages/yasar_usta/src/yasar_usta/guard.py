@@ -546,6 +546,10 @@ class ProcessGuard:
             if sf.exists():
                 sf.unlink()
 
+        # Flush stale Telegram updates from previous runs so old
+        # callbacks (like restart_guard) don't trigger on startup.
+        await self.telegram.flush_updates()
+
         # Start sidecars
         for sc in self.sidecars.values():
             if sc.command:
@@ -575,7 +579,10 @@ class ProcessGuard:
 
                 if self.sidecars:
                     for sc in self.sidecars.values():
-                        await sc.ensure()
+                        try:
+                            await sc.ensure()
+                        except Exception as e:
+                            logger.warning("Sidecar %s ensure failed: %s", sc.name, e)
                 await self._stop_signal_watcher()
                 if self.cfg.on_exit:
                     self.cfg.on_exit(exit_code)

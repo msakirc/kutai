@@ -182,36 +182,36 @@ def format_metrics_summary() -> str:
 
 # ── NerdHerd collector ──────────────────────────────────────────────
 
+from prometheus_client import Gauge as _Gauge
+
+_g_tasks_ok = _Gauge("kutay_tasks_completed_total", "Total tasks completed")
+_g_tasks_fail = _Gauge("kutay_tasks_failed_total", "Total tasks failed")
+_g_queue = _Gauge("kutay_queue_depth", "Current task queue depth")
+_g_cost = _Gauge("kutay_cost_total_usd", "Total inference cost USD")
+_g_model_calls = _Gauge("kutay_model_calls_total", "Model calls", ["model"])
+_g_tokens = _Gauge("kutay_tokens_total", "Tokens by model", ["model"])
+_orch_gauges = [_g_tasks_ok, _g_tasks_fail, _g_queue, _g_cost, _g_model_calls, _g_tokens]
+
+
 class OrchestratorCollector:
     """Exposes orchestrator counters via NerdHerd's collector protocol."""
 
     name = "orchestrator"
 
-    def __init__(self):
-        from prometheus_client import Gauge
-        self._g_tasks_ok = Gauge("kutay_tasks_completed_total", "Total tasks completed")
-        self._g_tasks_fail = Gauge("kutay_tasks_failed_total", "Total tasks failed")
-        self._g_queue = Gauge("kutay_queue_depth", "Current task queue depth")
-        self._g_cost = Gauge("kutay_cost_total_usd", "Total inference cost USD")
-        self._g_model_calls = Gauge("kutay_model_calls_total", "Model calls", ["model"])
-        self._g_tokens = Gauge("kutay_tokens_total", "Tokens by model", ["model"])
-        self._all = [self._g_tasks_ok, self._g_tasks_fail, self._g_queue, self._g_cost,
-                     self._g_model_calls, self._g_tokens]
-
     def collect(self) -> dict:
         return dict(_counters)
 
     def prometheus_metrics(self) -> list:
-        self._g_tasks_ok.set(_counters.get("tasks_completed", 0))
-        self._g_tasks_fail.set(_counters.get("tasks_failed", 0))
-        self._g_queue.set(_counters.get("queue_depth", 0))
-        self._g_cost.set(_counters.get("cost_total", 0.0))
+        _g_tasks_ok.set(_counters.get("tasks_completed", 0))
+        _g_tasks_fail.set(_counters.get("tasks_failed", 0))
+        _g_queue.set(_counters.get("queue_depth", 0))
+        _g_cost.set(_counters.get("cost_total", 0.0))
 
         for k, v in _counters.items():
             if k.startswith("model_calls:"):
                 model = k.split(":", 1)[1]
-                self._g_model_calls.labels(model=model).set(v)
+                _g_model_calls.labels(model=model).set(v)
             elif k.startswith("tokens:"):
                 model = k.split(":", 1)[1]
-                self._g_tokens.labels(model=model).set(v)
-        return self._all
+                _g_tokens.labels(model=model).set(v)
+        return _orch_gauges

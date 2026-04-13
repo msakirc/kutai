@@ -420,12 +420,25 @@ async def main():
 
     try:
         global _nerd_herd
+        # Restore persisted load mode from DB (if any)
+        _initial_mode = "full"
+        try:
+            from src.infra.db import get_db
+            _db = await get_db()
+            _cur = await _db.execute("SELECT mode FROM load_mode WHERE id = 1")
+            _row = await _cur.fetchone()
+            if _row and _row["mode"] in ("full", "heavy", "shared", "minimal"):
+                _initial_mode = _row["mode"]
+        except Exception:
+            pass
         _nerd_herd = NerdHerd(
             metrics_port=9881,
             llama_server_url="http://127.0.0.1:8080",
+            initial_load_mode=_initial_mode,
         )
         await _nerd_herd.start()
-        _log.info("NerdHerd metrics server started on port 9881")
+        _log.info("NerdHerd metrics server started on port 9881",
+                   load_mode=_initial_mode)
 
         # Register orchestrator metrics collector
         from src.infra.metrics import OrchestratorCollector

@@ -72,6 +72,10 @@ class GPUCollector:
     def gpu_state(self) -> GPUState:
         return self._get_state().gpu
 
+    def get_state(self) -> SystemState:
+        """Get full system state (cached). Backward-compatible name."""
+        return self._get_state()
+
     def system_state(self) -> SystemState:
         return self._get_state()
 

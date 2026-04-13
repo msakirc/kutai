@@ -135,39 +135,49 @@ class ProcessGuard:
     # ── Status panel ──────────────────────────────────────────────────
 
     async def _send_status(self, edit_message_id: int | None = None) -> None:
-        sidecar_infos = []
-        for name, sc in self.sidecars.items():
-            sidecar_infos.append({
-                "name": name,
-                "alive": await sc.is_alive(),
-                "pid": sc.pid_alive(),
-                "health_url": sc.health_url,
-                "http_alive": await sc.http_alive(),
-            })
+        try:
+            sidecar_infos = []
+            for name, sc in self.sidecars.items():
+                sidecar_infos.append({
+                    "name": name,
+                    "alive": await sc.is_alive(),
+                    "pid": sc.pid_alive(),
+                    "health_url": sc.health_url,
+                    "http_alive": await sc.http_alive(),
+                })
 
-        text = build_status_text(
-            name=self.cfg.name,
-            app_name=self.cfg.app_name,
-            guard_start_time=self._guard_start_time,
-            app_running=self.subprocess.running,
-            heartbeat_age=self.subprocess.heartbeat_age(),
-            heartbeat_healthy_seconds=self.cfg.heartbeat_healthy_seconds,
-            total_crashes=self.backoff.total_crashes,
-            sidecar_infos=sidecar_infos,
-            extra_processes=self.cfg.extra_processes,
-        )
-        sidecar_names = list(self.sidecars.keys()) if self.sidecars else []
-        inline_kb = build_status_inline_keyboard(
-            self.msgs, self.cfg.name, sidecar_names=sidecar_names)
-
-        if edit_message_id:
-            await self.telegram.edit(edit_message_id, text, reply_markup=inline_kb)
-        else:
-            await self._send(
-                self.msgs.status_title.format(name=self.cfg.name) + "panel:",
-                reply_markup=self._kb(),
+            text = build_status_text(
+                name=self.cfg.name,
+                app_name=self.cfg.app_name,
+                guard_start_time=self._guard_start_time,
+                app_running=self.subprocess.running,
+                heartbeat_age=self.subprocess.heartbeat_age(),
+                heartbeat_healthy_seconds=self.cfg.heartbeat_healthy_seconds,
+                total_crashes=self.backoff.total_crashes,
+                sidecar_infos=sidecar_infos,
+                extra_processes=self.cfg.extra_processes,
             )
-            await self.telegram.send(text, reply_markup=inline_kb)
+            sidecar_names = list(self.sidecars.keys()) if self.sidecars else []
+            inline_kb = build_status_inline_keyboard(
+                self.msgs, self.cfg.name, sidecar_names=sidecar_names)
+
+            if edit_message_id:
+                result = await self.telegram.edit(
+                    edit_message_id, text, reply_markup=inline_kb)
+                # Markdown fail → retry as plain text
+                if result and not result.get("ok"):
+                    await self.telegram.edit(
+                        edit_message_id, text, reply_markup=inline_kb,
+                        parse_mode=None)
+            else:
+                result = await self.telegram.send(text, reply_markup=inline_kb)
+                # Markdown fail → retry as plain text
+                if result and not result.get("ok"):
+                    await self.telegram.send(
+                        text, reply_markup=inline_kb, parse_mode=None)
+        except Exception as e:
+            logger.error("Status panel failed: %s", e)
+            await self._send(f"⚠️ Status panel error: {e}")
 
     # ── Logs ──────────────────────────────────────────────────────────
 

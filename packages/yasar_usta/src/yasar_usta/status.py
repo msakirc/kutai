@@ -75,7 +75,7 @@ def build_status_text(
         sc_name = si["name"]
         if si.get("http_alive"):
             pid_str = f", PID {si['pid']}" if si.get("pid") else ""
-            lines.append(f"📊 {sc_name}: running ({si.get('health_url', '')}{pid_str})")
+            lines.append(f"📊 {sc_name}: running{pid_str}")
         elif si.get("pid"):
             lines.append(f"🟠 {sc_name}: process alive but not responding (PID {si['pid']})")
         elif si.get("alive"):

@@ -39,8 +39,9 @@ class TelegramAPI:
         payload: dict[str, Any] = {
             "chat_id": self.chat_id,
             "text": text,
-            "parse_mode": parse_mode,
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
         try:
@@ -70,8 +71,9 @@ class TelegramAPI:
             "chat_id": self.chat_id,
             "message_id": message_id,
             "text": text,
-            "parse_mode": parse_mode,
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
         try:

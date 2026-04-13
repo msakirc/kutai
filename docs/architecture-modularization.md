@@ -59,6 +59,7 @@ Agent needs LLM call
 | **yasar_usta** | Telegram-controlled process manager with heartbeat watchdog | `packages/yasar_usta/` ([github](https://github.com/msakirc/yasar-usta)) | Active development | aiohttp |
 | **dogru_mu_samet** | Heuristic LLM output quality detection (degenerate/repetitive) | `packages/dogru_mu_samet/` | Stable | None |
 | **dallama** | Async llama-server process manager | `packages/dallama/` | Stable v0.1.0 | httpx |
+| **nerd_herd** | Observability: GPU, VRAM budget, health, inference metrics, Prometheus | `packages/nerd_herd/` | Stable v0.1.0 | yazbunu, pynvml, psutil, prometheus_client, aiohttp |
 
 All packages: `packages/<name>/`, src layout, editable install via requirements.txt. Original module becomes a thin shim preserving all import paths.
 
@@ -118,7 +119,7 @@ DaLLaMa's `swap.py` is designed for future migration — swap strategy changes f
 
 ### Extract Next
 
-**GPU Monitor → observability package.** Today: 250 LOC reads VRAM/temp via pynvml. Vision: unified collector for GPU, inference speed (from DaLLaMa), cloud costs, rate limits, task distribution. Serves Prometheus `/metrics` for Grafana via `prometheus_client`. No Prometheus server needed — Grafana connects directly.
+**GPU Monitor → nerd_herd (DONE).** Extracted as Nerd Herd. Unified collector for GPU, inference speed, VRAM budget policy, health. Serves Prometheus `/metrics` on port 9881 for Grafana. Prometheus container removed — Nerd Herd pre-computes rates via ring buffers.
 
 **Turkish Shopping Scrapers → own package.** 8,500 LOC, 19 scrapers. Largest blast radius. Now connected to workflows, increasing confusion risk.
 
@@ -158,6 +159,7 @@ Future registry extraction should align with LiteLLM's field vocabulary.
 | File | What |
 |------|------|
 | `packages/dallama/` | DaLLaMa package (6 modules + tests) |
+| `packages/nerd_herd/` | Nerd Herd observability package (8 modules + tests) |
 | `src/models/local_model_manager.py` | Shim wrapping DaLLaMa |
 | `src/models/gpu_scheduler.py` | Deprecated — used only by shim |
 | `src/models/gpu_monitor.py` | GPU state — future extraction to observability |
@@ -178,6 +180,9 @@ Stay in `src/core/llm_dispatcher.py` and `src/core/router.py`. DaLLaMa doesn't r
 
 **If you're fixing an agent/task error:**
 Stay in `src/agents/` and `src/core/orchestrator.py`. The model layer is a black box — call `Dispatcher.request()`, get a response.
+
+**If you're fixing a GPU/metrics/monitoring error:**
+The real logic is in `packages/nerd_herd/src/nerd_herd/`. The shims in `src/models/gpu_monitor.py` and `src/infra/load_manager.py` just delegate. Don't edit the shims for GPU bugs — fix Nerd Herd.
 
 **If you're adding a new package:**
 Follow the convention: `packages/<name>/`, src layout, pyproject.toml, editable install. Original module becomes a shim. Preserve all import paths.

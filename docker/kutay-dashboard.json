@@ -105,7 +105,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "rate(llamacpp:tokens_predicted_total[1m])",
+          "expr": "nerd_herd_inference_tokens_per_sec",
           "legendFormat": "gen tok/s",
           "refId": "A"
         }
@@ -148,7 +148,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "rate(llamacpp:prompt_tokens_total[1m])",
+          "expr": "nerd_herd_inference_prompt_tokens_per_sec",
           "legendFormat": "prompt tok/s",
           "refId": "A"
         }
@@ -186,7 +186,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "llamacpp:kv_cache_usage_ratio",
+          "expr": "nerd_herd_inference_kv_cache_ratio",
           "legendFormat": "KV cache",
           "refId": "A"
         }
@@ -231,7 +231,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "llamacpp:requests_processing",
+          "expr": "nerd_herd_inference_requests_processing",
           "legendFormat": "processing",
           "refId": "A"
         }
@@ -269,7 +269,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "llamacpp:requests_pending",
+          "expr": "nerd_herd_inference_requests_pending",
           "legendFormat": "pending",
           "refId": "A"
         }
@@ -312,13 +312,13 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "llamacpp:requests_processing",
+          "expr": "nerd_herd_inference_requests_processing",
           "legendFormat": "processing",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "llamacpp:requests_pending",
+          "expr": "nerd_herd_inference_requests_pending",
           "legendFormat": "pending",
           "refId": "B"
         }
@@ -375,13 +375,13 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "rate(kutay_tasks_completed_total[5m])",
+          "expr": "kutay_tasks_completed_total",
           "legendFormat": "completed",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "rate(kutay_tasks_failed_total[5m])",
+          "expr": "kutay_tasks_failed_total",
           "legendFormat": "failed",
           "refId": "B"
         }
@@ -502,7 +502,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "rate(kutay_model_calls_total[5m])",
+          "expr": "kutay_model_calls_total",
           "legendFormat": "{{model}}",
           "refId": "A"
         }

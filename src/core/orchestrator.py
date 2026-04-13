@@ -6,6 +6,7 @@ import os
 import re
 import signal
 import time
+from pathlib import Path
 from ..app.config import DB_PATH, MAX_CONTEXT_CHAIN_LENGTH, TASK_PRIORITY
 from datetime import datetime, timedelta, timezone
 from ..infra.times import utc_now, db_now, to_db, from_db, DB_FMT

@@ -28,6 +28,7 @@ if not _in_venv and _EXPECTED_VENV.exists():
 from yasar_usta import ProcessGuard, GuardConfig, Messages, SidecarConfig
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+os.environ["NERD_HERD_PROJECT_ROOT"] = str(PROJECT_ROOT)
 
 
 def _find_python() -> str:
@@ -127,15 +128,29 @@ config = GuardConfig(
     claude_name="Kutay",
     claude_signal_file=str(PROJECT_ROOT / "logs" / "claude_remote.signal"),
 
-    sidecar=SidecarConfig(
-        name="yazbunu",
-        command=[venv_python, "-m", "yazbunu.server",
-                 "--log-dir", "./logs", "--port", "9880", "--host", "0.0.0.0"],
-        health_url="http://127.0.0.1:9880/health",
-        pid_file=str(PROJECT_ROOT / "logs" / "yazbunu.pid"),
-        detached=True,
-        auto_start=True,
-    ),
+    sidecars=[
+        SidecarConfig(
+            name="yazbunu",
+            command=[venv_python, "-m", "yazbunu.server",
+                     "--log-dir", "./logs", "--port", "9880", "--host", "0.0.0.0"],
+            health_url="http://127.0.0.1:9880/health",
+            pid_file=str(PROJECT_ROOT / "logs" / "yazbunu.pid"),
+            detached=True,
+            auto_start=True,
+        ),
+        SidecarConfig(
+            name="nerd_herd",
+            command=[venv_python, "-m", "nerd_herd",
+                     "--port", "9881",
+                     "--llama-url", "http://127.0.0.1:8080",
+                     "--pid-file", str(PROJECT_ROOT / "logs" / "nerd_herd.pid"),
+                     "--db-path", os.getenv("DB_PATH", str(PROJECT_ROOT / "data" / "kutai.db"))],
+            health_url="http://127.0.0.1:9881/health",
+            pid_file=str(PROJECT_ROOT / "logs" / "nerd_herd.pid"),
+            detached=True,
+            auto_start=True,
+        ),
+    ],
 
     on_exit=_kill_orphan_processes,
 
@@ -169,7 +184,7 @@ config = GuardConfig(
         btn_remote="🖥️ Claude Code",
         btn_refresh="🔄 Yenile",
         btn_restart_guard="♻️ Usta'yı Yeniden Başlat",
-        btn_restart_sidecar="📊 Yazbunu Yeniden Başlat",
+        btn_restart_sidecar="📊 {sidecar_name} Yeniden Başlat",
         remote_starting="🖥️ Claude Code oturumu başlatılıyor...",
         remote_not_found="❌ `claude` command not found. Claude Code kurulu mu?",
     ),

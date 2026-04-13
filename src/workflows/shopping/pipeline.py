@@ -37,6 +37,7 @@ async def _step_search(task: dict, artifacts: dict) -> str:
     query = artifacts.get("user_query", "")
     if not query:
         query = task.get("description", "")
+    logger.info("search step starting", query=query[:100])
 
     from src.shopping.resilience.fallback_chain import (
         get_product_with_fallback,
@@ -54,12 +55,14 @@ async def _step_search(task: dict, artifacts: dict) -> str:
     community: list = []
     try:
         products = await product_task
-    except (asyncio.TimeoutError, Exception):
-        pass
+    except (asyncio.TimeoutError, Exception) as exc:
+        logger.warning("product search failed for _step_search", error=str(exc))
     try:
         community = await community_task
-    except (asyncio.TimeoutError, Exception):
-        pass
+    except (asyncio.TimeoutError, Exception) as exc:
+        logger.warning("community search failed for _step_search", error=str(exc))
+
+    logger.info("search step done", product_count=len(products or []), community_count=len(community or []))
 
     if not isinstance(products, list):
         products = []
@@ -356,6 +359,9 @@ class ShoppingPipeline:
                 step_name = title.split("] ", 1)[1]
         if not step_name:
             step_name = context.get("workflow_step_id", "")
+
+        logger.info("step dispatch", step_name=step_name, task_id=task.get("id"))
+
         mission_id = task.get("mission_id")
         input_artifacts = context.get("input_artifacts", [])
 
@@ -363,6 +369,13 @@ class ShoppingPipeline:
             await _read_artifacts(mission_id, input_artifacts)
             if mission_id
             else {}
+        )
+
+        logger.info(
+            "artifacts loaded",
+            step_name=step_name,
+            artifact_keys=list(artifacts.keys()),
+            mission_id=mission_id,
         )
 
         handler = _STEP_HANDLERS.get(step_name)

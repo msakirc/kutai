@@ -227,13 +227,13 @@ class LLMDispatcher:
         Before swapping, checks the swap budget. If budget exhausted,
         tries to use the loaded model (even if suboptimal) or cloud.
         """
-        from src.core.router import call_model
+        import talking_layer
+        from src.core.router import ModelCallFailed
 
         timeout = self._compute_timeout(CallCategory.MAIN_WORK, reqs)
 
         # Check swap budget — if exhausted, constrain to loaded model or cloud
         if self.swap_budget.exhausted and not reqs.local_only:
-            reqs_copy = copy.copy(reqs)
             loaded = self._get_loaded_litellm_name()
             if loaded:
                 # Skip pinning if task prefers speed but loaded model is too
@@ -246,13 +246,31 @@ class LLMDispatcher:
                     # Fall through to normal routing below
                 else:
                     # Try the loaded model first by pinning it
+                    reqs_copy = copy.copy(reqs)
                     reqs_copy.model_override = loaded
                     try:
-                        result = await call_model(reqs_copy, messages, tools,
-                                                  timeout_override=timeout,
-                                                  partial_buf=partial_buf,
-                                                  on_chunk=on_chunk)
-                        return result
+                        candidates = self._select_candidates(reqs_copy, tools)
+                        if candidates:
+                            scored = candidates[0]
+                            model = scored.model
+                            is_thinking = model.thinking_model and reqs_copy.needs_thinking
+                            _messages = self._prepare_messages(messages, model)
+                            result = await talking_layer.call(
+                                model=model,
+                                messages=_messages,
+                                tools=tools,
+                                timeout=timeout,
+                                task=reqs_copy.effective_task or reqs_copy.primary_capability or "main_work",
+                                needs_thinking=reqs_copy.needs_thinking,
+                                estimated_output_tokens=reqs_copy.estimated_output_tokens,
+                            )
+                            if isinstance(result, talking_layer.CallResult):
+                                return self._result_to_dict(result, scored, reqs_copy)
+                            # CallError — fall through to normal routing
+                            logger.debug(
+                                f"main_work: pinned loaded model failed ({loaded}), "
+                                f"error={result.message[:100]} falling through."
+                            )
                     except Exception as e:
                         # Loaded model failed — fall through to normal routing
                         # which may try cloud
@@ -265,9 +283,57 @@ class LLMDispatcher:
             # handle it (will likely pick cloud since budget is exhausted
             # and we can't swap)
 
-        result = await call_model(reqs, messages, tools, timeout_override=timeout,
-                                 partial_buf=partial_buf, on_chunk=on_chunk)
-        return result
+        candidates = self._select_candidates(reqs, tools)
+        if not candidates:
+            raise ModelCallFailed(
+                call_id=reqs.effective_task or reqs.primary_capability or "main_work",
+                last_error="No model candidates available",
+                error_category="no_model",
+            )
+
+        last_error = "Unknown"
+        last_category = "unknown"
+        for scored in candidates[:5]:
+            model = scored.model
+            is_thinking = model.thinking_model and reqs.needs_thinking
+
+            # Ensure local model is loaded with correct state
+            if model.is_local and model.location != "ollama":
+                ok = await self._ensure_local_model(model, reqs, is_thinking)
+                if not ok:
+                    last_error = f"Failed to load local model {model.name}"
+                    last_category = "loading"
+                    continue
+
+            _messages = self._prepare_messages(messages, model)
+            result = await talking_layer.call(
+                model=model,
+                messages=_messages,
+                tools=tools,
+                timeout=timeout,
+                task=reqs.effective_task or reqs.primary_capability or "main_work",
+                needs_thinking=reqs.needs_thinking,
+                estimated_output_tokens=reqs.estimated_output_tokens,
+            )
+
+            if isinstance(result, talking_layer.CallResult):
+                return self._result_to_dict(result, scored, reqs)
+
+            # CallError
+            last_error = result.message
+            last_category = result.category
+            logger.debug(
+                f"main_work candidate failed | model={model.name} "
+                f"category={result.category} error={result.message[:80]}"
+            )
+            if not result.retryable:
+                break
+
+        raise ModelCallFailed(
+            call_id=reqs.effective_task or reqs.primary_capability or "main_work",
+            last_error=last_error,
+            error_category=last_category,
+        )
 
     async def _route_overhead(
         self,
@@ -282,11 +348,11 @@ class LLMDispatcher:
             - The currently loaded model (free, no swap)
             - Cloud models (fallback)
 
-          call_model() handles the rest naturally:
+          Iterates candidates (max 5) via talking_layer.call():
             1. Tries loaded model first (ranked highest: free + loaded)
             2. GPU scheduler queues request — up to 60s waiting room
             3. If GPU times out, falls through to cloud candidates
-            4. If cloud also fails, ModelCallFailed → sleeping queue
+            4. If cloud also fails, raises RuntimeError → sleeping queue
 
           Swap-awareness:
             When a model swap is in progress, local model is unavailable.
@@ -298,7 +364,7 @@ class LLMDispatcher:
             proactive load is in progress, wait briefly for it to complete
             rather than failing immediately.
         """
-        from src.core.router import call_model
+        import talking_layer
 
         timeout = self._compute_timeout(CallCategory.OVERHEAD, reqs)
 
@@ -306,36 +372,237 @@ class LLMDispatcher:
         if not self._get_loaded_model_name() and self._should_wait_for_cold_start():
             await self._wait_for_model_load(reqs)
 
-        reqs_safe = copy.copy(reqs)
+        reqs_safe = self._prepare_overhead_reqs(copy.copy(reqs))
 
-        # ── Atomic swap-state check ──
-        # Snapshot swap_version + loaded model atomically. If the swap
-        # version changes between our snapshot and call_model's execution,
-        # the exclusion list may be stale — but that's safe because:
-        #   - If swap completed: loaded model changed, but we only kept
-        #     it as a candidate (select_model will see it's now different).
-        #   - If swap started: we excluded unloaded models already.
-        # The timestamp lets us detect these transitions for logging.
+        last_error = "Unknown"
+        candidates = self._select_candidates(reqs_safe, tools)
+        if not candidates:
+            raise RuntimeError(
+                f"OVERHEAD call failed: no model candidates available. "
+                f"Task: {reqs.effective_task or reqs.primary_capability}"
+            )
+
+        for scored in candidates[:5]:
+            model = scored.model
+            _messages = self._prepare_messages(messages, model)
+            result = await talking_layer.call(
+                model=model,
+                messages=_messages,
+                tools=tools,
+                timeout=timeout,
+                task=reqs.effective_task or reqs.primary_capability or "overhead",
+                needs_thinking=False,  # OVERHEAD never needs thinking
+                estimated_output_tokens=reqs.estimated_output_tokens,
+            )
+            if isinstance(result, talking_layer.CallResult):
+                return self._result_to_dict(result, scored, reqs)
+            last_error = result.message
+            logger.debug(
+                f"overhead candidate failed | model={model.name} "
+                f"category={result.category} error={result.message[:80]}"
+            )
+            if not result.retryable:
+                break
+
+        raise RuntimeError(
+            f"OVERHEAD call failed: loaded model and cloud unavailable. "
+            f"Task: {reqs.effective_task or reqs.primary_capability}, "
+            f"Error: {last_error}"
+        )
+
+    # ─── Candidate selection & model preparation helpers ─────────────────────
+
+    def _select_candidates(
+        self,
+        reqs: "ModelRequirements",
+        tools: list[dict] | None = None,
+    ) -> list:
+        """Select ranked model candidates from router.
+
+        Absorbs the model_override and fallback-relaxation logic from
+        router.call_model() so the dispatcher owns the full candidate loop.
+
+        Returns list[ScoredModel], empty if nothing available.
+        """
+        import copy as _copy
+        from src.core.router import select_model
+
+        if tools:
+            reqs.needs_function_calling = True
+
+        # Direct model override
+        if reqs.model_override:
+            from src.models.model_registry import get_registry
+            from src.core.router import ScoredModel, ModelInfo, ALL_CAPABILITIES
+
+            registry = get_registry()
+            pinned = registry.find_by_litellm_name(reqs.model_override)
+            if pinned:
+                return [ScoredModel(model=pinned, score=999, reasons=["pinned"])]
+            else:
+                return [ScoredModel(
+                    model=ModelInfo(
+                        name="override",
+                        location="cloud",
+                        provider="unknown",
+                        litellm_name=reqs.model_override,
+                        capabilities={cap: 5.0 for cap in ALL_CAPABILITIES},
+                        context_length=128000,
+                        max_tokens=4096,
+                    ),
+                    score=999,
+                    reasons=["pinned_raw"],
+                )]
+
+        candidates = select_model(reqs)
+
+        if not candidates:
+            # Relax constraints but keep original task profile
+            fallback_reqs = _copy.copy(reqs)
+            fallback_reqs.difficulty = 1
+            fallback_reqs.min_score = 0.01
+            fallback_reqs.local_only = False
+            fallback_reqs.needs_thinking = False
+            fallback_reqs.needs_vision = False
+            fallback_reqs.needs_function_calling = False
+            logger.warning("relaxed fallback", original_task=reqs.effective_task,
+                           agent_type=reqs.agent_type)
+            candidates = select_model(fallback_reqs)
+
+        return candidates or []
+
+    async def _ensure_local_model(
+        self,
+        model: "ModelInfo",
+        reqs: "ModelRequirements",
+        is_thinking: bool,
+    ) -> bool:
+        """Ensure the local model is loaded with correct vision/thinking state.
+
+        Returns True if model is ready, False if load failed.
+        """
+        from src.models.local_model_manager import get_local_manager
+
+        manager = get_local_manager()
+        needs_vision = reqs.needs_vision and model.has_vision
+        needs_thinking_reload = (
+            model.thinking_model
+            and is_thinking
+            and not manager._thinking_enabled
+        )
+        needs_reload = (
+            not model.is_loaded
+            or needs_thinking_reload
+            or (needs_vision and not manager._vision_enabled)
+        )
+        if not needs_reload:
+            return True
+
+        success = await manager.ensure_model(
+            model.name,
+            reason=f"{reqs.agent_type}:{reqs.effective_task or reqs.primary_capability}",
+            enable_thinking=is_thinking,
+            enable_vision=needs_vision,
+            min_context=reqs.effective_context_needed,
+        )
+        if not success:
+            # Proactively trigger replacement load so the NEXT task
+            # doesn't also hit "no models available" while waiting
+            # for the main loop's ensure_gpu_utilized cycle.
+            try:
+                import asyncio as _asyncio
+                _asyncio.ensure_future(
+                    self.ensure_gpu_utilized(
+                        [{"agent_type": reqs.agent_type, "context": "{}"}]
+                    )
+                )
+            except Exception:
+                pass
+        return success
+
+    def _prepare_messages(
+        self,
+        messages: list[dict],
+        model: "ModelInfo",
+    ) -> list[dict]:
+        """Prepare messages for the given model.
+
+        - Redacts secrets for cloud models
+        - Adapts trailing assistant prefill for thinking models
+        """
+        _messages = messages
+
+        # Phase 8.3: Redact secrets from messages sent to cloud models
+        if not model.is_local:
+            try:
+                from src.security.sensitivity import redact_secrets
+                _messages = []
+                for msg in messages:
+                    _m = dict(msg)
+                    if isinstance(_m.get("content"), str):
+                        _m["content"] = redact_secrets(_m["content"])
+                    _messages.append(_m)
+            except Exception:
+                _messages = messages
+
+        # Thinking models reject assistant prefills — convert to user message
+        if model.thinking_model and _messages and _messages[-1].get("role") == "assistant":
+            last = _messages[-1]
+            _messages = list(_messages[:-1])
+            _messages.append({
+                "role": "user",
+                "content": (
+                    "Your previous response (continue from here, "
+                    "do NOT repeat this):\n\n" + last["content"]
+                ),
+            })
+
+        return _messages
+
+    def _prepare_overhead_reqs(self, reqs: "ModelRequirements") -> "ModelRequirements":
+        """Exclude unloaded local models from overhead reqs (no swap triggers).
+
+        Uses atomic swap-state check to decide between full exclusion and
+        unloaded-only exclusion.
+        """
         _sv = self._swap_version()
         _loaded = self._get_loaded_model_name()
 
         if _sv > 0 and not _loaded:
             # Swap in progress, no model available yet → cloud only
             logger.debug(f"overhead skipping local — swap in progress | task={reqs.effective_task or reqs.primary_capability}")
-            reqs_safe = self._exclude_all_local(reqs_safe)
+            return self._exclude_all_local(reqs)
         else:
-            reqs_safe = self._exclude_unloaded_local(reqs_safe)
+            return self._exclude_unloaded_local(reqs)
 
-        try:
-            result = await call_model(reqs_safe, messages, tools,
-                                      timeout_override=timeout)
-            return result
-        except Exception as e:
-            raise RuntimeError(
-                f"OVERHEAD call failed: loaded model and cloud unavailable. "
-                f"Task: {reqs.effective_task or reqs.primary_capability}, "
-                f"Error: {e}"
-            ) from e
+    def _result_to_dict(
+        self,
+        result: "CallResult",
+        scored: "ScoredModel",
+        reqs: "ModelRequirements",
+    ) -> dict:
+        """Convert a talking_layer CallResult to the legacy response dict format."""
+        return {
+            "content": result.content,
+            "model": result.model,
+            "model_name": result.model_name,
+            "cost": result.cost,
+            "usage": result.usage,
+            "tool_calls": result.tool_calls,
+            "latency": result.latency,
+            "thinking": result.thinking,
+            "is_local": result.is_local,
+            "ran_on": "local" if result.is_local else result.provider,
+            "provider": result.provider,
+            "task": result.task,
+            "capability_score": scored.capability_score,
+            "difficulty": reqs.difficulty,
+        }
+
+    def _classify_error_category(self, error: str) -> str:
+        """Classify an error string into a routing category."""
+        from talking_layer.retry import classify_error
+        return classify_error(error)
 
     def _should_wait_for_cold_start(self) -> bool:
         """Check if we should wait for a model to load on cold start.

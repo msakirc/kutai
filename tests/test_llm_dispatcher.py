@@ -139,6 +139,42 @@ class TestSwapBudget(unittest.TestCase):
 # LLMDispatcher Routing Tests
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _make_fake_scored(name="model-a", litellm_name="openai/model-a", is_local=False):
+    """Create a fake ScoredModel for tests using MagicMock."""
+    fake_model = MagicMock()
+    fake_model.name = name
+    fake_model.litellm_name = litellm_name
+    fake_model.is_local = is_local
+    fake_model.location = "cloud"
+    fake_model.thinking_model = False
+    fake_model.has_vision = False
+
+    fake_scored = MagicMock()
+    fake_scored.model = fake_model
+    fake_scored.score = 99.0
+    fake_scored.capability_score = 0.8
+    fake_scored.reasons = []
+    return fake_scored
+
+
+def _make_fake_call_result(content="ok", model="openai/model-a", model_name="model-a"):
+    """Create a fake talking_layer.CallResult."""
+    import talking_layer
+    return talking_layer.CallResult(
+        content=content,
+        tool_calls=None,
+        thinking=None,
+        usage={"prompt_tokens": 10, "completion_tokens": 5},
+        cost=0.0,
+        latency=0.1,
+        model=model,
+        model_name=model_name,
+        is_local=False,
+        provider="openai",
+        task="test",
+    )
+
+
 class TestLLMDispatcherRouting(unittest.TestCase):
 
     def _make_dispatcher(self):
@@ -173,13 +209,19 @@ class TestLLMDispatcherRouting(unittest.TestCase):
         dispatcher = self._make_dispatcher()
         reqs = _make_reqs()
         messages = [{"role": "user", "content": "classify this"}]
-        mock_result = {"content": "ok", "model": "openai/model-a"}
 
-        mock_call = AsyncMock(return_value=mock_result)
+        fake_scored = _make_fake_scored()
+        fake_result = _make_fake_call_result("ok")
+
+        mock_tl_call = AsyncMock(return_value=fake_result)
 
         with patch("src.core.llm_dispatcher.LLMDispatcher._exclude_unloaded_local",
                    side_effect=lambda r: r), \
-             patch("src.core.router.call_model", mock_call):
+             patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
+                   return_value=[fake_scored]), \
+             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
+                   side_effect=lambda msgs, m: msgs), \
+             patch("talking_layer.call", mock_tl_call):
 
             from src.core.llm_dispatcher import CallCategory
             result = run_async(dispatcher.request(
@@ -188,25 +230,30 @@ class TestLLMDispatcherRouting(unittest.TestCase):
                 messages=messages,
             ))
 
-        # Single call_model call — loaded model + cloud as candidates
-        self.assertTrue(mock_call.called)
-        self.assertEqual(mock_call.call_count, 1)
-        # No model_override — select_model naturally prefers loaded model
-        called_reqs = mock_call.call_args[0][0]
-        self.assertIsNone(called_reqs.model_override)
+        # talking_layer.call was invoked once
+        self.assertTrue(mock_tl_call.called)
+        self.assertEqual(mock_tl_call.call_count, 1)
+        # Result has content from the fake result
+        self.assertEqual(result["content"], "ok")
 
     # 15. no model loaded → exclude_unloaded excludes all local → cloud only
     def test_dispatcher_overhead_falls_to_cloud_when_no_loaded(self):
         dispatcher = self._make_dispatcher()
         reqs = _make_reqs()
         messages = [{"role": "user", "content": "classify this"}]
-        mock_result = {"content": "ok", "model": "claude-3-haiku"}
 
-        mock_call = AsyncMock(return_value=mock_result)
+        fake_scored = _make_fake_scored(name="haiku", litellm_name="claude-3-haiku")
+        fake_result = _make_fake_call_result("ok", model="claude-3-haiku", model_name="haiku")
+
+        mock_tl_call = AsyncMock(return_value=fake_result)
 
         with patch("src.core.llm_dispatcher.LLMDispatcher._exclude_unloaded_local",
                    side_effect=lambda r: r), \
-             patch("src.core.router.call_model", mock_call):
+             patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
+                   return_value=[fake_scored]), \
+             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
+                   side_effect=lambda msgs, m: msgs), \
+             patch("talking_layer.call", mock_tl_call):
 
             from src.core.llm_dispatcher import CallCategory
             result = run_async(dispatcher.request(
@@ -215,22 +262,29 @@ class TestLLMDispatcherRouting(unittest.TestCase):
                 messages=messages,
             ))
 
-        # Single call_model — when no model loaded, all local excluded → cloud
-        self.assertTrue(mock_call.called)
-        self.assertEqual(mock_call.call_count, 1)
+        # talking_layer.call invoked — cloud model was used
+        self.assertTrue(mock_tl_call.called)
+        self.assertEqual(mock_tl_call.call_count, 1)
 
     # ── MAIN_WORK routing ──
 
-    # 16. MAIN_WORK calls call_model normally
+    # 16. MAIN_WORK calls talking_layer.call normally
     def test_dispatcher_main_work_passes_through(self):
         dispatcher = self._make_dispatcher()
         reqs = _make_reqs()
         messages = [{"role": "user", "content": "do work"}]
-        mock_result = {"content": "done", "model": "openai/model-a"}
 
-        mock_call = AsyncMock(return_value=mock_result)
+        fake_scored = _make_fake_scored()
+        fake_result = _make_fake_call_result("done")
 
-        with patch("src.core.router.call_model", mock_call):
+        mock_tl_call = AsyncMock(return_value=fake_result)
+
+        with patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
+                   return_value=[fake_scored]), \
+             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
+                   side_effect=lambda msgs, m: msgs), \
+             patch("talking_layer.call", mock_tl_call):
+
             from src.core.llm_dispatcher import CallCategory
             result = run_async(dispatcher.request(
                 category=CallCategory.MAIN_WORK,
@@ -238,10 +292,10 @@ class TestLLMDispatcherRouting(unittest.TestCase):
                 messages=messages,
             ))
 
-        mock_call.assert_called_once()
-        self.assertEqual(result, mock_result)
+        mock_tl_call.assert_called_once()
+        self.assertEqual(result["content"], "done")
 
-    # 17. exhausted budget → tries loaded model first
+    # 17. exhausted budget → tries loaded model first via model_override pinning
     def test_dispatcher_main_work_with_exhausted_budget(self):
         dispatcher = self._make_dispatcher()
         # Exhaust the budget
@@ -251,13 +305,26 @@ class TestLLMDispatcherRouting(unittest.TestCase):
 
         reqs = _make_reqs(local_only=False)
         messages = [{"role": "user", "content": "do work"}]
-        mock_result = {"content": "done", "model": "openai/model-a"}
 
-        mock_call = AsyncMock(return_value=mock_result)
+        fake_scored = _make_fake_scored()
+        fake_result = _make_fake_call_result("done")
+
+        # Track what model_override was used in the first _select_candidates call
+        select_calls = []
+
+        def fake_select_candidates(r, tools=None):
+            select_calls.append(getattr(r, "model_override", None))
+            return [fake_scored]
+
+        mock_tl_call = AsyncMock(return_value=fake_result)
 
         with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_litellm_name",
                    return_value="openai/model-a"), \
-             patch("src.core.router.call_model", mock_call):
+             patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
+                   side_effect=fake_select_candidates), \
+             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
+                   side_effect=lambda msgs, m: msgs), \
+             patch("talking_layer.call", mock_tl_call):
 
             from src.core.llm_dispatcher import CallCategory
             result = run_async(dispatcher.request(
@@ -266,20 +333,25 @@ class TestLLMDispatcherRouting(unittest.TestCase):
                 messages=messages,
             ))
 
-        # With exhausted budget, the loaded model is tried first via model_override
-        self.assertTrue(mock_call.called)
-        first_call_reqs = mock_call.call_args_list[0][0][0]
-        self.assertEqual(first_call_reqs.model_override, "openai/model-a")
+        # First _select_candidates call should have model_override set to loaded model
+        self.assertTrue(len(select_calls) >= 1)
+        self.assertEqual(select_calls[0], "openai/model-a")
 
     # 22. get_stats returns correct counters
     def test_dispatcher_stats(self):
         dispatcher = self._make_dispatcher()
 
-        mock_call = AsyncMock(return_value={"content": "ok", "model": "m"})
+        fake_scored = _make_fake_scored()
+        fake_result = _make_fake_call_result("ok")
+        mock_tl_call = AsyncMock(return_value=fake_result)
 
-        with patch("src.core.router.call_model", mock_call), \
+        with patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
+                   return_value=[fake_scored]), \
+             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
+                   side_effect=lambda msgs, m: msgs), \
              patch("src.core.llm_dispatcher.LLMDispatcher._exclude_unloaded_local",
-                   side_effect=lambda r: r):
+                   side_effect=lambda r: r), \
+             patch("talking_layer.call", mock_tl_call):
 
             from src.core.llm_dispatcher import CallCategory
 
@@ -333,13 +405,19 @@ class TestLLMDispatcherIntegration(unittest.TestCase):
         reqs = _make_reqs()
         messages = [{"role": "user", "content": "classify"}]
 
-        mock_call = AsyncMock(return_value={"content": "ok", "model": "openai/m"})
         mock_ensure = AsyncMock()
+        fake_scored = _make_fake_scored()
+        fake_result = _make_fake_call_result("ok")
+        mock_tl_call = AsyncMock(return_value=fake_result)
 
         # _exclude_unloaded_local is the mechanism that prevents swaps
         with patch("src.core.llm_dispatcher.LLMDispatcher._exclude_unloaded_local",
                    side_effect=lambda r: r), \
-             patch("src.core.router.call_model", mock_call):
+             patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
+                   return_value=[fake_scored]), \
+             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
+                   side_effect=lambda msgs, m: msgs), \
+             patch("talking_layer.call", mock_tl_call):
 
             # Patch ensure_model via the module that would be imported
             with patch.dict("sys.modules", {
@@ -447,7 +525,6 @@ class TestColdStartWait(unittest.TestCase):
         dispatcher = self._make_dispatcher()
         reqs = _make_reqs()
         messages = [{"role": "user", "content": "classify this"}]
-        mock_result = {"content": "ok", "model": "openai/model-a"}
 
         # Simulate: no model loaded initially, then loaded after wait
         load_count = {"calls": 0}
@@ -469,7 +546,9 @@ class TestColdStartWait(unittest.TestCase):
         mock_mgr = MagicMock()
         mock_mgr.swap_started_at = 1.0  # proactive load in progress
 
-        mock_call = AsyncMock(return_value=mock_result)
+        fake_scored = _make_fake_scored()
+        fake_result = _make_fake_call_result("ok")
+        mock_tl_call = AsyncMock(return_value=fake_result)
 
         with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_model_name",
                    side_effect=fake_get_loaded_name), \
@@ -477,7 +556,11 @@ class TestColdStartWait(unittest.TestCase):
                    return_value=mock_reg), \
              patch("src.models.local_model_manager.get_local_manager",
                    return_value=mock_mgr), \
-             patch("src.core.router.call_model", mock_call):
+             patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
+                   return_value=[fake_scored]), \
+             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
+                   side_effect=lambda msgs, m: msgs), \
+             patch("talking_layer.call", mock_tl_call):
 
             from src.core.llm_dispatcher import CallCategory
             result = run_async(dispatcher.request(
@@ -487,8 +570,8 @@ class TestColdStartWait(unittest.TestCase):
             ))
 
         # Should have succeeded after waiting for model load
-        self.assertEqual(result, mock_result)
-        mock_call.assert_called_once()
+        self.assertEqual(result["content"], "ok")
+        mock_tl_call.assert_called_once()
 
     # 31. OVERHEAD times out waiting if model never loads
     def test_overhead_cold_start_timeout(self):
@@ -509,7 +592,9 @@ class TestColdStartWait(unittest.TestCase):
         mock_mgr.swap_started_at = 1.0
         mock_mgr.current_model = None
 
-        mock_call = AsyncMock(side_effect=RuntimeError("no models"))
+        import talking_layer as _tl
+        mock_tl_call = AsyncMock(return_value=_tl.CallError(
+            category="no_model", message="no models", retryable=False))
 
         with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_model_name",
                    return_value=None), \
@@ -517,7 +602,11 @@ class TestColdStartWait(unittest.TestCase):
                    return_value=mock_reg), \
              patch("src.models.local_model_manager.get_local_manager",
                    return_value=mock_mgr), \
-             patch("src.core.router.call_model", mock_call), \
+             patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
+                   return_value=[_make_fake_scored()]), \
+             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
+                   side_effect=lambda msgs, m: msgs), \
+             patch("talking_layer.call", mock_tl_call), \
              patch("src.core.llm_dispatcher._COLD_START_WAIT_TIMEOUT", 0.3), \
              patch("src.core.llm_dispatcher._COLD_START_POLL_INTERVAL", 0.1):
 
@@ -536,7 +625,6 @@ class TestColdStartWait(unittest.TestCase):
         dispatcher = self._make_dispatcher()
         reqs = _make_reqs()
         messages = [{"role": "user", "content": "classify this"}]
-        mock_result = {"content": "ok", "model": "claude-3-haiku"}
 
         mock_model_a = MagicMock()
         mock_model_a.is_local = True
@@ -551,13 +639,19 @@ class TestColdStartWait(unittest.TestCase):
         mock_reg = MagicMock()
         mock_reg.all_models.return_value = [mock_model_a, mock_cloud]
 
-        mock_call = AsyncMock(return_value=mock_result)
+        fake_scored = _make_fake_scored(name="haiku", litellm_name="claude-3-haiku")
+        fake_result = _make_fake_call_result("ok", model="claude-3-haiku", model_name="haiku")
+        mock_tl_call = AsyncMock(return_value=fake_result)
 
         with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_model_name",
                    return_value=None), \
              patch("src.models.model_registry.get_registry",
                    return_value=mock_reg), \
-             patch("src.core.router.call_model", mock_call):
+             patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
+                   return_value=[fake_scored]), \
+             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
+                   side_effect=lambda msgs, m: msgs), \
+             patch("talking_layer.call", mock_tl_call):
 
             from src.core.llm_dispatcher import CallCategory
             result = run_async(dispatcher.request(
@@ -567,8 +661,8 @@ class TestColdStartWait(unittest.TestCase):
             ))
 
         # Should succeed immediately without waiting
-        self.assertEqual(result, mock_result)
-        mock_call.assert_called_once()
+        self.assertEqual(result["content"], "ok")
+        mock_tl_call.assert_called_once()
 
     # 33. OVERHEAD skips wait when no swap in progress (nothing loading)
     def test_overhead_no_wait_when_nothing_loading(self):
@@ -589,7 +683,9 @@ class TestColdStartWait(unittest.TestCase):
         mock_mgr.swap_started_at = 0.0  # nothing loading
         mock_mgr.current_model = None
 
-        mock_call = AsyncMock(side_effect=RuntimeError("no models"))
+        import talking_layer as _tl
+        mock_tl_call = AsyncMock(return_value=_tl.CallError(
+            category="no_model", message="no models", retryable=False))
 
         with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_model_name",
                    return_value=None), \
@@ -597,7 +693,11 @@ class TestColdStartWait(unittest.TestCase):
                    return_value=mock_reg), \
              patch("src.models.local_model_manager.get_local_manager",
                    return_value=mock_mgr), \
-             patch("src.core.router.call_model", mock_call):
+             patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
+                   return_value=[_make_fake_scored()]), \
+             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
+                   side_effect=lambda msgs, m: msgs), \
+             patch("talking_layer.call", mock_tl_call):
 
             from src.core.llm_dispatcher import CallCategory
             with self.assertRaises(RuntimeError):

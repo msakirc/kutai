@@ -1333,11 +1333,18 @@ async def _check_conditional_triggers(
                 from ...infra.db import update_task_by_context_field, propagate_skips
 
                 for step in excluded:
+                    logger.warning(
+                        "TASK SKIPPED (conditional group exclusion)",
+                        step=step,
+                        group=group.get("group_id"),
+                        mission_id=mission_id,
+                    )
                     await update_task_by_context_field(
                         mission_id=mission_id,
                         field="workflow_step_id",
                         value=step,
                         status="skipped",
+                        error=f"excluded by conditional group '{group.get('group_id')}'",
                     )
                 # Cascade skips to downstream dependents
                 skipped_count = await propagate_skips(mission_id)

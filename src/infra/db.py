@@ -984,12 +984,18 @@ async def get_ready_tasks(limit=5):
                 break
         elif resolved_count == len(deps) and completed_count == 0:
             # All deps resolved but ALL are skipped → auto-skip this task
+            title = task.get("title", "?")
             await db.execute(
                 "UPDATE tasks SET status = 'skipped', error = 'dependency_skipped' WHERE id = ?",
                 (task_id,)
             )
             await db.commit()
-            logger.info(f"Task #{task_id} auto-skipped: all deps are skipped")
+            logger.warning(
+                "TASK SKIPPED (all deps skipped)",
+                task_id=task_id,
+                title=title,
+                deps=deps,
+            )
         elif failed_count > 0:
             blocked.append((task_id, "has_failed_deps"))
             logger.debug(
@@ -1111,6 +1117,12 @@ async def get_completed_dependency_results(depends_on):
 
 async def update_task(task_id, **kwargs):
     _validate_columns(kwargs, _TASK_COLUMNS, "tasks")
+    if kwargs.get("status") == "skipped":
+        logger.warning(
+            "TASK STATUS → SKIPPED",
+            task_id=task_id,
+            error=kwargs.get("error", "NO_ERROR_SET"),
+        )
     db = await get_db()
     sets = ", ".join(f"{k} = ?" for k in kwargs)
     values = list(kwargs.values()) + [task_id]
@@ -1387,7 +1399,7 @@ async def propagate_skips(mission_id: int) -> int:
 
         # Get all pending tasks for this mission
         cursor = await db.execute(
-            "SELECT id, depends_on FROM tasks WHERE mission_id = ? AND status = 'pending'",
+            "SELECT id, depends_on, title FROM tasks WHERE mission_id = ? AND status = 'pending'",
             (mission_id,)
         )
         pending_tasks = await cursor.fetchall()
@@ -1397,6 +1409,7 @@ async def propagate_skips(mission_id: int) -> int:
         for row in pending_tasks:
             task_id = row[0]
             raw_deps = row[1]
+            task_title = row[2] if len(row) > 2 else "?"
 
             # Parse depends_on
             try:
@@ -1449,6 +1462,13 @@ async def propagate_skips(mission_id: int) -> int:
                     (task_id,)
                 )
                 newly_skipped += 1
+                logger.warning(
+                    "TASK SKIPPED (propagated — all deps skipped)",
+                    task_id=task_id,
+                    title=task_title,
+                    deps=deps,
+                    dep_statuses=dep_statuses,
+                )
 
         if newly_skipped == 0:
             break

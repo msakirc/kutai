@@ -148,21 +148,12 @@ def _extract_budget(raw: str) -> float | None:
 
 
 def _is_vague_query(raw_query: str, constraints: list[str], budget: float | None) -> bool:
-    """Determine if a query is too vague and would benefit from clarification.
+    """Determine if a query is too vague to search.
 
-    A query is vague when it's a single generic category word (like "laptop",
-    "ayakkabı") with no budget, brand, use-case, or feature qualifiers.
-    Multi-word queries are assumed specific enough to search.
+    In practice, almost nothing is too vague — scrapers handle broad queries
+    and return results the user can refine. Only truly empty queries are vague.
     """
-    words = raw_query.strip().split()
-    if not words:
-        return True
-    if constraints or budget is not None:
-        return False
-    # Single word with no qualifiers is vague
-    if len(words) == 1:
-        return True
-    return False
+    return not raw_query.strip()
 
 
 def _fallback_analyze(raw_query: str) -> dict:

@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from yasar_usta import ProcessGuard, GuardConfig, Messages
+from yasar_usta.config import SidecarConfig
 
 
 def run_async(coro):
@@ -26,7 +27,7 @@ class TestProcessGuardConstruction:
         guard = ProcessGuard(cfg)
         assert guard.cfg.app_name == "App"
         assert guard.telegram.enabled is False
-        assert guard.sidecar is None
+        assert guard.sidecars == {}
 
     def test_creates_with_full_config(self):
         cfg = GuardConfig(
@@ -35,17 +36,26 @@ class TestProcessGuardConstruction:
             command=["python", "run.py"],
             telegram_token="tok",
             telegram_chat_id="123",
-            sidecar=__import__("yasar_usta.config", fromlist=["SidecarConfig"]).SidecarConfig(
-                name="yazbunu",
-                command=["python", "-m", "yazbunu.server"],
-                health_url="http://127.0.0.1:9880/",
-                pid_file="/tmp/yazbunu.pid",
-            ),
+            sidecars=[
+                SidecarConfig(
+                    name="yazbunu",
+                    command=["python", "-m", "yazbunu.server"],
+                    health_url="http://127.0.0.1:9880/",
+                    pid_file="/tmp/yazbunu.pid",
+                ),
+                SidecarConfig(
+                    name="nerd_herd",
+                    command=["python", "-m", "nerd_herd"],
+                    health_url="http://127.0.0.1:9881/health",
+                    pid_file="/tmp/nerd_herd.pid",
+                ),
+            ],
         )
         guard = ProcessGuard(cfg)
         assert guard.telegram.enabled is True
-        assert guard.sidecar is not None
-        assert guard.sidecar.name == "yazbunu"
+        assert len(guard.sidecars) == 2
+        assert guard.sidecars["yazbunu"].name == "yazbunu"
+        assert guard.sidecars["nerd_herd"].name == "nerd_herd"
 
     def test_custom_messages(self):
         cfg = GuardConfig(

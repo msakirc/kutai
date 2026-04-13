@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .backoff import BackoffTracker
 from .commands import build_start_keyboard, build_status_inline_keyboard, format_log_entries
-from .config import GuardConfig, SidecarConfig
+from .config import GuardConfig
 from .lock import acquire_lock, release_lock
 from .remote import find_claude_cmd, start_claude_remote
 from .sidecar import SidecarManager
@@ -52,20 +52,20 @@ class ProcessGuard:
             reset_after=config.backoff_reset_after,
         )
 
-        # Sidecar
-        self.sidecar: SidecarManager | None = None
-        if config.sidecar and config.sidecar.command:
-            sc = config.sidecar
-            self.sidecar = SidecarManager(
-                name=sc.name,
-                command=sc.command,
-                pid_file=sc.pid_file,
-                health_url=sc.health_url,
-                health_timeout=sc.health_timeout,
-                log_file=str(Path(config.log_dir) / f"{sc.name}.log"),
-                cwd=config.cwd,
-                detached=sc.detached,
-            )
+        # Sidecars
+        self.sidecars: dict[str, SidecarManager] = {}
+        for sc in config.sidecars:
+            if sc.command:
+                self.sidecars[sc.name] = SidecarManager(
+                    name=sc.name,
+                    command=sc.command,
+                    pid_file=sc.pid_file,
+                    health_url=sc.health_url,
+                    health_timeout=sc.health_timeout,
+                    log_file=str(Path(config.log_dir) / f"{sc.name}.log"),
+                    cwd=config.cwd,
+                    detached=sc.detached,
+                )
 
         # Claude remote
         self._claude_cmd = find_claude_cmd(config.claude_cmd) if config.claude_enabled else None
@@ -135,10 +135,15 @@ class ProcessGuard:
     # ── Status panel ──────────────────────────────────────────────────
 
     async def _send_status(self, edit_message_id: int | None = None) -> None:
-        sidecar_name = self.sidecar.name if self.sidecar else None
-        sidecar_alive = await self.sidecar.is_alive() if self.sidecar else False
-        sidecar_pid = self.sidecar.pid_alive() if self.sidecar else None
-        sidecar_http = await self.sidecar.http_alive() if self.sidecar else False
+        sidecar_infos = []
+        for name, sc in self.sidecars.items():
+            sidecar_infos.append({
+                "name": name,
+                "alive": await sc.is_alive(),
+                "pid": sc.pid_alive(),
+                "health_url": sc.health_url,
+                "http_alive": await sc.http_alive(),
+            })
 
         text = build_status_text(
             name=self.cfg.name,
@@ -148,15 +153,12 @@ class ProcessGuard:
             heartbeat_age=self.subprocess.heartbeat_age(),
             heartbeat_healthy_seconds=self.cfg.heartbeat_healthy_seconds,
             total_crashes=self.backoff.total_crashes,
-            sidecar_name=sidecar_name,
-            sidecar_alive=sidecar_alive,
-            sidecar_pid=sidecar_pid,
-            sidecar_health_url=self.sidecar.health_url if self.sidecar else None,
-            sidecar_http_alive=sidecar_http,
+            sidecar_infos=sidecar_infos,
             extra_processes=self.cfg.extra_processes,
         )
+        sidecar_names = list(self.sidecars.keys()) if self.sidecars else []
         inline_kb = build_status_inline_keyboard(
-            self.msgs, self.cfg.name, sidecar_name)
+            self.msgs, self.cfg.name, sidecar_names=sidecar_names)
 
         if edit_message_id:
             await self.telegram.edit(edit_message_id, text, reply_markup=inline_kb)
@@ -184,9 +186,10 @@ class ProcessGuard:
             await self._send(self.msgs.no_log_file)
             return
 
-        if self.sidecar and self.sidecar.health_url:
-            if await self.sidecar.http_alive():
-                url = self.sidecar.health_url.replace("/health", "/")
+        yazbunu = self.sidecars.get("yazbunu")
+        if yazbunu and yazbunu.health_url:
+            if await yazbunu.http_alive():
+                url = yazbunu.health_url.replace("/health", "/")
                 formatted += f"\n\n📊 [Yazbunu Log Viewer]({url})"
         await self._send(formatted)
 
@@ -216,7 +219,7 @@ class ProcessGuard:
         if self._signal_watcher:
             return
         # Watcher runs if we have a signal file to watch OR a sidecar to monitor
-        if not self.cfg.claude_signal_file and not self.sidecar:
+        if not self.cfg.claude_signal_file and not self.sidecars:
             return
         self._signal_watcher = asyncio.create_task(self._signal_watch_loop())
 
@@ -241,9 +244,10 @@ class ProcessGuard:
                     await self._handle_remote()
                 # Check sidecar health every ~30s (10 iterations * 3s)
                 sidecar_check_counter += 1
-                if self.sidecar and sidecar_check_counter >= 10:
+                if self.sidecars and sidecar_check_counter >= 10:
                     sidecar_check_counter = 0
-                    await self.sidecar.ensure()
+                    for sc in self.sidecars.values():
+                        await sc.ensure()
             except asyncio.CancelledError:
                 return
             except Exception as e:
@@ -298,12 +302,27 @@ class ProcessGuard:
                             elif cb_data in ("guard_refresh", "usta_refresh"):
                                 await self.telegram.answer_callback(cb["id"])
                                 await self._send_status(edit_message_id=cb_msg_id)
-                            elif cb_data in ("restart_sidecar", "restart_yazbunu") and self.sidecar:
-                                sc_name = self.sidecar.name
-                                await self.telegram.answer_callback(cb["id"], f"📊 {sc_name} yeniden başlatılıyor...")
-                                await self.sidecar.stop()
-                                await self.sidecar.start()
-                                await self._send_status(edit_message_id=cb_msg_id)
+                            elif cb_data.startswith("restart_sidecar:"):
+                                sc_name = cb_data.split(":", 1)[1]
+                                sc = self.sidecars.get(sc_name)
+                                if sc:
+                                    await self.telegram.answer_callback(cb["id"], f"📊 {sc_name} yeniden başlatılıyor...")
+                                    await sc.stop()
+                                    await sc.start()
+                                    await self._send_status(edit_message_id=cb_msg_id)
+                                else:
+                                    await self.telegram.answer_callback(cb["id"])
+                            elif cb_data in ("restart_sidecar", "restart_yazbunu"):
+                                # Legacy compat for old button payloads
+                                sc = self.sidecars.get("yazbunu") or (
+                                    next(iter(self.sidecars.values()), None) if self.sidecars else None)
+                                if sc:
+                                    await self.telegram.answer_callback(cb["id"], f"📊 {sc.name} yeniden başlatılıyor...")
+                                    await sc.stop()
+                                    await sc.start()
+                                    await self._send_status(edit_message_id=cb_msg_id)
+                                else:
+                                    await self.telegram.answer_callback(cb["id"])
                             elif cb_data == "confirm_stop":
                                 _app = self.cfg.app_name
                                 await self.telegram.answer_callback(cb["id"], f"⏹ {_app} durduruluyor...")
@@ -507,9 +526,10 @@ class ProcessGuard:
             if sf.exists():
                 sf.unlink()
 
-        # Start sidecar
-        if self.sidecar and self.sidecar.command:
-            await self.sidecar.start()
+        # Start sidecars
+        for sc in self.sidecars.values():
+            if sc.command:
+                await sc.start()
 
         # Announce
         await self._send(
@@ -533,8 +553,9 @@ class ProcessGuard:
             try:
                 exit_code = await self.subprocess.wait_for_exit()
 
-                if self.sidecar:
-                    await self.sidecar.ensure()
+                if self.sidecars:
+                    for sc in self.sidecars.values():
+                        await sc.ensure()
                 await self._stop_signal_watcher()
                 if self.cfg.on_exit:
                     self.cfg.on_exit(exit_code)

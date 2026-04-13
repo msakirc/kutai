@@ -124,8 +124,8 @@ class GuardConfig:
     claude_name: str | None = None
     claude_signal_file: str | None = None
 
-    # Sidecar (log viewer etc.)
-    sidecar: SidecarConfig | None = None
+    # Sidecars (log viewer, observability, etc.)
+    sidecars: list[SidecarConfig] = field(default_factory=list)
 
     # Hooks
     on_exit: None = None  # callable(exit_code: int) -> None, called after process exits

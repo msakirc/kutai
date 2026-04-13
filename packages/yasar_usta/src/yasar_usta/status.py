@@ -19,6 +19,7 @@ def build_status_text(
     heartbeat_age: float | None,
     heartbeat_healthy_seconds: int,
     total_crashes: int,
+    sidecar_infos: list[dict] | None = None,
     sidecar_name: str | None = None,
     sidecar_alive: bool = False,
     sidecar_pid: int | None = None,
@@ -59,17 +60,28 @@ def build_status_text(
         else:
             lines.append(f"⚫ {label}: not running")
 
-    # Sidecar
-    if sidecar_name:
-        if sidecar_http_alive:
-            pid_str = f", PID {sidecar_pid}" if sidecar_pid else ""
-            lines.append(f"📊 {sidecar_name}: running ({sidecar_health_url}{pid_str})")
-        elif sidecar_pid:
-            lines.append(f"🟠 {sidecar_name}: process alive but not responding (PID {sidecar_pid})")
-        elif sidecar_alive:
-            lines.append(f"🟢 {sidecar_name}: running")
+    # Sidecars
+    _infos = sidecar_infos
+    if _infos is None and sidecar_name:
+        # Legacy single-sidecar compat
+        _infos = [{
+            "name": sidecar_name,
+            "alive": sidecar_alive,
+            "pid": sidecar_pid,
+            "health_url": sidecar_health_url,
+            "http_alive": sidecar_http_alive,
+        }]
+    for si in (_infos or []):
+        sc_name = si["name"]
+        if si.get("http_alive"):
+            pid_str = f", PID {si['pid']}" if si.get("pid") else ""
+            lines.append(f"📊 {sc_name}: running ({si.get('health_url', '')}{pid_str})")
+        elif si.get("pid"):
+            lines.append(f"🟠 {sc_name}: process alive but not responding (PID {si['pid']})")
+        elif si.get("alive"):
+            lines.append(f"🟢 {sc_name}: running")
         else:
-            lines.append(f"⚫ {sidecar_name}: not running")
+            lines.append(f"⚫ {sc_name}: not running")
 
     lines.append(f"\nCrashes: {total_crashes}")
     ts = time.strftime("%H:%M:%S")

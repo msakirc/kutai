@@ -105,10 +105,13 @@ class TestBuildStatusText:
             heartbeat_age=5.0,
             heartbeat_healthy_seconds=90,
             total_crashes=0,
-            sidecar_name="LogViewer",
-            sidecar_http_alive=True,
-            sidecar_pid=12345,
-            sidecar_health_url="http://localhost:9880",
+            sidecar_infos=[{
+                "name": "LogViewer",
+                "http_alive": True,
+                "pid": 12345,
+                "health_url": "http://localhost:9880",
+                "alive": True,
+            }],
         )
         assert "LogViewer" in text
         assert "running" in text
@@ -122,11 +125,33 @@ class TestBuildStatusText:
             heartbeat_age=5.0,
             heartbeat_healthy_seconds=90,
             total_crashes=0,
-            sidecar_name="LogViewer",
-            sidecar_alive=False,
+            sidecar_infos=[{
+                "name": "LogViewer",
+                "alive": False,
+                "http_alive": False,
+            }],
         )
         assert "LogViewer" in text
         assert "not running" in text
+
+    def test_multiple_sidecars(self):
+        text = build_status_text(
+            name="Guard",
+            app_name="MyApp",
+            guard_start_time=time.time(),
+            app_running=True,
+            heartbeat_age=5.0,
+            heartbeat_healthy_seconds=90,
+            total_crashes=0,
+            sidecar_infos=[
+                {"name": "yazbunu", "http_alive": True, "pid": 111,
+                 "health_url": "http://localhost:9880", "alive": True},
+                {"name": "nerd_herd", "http_alive": True, "pid": 222,
+                 "health_url": "http://localhost:9881", "alive": True},
+            ],
+        )
+        assert "yazbunu" in text
+        assert "nerd_herd" in text
 
     def test_extra_processes_running(self):
         with patch("yasar_usta.status._check_process_running", return_value=True):

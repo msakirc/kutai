@@ -27,17 +27,24 @@ def build_start_keyboard(messages: Messages, app_name: str = "App") -> dict:
     }
 
 
-def build_status_inline_keyboard(messages: Messages, name: str, sidecar_name: str | None = None) -> dict:
+def build_status_inline_keyboard(messages: Messages, name: str,
+                                  sidecar_names: list[str] | None = None,
+                                  sidecar_name: str | None = None) -> dict:
     """Build inline keyboard for the status panel."""
     buttons = [
         [{"text": messages.btn_refresh, "callback_data": "guard_refresh"}],
         [{"text": messages.btn_restart_guard.format(name=name), "callback_data": "restart_guard"}],
     ]
-    if sidecar_name:
-        buttons[1].append({
-            "text": messages.btn_restart_sidecar.format(sidecar_name=sidecar_name),
-            "callback_data": "restart_sidecar",
-        })
+    # Multi-sidecar buttons
+    names = sidecar_names or ([sidecar_name] if sidecar_name else [])
+    if names:
+        sidecar_row = []
+        for sc_name in names:
+            sidecar_row.append({
+                "text": f"📊 Restart {sc_name}",
+                "callback_data": f"restart_sidecar:{sc_name}",
+            })
+        buttons.append(sidecar_row)
     return {"inline_keyboard": buttons}
 
 

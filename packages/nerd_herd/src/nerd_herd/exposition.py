@@ -34,7 +34,7 @@ class MetricsServer:
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, "0.0.0.0", self._port)
+        site = web.TCPSite(self._runner, "0.0.0.0", self._port, reuse_address=True)
         await site.start()
         logger.info("Metrics server started", port=self._port)
 

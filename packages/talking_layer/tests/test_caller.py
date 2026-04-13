@@ -58,14 +58,26 @@ def _make_litellm_response(content="Hello", tool_calls=None,
     return resp
 
 
-@patch("talking_layer.caller._get_dallama", return_value=None)
+def _local_patches():
+    """Common patches for local model tests: no DaLLaMa, mock streaming."""
+    resp = _make_litellm_response()
+    return (
+        resp,
+        patch("talking_layer.caller._get_dallama", return_value=None),
+        patch("talking_layer.caller._stream_with_accumulator",
+              new_callable=AsyncMock, return_value=resp),
+    )
+
+
 @patch("talking_layer.caller.litellm")
-def test_call_local_success(mock_litellm, mock_dallama):
-    mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
-    model = _make_model_info(is_local=True)
-    result = run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],
-                           tools=None, timeout=60.0, task="executor",
-                           needs_thinking=False, estimated_output_tokens=500))
+def test_call_local_success(mock_litellm):
+    """Local model call succeeds — returns CallResult."""
+    resp, p_dallama, p_stream = _local_patches()
+    with p_dallama, p_stream:
+        model = _make_model_info(is_local=True)
+        result = run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],
+                               tools=None, timeout=60.0, task="executor",
+                               needs_thinking=False, estimated_output_tokens=500))
     assert isinstance(result, CallResult)
     assert result.content == "Hello"
     assert result.is_local is True
@@ -74,6 +86,7 @@ def test_call_local_success(mock_litellm, mock_dallama):
 
 @patch("talking_layer.caller.litellm")
 def test_call_cloud_success(mock_litellm):
+    """Cloud model call succeeds — uses KDV pre/post."""
     mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
     model = _make_model_info(is_local=False, litellm_name="groq/llama-8b",
                              name="llama-8b", location="cloud", provider="groq", api_base=None)
@@ -90,6 +103,7 @@ def test_call_cloud_success(mock_litellm):
 
 @patch("talking_layer.caller.litellm")
 def test_call_timeout_returns_call_error(mock_litellm):
+    """Timeout returns CallError with category='timeout'."""
     mock_litellm.acompletion = AsyncMock(side_effect=asyncio.TimeoutError)
     model = _make_model_info(is_local=False, litellm_name="groq/llama-8b",
                              location="cloud", provider="groq", api_base=None)
@@ -103,21 +117,34 @@ def test_call_timeout_returns_call_error(mock_litellm):
     assert result.retryable is True
 
 
-@patch("talking_layer.caller._get_dallama", return_value=None)
 @patch("talking_layer.caller.litellm")
-def test_call_sets_api_key_for_local(mock_litellm, mock_dallama):
-    mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
-    model = _make_model_info(is_local=True)
-    run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],
-                   tools=None, timeout=60.0, task="executor",
-                   needs_thinking=False, estimated_output_tokens=500))
-    kwargs = mock_litellm.acompletion.call_args[1]
+def test_call_sets_api_key_for_local(mock_litellm):
+    """Local models get api_key='sk-no-key' in completion_kwargs.
+
+    For local models without tools, streaming is used. The kwargs are passed
+    to _stream_with_accumulator which internally calls litellm.acompletion.
+    We verify the kwargs via the stream mock.
+    """
+    resp = _make_litellm_response()
+    stream_mock = AsyncMock(return_value=resp)
+    with patch("talking_layer.caller._get_dallama", return_value=None), \
+         patch("talking_layer.caller._stream_with_accumulator", stream_mock):
+        model = _make_model_info(is_local=True)
+        run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],
+                       tools=None, timeout=60.0, task="executor",
+                       needs_thinking=False, estimated_output_tokens=500))
+    # _stream_with_accumulator receives completion_kwargs as first arg
+    kwargs = stream_mock.call_args[0][0]  # first positional arg
     assert kwargs["api_key"] == "sk-no-key"
 
 
 @patch("talking_layer.caller._get_dallama", return_value=None)
 @patch("talking_layer.caller.litellm")
 def test_call_tools_set_tool_choice(mock_litellm, mock_dallama):
+    """When tools provided and model supports FC, tool_choice='auto'.
+
+    With tools, streaming is disabled — litellm.acompletion is called directly.
+    """
     mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
     model = _make_model_info(is_local=True, supports_function_calling=True)
     tools = [{"type": "function", "function": {"name": "search"}}]
@@ -129,15 +156,21 @@ def test_call_tools_set_tool_choice(mock_litellm, mock_dallama):
     assert kwargs["tool_choice"] == "auto"
 
 
-@patch("talking_layer.caller._get_dallama", return_value=None)
 @patch("talking_layer.caller.litellm")
-def test_call_json_mode_fallback(mock_litellm, mock_dallama):
-    mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
-    model = _make_model_info(is_local=True, supports_function_calling=False, supports_json_mode=True)
-    tools = [{"type": "function", "function": {"name": "search"}}]
-    run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],
-                   tools=tools, timeout=60.0, task="executor",
-                   needs_thinking=False, estimated_output_tokens=500))
-    kwargs = mock_litellm.acompletion.call_args[1]
+def test_call_json_mode_fallback(mock_litellm):
+    """When tools given but model lacks FC, falls back to json_mode.
+
+    No FC means use_tools=None, so local models use streaming path.
+    """
+    resp = _make_litellm_response()
+    stream_mock = AsyncMock(return_value=resp)
+    with patch("talking_layer.caller._get_dallama", return_value=None), \
+         patch("talking_layer.caller._stream_with_accumulator", stream_mock):
+        model = _make_model_info(is_local=True, supports_function_calling=False, supports_json_mode=True)
+        tools = [{"type": "function", "function": {"name": "search"}}]
+        run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],
+                       tools=tools, timeout=60.0, task="executor",
+                       needs_thinking=False, estimated_output_tokens=500))
+    kwargs = stream_mock.call_args[0][0]
     assert "tools" not in kwargs
     assert kwargs["response_format"] == {"type": "json_object"}

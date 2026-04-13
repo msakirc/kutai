@@ -385,6 +385,22 @@ class RateLimitManager:
 
         return total_waited
 
+    def record_request(
+        self,
+        litellm_name: str,
+        provider: str,
+    ) -> None:
+        """Record a request timestamp for RPM tracking."""
+        import time
+        now = time.time()
+        model_state = self.model_limits.get(litellm_name)
+        if model_state:
+            model_state._request_timestamps.append(now)
+
+        provider_state = self._provider_limits.get(provider)
+        if provider_state:
+            provider_state._request_timestamps.append(now)
+
     def record_tokens(
         self,
         litellm_name: str,

@@ -102,7 +102,8 @@ class KuledenDonenVar:
         headers: dict[str, Any] | None,
         token_count: int,
     ) -> None:
-        # Record tokens
+        # Record request (RPM tracking) and tokens (TPM tracking)
+        self._rate_limiter.record_request(model_id, provider)
         self._rate_limiter.record_tokens(model_id, provider, token_count)
 
         # Parse and apply response headers
@@ -199,6 +200,10 @@ class KuledenDonenVar:
             reset_in_seconds=earliest_reset,
             models=models,
         )
+
+    def restore_limits(self) -> None:
+        """Gradually restore adaptive rate limit reductions. Called by watchdog."""
+        self._rate_limiter.restore_limits()
 
     @property
     def status(self) -> dict[str, ProviderStatus]:

@@ -1066,8 +1066,7 @@ class Orchestrator:
 
         # 8. Restore rate limits that were adaptively reduced
         try:
-            from ..models.rate_limiter import get_rate_limit_manager
-            get_rate_limit_manager().restore_limits()
+            get_kdv().restore_limits()
         except Exception as e:
             logger.warning(f"[Watchdog] Rate limit restore failed: {e}")
 

@@ -74,6 +74,16 @@ def test_pre_call_daily_exhausted(kdv_with_model):
 
 # -- post_call --
 
+def test_post_call_records_request_timestamp(kdv_with_model):
+    """RPM tracking requires request timestamps to be recorded."""
+    state = kdv_with_model._rate_limiter.model_limits["groq/llama-8b"]
+    assert state.current_rpm == 0
+    kdv_with_model.post_call("groq/llama-8b", "groq", headers={}, token_count=1000)
+    assert state.current_rpm == 1
+    kdv_with_model.post_call("groq/llama-8b", "groq", headers={}, token_count=1000)
+    assert state.current_rpm == 2
+
+
 def test_post_call_records_tokens(kdv_with_model):
     kdv_with_model.post_call("groq/llama-8b", "groq", headers={}, token_count=5000)
     util = kdv_with_model._rate_limiter.get_utilization("groq/llama-8b")
@@ -118,6 +128,16 @@ def test_record_failure_timeout_trips_breaker(kdv_with_model):
         kdv_with_model.record_failure("groq/llama-8b", "groq", "timeout")
     result = kdv_with_model.pre_call("groq/llama-8b", "groq")
     assert result.allowed is False
+
+
+def test_restore_limits(kdv_with_model):
+    """Watchdog calls restore_limits to undo adaptive 429 reductions."""
+    kdv_with_model.record_failure("groq/llama-8b", "groq", "rate_limit")
+    state = kdv_with_model._rate_limiter.model_limits["groq/llama-8b"]
+    reduced_rpm = state.rpm_limit
+    state._last_429_at = time.time() - 700  # 11+ minutes ago
+    kdv_with_model.restore_limits()
+    assert state.rpm_limit > reduced_rpm
 
 
 def test_record_failure_auth_ignored(kdv_with_model):

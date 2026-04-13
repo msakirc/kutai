@@ -150,23 +150,17 @@ def _extract_budget(raw: str) -> float | None:
 def _is_vague_query(raw_query: str, constraints: list[str], budget: float | None) -> bool:
     """Determine if a query is too vague and would benefit from clarification.
 
-    A query is vague when it's a single generic product word (like "laptop",
-    "phone", "tablet") with no budget, brand, use-case, or feature qualifiers.
-    Two-word queries with a model number or brand+model are specific.
+    A query is vague when it's a single generic category word (like "laptop",
+    "ayakkabı") with no budget, brand, use-case, or feature qualifiers.
+    Multi-word queries are assumed specific enough to search.
     """
     words = raw_query.strip().split()
     if not words:
         return True
     if constraints or budget is not None:
         return False
-    # Single generic word is vague
+    # Single word with no qualifiers is vague
     if len(words) == 1:
-        return True
-    # 2+ words: check if any word has digits (model number) — that's specific
-    if any(any(c.isdigit() for c in w) for w in words):
-        return False
-    # 2 words, no digits, no constraints — still vague (e.g. "good laptop")
-    if len(words) <= 2:
         return True
     return False
 

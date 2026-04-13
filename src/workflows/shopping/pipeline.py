@@ -308,8 +308,12 @@ async def _step_analyze_query(task: dict, artifacts: dict) -> str:
 
 # ── Step registry ────────────────────────────────────────────────────────────
 
-async def _step_clarify(task: dict, artifacts: dict) -> str:
-    """Check if clarification is needed. If not, pass the query through."""
+async def _step_clarify(task: dict, artifacts: dict) -> str | dict:
+    """Check if clarification is needed. If not, pass the query through.
+
+    Returns str (artifact) for pass-through, or dict with
+    status="needs_clarification" to trigger the Telegram pause mechanism.
+    """
     parsed = artifacts.get("parsed_intent", "{}")
     if isinstance(parsed, str):
         try:
@@ -318,25 +322,31 @@ async def _step_clarify(task: dict, artifacts: dict) -> str:
             parsed = {}
 
     needs_clarification = parsed.get("needs_clarification", False)
+    query = _extract_query(artifacts, task)
 
     if not needs_clarification:
-        # Specific query — skip clarification, pass query through
-        query = parsed.get("query", "") or artifacts.get("user_query", "")
         return json.dumps({
             "clarified_query": query,
             "skipped": True,
         }, ensure_ascii=False)
 
-    # Vague query — for now, pass through with defaults
-    # (True interactive clarification via Telegram would need
-    # the may_need_clarification workflow hook, which pauses the
-    # mission and waits for user input. That's a separate feature.)
-    query = parsed.get("query", "") or artifacts.get("user_query", "")
-    return json.dumps({
-        "clarified_query": query,
-        "skipped": False,
-        "note": "Query was vague but clarification not yet interactive — proceeding with defaults",
-    }, ensure_ascii=False)
+    # Vague query — trigger the Telegram clarification mechanism.
+    # Return a special dict (not str) that run() will detect and
+    # pass through as the result, with status="needs_clarification".
+    category = parsed.get("category", "")
+    cat_hint = f" ({category})" if category else ""
+    return {
+        "_needs_clarification": True,
+        "clarification": (
+            f"'{query}' biraz geniş bir arama{cat_hint}. "
+            f"Aradığınız ürünü daraltabilir misiniz?\n\n"
+            f"Örneğin:\n"
+            f"• Marka veya model (ör: Nike Air Max)\n"
+            f"• Bütçe (ör: 2000 TL altı)\n"
+            f"• Kullanım amacı (ör: koşu ayakkabısı)"
+        ),
+        "query": query,
+    }
 
 
 _STEP_HANDLERS = {
@@ -413,10 +423,23 @@ class ShoppingPipeline:
             }
 
         try:
-            result_text = await handler(task, artifacts)
+            result = await handler(task, artifacts)
+
+            # Handler can return a dict to signal special statuses
+            # (e.g. needs_clarification from _step_clarify)
+            if isinstance(result, dict) and result.get("_needs_clarification"):
+                return {
+                    "status": "needs_clarification",
+                    "clarification": result.get("clarification", "More info needed"),
+                    "result": json.dumps(result, ensure_ascii=False, default=str),
+                    "model": "shopping_pipeline",
+                    "cost": 0.0,
+                    "iterations": 1,
+                }
+
             return {
                 "status": "completed",
-                "result": result_text,
+                "result": result if isinstance(result, str) else json.dumps(result, default=str),
                 "model": "shopping_pipeline",
                 "cost": 0.0,
                 "iterations": 1,

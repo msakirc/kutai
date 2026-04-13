@@ -241,138 +241,16 @@ def create_app() -> Any:
 
     @app.get("/metrics", response_class=PlainTextResponse)
     async def prometheus_metrics():
-        """Prometheus-compatible metrics endpoint. No auth — Prometheus needs open access."""
-        from src.infra.metrics import get_all_counters
-        from src.models.local_model_manager import get_local_manager
-
-        lines = []
-
-        # ── Orchestrator counters ──
-        counters = get_all_counters()
-        tasks_ok = int(counters.get("tasks_completed", 0))
-        tasks_fail = int(counters.get("tasks_failed", 0))
-        queue = int(counters.get("queue_depth", 0))
-        cost = float(counters.get("cost_total", 0.0))
-
-        lines.append(f"# HELP kutay_tasks_completed_total Total tasks completed")
-        lines.append(f"# TYPE kutay_tasks_completed_total counter")
-        lines.append(f"kutay_tasks_completed_total {tasks_ok}")
-
-        lines.append(f"# HELP kutay_tasks_failed_total Total tasks failed")
-        lines.append(f"# TYPE kutay_tasks_failed_total counter")
-        lines.append(f"kutay_tasks_failed_total {tasks_fail}")
-
-        lines.append(f"# HELP kutay_queue_depth Current task queue depth")
-        lines.append(f"# TYPE kutay_queue_depth gauge")
-        lines.append(f"kutay_queue_depth {queue}")
-
-        lines.append(f"# HELP kutay_cost_total_usd Total inference cost in USD")
-        lines.append(f"# TYPE kutay_cost_total_usd counter")
-        lines.append(f"kutay_cost_total_usd {cost:.6f}")
-
-        # Per-model call counts and tokens
-        model_calls = {k.split(":", 1)[1]: int(v)
-                       for k, v in counters.items() if k.startswith("model_calls:")}
-        if model_calls:
-            lines.append(f"# HELP kutay_model_calls_total Model call count by model")
-            lines.append(f"# TYPE kutay_model_calls_total counter")
-            for model, count in model_calls.items():
-                safe = model.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
-                lines.append(f'kutay_model_calls_total{{model="{safe}"}} {count}')
-
-        model_tokens = {k.split(":", 1)[1]: int(v)
-                        for k, v in counters.items() if k.startswith("tokens:")}
-        if model_tokens:
-            lines.append(f"# HELP kutay_tokens_total Token count by model")
-            lines.append(f"# TYPE kutay_tokens_total counter")
-            for model, tokens in model_tokens.items():
-                safe = model.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
-                lines.append(f'kutay_tokens_total{{model="{safe}"}} {tokens}')
-
-        # ── Local model manager status ──
+        """Prometheus-compatible metrics. Delegates to NerdHerd."""
         try:
-            mgr = get_local_manager()
-            status = mgr.get_status()
-            loaded = status.get("loaded_model") or ""
-            healthy = 1 if status.get("healthy") else 0
-            swaps = status.get("total_swaps", 0)
-            idle = status.get("idle_seconds", 0)
-            busy = 1 if status.get("inference_busy") else 0
-
-            lines.append(f"# HELP kutay_model_healthy Is the local model healthy")
-            lines.append(f"# TYPE kutay_model_healthy gauge")
-            lines.append(f'kutay_model_healthy{{model="{loaded}"}} {healthy}')
-
-            lines.append(f"# HELP kutay_model_swaps_total Total model swaps")
-            lines.append(f"# TYPE kutay_model_swaps_total counter")
-            lines.append(f"kutay_model_swaps_total {swaps}")
-
-            lines.append(f"# HELP kutay_model_idle_seconds Seconds since last inference")
-            lines.append(f"# TYPE kutay_model_idle_seconds gauge")
-            lines.append(f"kutay_model_idle_seconds {idle:.1f}")
-
-            lines.append(f"# HELP kutay_model_inference_busy Is inference currently running")
-            lines.append(f"# TYPE kutay_model_inference_busy gauge")
-            lines.append(f"kutay_model_inference_busy {busy}")
+            from src.app.run import get_nerd_herd
+            nh = get_nerd_herd()
+            if nh is not None:
+                return nh.prometheus_lines()
+            return ""
         except Exception as e:
-            logger.debug(f"Model manager metrics unavailable: {e}")
-            lines.append("# HELP kutay_model_healthy Is the local model healthy")
-            lines.append("# TYPE kutay_model_healthy gauge")
-            lines.append('kutay_model_healthy{model=""} 0')
-
-        # ── Auto-tuner quality + model health metrics ──
-        try:
-            from src.models.auto_tuner import get_prometheus_lines_async
-            lines.extend(await get_prometheus_lines_async())
-        except Exception as e:
-            logger.debug(f"Auto-tuner metrics unavailable: {e}")
-
-        # ── GPU load mode metrics ──
-        try:
-            from src.infra.load_manager import get_load_mode, get_vram_budget_fraction, is_auto_managed
-            mode = await get_load_mode()
-            budget = get_vram_budget_fraction()
-            auto = 1 if is_auto_managed() else 0
-
-            mode_val = {"minimal": 0, "shared": 1, "heavy": 2, "full": 3}.get(mode, 3)
-            lines.append("# HELP kutay_gpu_load_mode Current GPU load mode (0=minimal,1=shared,2=heavy,3=full)")
-            lines.append("# TYPE kutay_gpu_load_mode gauge")
-            lines.append(f"kutay_gpu_load_mode {mode_val}")
-
-            lines.append("# HELP kutay_gpu_load_mode_info GPU load mode as label")
-            lines.append("# TYPE kutay_gpu_load_mode_info gauge")
-            lines.append(f'kutay_gpu_load_mode_info{{mode="{mode}"}} 1')
-
-            lines.append("# HELP kutay_gpu_vram_budget_fraction VRAM budget fraction 0.0-1.0")
-            lines.append("# TYPE kutay_gpu_vram_budget_fraction gauge")
-            lines.append(f"kutay_gpu_vram_budget_fraction {budget:.2f}")
-
-            lines.append("# HELP kutay_gpu_auto_managed Whether GPU mode is auto-managed")
-            lines.append("# TYPE kutay_gpu_auto_managed gauge")
-            lines.append(f"kutay_gpu_auto_managed {auto}")
-        except Exception as e:
-            logger.debug(f"Load mode metrics unavailable: {e}")
-
-        # ── External GPU usage metrics ──
-        try:
-            from src.models.gpu_monitor import get_gpu_monitor
-            ext = get_gpu_monitor().detect_external_gpu_usage()
-            lines.append("# HELP kutay_gpu_external_vram_mb External process VRAM usage in MB")
-            lines.append("# TYPE kutay_gpu_external_vram_mb gauge")
-            lines.append(f"kutay_gpu_external_vram_mb {ext.external_vram_mb}")
-
-            lines.append("# HELP kutay_gpu_external_processes Number of external GPU processes")
-            lines.append("# TYPE kutay_gpu_external_processes gauge")
-            lines.append(f"kutay_gpu_external_processes {ext.external_process_count}")
-
-            lines.append("# HELP kutay_gpu_external_vram_fraction External VRAM as fraction of total")
-            lines.append("# TYPE kutay_gpu_external_vram_fraction gauge")
-            lines.append(f"kutay_gpu_external_vram_fraction {ext.external_vram_fraction:.4f}")
-        except Exception as e:
-            logger.debug(f"External GPU metrics unavailable: {e}")
-
-        lines.append("")
-        return "\n".join(lines)
+            logger.warning("NerdHerd metrics unavailable", error=str(e))
+            return ""
 
     # ── Artifacts ────────────────────────────────────────────────────────────
 

@@ -39,6 +39,13 @@ except Exception as e:
     _log = get_logger("app.run")
     _log.warning("Could not attach TelegramAlertHandler", error=str(e))
 
+from nerd_herd import NerdHerd
+
+_nerd_herd: NerdHerd | None = None
+
+def get_nerd_herd() -> NerdHerd | None:
+    return _nerd_herd
+
 from src.core.orchestrator import Orchestrator
 from src.infra.runtime_state import runtime_state, mark_degraded
 
@@ -394,34 +401,69 @@ async def main():
     except Exception as exc:
         _log.debug("Monitoring loop not started", reason=str(exc))
 
-    # Phase 3: Start GPU auto-detect loop
-    gpu_detect_task = None
-    try:
-        from src.infra.load_manager import run_gpu_autodetect_loop
+    # Phase 3: Start NerdHerd observability
+    async def _notify_gpu_change(msg: str):
+        try:
+            from src.app.config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID
+            if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_CHAT_ID:
+                return
+            import aiohttp
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            async with aiohttp.ClientSession() as s:
+                await s.post(url, json={
+                    "chat_id": TELEGRAM_ADMIN_CHAT_ID,
+                    "text": msg,
+                    "parse_mode": "Markdown",
+                }, timeout=aiohttp.ClientTimeout(total=5))
+        except Exception:
+            pass
 
-        async def _notify_gpu_change(msg: str):
+    try:
+        global _nerd_herd
+        _nerd_herd = NerdHerd(
+            metrics_port=9881,
+            llama_server_url="http://127.0.0.1:8080",
+        )
+        await _nerd_herd.start()
+        _log.info("NerdHerd metrics server started on port 9881")
+
+        # Register orchestrator metrics collector
+        from src.infra.metrics import OrchestratorCollector
+        _nerd_herd.register_collector("orchestrator", OrchestratorCollector())
+
+        # Wire mode change callback
+        async def _handle_mode_change(old, new, source):
             try:
-                from src.app.config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID
-                if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_CHAT_ID:
-                    return
-                import aiohttp
-                url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-                async with aiohttp.ClientSession() as s:
-                    await s.post(url, json={
-                        "chat_id": TELEGRAM_ADMIN_CHAT_ID,
-                        "text": msg,
-                        "parse_mode": "Markdown",
-                    }, timeout=aiohttp.ClientTimeout(total=5))
+                from src.infra.db import get_db
+                db = await get_db()
+                await db.execute(
+                    "INSERT OR REPLACE INTO load_mode (id, mode, auto_managed, updated_at) "
+                    "VALUES (1, ?, ?, CURRENT_TIMESTAMP)",
+                    (new, int(_nerd_herd._load.is_auto_managed()))
+                )
+                await db.commit()
             except Exception:
                 pass
+            if old != new:
+                try:
+                    from src.models.local_model_manager import get_local_manager
+                    mgr = get_local_manager()
+                    if mgr.runtime_state and mgr.runtime_state.measured_tps > 0:
+                        _log.info("invalidating measured_tps on mode change",
+                                  old_tps=mgr.runtime_state.measured_tps)
+                        mgr.runtime_state.measured_tps = 0.0
+                except Exception:
+                    pass
 
-        gpu_detect_task = asyncio.create_task(
-            run_gpu_autodetect_loop(notify_fn=_notify_gpu_change),
-            name="gpu_autodetect_loop",
-        )
-        _log.info("GPU auto-detect loop started")
+        _nerd_herd.on_mode_change(lambda old, new, src: asyncio.create_task(
+            _handle_mode_change(old, new, src)
+        ))
+
+        # Start auto-detect with Telegram notification
+        await _nerd_herd.start_auto_detect(notify_fn=_notify_gpu_change)
+        _log.info("GPU auto-detect loop started via NerdHerd")
     except Exception as exc:
-        _log.debug("GPU auto-detect loop not started", reason=str(exc))
+        _log.warning("NerdHerd startup failed", error=str(exc))
 
     # Cancel startup heartbeat — the orchestrator's own _heartbeat_loop
     # takes over once start() creates its background tasks.
@@ -434,8 +476,8 @@ async def main():
         api_task.cancel()
     if monitor_task and not monitor_task.done():
         monitor_task.cancel()
-    if gpu_detect_task and not gpu_detect_task.done():
-        gpu_detect_task.cancel()
+    if _nerd_herd:
+        await _nerd_herd.stop()
 
     # Propagate exit code to wrapper (EXIT_RESTART=42, EXIT_STOP=0).
     # Use sys.exit() so that atexit handlers (llama-server cleanup) still run.

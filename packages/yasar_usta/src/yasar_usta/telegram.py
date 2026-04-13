@@ -125,16 +125,30 @@ class TelegramAPI:
             return []
 
     async def flush_updates(self) -> None:
-        """Confirm all pending updates (used before self-restart)."""
+        """Confirm all pending updates so stale callbacks aren't reprocessed."""
         if not self.enabled:
             return
         import aiohttp
         try:
             async with aiohttp.ClientSession() as session:
-                await session.get(
+                # First get pending count
+                async with session.get(
                     f"{self._base_url}/getUpdates",
-                    params={"offset": -1, "timeout": 0},
+                    params={"offset": 0, "timeout": 0},
                     timeout=aiohttp.ClientTimeout(total=5),
-                )
-        except Exception:
-            pass
+                ) as resp:
+                    data = await resp.json()
+                    pending = data.get("result", [])
+                    if pending:
+                        max_id = max(u["update_id"] for u in pending)
+                        logger.info("Flushing %d pending updates (max_id=%d)", len(pending), max_id)
+                        # Confirm all by requesting offset past the last one
+                        await session.get(
+                            f"{self._base_url}/getUpdates",
+                            params={"offset": max_id + 1, "timeout": 0},
+                            timeout=aiohttp.ClientTimeout(total=5),
+                        )
+                    else:
+                        logger.info("No pending updates to flush")
+        except Exception as e:
+            logger.warning("flush_updates failed: %s", e)

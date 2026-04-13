@@ -306,6 +306,7 @@ class ProcessGuard:
                             cb_data = cb.get("data", "")
                             cb_msg_id = cb.get("message", {}).get("message_id")
                             if cb_data in ("restart_guard", "restart_usta"):
+                                logger.warning("restart_guard triggered by callback uid=%s", uid)
                                 await self.telegram.answer_callback(cb["id"], "♻️ Yeniden başlatılıyor...")
                                 await self._restart_self()
                                 return
@@ -414,6 +415,7 @@ class ProcessGuard:
 
                     elif (text.startswith("/restart_guard")
                           or text.startswith("/restart_usta")):
+                        logger.warning("restart_guard triggered by text=%r uid=%s", text, uid)
                         await self._restart_self()
                         return
 

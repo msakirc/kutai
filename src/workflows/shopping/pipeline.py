@@ -30,13 +30,39 @@ async def _read_artifacts(mission_id: int | str, artifact_names: list[str]) -> d
     return result
 
 
+def _extract_query(artifacts: dict, task: dict) -> str:
+    """Extract the actual search query string from artifacts.
+
+    Artifacts may be raw strings ("siemens s100") or JSON-encoded dicts
+    (``{"clarified_query": "siemens s100", "skipped": true}``).
+    """
+    # Try clarified_query first (from step 1.1), then user_query (initial input)
+    for key in ("clarified_query", "user_query"):
+        raw = artifacts.get(key, "")
+        if not raw:
+            continue
+        if isinstance(raw, str) and raw.strip().startswith("{"):
+            try:
+                parsed = json.loads(raw)
+                # The artifact might wrap the query in a field
+                q = parsed.get("clarified_query") or parsed.get("query") or parsed.get("user_query", "")
+                if q:
+                    return q
+            except (json.JSONDecodeError, ValueError):
+                pass
+        # Raw string — use as-is
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+
+    # Last resort: task description
+    return task.get("description", "")
+
+
 # ── Step handlers ────────────────────────────────────────────────────────────
 
 async def _step_search(task: dict, artifacts: dict) -> str:
     """Search products and community data. Returns JSON."""
-    query = artifacts.get("user_query", "")
-    if not query:
-        query = task.get("description", "")
+    query = _extract_query(artifacts, task)
     logger.info("search step starting", query=query[:100])
 
     from src.shopping.resilience.fallback_chain import (
@@ -91,9 +117,7 @@ async def _step_search(task: dict, artifacts: dict) -> str:
 
 async def _step_search_and_reviews(task: dict, artifacts: dict) -> str:
     """Search products, community, and fetch reviews for top products."""
-    query = artifacts.get("clarified_query") or artifacts.get("user_query", "")
-    if not query:
-        query = task.get("description", "")
+    query = _extract_query(artifacts, task)
 
     from src.shopping.resilience.fallback_chain import (
         get_product_with_fallback,

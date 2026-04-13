@@ -266,10 +266,11 @@ class ProcessGuard:
 
     # ── Telegram poller ───────────────────────────────────────────────
 
-    async def _start_telegram_poller(self) -> None:
+    async def _start_telegram_poller(self, initial_offset: int = 0) -> None:
         if self._telegram_poller or not self.telegram.enabled:
             return
-        self._telegram_poller = asyncio.create_task(self._telegram_poll_loop())
+        self._telegram_poller = asyncio.create_task(
+            self._telegram_poll_loop(initial_offset))
 
     async def _stop_telegram_poller(self) -> None:
         if self._telegram_poller:
@@ -280,8 +281,8 @@ class ProcessGuard:
                 pass
             self._telegram_poller = None
 
-    async def _telegram_poll_loop(self) -> None:
-        offset = 0
+    async def _telegram_poll_loop(self, initial_offset: int = 0) -> None:
+        offset = initial_offset
         last_down_reply: float = 0
         DOWN_REPLY_COOLDOWN = 30
         logger.info("Telegram poller started")
@@ -550,7 +551,7 @@ class ProcessGuard:
 
         # Flush stale Telegram updates from previous runs so old
         # callbacks (like restart_guard) don't trigger on startup.
-        await self.telegram.flush_updates()
+        _flush_offset = await self.telegram.flush_updates()
 
         # Start sidecars
         for sc in self.sidecars.values():
@@ -564,7 +565,7 @@ class ProcessGuard:
         )
 
         # Always-on Telegram poller — runs for the entire lifetime of the guard
-        await self._start_telegram_poller()
+        await self._start_telegram_poller(initial_offset=_flush_offset)
 
         # Start app
         await self._start_app()

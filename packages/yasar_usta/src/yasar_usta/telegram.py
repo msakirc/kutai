@@ -124,14 +124,14 @@ class TelegramAPI:
             logger.warning("Telegram poll error: %s", e)
             return []
 
-    async def flush_updates(self) -> None:
-        """Confirm all pending updates so stale callbacks aren't reprocessed."""
+    async def flush_updates(self) -> int:
+        """Confirm all pending updates. Returns the next offset to use."""
         if not self.enabled:
-            return
+            return 0
         import aiohttp
+        next_offset = 0
         try:
             async with aiohttp.ClientSession() as session:
-                # First get pending count
                 async with session.get(
                     f"{self._base_url}/getUpdates",
                     params={"offset": 0, "timeout": 0},
@@ -141,14 +141,16 @@ class TelegramAPI:
                     pending = data.get("result", [])
                     if pending:
                         max_id = max(u["update_id"] for u in pending)
-                        logger.info("Flushing %d pending updates (max_id=%d)", len(pending), max_id)
-                        # Confirm all by requesting offset past the last one
+                        next_offset = max_id + 1
+                        logger.info("Flushing %d pending updates (next_offset=%d)", len(pending), next_offset)
+                        # Confirm by fetching with offset past the last one
                         await session.get(
                             f"{self._base_url}/getUpdates",
-                            params={"offset": max_id + 1, "timeout": 0},
+                            params={"offset": next_offset, "timeout": 0},
                             timeout=aiohttp.ClientTimeout(total=5),
                         )
                     else:
                         logger.info("No pending updates to flush")
         except Exception as e:
             logger.warning("flush_updates failed: %s", e)
+        return next_offset

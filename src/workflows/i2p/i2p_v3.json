@@ -1627,7 +1627,7 @@
         "value_proposition_canvas",
         "user_personas",
         "competitor_feature_matrix",
-        "technology_trends_summary"
+        "technology_trends"
       ],
       "output_artifacts": [
         "feature_brainstorm_list"

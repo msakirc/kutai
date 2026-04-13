@@ -771,22 +771,48 @@ async def pre_execute_workflow_step(task: dict) -> dict:
                 else:
                     task["context"]["context_strategy"] = context_strategy
 
+    # Warn about missing artifacts in the description
+    _missing_arts = [n for n in input_artifact_names if artifact_contents.get(n) is None]
+    if _missing_arts:
+        logger.warning(
+            "workflow step missing input artifacts",
+            task_id=task.get("id"),
+            missing=_missing_arts,
+        )
+
     # Enrich description
     task["description"] = enrich_task_description(task, artifact_contents)
 
+    # Append missing artifact notice so the agent doesn't go searching
+    if _missing_arts:
+        task["description"] += (
+            "\n\nNOTE: The following input artifacts are unavailable "
+            "(their upstream steps were skipped or failed): "
+            + ", ".join(_missing_arts)
+            + ". Work with the data you have — do NOT search the web or "
+            "read files to find this data."
+        )
+
     logger.info(
-        f"[Workflow Hook] Pre-execute: injected {len(input_artifact_names)} "
+        f"[Workflow Hook] Pre-execute: injected "
+        f"{len(input_artifact_names) - len(_missing_arts)}/{len(input_artifact_names)} "
         f"artifact(s) into task description"
     )
 
-    # ── Strip file tools when all data is already in context ──
-    # If all input artifacts were injected and the step has no tools_hint
-    # (meaning it doesn't need file access for its work), remove read_file
-    # and file_tree to prevent the agent from wasting iterations re-reading
-    # artifacts that are already in its prompt.
+    # ── Strip file/web tools when tools_hint is empty ──
+    # An empty tools_hint means the step explicitly doesn't need tools.
+    # Also strip when all artifacts were injected successfully.
     _tools_hint = ctx.get("tools_hint")
-    if _tools_hint is None or _tools_hint == []:
-        # Check if all input artifacts were successfully injected
+    if _tools_hint is not None and _tools_hint == []:
+        # Explicit empty tools_hint — strip regardless
+        ctx["_strip_file_tools"] = True
+        ctx["_strip_web_tools"] = True
+        if isinstance(task.get("context"), str):
+            task["context"] = json.dumps(ctx)
+        elif isinstance(task.get("context"), dict):
+            task["context"]["_strip_file_tools"] = True
+            task["context"]["_strip_web_tools"] = True
+    elif _tools_hint is None:
         _all_injected = (
             input_artifact_names
             and all(artifact_contents.get(n) is not None for n in input_artifact_names)

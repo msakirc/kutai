@@ -1446,15 +1446,21 @@ class BaseAgent:
         # Strip file tools when all input artifacts are already in context.
         # Prevents wasting iterations re-reading data that's in the prompt.
         _FILE_TOOLS = {"read_file", "file_tree", "project_info"}
-        if _task_ctx.get("_strip_file_tools") and self.allowed_tools is not None:
-            if not hasattr(self, '_original_allowed_tools'):
+        _WEB_TOOLS = {"web_search", "smart_search", "extract_url"}
+        _strip_set = set()
+        if _task_ctx.get("_strip_file_tools"):
+            _strip_set |= _FILE_TOOLS
+        if _task_ctx.get("_strip_web_tools"):
+            _strip_set |= _WEB_TOOLS
+        if _strip_set:
+            if self.allowed_tools is not None:
+                if not hasattr(self, '_original_allowed_tools'):
+                    self._original_allowed_tools = self.allowed_tools
+                self.allowed_tools = [t for t in self.allowed_tools if t not in _strip_set]
+            else:
+                from src.tools import list_tool_names
                 self._original_allowed_tools = self.allowed_tools
-            self.allowed_tools = [t for t in self.allowed_tools if t not in _FILE_TOOLS]
-        elif _task_ctx.get("_strip_file_tools") and self.allowed_tools is None:
-            # Agent has no explicit tool list — build one without file tools
-            from src.tools import list_tool_names
-            self._original_allowed_tools = self.allowed_tools
-            self.allowed_tools = [t for t in list_tool_names() if t not in _FILE_TOOLS]
+                self.allowed_tools = [t for t in list_tool_names() if t not in _strip_set]
 
         # Suppress clarification if task explicitly disallows it
         self._suppress_clarification = _task_ctx.get("may_need_clarification") is False
@@ -1969,7 +1975,9 @@ class BaseAgent:
                             )
                             break
 
-                if subtasks:
+                # Workflow steps must produce output directly — never delegate
+                _is_wf = bool(_task_ctx.get("is_workflow_step"))
+                if subtasks and not _is_wf:
                     await self._clear_checkpoint_safe(task_id)
                     return {
                         "status":       "needs_subtasks",
@@ -1979,6 +1987,14 @@ class BaseAgent:
                         "cost":         total_cost,
                         "difficulty":   reqs.difficulty,
                     }
+                elif subtasks and _is_wf:
+                    # Agent tried to create subtasks in a workflow step —
+                    # treat the plan_summary or result as the actual output
+                    logger.warning(
+                        f"[Task #{task_id}] Planner tried to create subtasks "
+                        f"in workflow step — using result directly"
+                    )
+                    result = parsed.get("plan_summary") or parsed.get("result", result)
 
                 if parsed.get("needs_clarification"):
                     await self._clear_checkpoint_safe(task_id)

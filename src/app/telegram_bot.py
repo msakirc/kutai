@@ -3246,9 +3246,9 @@ class TelegramInterface:
         """/load full|heavy|shared|minimal|auto — set GPU load mode"""
         args = context.args or []
         if not args:
-            from src.infra.load_manager import get_load_mode, is_auto_managed
+            from src.infra.load_manager import get_load_mode, is_auto_managed_async
             current = await get_load_mode()
-            auto_str = " (auto-managed)" if is_auto_managed() else " (manual)"
+            auto_str = " (auto-managed)" if await is_auto_managed_async() else " (manual)"
             await self._reply(update,
                 f"Current load mode: *{current}*{auto_str}\n\n"
                 "Usage: `/load full|heavy|shared|minimal|auto`\n"

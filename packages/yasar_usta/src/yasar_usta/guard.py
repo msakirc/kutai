@@ -304,6 +304,16 @@ class ProcessGuard:
                                 await self.sidecar.stop()
                                 await self.sidecar.start()
                                 await self._send_status(edit_message_id=cb_msg_id)
+                            elif cb_data == "confirm_stop":
+                                _app = self.cfg.app_name
+                                await self.telegram.answer_callback(cb["id"], f"⏹ {_app} durduruluyor...")
+                                await self.telegram.edit(cb_msg_id, f"⏹ *{_app} durduruluyor...*")
+                                self._stop_requested = True
+                                self._write_shutdown_signal("stop")
+                                await self.subprocess.stop()
+                            elif cb_data == "confirm_cancel":
+                                await self.telegram.answer_callback(cb["id"])
+                                await self.telegram.edit(cb_msg_id, "👍 İptal edildi.")
                             else:
                                 await self.telegram.answer_callback(cb["id"])
                         continue
@@ -352,10 +362,14 @@ class ProcessGuard:
                     elif (text == _btn_stop
                           or text.startswith("/stop")):
                         if self.subprocess.running:
-                            await self._send(self.msgs.stopped.format(app_name=self.cfg.app_name))
-                            self._stop_requested = True
-                            self._write_shutdown_signal("stop")
-                            await self.subprocess.stop()
+                            await self.telegram.send(
+                                f"⚠️ *{_app} durdurulsun mu?*\n"
+                                "Manuel olarak yeniden başlatmanız gerekecek.",
+                                reply_markup={"inline_keyboard": [[
+                                    {"text": "⏹ Evet, durdur", "callback_data": "confirm_stop"},
+                                    {"text": "❌ Vazgeç", "callback_data": "confirm_cancel"},
+                                ]]},
+                            )
                         else:
                             await self._send_status()
 

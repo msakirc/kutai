@@ -67,6 +67,38 @@ def _kill_orphan_processes(exit_code: int) -> None:
             print(f"[Yasar Usta] {label} cleanup error: {e}")
 
 
+def _kill_stale_orchestrators() -> None:
+    """Kill any stale orchestrator (run.py) processes left from a previous crash."""
+    my_pid = os.getpid()
+    try:
+        raw = _sp.check_output(
+            ['wmic', 'process', 'where', "name='python.exe'",
+             'get', 'ProcessId,CommandLine'],
+            text=True, timeout=5,
+        )
+        for line in raw.strip().splitlines():
+            line = line.strip()
+            if not line or line.startswith("CommandLine"):
+                continue
+            if "run.py" not in line:
+                continue
+            pid_str = line.split()[-1]
+            try:
+                pid = int(pid_str)
+            except ValueError:
+                continue
+            if pid == my_pid:
+                continue
+            print(f"[Yasar Usta] Killing stale orchestrator PID {pid}")
+            _sp.run(['taskkill', '/F', '/PID', str(pid)],
+                    capture_output=True, timeout=5)
+    except Exception as e:
+        print(f"[Yasar Usta] Stale orchestrator cleanup error: {e}")
+
+
+# ── Startup cleanup ──
+_kill_stale_orchestrators()
+
 venv_python = _find_python()
 
 config = GuardConfig(

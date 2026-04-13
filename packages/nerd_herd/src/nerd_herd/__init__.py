@@ -1,6 +1,7 @@
 """Nerd Herd — standalone observability package."""
 
 from nerd_herd.nerd_herd import NerdHerd
+from nerd_herd.client import NerdHerdClient, GPUStateProxy
 from nerd_herd.types import (
     GPUState,
     SystemState,
@@ -16,6 +17,8 @@ from nerd_herd.ring_buffer import RingBuffer
 
 __all__ = [
     "NerdHerd",
+    "NerdHerdClient",
+    "GPUStateProxy",
     "GPUState",
     "SystemState",
     "ExternalGPUUsage",

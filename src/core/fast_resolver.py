@@ -40,7 +40,7 @@ async def try_resolve(task: dict) -> str | None:
         raw = await _call_best_api(api, params)
         elapsed_ms = int((time.time() - start) * 1000)
 
-        if not raw:
+        if not raw or (isinstance(raw, str) and raw.startswith("Error:")):
             try:
                 from src.infra.db import record_api_call
                 await record_api_call(api.name, success=False)
@@ -89,7 +89,7 @@ async def enrich_context(task: dict) -> str | None:
         raw = await _call_best_api(api, params)
         elapsed_ms = int((time.time() - start) * 1000)
 
-        if not raw:
+        if not raw or (isinstance(raw, str) and raw.startswith("Error:")):
             try:
                 from src.infra.db import record_api_call
                 await record_api_call(api.name, success=False)

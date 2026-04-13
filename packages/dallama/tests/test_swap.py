@@ -105,12 +105,13 @@ async def test_swap_force_drains_on_timeout(swap, server, server_config):
 
 # -- VRAM check --
 @pytest.mark.asyncio
-async def test_swap_refuses_insufficient_vram(server, server_config):
+async def test_swap_warns_on_low_vram_but_proceeds(server, server_config):
+    """Low VRAM logs a warning but proceeds — refusing would leave nothing loaded."""
     cfg = DaLLaMaConfig(min_free_vram_mb=4096, get_vram_free_mb=lambda: 2000)
     swap = SwapManager(cfg)
     result = await swap.swap(server, server_config)
-    assert result is False
-    server.start.assert_not_called()
+    assert result is True  # proceeds despite low VRAM
+    server.start.assert_called()
 
 @pytest.mark.asyncio
 async def test_swap_proceeds_without_vram_callback(swap, server, server_config):

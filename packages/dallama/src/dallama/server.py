@@ -92,8 +92,15 @@ class ServerProcess:
         Returns True on success, False if the process fails to become healthy.
         """
         if self.process is not None:
-            logger.warning("start() called while process is already running (pid=%s)", self.process.pid)
-            return True
+            if self.process.poll() is None:
+                # Process object exists AND is still alive — skip re-start
+                logger.warning("start() called while process is already running (pid=%s)", self.process.pid)
+                return True
+            # Process object exists but process is dead — clean up and proceed
+            logger.info("start() found dead process (pid=%s, rc=%s) — cleaning up",
+                        self.process.pid, self.process.returncode)
+            self._platform._close_stderr(self.process)
+            self.process = None
 
         cmd = self.build_cmd(config)
         log_dir = os.environ.get("DALLAMA_LOG_DIR", ".")

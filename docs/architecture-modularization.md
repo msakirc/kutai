@@ -73,7 +73,7 @@ Agent needs LLM call
 | **nerd_herd** | Observability: GPU, VRAM budget, health, inference metrics, Prometheus | `packages/nerd_herd/` | Stable v0.1.0 | yazbunu, pynvml, psutil, prometheus_client, aiohttp |
 | **kuleden_donen_var** | Cloud provider capacity tracker: rate limits, quotas, circuit breakers | `packages/kuleden_donen_var/` | Stable v0.1.0 | None |
 | **hallederiz_kadir** | LLM call execution hub: litellm, streaming, retries, quality | `packages/hallederiz_kadir/` | New v0.1.0 | litellm |
-| **fatih_hoca** | Model manager: scoring, selection, swap budget, failure adaptation | `packages/fatih_hoca/` | Planned | nerd_herd |
+| **fatih_hoca** | Model manager: scoring, selection, swap budget, failure adaptation | `packages/fatih_hoca/` | Stable v0.1.0 | nerd_herd |
 
 All packages: `packages/<name>/`, src layout, editable install via requirements.txt. Original module becomes a thin shim preserving all import paths.
 
@@ -121,6 +121,8 @@ DaLLaMa's `swap.py` is designed for future migration — swap strategy changes f
 
 **Router dead code** (removed 2026-04-14): `RateLimiter` class (replaced by KDV), `refresh_perf_cache()` (never called), perf cache globals (never populated). Dispatcher unified `_route_main_work` / `_route_overhead` into single candidate loop, removed dead `partial_buf`/`on_chunk` params.
 
+**Fatih Hoca extraction** (2026-04-14): `model_registry.py` (2050→39 lines), `capabilities.py` (492→13 lines), `model_profiles.py` (1557→10 lines), `quota_planner.py` (229→2 lines) all became thin shims re-exporting from `packages/fatih_hoca/`. `router.py` (856→488 lines) kept `select_model()`, `call_model()`, `get_kdv()` but re-exports `ModelRequirements`, `ScoredModel`, `AGENT_REQUIREMENTS` from fatih_hoca.
+
 ## Extraction Decisions
 
 ### Don't Extract
@@ -139,9 +141,9 @@ DaLLaMa's `swap.py` is designed for future migration — swap strategy changes f
 
 **Cloud Operator → kuleden_donen_var (DONE).** Extracted as Kuleden Dönen Var. Tracks rate limits, quotas, and circuit breakers across cloud LLM providers. Pushes state changes to Nerd Herd.
 
-**Model Manager → fatih_hoca (PLANNED).** Router + registry + capabilities + quota planner merge into Fatih Hoca. Unified model selection with failure adaptation, Nerd Herd as single state source. Dispatcher simplifies to ask-load-call-retry loop. See `docs/superpowers/specs/2026-04-14-fatih-hoca-design.md`.
+**Model Manager → fatih_hoca (DONE).** Router + registry + capabilities + quota planner merged into Fatih Hoca. 7 modules, 253 tests. Original files are thin shims preserving import paths. Dispatcher simplification (converting request() to use fatih_hoca.select()) is planned as a follow-up. See `docs/superpowers/specs/2026-04-14-fatih-hoca-design.md`.
 
-**Nerd Herd expansion (PLANNED, prerequisite for Fatih Hoca).** Add LocalModelStateCollector (from DaLLaMa) and CloudCapacityCollector (from KDV). Expose `snapshot()` returning unified `SystemSnapshot`.
+**Nerd Herd expansion (DONE, part of Fatih Hoca).** Added `SystemSnapshot`, `LocalModelState`, `CloudProviderState` types. `snapshot()` method on NerdHerd. Push-based state from DaLLaMa (`push_local_state`) and KDV (`push_cloud_state`).
 
 **Turkish Shopping Scrapers → own package.** 8,500 LOC, 19 scrapers. Largest blast radius. Now connected to workflows, increasing confusion risk.
 
@@ -165,15 +167,16 @@ Future registry extraction should align with LiteLLM's field vocabulary.
 | `packages/nerd_herd/` | Nerd Herd observability package (8 modules + tests) |
 | `packages/kuleden_donen_var/` | Kuleden Dönen Var package (6 modules + tests) |
 | `packages/hallederiz_kadir/` | Talking Layer package (4 modules + tests) |
-| `packages/fatih_hoca/` | *Planned* — model manager (scoring, selection, registry) |
-| `src/models/local_model_manager.py` | Shim wrapping DaLLaMa — deleted when Fatih Hoca extracts |
-| `src/models/gpu_scheduler.py` | Deprecated — dead code |
-| `src/models/gpu_monitor.py` | Shim wrapping Nerd Herd — deleted when Fatih Hoca extracts |
-| `src/models/model_registry.py` | Model catalog — moves to Fatih Hoca |
-| `src/models/capabilities.py` | 15-dim scoring, task profiles — moves to Fatih Hoca |
-| `src/models/quota_planner.py` | Quota policy — moves to Fatih Hoca |
-| `src/core/llm_dispatcher.py` | Ask-load-call-retry loop |
-| `src/core/router.py` | Pure scoring — moves to Fatih Hoca, becomes shim during migration |
+| `packages/fatih_hoca/` | Fatih Hoca model manager (7 modules, 152 tests) |
+| `src/models/local_model_manager.py` | Shim wrapping DaLLaMa — pushes state to Nerd Herd |
+| `src/models/gpu_scheduler.py` | Deprecated — still imported by local_model_manager |
+| `src/models/gpu_monitor.py` | Shim wrapping Nerd Herd — still imported by local_model_manager |
+| `src/models/model_registry.py` | Shim re-exporting from `fatih_hoca.registry` |
+| `src/models/capabilities.py` | Shim re-exporting from `fatih_hoca.capabilities` |
+| `src/models/quota_planner.py` | Shim re-exporting from `fatih_hoca.requirements` |
+| `src/models/model_profiles.py` | Shim re-exporting from `fatih_hoca.profiles` |
+| `src/core/llm_dispatcher.py` | Ask-load-call-retry loop (dispatcher simplification pending) |
+| `src/core/router.py` | Shim — `ModelRequirements`/`ScoredModel` from fatih_hoca, keeps `select_model()`/`call_model()` |
 | `docs/superpowers/specs/2026-04-12-dallama-design.md` | DaLLaMa design spec |
 | `docs/superpowers/specs/2026-04-14-fatih-hoca-design.md` | Fatih Hoca design spec |
 | `docs/extraction/extraction_report_v2.md` | Extraction decisions and status |

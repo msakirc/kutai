@@ -1,0 +1,543 @@
+# ranking.py
+"""
+Fatih Hoca — Ranking Module (Layers 2 & 3)
+
+Takes a list of already-eligible ModelInfo objects (pre-filtered by selector.py
+which handles Layer 1 eligibility) and returns them scored and sorted.
+
+Scoring pipeline:
+  Layer 2: Five-dimension composite scoring (capability, cost, availability,
+            performance, speed), each 0-100, weighted by difficulty.
+  Layer 3: Ranking adjustments — thinking fitness, specialty alignment,
+            swap stickiness.
+  Post:     Time gate rescue, sibling rebalancing (S7), failure adaptation.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+from fatih_hoca.capabilities import TaskRequirements, score_model_for_task
+from fatih_hoca.requirements import get_quota_planner
+
+if TYPE_CHECKING:
+    pass
+
+from fatih_hoca.registry import ModelInfo
+from fatih_hoca.requirements import ModelRequirements
+from fatih_hoca.types import Failure
+from nerd_herd.types import SystemSnapshot
+
+logger = logging.getLogger("fatih_hoca.ranking")
+
+
+# ─── ScoredModel ─────────────────────────────────────────────────────────────
+
+@dataclass
+class ScoredModel:
+    model: ModelInfo
+    score: float
+    capability_score: float = 0.0
+    composite_score: float = 0.0
+    reasons: list[str] = field(default_factory=list)
+
+    @property
+    def litellm_name(self) -> str:
+        return self.model.litellm_name
+
+
+# ─── Failure Adaptation Helpers ──────────────────────────────────────────────
+
+def _build_failure_index(failures: list[Failure]) -> dict[str, list[Failure]]:
+    """Index failures by litellm_name for O(1) lookups."""
+    idx: dict[str, list[Failure]] = {}
+    for f in failures:
+        idx.setdefault(f.model, []).append(f)
+    return idx
+
+
+def _provider_from_litellm(litellm_name: str) -> str:
+    """Extract provider prefix from 'provider/model' litellm_name."""
+    if "/" in litellm_name:
+        return litellm_name.split("/")[0]
+    return ""
+
+
+def _failure_penalty(
+    model: ModelInfo,
+    failure_idx: dict[str, list[Failure]],
+    all_failures: list[Failure],
+) -> tuple[float, bool, list[str]]:
+    """
+    Compute a multiplier (0-1) and exclusion flag for failure adaptation.
+
+    Returns (multiplier, exclude, reasons).
+    """
+    model_failures = failure_idx.get(model.litellm_name, [])
+    reasons: list[str] = []
+    multiplier = 1.0
+    exclude = False
+
+    for f in model_failures:
+        if f.reason == "loading":
+            exclude = True
+            reasons.append("fail_loading")
+        elif f.reason == "timeout":
+            multiplier = min(multiplier, 0.2)
+            reasons.append("fail_timeout")
+        elif f.reason == "quality_failure":
+            multiplier = min(multiplier, 0.5)
+            reasons.append("fail_quality")
+        elif f.reason == "server_error":
+            multiplier = min(multiplier, 0.3)
+            reasons.append("fail_server_error")
+
+    # Provider-level rate limit penalty — applies to all models from that provider
+    model_provider = model.provider
+    if model_provider:
+        for failure in all_failures:
+            if failure.reason == "rate_limit":
+                fp = _provider_from_litellm(failure.model)
+                if fp == model_provider:
+                    multiplier = min(multiplier, 0.3)
+                    reasons.append(f"fail_rate_limit({model_provider})")
+                    break
+
+    return multiplier, exclude, reasons
+
+
+# ─── Core Ranking Function ───────────────────────────────────────────────────
+
+def rank_candidates(
+    candidates: list[ModelInfo],
+    reqs: ModelRequirements,
+    snapshot: SystemSnapshot,
+    failures: list[Failure],
+) -> list[ScoredModel]:
+    """
+    Score and rank an already-filtered list of ModelInfo objects.
+
+    Parameters
+    ----------
+    candidates : list[ModelInfo]
+        Models that have already passed Layer 1 eligibility filtering.
+    reqs : ModelRequirements
+        Task requirements driving the scoring.
+    snapshot : SystemSnapshot
+        Current system state (local model, cloud utilization).
+    failures : list[Failure]
+        Recent failure records used for penalty adaptation.
+
+    Returns
+    -------
+    list[ScoredModel]
+        Scored and sorted models, best first. May be empty.
+    """
+    effective_task = reqs.effective_task
+    needed_ctx = reqs.effective_context_needed
+    min_score = reqs.effective_min_score
+
+    # Pre-build failure index for O(1) per-model lookup
+    failure_idx = _build_failure_index(failures)
+
+    scored: list[ScoredModel] = []
+    time_gated: list[ScoredModel] = []
+
+    # Runtime state for the loaded local model
+    local_state = snapshot.local
+
+    for model in candidates:
+        reasons: list[str] = []
+
+        # ── Failure adaptation: exclude or penalize failed models ──
+        fail_mult, fail_exclude, fail_reasons = _failure_penalty(model, failure_idx, failures)
+        if fail_exclude:
+            logger.debug(
+                "model excluded by failure adaptation: model=%s reasons=%s",
+                model.name, fail_reasons,
+            )
+            continue
+        reasons.extend(fail_reasons)
+
+        # ── Time gate: flag models too slow for the 300s budget ──
+        is_time_gated = False
+        if model.is_local and reqs.estimated_output_tokens > 0:
+            # Use measured tps from snapshot when this is the loaded model
+            if (
+                model.is_loaded
+                and local_state.model_name == model.name
+                and local_state.measured_tps > 0
+            ):
+                gate_tps = local_state.measured_tps
+            else:
+                gate_tps = model.tokens_per_second
+
+            if gate_tps > 0:
+                gate_secs = reqs.estimated_output_tokens / gate_tps
+                TIME_BUDGET = 300.0
+                if gate_secs > TIME_BUDGET:
+                    is_time_gated = True
+                    reasons.append(
+                        f"time_gated({gate_tps:.1f}tps"
+                        f"×{reqs.estimated_output_tokens}tok"
+                        f"={gate_secs:.0f}s>{TIME_BUDGET:.0f}s)"
+                    )
+
+        # ════════════════════════════════════════════════════════
+        # LAYER 2: Five-Dimension Scoring
+        # ════════════════════════════════════════════════════════
+
+        # ── 1. Capability Fit (0–100) ──
+        cap_score_raw = score_model_for_task(
+            model_capabilities=model.capabilities,
+            model_operational=model.operational_dict(),
+            requirements=TaskRequirements(
+                task_name=effective_task or reqs.primary_capability,
+                min_context=needed_ctx,
+                needs_function_calling=reqs.needs_function_calling,
+                needs_json_mode=reqs.needs_json_mode,
+                needs_vision=reqs.needs_vision,
+                needs_thinking=reqs.needs_thinking,
+                prefer_local=reqs.prefer_local or reqs.local_only,
+                prefer_fast=reqs.prefer_speed,
+            ),
+        )
+
+        if cap_score_raw < 0:
+            logger.debug(
+                "model rejected by capability score: model=%s cap_score_raw=%.2f",
+                model.name, cap_score_raw,
+            )
+            continue
+        if min_score > 0 and cap_score_raw < min_score:
+            logger.debug(
+                "model below min_score: model=%s cap_score_raw=%.2f min_score=%.2f",
+                model.name, cap_score_raw, min_score,
+            )
+            continue
+
+        cap_score = min(cap_score_raw * 10, 100)
+        reasons.append(f"cap={cap_score_raw:.1f}")
+        if effective_task:
+            reasons.append(f"task={effective_task}")
+
+        # ── 2. Cost Efficiency (0–100) ──
+        if model.is_local:
+            cost_score = 95 if model.is_loaded else 90
+            if not model.is_loaded:
+                reasons.append("needs_swap")
+            reasons.append("local")
+            # Skip load mode penalty — snapshot doesn't carry vram_budget_fraction;
+            # the selector already filtered models that exceed the VRAM budget.
+        elif model.is_free:
+            cost_score = 85
+            reasons.append("free_cloud")
+        else:
+            est_cost = model.estimated_cost(
+                reqs.estimated_input_tokens, reqs.estimated_output_tokens
+            )
+            if est_cost <= 0.001:
+                cost_score = 75
+            elif est_cost <= 0.01:
+                cost_score = 50
+            elif est_cost <= 0.05:
+                cost_score = 30
+            else:
+                cost_score = 10
+            reasons.append(f"cost=${est_cost:.4f}")
+
+            # Quota planner penalty for paid models below threshold
+            planner = get_quota_planner()
+            if reqs.difficulty < planner.expensive_threshold:
+                penalty = (planner.expensive_threshold - reqs.difficulty) * 8
+                cost_score = max(0, cost_score - penalty)
+                reasons.append(f"quota_pen=-{penalty}")
+
+        # ── 3. Availability (0–100) ──
+        if model.is_local:
+            if model.is_loaded:
+                avail_score = 100
+                reasons.append("loaded")
+            else:
+                swap_time = model.load_time_seconds
+                avail_score = 75 if swap_time < 10 else (55 if swap_time < 30 else 35)
+                reasons.append(f"swap_{swap_time:.0f}s")
+        else:
+            # Use snapshot.cloud for utilization data
+            prov_state = snapshot.cloud.get(model.provider)
+            model_state = (
+                prov_state.models.get(model.litellm_name) if prov_state else None
+            )
+            model_util = model_state.utilization_pct if model_state else 0.0
+            provider_util = prov_state.utilization_pct if prov_state else 0.0
+
+            # Daily exhaustion check — no graduated fallback
+            daily_exhausted = getattr(model_state, "daily_exhausted", False) if model_state else False
+            if daily_exhausted:
+                avail_score = 0
+                reasons.append("daily_exhausted")
+            else:
+                # Smooth curve: 0% util → 95, 100% util → 5
+                effective_util = max(model_util, provider_util)
+                avail_score = max(5, int(95 - effective_util * 0.90))
+                if effective_util >= 50:
+                    reasons.append(f"util={effective_util:.0f}%")
+
+        # ── 4. Performance History (0–100) ──
+        # TODO: wire up performance cache (refresh from DB stats)
+        perf_score = 50
+
+        # ── 5. Speed (0–100) ──
+        if model.is_local:
+            # Use measured tps from snapshot when this is the loaded model
+            if (
+                model.is_loaded
+                and local_state.model_name == model.name
+                and local_state.measured_tps > 0
+            ):
+                tps = local_state.measured_tps
+            else:
+                tps = model.tokens_per_second
+
+            active = getattr(model, "active_params_b", 0) or model.total_params_b
+
+            if tps >= 50:
+                speed_score = 100
+            elif tps >= 20:
+                speed_score = 80
+            elif tps >= 10:
+                speed_score = 60
+            elif tps >= 5:
+                speed_score = 40
+            elif tps >= 2:
+                speed_score = 20
+            elif tps > 0:
+                speed_score = 10
+            else:
+                # No measured tps — estimate from model size
+                if active < 5:
+                    speed_score = 75
+                elif active < 10:
+                    speed_score = 55
+                elif active < 20:
+                    speed_score = 35
+                else:
+                    speed_score = 15
+
+            # Output-length penalty for slow local models
+            est_out = reqs.estimated_output_tokens
+            effective_tps = tps if tps > 0 else (
+                25 if active < 5
+                else 12 if active < 15
+                else 5 if active < 30
+                else 3
+            )
+            est_generation_secs = est_out / effective_tps if effective_tps > 0 else 0
+            if est_generation_secs > 300:
+                speed_score = max(0, speed_score - 50)
+                reasons.append(f"very_slow({est_generation_secs:.0f}s)")
+            elif est_generation_secs > 120:
+                speed_score = max(0, speed_score - 30)
+                reasons.append(f"slow({est_generation_secs:.0f}s)")
+            elif est_generation_secs > 60:
+                speed_score = max(0, speed_score - 15)
+                reasons.append(f"moderate({est_generation_secs:.0f}s)")
+
+            # Amplify speed score when prefer_speed is set
+            if reqs.prefer_speed and tps > 0:
+                tps_boost = min(1.0, tps / 50.0)
+                speed_score = speed_score * (0.5 + tps_boost * 0.5)
+        else:
+            speed_map = {
+                "groq": 95,
+                "cerebras": 95,
+                "sambanova": 80,
+                "gemini": 70,
+                "openai": 60,
+                "anthropic": 50,
+            }
+            speed_score = speed_map.get(model.provider, 50)
+
+        # ── Composite Weighting ──
+        d = reqs.difficulty
+        if d <= 3:
+            weights = {"capability": 20, "cost": 35, "availability": 20, "performance": 10, "speed": 15}
+        elif d <= 5:
+            weights = {"capability": 30, "cost": 20, "availability": 20, "performance": 15, "speed": 15}
+        elif d <= 7:
+            weights = {"capability": 35, "cost": 15, "availability": 15, "performance": 15, "speed": 20}
+        else:
+            weights = {"capability": 45, "cost": 5, "availability": 10, "performance": 20, "speed": 20}
+
+        # Modifier adjustments
+        if reqs.prefer_speed:
+            weights["speed"] += 15
+            weights["cost"] -= 10
+        if reqs.prefer_quality:
+            weights["capability"] += 10
+            weights["cost"] -= 10
+        if reqs.prefer_local:
+            weights["cost"] += 10
+            weights["speed"] -= 5
+            weights["availability"] -= 5
+        if reqs.local_only:
+            weights["availability"] += 10
+            weights["cost"] -= 10
+
+        total_weight = sum(weights.values())
+        composite = (
+            cap_score * weights["capability"]
+            + cost_score * weights["cost"]
+            + avail_score * weights["availability"]
+            + perf_score * weights["performance"]
+            + speed_score * weights["speed"]
+        ) / total_weight
+
+        # ════════════════════════════════════════════════════════
+        # LAYER 3: Ranking Adjustments
+        # ════════════════════════════════════════════════════════
+
+        # Group A: Thinking fitness — reward thinking models when CoT requested
+        if reqs.needs_thinking and model.thinking_model:
+            composite *= 1.20
+            reasons.append("thinking_bonus")
+
+        # Group B: Specialty alignment
+        if model.specialty and effective_task:
+            _specialty_tasks = {
+                "coding": {"coder", "implementer", "fixer", "test_generator"},
+                "reasoning": {"planner", "architect", "analyst"},
+                "vision": {"visual_reviewer"},
+            }
+            matched = _specialty_tasks.get(model.specialty, set())
+            if effective_task in matched:
+                composite *= 1.15
+                reasons.append(f"specialty={model.specialty}")
+
+        # Group C: Swap stickiness — prefer the already-loaded model
+        if model.is_local and model.is_loaded:
+            _thinking_mismatch = (
+                reqs.needs_thinking
+                and local_state.model_name == model.name
+                and not local_state.thinking_enabled
+            )
+            if _thinking_mismatch:
+                composite *= 1.10
+                reasons.append("thinking_mismatch")
+            else:
+                composite *= 1.40
+                reasons.append("loaded")
+        elif model.is_local and not model.is_loaded:
+            composite *= 0.75
+            reasons.append("needs_swap")
+
+        # Apply failure penalty multiplier (from adaptation above)
+        if fail_mult < 1.0:
+            composite *= fail_mult
+
+        sm = ScoredModel(
+            model=model,
+            score=composite,
+            capability_score=cap_score_raw,
+            composite_score=composite,
+            reasons=reasons,
+        )
+        if is_time_gated:
+            time_gated.append(sm)
+        else:
+            scored.append(sm)
+
+    # ── Time Gate Rescue ──
+    # If ALL candidates are time-gated, rescue the fastest to avoid empty result.
+    if not scored and time_gated:
+        time_gated.sort(key=lambda c: -(c.model.tokens_per_second or 0))
+        rescued = time_gated[0]
+        rescued.reasons.append("rescued(only_option)")
+        scored.append(rescued)
+        logger.warning(
+            "time_gate_rescue: all candidates were too slow, rescued fastest: model=%s tps=%.1f",
+            rescued.model.name, rescued.model.tokens_per_second,
+        )
+
+    scored.sort(key=lambda c: -c.score)
+
+    # ── S7: Sibling Rebalancing ──
+    # When one cloud model in a provider has >70% util and a sibling has <30%,
+    # nudge the sibling's score +8% to distribute load.
+    try:
+        prov_groups: dict[str, list[ScoredModel]] = {}
+        for c in scored:
+            if not c.model.is_local:
+                prov_groups.setdefault(c.model.provider, []).append(c)
+
+        rebalanced = False
+        for provider, group in prov_groups.items():
+            if len(group) < 2:
+                continue
+
+            prov_state = snapshot.cloud.get(provider)
+            group_utils = [
+                (
+                    sc,
+                    (
+                        prov_state.models.get(sc.model.litellm_name).utilization_pct
+                        if (
+                            prov_state
+                            and prov_state.models.get(sc.model.litellm_name)
+                        )
+                        else 0.0
+                    ),
+                )
+                for sc in group
+            ]
+
+            max_util = max(u for _, u in group_utils)
+            if max_util < 70:
+                continue
+
+            congested_name = next(
+                sc.model.name for sc, u in group_utils if u == max_util
+            )
+
+            for sc, sib_util in group_utils:
+                if sib_util < 30:
+                    old = sc.score
+                    sc.score *= 1.08
+                    sc.composite_score = sc.score
+                    sc.reasons.append(
+                        f"sibling_rebal({provider}:{max_util:.0f}%>{sib_util:.0f}%)"
+                    )
+                    logger.debug(
+                        "sibling rebalancing nudge: sibling=%s congested=%s provider=%s "
+                        "max_util=%.0f%% sib_util=%.0f%% score %.1f->%.1f",
+                        sc.model.name, congested_name, provider,
+                        max_util, sib_util, old, sc.score,
+                    )
+                    rebalanced = True
+
+        if rebalanced:
+            scored.sort(key=lambda c: -c.score)
+    except Exception as e:
+        logger.debug("sibling rebalancing failed: %s", str(e))
+
+    # Logging
+    if scored:
+        top3 = scored[:3]
+        task_str = effective_task or reqs.primary_capability
+        log_parts = [
+            f"{c.model.name}({c.score:.1f}|cap={c.capability_score:.1f}|{','.join(c.reasons[:2])})"
+            for c in top3
+        ]
+        extra = f" (+{len(scored) - 3} more)" if len(scored) > 3 else ""
+        logger.info(
+            "rank_candidates result: task=%s count=%d top=%s",
+            task_str, len(scored), " > ".join(log_parts) + extra,
+        )
+    else:
+        logger.warning(
+            "rank_candidates: no models passed scoring: task=%s input_candidates=%d",
+            effective_task or reqs.primary_capability, len(candidates),
+        )
+
+    return scored

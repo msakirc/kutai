@@ -9,7 +9,7 @@ from nerd_herd.load import LoadManager
 from nerd_herd.health import HealthRegistry
 from nerd_herd.inference import InferenceCollector
 from nerd_herd.exposition import MetricsServer, build_metrics_text
-from nerd_herd.types import GPUState, HealthStatus
+from nerd_herd.types import GPUState, HealthStatus, LocalModelState, CloudProviderState, SystemSnapshot
 
 
 class NerdHerd:
@@ -47,6 +47,9 @@ class NerdHerd:
                 poll_interval=inference_poll_interval,
             )
             self.registry.register("inference", self._inference)
+
+        self._local_state: LocalModelState = LocalModelState()
+        self._cloud_state: dict[str, CloudProviderState] = {}
 
         self._server = MetricsServer(self.registry, port=metrics_port, nerd_herd=self)
 
@@ -102,6 +105,23 @@ class NerdHerd:
 
     def register_collector(self, name: str, collector: Collector) -> None:
         self.registry.register(name, collector)
+
+    def push_local_state(self, state: LocalModelState) -> None:
+        """Replace the current local model state (called by DaLLaMa on each swap)."""
+        self._local_state = state
+
+    def push_cloud_state(self, state: CloudProviderState) -> None:
+        """Upsert a cloud provider state entry (called by KDV on each API response)."""
+        self._cloud_state[state.provider] = state
+
+    def snapshot(self) -> SystemSnapshot:
+        """Return a point-in-time snapshot of all system state."""
+        gpu = self._gpu.gpu_state()
+        return SystemSnapshot(
+            vram_available_mb=self.get_vram_budget_mb() if gpu.available else 0,
+            local=self._local_state,
+            cloud=dict(self._cloud_state),
+        )
 
     def prometheus_lines(self) -> str:
         return build_metrics_text(self.registry)

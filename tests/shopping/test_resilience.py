@@ -445,25 +445,31 @@ class TestGetProductWithFallback(unittest.TestCase):
             f"but only tried: {tried}",
         )
 
-    def test_aggregator_hit_skips_later_tiers(self):
-        """If an aggregator returns results, major/specialty tiers are not tried."""
+    def test_all_tiers_searched_even_if_first_has_results(self):
+        """All tiers are searched for price comparison, not just the first success."""
         from src.shopping.resilience.fallback_chain import get_product_with_fallback
 
         called: list[str] = []
-        fake_product = MagicMock()
+        fake_akakce = MagicMock()
+        fake_trendyol = MagicMock()
 
         async def _run():
             with patch("src.shopping.scrapers.get_scraper",
-                       side_effect=self._mock_get_scraper(called, {"akakce": [fake_product]})), \
+                       side_effect=self._mock_get_scraper(called, {
+                           "akakce": [fake_akakce],
+                           "trendyol": [fake_trendyol],
+                       })), \
                  patch("src.shopping.resilience.cache_fallback.get_stale_product", new_callable=AsyncMock, return_value=None):
                 return await get_product_with_fallback("iphone 15")
 
         result = run_async(_run())
 
-        self.assertEqual(result, [fake_product])
-        # Only aggregator tier should have been tried
-        self.assertNotIn("trendyol", called)
-        self.assertNotIn("kitapyurdu", called)
+        # Both sources should be in results
+        self.assertIn(fake_akakce, result)
+        self.assertIn(fake_trendyol, result)
+        # All tiers were searched
+        self.assertIn("akakce", called)
+        self.assertIn("trendyol", called)
 
     def test_explicit_sources_tried_first(self):
         """When explicit sources are given, they're tried before default tiers."""

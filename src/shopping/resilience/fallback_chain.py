@@ -81,16 +81,21 @@ async def _search_scraper(source: str, query: str) -> list:
 
 
 async def _search_parallel(sources: list[str], query: str) -> list:
-    """Search multiple scrapers in parallel, return first non-empty result."""
+    """Search multiple scrapers in parallel, collect ALL results.
+
+    For price comparison we need products from every source, not just the
+    first one that responds.
+    """
     tasks = [asyncio.create_task(_search_scraper(s, query)) for s in sources]
+    all_results: list = []
     for coro in asyncio.as_completed(tasks):
-        result = await coro
-        if result:
-            # Cancel remaining tasks
-            for t in tasks:
-                t.cancel()
-            return result
-    return []
+        try:
+            result = await coro
+            if result:
+                all_results.extend(result)
+        except Exception:
+            pass
+    return all_results
 
 
 # Scraper tiers — ordered by breadth and likelihood of having results.
@@ -162,22 +167,27 @@ async def get_product_with_fallback(
             if results:
                 return results
 
-    # Tier 1: aggregators (parallel)
-    results = await _search_parallel(_AGGREGATORS, product_query)
-    if results:
-        return results
+    # Search ALL tiers in parallel — collect products from every source
+    # for price comparison. Tiers are searched concurrently.
+    all_products: list = []
 
-    # Tier 2: major retailers (parallel)
-    results = await _search_parallel(_MAJOR_RETAILERS, product_query)
-    if results:
-        return results
+    tier_tasks = [
+        asyncio.create_task(_search_parallel(_AGGREGATORS, product_query)),
+        asyncio.create_task(_search_parallel(_MAJOR_RETAILERS, product_query)),
+        asyncio.create_task(_search_parallel(_SPECIALTY_RETAILERS, product_query)),
+    ]
+    for coro in asyncio.as_completed(tier_tasks):
+        try:
+            result = await coro
+            if result:
+                all_products.extend(result)
+        except Exception:
+            pass
 
-    # Tier 3: specialty retailers (parallel)
-    results = await _search_parallel(_SPECIALTY_RETAILERS, product_query)
-    if results:
-        return results
+    if all_products:
+        return all_products
 
-    # Tier 4: Google CSE
+    # Fallback: Google CSE
     try:
         from src.shopping.scrapers.google_cse import GoogleCSEScraper
         cse = GoogleCSEScraper()
@@ -187,7 +197,7 @@ async def get_product_with_fallback(
     except Exception as exc:
         logger.warning("Google CSE failed for '%s': %s", product_query, exc)
 
-    # Tier 5: stale cache
+    # Last resort: stale cache
     stale = await get_stale_product(product_query, max_age_hours=72)
     if stale:
         logger.info("Serving stale cache for '%s'", product_query)

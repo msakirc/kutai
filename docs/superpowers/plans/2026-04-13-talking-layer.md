@@ -1,14 +1,14 @@
-# Talking Layer Implementation Plan
+# HaLLederiz Kadir Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Extract LLM call execution from `src/core/router.py` into a new `packages/talking_layer/` package, making router pure scoring and dispatcher the policy/orchestration layer.
+**Goal:** Extract LLM call execution from `src/core/router.py` into a new `packages/hallederiz_kadir/` package, making router pure scoring and dispatcher the policy/orchestration layer.
 
-**Architecture:** The talking layer is a KutAI package that owns the litellm call pipeline — building completion kwargs, making calls, streaming, retries, response parsing, error classification, quality checks, and metrics. Dispatcher handles candidate iteration and calls the talking layer once per candidate. Router becomes pure scoring with no I/O.
+**Architecture:** HaLLederiz Kadir is a KutAI package that owns the litellm call pipeline — building completion kwargs, making calls, streaming, retries, response parsing, error classification, quality checks, and metrics. Dispatcher handles candidate iteration and calls HaLLederiz Kadir once per candidate. Router becomes pure scoring with no I/O.
 
 **Tech Stack:** Python 3.10, litellm, asyncio, DaLLaMa, KDV, Dogru mu Samet, Nerd Herd, Yazbunu
 
-**Design spec:** `docs/superpowers/specs/2026-04-13-talking-layer-design.md`
+**Design spec:** `docs/superpowers/specs/2026-04-13-hallederiz-kadir-design.md`
 
 ---
 
@@ -17,9 +17,9 @@
 ### New files (package)
 
 ```
-packages/talking_layer/
+packages/hallederiz_kadir/
   pyproject.toml                              # Package config, deps: litellm
-  src/talking_layer/
+  src/hallederiz_kadir/
     __init__.py                               # Exports: call, CallResult, CallError
     types.py                                  # CallResult, CallError dataclasses (~50 lines)
     caller.py                                 # Main call() function — local/cloud routing,
@@ -45,7 +45,7 @@ src/core/router.py                           # Remove call_model(), _stream_with
                                               #   _extract_thinking(), _classify_error_category(),
                                               #   ModelCallFailed, litellm imports, GPU/KDV wiring.
                                               #   call_model() becomes thin shim to dispatcher.
-requirements.txt                             # Add: -e ./packages/talking_layer
+requirements.txt                             # Add: -e ./packages/hallederiz_kadir
 ```
 
 ---
@@ -53,22 +53,22 @@ requirements.txt                             # Add: -e ./packages/talking_layer
 ## Task 1: Package Scaffold + Types
 
 **Files:**
-- Create: `packages/talking_layer/pyproject.toml`
-- Create: `packages/talking_layer/src/talking_layer/__init__.py`
-- Create: `packages/talking_layer/src/talking_layer/types.py`
-- Create: `packages/talking_layer/tests/test_types.py`
+- Create: `packages/hallederiz_kadir/pyproject.toml`
+- Create: `packages/hallederiz_kadir/src/hallederiz_kadir/__init__.py`
+- Create: `packages/hallederiz_kadir/src/hallederiz_kadir/types.py`
+- Create: `packages/hallederiz_kadir/tests/test_types.py`
 - Modify: `requirements.txt`
 
 - [ ] **Step 1: Create pyproject.toml**
 
 ```python
-# packages/talking_layer/pyproject.toml
+# packages/hallederiz_kadir/pyproject.toml
 [build-system]
 requires = ["setuptools>=42"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "talking_layer"
+name = "hallederiz_kadir"
 version = "0.1.0"
 description = "LLM call execution hub — litellm, streaming, retries, quality"
 requires-python = ">=3.10"
@@ -81,8 +81,8 @@ where = ["src"]
 - [ ] **Step 2: Create types.py with CallResult and CallError**
 
 ```python
-# packages/talking_layer/src/talking_layer/types.py
-"""Result and error types for the talking layer."""
+# packages/hallederiz_kadir/src/hallederiz_kadir/types.py
+"""Result and error types for HaLLederiz Kadir."""
 
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -118,8 +118,8 @@ class CallError:
 - [ ] **Step 3: Create __init__.py**
 
 ```python
-# packages/talking_layer/src/talking_layer/__init__.py
-"""Talking Layer — LLM call execution hub."""
+# packages/hallederiz_kadir/src/hallederiz_kadir/__init__.py
+"""HaLLederiz Kadir — LLM call execution hub."""
 
 from .types import CallResult, CallError
 
@@ -129,7 +129,7 @@ __all__ = ["CallResult", "CallError"]
 - [ ] **Step 4: Write test for types**
 
 ```python
-# packages/talking_layer/tests/test_types.py
+# packages/hallederiz_kadir/tests/test_types.py
 """Tests for CallResult and CallError dataclasses."""
 
 import sys
@@ -137,7 +137,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from talking_layer.types import CallResult, CallError
+from hallederiz_kadir.types import CallResult, CallError
 
 
 def test_call_result_construction():
@@ -200,22 +200,22 @@ def test_call_error_with_partial_content():
 
 - [ ] **Step 5: Run test**
 
-Run: `pytest packages/talking_layer/tests/test_types.py -v`
+Run: `pytest packages/hallederiz_kadir/tests/test_types.py -v`
 Expected: 4 tests PASS
 
 - [ ] **Step 6: Add editable install to requirements.txt**
 
-Add `-e ./packages/talking_layer` to `requirements.txt` alongside other package installs.
+Add `-e ./packages/hallederiz_kadir` to `requirements.txt` alongside other package installs.
 
 - [ ] **Step 7: Install the package**
 
-Run: `pip install -e ./packages/talking_layer`
+Run: `pip install -e ./packages/hallederiz_kadir`
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add packages/talking_layer/ requirements.txt
-git commit -m "feat(talking_layer): scaffold package with CallResult/CallError types"
+git add packages/hallederiz_kadir/ requirements.txt
+git commit -m "feat(hallederiz_kadir): scaffold package with CallResult/CallError types"
 ```
 
 ---
@@ -223,15 +223,15 @@ git commit -m "feat(talking_layer): scaffold package with CallResult/CallError t
 ## Task 2: Response Parsing Module
 
 **Files:**
-- Create: `packages/talking_layer/src/talking_layer/response.py`
-- Create: `packages/talking_layer/tests/test_response.py`
+- Create: `packages/hallederiz_kadir/src/hallederiz_kadir/response.py`
+- Create: `packages/hallederiz_kadir/tests/test_response.py`
 
 This module extracts response parsing from `router.py:1321-1483` — content, tool_calls, thinking extraction, think-tag stripping, cost calculation.
 
 - [ ] **Step 1: Write tests for response parsing**
 
 ```python
-# packages/talking_layer/tests/test_response.py
+# packages/hallederiz_kadir/tests/test_response.py
 """Tests for response parsing — content, tool_calls, thinking, think-tags, cost."""
 
 import sys
@@ -240,7 +240,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from unittest.mock import MagicMock
-from talking_layer.response import parse_response
+from hallederiz_kadir.response import parse_response
 
 
 def _make_response(content="hello", tool_calls=None, reasoning_content=None,
@@ -353,13 +353,13 @@ def test_cost_zero_for_local():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest packages/talking_layer/tests/test_response.py -v`
+Run: `pytest packages/hallederiz_kadir/tests/test_response.py -v`
 Expected: FAIL — `ImportError: cannot import name 'parse_response'`
 
 - [ ] **Step 3: Implement response.py**
 
 ```python
-# packages/talking_layer/src/talking_layer/response.py
+# packages/hallederiz_kadir/src/hallederiz_kadir/response.py
 """Response parsing — extract content, tool_calls, thinking from litellm responses."""
 
 from __future__ import annotations
@@ -464,14 +464,14 @@ def _extract_thinking(msg) -> str | None:
 
 - [ ] **Step 4: Run tests**
 
-Run: `pytest packages/talking_layer/tests/test_response.py -v`
+Run: `pytest packages/hallederiz_kadir/tests/test_response.py -v`
 Expected: All PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/talking_layer/src/talking_layer/response.py packages/talking_layer/tests/test_response.py
-git commit -m "feat(talking_layer): response parsing — content, tool_calls, thinking, think-tags"
+git add packages/hallederiz_kadir/src/hallederiz_kadir/response.py packages/hallederiz_kadir/tests/test_response.py
+git commit -m "feat(hallederiz_kadir): response parsing — content, tool_calls, thinking, think-tags"
 ```
 
 ---
@@ -479,15 +479,15 @@ git commit -m "feat(talking_layer): response parsing — content, tool_calls, th
 ## Task 3: Error Classification + Retry Module
 
 **Files:**
-- Create: `packages/talking_layer/src/talking_layer/retry.py`
-- Create: `packages/talking_layer/tests/test_retry.py`
+- Create: `packages/hallederiz_kadir/src/hallederiz_kadir/retry.py`
+- Create: `packages/hallederiz_kadir/tests/test_retry.py`
 
 Extracts error classification from `router.py:1602-1623` and retry loop from `router.py:1283-1579`.
 
 - [ ] **Step 1: Write tests for error classification**
 
 ```python
-# packages/talking_layer/tests/test_retry.py
+# packages/hallederiz_kadir/tests/test_retry.py
 """Tests for error classification and retry logic."""
 
 import sys
@@ -496,7 +496,7 @@ import asyncio
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from talking_layer.retry import classify_error
+from hallederiz_kadir.retry import classify_error
 
 
 def test_classify_timeout():
@@ -552,13 +552,13 @@ def test_classify_server_error():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest packages/talking_layer/tests/test_retry.py -v`
+Run: `pytest packages/hallederiz_kadir/tests/test_retry.py -v`
 Expected: FAIL — `ImportError`
 
 - [ ] **Step 3: Implement retry.py**
 
 ```python
-# packages/talking_layer/src/talking_layer/retry.py
+# packages/hallederiz_kadir/src/hallederiz_kadir/retry.py
 """Retry loop and error classification for LLM calls."""
 
 from __future__ import annotations
@@ -708,14 +708,14 @@ async def execute_with_retry(
 
 - [ ] **Step 4: Run tests**
 
-Run: `pytest packages/talking_layer/tests/test_retry.py -v`
+Run: `pytest packages/hallederiz_kadir/tests/test_retry.py -v`
 Expected: All PASS (classify_error tests pass; execute_with_retry tested in Task 4)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/talking_layer/src/talking_layer/retry.py packages/talking_layer/tests/test_retry.py
-git commit -m "feat(talking_layer): error classification and retry loop"
+git add packages/hallederiz_kadir/src/hallederiz_kadir/retry.py packages/hallederiz_kadir/tests/test_retry.py
+git commit -m "feat(hallederiz_kadir): error classification and retry loop"
 ```
 
 ---
@@ -723,16 +723,16 @@ git commit -m "feat(talking_layer): error classification and retry loop"
 ## Task 4: Main Caller Module
 
 **Files:**
-- Create: `packages/talking_layer/src/talking_layer/caller.py`
-- Create: `packages/talking_layer/tests/test_caller.py`
-- Modify: `packages/talking_layer/src/talking_layer/__init__.py`
+- Create: `packages/hallederiz_kadir/src/hallederiz_kadir/caller.py`
+- Create: `packages/hallederiz_kadir/tests/test_caller.py`
+- Modify: `packages/hallederiz_kadir/src/hallederiz_kadir/__init__.py`
 
-The core of the talking layer — receives a `ModelInfo` + messages and handles the complete call pipeline: kwargs building, local vs cloud routing, streaming, quality check, metrics.
+The core of HaLLederiz Kadir — receives a `ModelInfo` + messages and handles the complete call pipeline: kwargs building, local vs cloud routing, streaming, quality check, metrics.
 
 - [ ] **Step 1: Write tests for the main call function**
 
 ```python
-# packages/talking_layer/tests/test_caller.py
+# packages/hallederiz_kadir/tests/test_caller.py
 """Tests for the main call() function with mocked litellm and backends."""
 
 import sys
@@ -742,8 +742,8 @@ import asyncio
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
-from talking_layer.caller import call
-from talking_layer.types import CallResult, CallError
+from hallederiz_kadir.caller import call
+from hallederiz_kadir.types import CallResult, CallError
 
 
 def run_async(coro):
@@ -803,7 +803,7 @@ def _make_litellm_response(content="Hello", tool_calls=None,
     return resp
 
 
-@patch("talking_layer.caller.litellm")
+@patch("hallederiz_kadir.caller.litellm")
 def test_call_local_success(mock_litellm):
     """Local model call succeeds — returns CallResult."""
     mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
@@ -825,7 +825,7 @@ def test_call_local_success(mock_litellm):
     assert result.cost == 0.0
 
 
-@patch("talking_layer.caller.litellm")
+@patch("hallederiz_kadir.caller.litellm")
 def test_call_cloud_success(mock_litellm):
     """Cloud model call succeeds — uses KDV pre/post."""
     mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
@@ -833,9 +833,9 @@ def test_call_cloud_success(mock_litellm):
                              name="llama-8b", location="cloud", provider="groq",
                              api_base=None)
 
-    with patch("talking_layer.caller._kdv_pre_call", return_value=(True, 0.0, False)), \
-         patch("talking_layer.caller._kdv_post_call"), \
-         patch("talking_layer.caller.litellm.completion_cost", return_value=0.001):
+    with patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False)), \
+         patch("hallederiz_kadir.caller._kdv_post_call"), \
+         patch("hallederiz_kadir.caller.litellm.completion_cost", return_value=0.001):
         result = run_async(call(
             model=model,
             messages=[{"role": "user", "content": "hello"}],
@@ -851,15 +851,15 @@ def test_call_cloud_success(mock_litellm):
     assert result.provider == "groq"
 
 
-@patch("talking_layer.caller.litellm")
+@patch("hallederiz_kadir.caller.litellm")
 def test_call_timeout_returns_call_error(mock_litellm):
     """Timeout returns CallError with category='timeout'."""
     mock_litellm.acompletion = AsyncMock(side_effect=asyncio.TimeoutError)
     model = _make_model_info(is_local=False, litellm_name="groq/llama-8b",
                              location="cloud", provider="groq", api_base=None)
 
-    with patch("talking_layer.caller._kdv_pre_call", return_value=(True, 0.0, False)), \
-         patch("talking_layer.caller._kdv_record_failure"):
+    with patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False)), \
+         patch("hallederiz_kadir.caller._kdv_record_failure"):
         result = run_async(call(
             model=model,
             messages=[{"role": "user", "content": "hello"}],
@@ -875,7 +875,7 @@ def test_call_timeout_returns_call_error(mock_litellm):
     assert result.retryable is True
 
 
-@patch("talking_layer.caller.litellm")
+@patch("hallederiz_kadir.caller.litellm")
 def test_call_sets_api_key_for_local(mock_litellm):
     """Local models get api_key='sk-no-key'."""
     mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
@@ -895,7 +895,7 @@ def test_call_sets_api_key_for_local(mock_litellm):
     assert kwargs["api_key"] == "sk-no-key"
 
 
-@patch("talking_layer.caller.litellm")
+@patch("hallederiz_kadir.caller.litellm")
 def test_call_tools_set_tool_choice(mock_litellm):
     """When tools provided and model supports FC, tool_choice='auto'."""
     mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
@@ -917,7 +917,7 @@ def test_call_tools_set_tool_choice(mock_litellm):
     assert kwargs["tool_choice"] == "auto"
 
 
-@patch("talking_layer.caller.litellm")
+@patch("hallederiz_kadir.caller.litellm")
 def test_call_json_mode_fallback(mock_litellm):
     """When tools given but model lacks FC, falls back to json_mode."""
     mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
@@ -942,14 +942,14 @@ def test_call_json_mode_fallback(mock_litellm):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest packages/talking_layer/tests/test_caller.py -v`
+Run: `pytest packages/hallederiz_kadir/tests/test_caller.py -v`
 Expected: FAIL — `ImportError: cannot import name 'call'`
 
 - [ ] **Step 3: Implement caller.py**
 
 ```python
-# packages/talking_layer/src/talking_layer/caller.py
-"""Main call function — the talking layer's entry point.
+# packages/hallederiz_kadir/src/hallederiz_kadir/caller.py
+"""Main call function — HaLLederiz Kadir's entry point.
 
 Receives a ModelInfo + messages from the dispatcher and handles:
   - completion_kwargs building (sampling, api_base, api_key, tools)
@@ -981,10 +981,10 @@ litellm.request_timeout = 120
 def _get_logger():
     try:
         from src.infra.logging_config import get_logger
-        return get_logger("talking_layer")
+        return get_logger("hallederiz_kadir")
     except Exception:
         import logging
-        return logging.getLogger("talking_layer")
+        return logging.getLogger("hallederiz_kadir")
 
 
 def _get_dallama():
@@ -1137,8 +1137,8 @@ async def call(
 ) -> CallResult | CallError:
     """Execute an LLM call against a single model.
 
-    This is the talking layer's main entry point. The dispatcher calls this
-    once per candidate model. The talking layer handles everything from
+    This is HaLLederiz Kadir's main entry point. The dispatcher calls this
+    once per candidate model. The HaLLederiz Kadir handles everything from
     building the litellm kwargs to returning a parsed result.
 
     Args:
@@ -1400,8 +1400,8 @@ async def call(
 - [ ] **Step 4: Update __init__.py to export call**
 
 ```python
-# packages/talking_layer/src/talking_layer/__init__.py
-"""Talking Layer — LLM call execution hub."""
+# packages/hallederiz_kadir/src/hallederiz_kadir/__init__.py
+"""HaLLederiz Kadir — LLM call execution hub."""
 
 from .types import CallResult, CallError
 from .caller import call
@@ -1411,24 +1411,24 @@ __all__ = ["call", "CallResult", "CallError"]
 
 - [ ] **Step 5: Run tests**
 
-Run: `pytest packages/talking_layer/tests/test_caller.py -v`
+Run: `pytest packages/hallederiz_kadir/tests/test_caller.py -v`
 Expected: All PASS
 
-- [ ] **Step 6: Run all talking layer tests**
+- [ ] **Step 6: Run all HaLLederiz Kadir tests**
 
-Run: `pytest packages/talking_layer/tests/ -v`
+Run: `pytest packages/hallederiz_kadir/tests/ -v`
 Expected: All PASS
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add packages/talking_layer/
-git commit -m "feat(talking_layer): main call() function — local/cloud routing, streaming, quality"
+git add packages/hallederiz_kadir/
+git commit -m "feat(hallederiz_kadir): main call() function — local/cloud routing, streaming, quality"
 ```
 
 ---
 
-## Task 5: Wire Dispatcher to Talking Layer
+## Task 5: Wire Dispatcher to HaLLederiz Kadir
 
 **Files:**
 - Modify: `src/core/llm_dispatcher.py`
@@ -1453,7 +1453,7 @@ async def _route_main_work(
     """Route a MAIN_WORK call. Can trigger model swaps."""
     from src.core.router import select_model, ModelCallFailed
     from src.models.model_registry import get_registry
-    from talking_layer import call as talker_call, CallResult, CallError
+    from hallederiz_kadir import call as talker_call, CallResult, CallError
     import copy
 
     timeout = self._compute_timeout(CallCategory.MAIN_WORK, reqs)
@@ -1482,7 +1482,7 @@ async def _route_main_work(
         # ── Prepare messages ──
         prepared = self._prepare_messages(messages, model)
 
-        # ── Call via talking layer ──
+        # ── Call via HaLLederiz Kadir ──
         result = await talker_call(
             model=model,
             messages=prepared,
@@ -1514,7 +1514,7 @@ async def _route_main_work(
     )
 ```
 
-- [ ] **Step 2: Add _route_overhead using talking layer**
+- [ ] **Step 2: Add _route_overhead using HaLLederiz Kadir**
 
 Replace `_route_overhead` (lines 272-338) similarly:
 
@@ -1527,7 +1527,7 @@ async def _route_overhead(
 ) -> dict:
     """Route an OVERHEAD call. CANNOT trigger model swaps."""
     from src.core.router import ModelCallFailed
-    from talking_layer import call as talker_call, CallResult, CallError
+    from hallederiz_kadir import call as talker_call, CallResult, CallError
 
     timeout = self._compute_timeout(CallCategory.OVERHEAD, reqs)
 
@@ -1730,19 +1730,19 @@ def _result_to_dict(self, result: "CallResult", scored, reqs) -> dict:
     }
 ```
 
-- [ ] **Step 4: Import _classify_error_category from talking layer**
+- [ ] **Step 4: Import _classify_error_category from HaLLederiz Kadir**
 
 Add at the top of dispatcher (lazy import pattern):
 
 ```python
 def _classify_error_category(error: str) -> str:
-    from talking_layer.retry import classify_error
+    from hallederiz_kadir.retry import classify_error
     return classify_error(error)
 ```
 
 - [ ] **Step 5: Remove old call_model imports from dispatcher**
 
-Remove the two `from src.core.router import call_model` lines (current lines 230 and 301) since they're replaced by `talking_layer.call`.
+Remove the two `from src.core.router import call_model` lines (current lines 230 and 301) since they're replaced by `hallederiz_kadir.call`.
 
 - [ ] **Step 6: Run existing dispatcher tests**
 
@@ -1753,7 +1753,7 @@ Expected: Tests that mock `src.core.router.call_model` will need patch path upda
 
 ```bash
 git add src/core/llm_dispatcher.py
-git commit -m "feat(dispatcher): absorb candidate iteration, call via talking layer"
+git commit -m "feat(dispatcher): absorb candidate iteration, call via HaLLederiz Kadir"
 ```
 
 ---
@@ -1796,18 +1796,18 @@ async def call_model(
 
 - [ ] **Step 2: Remove extracted code from router**
 
-Remove these functions/code that now live in the talking layer:
+Remove these functions/code that now live in HaLLederiz Kadir:
 - `_stream_with_accumulator()` (lines 43-93)
 - `_extract_thinking()` (lines 1628-1638)
 - `_classify_error_category()` (lines 1602-1623)
 - The `litellm` import and configuration (lines 32-41)
-- The `ModelCallFailed` class (lines 17-29) — move to talking layer types or keep as re-export
+- The `ModelCallFailed` class (lines 17-29) — move to HaLLederiz Kadir types or keep as re-export
 
-Keep `ModelCallFailed` as a re-export from talking layer for backward compatibility:
+Keep `ModelCallFailed` as a re-export from HaLLederiz Kadir for backward compatibility:
 
 ```python
 # At top of router.py, after removing litellm import:
-from talking_layer.retry import classify_error as _classify_error_category  # shim
+from hallederiz_kadir.retry import classify_error as _classify_error_category  # shim
 
 
 class ModelCallFailed(RuntimeError):
@@ -1855,15 +1855,15 @@ git commit -m "refactor(router): replace call_model with dispatcher shim, remove
 ## Task 7: Integration Test
 
 **Files:**
-- Create: `tests/test_talking_layer_integration.py`
+- Create: `tests/test_hallederiz_kadir_integration.py`
 
-End-to-end test that verifies the full pipeline: dispatcher → talking layer → mocked litellm.
+End-to-end test that verifies the full pipeline: dispatcher → HaLLederiz Kadir → mocked litellm.
 
 - [ ] **Step 1: Write integration test**
 
 ```python
-# tests/test_talking_layer_integration.py
-"""Integration test: dispatcher → talking layer → mocked litellm.
+# tests/test_hallederiz_kadir_integration.py
+"""Integration test: dispatcher → HaLLederiz Kadir → mocked litellm.
 
 Verifies the full call pipeline works end-to-end without a real LLM.
 """
@@ -1936,14 +1936,14 @@ def _make_scored(model):
     return scored
 
 
-@patch("talking_layer.caller.litellm")
-@patch("talking_layer.caller._kdv_pre_call", return_value=(True, 0.0, False))
-@patch("talking_layer.caller._kdv_post_call")
-@patch("talking_layer.caller._record_metrics")
-@patch("talking_layer.caller._record_audit", new_callable=AsyncMock)
+@patch("hallederiz_kadir.caller.litellm")
+@patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False))
+@patch("hallederiz_kadir.caller._kdv_post_call")
+@patch("hallederiz_kadir.caller._record_metrics")
+@patch("hallederiz_kadir.caller._record_audit", new_callable=AsyncMock)
 def test_full_pipeline_cloud(mock_audit, mock_metrics, mock_kdv_post,
                               mock_kdv_pre, mock_litellm):
-    """Full pipeline: dispatcher → talking layer → cloud model."""
+    """Full pipeline: dispatcher → HaLLederiz Kadir → cloud model."""
     mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
     mock_litellm.completion_cost = MagicMock(return_value=0.001)
 
@@ -1992,7 +1992,7 @@ def test_full_pipeline_cloud(mock_audit, mock_metrics, mock_kdv_post,
 
 - [ ] **Step 2: Run integration test**
 
-Run: `pytest tests/test_talking_layer_integration.py -v`
+Run: `pytest tests/test_hallederiz_kadir_integration.py -v`
 Expected: PASS
 
 - [ ] **Step 3: Run full test suite**
@@ -2003,8 +2003,8 @@ Expected: All tests pass.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add tests/test_talking_layer_integration.py
-git commit -m "test(talking_layer): integration test — full dispatcher → talking layer pipeline"
+git add tests/test_hallederiz_kadir_integration.py
+git commit -m "test(hallederiz_kadir): integration test — full dispatcher → HaLLederiz Kadir pipeline"
 ```
 
 ---
@@ -2016,7 +2016,7 @@ git commit -m "test(talking_layer): integration test — full dispatcher → tal
 
 - [ ] **Step 1: Update system layers diagram**
 
-In `docs/architecture-modularization.md`, update the System Layers diagram to include the talking layer:
+In `docs/architecture-modularization.md`, update the System Layers diagram to include HaLLederiz Kadir:
 
 ```
 Telegram / API
@@ -2025,7 +2025,7 @@ Telegram / API
        │
   LLM Dispatcher ─── candidate iteration, swap budget, model selection (via Router)
        │
-  Talking Layer ─── litellm call, streaming, retry, quality check, metrics
+  HaLLederiz Kadir ─── litellm call, streaming, retry, quality check, metrics
        │
   ┌────┴────┐
   │         │
@@ -2037,15 +2037,15 @@ llama-server
 
 - [ ] **Step 2: Update extracted packages table**
 
-Add the talking layer to the Extracted Packages table:
+Add HaLLederiz Kadir to the Extracted Packages table:
 
 ```markdown
-| **talking_layer** | LLM call execution hub: litellm, streaming, retries, quality | `packages/talking_layer/` | New | litellm, dogru_mu_samet |
+| **hallederiz_kadir** | LLM call execution hub: litellm, streaming, retries, quality | `packages/hallederiz_kadir/` | New | litellm, dogru_mu_samet |
 ```
 
 - [ ] **Step 3: Update data flow section**
 
-Update the "Data Flow: Local LLM Call" section to show the talking layer:
+Update the "Data Flow: Local LLM Call" section to show HaLLederiz Kadir:
 
 ```
 Agent needs LLM call
@@ -2062,11 +2062,11 @@ Agent needs LLM call
 
 - [ ] **Step 4: Update "What Agents Need to Know" section**
 
-Add a talking layer entry:
+Add a HaLLederiz Kadir entry:
 
 ```markdown
 **If you're fixing an LLM call error (timeout, retry, streaming, response parsing):**
-The real logic is in `packages/talking_layer/src/talking_layer/`. The caller in dispatcher just iterates candidates. Don't touch dispatcher or router for call execution bugs — fix the talking layer.
+The real logic is in `packages/hallederiz_kadir/src/hallederiz_kadir/`. The caller in dispatcher just iterates candidates. Don't touch dispatcher or router for call execution bugs — fix HaLLederiz Kadir.
 ```
 
 - [ ] **Step 5: Update "Don't Extract" table**
@@ -2074,14 +2074,14 @@ The real logic is in `packages/talking_layer/src/talking_layer/`. The caller in 
 Change the LLM Router / Dispatcher entry to clarify the split:
 
 ```markdown
-| LLM Router / Dispatcher | Router: 15-dimension scoring is KutAI-shaped. Dispatcher: swap budget + candidate orchestration is KutAI-shaped. Call execution extracted to talking_layer. |
+| LLM Router / Dispatcher | Router: 15-dimension scoring is KutAI-shaped. Dispatcher: swap budget + candidate orchestration is KutAI-shaped. Call execution extracted to hallederiz_kadir. |
 ```
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add docs/architecture-modularization.md
-git commit -m "docs: update architecture for talking layer extraction"
+git commit -m "docs: update architecture for HaLLederiz Kadir extraction"
 ```
 
 ---
@@ -2094,7 +2094,7 @@ git commit -m "docs: update architecture for talking layer extraction"
 | 2 | Response parsing module | ~120 lines |
 | 3 | Error classification + retry | ~130 lines |
 | 4 | Main caller module | ~280 lines |
-| 5 | Wire dispatcher to talking layer | ~200 lines changed |
+| 5 | Wire dispatcher to HaLLederiz Kadir | ~200 lines changed |
 | 6 | Router shim + cleanup | ~600 lines removed |
 | 7 | Integration test | ~120 lines |
 | 8 | Documentation update | ~50 lines changed |

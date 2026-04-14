@@ -3,8 +3,8 @@ import sys, os, asyncio
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from unittest.mock import AsyncMock
-from talking_layer.retry import classify_error, execute_with_retry
-from talking_layer.types import CallError
+from hallederiz_kadir.retry import classify_error, execute_with_retry
+from hallederiz_kadir.types import CallError
 
 
 def test_classify_timeout():

@@ -158,9 +158,9 @@ def _make_fake_scored(name="model-a", litellm_name="openai/model-a", is_local=Fa
 
 
 def _make_fake_call_result(content="ok", model="openai/model-a", model_name="model-a"):
-    """Create a fake talking_layer.CallResult."""
-    import talking_layer
-    return talking_layer.CallResult(
+    """Create a fake hallederiz_kadir.CallResult."""
+    import hallederiz_kadir
+    return hallederiz_kadir.CallResult(
         content=content,
         tool_calls=None,
         thinking=None,
@@ -221,7 +221,7 @@ class TestLLMDispatcherRouting(unittest.TestCase):
                    return_value=[fake_scored]), \
              patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
                    side_effect=lambda msgs, m: msgs), \
-             patch("talking_layer.call", mock_tl_call):
+             patch("hallederiz_kadir.call", mock_tl_call):
 
             from src.core.llm_dispatcher import CallCategory
             result = run_async(dispatcher.request(
@@ -230,7 +230,7 @@ class TestLLMDispatcherRouting(unittest.TestCase):
                 messages=messages,
             ))
 
-        # talking_layer.call was invoked once
+        # hallederiz_kadir.call was invoked once
         self.assertTrue(mock_tl_call.called)
         self.assertEqual(mock_tl_call.call_count, 1)
         # Result has content from the fake result
@@ -253,7 +253,7 @@ class TestLLMDispatcherRouting(unittest.TestCase):
                    return_value=[fake_scored]), \
              patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
                    side_effect=lambda msgs, m: msgs), \
-             patch("talking_layer.call", mock_tl_call):
+             patch("hallederiz_kadir.call", mock_tl_call):
 
             from src.core.llm_dispatcher import CallCategory
             result = run_async(dispatcher.request(
@@ -262,13 +262,13 @@ class TestLLMDispatcherRouting(unittest.TestCase):
                 messages=messages,
             ))
 
-        # talking_layer.call invoked — cloud model was used
+        # hallederiz_kadir.call invoked — cloud model was used
         self.assertTrue(mock_tl_call.called)
         self.assertEqual(mock_tl_call.call_count, 1)
 
     # ── MAIN_WORK routing ──
 
-    # 16. MAIN_WORK calls talking_layer.call normally
+    # 16. MAIN_WORK calls hallederiz_kadir.call normally
     def test_dispatcher_main_work_passes_through(self):
         dispatcher = self._make_dispatcher()
         reqs = _make_reqs()
@@ -283,7 +283,7 @@ class TestLLMDispatcherRouting(unittest.TestCase):
                    return_value=[fake_scored]), \
              patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
                    side_effect=lambda msgs, m: msgs), \
-             patch("talking_layer.call", mock_tl_call):
+             patch("hallederiz_kadir.call", mock_tl_call):
 
             from src.core.llm_dispatcher import CallCategory
             result = run_async(dispatcher.request(
@@ -324,7 +324,7 @@ class TestLLMDispatcherRouting(unittest.TestCase):
                    side_effect=fake_select_candidates), \
              patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
                    side_effect=lambda msgs, m: msgs), \
-             patch("talking_layer.call", mock_tl_call):
+             patch("hallederiz_kadir.call", mock_tl_call):
 
             from src.core.llm_dispatcher import CallCategory
             result = run_async(dispatcher.request(
@@ -351,7 +351,7 @@ class TestLLMDispatcherRouting(unittest.TestCase):
                    side_effect=lambda msgs, m: msgs), \
              patch("src.core.llm_dispatcher.LLMDispatcher._exclude_unloaded_local",
                    side_effect=lambda r: r), \
-             patch("talking_layer.call", mock_tl_call):
+             patch("hallederiz_kadir.call", mock_tl_call):
 
             from src.core.llm_dispatcher import CallCategory
 
@@ -417,7 +417,7 @@ class TestLLMDispatcherIntegration(unittest.TestCase):
                    return_value=[fake_scored]), \
              patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
                    side_effect=lambda msgs, m: msgs), \
-             patch("talking_layer.call", mock_tl_call):
+             patch("hallederiz_kadir.call", mock_tl_call):
 
             # Patch ensure_model via the module that would be imported
             with patch.dict("sys.modules", {
@@ -560,7 +560,7 @@ class TestColdStartWait(unittest.TestCase):
                    return_value=[fake_scored]), \
              patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
                    side_effect=lambda msgs, m: msgs), \
-             patch("talking_layer.call", mock_tl_call):
+             patch("hallederiz_kadir.call", mock_tl_call):
 
             from src.core.llm_dispatcher import CallCategory
             result = run_async(dispatcher.request(
@@ -592,7 +592,7 @@ class TestColdStartWait(unittest.TestCase):
         mock_mgr.swap_started_at = 1.0
         mock_mgr.current_model = None
 
-        import talking_layer as _tl
+        import hallederiz_kadir as _tl
         mock_tl_call = AsyncMock(return_value=_tl.CallError(
             category="no_model", message="no models", retryable=False))
 
@@ -606,7 +606,7 @@ class TestColdStartWait(unittest.TestCase):
                    return_value=[_make_fake_scored()]), \
              patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
                    side_effect=lambda msgs, m: msgs), \
-             patch("talking_layer.call", mock_tl_call), \
+             patch("hallederiz_kadir.call", mock_tl_call), \
              patch("src.core.llm_dispatcher._COLD_START_WAIT_TIMEOUT", 0.3), \
              patch("src.core.llm_dispatcher._COLD_START_POLL_INTERVAL", 0.1):
 
@@ -651,7 +651,7 @@ class TestColdStartWait(unittest.TestCase):
                    return_value=[fake_scored]), \
              patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
                    side_effect=lambda msgs, m: msgs), \
-             patch("talking_layer.call", mock_tl_call):
+             patch("hallederiz_kadir.call", mock_tl_call):
 
             from src.core.llm_dispatcher import CallCategory
             result = run_async(dispatcher.request(
@@ -683,7 +683,7 @@ class TestColdStartWait(unittest.TestCase):
         mock_mgr.swap_started_at = 0.0  # nothing loading
         mock_mgr.current_model = None
 
-        import talking_layer as _tl
+        import hallederiz_kadir as _tl
         mock_tl_call = AsyncMock(return_value=_tl.CallError(
             category="no_model", message="no models", retryable=False))
 
@@ -697,7 +697,7 @@ class TestColdStartWait(unittest.TestCase):
                    return_value=[_make_fake_scored()]), \
              patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
                    side_effect=lambda msgs, m: msgs), \
-             patch("talking_layer.call", mock_tl_call):
+             patch("hallederiz_kadir.call", mock_tl_call):
 
             from src.core.llm_dispatcher import CallCategory
             with self.assertRaises(RuntimeError):

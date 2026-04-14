@@ -1,4 +1,4 @@
-"""Integration test: dispatcher → talking layer → mocked litellm."""
+"""Integration test: dispatcher → HaLLederiz Kadir → mocked litellm."""
 import asyncio, sys, os
 from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -85,14 +85,14 @@ def _make_reqs():
     return FakeReqs()
 
 
-@patch("talking_layer.caller.litellm")
-@patch("talking_layer.caller._kdv_pre_call", return_value=(True, 0.0, False))
-@patch("talking_layer.caller._kdv_post_call")
-@patch("talking_layer.caller._record_metrics")
-@patch("talking_layer.caller._record_audit", new_callable=AsyncMock)
+@patch("hallederiz_kadir.caller.litellm")
+@patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False))
+@patch("hallederiz_kadir.caller._kdv_post_call")
+@patch("hallederiz_kadir.caller._record_metrics")
+@patch("hallederiz_kadir.caller._record_audit", new_callable=AsyncMock)
 def test_full_pipeline_cloud(mock_audit, mock_metrics, mock_kdv_post,
                               mock_kdv_pre, mock_litellm):
-    """Full pipeline: dispatcher → talking layer → cloud model."""
+    """Full pipeline: dispatcher → HaLLederiz Kadir → cloud model."""
     mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
     mock_litellm.completion_cost = MagicMock(return_value=0.001)
 
@@ -116,15 +116,15 @@ def test_full_pipeline_cloud(mock_audit, mock_metrics, mock_kdv_post,
     assert result["capability_score"] == 7.2
 
 
-@patch("talking_layer.caller.litellm")
-@patch("talking_layer.caller._kdv_pre_call", return_value=(True, 0.0, False))
-@patch("talking_layer.caller._kdv_post_call")
-@patch("talking_layer.caller._record_metrics")
-@patch("talking_layer.caller._record_audit", new_callable=AsyncMock)
+@patch("hallederiz_kadir.caller.litellm")
+@patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False))
+@patch("hallederiz_kadir.caller._kdv_post_call")
+@patch("hallederiz_kadir.caller._record_metrics")
+@patch("hallederiz_kadir.caller._record_audit", new_callable=AsyncMock)
 def test_full_pipeline_fallback_on_error(mock_audit, mock_metrics, mock_kdv_post,
                                           mock_kdv_pre, mock_litellm):
     """First candidate fails, second succeeds."""
-    from talking_layer.types import CallError
+    from hallederiz_kadir.types import CallError
 
     mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
     mock_litellm.completion_cost = MagicMock(return_value=0.001)
@@ -144,7 +144,7 @@ def test_full_pipeline_fallback_on_error(mock_audit, mock_metrics, mock_kdv_post
     original_call = None
 
     # Grab the real call before patching so we can delegate to it on success
-    from talking_layer.caller import call as _real_call
+    from hallederiz_kadir.caller import call as _real_call
 
     async def mock_talker_call(model, messages, tools, timeout, task, needs_thinking, estimated_output_tokens=1000):
         call_count[0] += 1
@@ -157,7 +157,7 @@ def test_full_pipeline_fallback_on_error(mock_audit, mock_metrics, mock_kdv_post
 
     with patch.object(dispatcher, "_select_candidates", return_value=[scored1, scored2]), \
          patch.object(dispatcher, "_prepare_messages", return_value=[{"role": "user", "content": "test"}]), \
-         patch("talking_layer.call", side_effect=mock_talker_call):
+         patch("hallederiz_kadir.call", side_effect=mock_talker_call):
         result = run_async(dispatcher.request(
             category=CallCategory.MAIN_WORK,
             reqs=reqs,

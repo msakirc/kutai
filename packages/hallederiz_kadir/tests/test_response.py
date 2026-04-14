@@ -3,7 +3,7 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from unittest.mock import MagicMock
-from talking_layer.response import parse_response
+from hallederiz_kadir.response import parse_response
 
 
 def _make_response(content="hello", tool_calls=None, reasoning_content=None,

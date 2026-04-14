@@ -15,7 +15,7 @@ Telegram / API
        │
   LLM Dispatcher ─── candidate iteration, swap budget, model selection (via Router)
        │
-  Talking Layer ─── litellm call, streaming, retry, quality check, metrics
+  HaLLederiz Kadir ── litellm call, streaming, retry, quality check, metrics
        │
   ┌────┴────┐
   │         │
@@ -27,13 +27,13 @@ llama-server
 
 **Orchestrator** reads the task queue, picks next task. Does NOT select models.
 
-**Dispatcher** picks the best model via Router scoring, iterates candidates, manages swap budget. Calls Talking Layer per candidate.
+**Dispatcher** picks the best model via Router scoring, iterates candidates, manages swap budget. Calls HaLLederiz Kadir per candidate.
 
 **DaLLaMa** manages the llama-server process. Start, stop, swap, health, idle unload. Three methods: `infer(config)`, `keep_alive()`, `status`. Does NOT select models, route calls, or manage cloud.
 
 **Router** scores models using 15-dimension capability vectors, selects best candidate. Pure scoring, no I/O.
 
-**Talking Layer** executes LLM calls via litellm — builds completion kwargs, manages streaming, retries, response parsing, quality checks (via Doğru mu Samet), and metrics recording.
+**HaLLederiz Kadir** executes LLM calls via litellm — builds completion kwargs, manages streaming, retries, response parsing, quality checks (via Doğru mu Samet), and metrics recording.
 
 **Registry** knows all models (local GGUFs + cloud providers). Builds `ServerConfig` for DaLLaMa from `ModelInfo`.
 
@@ -44,11 +44,11 @@ Agent needs LLM call
   → Dispatcher.request(messages, MAIN_WORK)
     → Router scores models, picks "qwen3-30b"
     → Dispatcher: ensure_model via DaLLaMa, prepare messages
-    → TalkingLayer.call(model, messages, ...)
+    → HallederizKadir.call(model, messages, ...)
        → DaLLaMa.infer() → GPU acquire → endpoint URL
        → litellm.acompletion(api_base=url, ...)
        → Parse response, quality check, metrics
-    → Response flows back: TalkingLayer → Dispatcher → Agent
+    → Response flows back: HaLLederiz Kadir → Dispatcher → Agent
   → DaLLaMa marks inference done, resets idle timer
 ```
 
@@ -63,7 +63,7 @@ Agent needs LLM call
 | **dallama** | Async llama-server process manager | `packages/dallama/` | Stable v0.1.0 | httpx |
 | **nerd_herd** | Observability: GPU, VRAM budget, health, inference metrics, Prometheus | `packages/nerd_herd/` | Stable v0.1.0 | yazbunu, pynvml, psutil, prometheus_client, aiohttp |
 | **kuleden_donen_var** | Cloud provider capacity tracker: rate limits, quotas, circuit breakers | `packages/kuleden_donen_var/` | Stable v0.1.0 | None |
-| **talking_layer** | LLM call execution hub: litellm, streaming, retries, quality | `packages/talking_layer/` | New v0.1.0 | litellm |
+| **hallederiz_kadir** | LLM call execution hub: litellm, streaming, retries, quality | `packages/hallederiz_kadir/` | New v0.1.0 | litellm |
 
 All packages: `packages/<name>/`, src layout, editable install via requirements.txt. Original module becomes a thin shim preserving all import paths.
 
@@ -115,7 +115,7 @@ DaLLaMa's `swap.py` is designed for future migration — swap strategy changes f
 
 | Component | Why |
 |-----------|-----|
-| LLM Router / Dispatcher | Router: 15-dimension scoring is KutAI-shaped. Dispatcher: swap budget + candidate orchestration is KutAI-shaped. Call execution extracted to talking_layer. |
+| LLM Router / Dispatcher | Router: 15-dimension scoring is KutAI-shaped. Dispatcher: swap budget + candidate orchestration is KutAI-shaped. Call execution extracted to hallederiz_kadir. |
 | ReAct Agent Framework | Crowded space (LangGraph, CrewAI). Heavy refactor, marginal value. |
 | Workflow Engine | Coupled to DB, blackboard, tools. Not separable. |
 | Skills System | Coupled to DB persistence and learning loop. |
@@ -175,7 +175,7 @@ Future registry extraction should align with LiteLLM's field vocabulary.
 | `src/core/llm_dispatcher.py` | Routing policy, swap budget |
 | `src/core/router.py` | Model selection (pure scoring, no I/O) |
 | `docs/superpowers/specs/2026-04-12-dallama-design.md` | DaLLaMa design spec |
-| `packages/talking_layer/` | Talking Layer package (4 modules + tests) |
+| `packages/hallederiz_kadir/` | HaLLederiz Kadir package (4 modules + tests) |
 | `docs/extraction/extraction_report_v2.md` | Extraction decisions and status |
 
 ## What Agents Need to Know
@@ -196,7 +196,7 @@ The real logic is in `packages/nerd_herd/src/nerd_herd/`. The shims in `src/mode
 The real logic is in `packages/kuleden_donen_var/src/kuleden_donen_var/`. The shims in `src/models/rate_limiter.py` and `src/models/header_parser.py` just delegate. Don't edit the shims for cloud capacity bugs — fix Kuleden Dönen Var.
 
 **If you're fixing an LLM call error (timeout, retry, streaming, response parsing):**
-The real logic is in `packages/talking_layer/src/talking_layer/`. The caller in dispatcher just iterates candidates. Don't touch dispatcher or router for call execution bugs — fix the talking layer.
+The real logic is in `packages/hallederiz_kadir/src/hallederiz_kadir/`. The caller in dispatcher just iterates candidates. Don't touch dispatcher or router for call execution bugs — fix HaLLederiz Kadir.
 
 **If you're adding a new package:**
 Follow the convention: `packages/<name>/`, src layout, pyproject.toml, editable install. Original module becomes a shim. Preserve all import paths.

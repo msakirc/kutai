@@ -9,7 +9,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 - **Agents**: `src/agents/` — base.py (ReAct loop), specialized agents (coder, researcher, planner, etc.)
 - **LLM routing**: `src/core/router.py` — pure model scoring (15-dimension capability vectors), no I/O
 - **LLM dispatch**: `src/core/llm_dispatcher.py` — candidate iteration, swap budget, model selection policy
-- **LLM execution**: `packages/talking_layer/` — litellm calls, streaming, retries, response parsing, quality checks
+- **LLM execution**: `packages/hallederiz_kadir/` (HaLLederiz Kadir) — litellm calls, streaming, retries, response parsing, quality checks
 - **Model management**: `src/models/local_model_manager.py` — manages llama-server lifecycle
 - **Database**: SQLite via `src/infra/db.py` (aiosqlite, WAL mode)
 - **Vector store**: ChromaDB via `src/memory/vector_store.py`
@@ -59,7 +59,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 
 ### LLM Dispatch & Model Routing
 - **All LLM calls go through `LLMDispatcher`** (`src/core/llm_dispatcher.py`) — NEVER call `call_model()` directly from agents, classifiers, or graders
-- **Three layers**: Dispatcher (policy + candidate iteration) → Router (pure scoring) → Talking Layer (litellm execution). `call_model()` is a legacy shim that routes through dispatcher.
+- **Three layers**: Dispatcher (policy + candidate iteration) → Router (pure scoring) → HaLLederiz Kadir (litellm execution). `call_model()` is a legacy shim that routes through dispatcher.
 - Two call categories: `MAIN_WORK` (agent execution, can trigger model swaps) and `OVERHEAD` (classifier, grader, self-reflection — CANNOT trigger swaps, uses loaded model or cloud)
 - **Deferred grading**: Non-urgent tasks (priority < 8) defer grading to `GradeQueue` instead of swapping models. Grading happens when: model naturally swaps for main work, cloud has headroom, or queue exceeds threshold
 - **Proactive GPU loading**: If queue has ANY tasks a local model can handle, load one — don't wait for local_only/prefer_local flags. Local inference is free.
@@ -79,7 +79,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 - **Datetime format for scheduled_tasks**: NEVER use `datetime.isoformat()` when storing to `scheduled_tasks.next_run` or `last_run` — use `strftime("%Y-%m-%d %H:%M:%S")` because SQLite's `datetime('now')` returns space-separated format. ISO format (with `T`) causes string comparison failures.
 - **Shopping agents must NOT have file tools**: `shopping_advisor`, `product_researcher`, and `deal_analyst` must NOT have `read_file`, `write_file`, or `file_tree` in their `allowed_tools` — these cause the LLM to waste iterations browsing the filesystem instead of searching products.
 - **Never call `call_model()` directly** — always use `LLMDispatcher.request()`. `call_model()` is a legacy shim; direct calls bypass swap protection, quota management, and deferred grading.
-- **LLM call bugs go to `packages/talking_layer/`** — timeout, retry, streaming, response parsing, quality check issues live there. Don't touch router or dispatcher for call execution bugs.
+- **LLM call bugs go to `packages/hallederiz_kadir/`** — timeout, retry, streaming, response parsing, quality check issues live there. Don't touch router or dispatcher for call execution bugs.
 - **`shopping_advisor` task profile** must exist in `TASK_PROFILES` (capabilities.py) — without it, shopping tasks fall back to a flat adhoc profile with bad scoring.
 - **Never pass `--n-gpu-layers` to llama-server** — it overrides `--fit` (default-on since v8000+). `--fit` auto-calculates optimal GPU layer allocation. Forcing `--n-gpu-layers 99` causes VRAM thrashing for models that don't fully fit (e.g. Apriel 8.7GB on 8GB GPU: 3.7→6.8 tok/s). Only pass `--n-gpu-layers` when `models.yaml` has an explicit `gpu_layers` override.
 
@@ -106,8 +106,8 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 | `src/app/telegram_bot.py` | All Telegram UI — commands, buttons, callbacks |
 | `src/core/orchestrator.py` | Main loop, task processing, agent dispatch |
 | `src/core/router.py` | Pure model scoring — 15-dimension capability vectors, no I/O |
-| `src/core/llm_dispatcher.py` | LLM call coordinator — candidate iteration, swap budget, calls talking layer |
-| `packages/talking_layer/` | LLM call execution hub — litellm, streaming, retries, quality checks |
+| `src/core/llm_dispatcher.py` | LLM call coordinator — candidate iteration, swap budget, calls HaLLederiz Kadir |
+| `packages/hallederiz_kadir/` | HaLLederiz Kadir — LLM call execution hub: litellm, streaming, retries, quality checks |
 | `docs/orchestrator-xray.md` | Architecture X-ray: routing, concurrency, resource management |
 | `src/agents/base.py` | ReAct agent loop, tool execution, context building |
 | `src/infra/db.py` | Database schema, queries, memory storage |

@@ -76,9 +76,9 @@ class TestRecordModelCallUnified(unittest.TestCase):
     def test_router_uses_renamed_function(self):
         """router.py call_model is now a dispatcher shim — no direct litellm calls.
 
-        After the talking-layer migration, router.py no longer calls litellm or
+        After the HaLLederiz Kadir migration, router.py no longer calls litellm or
         track_model_call_metrics directly. Instead call_model() delegates to
-        LLMDispatcher.request() which routes through the talking layer package.
+        LLMDispatcher.request() which routes through HaLLederiz Kadir.
         """
         source = _read_source("src/core/router.py")
         # Old litellm alias must be gone

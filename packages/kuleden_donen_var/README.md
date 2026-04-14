@@ -181,7 +181,7 @@ Ismi havaalanlarindaki "kuleden donen var" anonsu gibidir: bir ucak piste inmek 
 
 - Model kesfetmez (registry'nin isi)
 - Model secmez (router'in isi)
-- LLM cagrisi yapmaz (talking layer'in isi)
+- LLM cagrisi yapmaz (HaLLederiz Kadir'in isi)
 - Yerel model yonetmez (DaLLaMa'nin isi)
 
 ### Kullanim

@@ -1,4 +1,4 @@
-"""Result and error types for the talking layer."""
+"""Result and error types for HaLLederiz Kadir."""
 from __future__ import annotations
 from dataclasses import dataclass
 

@@ -3,8 +3,8 @@ import sys, os, asyncio
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from unittest.mock import AsyncMock, MagicMock, patch
-from talking_layer.caller import call
-from talking_layer.types import CallResult, CallError
+from hallederiz_kadir.caller import call
+from hallederiz_kadir.types import CallResult, CallError
 
 
 def run_async(coro):
@@ -63,13 +63,13 @@ def _local_patches():
     resp = _make_litellm_response()
     return (
         resp,
-        patch("talking_layer.caller._get_dallama", return_value=None),
-        patch("talking_layer.caller._stream_with_accumulator",
+        patch("hallederiz_kadir.caller._get_dallama", return_value=None),
+        patch("hallederiz_kadir.caller._stream_with_accumulator",
               new_callable=AsyncMock, return_value=resp),
     )
 
 
-@patch("talking_layer.caller.litellm")
+@patch("hallederiz_kadir.caller.litellm")
 def test_call_local_success(mock_litellm):
     """Local model call succeeds — returns CallResult."""
     resp, p_dallama, p_stream = _local_patches()
@@ -84,15 +84,15 @@ def test_call_local_success(mock_litellm):
     assert result.cost == 0.0
 
 
-@patch("talking_layer.caller.litellm")
+@patch("hallederiz_kadir.caller.litellm")
 def test_call_cloud_success(mock_litellm):
     """Cloud model call succeeds — uses KDV pre/post."""
     mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
     model = _make_model_info(is_local=False, litellm_name="groq/llama-8b",
                              name="llama-8b", location="cloud", provider="groq", api_base=None)
-    with patch("talking_layer.caller._kdv_pre_call", return_value=(True, 0.0, False)), \
-         patch("talking_layer.caller._kdv_post_call"), \
-         patch("talking_layer.caller.litellm.completion_cost", return_value=0.001):
+    with patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False)), \
+         patch("hallederiz_kadir.caller._kdv_post_call"), \
+         patch("hallederiz_kadir.caller.litellm.completion_cost", return_value=0.001):
         result = run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],
                                tools=None, timeout=60.0, task="executor",
                                needs_thinking=False, estimated_output_tokens=500))
@@ -101,14 +101,14 @@ def test_call_cloud_success(mock_litellm):
     assert result.provider == "groq"
 
 
-@patch("talking_layer.caller.litellm")
+@patch("hallederiz_kadir.caller.litellm")
 def test_call_timeout_returns_call_error(mock_litellm):
     """Timeout returns CallError with category='timeout'."""
     mock_litellm.acompletion = AsyncMock(side_effect=asyncio.TimeoutError)
     model = _make_model_info(is_local=False, litellm_name="groq/llama-8b",
                              location="cloud", provider="groq", api_base=None)
-    with patch("talking_layer.caller._kdv_pre_call", return_value=(True, 0.0, False)), \
-         patch("talking_layer.caller._kdv_record_failure"):
+    with patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False)), \
+         patch("hallederiz_kadir.caller._kdv_record_failure"):
         result = run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],
                                tools=None, timeout=1.0, task="executor",
                                needs_thinking=False, estimated_output_tokens=500))
@@ -117,7 +117,7 @@ def test_call_timeout_returns_call_error(mock_litellm):
     assert result.retryable is True
 
 
-@patch("talking_layer.caller.litellm")
+@patch("hallederiz_kadir.caller.litellm")
 def test_call_sets_api_key_for_local(mock_litellm):
     """Local models get api_key='sk-no-key' in completion_kwargs.
 
@@ -127,8 +127,8 @@ def test_call_sets_api_key_for_local(mock_litellm):
     """
     resp = _make_litellm_response()
     stream_mock = AsyncMock(return_value=resp)
-    with patch("talking_layer.caller._get_dallama", return_value=None), \
-         patch("talking_layer.caller._stream_with_accumulator", stream_mock):
+    with patch("hallederiz_kadir.caller._get_dallama", return_value=None), \
+         patch("hallederiz_kadir.caller._stream_with_accumulator", stream_mock):
         model = _make_model_info(is_local=True)
         run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],
                        tools=None, timeout=60.0, task="executor",
@@ -138,8 +138,8 @@ def test_call_sets_api_key_for_local(mock_litellm):
     assert kwargs["api_key"] == "sk-no-key"
 
 
-@patch("talking_layer.caller._get_dallama", return_value=None)
-@patch("talking_layer.caller.litellm")
+@patch("hallederiz_kadir.caller._get_dallama", return_value=None)
+@patch("hallederiz_kadir.caller.litellm")
 def test_call_tools_set_tool_choice(mock_litellm, mock_dallama):
     """When tools provided and model supports FC, tool_choice='auto'.
 
@@ -156,7 +156,7 @@ def test_call_tools_set_tool_choice(mock_litellm, mock_dallama):
     assert kwargs["tool_choice"] == "auto"
 
 
-@patch("talking_layer.caller.litellm")
+@patch("hallederiz_kadir.caller.litellm")
 def test_call_json_mode_fallback(mock_litellm):
     """When tools given but model lacks FC, falls back to json_mode.
 
@@ -164,8 +164,8 @@ def test_call_json_mode_fallback(mock_litellm):
     """
     resp = _make_litellm_response()
     stream_mock = AsyncMock(return_value=resp)
-    with patch("talking_layer.caller._get_dallama", return_value=None), \
-         patch("talking_layer.caller._stream_with_accumulator", stream_mock):
+    with patch("hallederiz_kadir.caller._get_dallama", return_value=None), \
+         patch("hallederiz_kadir.caller._stream_with_accumulator", stream_mock):
         model = _make_model_info(is_local=True, supports_function_calling=False, supports_json_mode=True)
         tools = [{"type": "function", "function": {"name": "search"}}]
         run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],

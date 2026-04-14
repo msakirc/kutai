@@ -1,4 +1,4 @@
-"""Main call function — the talking layer's entry point.
+"""Main call function — HaLLederiz Kadir's entry point.
 
 Receives a ModelInfo + messages from the dispatcher and handles:
   - completion_kwargs building (sampling, api_base, api_key, tools)
@@ -26,10 +26,10 @@ litellm.request_timeout = 120
 def _get_logger():
     try:
         from src.infra.logging_config import get_logger
-        return get_logger("talking_layer")
+        return get_logger("hallederiz_kadir")
     except Exception:
         import logging
-        return logging.getLogger("talking_layer")
+        return logging.getLogger("hallederiz_kadir")
 
 
 def _get_dallama():
@@ -109,7 +109,16 @@ def _check_quality(content):
 # ─── Streaming ─────────────────────────────────────────────────────────────
 
 async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
-    """Call litellm with streaming, accumulate content for partial recovery."""
+    """Call litellm with streaming, accumulate content for partial recovery.
+
+    Uses dogru_mu_samet's streaming callback to monitor for degenerate
+    repetition during generation and abort early.
+    """
+    from dogru_mu_samet.streaming import make_stream_callback
+    # Size capping is llama-server's job (ctx-size); we only watch for
+    # repetition / low-entropy degeneration during streaming.
+    _should_abort = make_stream_callback(max_size=200_000, check_interval=2000)
+
     completion_kwargs["stream"] = True
     chunks = []
     accumulated = ""
@@ -127,6 +136,14 @@ async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
             if chunk.choices[0].finish_reason:
                 finish_reason = chunk.choices[0].finish_reason
         chunks.append(chunk)
+
+        if _should_abort(accumulated):
+            _get_logger().warning(
+                "stream aborted: degenerate content detected "
+                f"at {len(accumulated)} chars"
+            )
+            finish_reason = "length"
+            break
 
     last = chunks[-1] if chunks else None
     resp = litellm.ModelResponse(
@@ -150,7 +167,7 @@ async def call(
 ) -> CallResult | CallError:
     """Execute an LLM call against a single model.
 
-    This is the talking layer's main entry point. The dispatcher calls this
+    This is HaLLederiz Kadir's main entry point. The dispatcher calls this
     once per candidate model.
 
     Args:
@@ -175,7 +192,13 @@ async def call(
             task, sampling_overrides=getattr(model, "sampling_overrides", None))
 
     # ── Max tokens ──
-    _max_tokens = min(estimated_output_tokens * 2, model.max_tokens)
+    # Local models: don't cap — llama-server enforces ctx-size naturally,
+    # and the post-execute hook summarizes long artifacts for downstream.
+    # Cloud models: cap to avoid runaway cost.
+    if is_local:
+        _max_tokens = None  # omit from request → server uses full context
+    else:
+        _max_tokens = min(estimated_output_tokens * 2, model.max_tokens)
 
     # ── HTTP timeout ──
     http_timeout = max(10.0, float(timeout) - 5.0)
@@ -183,8 +206,10 @@ async def call(
     # ── Build completion kwargs ──
     completion_kwargs = dict(
         model=model.litellm_name, messages=messages,
-        max_tokens=_max_tokens, timeout=http_timeout,
+        timeout=http_timeout,
     )
+    if _max_tokens is not None:
+        completion_kwargs["max_tokens"] = _max_tokens
 
     if sampling_params:
         for k, v in sampling_params.items():

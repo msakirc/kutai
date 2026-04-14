@@ -2,7 +2,7 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from talking_layer.types import CallResult, CallError
+from hallederiz_kadir.types import CallResult, CallError
 
 
 def test_call_result_construction():

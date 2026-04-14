@@ -12,7 +12,7 @@ Extracted from `src/models/rate_limiter.py`, `src/models/quota_planner.py`, `src
 
 - Does not discover cloud providers or available models (registry's job)
 - Does not select which model to use (router's job)
-- Does not make litellm calls (talking layer's job, future)
+- Does not make litellm calls (HaLLederiz Kadir's job)
 - Does not manage local models (DaLLaMa's job)
 
 ## Interface

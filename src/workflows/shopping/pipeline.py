@@ -202,9 +202,19 @@ async def _step_search_and_reviews(task: dict, artifacts: dict) -> str:
 
 
 async def _step_format(task: dict, artifacts: dict) -> str:
-    """Format search results into a Telegram-ready message."""
+    """Format search results into a Telegram-ready message.
+
+    If a 'recommendation' artifact exists (from the LLM synthesis step in
+    the full shopping workflow), use it directly — it's already a rich
+    text recommendation.  Otherwise fall back to formatting raw products.
+    """
     from src.shopping.output.summary import format_recommendation_summary
     from src.shopping.output.formatters import format_price
+
+    # Prefer the LLM-synthesized recommendation if available
+    recommendation = artifacts.get("recommendation", "")
+    if isinstance(recommendation, str) and len(recommendation.strip()) > 20:
+        return recommendation.strip()
 
     raw = artifacts.get("search_results", "{}")
     if isinstance(raw, str):

@@ -1,7 +1,9 @@
 # router.py
 """
-Model Router v2 — 15-dimension task-aware model selection,
-rate limiting, retries, cross-provider fallback, GPU-aware scheduling.
+Model Router — shim layer on top of fatih_hoca.
+select_model() is kept here (uses old registry API directly).
+ModelRequirements, ScoredModel, CAPABILITY_TO_TASK, AGENT_REQUIREMENTS
+are re-exported from fatih_hoca.requirements / fatih_hoca.ranking.
 """
 
 from __future__ import annotations
@@ -32,6 +34,15 @@ from src.models.quota_planner import get_quota_planner
 from src.models.capabilities import ALL_CAPABILITIES, Cap, TASK_PROFILES, \
   TaskRequirements as CapabilityTaskReqs, score_model_for_task
 from src.models.model_registry import ModelInfo, get_registry
+
+# ── Re-exports from fatih_hoca (preserves all existing import paths) ──────────
+from fatih_hoca.requirements import (  # noqa: F401
+    ModelRequirements,
+    CAPABILITY_TO_TASK,
+    AGENT_REQUIREMENTS,
+    _make_adhoc_profile,
+)
+from fatih_hoca.ranking import ScoredModel  # noqa: F401
 
 logger = get_logger("core.router")
 
@@ -78,152 +89,6 @@ def get_kdv() -> KuledenDonenVar:
         except Exception:
             pass
     return _kdv
-
-
-# ─── Capability ↔ Task Mapping ───────────────────────────────────────────────
-
-CAPABILITY_TO_TASK: dict[str, str] = {
-    # Map primary_capability values to TASK_PROFILES keys
-    "reasoning":             "planner",
-    "planning":              "planner",
-    "analysis":              "analyst",
-    "code_generation":       "coder",
-    "code_reasoning":        "fixer",
-    "system_design":         "architect",
-    "prose_quality":         "writer",
-    "instruction_adherence": "executor",
-    "domain_knowledge":      "researcher",
-    "context_utilization":   "summarizer",
-    "structured_output":     "executor",
-    "tool_use":              "executor",
-    "vision":                "visual_reviewer",
-    "conversation":          "assistant",
-    "general":               "assistant",
-    "shopping":              "shopping_advisor",
-}
-
-
-def _make_adhoc_profile(primary_cap: str) -> dict[str, float]:
-    """Create a task profile on the fly for unknown capability requests."""
-    profile = {cap: 0.3 for cap in ALL_CAPABILITIES}
-    for c in Cap:
-        if c.value == primary_cap or primary_cap in c.value:
-            profile[c.value] = 1.0
-            return profile
-    profile[Cap.REASONING.value] = 0.8
-    profile[Cap.INSTRUCTION_ADHERENCE.value] = 0.8
-    return profile
-
-
-# ─── Model Requirements ─────────────────────────────────────────────────────
-
-@dataclass
-class ModelRequirements:
-    """
-    Structured description of what a task needs from a model.
-
-    Uses difficulty (1-10) to express how capable the model must be.
-    """
-    # ── Task identity (preferred path) ──
-    task: str = ""                            # Key into TASK_PROFILES
-
-    # ── Capability path (auto-maps to task) ──
-    primary_capability: str = "general"
-    secondary_capabilities: list[str] = field(default_factory=list)
-
-    # ── Difficulty (1-10) — drives model quality selection ──
-    difficulty: int = 5
-    min_score: float = 0.0                     # Override; if 0, computed from difficulty
-
-    # ── Context requirements ──
-    estimated_input_tokens: int = 2000
-    estimated_output_tokens: int = 1000
-    min_context_length: int = 0
-
-    # ── Feature requirements ──
-    needs_function_calling: bool = False
-    needs_json_mode: bool = False
-    needs_thinking: bool = False
-    needs_vision: bool = False
-
-    # ── Constraints ──
-    local_only: bool = False
-    prefer_speed: bool = False
-    prefer_quality: bool = False
-    prefer_local: bool = False
-    max_cost: float = 0.0
-
-    # ── Priority ──
-    priority: int = 5
-
-    # ── Exclusion / pinning ──
-    exclude_models: list[str] = field(default_factory=list)
-    model_override: str | None = None
-
-    # ── Agent context ──
-    agent_type: str = ""
-
-    @property
-    def effective_task(self) -> str:
-        if self.task and self.task in TASK_PROFILES:
-            return self.task
-        mapped = CAPABILITY_TO_TASK.get(self.primary_capability)
-        if mapped and mapped in TASK_PROFILES:
-            return mapped
-        return ""
-
-    @property
-    def task_profile(self) -> dict[str, float]:
-        task = self.effective_task
-        if task:
-            return TASK_PROFILES[task]
-        return _make_adhoc_profile(self.primary_capability)
-
-    @property
-    def effective_context_needed(self) -> int:
-        if self.min_context_length > 0:
-            return self.min_context_length
-        # 1.3× covers tokenizer variance; extra 512 tokens headroom for
-        # tool results that grow the context during multi-iteration execution.
-        # Without this, a model that barely fits the initial prompt gets
-        # filtered after one tool call (e.g. ctx 8192 < 8217 after read_file).
-        return int((self.estimated_input_tokens + self.estimated_output_tokens) * 1.3) + 512
-
-    @property
-    def effective_min_score(self) -> float:
-        if self.min_score > 0:
-            return self.min_score
-        # Gentle curve: difficulty 1→0.3, 5→1.5, 7→2.5, 10→4.5
-        # This ensures available models (groq-llama-70b scores ~3.3) aren't
-        # filtered out for reasonable tasks. Only difficulty 10 needs top-tier.
-        return max(0.0, (self.difficulty - 1) * 0.47)
-
-    def escalate(self) -> "ModelRequirements":
-        """
-        Return a copy with escalated quality requirements.
-        Used by base.py for mid-task escalation.
-        """
-        escalated = copy.copy(self)
-        escalated.difficulty = min(10, self.difficulty + 2)
-        escalated.min_score = 0.0  # reset so it recomputes from new difficulty
-        escalated.prefer_quality = True
-        return escalated
-
-
-# ─── Model Selection ────────────────────────────────────────────────────────
-
-@dataclass
-class ScoredModel:
-    """A model candidate with its selection score and reasoning."""
-    model: ModelInfo
-    score: float
-    capability_score: float = 0.0
-    composite_score: float = 0.0
-    reasons: list[str] = field(default_factory=list)
-
-    @property
-    def litellm_name(self) -> str:
-        return self.model.litellm_name
 
 
 def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
@@ -824,33 +689,3 @@ async def check_cost_budget() -> dict:
         return await check_budget("daily")
     except Exception as e:
         return {"ok": True, "reason": f"check failed: {e}"}
-
-
-# ─── Backward Compatibility ─────────────────────────────────────────────────
-
-# ─── Agent Requirement Templates ─────────────────────────────────────────────
-
-AGENT_REQUIREMENTS: dict[str, ModelRequirements] = {
-    # ── Difficult / sensitive → cloud (better quality, rate-limited) ──
-    "planner":        ModelRequirements(task="planner",        difficulty=5, estimated_output_tokens=2000, prefer_quality=True),
-    "architect":      ModelRequirements(task="architect",      difficulty=5, estimated_output_tokens=3000, prefer_quality=True),
-    "coder":          ModelRequirements(task="coder",          difficulty=6, estimated_output_tokens=4000, needs_function_calling=True),
-    "fixer":          ModelRequirements(task="fixer",          difficulty=6, estimated_output_tokens=3000, needs_function_calling=True),
-    "reviewer":       ModelRequirements(task="reviewer",       difficulty=6, estimated_output_tokens=2000),
-    "analyst":        ModelRequirements(task="analyst",        difficulty=6, estimated_output_tokens=3000, needs_function_calling=True),
-    # ── Moderate → let the scorer decide (local if free, cloud if rate OK) ──
-    "implementer":    ModelRequirements(task="implementer",    difficulty=5, estimated_output_tokens=4000, needs_function_calling=True),
-    "test_generator": ModelRequirements(task="test_generator", difficulty=5, estimated_output_tokens=3000, needs_function_calling=True),
-    "writer":         ModelRequirements(task="writer",         difficulty=5, estimated_output_tokens=3000),
-    "visual_reviewer": ModelRequirements(task="visual_reviewer", difficulty=5, estimated_output_tokens=2000, needs_vision=True),
-    # ── Token-heavy / conversational → prefer local (save cloud rate limits) ──
-    "researcher":     ModelRequirements(task="researcher",     difficulty=4, estimated_output_tokens=2000, needs_function_calling=True, prefer_local=True, prefer_speed=True),
-    "assistant":      ModelRequirements(task="assistant",      difficulty=3, estimated_output_tokens=2000, prefer_local=True, prefer_speed=True),
-    "executor":       ModelRequirements(task="executor",       difficulty=3, estimated_output_tokens=1000, needs_function_calling=True, prefer_speed=True, prefer_local=True),
-    "summarizer":     ModelRequirements(task="summarizer",     difficulty=4, estimated_output_tokens=2000, prefer_speed=True, prefer_local=True),
-    # ── Shopping agents → prefer local, need tool calling ──
-    "shopping_advisor":    ModelRequirements(task="shopping_advisor",    difficulty=5, estimated_output_tokens=2500, needs_function_calling=True, prefer_local=True, prefer_speed=True),
-    "product_researcher":  ModelRequirements(task="shopping_advisor",    difficulty=4, estimated_output_tokens=2000, needs_function_calling=True, prefer_local=True, prefer_speed=True),
-    "deal_analyst":        ModelRequirements(task="shopping_advisor",    difficulty=5, estimated_output_tokens=2000, needs_function_calling=True, prefer_local=True),
-    "shopping_clarifier":  ModelRequirements(task="shopping_advisor",    difficulty=3, estimated_output_tokens=1000, prefer_local=True, prefer_speed=True),
-}

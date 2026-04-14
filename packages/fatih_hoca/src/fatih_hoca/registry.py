@@ -1339,3 +1339,63 @@ class ModelRegistry:
         """Force-write speed cache to disk. Call on shutdown."""
         if self._speed_cache_dirty:
             self._save_speed_cache(force=True)
+
+    # ── Legacy API compatibility shims ───────────────────────────────────────
+    # These preserve backward-compat with callers that use the old ModelRegistry
+    # API (dict-style .models, is_demoted(), load(), reload()).
+
+    @property
+    def models(self) -> dict[str, "ModelInfo"]:
+        """Legacy dict-style access — mirrors self._models."""
+        return self._models
+
+    @models.setter
+    def models(self, value: dict[str, "ModelInfo"]) -> None:
+        """Allow direct assignment for test fixtures and compat."""
+        self._models = value
+
+    def is_demoted(self, name: str) -> bool:
+        """Check if a model is currently demoted (timed or permanent)."""
+        with self._lock:
+            m = self._models.get(name)
+            if m is None:
+                return False
+            until = getattr(m, "_demoted_until", 0)
+            if until:
+                if time.time() < until:
+                    return True
+                else:
+                    m._demoted_until = 0  # type: ignore[attr-defined]
+            return bool(m.demoted)
+
+    def demote(self, name: str, duration: float = 300.0) -> None:
+        """Temporarily demote a model after a load failure."""
+        with self._lock:
+            m = self._models.get(name)
+            if m is not None:
+                m._demoted_until = time.time() + duration  # type: ignore[attr-defined]
+
+    def load(self, config_path: "Path | str | None" = None) -> None:
+        """Load the model catalog from models.yaml (legacy compat)."""
+        _REGISTRY_PATH = Path(__file__).parent.parent.parent.parent / "src" / "models" / "models.yaml"
+        resolved = Path(config_path) if config_path else _REGISTRY_PATH
+        if resolved.exists():
+            self.load_yaml(str(resolved))
+        else:
+            logger.warning(f"Registry config not found at {resolved}")
+
+    def reload(self, config_path: "Path | str | None" = None) -> dict:
+        """Hot reload — rescan and rebuild registry."""
+        old_names = set(self._models.keys())
+        self.load(config_path)
+        new_names = set(self._models.keys())
+        added = sorted(new_names - old_names)
+        removed = sorted(old_names - new_names)
+        return {"added": added, "removed": removed, "total": len(new_names)}
+
+    def currently_loaded(self) -> "ModelInfo | None":
+        """Return the currently loaded local model, if any."""
+        for m in self._models.values():
+            if m.is_local and m.is_loaded:
+                return m
+        return None

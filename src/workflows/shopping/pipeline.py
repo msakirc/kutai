@@ -225,8 +225,19 @@ async def _step_format(task: dict, artifacts: dict) -> str:
     else:
         data = raw if isinstance(raw, dict) else {}
 
+    # Also read review_data artifact if available (from step 2.1 in full workflow)
+    review_raw = artifacts.get("review_data", "{}")
+    if isinstance(review_raw, str):
+        try:
+            review_data = json.loads(review_raw)
+        except (json.JSONDecodeError, ValueError):
+            review_data = {}
+    else:
+        review_data = review_raw if isinstance(review_raw, dict) else {}
+
     products = data.get("products", [])
     community = data.get("community", [])
+    reviews = review_data.get("reviews", []) if isinstance(review_data, dict) else []
 
     if not products:
         if community:
@@ -239,64 +250,124 @@ async def _step_format(task: dict, artifacts: dict) -> str:
             return text
         return "No results found. Try a more specific search."
 
-    # Sort by price to pick cheapest
-    priced = [p for p in products if p.get("original_price")]
-    priced.sort(key=lambda p: p.get("original_price", float("inf")))
+    # ── Build formatted output directly ──
+    # The output formatters (format_recommendation_summary) expect a specific
+    # dict structure that doesn't map well to raw scraper data. Build the
+    # Telegram message directly — it's clearer and shows all available data.
 
-    top = priced[0] if priced else products[0]
-    top_pick = {
-        "name": top.get("name", ""),
-        "price": top.get("discounted_price") or top.get("original_price"),
-        "source": top.get("source", ""),
-        "url": top.get("url", ""),
-        "reason": "Best price found",
-    }
+    lines: list[str] = []
 
-    where_to_buy = [
-        {
-            "source": p.get("source"),
-            "price": p.get("discounted_price") or p.get("original_price"),
-            "url": p.get("url"),
-        }
-        for p in priced[:5]
-    ]
+    # ── Prices across sources ──
+    priced = sorted(
+        [p for p in products if p.get("original_price") or p.get("discounted_price")],
+        key=lambda p: p.get("discounted_price") or p.get("original_price") or float("inf"),
+    )
 
-    warnings: list[str] = []
-    sikayetvar = sum(1 for c in community if c.get("source") == "sikayetvar")
-    if sikayetvar >= 2:
-        warnings.append(f"⚠️ {sikayetvar} complaints on Şikayetvar")
+    if priced:
+        best = priced[0]
+        best_price = best.get("discounted_price") or best.get("original_price")
+        lines.append(
+            f"🏆 *{best.get('name', '')}*\n"
+            f"   💰 {format_price(best_price)} — {best.get('source', '')}"
+        )
+        if best.get("url"):
+            lines.append(f"   🔗 {best['url']}")
 
-    results = {
-        "top_pick": top_pick,
-        "budget_option": None,
-        "alternatives": [],
-        "warnings": warnings,
-        "timing": {},
-        "where_to_buy": where_to_buy,
-        "confidence": min(
-            len(set(p.get("source", "") for p in products)) * 0.25, 1.0
-        ),
-        "sources": len(set(p.get("source", "") for p in products)),
-    }
+        # Rating if available
+        if best.get("rating"):
+            stars = "⭐" * int(best["rating"])
+            review_count = best.get("review_count", "")
+            rc_str = f" ({review_count} değerlendirme)" if review_count else ""
+            lines.append(f"   {stars} {best['rating']}/5{rc_str}")
 
-    formatted = format_recommendation_summary(results, format="telegram")
-    if not formatted:
-        lines = [
-            f"🏆 *{top_pick['name']}* — "
-            + (format_price(top_pick["price"]) if top_pick.get("price") else "?")
-        ]
-        if top_pick.get("url"):
-            lines.append(f"   {top_pick['source']}: {top_pick['url']}")
-        if where_to_buy and len(where_to_buy) > 1:
-            lines.append("\n📍 *Prices:*")
-            for w in where_to_buy:
-                p = format_price(w.get("price", 0)) if w.get("price") else "?"
-                lines.append(f"  • {w.get('source', '?')} — {p}")
-        for w in warnings:
-            lines.append(f"\n{w}")
-        formatted = "\n".join(lines)
+        # Other sources with prices
+        others = [p for p in priced[1:] if p.get("source") != best.get("source")]
+        if others:
+            lines.append("\n📍 *Diğer Fiyatlar:*")
+            for p in others[:5]:
+                price = p.get("discounted_price") or p.get("original_price")
+                orig = p.get("original_price")
+                disc = p.get("discounted_price")
+                price_str = format_price(price)
+                if disc and orig and disc < orig:
+                    price_str += f" ~~{format_price(orig)}~~"
+                src = p.get("source", "?")
+                url = p.get("url", "")
+                url_str = f"  {url}" if url else ""
+                lines.append(f"  • {src} — {price_str}{url_str}")
+    else:
+        # Products found but no prices
+        top = products[0]
+        lines.append(f"🔍 *{top.get('name', '')}*")
+        lines.append(f"   {top.get('source', '')} — fiyat bilgisi yok")
+        if top.get("url"):
+            lines.append(f"   🔗 {top['url']}")
 
-    return formatted
+    # ── Community data ──
+    if community:
+        by_source: dict[str, list] = {}
+        for c in community:
+            src = c.get("source", "other")
+            by_source.setdefault(src, []).append(c)
+
+        lines.append("\n💬 *Topluluk:*")
+        for src, items in by_source.items():
+            src_label = {
+                "teknopat": "Technopat",
+                "sikayetvar": "Şikayetvar",
+                "donanimhaber": "DonanımHaber",
+                "eksisozluk": "Ekşi Sözlük",
+            }.get(src, src)
+
+            if src == "sikayetvar":
+                lines.append(f"  ⚠️ {len(items)} şikayet — {src_label}")
+            else:
+                lines.append(f"  💭 {len(items)} tartışma — {src_label}")
+
+            # Show top 2 thread titles
+            for item in items[:2]:
+                name = item.get("name", "")[:60]
+                url = item.get("url", "")
+                if name:
+                    lines.append(f"     • {name}")
+
+    # ── Reviews ──
+    if reviews:
+        lines.append("\n📝 *Kullanıcı Yorumları:*")
+        # Group by positive/negative sentiment if rating available
+        positive = [r for r in reviews if (r.get("rating") or 0) >= 4]
+        negative = [r for r in reviews if (r.get("rating") or 5) <= 2]
+        neutral = [r for r in reviews if r not in positive and r not in negative]
+
+        if positive:
+            lines.append(f"  👍 {len(positive)} olumlu")
+            for r in positive[:2]:
+                text = r.get("text", "")[:80]
+                if text:
+                    lines.append(f"     \"{text}\"")
+        if negative:
+            lines.append(f"  👎 {len(negative)} olumsuz")
+            for r in negative[:2]:
+                text = r.get("text", "")[:80]
+                if text:
+                    lines.append(f"     \"{text}\"")
+        if not positive and not negative and neutral:
+            for r in neutral[:2]:
+                text = r.get("text", "")[:80]
+                if text:
+                    lines.append(f"  💬 \"{text}\"")
+
+    # ── Source count ──
+    sources = set(p.get("source", "") for p in products)
+    sources.discard("")
+    if len(sources) >= 3:
+        lines.append(f"\n✅ {len(sources)} kaynaktan karşılaştırma")
+    elif len(sources) == 2:
+        lines.append(f"\n🟡 {len(sources)} kaynak")
+    elif len(sources) == 1:
+        lines.append(f"\n🟠 Tek kaynak ({list(sources)[0]})")
+
+    return "\n".join(lines)
 
 
 async def _step_analyze_query(task: dict, artifacts: dict) -> str:

@@ -91,6 +91,9 @@ class LocalModelManager:
         self._thinking_enabled: bool = False
         self._vision_enabled: bool = False
 
+        # NerdHerd client reference — set via set_nerd_herd() by the orchestrator
+        self._nerd_herd = None
+
         # GPU scheduler for acquire/release — same as before
         from .gpu_scheduler import get_gpu_scheduler
         self._scheduler = get_gpu_scheduler()
@@ -104,15 +107,54 @@ class LocalModelManager:
 
     # ── Callbacks for DaLLaMa ─────────────────────────────────────────────
 
+    def set_nerd_herd(self, nerd_herd) -> None:
+        """Store a NerdHerdClient reference for push notifications.
+
+        Called by the orchestrator/run.py after the sidecar connects.
+        """
+        self._nerd_herd = nerd_herd
+
+    def _push_to_nerd_herd(self, model_name: str | None) -> None:
+        """Push current LocalModelState to the NerdHerd sidecar (fire-and-forget)."""
+        nh = self._nerd_herd
+        if nh is None:
+            try:
+                from src.app.run import get_nerd_herd
+                nh = get_nerd_herd()
+            except Exception:
+                return
+        if nh is None:
+            return
+
+        rs = self.runtime_state
+        if model_name is not None and rs is not None:
+            kwargs = dict(
+                model_name=model_name,
+                thinking_enabled=rs.thinking_enabled,
+                vision_enabled=self._vision_enabled,
+                measured_tps=rs.measured_tps,
+                context_length=rs.context_length,
+            )
+        else:
+            kwargs = dict(model_name=None)
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(nh.push_local_state(**kwargs))
+        except RuntimeError:
+            pass
+        except Exception:
+            pass
+
     def _on_ready(self, model_name: str | None, reason: str) -> None:
         """Fired by DaLLaMa after every swap attempt and idle unload."""
         if model_name is None and reason == "idle_unload":
-            # Clear stale config so status reflects reality
             self._dallama._current_config = None
             self.runtime_state = None
             self._thinking_enabled = False
             self._vision_enabled = False
             logger.info("Idle unload: cleared model state")
+            self._push_to_nerd_herd(None)
             return
         if model_name is not None:
             try:
@@ -121,6 +163,9 @@ class LocalModelManager:
                 loop.create_task(accelerate_retries(f"model_loaded:{model_name}"))
             except Exception:
                 pass
+
+        # Push updated state to NerdHerd sidecar
+        self._push_to_nerd_herd(model_name)
 
     @staticmethod
     def _get_vram_free_mb() -> int:

@@ -158,6 +158,27 @@ class NerdHerdClient:
             gpu_util_pct=float(data.get("gpu_util_pct", 0.0)),
         )
 
+    async def push_local_state(
+        self,
+        model_name: str | None,
+        thinking_enabled: bool = False,
+        vision_enabled: bool = False,
+        measured_tps: float = 0.0,
+        context_length: int = 0,
+        is_swapping: bool = False,
+        kv_cache_ratio: float = 0.0,
+    ) -> None:
+        """Push current local model state to the NerdHerd sidecar."""
+        await self._post_json("/api/local_state", {
+            "model_name": model_name,
+            "thinking_enabled": thinking_enabled,
+            "vision_enabled": vision_enabled,
+            "measured_tps": measured_tps,
+            "context_length": context_length,
+            "is_swapping": is_swapping,
+            "kv_cache_ratio": kv_cache_ratio,
+        })
+
     async def mark_degraded(self, capability: str) -> None:
         """Mark a capability as degraded on the sidecar."""
         await self._post_json("/api/degraded", {"capability": capability})

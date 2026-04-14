@@ -413,6 +413,14 @@ async def main():
                      error=str(exc))
         _nerd_herd = None
 
+    # Wire NerdHerd client into LocalModelManager so _on_ready can push state
+    try:
+        from src.models.local_model_manager import get_local_manager
+        get_local_manager().set_nerd_herd(_nerd_herd)
+        _log.debug("LocalModelManager wired to NerdHerd client")
+    except Exception as exc:
+        _log.debug("Could not wire NerdHerd to LocalModelManager", error=str(exc))
+
     # Cancel startup heartbeat — the orchestrator's own _heartbeat_loop
     # takes over once start() creates its background tasks.
     _hb_task.cancel()

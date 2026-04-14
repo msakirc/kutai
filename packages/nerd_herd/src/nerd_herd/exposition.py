@@ -49,6 +49,7 @@ class MetricsServer:
             app.router.add_post("/api/auto", self._handle_enable_auto)
             app.router.add_get("/api/gpu", self._handle_gpu)
             app.router.add_post("/api/degraded", self._handle_degraded)
+            app.router.add_post("/api/local_state", self._handle_local_state)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -125,3 +126,22 @@ class MetricsServer:
 
         self._nh.mark_degraded(capability)
         return web.json_response({"capability": capability, "degraded": True})
+
+    async def _handle_local_state(self, request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+
+        from nerd_herd.types import LocalModelState
+        state = LocalModelState(
+            model_name=body.get("model_name"),
+            thinking_enabled=bool(body.get("thinking_enabled", False)),
+            vision_enabled=bool(body.get("vision_enabled", False)),
+            measured_tps=float(body.get("measured_tps", 0.0)),
+            context_length=int(body.get("context_length", 0)),
+            is_swapping=bool(body.get("is_swapping", False)),
+            kv_cache_ratio=float(body.get("kv_cache_ratio", 0.0)),
+        )
+        self._nh.push_local_state(state)
+        return web.json_response({"ok": True})

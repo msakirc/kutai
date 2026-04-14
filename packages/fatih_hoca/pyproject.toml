@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fatih_hoca"
+version = "0.1.0"
+description = "Model manager — scoring, selection, swap budget, failure adaptation"
+requires-python = ">=3.10"
+dependencies = ["nerd_herd"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

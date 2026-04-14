@@ -1,0 +1,9 @@
+pyproject.toml
+src/fatih_hoca/__init__.py
+src/fatih_hoca/types.py
+src/fatih_hoca.egg-info/PKG-INFO
+src/fatih_hoca.egg-info/SOURCES.txt
+src/fatih_hoca.egg-info/dependency_links.txt
+src/fatih_hoca.egg-info/requires.txt
+src/fatih_hoca.egg-info/top_level.txt
+tests/test_types.py

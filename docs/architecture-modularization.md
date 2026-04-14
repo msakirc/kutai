@@ -13,42 +13,51 @@ Telegram / API
        │
   Orchestrator ─── picks tasks from queue by priority, dependencies
        │
-  LLM Dispatcher ─── candidate iteration, swap budget, model selection (via Router)
+  LLM Dispatcher ─── ask, load, call, retry
        │
-  HaLLederiz Kadir ── litellm call, streaming, retry, quality check, metrics
-       │
-  ┌────┴────┐
-  │         │
-DaLLaMa   KDV
-(local)   (cloud)
-  │
-llama-server
+  ┌────┼──────────────┐
+  │    │              │
+Fatih Hoca    Talking Layer    DaLLaMa
+(model        (litellm call,   (local model
+ selection)    streaming,       process mgmt)
+  │            retry, quality)     │
+Nerd Herd         │           llama-server
+(system       ┌───┴───┐
+ state)       │       │
+           DaLLaMa   KDV
+           (GPU sem)  (cloud capacity)
 ```
 
 **Orchestrator** reads the task queue, picks next task. Does NOT select models.
 
-**Dispatcher** picks the best model via Router scoring, iterates candidates, manages swap budget. Calls HaLLederiz Kadir per candidate.
+**Dispatcher** asks Fatih Hoca for a model, loads it via DaLLaMa, calls the Talking Layer, reports failures back for re-selection. Owns message preparation (secret redaction, thinking adaptation) and timeout floors. Does NOT score or select models.
+
+**Fatih Hoca** (planned extraction) is the model manager — knows every model's strengths, picks the best one for each job. Owns model catalog, 15-dimension capability scoring, swap budget, failure-adaptive re-selection. Queries Nerd Herd for system state. See `docs/superpowers/specs/2026-04-14-fatih-hoca-design.md`.
 
 **DaLLaMa** manages the llama-server process. Start, stop, swap, health, idle unload. Three methods: `infer(config)`, `keep_alive()`, `status`. Does NOT select models, route calls, or manage cloud.
 
-**Router** scores models using 15-dimension capability vectors, selects best candidate. Pure scoring, no I/O.
+**Talking Layer** executes LLM calls via litellm — builds completion kwargs, manages streaming, retries, response parsing, quality checks (via Doğru mu Samet), and metrics recording.
 
-**HaLLederiz Kadir** executes LLM calls via litellm — builds completion kwargs, manages streaming, retries, response parsing, quality checks (via Doğru mu Samet), and metrics recording.
+**Nerd Herd** is the unified system state provider — GPU, VRAM, loaded model state (from DaLLaMa), cloud provider capacity (from KDV), inference metrics. Single `snapshot()` call for consumers.
 
-**Registry** knows all models (local GGUFs + cloud providers). Builds `ServerConfig` for DaLLaMa from `ModelInfo`.
+**KDV** tracks cloud provider rate limits, quotas, and failures. Pushes state changes to Nerd Herd.
 
 ## Data Flow: Local LLM Call
 
 ```
 Agent needs LLM call
-  → Dispatcher.request(messages, MAIN_WORK)
-    → Router scores models, picks "qwen3-30b"
-    → Dispatcher: ensure_model via DaLLaMa, prepare messages
-    → HallederizKadir.call(model, messages, ...)
+  → Dispatcher.request(category, task, messages, ...)
+    → Fatih Hoca.select(task, difficulty, failures, ...)
+       → Nerd Herd.snapshot() → system state
+       → Score models, pick best → Pick(model, min_time)
+    → DaLLaMa.ensure_model(model) → swap if needed
+    → Dispatcher: prepare messages, compute timeout
+    → TalkingLayer.call(model, messages, timeout, ...)
        → DaLLaMa.infer() → GPU acquire → endpoint URL
        → litellm.acompletion(api_base=url, ...)
        → Parse response, quality check, metrics
-    → Response flows back: HaLLederiz Kadir → Dispatcher → Agent
+    → Response flows back: Talking Layer → Dispatcher → Agent
+    → On failure: Dispatcher adds Failure, calls select() again
   → DaLLaMa marks inference done, resets idle timer
 ```
 
@@ -64,6 +73,7 @@ Agent needs LLM call
 | **nerd_herd** | Observability: GPU, VRAM budget, health, inference metrics, Prometheus | `packages/nerd_herd/` | Stable v0.1.0 | yazbunu, pynvml, psutil, prometheus_client, aiohttp |
 | **kuleden_donen_var** | Cloud provider capacity tracker: rate limits, quotas, circuit breakers | `packages/kuleden_donen_var/` | Stable v0.1.0 | None |
 | **hallederiz_kadir** | LLM call execution hub: litellm, streaming, retries, quality | `packages/hallederiz_kadir/` | New v0.1.0 | litellm |
+| **fatih_hoca** | Model manager: scoring, selection, swap budget, failure adaptation | `packages/fatih_hoca/` | Planned | nerd_herd |
 
 All packages: `packages/<name>/`, src layout, editable install via requirements.txt. Original module becomes a thin shim preserving all import paths.
 
@@ -105,9 +115,11 @@ DaLLaMa's `swap.py` is designed for future migration — swap strategy changes f
 
 ## What Was Removed
 
-**GPU Scheduler** (`gpu_scheduler.py`): Priority queue for GPU inference slots. No longer needed — dispatcher checks `dallama.status.busy` instead of queuing. File still exists for shim backward compat; deleted when dispatcher is refactored.
+**GPU Scheduler** (`gpu_scheduler.py`): Priority queue for GPU inference slots. Dead code — scheduled for deletion.
 
-**local_model_manager.py** (1,193 → 449 lines): Replaced with shim wrapping DaLLaMa. All existing import paths preserved.
+**local_model_manager.py** (1,193 → 449 lines): Shim wrapping DaLLaMa. Scheduled for deletion when Fatih Hoca extraction removes all callers.
+
+**Router dead code** (removed 2026-04-14): `RateLimiter` class (replaced by KDV), `refresh_perf_cache()` (never called), perf cache globals (never populated). Dispatcher unified `_route_main_work` / `_route_overhead` into single candidate loop, removed dead `partial_buf`/`on_chunk` params.
 
 ## Extraction Decisions
 
@@ -115,7 +127,7 @@ DaLLaMa's `swap.py` is designed for future migration — swap strategy changes f
 
 | Component | Why |
 |-----------|-----|
-| LLM Router / Dispatcher | Router: 15-dimension scoring is KutAI-shaped. Dispatcher: swap budget + candidate orchestration is KutAI-shaped. Call execution extracted to hallederiz_kadir. |
+| LLM Dispatcher | Coordinator that wires Fatih Hoca + DaLLaMa + Talking Layer. Its value is in the wiring, not reusable logic. |
 | ReAct Agent Framework | Crowded space (LangGraph, CrewAI). Heavy refactor, marginal value. |
 | Workflow Engine | Coupled to DB, blackboard, tools. Not separable. |
 | Skills System | Coupled to DB persistence and learning loop. |
@@ -125,28 +137,13 @@ DaLLaMa's `swap.py` is designed for future migration — swap strategy changes f
 
 **GPU Monitor → nerd_herd (DONE).** Extracted as Nerd Herd. Unified collector for GPU, inference speed, VRAM budget policy, health. Serves Prometheus `/metrics` on port 9881 for Grafana. Prometheus container removed — Nerd Herd pre-computes rates via ring buffers.
 
-**Cloud Operator → kuleden_donen_var (DONE).** Extracted as Kuleden Dönen Var. Tracks rate limits, quotas, and circuit breakers across cloud LLM providers. Reports capacity changes via callback. Router and dispatcher consume status instead of directly managing rate_limiter/header_parser/circuit_breaker.
+**Cloud Operator → kuleden_donen_var (DONE).** Extracted as Kuleden Dönen Var. Tracks rate limits, quotas, and circuit breakers across cloud LLM providers. Pushes state changes to Nerd Herd.
+
+**Model Manager → fatih_hoca (PLANNED).** Router + registry + capabilities + quota planner merge into Fatih Hoca. Unified model selection with failure adaptation, Nerd Herd as single state source. Dispatcher simplifies to ask-load-call-retry loop. See `docs/superpowers/specs/2026-04-14-fatih-hoca-design.md`.
+
+**Nerd Herd expansion (PLANNED, prerequisite for Fatih Hoca).** Add LocalModelStateCollector (from DaLLaMa) and CloudCapacityCollector (from KDV). Expose `snapshot()` returning unified `SystemSnapshot`.
 
 **Turkish Shopping Scrapers → own package.** 8,500 LOC, 19 scrapers. Largest blast radius. Now connected to workflows, increasing confusion risk.
-
-## Dispatcher Refactoring (Future)
-
-Three components do overlapping scheduling work today:
-
-| Component | Does | Should Do |
-|-----------|------|-----------|
-| Orchestrator | Picks tasks + model affinity boost | Pick tasks only |
-| Dispatcher | Gates swaps + categorizes | Route local/cloud, own swap budget |
-| Router | Scores + calls litellm | Same |
-
-Target:
-```
-Dispatcher ("what to do")
-  ├── DaLLaMa ("local backend")
-  └── Cloud Operator ("cloud backend" — rate limits, quotas, fallback)
-```
-
-Steps: remove model affinity from orchestrator → replace acquire/release_inference_slot with busy check → delete gpu_scheduler → extract cloud operator (rate_limiter, header_parser, quota_planner).
 
 ## Model Metadata Standards
 
@@ -167,15 +164,18 @@ Future registry extraction should align with LiteLLM's field vocabulary.
 | `packages/dallama/` | DaLLaMa package (6 modules + tests) |
 | `packages/nerd_herd/` | Nerd Herd observability package (8 modules + tests) |
 | `packages/kuleden_donen_var/` | Kuleden Dönen Var package (6 modules + tests) |
-| `src/models/local_model_manager.py` | Shim wrapping DaLLaMa |
-| `src/models/gpu_scheduler.py` | Deprecated — used only by shim |
-| `src/models/gpu_monitor.py` | GPU state — future extraction to observability |
-| `src/models/model_registry.py` | Model catalog + capability vectors |
-| `src/models/capabilities.py` | 15-dim scoring, task profiles |
-| `src/core/llm_dispatcher.py` | Routing policy, swap budget |
-| `src/core/router.py` | Model selection (pure scoring, no I/O) |
+| `packages/hallederiz_kadir/` | Talking Layer package (4 modules + tests) |
+| `packages/fatih_hoca/` | *Planned* — model manager (scoring, selection, registry) |
+| `src/models/local_model_manager.py` | Shim wrapping DaLLaMa — deleted when Fatih Hoca extracts |
+| `src/models/gpu_scheduler.py` | Deprecated — dead code |
+| `src/models/gpu_monitor.py` | Shim wrapping Nerd Herd — deleted when Fatih Hoca extracts |
+| `src/models/model_registry.py` | Model catalog — moves to Fatih Hoca |
+| `src/models/capabilities.py` | 15-dim scoring, task profiles — moves to Fatih Hoca |
+| `src/models/quota_planner.py` | Quota policy — moves to Fatih Hoca |
+| `src/core/llm_dispatcher.py` | Ask-load-call-retry loop |
+| `src/core/router.py` | Pure scoring — moves to Fatih Hoca, becomes shim during migration |
 | `docs/superpowers/specs/2026-04-12-dallama-design.md` | DaLLaMa design spec |
-| `packages/hallederiz_kadir/` | HaLLederiz Kadir package (4 modules + tests) |
+| `docs/superpowers/specs/2026-04-14-fatih-hoca-design.md` | Fatih Hoca design spec |
 | `docs/extraction/extraction_report_v2.md` | Extraction decisions and status |
 
 ## What Agents Need to Know
@@ -183,20 +183,23 @@ Future registry extraction should align with LiteLLM's field vocabulary.
 **If you're fixing a model loading/swap error:**
 The real logic is in `packages/dallama/src/dallama/swap.py` (circuit breaker, drain, VRAM check) and `server.py` (cmd building, health polling). The shim in `src/models/local_model_manager.py` just translates types. Don't edit the shim for swap bugs — fix DaLLaMa.
 
-**If you're fixing a routing/dispatch error:**
-Stay in `src/core/llm_dispatcher.py` and `src/core/router.py`. DaLLaMa doesn't route. Don't touch DaLLaMa for routing bugs.
+**If you're fixing a model selection/scoring error:**
+Stay in `packages/fatih_hoca/` (or `src/core/router.py` + `src/models/` pre-extraction). DaLLaMa doesn't route. Dispatcher doesn't score. Don't touch them for scoring bugs.
+
+**If you're fixing a dispatch/routing error:**
+Stay in `src/core/llm_dispatcher.py`. Dispatcher is a thin loop — ask Fatih Hoca, load via DaLLaMa, call Talking Layer. Don't touch scoring for dispatch bugs.
 
 **If you're fixing an agent/task error:**
 Stay in `src/agents/` and `src/core/orchestrator.py`. The model layer is a black box — call `Dispatcher.request()`, get a response.
 
 **If you're fixing a GPU/metrics/monitoring error:**
-The real logic is in `packages/nerd_herd/src/nerd_herd/`. The shims in `src/models/gpu_monitor.py` and `src/infra/load_manager.py` just delegate. Don't edit the shims for GPU bugs — fix Nerd Herd.
+The real logic is in `packages/nerd_herd/src/nerd_herd/`. Don't edit shims for GPU bugs — fix Nerd Herd.
 
-**If you're fixing a cloud rate limit/quota/circuit breaker error:**
-The real logic is in `packages/kuleden_donen_var/src/kuleden_donen_var/`. The shims in `src/models/rate_limiter.py` and `src/models/header_parser.py` just delegate. Don't edit the shims for cloud capacity bugs — fix Kuleden Dönen Var.
+**If you're fixing a cloud rate limit/quota/capacity error:**
+The real logic is in `packages/kuleden_donen_var/src/kuleden_donen_var/`. Don't edit shims for cloud capacity bugs — fix Kuleden Dönen Var.
 
 **If you're fixing an LLM call error (timeout, retry, streaming, response parsing):**
-The real logic is in `packages/hallederiz_kadir/src/hallederiz_kadir/`. The caller in dispatcher just iterates candidates. Don't touch dispatcher or router for call execution bugs — fix HaLLederiz Kadir.
+The real logic is in `packages/hallederiz_kadir/src/hallederiz_kadir/`. Dispatcher just calls it. Don't touch dispatcher or scoring for call execution bugs — fix the Talking Layer.
 
 **If you're adding a new package:**
-Follow the convention: `packages/<name>/`, src layout, pyproject.toml, editable install. Original module becomes a shim. Preserve all import paths.
+Follow the convention: `packages/<name>/`, src layout, pyproject.toml, editable install.

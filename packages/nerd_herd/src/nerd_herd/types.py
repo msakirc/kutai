@@ -65,3 +65,52 @@ class HealthStatus:
     @property
     def degraded(self) -> list[str]:
         return [k for k, v in self.capabilities.items() if not v]
+
+
+@dataclass
+class RateLimit:
+    limit: int | None = None
+    remaining: int | None = None
+    reset_at: int | None = None        # absolute epoch seconds
+
+
+@dataclass
+class RateLimits:
+    rpm: RateLimit = field(default_factory=RateLimit)
+    tpm: RateLimit = field(default_factory=RateLimit)
+    rpd: RateLimit = field(default_factory=RateLimit)
+
+
+@dataclass
+class CloudModelState:
+    model_id: str = ""
+    utilization_pct: float = 0.0
+    limits: RateLimits = field(default_factory=RateLimits)
+
+
+@dataclass
+class CloudProviderState:
+    provider: str = ""
+    utilization_pct: float = 0.0
+    consecutive_failures: int = 0
+    last_failure_at: int | None = None   # epoch seconds
+    limits: RateLimits = field(default_factory=RateLimits)
+    models: dict[str, CloudModelState] = field(default_factory=dict)
+
+
+@dataclass
+class LocalModelState:
+    model_name: str | None = None
+    thinking_enabled: bool = False
+    vision_enabled: bool = False
+    measured_tps: float = 0.0
+    context_length: int = 0
+    is_swapping: bool = False
+    kv_cache_ratio: float = 0.0
+
+
+@dataclass
+class SystemSnapshot:
+    vram_available_mb: int = 0
+    local: LocalModelState = field(default_factory=LocalModelState)
+    cloud: dict[str, CloudProviderState] = field(default_factory=dict)

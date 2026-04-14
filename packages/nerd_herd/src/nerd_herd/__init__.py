@@ -7,6 +7,12 @@ from nerd_herd.types import (
     SystemState,
     ExternalGPUUsage,
     HealthStatus,
+    RateLimit,
+    RateLimits,
+    CloudModelState,
+    CloudProviderState,
+    LocalModelState,
+    SystemSnapshot,
 )
 from nerd_herd.registry import CollectorRegistry, Collector
 from nerd_herd.gpu import GPUCollector
@@ -23,6 +29,12 @@ __all__ = [
     "SystemState",
     "ExternalGPUUsage",
     "HealthStatus",
+    "RateLimit",
+    "RateLimits",
+    "CloudModelState",
+    "CloudProviderState",
+    "LocalModelState",
+    "SystemSnapshot",
     "CollectorRegistry",
     "Collector",
     "GPUCollector",

@@ -1,4 +1,15 @@
-from nerd_herd.types import GPUState, SystemState, ExternalGPUUsage, HealthStatus
+from nerd_herd.types import (
+    GPUState,
+    SystemState,
+    ExternalGPUUsage,
+    HealthStatus,
+    RateLimit,
+    RateLimits,
+    CloudModelState,
+    CloudProviderState,
+    LocalModelState,
+    SystemSnapshot,
+)
 
 
 def test_gpu_state_defaults():
@@ -59,3 +70,74 @@ def test_health_status_all_healthy():
         capabilities={"telegram": True, "llm": True},
     )
     assert h.degraded == []
+
+
+# --- SystemSnapshot / cloud-state types ---
+
+def test_rate_limit_defaults():
+    r = RateLimit()
+    assert r.limit is None
+    assert r.remaining is None
+    assert r.reset_at is None
+
+
+def test_system_snapshot_defaults():
+    s = SystemSnapshot()
+    assert s.vram_available_mb == 0
+    assert isinstance(s.local, LocalModelState)
+    assert s.local.model_name is None
+    assert s.local.thinking_enabled is False
+    assert s.local.measured_tps == 0.0
+    assert s.cloud == {}
+
+
+def test_cloud_model_state():
+    m = CloudModelState(model_id="gpt-4o", utilization_pct=42.5)
+    assert m.model_id == "gpt-4o"
+    assert m.utilization_pct == 42.5
+    assert isinstance(m.limits, RateLimits)
+    assert isinstance(m.limits.rpm, RateLimit)
+
+
+def test_cloud_provider_state():
+    p = CloudProviderState(
+        provider="openai",
+        utilization_pct=30.0,
+        consecutive_failures=2,
+        last_failure_at=1713000000,
+    )
+    assert p.provider == "openai"
+    assert p.consecutive_failures == 2
+    assert p.last_failure_at == 1713000000
+    assert p.models == {}
+    assert isinstance(p.limits, RateLimits)
+
+
+def test_snapshot_with_cloud():
+    provider = CloudProviderState(
+        provider="anthropic",
+        utilization_pct=10.0,
+        models={
+            "claude-3-5-sonnet": CloudModelState(
+                model_id="claude-3-5-sonnet",
+                utilization_pct=10.0,
+            )
+        },
+    )
+    local = LocalModelState(
+        model_name="qwen3-8b",
+        thinking_enabled=True,
+        measured_tps=45.2,
+        context_length=32768,
+    )
+    snap = SystemSnapshot(
+        vram_available_mb=4096,
+        local=local,
+        cloud={"anthropic": provider},
+    )
+    assert snap.vram_available_mb == 4096
+    assert snap.local.model_name == "qwen3-8b"
+    assert snap.local.thinking_enabled is True
+    assert "anthropic" in snap.cloud
+    assert snap.cloud["anthropic"].provider == "anthropic"
+    assert "claude-3-5-sonnet" in snap.cloud["anthropic"].models

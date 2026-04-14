@@ -8,9 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import time
 from dataclasses import dataclass, field
-from typing import Callable
 
 
 class ModelCallFailed(RuntimeError):
@@ -210,86 +208,6 @@ class ModelRequirements:
         escalated.min_score = 0.0  # reset so it recomputes from new difficulty
         escalated.prefer_quality = True
         return escalated
-
-
-# ─── Per-Provider Rate Limiting ──────────────────────────────────────────────
-
-class RateLimiter:
-    """Sliding-window rate limiter tracking both RPM and TPM."""
-
-    def __init__(self, rpm: int = 30, tpm: int = 100000):
-        self.rpm = rpm
-        self.tpm = tpm
-        self._request_timestamps: list[float] = []
-        self._token_log: list[tuple[float, int]] = []
-
-    @property
-    def current_rpm_usage(self) -> int:
-        now = time.time()
-        return len([t for t in self._request_timestamps if now - t < 60])
-
-    @property
-    def current_tpm_usage(self) -> int:
-        now = time.time()
-        return sum(tc for ts, tc in self._token_log if now - ts < 60)
-
-    @property
-    def rpm_headroom(self) -> int:
-        return self.rpm - self.current_rpm_usage
-
-    @property
-    def tpm_headroom(self) -> int:
-        return self.tpm - self.current_tpm_usage
-
-    def has_capacity(self, estimated_tokens: int = 0) -> bool:
-        return self.rpm_headroom > 2 and self.tpm_headroom > estimated_tokens
-
-    async def wait(self) -> None:
-        now = time.time()
-        self._request_timestamps = [t for t in self._request_timestamps if now - t < 60]
-        if len(self._request_timestamps) >= self.rpm:
-            wait_time = 60 - (now - self._request_timestamps[0]) + 0.5
-            logger.info("rate limiter wait", wait_time_seconds=wait_time)
-            await asyncio.sleep(wait_time)
-        self._request_timestamps.append(time.time())
-
-    def record_tokens(self, token_count: int) -> None:
-        now = time.time()
-        self._token_log.append((now, token_count))
-        self._token_log = [(t, c) for t, c in self._token_log if now - t < 60]
-
-
-_limiters_initialized = False
-
-
-# ─── Performance Cache ──────────────────────────────────────────────────────
-
-_perf_cache: dict[str, dict[str, dict]] = {}
-_perf_cache_ready: bool = False
-_perf_cache_last_refresh: float = 0.0
-_PERF_CACHE_TTL: float = 300.0
-
-
-async def refresh_perf_cache() -> None:
-    global _perf_cache, _perf_cache_ready, _perf_cache_last_refresh
-    now = time.time()
-    if _perf_cache_ready and (now - _perf_cache_last_refresh) < _PERF_CACHE_TTL:
-        return
-    try:
-        from ..infra.db import get_model_stats
-        stats = await get_model_stats()
-        cache: dict[str, dict[str, dict]] = {}
-        for s in stats:
-            at = s["agent_type"]
-            m = s["model"]
-            if at not in cache:
-                cache[at] = {}
-            cache[at][m] = s
-        _perf_cache = cache
-        _perf_cache_ready = True
-        _perf_cache_last_refresh = now
-    except Exception as e:
-        logger.debug("performance cache refresh failed", error=str(e))
 
 
 # ─── Model Selection ────────────────────────────────────────────────────────
@@ -565,22 +483,9 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
         # ═════════════════════════════════════════
         # 4. PERFORMANCE HISTORY (0-100)
         # ═════════════════════════════════════════
-
+        # TODO: wire up performance cache (refresh from DB stats)
+        # so historical success rate and grade influence scoring.
         perf_score = 50
-        if reqs.agent_type and _perf_cache_ready:
-            agent_perf = _perf_cache.get(reqs.agent_type, {})
-            model_perf = agent_perf.get(model.litellm_name)
-            if model_perf and model_perf.get("total_calls", 0) >= 3:
-                sr = model_perf["success_rate"]
-                grade = model_perf.get("avg_grade", 3.0)
-                perf_score = max(0, min(100, (sr * grade / 5.0) * 100))
-                reasons.append(
-                    f"perf(sr={sr:.2f},g={grade:.1f},n={model_perf['total_calls']})"
-                )
-                # Penalize unreliable models
-                if sr < 0.5:
-                    avail_score = int(avail_score * 0.3)
-                    reasons.append("unreliable")
 
         # ═════════════════════════════════════════
         # 5. SPEED (0-100)
@@ -895,8 +800,6 @@ async def call_model(
     messages: list[dict],
     tools: list[dict] | None = None,
     timeout_override: float | None = None,
-    partial_buf: object | None = None,
-    on_chunk: "Callable[[str], bool] | None" = None,
 ) -> dict:
     """Legacy shim — routes through dispatcher.
 

@@ -1736,21 +1736,11 @@ class BaseAgent:
                 self._partial_content = ""
                 try:
                     from src.core.llm_dispatcher import get_dispatcher, CallCategory
-                    _on_chunk = None
-                    if _task_ctx.get("is_workflow_step"):
-                        from dogru_mu_samet import make_stream_callback
-                        _step_max = _task_ctx.get("artifact_schema", {}).get(
-                            "max_output_chars", 20_000
-                        )
-                        _on_chunk = make_stream_callback(max_size=_step_max)
-
                     response = await get_dispatcher().request(
                         CallCategory.MAIN_WORK,
                         reqs,
                         messages,
                         tools=litellm_tools,
-                        partial_buf=self,
-                        on_chunk=_on_chunk,
                     )
                 except Exception as exc:
                     logger.error(f"[Task #{task_id}] Model call failed: {exc}")

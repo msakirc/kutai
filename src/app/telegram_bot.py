@@ -71,7 +71,7 @@ def _friendly_error(error: str) -> str:
         return "Rate limited by the AI provider. Will retry automatically."
     if "timeout" in e:
         return "The task timed out. Try again or simplify the request."
-    if "no models available" in e or "no models matched" in e:
+    if "no models available" in e or "no models matched" in e or "no model candidates" in e:
         return "No suitable AI model available right now. Try again later."
     if "connection" in e or "network" in e:
         return "Network error. Check connectivity and try again."
@@ -5331,14 +5331,22 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 self.orchestrator._current_task_future = None
 
             db = await get_db()
-            await db.execute("DELETE FROM tasks")
-            await db.execute("DELETE FROM missions")
-            await db.execute("DELETE FROM dead_letter_tasks")
-            await db.execute("DELETE FROM workflow_checkpoints")
-            await db.execute("DELETE FROM blackboards")
-            await db.execute("DELETE FROM approval_requests")
-            await db.execute("DELETE FROM scheduled_tasks")
-            await db.commit()
+            for _attempt in range(3):
+                try:
+                    await db.execute("DELETE FROM tasks")
+                    await db.execute("DELETE FROM missions")
+                    await db.execute("DELETE FROM dead_letter_tasks")
+                    await db.execute("DELETE FROM workflow_checkpoints")
+                    await db.execute("DELETE FROM blackboards")
+                    await db.execute("DELETE FROM approval_requests")
+                    await db.execute("DELETE FROM scheduled_tasks")
+                    await db.commit()
+                    break
+                except Exception as _db_err:
+                    if _attempt < 2:
+                        await asyncio.sleep(1)
+                    else:
+                        raise
             # Also wipe shopping cache (separate DB)
             try:
                 import aiosqlite as _aiosqlite

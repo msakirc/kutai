@@ -18,13 +18,38 @@ from .backoff import BackoffTracker
 from .commands import build_start_keyboard, build_status_inline_keyboard, format_log_entries
 from .config import GuardConfig
 from .lock import acquire_lock, release_lock
-from .remote import find_claude_cmd, start_claude_remote
+from .remote import find_claude_cmd, list_sessions, start_claude_remote
 from .sidecar import SidecarManager
 from .status import build_status_text
 from .subprocess_mgr import SubprocessManager
 from .telegram import TelegramAPI
 
 logger = logging.getLogger("yasar_usta")
+
+
+def _extract_traceback(lines) -> str:
+    """Extract Python traceback from stderr lines, skipping debug noise.
+
+    Scans backwards for the last 'Traceback' block. Falls back to
+    the last few non-empty lines if no traceback is found.
+    """
+    items = list(lines)
+    if not items:
+        return "(no output)"
+
+    # Find the last traceback start
+    tb_start = None
+    for i in range(len(items) - 1, -1, -1):
+        if items[i].startswith("Traceback"):
+            tb_start = i
+            break
+
+    if tb_start is not None:
+        return "\n".join(items[tb_start:])
+
+    # No traceback — return last non-empty lines
+    tail = [l for l in items if l.strip()][-20:]
+    return "\n".join(tail) or "(no output)"
 
 
 class ProcessGuard:
@@ -67,9 +92,9 @@ class ProcessGuard:
                     detached=sc.detached,
                 )
 
-        # Claude remote
+        # Claude remote — sessions tracked in a directory, survive restarts
         self._claude_cmd = find_claude_cmd(config.claude_cmd) if config.claude_enabled else None
-        self._claude_process: asyncio.subprocess.Process | None = None
+        self._claude_session_dir = str(Path(config.log_dir) / "claude_sessions")
 
         # State
         self._telegram_poller: asyncio.Task | None = None
@@ -111,7 +136,7 @@ class ProcessGuard:
         await self._send(msg, reply_markup=self._kb())
 
     async def _notify_crash(self, exit_code: int) -> None:
-        stderr = "\n".join(self.subprocess.stderr_tail) or "(no output)"
+        stderr = _extract_traceback(self.subprocess.stderr_tail)
         if len(stderr) > 1500:
             stderr = stderr[-1500:]
         msg = self.msgs.crash.format(
@@ -146,6 +171,13 @@ class ProcessGuard:
                     "http_alive": await sc.http_alive(),
                 })
 
+            # Derive script basenames for duplicate detection
+            _guard_script = Path(sys.argv[0]).name if sys.argv else None
+            _app_script = (
+                Path(self.cfg.command[-1]).name
+                if self.cfg.command else None
+            )
+
             text = build_status_text(
                 name=self.cfg.name,
                 app_name=self.cfg.app_name,
@@ -156,6 +188,8 @@ class ProcessGuard:
                 total_crashes=self.backoff.total_crashes,
                 sidecar_infos=sidecar_infos,
                 extra_processes=self.cfg.extra_processes,
+                guard_script=_guard_script,
+                app_script=_app_script,
             )
             sidecar_names = list(self.sidecars.keys()) if self.sidecars else []
             inline_kb = build_status_inline_keyboard(
@@ -209,19 +243,33 @@ class ProcessGuard:
         if not self._claude_cmd:
             await self._send(self.msgs.remote_not_found)
             return
-        await self._send(self.msgs.remote_starting)
-        proc, url = await start_claude_remote(
+
+        # Report any existing live sessions
+        alive = list_sessions(self._claude_session_dir)
+        if alive:
+            lines = ["🖥️ *Active Claude sessions:*"]
+            for pid, url in alive:
+                if url:
+                    lines.append(f"  • PID `{pid}` — [Connect]({url})")
+                else:
+                    lines.append(f"  • PID `{pid}` (no URL)")
+            lines.append("\nStarting a new session...")
+            await self._send("\n".join(lines))
+        else:
+            await self._send(self.msgs.remote_starting)
+
+        pid, url = await start_claude_remote(
             self._claude_cmd,
             name=self.cfg.claude_name or self.cfg.app_name,
             cwd=self.cfg.cwd,
+            session_dir=self._claude_session_dir,
         )
-        self._claude_process = proc
-        if proc is None:
-            await self._send(self.msgs.remote_failed.format(error="process failed to start"))
+        if pid is None:
+            await self._send(self.msgs.remote_failed.format(error=url or "process failed to start"))
         elif url:
-            await self._send(self.msgs.remote_started.format(url=url, pid=proc.pid))
+            await self._send(self.msgs.remote_started.format(url=url, pid=pid))
         else:
-            await self._send(self.msgs.remote_started_no_url.format(pid=proc.pid))
+            await self._send(self.msgs.remote_started_no_url.format(pid=pid))
 
     # ── Signal file watcher ───────────────────────────────────────────
 
@@ -308,7 +356,9 @@ class ProcessGuard:
                             cb_msg_id = cb.get("message", {}).get("message_id")
                             if cb_data in ("restart_guard", "restart_usta"):
                                 logger.warning("restart_guard triggered by callback uid=%s", uid)
-                                await self.telegram.answer_callback(cb["id"], "♻️ Yeniden başlatılıyor...")
+                                await self.telegram.answer_callback(cb["id"])
+                                await self.telegram.delete(cb_msg_id)
+                                await self._send("♻️ *Yaşar Usta yeniden başlatılıyor...*")
                                 await self._restart_self()
                                 return
                             elif cb_data in ("guard_refresh", "usta_refresh"):
@@ -318,10 +368,12 @@ class ProcessGuard:
                                 sc_name = cb_data.split(":", 1)[1]
                                 sc = self.sidecars.get(sc_name)
                                 if sc:
-                                    await self.telegram.answer_callback(cb["id"], f"📊 {sc_name} yeniden başlatılıyor...")
+                                    await self.telegram.answer_callback(cb["id"])
+                                    await self.telegram.delete(cb_msg_id)
+                                    await self._send(f"📊 *{sc_name}* yeniden başlatılıyor...")
                                     await sc.stop()
                                     await sc.start()
-                                    await self._send_status(edit_message_id=cb_msg_id)
+                                    await self._send(f"✅ *{sc_name}* yeniden başlatıldı")
                                 else:
                                     await self.telegram.answer_callback(cb["id"])
                             elif cb_data in ("restart_sidecar", "restart_yazbunu"):
@@ -329,29 +381,34 @@ class ProcessGuard:
                                 sc = self.sidecars.get("yazbunu") or (
                                     next(iter(self.sidecars.values()), None) if self.sidecars else None)
                                 if sc:
-                                    await self.telegram.answer_callback(cb["id"], f"📊 {sc.name} yeniden başlatılıyor...")
+                                    await self.telegram.answer_callback(cb["id"])
+                                    await self.telegram.delete(cb_msg_id)
+                                    await self._send(f"📊 *{sc.name}* yeniden başlatılıyor...")
                                     await sc.stop()
                                     await sc.start()
-                                    await self._send_status(edit_message_id=cb_msg_id)
+                                    await self._send(f"✅ *{sc.name}* yeniden başlatıldı")
                                 else:
                                     await self.telegram.answer_callback(cb["id"])
                             elif cb_data == "confirm_restart":
                                 _app = self.cfg.app_name
-                                await self.telegram.answer_callback(cb["id"], f"🔄 {_app} yeniden başlatılıyor...")
-                                await self.telegram.edit(cb_msg_id, f"♻️ *{_app} yeniden başlatılıyor...*")
+                                await self.telegram.answer_callback(cb["id"])
+                                await self.telegram.delete(cb_msg_id)
+                                await self._send(f"♻️ *{_app} yeniden başlatılıyor...*")
                                 self._restart_requested = True
                                 self._write_shutdown_signal("restart")
                                 await self.subprocess.stop()
                             elif cb_data == "confirm_stop":
                                 _app = self.cfg.app_name
-                                await self.telegram.answer_callback(cb["id"], f"⏹ {_app} durduruluyor...")
-                                await self.telegram.edit(cb_msg_id, f"⏹ *{_app} durduruluyor...*")
+                                await self.telegram.answer_callback(cb["id"])
+                                await self.telegram.delete(cb_msg_id)
+                                await self._send(f"⏹ *{_app} durduruluyor...*")
                                 self._stop_requested = True
                                 self._write_shutdown_signal("stop")
                                 await self.subprocess.stop()
                             elif cb_data == "confirm_cancel":
                                 await self.telegram.answer_callback(cb["id"])
-                                await self.telegram.edit(cb_msg_id, "👍 İptal edildi.")
+                                await self.telegram.delete(cb_msg_id)
+                                await self._send("👍 İptal edildi.")
                             else:
                                 await self.telegram.answer_callback(cb["id"])
                         continue
@@ -470,6 +527,9 @@ class ProcessGuard:
         logger.info("Self-restart requested")
         await self._send(self.msgs.self_restarting.format(name=self.cfg.name))
 
+        # Set shutdown BEFORE stopping subprocess so the main loop
+        # breaks out instead of sending a spurious crash notification.
+        self._shutdown = True
         if self.subprocess.running:
             await self.subprocess.stop()
         await self._stop_telegram_poller()

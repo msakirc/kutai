@@ -68,7 +68,7 @@ class SubprocessManager:
         self.running: bool = False
         self.start_time: float | None = None
         self.last_exit_code: int | None = None
-        self.stderr_tail: deque[str] = deque(maxlen=50)
+        self.stderr_tail: deque[str] = deque(maxlen=200)
         self._stop_requested: bool = False
         self._output_log: logging.Logger | None = None
 
@@ -270,7 +270,9 @@ class SubprocessManager:
                 pass
 
             if name == "stderr":
-                self.stderr_tail.append(line)
+                # Skip debug noise so tracebacks aren't pushed out
+                if not ("LiteLLM:DEBUG" in line or "LiteLLM:INFO" in line):
+                    self.stderr_tail.append(line)
             try:
                 self._ensure_output_log().info(json.dumps({
                     "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),

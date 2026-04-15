@@ -183,4 +183,6 @@ def print_config() -> None:
         max_iterations=MAX_AGENT_ITERATIONS,
         daily_budget=COST_BUDGET_DAILY,
     )
-    registry.print_summary()  # registry still prints its own table to stdout
+    # print_summary was on the old ModelRegistry; fatih_hoca logs during build
+    total = len(registry.models) if hasattr(registry, 'models') else '?'
+    logger.info("Config summary", model_count=total)

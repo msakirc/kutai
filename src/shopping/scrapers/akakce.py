@@ -134,8 +134,12 @@ class AkakceScraper(BaseScraper):
 
     def _parse_card(self, card: Any, now_iso: str) -> Product | None:
         """Extract a single Product from a search-result card element."""
-        # Product name
-        name_el = card.select_one("a.pn_7") or card.select_one("a[title]")
+        # Product name — class changes with redesigns (pn_7 → iC, etc.)
+        name_el = (
+            card.select_one("a.pn_7")
+            or card.select_one("a.iC")
+            or card.select_one("a[title]")
+        )
         if name_el is None:
             return None
 
@@ -149,8 +153,13 @@ class AkakceScraper(BaseScraper):
         href = name_el.get("href", "")
         product_url = href if href.startswith("http") else f"{self._BASE_URL}{href}"
 
-        # Prices (Akakce shows min-max range)
-        price_el = card.select_one("span.pt_v8") or card.select_one("span.fiyat")
+        # Prices — class changes with redesigns (pt_v8 → pt_v9, etc.)
+        price_el = (
+            card.select_one("span.pt_v9")
+            or card.select_one("span.pt_v8")
+            or card.select_one("span.pb_v8")
+            or card.select_one("span.fiyat")
+        )
         original_price: float | None = None
         discounted_price: float | None = None
 
@@ -161,16 +170,25 @@ class AkakceScraper(BaseScraper):
                 discounted_price = parsed
 
         # Second price (original / list price if crossed out)
-        old_price_el = card.select_one("span.pt_v8.old") or card.select_one("del")
+        old_price_el = (
+            card.select_one("span.pt_v9.old")
+            or card.select_one("span.pt_v8.old")
+            or card.select_one("del")
+        )
         if old_price_el:
             old_text = old_price_el.get_text(strip=True)
             original_price = parse_turkish_price(old_text)
 
-        # Store count
+        # Store count — may be in a dedicated span or embedded in price text
         store_el = card.select_one("span.mc") or card.select_one("span.dt_v8")
         store_count: int | None = None
         if store_el:
             m = re.search(r"(\d+)", store_el.get_text())
+            if m:
+                store_count = int(m.group(1))
+        elif price_el:
+            # Akakce embeds store count in price text: "25.499,00TL+16 FİYAT"
+            m = re.search(r"\+(\d+)\s*(?:FİYAT|fiyat)", price_el.get_text(strip=True))
             if m:
                 store_count = int(m.group(1))
 

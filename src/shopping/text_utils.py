@@ -125,6 +125,11 @@ def parse_turkish_price(text: str) -> float | None:
     # Remove currency markers and surrounding whitespace
     s = s.replace("₺", "").replace("TL", "").replace("tl", "").strip()
 
+    # Strip trailing non-price text (e.g. "+16 FİYAT" from akakce)
+    m = re.match(r"^[\d.,\s]+", s)
+    if m:
+        s = m.group(0).strip()
+
     if not s:
         return None
 

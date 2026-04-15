@@ -52,7 +52,10 @@ async def fetch_http(url: str, timeout: float = 10.0) -> ScrapeResult:
             async with session.get(
                 url,
                 timeout=aiohttp.ClientTimeout(total=timeout),
-                headers={"User-Agent": _USER_AGENT},
+                headers={
+                    "User-Agent": _USER_AGENT,
+                    "Accept-Encoding": "gzip, deflate",
+                },
                 allow_redirects=True,
                 max_redirects=3,
             ) as resp:

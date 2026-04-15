@@ -1,734 +1,793 @@
 # tests/test_llm_dispatcher.py
 """
-Comprehensive tests for src/core/llm_dispatcher.py
+Tests for src/core/llm_dispatcher.py (new simplified API).
 
-Covers:
-  - SwapBudget: allow/block/reset/exempt logic, remaining/exhausted properties
-  - LLMDispatcher: OVERHEAD and MAIN_WORK routing, swap notification, stats
-  - CallCategory enum values
-  - Integration-style: ensure_model never called for OVERHEAD
+Tests the thin ask-load-call-retry loop:
+  - CallCategory enum
+  - request() happy path / no-model / retry-on-error / max-retries
+  - needs_thinking=False for OVERHEAD
+  - needs_function_calling propagation
+  - on_model_swap()
+  - get_stats() counters
+  - get_dispatcher() singleton
 """
 from __future__ import annotations
 
 import asyncio
 import sys
 import os
-import time
-import unittest
 from unittest.mock import AsyncMock, MagicMock, patch, call
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def run_async(coro):
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+# ─── Fake lightweight types ───────────────────────────────────────────────────
+
+class FakeCallResult:
+    """Lightweight stand-in that satisfies isinstance(result, hallederiz_kadir.CallResult)."""
+    def __init__(self, **kwargs):
+        self.content = kwargs.get("content", "test response")
+        self.model = kwargs.get("model", "test/model")
+        self.model_name = kwargs.get("model_name", "test-model")
+        self.cost = kwargs.get("cost", 0.001)
+        self.usage = kwargs.get("usage", {"prompt_tokens": 100, "completion_tokens": 50})
+        self.tool_calls = kwargs.get("tool_calls", [])
+        self.latency = kwargs.get("latency", 1.5)
+        self.thinking = kwargs.get("thinking", None)
+        self.is_local = kwargs.get("is_local", False)
+        self.provider = kwargs.get("provider", "test")
+        self.task = kwargs.get("task", "test")
 
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────
+class FakeCallError:
+    retryable = True
+    message = "timeout"
+    category = "timeout"
 
-def _make_reqs(**kwargs):
-    """Create a minimal ModelRequirements-like object for testing."""
-    from dataclasses import dataclass, field
-
-    @dataclass
-    class FakeReqs:
-        task: str = ""
-        primary_capability: str = "general"
-        difficulty: int = 5
-        min_score: float = 0.0
-        estimated_input_tokens: int = 2000
-        estimated_output_tokens: int = 1000
-        min_context_length: int = 0
-        needs_function_calling: bool = False
-        needs_json_mode: bool = False
-        needs_thinking: bool = False
-        needs_vision: bool = False
-        local_only: bool = False
-        prefer_speed: bool = False
-        prefer_quality: bool = False
-        prefer_local: bool = False
-        max_cost: float = 0.0
-        priority: int = 5
-        exclude_models: list = field(default_factory=list)
-        model_override: str | None = None
-        agent_type: str = ""
-        effective_task: str = ""
-
-    r = FakeReqs()
-    for k, v in kwargs.items():
-        setattr(r, k, v)
-    return r
+    def __init__(self, retryable=True, message="timeout", category="timeout"):
+        self.retryable = retryable
+        self.message = message
+        self.category = category
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# SwapBudget Tests
-# ═══════════════════════════════════════════════════════════════════════════════
+# ─── Factories ────────────────────────────────────────────────────────────────
 
-class TestSwapBudget(unittest.TestCase):
+def _make_mock_model(
+    name="test-model",
+    is_local=False,
+    litellm_name="test/model",
+    thinking_model=False,
+    has_vision=False,
+    is_loaded=True,
+):
+    m = MagicMock()
+    m.name = name
+    m.is_local = is_local
+    m.litellm_name = litellm_name
+    m.thinking_model = thinking_model
+    m.has_vision = has_vision
+    m.is_loaded = is_loaded
+    m.location = ""
+    return m
 
-    def _make(self, max_swaps=3, window_seconds=300.0):
-        from src.core.llm_dispatcher import SwapBudget
-        return SwapBudget(max_swaps=max_swaps, window_seconds=window_seconds)
 
-    # 1. 2 swaps when max is 3 → allowed
-    def test_swap_budget_allows_under_limit(self):
-        budget = self._make(max_swaps=3)
-        budget.record_swap()
-        budget.record_swap()
-        self.assertTrue(budget.can_swap())
+def _make_mock_pick(model=None, min_time=30.0):
+    p = MagicMock()
+    p.model = model or _make_mock_model()
+    p.min_time_seconds = min_time
+    return p
 
-    # 2. 3 swaps → 4th blocked
-    def test_swap_budget_blocks_over_limit(self):
-        budget = self._make(max_swaps=3)
-        budget.record_swap()
-        budget.record_swap()
-        budget.record_swap()
-        self.assertFalse(budget.can_swap())
 
-    # 3. swaps expire after window_seconds
-    def test_swap_budget_resets_after_window(self):
-        budget = self._make(max_swaps=2, window_seconds=0.05)
-        budget.record_swap()
-        budget.record_swap()
-        self.assertFalse(budget.can_swap())
-        # Wait for the window to expire
-        time.sleep(0.1)
-        self.assertTrue(budget.can_swap())
+def _fresh_dispatcher():
+    """Return a new LLMDispatcher with reset singleton."""
+    import src.core.llm_dispatcher as mod
+    mod._dispatcher = None
+    from src.core.llm_dispatcher import LLMDispatcher
+    return LLMDispatcher()
 
-    # 4. local_only=True always allowed even over budget
-    def test_swap_budget_exempts_local_only(self):
-        budget = self._make(max_swaps=1)
-        budget.record_swap()
-        # Exhausted but local_only bypasses
-        self.assertTrue(budget.can_swap(local_only=True))
 
-    # 5. priority>=9 always allowed even over budget
-    def test_swap_budget_exempts_urgent(self):
-        budget = self._make(max_swaps=1)
-        budget.record_swap()
-        # Exhausted but priority 9 bypasses
-        self.assertTrue(budget.can_swap(priority=9))
-        self.assertTrue(budget.can_swap(priority=10))
+# ─── Patch helpers ────────────────────────────────────────────────────────────
 
-    # 6. remaining count
-    def test_swap_budget_remaining_property(self):
-        budget = self._make(max_swaps=3)
-        self.assertEqual(budget.remaining, 3)
-        budget.record_swap()
-        self.assertEqual(budget.remaining, 2)
-        budget.record_swap()
-        self.assertEqual(budget.remaining, 1)
-        budget.record_swap()
-        self.assertEqual(budget.remaining, 0)
+def _patch_select(return_value):
+    return patch("fatih_hoca.select", return_value=return_value)
 
-    # 7. exhausted flag
-    def test_swap_budget_exhausted_property(self):
-        budget = self._make(max_swaps=2)
-        self.assertFalse(budget.exhausted)
-        budget.record_swap()
-        self.assertFalse(budget.exhausted)
-        budget.record_swap()
-        self.assertTrue(budget.exhausted)
+
+def _patch_call(return_value=None, side_effect=None):
+    if side_effect is not None:
+        return patch("hallederiz_kadir.call", new=AsyncMock(side_effect=side_effect))
+    return patch("hallederiz_kadir.call", new=AsyncMock(return_value=return_value))
+
+
+def _patch_call_result_class(cls):
+    """Patch hallederiz_kadir.CallResult so isinstance() checks in request() work."""
+    return patch("hallederiz_kadir.CallResult", cls)
+
+
+def _patch_failure_class(cls=None):
+    """Patch fatih_hoca.types.Failure used inside request()."""
+    if cls is None:
+        from fatih_hoca.types import Failure
+        cls = Failure
+    return patch("fatih_hoca.types.Failure", cls)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# LLMDispatcher Routing Tests
+# 1. CallCategory enum
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _make_fake_scored(name="model-a", litellm_name="openai/model-a", is_local=False):
-    """Create a fake ScoredModel for tests using MagicMock."""
-    fake_model = MagicMock()
-    fake_model.name = name
-    fake_model.litellm_name = litellm_name
-    fake_model.is_local = is_local
-    fake_model.location = "cloud"
-    fake_model.thinking_model = False
-    fake_model.has_vision = False
+class TestCallCategory:
 
-    fake_scored = MagicMock()
-    fake_scored.model = fake_model
-    fake_scored.score = 99.0
-    fake_scored.capability_score = 0.8
-    fake_scored.reasons = []
-    return fake_scored
+    def test_main_work_value(self):
+        from src.core.llm_dispatcher import CallCategory
+        assert CallCategory.MAIN_WORK.value == "main_work"
 
+    def test_overhead_value(self):
+        from src.core.llm_dispatcher import CallCategory
+        assert CallCategory.OVERHEAD.value == "overhead"
 
-def _make_fake_call_result(content="ok", model="openai/model-a", model_name="model-a"):
-    """Create a fake hallederiz_kadir.CallResult."""
-    import hallederiz_kadir
-    return hallederiz_kadir.CallResult(
-        content=content,
-        tool_calls=None,
-        thinking=None,
-        usage={"prompt_tokens": 10, "completion_tokens": 5},
-        cost=0.0,
-        latency=0.1,
-        model=model,
-        model_name=model_name,
-        is_local=False,
-        provider="openai",
-        task="test",
-    )
+    def test_both_members_exist(self):
+        from src.core.llm_dispatcher import CallCategory
+        names = {m.name for m in CallCategory}
+        assert "MAIN_WORK" in names
+        assert "OVERHEAD" in names
 
 
-class TestLLMDispatcherRouting(unittest.TestCase):
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2. request() — happy path
+# ═══════════════════════════════════════════════════════════════════════════════
 
-    def _make_dispatcher(self):
-        # Reset the singleton so each test gets a fresh instance
-        import src.core.llm_dispatcher as mod
-        mod._dispatcher = None
-        from src.core.llm_dispatcher import LLMDispatcher
-        return LLMDispatcher()
+class TestRequestHappyPath:
 
-    def _fake_model_info(self, name="model-a", litellm_name="openai/model-a"):
-        info = MagicMock()
-        info.litellm_name = litellm_name
-        info.is_local = True
-        return info
+    @pytest.mark.asyncio
+    async def test_returns_dict_with_content(self):
+        from src.core.llm_dispatcher import CallCategory
 
-    def _fake_manager(self, current_model="model-a"):
-        mgr = MagicMock()
-        mgr.current_model = current_model
-        return mgr
+        dispatcher = _fresh_dispatcher()
+        pick = _make_mock_pick()
+        result_obj = FakeCallResult(content="hello")
 
-    def _fake_registry(self, litellm_name="openai/model-a"):
-        reg = MagicMock()
-        info = self._fake_model_info(litellm_name=litellm_name)
-        reg.get.return_value = info
-        reg.all_models.return_value = [info]
-        return reg
-
-    # ── OVERHEAD routing ──
-
-    # 14. OVERHEAD routes through _exclude_unloaded_local (no pinning)
-    def test_dispatcher_overhead_uses_loaded_model(self):
-        dispatcher = self._make_dispatcher()
-        reqs = _make_reqs()
-        messages = [{"role": "user", "content": "classify this"}]
-
-        fake_scored = _make_fake_scored()
-        fake_result = _make_fake_call_result("ok")
-
-        mock_tl_call = AsyncMock(return_value=fake_result)
-
-        with patch("src.core.llm_dispatcher.LLMDispatcher._exclude_unloaded_local",
-                   side_effect=lambda r: r), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
-                   return_value=[fake_scored]), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
-                   side_effect=lambda msgs, m: msgs), \
-             patch("hallederiz_kadir.call", mock_tl_call):
-
-            from src.core.llm_dispatcher import CallCategory
-            result = run_async(dispatcher.request(
-                category=CallCategory.OVERHEAD,
-                reqs=reqs,
-                messages=messages,
-            ))
-
-        # hallederiz_kadir.call was invoked once
-        self.assertTrue(mock_tl_call.called)
-        self.assertEqual(mock_tl_call.call_count, 1)
-        # Result has content from the fake result
-        self.assertEqual(result["content"], "ok")
-
-    # 15. no model loaded → exclude_unloaded excludes all local → cloud only
-    def test_dispatcher_overhead_falls_to_cloud_when_no_loaded(self):
-        dispatcher = self._make_dispatcher()
-        reqs = _make_reqs()
-        messages = [{"role": "user", "content": "classify this"}]
-
-        fake_scored = _make_fake_scored(name="haiku", litellm_name="claude-3-haiku")
-        fake_result = _make_fake_call_result("ok", model="claude-3-haiku", model_name="haiku")
-
-        mock_tl_call = AsyncMock(return_value=fake_result)
-
-        with patch("src.core.llm_dispatcher.LLMDispatcher._exclude_unloaded_local",
-                   side_effect=lambda r: r), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
-                   return_value=[fake_scored]), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
-                   side_effect=lambda msgs, m: msgs), \
-             patch("hallederiz_kadir.call", mock_tl_call):
-
-            from src.core.llm_dispatcher import CallCategory
-            result = run_async(dispatcher.request(
-                category=CallCategory.OVERHEAD,
-                reqs=reqs,
-                messages=messages,
-            ))
-
-        # hallederiz_kadir.call invoked — cloud model was used
-        self.assertTrue(mock_tl_call.called)
-        self.assertEqual(mock_tl_call.call_count, 1)
-
-    # ── MAIN_WORK routing ──
-
-    # 16. MAIN_WORK calls hallederiz_kadir.call normally
-    def test_dispatcher_main_work_passes_through(self):
-        dispatcher = self._make_dispatcher()
-        reqs = _make_reqs()
-        messages = [{"role": "user", "content": "do work"}]
-
-        fake_scored = _make_fake_scored()
-        fake_result = _make_fake_call_result("done")
-
-        mock_tl_call = AsyncMock(return_value=fake_result)
-
-        with patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
-                   return_value=[fake_scored]), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
-                   side_effect=lambda msgs, m: msgs), \
-             patch("hallederiz_kadir.call", mock_tl_call):
-
-            from src.core.llm_dispatcher import CallCategory
-            result = run_async(dispatcher.request(
+        with _patch_select(pick), \
+             _patch_call(result_obj), \
+             _patch_call_result_class(FakeCallResult):
+            result = await dispatcher.request(
                 category=CallCategory.MAIN_WORK,
-                reqs=reqs,
-                messages=messages,
-            ))
+                task="coder",
+                messages=[{"role": "user", "content": "write code"}],
+            )
 
-        mock_tl_call.assert_called_once()
-        self.assertEqual(result["content"], "done")
+        assert result["content"] == "hello"
 
-    # 17. exhausted budget → tries loaded model first via model_override pinning
-    def test_dispatcher_main_work_with_exhausted_budget(self):
-        dispatcher = self._make_dispatcher()
-        # Exhaust the budget
-        dispatcher.swap_budget.record_swap()
-        dispatcher.swap_budget.record_swap()
-        dispatcher.swap_budget.record_swap()
+    @pytest.mark.asyncio
+    async def test_result_dict_has_expected_keys(self):
+        from src.core.llm_dispatcher import CallCategory
 
-        reqs = _make_reqs(local_only=False)
-        messages = [{"role": "user", "content": "do work"}]
+        dispatcher = _fresh_dispatcher()
+        pick = _make_mock_pick()
+        result_obj = FakeCallResult()
 
-        fake_scored = _make_fake_scored()
-        fake_result = _make_fake_call_result("done")
-
-        # Track what model_override was used in the first _select_candidates call
-        select_calls = []
-
-        def fake_select_candidates(r, tools=None):
-            select_calls.append(getattr(r, "model_override", None))
-            return [fake_scored]
-
-        mock_tl_call = AsyncMock(return_value=fake_result)
-
-        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_litellm_name",
-                   return_value="openai/model-a"), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
-                   side_effect=fake_select_candidates), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
-                   side_effect=lambda msgs, m: msgs), \
-             patch("hallederiz_kadir.call", mock_tl_call):
-
-            from src.core.llm_dispatcher import CallCategory
-            result = run_async(dispatcher.request(
+        with _patch_select(pick), \
+             _patch_call(result_obj), \
+             _patch_call_result_class(FakeCallResult):
+            result = await dispatcher.request(
                 category=CallCategory.MAIN_WORK,
-                reqs=reqs,
-                messages=messages,
-            ))
+                messages=[{"role": "user", "content": "do it"}],
+            )
 
-        # First _select_candidates call should have model_override set to loaded model
-        self.assertTrue(len(select_calls) >= 1)
-        self.assertEqual(select_calls[0], "openai/model-a")
+        for key in ("content", "model", "model_name", "cost", "usage",
+                    "tool_calls", "latency", "thinking", "is_local",
+                    "ran_on", "provider", "task"):
+            assert key in result, f"missing key: {key}"
 
-    # 22. get_stats returns correct counters
-    def test_dispatcher_stats(self):
-        dispatcher = self._make_dispatcher()
+    @pytest.mark.asyncio
+    async def test_overhead_happy_path(self):
+        from src.core.llm_dispatcher import CallCategory
 
-        fake_scored = _make_fake_scored()
-        fake_result = _make_fake_call_result("ok")
-        mock_tl_call = AsyncMock(return_value=fake_result)
+        dispatcher = _fresh_dispatcher()
+        pick = _make_mock_pick()
+        result_obj = FakeCallResult(content="classified")
 
-        with patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
-                   return_value=[fake_scored]), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
-                   side_effect=lambda msgs, m: msgs), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._exclude_unloaded_local",
-                   side_effect=lambda r: r), \
-             patch("hallederiz_kadir.call", mock_tl_call):
+        with _patch_select(pick), \
+             _patch_call(result_obj), \
+             _patch_call_result_class(FakeCallResult):
+            result = await dispatcher.request(
+                category=CallCategory.OVERHEAD,
+                task="router",
+                messages=[{"role": "user", "content": "classify"}],
+            )
 
-            from src.core.llm_dispatcher import CallCategory
+        assert result["content"] == "classified"
 
-            # 2 MAIN_WORK
-            run_async(dispatcher.request(CallCategory.MAIN_WORK, _make_reqs(), []))
-            run_async(dispatcher.request(CallCategory.MAIN_WORK, _make_reqs(), []))
-            # 1 OVERHEAD
-            run_async(dispatcher.request(CallCategory.OVERHEAD, _make_reqs(), []))
+    @pytest.mark.asyncio
+    async def test_ran_on_is_local_for_local_model(self):
+        from src.core.llm_dispatcher import CallCategory
+
+        dispatcher = _fresh_dispatcher()
+        pick = _make_mock_pick()
+        result_obj = FakeCallResult(is_local=True, provider="llama.cpp")
+
+        with _patch_select(pick), \
+             _patch_call(result_obj), \
+             _patch_call_result_class(FakeCallResult):
+            result = await dispatcher.request(
+                category=CallCategory.MAIN_WORK,
+                messages=[],
+            )
+
+        assert result["ran_on"] == "local"
+
+    @pytest.mark.asyncio
+    async def test_ran_on_is_provider_for_cloud_model(self):
+        from src.core.llm_dispatcher import CallCategory
+
+        dispatcher = _fresh_dispatcher()
+        pick = _make_mock_pick()
+        result_obj = FakeCallResult(is_local=False, provider="anthropic")
+
+        with _patch_select(pick), \
+             _patch_call(result_obj), \
+             _patch_call_result_class(FakeCallResult):
+            result = await dispatcher.request(
+                category=CallCategory.MAIN_WORK,
+                messages=[],
+            )
+
+        assert result["ran_on"] == "anthropic"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3. request() — no model available
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestRequestNoModel:
+
+    @pytest.mark.asyncio
+    async def test_main_work_raises_model_call_failed(self):
+        from src.core.llm_dispatcher import CallCategory
+        from src.core.router import ModelCallFailed
+
+        dispatcher = _fresh_dispatcher()
+
+        with _patch_select(None):
+            with pytest.raises(ModelCallFailed):
+                await dispatcher.request(
+                    category=CallCategory.MAIN_WORK,
+                    task="coder",
+                    messages=[],
+                )
+
+    @pytest.mark.asyncio
+    async def test_overhead_raises_runtime_error(self):
+        from src.core.llm_dispatcher import CallCategory
+
+        dispatcher = _fresh_dispatcher()
+
+        with _patch_select(None):
+            with pytest.raises(RuntimeError, match="OVERHEAD call failed"):
+                await dispatcher.request(
+                    category=CallCategory.OVERHEAD,
+                    task="router",
+                    messages=[],
+                )
+
+    @pytest.mark.asyncio
+    async def test_main_work_error_message_contains_task(self):
+        from src.core.llm_dispatcher import CallCategory
+        from src.core.router import ModelCallFailed
+
+        dispatcher = _fresh_dispatcher()
+
+        with _patch_select(None):
+            with pytest.raises(ModelCallFailed) as exc_info:
+                await dispatcher.request(
+                    category=CallCategory.MAIN_WORK,
+                    task="my-task",
+                    messages=[],
+                )
+        assert exc_info.value.call_id == "my-task"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 4. request() — retry on retryable CallError
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestRequestRetry:
+
+    @pytest.mark.asyncio
+    async def test_retries_on_call_error_then_succeeds(self):
+        """First call returns retryable error, second call succeeds."""
+        from src.core.llm_dispatcher import CallCategory
+
+        dispatcher = _fresh_dispatcher()
+        pick = _make_mock_pick()
+
+        error = FakeCallError(retryable=True, message="timeout", category="timeout")
+        success = FakeCallResult(content="retry worked")
+
+        call_count = {"n": 0}
+
+        async def fake_call(**kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return error
+            return success
+
+        with _patch_select(pick), \
+             patch("hallederiz_kadir.call", new=AsyncMock(side_effect=fake_call)), \
+             _patch_call_result_class(FakeCallResult), \
+             patch("hallederiz_kadir.CallError", FakeCallError):
+            result = await dispatcher.request(
+                category=CallCategory.MAIN_WORK,
+                messages=[],
+            )
+
+        assert result["content"] == "retry worked"
+        assert call_count["n"] == 2
+
+    @pytest.mark.asyncio
+    async def test_non_retryable_error_raises_immediately(self):
+        """Non-retryable CallError should raise without retrying."""
+        from src.core.llm_dispatcher import CallCategory
+        from src.core.router import ModelCallFailed
+
+        dispatcher = _fresh_dispatcher()
+        pick = _make_mock_pick()
+        error = FakeCallError(retryable=False, message="bad request", category="bad_request")
+
+        call_count = {"n": 0}
+
+        async def fake_call(**kwargs):
+            call_count["n"] += 1
+            return error
+
+        with _patch_select(pick), \
+             patch("hallederiz_kadir.call", new=AsyncMock(side_effect=fake_call)), \
+             _patch_call_result_class(FakeCallResult), \
+             patch("hallederiz_kadir.CallError", FakeCallError):
+            with pytest.raises(ModelCallFailed):
+                await dispatcher.request(
+                    category=CallCategory.MAIN_WORK,
+                    messages=[],
+                )
+
+        assert call_count["n"] == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5. request() — max retries exhausted
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestRequestMaxRetries:
+
+    @pytest.mark.asyncio
+    async def test_raises_after_5_retryable_failures(self):
+        """After 5 accumulated failures (max_recursion), should raise."""
+        from src.core.llm_dispatcher import CallCategory
+        from src.core.router import ModelCallFailed
+
+        dispatcher = _fresh_dispatcher()
+        pick = _make_mock_pick()
+        error = FakeCallError(retryable=True, message="timeout", category="timeout")
+
+        async def always_error(**kwargs):
+            return error
+
+        with _patch_select(pick), \
+             patch("hallederiz_kadir.call", new=AsyncMock(side_effect=always_error)), \
+             _patch_call_result_class(FakeCallResult), \
+             patch("hallederiz_kadir.CallError", FakeCallError):
+            with pytest.raises(ModelCallFailed):
+                await dispatcher.request(
+                    category=CallCategory.MAIN_WORK,
+                    messages=[],
+                )
+
+    @pytest.mark.asyncio
+    async def test_overhead_raises_runtime_error_after_max_retries(self):
+        from src.core.llm_dispatcher import CallCategory
+
+        dispatcher = _fresh_dispatcher()
+        pick = _make_mock_pick()
+        error = FakeCallError(retryable=True, message="timeout", category="timeout")
+
+        async def always_error(**kwargs):
+            return error
+
+        with _patch_select(pick), \
+             patch("hallederiz_kadir.call", new=AsyncMock(side_effect=always_error)), \
+             _patch_call_result_class(FakeCallResult), \
+             patch("hallederiz_kadir.CallError", FakeCallError):
+            with pytest.raises(RuntimeError, match="OVERHEAD call failed"):
+                await dispatcher.request(
+                    category=CallCategory.OVERHEAD,
+                    messages=[],
+                )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 6. needs_thinking=False for OVERHEAD
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestNeedsThinkingOverhead:
+
+    @pytest.mark.asyncio
+    async def test_overhead_always_passes_needs_thinking_false(self):
+        """OVERHEAD category must always pass needs_thinking=False to select()."""
+        from src.core.llm_dispatcher import CallCategory
+
+        dispatcher = _fresh_dispatcher()
+        pick = _make_mock_pick()
+        result_obj = FakeCallResult()
+
+        select_kwargs = {}
+
+        def fake_select(**kwargs):
+            select_kwargs.update(kwargs)
+            return pick
+
+        with patch("fatih_hoca.select", side_effect=fake_select), \
+             _patch_call(result_obj), \
+             _patch_call_result_class(FakeCallResult):
+            await dispatcher.request(
+                category=CallCategory.OVERHEAD,
+                messages=[],
+                needs_thinking=True,  # even if caller passes True, should be overridden
+            )
+
+        assert select_kwargs.get("needs_thinking") is False
+
+    @pytest.mark.asyncio
+    async def test_main_work_defaults_needs_thinking_true(self):
+        """MAIN_WORK with no explicit needs_thinking should default to True."""
+        from src.core.llm_dispatcher import CallCategory
+
+        dispatcher = _fresh_dispatcher()
+        pick = _make_mock_pick()
+        result_obj = FakeCallResult()
+
+        select_kwargs = {}
+
+        def fake_select(**kwargs):
+            select_kwargs.update(kwargs)
+            return pick
+
+        with patch("fatih_hoca.select", side_effect=fake_select), \
+             _patch_call(result_obj), \
+             _patch_call_result_class(FakeCallResult):
+            await dispatcher.request(
+                category=CallCategory.MAIN_WORK,
+                messages=[],
+            )
+
+        assert select_kwargs.get("needs_thinking") is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 7. tools → needs_function_calling
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestNeedsFunctionCalling:
+
+    @pytest.mark.asyncio
+    async def test_tools_sets_needs_function_calling_true(self):
+        """Passing tools must cause needs_function_calling=True in select()."""
+        from src.core.llm_dispatcher import CallCategory
+
+        dispatcher = _fresh_dispatcher()
+        pick = _make_mock_pick()
+        result_obj = FakeCallResult()
+
+        select_kwargs = {}
+
+        def fake_select(**kwargs):
+            select_kwargs.update(kwargs)
+            return pick
+
+        tools = [{"name": "search", "description": "search the web"}]
+
+        with patch("fatih_hoca.select", side_effect=fake_select), \
+             _patch_call(result_obj), \
+             _patch_call_result_class(FakeCallResult):
+            await dispatcher.request(
+                category=CallCategory.MAIN_WORK,
+                messages=[],
+                tools=tools,
+            )
+
+        assert select_kwargs.get("needs_function_calling") is True
+
+    @pytest.mark.asyncio
+    async def test_no_tools_does_not_force_function_calling(self):
+        """Without tools, needs_function_calling should default to False."""
+        from src.core.llm_dispatcher import CallCategory
+
+        dispatcher = _fresh_dispatcher()
+        pick = _make_mock_pick()
+        result_obj = FakeCallResult()
+
+        select_kwargs = {}
+
+        def fake_select(**kwargs):
+            select_kwargs.update(kwargs)
+            return pick
+
+        with patch("fatih_hoca.select", side_effect=fake_select), \
+             _patch_call(result_obj), \
+             _patch_call_result_class(FakeCallResult):
+            await dispatcher.request(
+                category=CallCategory.MAIN_WORK,
+                messages=[],
+            )
+
+        assert select_kwargs.get("needs_function_calling") is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8. on_model_swap()
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestOnModelSwap:
+
+    @pytest.mark.asyncio
+    async def test_calls_accelerate_retries(self):
+        dispatcher = _fresh_dispatcher()
+
+        mock_accelerate = AsyncMock(return_value=0)
+        mock_drain = AsyncMock(return_value=0)
+
+        with patch("src.infra.db.accelerate_retries", mock_accelerate), \
+             patch("src.core.grading.drain_ungraded_tasks", mock_drain):
+            await dispatcher.on_model_swap("old-model", "new-model")
+
+        mock_accelerate.assert_called_once_with("model_swap")
+
+    @pytest.mark.asyncio
+    async def test_calls_drain_ungraded_tasks_when_new_model(self):
+        dispatcher = _fresh_dispatcher()
+
+        mock_accelerate = AsyncMock(return_value=0)
+        mock_drain = AsyncMock(return_value=3)
+
+        with patch("src.infra.db.accelerate_retries", mock_accelerate), \
+             patch("src.core.grading.drain_ungraded_tasks", mock_drain):
+            await dispatcher.on_model_swap("old-model", "new-model")
+
+        mock_drain.assert_called_once_with("new-model")
+
+    @pytest.mark.asyncio
+    async def test_skips_drain_when_no_new_model(self):
+        """When new_model is None, drain_ungraded_tasks should not be called."""
+        dispatcher = _fresh_dispatcher()
+
+        mock_accelerate = AsyncMock(return_value=0)
+        mock_drain = AsyncMock(return_value=0)
+
+        with patch("src.infra.db.accelerate_retries", mock_accelerate), \
+             patch("src.core.grading.drain_ungraded_tasks", mock_drain):
+            await dispatcher.on_model_swap("old-model", None)
+
+        mock_drain.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_survives_accelerate_retries_exception(self):
+        """If accelerate_retries raises, on_model_swap should not propagate."""
+        dispatcher = _fresh_dispatcher()
+
+        with patch("src.infra.db.accelerate_retries", side_effect=RuntimeError("db gone")):
+            # Should not raise
+            await dispatcher.on_model_swap("old", "new")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 9. get_stats()
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestGetStats:
+
+    def test_initial_stats_are_zero(self):
+        dispatcher = _fresh_dispatcher()
+        stats = dispatcher.get_stats()
+        assert stats["total_calls"] == 0
+        assert stats["overhead_calls"] == 0
+        assert stats["overhead_pct"] == "0%"
+
+    @pytest.mark.asyncio
+    async def test_total_calls_increment(self):
+        from src.core.llm_dispatcher import CallCategory
+
+        dispatcher = _fresh_dispatcher()
+        pick = _make_mock_pick()
+        result_obj = FakeCallResult()
+
+        with _patch_select(pick), \
+             _patch_call(result_obj), \
+             _patch_call_result_class(FakeCallResult):
+            await dispatcher.request(CallCategory.MAIN_WORK, messages=[])
+            await dispatcher.request(CallCategory.MAIN_WORK, messages=[])
 
         stats = dispatcher.get_stats()
-        self.assertEqual(stats["total_calls"], 3)
-        self.assertEqual(stats["overhead_calls"], 1)
-        self.assertIn("overhead_pct", stats)
-        self.assertIn("swap_budget_remaining", stats)
-        # overhead_pct should be ~33.3%
-        self.assertIn("33.3%", stats["overhead_pct"])
+        assert stats["total_calls"] == 2
+        assert stats["overhead_calls"] == 0
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CallCategory Tests
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestCallCategory(unittest.TestCase):
-
-    # 23. enum values exist
-    def test_call_category_enum_values(self):
+    @pytest.mark.asyncio
+    async def test_overhead_calls_tracked_separately(self):
         from src.core.llm_dispatcher import CallCategory
-        self.assertEqual(CallCategory.MAIN_WORK.value, "main_work")
-        self.assertEqual(CallCategory.OVERHEAD.value, "overhead")
-        # Ensure both members exist
-        members = {m.name for m in CallCategory}
-        self.assertIn("MAIN_WORK", members)
-        self.assertIn("OVERHEAD", members)
+
+        dispatcher = _fresh_dispatcher()
+        pick = _make_mock_pick()
+        result_obj = FakeCallResult()
+
+        with _patch_select(pick), \
+             _patch_call(result_obj), \
+             _patch_call_result_class(FakeCallResult):
+            await dispatcher.request(CallCategory.MAIN_WORK, messages=[])
+            await dispatcher.request(CallCategory.MAIN_WORK, messages=[])
+            await dispatcher.request(CallCategory.OVERHEAD, messages=[])
+
+        stats = dispatcher.get_stats()
+        assert stats["total_calls"] == 3
+        assert stats["overhead_calls"] == 1
+
+    @pytest.mark.asyncio
+    async def test_overhead_pct_correct(self):
+        from src.core.llm_dispatcher import CallCategory
+
+        dispatcher = _fresh_dispatcher()
+        pick = _make_mock_pick()
+        result_obj = FakeCallResult()
+
+        with _patch_select(pick), \
+             _patch_call(result_obj), \
+             _patch_call_result_class(FakeCallResult):
+            # 1 overhead out of 3 total = 33.3%
+            await dispatcher.request(CallCategory.MAIN_WORK, messages=[])
+            await dispatcher.request(CallCategory.MAIN_WORK, messages=[])
+            await dispatcher.request(CallCategory.OVERHEAD, messages=[])
+
+        stats = dispatcher.get_stats()
+        assert "33.3%" in stats["overhead_pct"]
+
+    @pytest.mark.asyncio
+    async def test_overhead_pct_increments_even_on_failed_call(self):
+        """Even when select() returns None, counters should still increment."""
+        from src.core.llm_dispatcher import CallCategory
+        from src.core.router import ModelCallFailed
+
+        dispatcher = _fresh_dispatcher()
+
+        with _patch_select(None):
+            try:
+                await dispatcher.request(CallCategory.MAIN_WORK, messages=[])
+            except ModelCallFailed:
+                pass
+            try:
+                await dispatcher.request(CallCategory.OVERHEAD, messages=[])
+            except RuntimeError:
+                pass
+
+        stats = dispatcher.get_stats()
+        assert stats["total_calls"] == 2
+        assert stats["overhead_calls"] == 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Integration-style Tests
+# 10. Singleton — get_dispatcher
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestLLMDispatcherIntegration(unittest.TestCase):
+class TestGetDispatcherSingleton:
 
-    def _make_dispatcher(self):
+    def test_returns_same_instance(self):
         import src.core.llm_dispatcher as mod
         mod._dispatcher = None
-        from src.core.llm_dispatcher import LLMDispatcher
-        return LLMDispatcher()
-
-    # 24. ensure_model never called for OVERHEAD
-    def test_overhead_never_triggers_ensure_model(self):
-        dispatcher = self._make_dispatcher()
-        reqs = _make_reqs()
-        messages = [{"role": "user", "content": "classify"}]
-
-        mock_ensure = AsyncMock()
-        fake_scored = _make_fake_scored()
-        fake_result = _make_fake_call_result("ok")
-        mock_tl_call = AsyncMock(return_value=fake_result)
-
-        # _exclude_unloaded_local is the mechanism that prevents swaps
-        with patch("src.core.llm_dispatcher.LLMDispatcher._exclude_unloaded_local",
-                   side_effect=lambda r: r), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
-                   return_value=[fake_scored]), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
-                   side_effect=lambda msgs, m: msgs), \
-             patch("hallederiz_kadir.call", mock_tl_call):
-
-            # Patch ensure_model via the module that would be imported
-            with patch.dict("sys.modules", {
-                "src.models.local_model_manager": MagicMock(
-                    get_local_manager=MagicMock(return_value=MagicMock(
-                        current_model="model-a",
-                        swap_started_at=0.0,
-                        ensure_model=mock_ensure,
-                    ))
-                )
-            }):
-                from src.core.llm_dispatcher import CallCategory
-                run_async(dispatcher.request(
-                    category=CallCategory.OVERHEAD,
-                    reqs=reqs,
-                    messages=messages,
-                ))
-
-        # ensure_model (which causes swaps) must NOT have been called for OVERHEAD
-        mock_ensure.assert_not_called()
-
-    # 26. _exclude_unloaded_local keeps loaded model + cloud
-    def test_exclude_unloaded_local_keeps_loaded_model(self):
-        dispatcher = self._make_dispatcher()
-
-        from src.core.router import ModelRequirements
-        reqs = ModelRequirements(task="classifier", difficulty=2)
-
-        # Set up: model-a is loaded, model-b and model-c are unloaded
-        mock_model_a = MagicMock()
-        mock_model_a.is_local = True
-        mock_model_a.name = "model-a"
-        mock_model_a.litellm_name = "openai/model-a"
-
-        mock_model_b = MagicMock()
-        mock_model_b.is_local = True
-        mock_model_b.name = "model-b"
-        mock_model_b.litellm_name = "openai/model-b"
-
-        mock_cloud = MagicMock()
-        mock_cloud.is_local = False
-        mock_cloud.name = "gemini-flash"
-        mock_cloud.litellm_name = "gemini/flash"
-
-        mock_reg = MagicMock()
-        mock_reg.all_models.return_value = [mock_model_a, mock_model_b, mock_cloud]
-
-        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_model_name",
-                   return_value="model-a"), \
-             patch("src.models.model_registry.get_registry",
-                   return_value=mock_reg):
-            result = dispatcher._exclude_unloaded_local(reqs)
-
-        # Unloaded local model-b should be excluded
-        self.assertIn("openai/model-b", result.exclude_models)
-        # Loaded model-a should NOT be excluded
-        self.assertNotIn("openai/model-a", result.exclude_models)
-        # Cloud should NOT be excluded
-        self.assertNotIn("gemini/flash", result.exclude_models)
-        # local_only should be False
-        self.assertFalse(result.local_only)
-
-    # 27. _exclude_unloaded_local with nothing loaded excludes all local
-    def test_exclude_unloaded_local_no_model_loaded(self):
-        dispatcher = self._make_dispatcher()
-
-        from src.core.router import ModelRequirements
-        reqs = ModelRequirements(task="classifier", difficulty=2)
-
-        mock_model_a = MagicMock()
-        mock_model_a.is_local = True
-        mock_model_a.name = "model-a"
-        mock_model_a.litellm_name = "openai/model-a"
-
-        mock_reg = MagicMock()
-        mock_reg.all_models.return_value = [mock_model_a]
-
-        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_model_name",
-                   return_value=None), \
-             patch("src.models.model_registry.get_registry",
-                   return_value=mock_reg):
-            result = dispatcher._exclude_unloaded_local(reqs)
-
-        # All local models excluded (none loaded)
-        self.assertIn("openai/model-a", result.exclude_models)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Cold-Start Wait Tests
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestColdStartWait(unittest.TestCase):
-    """Test that OVERHEAD calls wait for proactive model load on cold start."""
-
-    def _make_dispatcher(self):
-        import src.core.llm_dispatcher as mod
-        mod._dispatcher = None
-        from src.core.llm_dispatcher import LLMDispatcher
-        return LLMDispatcher()
-
-    # 30. OVERHEAD waits for model load when no model loaded and no cloud
-    def test_overhead_waits_for_cold_start_load(self):
-        """When no model is loaded and no cloud available, OVERHEAD should
-        wait for the proactive load to complete rather than failing immediately."""
-        dispatcher = self._make_dispatcher()
-        reqs = _make_reqs()
-        messages = [{"role": "user", "content": "classify this"}]
-
-        # Simulate: no model loaded initially, then loaded after wait
-        load_count = {"calls": 0}
-
-        def fake_get_loaded_name():
-            load_count["calls"] += 1
-            if load_count["calls"] >= 3:  # loaded after a few polls
-                return "model-a"
-            return None
-
-        mock_model_a = MagicMock()
-        mock_model_a.is_local = True
-        mock_model_a.name = "model-a"
-        mock_model_a.litellm_name = "openai/model-a"
-
-        mock_reg = MagicMock()
-        mock_reg.all_models.return_value = [mock_model_a]
-
-        mock_mgr = MagicMock()
-        mock_mgr.swap_started_at = 1.0  # proactive load in progress
-
-        fake_scored = _make_fake_scored()
-        fake_result = _make_fake_call_result("ok")
-        mock_tl_call = AsyncMock(return_value=fake_result)
-
-        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_model_name",
-                   side_effect=fake_get_loaded_name), \
-             patch("src.models.model_registry.get_registry",
-                   return_value=mock_reg), \
-             patch("src.models.local_model_manager.get_local_manager",
-                   return_value=mock_mgr), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
-                   return_value=[fake_scored]), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
-                   side_effect=lambda msgs, m: msgs), \
-             patch("hallederiz_kadir.call", mock_tl_call):
-
-            from src.core.llm_dispatcher import CallCategory
-            result = run_async(dispatcher.request(
-                category=CallCategory.OVERHEAD,
-                reqs=reqs,
-                messages=messages,
-            ))
-
-        # Should have succeeded after waiting for model load
-        self.assertEqual(result["content"], "ok")
-        mock_tl_call.assert_called_once()
-
-    # 31. OVERHEAD times out waiting if model never loads
-    def test_overhead_cold_start_timeout(self):
-        """If model never loads within timeout, OVERHEAD should fail gracefully."""
-        dispatcher = self._make_dispatcher()
-        reqs = _make_reqs()
-        messages = [{"role": "user", "content": "classify this"}]
-
-        mock_model_a = MagicMock()
-        mock_model_a.is_local = True
-        mock_model_a.name = "model-a"
-        mock_model_a.litellm_name = "openai/model-a"
-
-        mock_reg = MagicMock()
-        mock_reg.all_models.return_value = [mock_model_a]
-
-        mock_mgr = MagicMock()
-        mock_mgr.swap_started_at = 1.0
-        mock_mgr.current_model = None
-
-        import hallederiz_kadir as _tl
-        mock_tl_call = AsyncMock(return_value=_tl.CallError(
-            category="no_model", message="no models", retryable=False))
-
-        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_model_name",
-                   return_value=None), \
-             patch("src.models.model_registry.get_registry",
-                   return_value=mock_reg), \
-             patch("src.models.local_model_manager.get_local_manager",
-                   return_value=mock_mgr), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
-                   return_value=[_make_fake_scored()]), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
-                   side_effect=lambda msgs, m: msgs), \
-             patch("hallederiz_kadir.call", mock_tl_call), \
-             patch("src.core.llm_dispatcher._COLD_START_WAIT_TIMEOUT", 0.3), \
-             patch("src.core.llm_dispatcher._COLD_START_POLL_INTERVAL", 0.1):
-
-            from src.core.llm_dispatcher import CallCategory
-            with self.assertRaises(RuntimeError) as ctx:
-                run_async(dispatcher.request(
-                    category=CallCategory.OVERHEAD,
-                    reqs=reqs,
-                    messages=messages,
-                ))
-            self.assertIn("OVERHEAD call failed", str(ctx.exception))
-
-    # 32. OVERHEAD skips wait when cloud is available
-    def test_overhead_no_wait_when_cloud_available(self):
-        """When cloud models are available, OVERHEAD should not wait — just use cloud."""
-        dispatcher = self._make_dispatcher()
-        reqs = _make_reqs()
-        messages = [{"role": "user", "content": "classify this"}]
-
-        mock_model_a = MagicMock()
-        mock_model_a.is_local = True
-        mock_model_a.name = "model-a"
-        mock_model_a.litellm_name = "openai/model-a"
-
-        mock_cloud = MagicMock()
-        mock_cloud.is_local = False
-        mock_cloud.name = "haiku"
-        mock_cloud.litellm_name = "claude-3-haiku"
-
-        mock_reg = MagicMock()
-        mock_reg.all_models.return_value = [mock_model_a, mock_cloud]
-
-        fake_scored = _make_fake_scored(name="haiku", litellm_name="claude-3-haiku")
-        fake_result = _make_fake_call_result("ok", model="claude-3-haiku", model_name="haiku")
-        mock_tl_call = AsyncMock(return_value=fake_result)
-
-        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_model_name",
-                   return_value=None), \
-             patch("src.models.model_registry.get_registry",
-                   return_value=mock_reg), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
-                   return_value=[fake_scored]), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
-                   side_effect=lambda msgs, m: msgs), \
-             patch("hallederiz_kadir.call", mock_tl_call):
-
-            from src.core.llm_dispatcher import CallCategory
-            result = run_async(dispatcher.request(
-                category=CallCategory.OVERHEAD,
-                reqs=reqs,
-                messages=messages,
-            ))
-
-        # Should succeed immediately without waiting
-        self.assertEqual(result["content"], "ok")
-        mock_tl_call.assert_called_once()
-
-    # 33. OVERHEAD skips wait when no swap in progress (nothing loading)
-    def test_overhead_no_wait_when_nothing_loading(self):
-        """When no model is loaded and nothing is loading, don't wait forever."""
-        dispatcher = self._make_dispatcher()
-        reqs = _make_reqs()
-        messages = [{"role": "user", "content": "classify this"}]
-
-        mock_model_a = MagicMock()
-        mock_model_a.is_local = True
-        mock_model_a.name = "model-a"
-        mock_model_a.litellm_name = "openai/model-a"
-
-        mock_reg = MagicMock()
-        mock_reg.all_models.return_value = [mock_model_a]
-
-        mock_mgr = MagicMock()
-        mock_mgr.swap_started_at = 0.0  # nothing loading
-        mock_mgr.current_model = None
-
-        import hallederiz_kadir as _tl
-        mock_tl_call = AsyncMock(return_value=_tl.CallError(
-            category="no_model", message="no models", retryable=False))
-
-        with patch("src.core.llm_dispatcher.LLMDispatcher._get_loaded_model_name",
-                   return_value=None), \
-             patch("src.models.model_registry.get_registry",
-                   return_value=mock_reg), \
-             patch("src.models.local_model_manager.get_local_manager",
-                   return_value=mock_mgr), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._select_candidates",
-                   return_value=[_make_fake_scored()]), \
-             patch("src.core.llm_dispatcher.LLMDispatcher._prepare_messages",
-                   side_effect=lambda msgs, m: msgs), \
-             patch("hallederiz_kadir.call", mock_tl_call):
-
-            from src.core.llm_dispatcher import CallCategory
-            with self.assertRaises(RuntimeError):
-                run_async(dispatcher.request(
-                    category=CallCategory.OVERHEAD,
-                    reqs=reqs,
-                    messages=messages,
-                ))
-
-
-# ─── Singleton Tests ──────────────────────────────────────────────────────────
-
-class TestGetDispatcherSingleton(unittest.TestCase):
-
-    def test_get_dispatcher_returns_same_instance(self):
-        import src.core.llm_dispatcher as mod
-        mod._dispatcher = None  # reset
 
         from src.core.llm_dispatcher import get_dispatcher
         d1 = get_dispatcher()
         d2 = get_dispatcher()
-        self.assertIs(d1, d2)
+        assert d1 is d2
 
-    def test_get_dispatcher_returns_llm_dispatcher(self):
+    def test_returns_llm_dispatcher_instance(self):
         import src.core.llm_dispatcher as mod
         mod._dispatcher = None
 
         from src.core.llm_dispatcher import get_dispatcher, LLMDispatcher
         d = get_dispatcher()
-        self.assertIsInstance(d, LLMDispatcher)
+        assert isinstance(d, LLMDispatcher)
+
+    def test_reset_creates_new_instance(self):
+        import src.core.llm_dispatcher as mod
+        from src.core.llm_dispatcher import get_dispatcher
+
+        mod._dispatcher = None
+        d1 = get_dispatcher()
+        mod._dispatcher = None
+        d2 = get_dispatcher()
+        assert d1 is not d2
 
 
-if __name__ == "__main__":
-    unittest.main()
+# ═══════════════════════════════════════════════════════════════════════════════
+# 11. _timeout_floor()
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestTimeoutFloor:
+
+    def test_overhead_floor_is_20(self):
+        from src.core.llm_dispatcher import CallCategory
+        dispatcher = _fresh_dispatcher()
+        assert dispatcher._timeout_floor(CallCategory.OVERHEAD) == 20.0
+
+    def test_main_work_floor_is_30(self):
+        from src.core.llm_dispatcher import CallCategory
+        dispatcher = _fresh_dispatcher()
+        assert dispatcher._timeout_floor(CallCategory.MAIN_WORK) == 30.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 12. local model load path
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestLocalModelLoad:
+
+    @pytest.mark.asyncio
+    async def test_local_model_load_failure_raises_model_call_failed(self):
+        """If _ensure_local_model returns False, should raise ModelCallFailed."""
+        from src.core.llm_dispatcher import CallCategory
+        from src.core.router import ModelCallFailed
+
+        dispatcher = _fresh_dispatcher()
+        # Local model, not ollama
+        model = _make_mock_model(is_local=True, is_loaded=False)
+        model.location = ""
+        model.thinking_model = False
+        pick = _make_mock_pick(model=model)
+
+        with _patch_select(pick), \
+             patch.object(dispatcher, "_ensure_local_model", AsyncMock(return_value=False)):
+            with pytest.raises(ModelCallFailed):
+                await dispatcher.request(
+                    category=CallCategory.MAIN_WORK,
+                    messages=[],
+                )
+
+    @pytest.mark.asyncio
+    async def test_local_model_load_failure_overhead_raises_runtime_error(self):
+        """If _ensure_local_model returns False for OVERHEAD, RuntimeError."""
+        from src.core.llm_dispatcher import CallCategory
+
+        dispatcher = _fresh_dispatcher()
+        model = _make_mock_model(is_local=True, is_loaded=False)
+        model.location = ""
+        model.thinking_model = False
+        pick = _make_mock_pick(model=model)
+
+        with _patch_select(pick), \
+             patch.object(dispatcher, "_ensure_local_model", AsyncMock(return_value=False)):
+            with pytest.raises(RuntimeError, match="OVERHEAD call failed"):
+                await dispatcher.request(
+                    category=CallCategory.OVERHEAD,
+                    messages=[],
+                )
+
+    @pytest.mark.asyncio
+    async def test_ollama_model_skips_local_load(self):
+        """Models with location='ollama' should skip _ensure_local_model."""
+        from src.core.llm_dispatcher import CallCategory
+
+        dispatcher = _fresh_dispatcher()
+        model = _make_mock_model(is_local=True)
+        model.location = "ollama"
+        pick = _make_mock_pick(model=model)
+        result_obj = FakeCallResult()
+
+        mock_ensure = AsyncMock(return_value=True)
+
+        with _patch_select(pick), \
+             _patch_call(result_obj), \
+             _patch_call_result_class(FakeCallResult), \
+             patch.object(dispatcher, "_ensure_local_model", mock_ensure):
+            await dispatcher.request(
+                category=CallCategory.MAIN_WORK,
+                messages=[],
+            )
+
+        mock_ensure.assert_not_called()

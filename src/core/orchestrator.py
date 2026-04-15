@@ -212,7 +212,7 @@ def _reorder_by_model_affinity(tasks: list[dict]) -> list[dict]:
                     fit = min(1.0, cap_score / 10.0)
 
             # Zero affinity for tasks that would reject the loaded model
-            if _should_defer_for_loaded_model(task, manager.current_litellm_name or ""):
+            if _should_defer_for_loaded_model(task, manager.current_model or ""):
                 fit = 0.0
 
             # Boost by fit * 0.9, so max boost < 1 priority level
@@ -934,38 +934,16 @@ class Orchestrator:
         resource_issues: list[str] = []
 
         # 4. Check llama-server health
+        # DaLLaMa's HealthWatchdog handles crash recovery internally.
+        # We only report status for the resource summary.
         try:
             from ..models.local_model_manager import get_local_manager
 
             manager = get_local_manager()
-            if manager.current_model:
-                # Server should be running
-                if manager.process is None or manager.process.poll() is not None:
-                    resource_issues.append(
-                        f"llama-server crashed (model: {manager.current_model})"
-                    )
-                    logger.error(
-                        f"[Watchdog] llama-server process died! "
-                        f"Attempting restart of {manager.current_model}"
-                    )
-                    model_name = manager.current_model
-                    manager.process = None
-                    manager.current_model = None
-
-                    # Attempt restart
-                    success = await manager.ensure_model(
-                        model_name, reason="watchdog crash recovery",
-                    )
-                    if success:
-                        logger.info(
-                            f"[Watchdog] ✅ llama-server recovered: "
-                            f"{model_name}"
-                        )
-                    else:
-                        resource_issues.append(
-                            f"Failed to restart llama-server for "
-                            f"{model_name}"
-                        )
+            if manager.current_model and not manager.is_loaded:
+                resource_issues.append(
+                    f"llama-server unhealthy (model: {manager.current_model})"
+                )
         except Exception as e:
             logger.warning(f"[Watchdog] Local model check failed: {e}")
 
@@ -977,7 +955,7 @@ class Orchestrator:
 
             if gpu_state.gpu.available:
                 # Thermal throttling
-                if gpu_state.gpu.is_thermal_throttling:
+                if gpu_state.gpu.is_throttling:
                     resource_issues.append(
                         f"GPU thermal throttling! "
                         f"Temp: {gpu_state.gpu.temperature_c}°C"
@@ -3305,7 +3283,7 @@ class Orchestrator:
                 try:
                     from src.models.local_model_manager import get_local_manager
                     _mgr = get_local_manager()
-                    loaded_model = getattr(_mgr, 'current_litellm_name', '') or ''
+                    loaded_model = getattr(_mgr, 'current_model', '') or ''
                 except Exception:
                     pass
 
@@ -3817,7 +3795,7 @@ class Orchestrator:
 
                     # Stop llama-server if running
                     try:
-                        await manager._stop_server()
+                        await manager.shutdown()
                         logger.info("llama-server stopped")
                     except Exception as e:
                         logger.warning(f"Error stopping llama-server: {e}")
@@ -3827,7 +3805,7 @@ class Orchestrator:
                     # Non-graceful exit (crash, code 42 restart, etc.)
                     # Still need to stop llama-server to prevent orphans
                     try:
-                        await manager._stop_server()
+                        await manager.shutdown()
                         logger.info("llama-server stopped (non-graceful exit)")
                     except Exception as e:
                         logger.warning(f"Error stopping llama-server: {e}")

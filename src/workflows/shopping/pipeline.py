@@ -9,11 +9,121 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import re
 from typing import Any
 
 from src.infra.logging_config import get_logger
 
 logger = get_logger("workflows.shopping.pipeline")
+
+
+# ── Relevance filtering ────────────────────────────────────────────────────
+
+def _relevance_score(product_name: str, query: str) -> float:
+    """Score 0.0–1.0 how relevant *product_name* is to the search *query*.
+
+    Tokenizes the query, normalises both sides (Turkish-aware lowercase,
+    strip punctuation), and counts what fraction of query tokens appear
+    in the product name.  A collapsed (no-space) check catches model
+    numbers like "EQ.s100" matching token "s100".
+    """
+    from src.shopping.text_utils import normalize_turkish
+
+    def _norm(s: str) -> str:
+        s = normalize_turkish(s)
+        return re.sub(r"[^a-z0-9ğüşıöç\s]", "", s)
+
+    name_norm = _norm(product_name)
+    query_norm = _norm(query)
+    name_collapsed = name_norm.replace(" ", "")
+
+    tokens = [t for t in query_norm.split() if len(t) >= 2]
+    if not tokens:
+        return 1.0
+
+    matched = sum(1 for t in tokens if t in name_norm or t in name_collapsed)
+    return matched / len(tokens)
+
+
+def _filter_relevant(products: list, query: str) -> list:
+    """Keep only products whose names are relevant to *query*.
+
+    Strategy: score every product, then keep those within 20% of the best
+    score, with a hard floor of 0.5 (at least half the query tokens must
+    appear).  If nothing passes the floor, return the original list so the
+    user still gets *something*.
+    """
+    if not products or not query:
+        return products
+
+    scored = []
+    for p in products:
+        name = p.name if hasattr(p, "name") else (p.get("name", "") if isinstance(p, dict) else "")
+        s = _relevance_score(name, query)
+        scored.append((p, s))
+
+    max_score = max(s for _, s in scored)
+    threshold = max(max_score * 0.8, 0.5)
+
+    filtered = [p for p, s in scored if s >= threshold]
+
+    dropped = len(products) - len(filtered)
+    if dropped:
+        logger.info(
+            "relevance filter: %d/%d products kept (threshold=%.2f)",
+            len(filtered), len(products), threshold,
+        )
+
+    return filtered if filtered else products
+
+
+async def _match_and_flatten(products: list) -> list[dict]:
+    """Run product matching, then flatten groups back to a sorted list.
+
+    Each match group keeps all its source entries (for cross-source price
+    comparison).  Groups are ordered by match count desc, then cheapest
+    price asc — so multi-source matches with good prices come first.
+    The original Product fields are preserved (not the matcher's stripped
+    version) so the format step has access to prices, ratings, etc.
+    """
+    # Separate Product dataclass instances from plain dicts
+    product_objs: list = []
+    plain_dicts: list[dict] = []
+    for p in products:
+        if dataclasses.is_dataclass(p):
+            product_objs.append(p)
+        elif isinstance(p, dict):
+            plain_dicts.append(p)
+
+    if not product_objs:
+        return plain_dicts
+
+    # Build lookup: (name, source, url) -> original full dict
+    orig_lookup: dict[tuple, dict] = {}
+    for p in product_objs:
+        d = dataclasses.asdict(p)
+        key = (d.get("name", ""), d.get("source", ""), d.get("url", ""))
+        orig_lookup[key] = d
+
+    try:
+        from src.shopping.intelligence.product_matcher import match_products
+        groups = await match_products(product_objs)
+    except Exception as exc:
+        logger.warning("product_matcher failed, returning unmatched: %s", exc)
+        return list(orig_lookup.values()) + plain_dicts
+
+    # Flatten: for each group, look up the original full dict for every
+    # product entry.  Fall back to the matcher's stripped dict if lookup
+    # misses (shouldn't happen, but be safe).
+    flat: list[dict] = []
+    for group in groups:
+        for prod in group.get("products", []):
+            key = (prod.get("name", ""), prod.get("source", ""), prod.get("url", ""))
+            full = orig_lookup.get(key, prod)
+            flat.append(full)
+
+    flat.extend(plain_dicts)
+    return flat
 
 
 # ── Artifact helper ─────────────────────────────────────────────────────────
@@ -71,7 +181,7 @@ async def _step_search(task: dict, artifacts: dict) -> str:
     )
 
     product_task = asyncio.ensure_future(
-        asyncio.wait_for(get_product_with_fallback(query), timeout=30)
+        asyncio.wait_for(get_product_with_fallback(query), timeout=45)
     )
     community_task = asyncio.ensure_future(
         asyncio.wait_for(get_community_data(query), timeout=20)
@@ -95,19 +205,24 @@ async def _step_search(task: dict, artifacts: dict) -> str:
     if not isinstance(community, list):
         community = []
 
-    products_dicts = [
-        dataclasses.asdict(p) if dataclasses.is_dataclass(p) else p
-        for p in products
-    ]
+    # ── Relevance filtering ──
+    products = _filter_relevant(products, query)
+
+    # ── Product matching / deduplication ──
+    products_dicts = await _match_and_flatten(products)
+
     community_dicts = [
         dataclasses.asdict(c) if dataclasses.is_dataclass(c) else c
         for c in community
     ]
 
+    # Cap results to prevent oversized artifacts (50K+ JSON from 16 scrapers)
+    _MAX_PRODUCTS = 20
+    _MAX_COMMUNITY = 10
     result = {
         "formatted_text": "",
-        "products": products_dicts,
-        "community": community_dicts,
+        "products": products_dicts[:_MAX_PRODUCTS],
+        "community": community_dicts[:_MAX_COMMUNITY],
         "product_count": len(products_dicts),
         "community_count": len(community_dicts),
         "escalation_needed": len(products_dicts) == 0,
@@ -125,7 +240,7 @@ async def _step_search_and_reviews(task: dict, artifacts: dict) -> str:
     )
 
     product_task = asyncio.ensure_future(
-        asyncio.wait_for(get_product_with_fallback(query), timeout=30)
+        asyncio.wait_for(get_product_with_fallback(query), timeout=45)
     )
     community_task = asyncio.ensure_future(
         asyncio.wait_for(get_community_data(query), timeout=20)
@@ -147,10 +262,12 @@ async def _step_search_and_reviews(task: dict, artifacts: dict) -> str:
     if not isinstance(community, list):
         community = []
 
-    products_dicts = [
-        dataclasses.asdict(p) if dataclasses.is_dataclass(p) else p
-        for p in products
-    ]
+    # ── Relevance filtering ──
+    products = _filter_relevant(products, query)
+
+    # ── Product matching / deduplication ──
+    products_dicts = await _match_and_flatten(products)
+
     community_dicts = [
         dataclasses.asdict(c) if dataclasses.is_dataclass(c) else c
         for c in community

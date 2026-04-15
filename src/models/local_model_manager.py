@@ -104,9 +104,16 @@ class LocalModelManager:
 
     # ── Callbacks for DaLLaMa ─────────────────────────────────────────────
 
-    @staticmethod
-    def _on_ready(model_name: str | None, reason: str) -> None:
-        """Fired by DaLLaMa after every swap attempt."""
+    def _on_ready(self, model_name: str | None, reason: str) -> None:
+        """Fired by DaLLaMa after every swap attempt and idle unload."""
+        if model_name is None and reason == "idle_unload":
+            # Clear stale config so status reflects reality
+            self._dallama._current_config = None
+            self.runtime_state = None
+            self._thinking_enabled = False
+            self._vision_enabled = False
+            logger.info("Idle unload: cleared model state")
+            return
         if model_name is not None:
             try:
                 from src.infra.db import accelerate_retries
@@ -125,6 +132,10 @@ class LocalModelManager:
             return 99999  # assume enough if monitor unavailable
 
     # ── Public API (same signatures as old LocalModelManager) ─────────────
+
+    def keep_alive(self) -> None:
+        """Reset idle-unload timer — call during active inference."""
+        self._dallama.keep_alive()
 
     async def ensure_model(
         self,
@@ -263,6 +274,7 @@ class LocalModelManager:
             self._last_request_time = time.time()
             self._thinking_enabled = sc.thinking
             self._vision_enabled = bool(sc.vision_projector)
+            self._dallama.keep_alive()  # Start idle-unload timer after swap
 
             # Seed measured_tps from persisted speed cache
             _seed_tps = info.tokens_per_second if info.tokens_per_second > 0 else 0.0
@@ -441,6 +453,12 @@ class LocalModelManager:
     async def run_health_watchdog(self, check_interval: float = 30) -> None:
         """No-op — DaLLaMa runs its own watchdog internally."""
         await asyncio.Event().wait()
+
+    async def _health_check(self) -> bool:
+        """Check if the llama-server is healthy (delegates to DaLLaMa)."""
+        if not self._started or not self._dallama._server:
+            return False
+        return await self._dallama._server.health_check()
 
     async def shutdown(self) -> None:
         """Graceful shutdown — called from atexit or orchestrator."""

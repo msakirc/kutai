@@ -65,16 +65,22 @@ async def execute_with_fallback(
 
 
 async def _search_scraper(source: str, query: str) -> list:
-    """Run a single scraper, return results or empty list on failure."""
+    """Run a single scraper, return results or empty list on failure.
+
+    Each scraper gets its own 20s timeout so one blocked site can't
+    eat the entire budget.
+    """
     try:
         from src.shopping.scrapers import get_scraper
         scraper_cls = get_scraper(source)
         if scraper_cls is None:
             return []
         scraper = scraper_cls()
-        results = await scraper.search(query)
+        results = await asyncio.wait_for(scraper.search(query), timeout=20)
         if results and isinstance(results, list):
             return results
+    except asyncio.TimeoutError:
+        logger.warning("Scraper %s timed out for '%s'", source, query)
     except Exception as exc:
         logger.warning("Scraper %s failed for '%s': %s", source, query, exc)
     return []

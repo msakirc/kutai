@@ -216,27 +216,27 @@ class TestErrorRecovery(unittest.TestCase):
     """Test error classification and recovery recommendations."""
 
     def test_classify_transient(self):
-        from src.shopping.resilience.error_recovery import classify_error
+        from src.shopping.resilience.scraper_failure_handler import classify_error
         self.assertEqual(classify_error(TimeoutError("Connection timed out")), "transient")
 
     def test_classify_rate_limit(self):
-        from src.shopping.resilience.error_recovery import classify_error
+        from src.shopping.resilience.scraper_failure_handler import classify_error
         self.assertEqual(classify_error(Exception("429 Too Many Requests")), "rate_limit")
 
     def test_classify_blocked(self):
-        from src.shopping.resilience.error_recovery import classify_error
+        from src.shopping.resilience.scraper_failure_handler import classify_error
         self.assertEqual(classify_error(Exception("403 Forbidden captcha")), "blocked")
 
     def test_classify_parse_error(self):
-        from src.shopping.resilience.error_recovery import classify_error
+        from src.shopping.resilience.scraper_failure_handler import classify_error
         self.assertEqual(classify_error(ValueError("JSON decode error")), "parse_error")
 
     def test_classify_permanent(self):
-        from src.shopping.resilience.error_recovery import classify_error
+        from src.shopping.resilience.scraper_failure_handler import classify_error
         self.assertEqual(classify_error(Exception("Something completely unknown")), "permanent")
 
     def test_handle_scraper_transient_first_try(self):
-        from src.shopping.resilience.error_recovery import handle_scraper_error
+        from src.shopping.resilience.scraper_failure_handler import handle_scraper_error
         result = run_async(handle_scraper_error(
             "trendyol", TimeoutError("timeout"), {"retry_count": 0}
         ))
@@ -245,14 +245,14 @@ class TestErrorRecovery(unittest.TestCase):
         self.assertGreater(result["delay"], 0)
 
     def test_handle_scraper_transient_exhausted(self):
-        from src.shopping.resilience.error_recovery import handle_scraper_error
+        from src.shopping.resilience.scraper_failure_handler import handle_scraper_error
         result = run_async(handle_scraper_error(
             "trendyol", TimeoutError("timeout"), {"retry_count": 5}
         ))
         self.assertEqual(result["action"], "fallback")
 
     def test_handle_scraper_blocked(self):
-        from src.shopping.resilience.error_recovery import handle_scraper_error
+        from src.shopping.resilience.scraper_failure_handler import handle_scraper_error
         result = run_async(handle_scraper_error(
             "trendyol", Exception("403 Forbidden"), {}
         ))
@@ -260,7 +260,7 @@ class TestErrorRecovery(unittest.TestCase):
         self.assertEqual(result["error_class"], "blocked")
 
     def test_handle_scraper_rate_limit(self):
-        from src.shopping.resilience.error_recovery import handle_scraper_error
+        from src.shopping.resilience.scraper_failure_handler import handle_scraper_error
         result = run_async(handle_scraper_error(
             "trendyol", Exception("429 rate limit"), {}
         ))
@@ -268,21 +268,21 @@ class TestErrorRecovery(unittest.TestCase):
         self.assertEqual(result["error_class"], "rate_limit")
 
     def test_handle_scraper_permanent(self):
-        from src.shopping.resilience.error_recovery import handle_scraper_error
+        from src.shopping.resilience.scraper_failure_handler import handle_scraper_error
         result = run_async(handle_scraper_error(
             "trendyol", Exception("fatal unexpected error"), {}
         ))
         self.assertEqual(result["action"], "abort")
 
     def test_handle_llm_transient(self):
-        from src.shopping.resilience.error_recovery import handle_llm_error
+        from src.shopping.resilience.scraper_failure_handler import handle_llm_error
         result = run_async(handle_llm_error(
             TimeoutError("connection timeout"), {"retry_count": 0}
         ))
         self.assertEqual(result["action"], "retry")
 
     def test_handle_llm_token_limit(self):
-        from src.shopping.resilience.error_recovery import handle_llm_error
+        from src.shopping.resilience.scraper_failure_handler import handle_llm_error
         result = run_async(handle_llm_error(
             Exception("token limit exceeded"), {}
         ))
@@ -290,7 +290,7 @@ class TestErrorRecovery(unittest.TestCase):
         self.assertIn("truncate", result["reason"])
 
     def test_handle_llm_rate_limit(self):
-        from src.shopping.resilience.error_recovery import handle_llm_error
+        from src.shopping.resilience.scraper_failure_handler import handle_llm_error
         result = run_async(handle_llm_error(
             Exception("429 rate limit"), {"retry_count": 0}
         ))
@@ -298,7 +298,7 @@ class TestErrorRecovery(unittest.TestCase):
         self.assertGreater(result["delay"], 0)
 
     def test_handle_llm_unrecoverable(self):
-        from src.shopping.resilience.error_recovery import handle_llm_error
+        from src.shopping.resilience.scraper_failure_handler import handle_llm_error
         result = run_async(handle_llm_error(
             Exception("some fatal error"), {"retry_count": 10}
         ))

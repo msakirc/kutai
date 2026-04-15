@@ -48,12 +48,14 @@ def _unwrap_envelope(text: str) -> str:
         if isinstance(obj, dict):
             # final_answer envelope
             if "result" in obj:
-                stripped = obj["result"]
+                val = obj["result"]
+                stripped = val if isinstance(val, str) else json.dumps(val, ensure_ascii=False)
             # write_file tool_call envelope — extract the file content
             elif obj.get("action") == "tool_call" and obj.get("tool") == "write_file":
                 args = obj.get("args", {})
                 if isinstance(args, dict) and "content" in args:
-                    stripped = args["content"]
+                    val = args["content"]
+                    stripped = val if isinstance(val, str) else json.dumps(val, ensure_ascii=False)
     except (json.JSONDecodeError, TypeError):
         pass
 
@@ -131,6 +133,8 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
         output_value = _unwrap_envelope(output_value)
 
     for artifact_name, rules in schema.items():
+        if not isinstance(rules, dict):
+            continue  # skip non-artifact entries like max_output_chars
         schema_type = rules.get("type", "string")
 
         if schema_type == "object":
@@ -207,7 +211,7 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
                                 continue  # passed
                     except (json.JSONDecodeError, TypeError):
                         pass
-            # Fallback: accept text if it has numbered/bulleted/table items
+            # Fallback: accept text if it has numbered/bulleted/table/JSON items
             min_items = rules.get("min_items", 0)
             if min_items > 0:
                 import re as _re
@@ -225,6 +229,14 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
                     # Exclude header row (first table row) from count
                     if len(table_rows) > 1:
                         items = table_rows[1:]  # skip header
+                # Truncated JSON arrays: count complete {...} objects
+                # (models often truncate mid-array at output token limit)
+                if len(items) < min_items:
+                    item_fields = rules.get("item_fields", [])
+                    if item_fields and text.lstrip().startswith("["):
+                        json_items = _re.findall(r'\{[^{}]{20,}\}', text)
+                        if len(json_items) >= min_items:
+                            items = json_items
                 if len(items) < min_items:
                     return False, f"'{artifact_name}' has ~{len(items)} list items, need >= {min_items}"
 
@@ -577,6 +589,11 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
     # ── Sanitize _prev_output before injection ──
     _prev = ctx.get("_prev_output")
     if _prev:
+        if isinstance(_prev, dict):
+            import json as _json
+            _prev = _json.dumps(_prev, ensure_ascii=False)
+        elif not isinstance(_prev, str):
+            _prev = str(_prev)
         _prev = _unwrap_envelope(_prev)
         from dogru_mu_samet import assess as cq_assess, salvage as cq_salvage
         _prev_cq = cq_assess(_prev)
@@ -666,6 +683,8 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
     if artifact_schema:
         hints = []
         for art_name, rules in artifact_schema.items():
+            if not isinstance(rules, dict):
+                continue
             schema_type = rules.get("type", "string")
             if schema_type == "object":
                 fields = rules.get("required_fields", [])
@@ -730,6 +749,24 @@ async def pre_execute_workflow_step(task: dict) -> dict:
         context_strategy = ctx.get("context_strategy")
         for name in input_artifact_names:
             full = await store.retrieve(mission_id, name)
+            # Fallback: if step asks for "foo_summary" but only "foo" exists
+            # (or vice versa), try the alternate name.
+            if full is None and name.endswith("_summary"):
+                base_name = name[: -len("_summary")]
+                full = await store.retrieve(mission_id, base_name)
+                if full:
+                    logger.debug(
+                        f"[Workflow Hook] '{name}' not found, "
+                        f"falling back to '{base_name}' ({len(full)} chars)"
+                    )
+            elif full is None:
+                # Try the summary variant
+                full = await store.retrieve(mission_id, f"{name}_summary")
+                if full:
+                    logger.debug(
+                        f"[Workflow Hook] '{name}' not found, "
+                        f"falling back to '{name}_summary' ({len(full)} chars)"
+                    )
             if full is None:
                 artifact_contents[name] = None
                 continue
@@ -989,15 +1026,21 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
     # compact summary ({name}_summary) that downstream steps consume.
     # Uses OVERHEAD category — cheap call, no model swaps.
     _SUMMARY_THRESHOLD = 3000  # chars — above this, create a summary
+    _MIN_SUMMARY_LEN = 50     # reject garbage summaries (1-char, empty, etc.)
     if output_value and len(output_value) > _SUMMARY_THRESHOLD:
         for name in output_names:
             summary = await _llm_summarize(output_value, name)
-            if summary:
+            if summary and len(summary) >= _MIN_SUMMARY_LEN:
                 summary_name = f"{name}_summary"
                 await store.store(mission_id, summary_name, summary)
                 logger.info(
                     f"[Workflow Hook] LLM-summarized '{name}' -> '{summary_name}' "
                     f"({len(output_value)} -> {len(summary)} chars)"
+                )
+            elif summary:
+                logger.warning(
+                    f"[Workflow Hook] Summary too short for '{name}' "
+                    f"({len(summary)} chars < {_MIN_SUMMARY_LEN}), discarding"
                 )
 
     # ── Write artifacts to disk in mission directory ──

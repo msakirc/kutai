@@ -74,8 +74,8 @@ class EksiSozlukScraper(BaseScraper):
         if not _BS4_AVAILABLE:
             return []
 
-        encoded = urllib.parse.quote(query, safe="")
-        url = f"{_BASE_URL}/?q={encoded}"
+        encoded = urllib.parse.quote_plus(query)
+        url = f"{_BASE_URL}/basliklar/ara?searchForm.Keywords={encoded}"
 
         try:
             response = await self._fetch(url)
@@ -100,11 +100,15 @@ class EksiSozlukScraper(BaseScraper):
             logger.error("search HTML parse failed", error=str(exc))
             return []
 
-        # Topic links from search results or main page
+        # Topic links from search results — filter out site navigation
         topic_links = (
             soup.select("ul.topic-list li a")
             or soup.select("ul#search-result-list li a")
-            or soup.select("a[href*='/--']")
+            or [
+                a for a in soup.select("a[href*='/--']")
+                if "sozluk-kural" not in a.get("href", "")
+                and "is-ilan" not in a.get("href", "")
+            ]
         )
 
         seen_urls: set[str] = set()

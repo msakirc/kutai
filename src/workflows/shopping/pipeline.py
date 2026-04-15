@@ -374,14 +374,28 @@ async def _step_format(task: dict, artifacts: dict) -> str:
 
     lines: list[str] = []
 
-    # ── Prices across sources ──
-    priced = sorted(
-        [p for p in products if p.get("original_price") or p.get("discounted_price")],
-        key=lambda p: p.get("discounted_price") or p.get("original_price") or float("inf"),
+    # ── Pick best product per source (trust site ranking order) ──
+    # Each site returns its most relevant result first.  Take the #1
+    # result from each source, then pick the "winner" as the one with
+    # the highest price (main product, not accessories/spare parts).
+    best_per_source: dict[str, dict] = {}
+    for p in products:
+        src = p.get("source", "")
+        if src and src not in best_per_source:
+            best_per_source[src] = p
+
+    top_products = list(best_per_source.values())
+
+    # Sort by price descending — the actual product is typically the
+    # most expensive among top-per-source results (spare parts are cheap).
+    priced_tops = sorted(
+        [p for p in top_products if p.get("original_price") or p.get("discounted_price")],
+        key=lambda p: p.get("discounted_price") or p.get("original_price") or 0,
+        reverse=True,
     )
 
-    if priced:
-        best = priced[0]
+    if priced_tops:
+        best = priced_tops[0]
         best_price = best.get("discounted_price") or best.get("original_price")
         lines.append(
             f"🏆 *{best.get('name', '')}*\n"
@@ -397,8 +411,8 @@ async def _step_format(task: dict, artifacts: dict) -> str:
             rc_str = f" ({review_count} değerlendirme)" if review_count else ""
             lines.append(f"   {stars} {best['rating']}/5{rc_str}")
 
-        # Other sources with prices
-        others = [p for p in priced[1:] if p.get("source") != best.get("source")]
+        # Other sources — show their #1 result price
+        others = [p for p in priced_tops[1:] if p.get("source") != best.get("source")]
         if others:
             lines.append("\n📍 *Diğer Fiyatlar:*")
             for p in others[:5]:

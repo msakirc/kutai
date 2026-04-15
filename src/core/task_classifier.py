@@ -67,7 +67,7 @@ Available agent types:
 - "assistant": general conversation, Q&A, personal assistance
 - "summarizer": condensing long content, extracting key points
 - "analyst": data analysis, feasibility studies, structured evaluation, risk assessment
-- "shopping_advisor": product research, price checks, deal finding, purchase advice, comparisons
+- "shopping_advisor": product research, price checks, deal finding, purchase advice, comparisons. IMPORTANT: bare product names/nouns (e.g. "kahve makinesi", "laptop", "buzdolabı", "ayakkabı") are shopping queries — classify as shopping_advisor, NOT coder.
 
 Determine:
 - agent_type: best matching type from above
@@ -322,6 +322,11 @@ _KEYWORD_RULES: list[tuple[str, int, list[str]]] = [
         "almak istiyorum", "want to buy", "should i buy", "almalı mıyım",
         "karşılaştır", "compare", "vs ", " vs ", "upgrade", "yükseltme",
         "hediye", "gift", "tavsiye", "recommendation", "öneri",
+        # Turkish product category nouns (bare product names = shopping)
+        "makinesi", "makinası", "makine", "telefon", "laptop", "tablet",
+        "buzdolabı", "bulaşık", "çamaşır", "kulaklık", "hoparlör",
+        "monitör", "klavye", "mouse", "ayakkabı", "kahve", "espresso",
+        "klima", "süpürge", "fırın", "ocak", "televizyon",
     ]),
     ("fixer",          5, ["fix", "bug", "error", "debug", "traceback", "crash"]),
     ("architect",      6, ["architect", "system design", "api design", "scalability"]),

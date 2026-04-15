@@ -410,16 +410,6 @@ async def _llm_summarize(text: str, artifact_name: str) -> Optional[str]:
     """
     try:
         from ...core.llm_dispatcher import get_dispatcher, CallCategory
-        from ...core.router import ModelRequirements
-
-        reqs = ModelRequirements(
-            task="summarizer",
-            difficulty=2,
-            prefer_speed=True,
-            prefer_local=True,
-            estimated_input_tokens=min(len(text) // 4, 4000),
-            estimated_output_tokens=500,
-        )
 
         # Truncate input to 4k tokens max to fit any model
         max_input = 16000  # ~4k tokens
@@ -445,7 +435,14 @@ async def _llm_summarize(text: str, artifact_name: str) -> Optional[str]:
         ]
 
         response = await get_dispatcher().request(
-            CallCategory.OVERHEAD, reqs, messages, tools=None
+            CallCategory.OVERHEAD,
+            task="summarizer",
+            difficulty=2,
+            messages=messages,
+            prefer_speed=True,
+            prefer_local=True,
+            estimated_input_tokens=min(len(text) // 4, 4000),
+            estimated_output_tokens=500,
         )
         summary = response.get("content", "").strip()
         if summary and len(summary) > 50:

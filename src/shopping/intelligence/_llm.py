@@ -34,27 +34,20 @@ async def _llm_call(
         mission_id: Optional mission ID for cost attribution (future use).
     """
     try:
-        from src.core.router import ModelRequirements
-
-        reqs = ModelRequirements(
-            task="shopping",
-            agent_type="shopping_advisor",
-            difficulty=3,
-            prefer_speed=True,
-            estimated_input_tokens=len(prompt) // 4,
-            estimated_output_tokens=2048,
-        )
-        if task_id is not None:
-            reqs._task_id = task_id  # type: ignore[attr-defined]
-        if mission_id is not None:
-            reqs._mission_id = mission_id  # type: ignore[attr-defined]
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
         from src.core.llm_dispatcher import get_dispatcher, CallCategory
         response = await get_dispatcher().request(
-            CallCategory.OVERHEAD, reqs, messages,
+            CallCategory.OVERHEAD,
+            task="shopping_advisor",
+            agent_type="shopping_advisor",
+            difficulty=3,
+            messages=messages,
+            prefer_speed=True,
+            estimated_input_tokens=len(prompt) // 4,
+            estimated_output_tokens=2048,
         )
         return response.get("content", "")
     except Exception as e:

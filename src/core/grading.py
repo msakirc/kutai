@@ -180,7 +180,6 @@ async def grade_task(task: dict, grader_model: str) -> GradeResult:
     """
     import json
     from src.core.llm_dispatcher import get_dispatcher, CallCategory
-    from src.core.router import ModelRequirements
 
     ctx = task.get("context", "{}")
     if isinstance(ctx, str):
@@ -192,17 +191,6 @@ async def grade_task(task: dict, grader_model: str) -> GradeResult:
     generating_model = ctx.get("generating_model", "")
     grade_excluded = ctx.get("grade_excluded_models", [])
     all_excluded = list(set([generating_model] + grade_excluded))
-
-    reqs = ModelRequirements(
-        task="reviewer",
-        difficulty=3,
-        priority=1,
-        estimated_input_tokens=800,
-        estimated_output_tokens=100,
-        prefer_speed=True,
-        exclude_models=all_excluded,
-        model_override=grader_model,
-    )
 
     result_text = task.get("result", "")
     if not result_text or len(str(result_text).strip()) < 10:
@@ -216,7 +204,8 @@ async def grade_task(task: dict, grader_model: str) -> GradeResult:
     dispatcher = get_dispatcher()
     response = await dispatcher.request(
         CallCategory.OVERHEAD,
-        reqs,
+        task="reviewer",
+        difficulty=3,
         messages=[
             {"role": "system", "content": GRADING_SYSTEM},
             {
@@ -228,6 +217,12 @@ async def grade_task(task: dict, grader_model: str) -> GradeResult:
                 ),
             },
         ],
+        priority=1,
+        estimated_input_tokens=800,
+        estimated_output_tokens=100,
+        prefer_speed=True,
+        exclude_models=all_excluded,
+        model_override=grader_model,
     )
 
     raw_content = response.get("content", "")

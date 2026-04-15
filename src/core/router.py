@@ -674,9 +674,23 @@ async def call_model(
     from src.core.llm_dispatcher import get_dispatcher, CallCategory
     return await get_dispatcher().request(
         category=CallCategory.MAIN_WORK,
-        reqs=reqs,
+        task=reqs.effective_task or reqs.primary_capability,
+        agent_type=reqs.agent_type,
+        difficulty=reqs.difficulty,
         messages=messages,
         tools=tools,
+        needs_thinking=reqs.needs_thinking,
+        needs_function_calling=reqs.needs_function_calling,
+        needs_vision=reqs.needs_vision,
+        local_only=reqs.local_only,
+        prefer_speed=reqs.prefer_speed,
+        prefer_quality=reqs.prefer_quality,
+        prefer_local=reqs.prefer_local,
+        estimated_input_tokens=reqs.estimated_input_tokens,
+        estimated_output_tokens=reqs.estimated_output_tokens,
+        priority=reqs.priority,
+        exclude_models=reqs.exclude_models or [],
+        model_override=reqs.model_override,
     )
 
 

@@ -335,13 +335,6 @@ class LocalModelManager:
                 "Model %s loaded (swap #%d)", model_name, self._total_swaps
             )
 
-            # Record swap in budget
-            try:
-                from src.core.llm_dispatcher import get_dispatcher
-                get_dispatcher().swap_budget.record_swap()
-            except Exception as _e:
-                logger.warning("Failed to record swap in budget: %s", _e)
-
             # Notify dispatcher for deferred grade draining
             try:
                 from src.core.llm_dispatcher import get_dispatcher

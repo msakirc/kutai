@@ -30,16 +30,7 @@ async def analyze_image(filepath: str, question: str = "Describe what you see in
         # Route through dispatcher as MAIN_WORK — vision is real task work,
         # not overhead. Using model_override to pin the vision-capable model.
         from src.core.llm_dispatcher import get_dispatcher, CallCategory
-        from src.core.router import ModelRequirements
 
-        reqs = ModelRequirements(
-            task="vision",
-            difficulty=4,
-            priority=5,
-            estimated_input_tokens=1500,  # image tokens
-            estimated_output_tokens=500,
-            model_override=vision_model.litellm_name,
-        )
         messages = [{"role": "user", "content": [
             {"type": "text", "text": question},
             {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{data}"}},
@@ -47,8 +38,13 @@ async def analyze_image(filepath: str, question: str = "Describe what you see in
 
         result = await get_dispatcher().request(
             category=CallCategory.MAIN_WORK,
-            reqs=reqs,
+            task="visual_reviewer",
+            difficulty=4,
             messages=messages,
+            priority=5,
+            estimated_input_tokens=1500,
+            estimated_output_tokens=500,
+            model_override=vision_model.litellm_name,
         )
         analysis = result.get("content", "")
         from dogru_mu_samet import assess as cq_assess

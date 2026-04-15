@@ -12,7 +12,6 @@ import re
 from dataclasses import dataclass
 
 from src.infra.logging_config import get_logger
-from .router import ModelRequirements
 
 logger = get_logger("core.task_classifier")
 
@@ -248,17 +247,6 @@ async def classify_task(title: str, description: str) -> TaskClassification:
 
 async def _classify_with_llm(title: str, description: str) -> TaskClassification:
     """Classify using the standard router — just another LLM call."""
-    reqs = ModelRequirements(
-        task="router",
-        agent_type="classifier",
-        difficulty=3,
-        prefer_speed=True,
-        needs_json_mode=True,
-        priority=3,                    # yield to real work tasks on GPU
-        estimated_input_tokens=500,
-        estimated_output_tokens=200,
-    )
-
     messages = [{
         "role": "user",
         "content": CLASSIFIER_PROMPT.format(
@@ -268,7 +256,16 @@ async def _classify_with_llm(title: str, description: str) -> TaskClassification
 
     from src.core.llm_dispatcher import get_dispatcher, CallCategory
     response = await get_dispatcher().request(
-        CallCategory.OVERHEAD, reqs, messages,
+        CallCategory.OVERHEAD,
+        task="router",
+        agent_type="classifier",
+        difficulty=3,
+        messages=messages,
+        prefer_speed=True,
+        needs_json_mode=True,
+        priority=3,
+        estimated_input_tokens=500,
+        estimated_output_tokens=200,
     )
 
     raw = response.get("content", "").strip()

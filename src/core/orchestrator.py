@@ -1344,23 +1344,18 @@ class Orchestrator:
 
         try:
             from src.core.llm_dispatcher import get_dispatcher, CallCategory
-            from src.core.router import ModelRequirements
 
             dispatcher = get_dispatcher()
-            reqs = ModelRequirements(
-                task="adhoc",
-                primary_capability="general",
-                difficulty=2,
-                estimated_input_tokens=400,
-                estimated_output_tokens=150,
-                prefer_speed=True,
-                priority=2,
-            )
             response = await asyncio.wait_for(
                 dispatcher.request(
                     category=CallCategory.OVERHEAD,
-                    reqs=reqs,
+                    task="assistant",
+                    difficulty=2,
                     messages=[{"role": "user", "content": prompt}],
+                    estimated_input_tokens=400,
+                    estimated_output_tokens=150,
+                    prefer_speed=True,
+                    priority=2,
                 ),
                 timeout=45,
             )
@@ -3349,15 +3344,6 @@ class Orchestrator:
                 except Exception:
                     pass
 
-                # ── Proactive GPU loading ──
-                # If GPU is idle, load best-fit model for main work tasks.
-                # When queue is empty, checks overhead needs (todos, grading).
-                # Local inference is free — don't waste GPU.
-                try:
-                    from src.core.llm_dispatcher import get_dispatcher
-                    await get_dispatcher().ensure_gpu_utilized(candidate_tasks)
-                except Exception as _gpu_err:
-                    logger.debug(f"Proactive GPU load failed: {_gpu_err}")
 
                 if tasks:
                     task_names = [

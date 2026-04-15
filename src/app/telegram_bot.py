@@ -3917,23 +3917,11 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         "workflow" for mission-type messages that need the workflow engine.
         """
         try:
-            from ..core.router import ModelRequirements
-
             # Build context hint
             context_parts = []
             if self._pending_clarifications:
                 context_parts.append("System has pending clarification requests")
 
-            reqs = ModelRequirements(
-                task="router",
-                agent_type="classifier",
-                difficulty=2,
-                prefer_speed=True,
-                needs_json_mode=True,
-                priority=2,
-                estimated_input_tokens=300,
-                estimated_output_tokens=50,
-            )
             messages = [{
                 "role": "user",
                 "content": self.MESSAGE_CLASSIFIER_PROMPT.format(
@@ -3943,7 +3931,16 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             }]
             from ..core.llm_dispatcher import get_dispatcher, CallCategory
             response = await get_dispatcher().request(
-                CallCategory.OVERHEAD, reqs, messages,
+                CallCategory.OVERHEAD,
+                task="router",
+                agent_type="classifier",
+                difficulty=2,
+                messages=messages,
+                prefer_speed=True,
+                needs_json_mode=True,
+                priority=2,
+                estimated_input_tokens=300,
+                estimated_output_tokens=50,
             )
             from ..core.task_classifier import _extract_json
             raw = response.get("content", "").strip()
@@ -4357,20 +4354,17 @@ Or: {{"type": "task", "confidence": 0.8}}"""
     async def _handle_casual(self, text: str, update: Update):
         """Handle casual messages with a quick LLM response (no task creation)."""
         try:
-            from ..core.router import ModelRequirements
             from ..core.llm_dispatcher import get_dispatcher, CallCategory
-            reqs = ModelRequirements(
+            response = await get_dispatcher().request(
+                CallCategory.OVERHEAD,
                 task="assistant",
                 agent_type="assistant",
                 difficulty=2,
+                messages=[{"role": "user", "content": text}],
                 prefer_speed=True,
                 priority=1,
                 estimated_input_tokens=100,
                 estimated_output_tokens=100,
-            )
-            response = await get_dispatcher().request(
-                CallCategory.OVERHEAD, reqs,
-                [{"role": "user", "content": text}],
             )
             reply = response.get("content", "Hey! How can I help?")
             await self._reply(update,reply[:1000])

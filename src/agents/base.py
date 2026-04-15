@@ -1738,9 +1738,23 @@ class BaseAgent:
                     from src.core.llm_dispatcher import get_dispatcher, CallCategory
                     response = await get_dispatcher().request(
                         CallCategory.MAIN_WORK,
-                        reqs,
-                        messages,
+                        task=reqs.effective_task or reqs.primary_capability,
+                        agent_type=reqs.agent_type,
+                        difficulty=reqs.difficulty,
+                        messages=messages,
                         tools=litellm_tools,
+                        needs_thinking=reqs.needs_thinking,
+                        needs_function_calling=reqs.needs_function_calling,
+                        needs_vision=reqs.needs_vision,
+                        local_only=reqs.local_only,
+                        prefer_speed=reqs.prefer_speed,
+                        prefer_quality=reqs.prefer_quality,
+                        prefer_local=reqs.prefer_local,
+                        estimated_input_tokens=reqs.estimated_input_tokens,
+                        estimated_output_tokens=reqs.estimated_output_tokens,
+                        priority=reqs.priority,
+                        exclude_models=reqs.exclude_models or [],
+                        model_override=reqs.model_override,
                     )
                 except Exception as exc:
                     logger.error(f"[Task #{task_id}] Model call failed: {exc}")
@@ -2884,7 +2898,23 @@ class BaseAgent:
         try:
             from src.core.llm_dispatcher import get_dispatcher, CallCategory
             response = await get_dispatcher().request(
-                CallCategory.MAIN_WORK, reqs, messages,
+                CallCategory.MAIN_WORK,
+                task=reqs.effective_task or reqs.primary_capability,
+                agent_type=reqs.agent_type,
+                difficulty=reqs.difficulty,
+                messages=messages,
+                needs_thinking=reqs.needs_thinking,
+                needs_function_calling=reqs.needs_function_calling,
+                needs_vision=reqs.needs_vision,
+                local_only=reqs.local_only,
+                prefer_speed=reqs.prefer_speed,
+                prefer_quality=reqs.prefer_quality,
+                prefer_local=reqs.prefer_local,
+                estimated_input_tokens=reqs.estimated_input_tokens,
+                estimated_output_tokens=reqs.estimated_output_tokens,
+                priority=reqs.priority,
+                exclude_models=reqs.exclude_models or [],
+                model_override=reqs.model_override,
             )
         except Exception as exc:
             logger.error(f"[Task #{task_id}] Single-shot call failed: {exc}")
@@ -2965,7 +2995,14 @@ class BaseAgent:
             ]
             from src.core.llm_dispatcher import get_dispatcher, CallCategory
             response = await get_dispatcher().request(
-                CallCategory.OVERHEAD, reflect_reqs, messages,
+                CallCategory.OVERHEAD,
+                task=reflect_reqs.task,
+                agent_type=reflect_reqs.agent_type,
+                difficulty=reflect_reqs.difficulty,
+                messages=messages,
+                estimated_input_tokens=reflect_reqs.estimated_input_tokens,
+                estimated_output_tokens=reflect_reqs.estimated_output_tokens,
+                prefer_speed=reflect_reqs.prefer_speed,
             )
             raw = response.get("content", "").strip()
             parsed = self._try_parse_json(raw)

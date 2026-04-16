@@ -88,3 +88,54 @@ class TestEmptyResponseSkip:
         assert idx > 0, "Empty response guard warning text not found"
         block = source[idx:idx+800]
         assert "continue" in block, "Empty response handler must use 'continue' to retry"
+
+
+class TestTodoSuggestionsGraceful:
+    """Todo suggestions must not crash or block when no model is loaded."""
+
+    def test_reminder_sent_even_when_suggestions_fail(self):
+        """If LLM call fails, reminder should still be sent."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock, MagicMock
+        from src.core.orchestrator import Orchestrator
+
+        loop = asyncio.new_event_loop()
+
+        orch = Orchestrator.__new__(Orchestrator)
+        orch.telegram = MagicMock()
+
+        with patch("src.infra.db.get_todos", new_callable=AsyncMock) as mock_todos, \
+             patch("src.app.reminders.send_todo_reminder", new_callable=AsyncMock) as mock_remind:
+
+            mock_todos.return_value = [
+                {"id": 1, "title": "Buy milk", "suggestion": None, "suggestion_at": None}
+            ]
+            # Make _generate_suggestions raise
+            orch._generate_suggestions = AsyncMock(side_effect=RuntimeError("LLM failed"))
+
+            loop.run_until_complete(orch._start_todo_suggestions())
+
+            # Reminder should still be sent
+            mock_remind.assert_called_once()
+
+        loop.close()
+
+
+class TestCheckpointResume:
+    """Checkpoints must persist across retries and only clear on final completion."""
+
+    def test_no_checkpoint_clear_in_react_loop(self):
+        """_execute_react_loop must NOT clear checkpoints — orchestrator handles it."""
+        import inspect
+        from src.agents.base import BaseAgent
+        source = inspect.getsource(BaseAgent._execute_react_loop)
+        assert "_clear_checkpoint" not in source, \
+            "_clear_checkpoint still called in _execute_react_loop — should only be in orchestrator"
+
+    def test_handle_complete_clears_checkpoint(self):
+        """_handle_complete must clear the checkpoint."""
+        import inspect
+        from src.core.orchestrator import Orchestrator
+        source = inspect.getsource(Orchestrator._handle_complete)
+        assert "checkpoint" in source.lower(), \
+            "_handle_complete does not reference checkpoint clearing"

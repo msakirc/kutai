@@ -1307,7 +1307,10 @@ class Orchestrator:
         ]
 
         if need_suggestions:
-            await self._generate_suggestions(need_suggestions)
+            try:
+                await self._generate_suggestions(need_suggestions)
+            except Exception as e:
+                logger.warning(f"[Todo] Suggestion generation failed: {e}")
 
         # Always send the reminder (suggestions are read from DB by reminders.py)
         if self.telegram:
@@ -2626,6 +2629,14 @@ class Orchestrator:
             completed_at=db_now(),
             cost=cost,
         )
+
+        # Clear checkpoint — task is fully done, no more retries possible
+        try:
+            from src.infra.db import clear_task_checkpoint
+            await clear_task_checkpoint(task_id)
+            logger.debug(f"Cleared checkpoint for completed task #{task_id}")
+        except Exception:
+            pass
 
         # Track skill A/B metrics
         try:

@@ -2004,7 +2004,6 @@ class BaseAgent:
                 # Workflow steps must produce output directly — never delegate
                 _is_wf = bool(_task_ctx.get("is_workflow_step"))
                 if subtasks and not _is_wf:
-                    await self._clear_checkpoint_safe(task_id)
                     return {
                         "status":       "needs_subtasks",
                         "subtasks":     subtasks,
@@ -2023,7 +2022,6 @@ class BaseAgent:
                     result = parsed.get("plan_summary") or parsed.get("result", result)
 
                 if parsed.get("needs_clarification"):
-                    await self._clear_checkpoint_safe(task_id)
                     return {
                         "status":        "needs_clarification",
                         "clarification": parsed["needs_clarification"],
@@ -2052,7 +2050,6 @@ class BaseAgent:
                     and isinstance(confidence, (int, float))
                     and confidence < self.min_confidence
                 ):
-                    await self._clear_checkpoint_safe(task_id)
                     return {
                         "status":      "needs_review",
                         "result":      result,
@@ -2084,7 +2081,6 @@ class BaseAgent:
                             task_id, "ungraded",
                             context=_json.dumps(_ctx),
                         )
-                        await self._clear_checkpoint_safe(task_id)
                         return {
                             "status": "ungraded",
                             "result": result,
@@ -2098,7 +2094,6 @@ class BaseAgent:
                 except Exception as exc:
                     logger.warning(f"grading failed | task_id={task_id} error={exc}")
 
-                await self._clear_checkpoint_safe(task_id)
                 return {
                     "status":        "completed",
                     "result":        result,
@@ -2601,7 +2596,6 @@ class BaseAgent:
             # handled as a sub-iteration guard — see _check_sub_iteration_guards.
             # Only the non-suppressed return path remains here.
             if action_type == "clarify":
-                await self._clear_checkpoint_safe(task_id)
                 return {
                     "status": "needs_clarification",
                     "clarification": parsed.get("question", content),
@@ -2609,7 +2603,6 @@ class BaseAgent:
                 }
 
             if action_type == "decompose":
-                await self._clear_checkpoint_safe(task_id)
                 return {
                     "status": "needs_subtasks",
                     "subtasks": parsed.get("subtasks", []),
@@ -2662,7 +2655,7 @@ class BaseAgent:
             raise  # re-raise so orchestrator's TimeoutError handler fires
 
         # ── Exhausted iterations ──
-        await self._clear_checkpoint_safe(task_id)
+        # Checkpoint is preserved here — orchestrator will clear it on final completion.
 
         # Classify exhaustion reason
         if guard_burns >= effective_max_iterations * 0.5:

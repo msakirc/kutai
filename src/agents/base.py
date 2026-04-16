@@ -1755,8 +1755,16 @@ class BaseAgent:
                         priority=reqs.priority,
                         exclude_models=reqs.exclude_models or [],
                         model_override=reqs.model_override,
+                        remaining_budget=max(0.0, _remaining),
                     )
                 except Exception as exc:
+                    # Let ModelCallFailed propagate — the orchestrator handles
+                    # it as an availability failure with backoff + wake signals.
+                    from src.core.router import ModelCallFailed
+                    _NON_RETRYABLE = (ModelCallFailed, AttributeError, TypeError,
+                                      ImportError, NameError, KeyError)
+                    if isinstance(exc, _NON_RETRYABLE):
+                        raise
                     logger.error(f"[Task #{task_id}] Model call failed: {exc}")
                     return {
                         "status": "failed",
@@ -2917,6 +2925,14 @@ class BaseAgent:
                 model_override=reqs.model_override,
             )
         except Exception as exc:
+            # Propagate non-retryable errors to the orchestrator:
+            # - ModelCallFailed → availability backoff with wake signals
+            # - Code bugs → immediate terminal (retrying won't help)
+            from src.core.router import ModelCallFailed
+            _NON_RETRYABLE = (ModelCallFailed, AttributeError, TypeError,
+                              ImportError, NameError, KeyError)
+            if isinstance(exc, _NON_RETRYABLE):
+                raise
             logger.error(f"[Task #{task_id}] Single-shot call failed: {exc}")
             return {
                 "status": "failed",

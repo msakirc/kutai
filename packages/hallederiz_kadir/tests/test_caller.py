@@ -138,20 +138,22 @@ def test_call_sets_api_key_for_local(mock_litellm):
     assert kwargs["api_key"] == "sk-no-key"
 
 
-@patch("hallederiz_kadir.caller._get_dallama", return_value=None)
 @patch("hallederiz_kadir.caller.litellm")
-def test_call_tools_set_tool_choice(mock_litellm, mock_dallama):
+def test_call_tools_set_tool_choice(mock_litellm):
     """When tools provided and model supports FC, tool_choice='auto'.
 
-    With tools, streaming is disabled — litellm.acompletion is called directly.
+    Local models always stream — tool calls go through _stream_with_accumulator.
     """
-    mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
-    model = _make_model_info(is_local=True, supports_function_calling=True)
-    tools = [{"type": "function", "function": {"name": "search"}}]
-    run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],
-                   tools=tools, timeout=60.0, task="executor",
-                   needs_thinking=False, estimated_output_tokens=500))
-    kwargs = mock_litellm.acompletion.call_args[1]
+    resp = _make_litellm_response()
+    stream_mock = AsyncMock(return_value=resp)
+    with patch("hallederiz_kadir.caller._get_dallama", return_value=None), \
+         patch("hallederiz_kadir.caller._stream_with_accumulator", stream_mock):
+        model = _make_model_info(is_local=True, supports_function_calling=True)
+        tools = [{"type": "function", "function": {"name": "search"}}]
+        run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],
+                       tools=tools, timeout=60.0, task="executor",
+                       needs_thinking=False, estimated_output_tokens=500))
+    kwargs = stream_mock.call_args[0][0]  # completion_kwargs passed to stream accumulator
     assert kwargs["tools"] == tools
     assert kwargs["tool_choice"] == "auto"
 

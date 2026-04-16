@@ -122,8 +122,11 @@ async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
     completion_kwargs["stream"] = True
     chunks = []
     accumulated = ""
+    accumulated_reasoning = ""
     role = "assistant"
     finish_reason = None
+    # Tool call accumulation: {index: {"id": ..., "name": ..., "arguments": ...}}
+    tool_call_parts: dict[int, dict] = {}
 
     async for chunk in await litellm.acompletion(**completion_kwargs):
         delta = chunk.choices[0].delta if chunk.choices else None
@@ -131,6 +134,25 @@ async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
             if delta.content:
                 accumulated += delta.content
                 partial_content_ref[0] = accumulated
+            # Capture reasoning_content from thinking models (DeepSeek, etc.)
+            rc = getattr(delta, "reasoning_content", None)
+            if rc:
+                accumulated_reasoning += rc
+            # Accumulate streamed tool_calls deltas
+            if hasattr(delta, "tool_calls") and delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index if hasattr(tc_delta, "index") else 0
+                    if idx not in tool_call_parts:
+                        tool_call_parts[idx] = {"id": "", "name": "", "arguments": ""}
+                    part = tool_call_parts[idx]
+                    if hasattr(tc_delta, "id") and tc_delta.id:
+                        part["id"] = tc_delta.id
+                    fn = getattr(tc_delta, "function", None)
+                    if fn:
+                        if hasattr(fn, "name") and fn.name:
+                            part["name"] = fn.name
+                        if hasattr(fn, "arguments") and fn.arguments:
+                            part["arguments"] += fn.arguments
             if delta.role:
                 role = delta.role
             if chunk.choices[0].finish_reason:
@@ -145,10 +167,30 @@ async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
             finish_reason = "length"
             break
 
+    # If content is empty but reasoning was captured, rescue it
+    if not accumulated.strip() and accumulated_reasoning.strip():
+        import re
+        accumulated = re.sub(r"</?think>", "", accumulated_reasoning).strip()
+
+    # Reassemble tool calls into the format parse_response expects
+    assembled_tool_calls = None
+    if tool_call_parts:
+        assembled_tool_calls = []
+        for idx in sorted(tool_call_parts):
+            p = tool_call_parts[idx]
+            assembled_tool_calls.append({
+                "id": p["id"] or f"call_{idx}",
+                "type": "function",
+                "function": {"name": p["name"], "arguments": p["arguments"]},
+            })
+
     last = chunks[-1] if chunks else None
+    msg_dict: dict = {"role": role, "content": accumulated}
+    if assembled_tool_calls:
+        msg_dict["tool_calls"] = assembled_tool_calls
     resp = litellm.ModelResponse(
         id=getattr(last, "id", "0"),
-        choices=[{"message": {"role": role, "content": accumulated}, "finish_reason": finish_reason or "stop"}],
+        choices=[{"message": msg_dict, "finish_reason": finish_reason or "stop"}],
         usage=getattr(last, "usage", None),
     )
     return resp
@@ -247,30 +289,17 @@ async def call(
                 return CallError(category="rate_limited",
                                message=f"Rate limited for {model.name}", retryable=True)
 
-    # ── GPU semaphore (local only) ──
+    # ── Local model manager reference (for health checks, speed tracking) ──
     local_manager = None
-    _inf_gen = None
     if is_local and not is_ollama:
         local_manager = _get_dallama()
-        if local_manager:
-            gpu_timeout = min(timeout, 120.0)
-            granted = await local_manager.acquire_inference_slot(
-                priority=getattr(model, "priority", 5),
-                task_id=task, agent_type=task, timeout=gpu_timeout)
-            if not granted:
-                return CallError(category="gpu_busy",
-                               message=f"GPU queue timeout for {model.name}", retryable=True)
-            _inf_gen = local_manager.mark_inference_start()
-            if local_manager.current_model != model.name:
-                actual = local_manager.current_model
-                local_manager.mark_inference_end(_inf_gen)
-                local_manager.release_inference_slot()
-                return CallError(category="loading",
-                               message=f"Model swapped during GPU wait: {model.name} → {actual}",
-                               retryable=True)
 
     # ── Streaming decision ──
-    use_stream = is_local and not is_ollama and not use_tools
+    # Always stream local models — including tool calls.  Non-streaming +
+    # thinking model + tools caused llama-server to silently drop requests
+    # (2026-04-15 incident: 190s "all slots idle" while request sat
+    # unprocessed).  The accumulator reassembles tool_call deltas.
+    use_stream = is_local and not is_ollama
 
     # ── Execute with retry ──
     max_retries = 2 if is_local else 3
@@ -302,9 +331,7 @@ async def call(
             partial_content_ref=partial_content_ref,
         )
     finally:
-        if local_manager and _inf_gen is not None:
-            local_manager.mark_inference_end(_inf_gen)
-            local_manager.release_inference_slot()
+        pass  # no GPU semaphore to release
 
     # ── Handle retry failure ──
     if isinstance(raw_result, CallError):

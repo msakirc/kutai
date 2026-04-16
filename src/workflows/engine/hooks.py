@@ -399,69 +399,6 @@ def _is_disguised_failure(output: str) -> bool:
     return False
 
 
-# ── LLM-based artifact summarization ──────────────────────────────────────
-
-
-async def _llm_summarize(text: str, artifact_name: str) -> Optional[str]:
-    """Summarize a large artifact using the LLM (OVERHEAD call).
-
-    Uses whatever model is loaded — no swaps. Falls back to structural
-    extraction if LLM is unavailable.
-    """
-    try:
-        from ...core.llm_dispatcher import get_dispatcher, CallCategory
-
-        # Truncate input to 4k tokens max to fit any model
-        max_input = 16000  # ~4k tokens
-        truncated_text = text[:max_input]
-
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a concise summarizer. Produce a summary that "
-                    "preserves ALL key facts, decisions, and data points. "
-                    "Target: under 400 words. No filler."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Summarize this '{artifact_name}' artifact. Keep every "
-                    f"important fact, number, name, and decision:\n\n"
-                    f"{truncated_text}"
-                ),
-            },
-        ]
-
-        response = await get_dispatcher().request(
-            CallCategory.OVERHEAD,
-            task="summarizer",
-            difficulty=2,
-            messages=messages,
-            prefer_speed=True,
-            prefer_local=True,
-            estimated_input_tokens=min(len(text) // 4, 4000),
-            estimated_output_tokens=500,
-        )
-        summary = response.get("content", "").strip()
-        if summary and len(summary) > 50:
-            from dogru_mu_samet import assess as cq_assess
-            _sum_cq = cq_assess(summary)
-            if _sum_cq.is_degenerate:
-                logger.warning(
-                    f"[Workflow Hook] LLM summary degenerate ({_sum_cq.summary}), "
-                    f"falling back to structural summary"
-                )
-            else:
-                return summary
-
-    except Exception as e:
-        logger.debug(f"[Workflow Hook] LLM summarization failed: {e}")
-
-    # Fallback: structural extraction if LLM unavailable
-    return _structural_summary(text)
-
 
 def _structural_summary(text: str, target: int = 1500) -> str:
     """Fallback summary without LLM — keep headings + first lines."""
@@ -1019,19 +956,19 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
         )
 
     # ── Auto-summarize large artifacts ──
-    # If an artifact exceeds the context budget, use the LLM to produce a
-    # compact summary ({name}_summary) that downstream steps consume.
-    # Uses OVERHEAD category — cheap call, no model swaps.
+    # If an artifact exceeds the context budget, use structural extraction to
+    # produce a compact summary ({name}_summary) that downstream steps consume.
+    # No LLM call — structural summary is fast and does not eat the task timeout.
     _SUMMARY_THRESHOLD = 3000  # chars — above this, create a summary
     _MIN_SUMMARY_LEN = 50     # reject garbage summaries (1-char, empty, etc.)
     if output_value and len(output_value) > _SUMMARY_THRESHOLD:
         for name in output_names:
-            summary = await _llm_summarize(output_value, name)
+            summary = _structural_summary(output_value)
             if summary and len(summary) >= _MIN_SUMMARY_LEN:
                 summary_name = f"{name}_summary"
                 await store.store(mission_id, summary_name, summary)
                 logger.info(
-                    f"[Workflow Hook] LLM-summarized '{name}' -> '{summary_name}' "
+                    f"[Workflow Hook] Summarized '{name}' -> '{summary_name}' "
                     f"({len(output_value)} -> {len(summary)} chars)"
                 )
             elif summary:
@@ -1217,17 +1154,40 @@ async def _check_phase_completion(mission_id: int, phase_id: str) -> bool:
     await _generate_phase_summary(mission_id, phase_id, phase_tasks)
 
     # ── Evaluate quality gate ──
-    await _evaluate_phase_gate(mission_id, phase_id)
+    await _evaluate_phase_gate(mission_id, phase_id, workflow_name)
 
     return True
 
 
-async def _evaluate_phase_gate(mission_id: int, phase_id: str) -> None:
-    """Evaluate the quality gate for a completed phase and store the result."""
+async def _evaluate_phase_gate(
+    mission_id: int, phase_id: str, workflow_name: str = ""
+) -> None:
+    """Evaluate the quality gate for a completed phase and store the result.
+
+    Loads the gate definition from the workflow JSON if available,
+    falling back to hardcoded gates (v1/v2 compatibility).
+    """
     store = get_artifact_store()
     try:
         phase_num = phase_id.replace("phase_", "")
-        passed, details = await evaluate_gate(mission_id, phase_id, store)
+
+        # Try to load gate definition from workflow JSON metadata
+        gate_def = None
+        if workflow_name:
+            try:
+                from .loader import load_workflow
+                wf = load_workflow(workflow_name)
+                gates = wf.metadata.get("quality_gates", {})
+                gate_def = gates.get(phase_id)
+            except Exception as exc:
+                logger.debug(
+                    f"[Workflow Hook] Could not load workflow gate "
+                    f"for {phase_id}: {exc}"
+                )
+
+        passed, details = await evaluate_gate(
+            mission_id, phase_id, store, gate_def=gate_def
+        )
 
         # Store gate result as artifact
         result_text = format_gate_result(phase_id, passed, details)

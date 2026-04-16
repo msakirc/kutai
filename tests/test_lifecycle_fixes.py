@@ -51,3 +51,40 @@ class TestNoInlineGrading:
         source = inspect.getsource(BaseAgent._execute_react_loop)
         assert "can_grade_now" not in source, \
             "can_grade_now still exists in _execute_react_loop"
+
+
+class TestPrevOutputInjection:
+    """All failure types must inject _prev_output into context for next attempt."""
+
+    def test_all_failure_paths_inject_prev_output(self):
+        """process_task must inject _prev_output in at least 3 places."""
+        import inspect
+        from src.core.orchestrator import Orchestrator
+        source = inspect.getsource(Orchestrator.process_task)
+        prev_output_injections = source.count('"_prev_output"')
+        assert prev_output_injections >= 3, \
+            f"_prev_output only injected {prev_output_injections} times — " \
+            f"expected at least 3 (timeout, disguised failure completed, disguised failure ungraded)"
+
+
+class TestEmptyResponseSkip:
+    """0-char LLM responses must not count as used iterations."""
+
+    def test_empty_response_guard_exists(self):
+        """_execute_react_loop must have empty response handling."""
+        import inspect
+        from src.agents.base import BaseAgent
+        source = inspect.getsource(BaseAgent._execute_react_loop)
+        assert "empty_response_count" in source, \
+            "No empty_response_count guard found in _execute_react_loop"
+
+    def test_empty_guard_has_continue(self):
+        """Empty response handler must 'continue' to retry same iteration."""
+        import inspect
+        from src.agents.base import BaseAgent
+        source = inspect.getsource(BaseAgent._execute_react_loop)
+        # Find the "not counting as iteration" warning — that's inside the guard block
+        idx = source.find("not counting as iteration")
+        assert idx > 0, "Empty response guard warning text not found"
+        block = source[idx:idx+800]
+        assert "continue" in block, "Empty response handler must use 'continue' to retry"

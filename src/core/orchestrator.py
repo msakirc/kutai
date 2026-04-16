@@ -2031,6 +2031,15 @@ class Orchestrator:
                                 )
                             retry_ctx.next_retry_at = next_retry
                             task_ctx.update(retry_ctx.to_context_patch())
+                            # Inject previous output so next attempt can continue
+                            result_text = result.get("result", "")
+                            if result_text:
+                                task_ctx["_prev_output"] = str(result_text)[:6000]
+                                task_ctx["_retry_hint"] = (
+                                    "Your previous attempt's output failed quality checks. "
+                                    "Your partial work is shown in context. Build on it — "
+                                    "do NOT start over."
+                                )
                             await update_task(
                                 task_id, status="pending",
                                 error=error_msg[:500],
@@ -2131,6 +2140,15 @@ class Orchestrator:
                                 next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
                             retry_ctx.next_retry_at = next_retry
                             task_ctx.update(retry_ctx.to_context_patch())
+                            # Inject previous output so next attempt can continue
+                            result_text = result.get("result", "")
+                            if result_text:
+                                task_ctx["_prev_output"] = str(result_text)[:6000]
+                                task_ctx["_retry_hint"] = (
+                                    "Your previous attempt's output failed quality checks. "
+                                    "Your partial work is shown in context. Build on it — "
+                                    "do NOT start over."
+                                )
                             await update_task(
                                 task_id, status="pending",
                                 error=error_msg[:500],
@@ -2387,6 +2405,15 @@ class Orchestrator:
                             error_category="quality",
                             original_agent=task.get("agent_type", "executor"),
                             attempts_snapshot=retry_ctx.worker_attempts,
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        await self.telegram.send_notification(
+                            f"🪦 Task #{task_id} → DLQ\n"
+                            f"_{title[:60]}_\n"
+                            f"Attempts: {retry_ctx.worker_attempts} | "
+                            f"Reason: {error_str[:100]}"
                         )
                     except Exception:
                         pass
@@ -2915,18 +2942,25 @@ class Orchestrator:
             pass
 
         # 2. Workspace files written by this task's mission
+        # Agents may write to subdirectories (user_artifacts/, results/)
+        # so walk the entire mission directory.
         mission_id = task_ctx.get("mission_id")
         output_names = task_ctx.get("output_artifacts", [])
         if mission_id and output_names:
             try:
                 import os
                 from ..tools.workspace import WORKSPACE_DIR
-                artifact_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
-                for name in output_names:
-                    for ext in (".md", ".json", ".txt"):
-                        fpath = os.path.join(artifact_dir, f"{name}{ext}")
-                        if os.path.isfile(fpath) and os.path.getsize(fpath) > 200:
-                            score = max(score, 0.8)
+                mission_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+                if os.path.isdir(mission_dir):
+                    for root, _dirs, files in os.walk(mission_dir):
+                        for fname in files:
+                            stem = os.path.splitext(fname)[0]
+                            if stem in output_names:
+                                fpath = os.path.join(root, fname)
+                                if os.path.getsize(fpath) > 200:
+                                    score = max(score, 0.8)
+                                    break
+                        if score >= 0.8:
                             break
             except Exception:
                 pass
@@ -3452,14 +3486,10 @@ class Orchestrator:
                     if self.cycle_count % 20 == 0:
                         logger.info(f"[Cycle {self.cycle_count}] Idle")
 
-                    # Grade ungraded tasks with loaded model (if compatible)
+                    # Grade ungraded tasks — Fatih Hoca picks the model
                     try:
-                        from src.core.llm_dispatcher import get_dispatcher
                         from src.core.grading import drain_ungraded_tasks
-                        dispatcher = get_dispatcher()
-                        loaded = dispatcher._get_loaded_litellm_name()
-                        if loaded:
-                            await drain_ungraded_tasks(loaded)
+                        await drain_ungraded_tasks()
                     except Exception as _gd_err:
                         logger.debug(f"Idle grade drain failed: {_gd_err}")
 
@@ -3591,9 +3621,21 @@ class Orchestrator:
                 f"to pending"
             )
 
-        # 2. Clear next_retry_at for all pending/ungraded tasks so they
-        #    retry immediately instead of sleeping through old backoff
-        #    timers from the previous session.
+        # 2. Reset backoff context for availability-delayed tasks FIRST
+        #    (must run before clearing next_retry_at, because
+        #    accelerate_retries queries next_retry_at > datetime('now'))
+        try:
+            from ..infra.db import accelerate_retries
+            woken = await accelerate_retries("startup")
+            if woken:
+                summary.append(
+                    f"Accelerated {woken} availability-delayed task(s)"
+                )
+        except Exception as e:
+            logger.debug(f"accelerate_retries on startup failed: {e}")
+
+        # 3. Clear next_retry_at for remaining pending/ungraded tasks
+        #    (infrastructure failures, etc.) so they retry immediately.
         cursor_retry = await db.execute(
             """SELECT id FROM tasks
                WHERE status IN ('pending', 'ungraded')
@@ -3611,17 +3653,6 @@ class Orchestrator:
             summary.append(
                 f"Cleared retry backoff for {len(delayed)} delayed task(s)"
             )
-
-        # 3. Accelerate availability-delayed tasks (resets backoff context)
-        try:
-            from ..infra.db import accelerate_retries
-            woken = await accelerate_retries("startup")
-            if woken:
-                summary.append(
-                    f"Accelerated {woken} availability-delayed task(s)"
-                )
-        except Exception as e:
-            logger.debug(f"accelerate_retries on startup failed: {e}")
 
         # 4. Release all stale file locks from the previous session
         try:

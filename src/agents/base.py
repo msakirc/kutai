@@ -1605,6 +1605,7 @@ class BaseAgent:
         # Exhaustion tracking counters
         guard_burns = 0
         useful_iterations = 0
+        empty_response_count = 0
 
         try:
           for iteration in range(start_iteration, effective_max_iterations):
@@ -1795,6 +1796,24 @@ class BaseAgent:
                         pass
 
                 logger.info(f"[Task #{task_id}] Raw response ({len(content)} chars):\n{content}")
+
+                # Skip empty responses — don't burn an iteration on nothing.
+                if not content and not response.get("tool_calls"):
+                    logger.warning(
+                        f"[Task #{task_id}] Empty response (0 chars, no tool_calls) "
+                        f"— not counting as iteration {iteration + 1}/{effective_max_iterations}"
+                    )
+                    empty_response_count += 1
+                    if empty_response_count >= 3:
+                        return {
+                            "status": "failed",
+                            "error": f"Model returned {empty_response_count} consecutive empty responses",
+                            "model": used_model,
+                            "cost": total_cost,
+                        }
+                    continue  # retry same iteration
+                empty_response_count = 0  # reset on non-empty
+
                 await self._safe_log(
                     task_id, "assistant", content, used_model, step_cost
                 )

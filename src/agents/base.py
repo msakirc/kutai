@@ -1491,13 +1491,9 @@ class BaseAgent:
                 _task_ctx = {}
         if not isinstance(_task_ctx, dict):
             _task_ctx = {}
-        model_override = _task_ctx.get("model_override")
-
         reqs = await self._build_model_requirements(task, _task_ctx)
         # Phase 9.2: Attach task_id for tracing in router
         reqs._task_id = int(task_id) if str(task_id).isdigit() else None
-        if model_override:
-            reqs.model_override = model_override
 
         # ── attempt checkpoint recovery ──
         start_iteration = 0
@@ -1754,7 +1750,6 @@ class BaseAgent:
                         estimated_output_tokens=reqs.estimated_output_tokens,
                         priority=reqs.priority,
                         exclude_models=reqs.exclude_models or [],
-                        model_override=reqs.model_override,
                         remaining_budget=max(0.0, _remaining),
                     )
                 except Exception as exc:
@@ -2048,53 +2043,12 @@ class BaseAgent:
                         "difficulty":  reqs.difficulty,
                     }
 
-                # ── Grade or defer grading ──
+                # ── Defer grading — always set to ungraded ──
                 try:
-                    from src.core.llm_dispatcher import get_dispatcher
-                    from src.core.grading import grade_task, apply_grade_result, GradeResult
-
-                    dispatcher = get_dispatcher()
-                    loaded = dispatcher._get_loaded_litellm_name()
-                    generating = used_model
-
-                    # Can we grade immediately? (loaded model != generating, or high priority)
-                    can_grade_now = (
-                        loaded and generating != loaded
-                    ) or reqs.priority >= 8
-
-                    grade_applied = False
-                    if can_grade_now and task_id != "?":
-                        try:
-                            # Inject actual result so grade_task sees it
-                            task["result"] = result
-                            verdict = await grade_task(task, loaded or "")
-                            if not verdict.passed:
-                                # Grade FAIL — apply immediately, return retry signal
-                                await apply_grade_result(task_id, verdict)
-                                grade_applied = True
-                                await self._clear_checkpoint_safe(task_id)
-                                return {
-                                    "status": "pending",
-                                    "result": result,
-                                    "model": used_model,
-                                }
-                        except Exception:
-                            if grade_applied:
-                                # apply_grade_result already transitioned the task;
-                                # returning "pending" so orchestrator doesn't overwrite.
-                                await self._clear_checkpoint_safe(task_id)
-                                return {
-                                    "status": "pending",
-                                    "result": result,
-                                    "model": used_model,
-                                }
-                            # Grading failed before state change — defer instead
-                            can_grade_now = False
-
-                    if not can_grade_now and task_id != "?":
+                    if task_id != "?":
                         # Defer grading — set to ungraded
                         import json as _json
-                        from datetime import datetime as _dt
+                        from src.infra.times import utc_now as _utc_now
                         _ctx = task.get("context", "{}")
                         if isinstance(_ctx, str):
                             try:
@@ -2102,7 +2056,7 @@ class BaseAgent:
                             except (ValueError, TypeError):
                                 _ctx = {}
                         _ctx["generating_model"] = used_model
-                        _ctx["worker_completed_at"] = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+                        _ctx["worker_completed_at"] = _utc_now().strftime("%Y-%m-%d %H:%M:%S")
                         _ctx["tools_used_names"] = sorted(tools_used_names)
                         _ctx["iterations"] = iteration + 1
 
@@ -2892,10 +2846,6 @@ class BaseAgent:
         # Build requirements using the same method as react loop
         reqs = await self._build_model_requirements(task, _ss_ctx)
 
-        _ss_model_override = _ss_ctx.get("model_override")
-        if _ss_model_override:
-            reqs.model_override = _ss_model_override
-
         system_prompt = self._build_full_system_prompt(task)
         context = await self._build_context(task)
         messages = [
@@ -2922,7 +2872,6 @@ class BaseAgent:
                 estimated_output_tokens=reqs.estimated_output_tokens,
                 priority=reqs.priority,
                 exclude_models=reqs.exclude_models or [],
-                model_override=reqs.model_override,
             )
         except Exception as exc:
             # Propagate non-retryable errors to the orchestrator:

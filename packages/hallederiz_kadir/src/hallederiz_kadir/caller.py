@@ -18,7 +18,10 @@ from .retry import execute_with_retry, classify_error
 
 litellm.suppress_debug_info = True
 litellm.return_response_headers = True
-litellm.request_timeout = 120
+# No global request_timeout — each call passes its own timeout via
+# completion_kwargs["timeout"], computed from the dispatcher's budget.
+# A global cap here silently truncates long generations (e.g. 300s coder
+# calls capped to 120s).
 
 
 # ─── Lazy singleton accessors ──────────────────────────────────────────────

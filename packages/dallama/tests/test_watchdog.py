@@ -25,6 +25,7 @@ def mock_server():
 def mock_swap():
     s = MagicMock()
     s.swap_in_progress = False
+    s.intentional_unload = False
     s.swap = AsyncMock(return_value=True)
     return s
 
@@ -123,6 +124,57 @@ async def test_idle_unloader_reset_prevents_unload():
     except asyncio.CancelledError:
         pass
     server.stop.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_watchdog_skips_during_intentional_unload(watchdog_cfg, mock_server, mock_swap):
+    """HealthWatchdog must not trigger recovery when IdleUnloader is stopping the server."""
+    current_config = ServerConfig(model_path="/m/test.gguf", model_name="test", context_length=4096)
+    mock_swap.intentional_unload = True
+    mock_server.is_alive.return_value = False  # server is dead (being unloaded)
+    wd = HealthWatchdog(watchdog_cfg, mock_server, mock_swap)
+    task = asyncio.create_task(wd.run(lambda: current_config))
+    await asyncio.sleep(0.3)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    mock_swap.swap.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_idle_unloader_sets_intentional_unload_flag():
+    """IdleUnloader must set intentional_unload while stopping the server."""
+    cfg = DaLLaMaConfig(idle_timeout_seconds=0.2)
+    server = AsyncMock()
+    server.is_alive.return_value = True
+    swap = MagicMock()
+    swap.swap_in_progress = False
+    swap.has_inflight = False
+    swap.intentional_unload = False
+
+    flag_during_stop = []
+    original_stop = server.stop
+
+    async def capture_flag():
+        flag_during_stop.append(swap.intentional_unload)
+        return await original_stop()
+
+    server.stop = capture_flag
+
+    unloader = IdleUnloader(cfg, server, swap)
+    unloader.reset_timer()
+    task = asyncio.create_task(unloader.run())
+    await asyncio.sleep(0.5)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    assert len(flag_during_stop) >= 1, "stop() must have been called at least once"
+    assert all(flag_during_stop), "intentional_unload must be True while stop() runs"
+    assert swap.intentional_unload is False, "intentional_unload must be cleared after stop()"
+
 
 @pytest.mark.asyncio
 async def test_idle_unloader_skips_when_inflight():

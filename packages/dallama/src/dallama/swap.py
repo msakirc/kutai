@@ -37,8 +37,9 @@ class SwapManager:
         self._fail_model: str | None = None
         self._cooldown_until: float = 0.0
 
-        # Watchdog coordination flag
+        # Watchdog coordination flags
         self.swap_in_progress: bool = False
+        self.intentional_unload: bool = False
 
     # ── Inference tracking ──────────────────────────────────────────────────
 
@@ -130,7 +131,7 @@ class SwapManager:
 
     # ── Main swap entry point ───────────────────────────────────────────────
 
-    async def swap(self, server: object, config: ServerConfig) -> bool:
+    async def swap(self, server: object, config: ServerConfig, load_timeout: float = 0.0) -> bool:
         """Transition the server to config.
 
         Flow:
@@ -141,6 +142,14 @@ class SwapManager:
         5. VRAM check
         6. Start server with new config
         7. Record outcome, notify, return
+
+        Parameters
+        ----------
+        load_timeout:
+            Caller-provided ceiling for the health-wait timeout (seconds).
+            If >0, ``server.start()`` uses ``min(own_estimate, load_timeout)``
+            instead of the internal estimate alone.  Passed from Fatih Hoca
+            via the dispatcher so slow-loading models can be rejected earlier.
 
         Returns True if the new model is loaded and healthy.
         """
@@ -159,11 +168,11 @@ class SwapManager:
         async with self._lock:
             self.swap_in_progress = True
             try:
-                return await self._do_swap(server, config)
+                return await self._do_swap(server, config, load_timeout=load_timeout)
             finally:
                 self.swap_in_progress = False
 
-    async def _do_swap(self, server: object, config: ServerConfig) -> bool:
+    async def _do_swap(self, server: object, config: ServerConfig, load_timeout: float = 0.0) -> bool:
         """Inner swap logic, executed under the lock."""
         model_name = config.model_name
 
@@ -192,20 +201,23 @@ class SwapManager:
             # to reclaim memory before checking free VRAM for the next model.
             await asyncio.sleep(2)
 
-        # ── VRAM check ─────────────────────────────────────────────────────
+        # ── VRAM check (advisory) ──────────────────────────────────────────
+        # The old server is already stopped at this point — refusing here
+        # would leave us with nothing loaded. Log a warning but proceed;
+        # if VRAM is truly insufficient server.start() will fail and the
+        # circuit breaker handles repeated failures.
         get_vram = self._config.get_vram_free_mb
         if get_vram is not None:
             free_mb = get_vram()
             if free_mb < self._config.min_free_vram_mb:
-                logger.error(
-                    f"Insufficient VRAM to load {model_name}: "
-                    f"{free_mb}MB free, need {self._config.min_free_vram_mb}MB"
+                logger.warning(
+                    f"Low VRAM for {model_name}: "
+                    f"{free_mb}MB free, want {self._config.min_free_vram_mb}MB "
+                    f"— attempting load anyway"
                 )
-                self._notify(None, "insufficient_vram")
-                return False
 
         # ── Start server with new config ───────────────────────────────────
-        success = await server.start(config)
+        success = await server.start(config, load_timeout=load_timeout)
         if success:
             logger.info(f"Model loaded: {model_name}")
             self._record_success()

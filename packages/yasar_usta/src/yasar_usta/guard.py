@@ -328,16 +328,21 @@ class ProcessGuard:
             except asyncio.CancelledError:
                 pass
             self._telegram_poller = None
+        await self.telegram.close()
 
     async def _telegram_poll_loop(self, initial_offset: int = 0) -> None:
         offset = initial_offset
         last_down_reply: float = 0
         DOWN_REPLY_COOLDOWN = 30
+        _poll_fail_count = 0
         logger.info("Telegram poller started")
 
         while True:
             try:
                 updates = await self.telegram.get_updates(offset=offset)
+                if _poll_fail_count > 0:
+                    logger.info("Telegram poll recovered after %d failures", _poll_fail_count)
+                    _poll_fail_count = 0
                 if not updates:
                     continue
 
@@ -515,7 +520,10 @@ class ProcessGuard:
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                logger.error("Telegram poll error: %s", e)
+                _poll_fail_count += 1
+                if _poll_fail_count <= 3 or _poll_fail_count % 60 == 0:
+                    logger.error("Telegram poll error (fail #%d): %s",
+                                 _poll_fail_count, e)
                 await asyncio.sleep(5)
 
     async def _start_app(self) -> None:

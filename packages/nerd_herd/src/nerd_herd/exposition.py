@@ -15,6 +15,10 @@ from nerd_herd.registry import CollectorRegistry
 if TYPE_CHECKING:
     from nerd_herd.nerd_herd import NerdHerd
 
+# Bump this whenever routes or response schemas change.
+# The client checks this on connect and triggers a sidecar restart on mismatch.
+API_VERSION = 2
+
 logger = get_logger("nerd_herd.exposition")
 
 
@@ -50,6 +54,7 @@ class MetricsServer:
             app.router.add_get("/api/gpu", self._handle_gpu)
             app.router.add_post("/api/degraded", self._handle_degraded)
             app.router.add_post("/api/local_state", self._handle_local_state)
+            app.router.add_get("/api/snapshot", self._handle_snapshot)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -71,7 +76,7 @@ class MetricsServer:
         )
 
     async def _handle_health(self, request: web.Request) -> web.Response:
-        return web.json_response({"status": "ok"})
+        return web.json_response({"status": "ok", "api_version": API_VERSION})
 
     async def _handle_state(self, request: web.Request) -> web.Response:
         nh = self._nh
@@ -145,3 +150,7 @@ class MetricsServer:
         )
         self._nh.push_local_state(state)
         return web.json_response({"ok": True})
+
+    async def _handle_snapshot(self, request: web.Request) -> web.Response:
+        snap = self._nh.snapshot()
+        return web.json_response(dataclasses.asdict(snap))

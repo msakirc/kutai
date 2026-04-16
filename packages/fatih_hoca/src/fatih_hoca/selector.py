@@ -26,10 +26,17 @@ class Selector:
     delegates scoring to rank_candidates(), returns a Pick.
     """
 
-    def __init__(self, registry: ModelRegistry, nerd_herd: object) -> None:
+    def __init__(
+        self,
+        registry: ModelRegistry,
+        nerd_herd: object,
+        available_providers: set[str] | None = None,
+    ) -> None:
         self._registry = registry
         self._nerd_herd = nerd_herd
         self._swap_budget = SwapBudget(max_swaps=3, window_seconds=300)
+        # Providers with API keys configured — cloud models without a key are filtered
+        self._available_providers: set[str] | None = available_providers
 
     # ─── Public API ──────────────────────────────────────────────────────────
 
@@ -53,6 +60,7 @@ class Selector:
         failures: list[Failure] | None = None,
         exclude_models: list[str] | None = None,
         model_override: str | None = None,
+        remaining_budget: float = 0.0,
     ) -> Pick | None:
         """
         Select the best model for a task.
@@ -133,6 +141,7 @@ class Selector:
             reqs=reqs,
             snapshot=snapshot,
             failures=failures,
+            remaining_budget=remaining_budget,
         )
 
         if not scored:
@@ -175,12 +184,13 @@ class Selector:
         min_time = self._calc_min_time(
             best.model, estimated_output_tokens, needs_thinking
         )
+        load_time = 0.0 if (best.model.is_loaded or not best.model.is_local) else best.model.load_time_seconds
 
         logger.info(
-            "selector pick: model=%s score=%.1f min_time=%.1fs task=%s",
-            best.model.name, best.score, min_time, task,
+            "selector pick: model=%s score=%.1f min_time=%.1fs load=%.0fs task=%s",
+            best.model.name, best.score, min_time, load_time, task,
         )
-        return Pick(model=best.model, min_time_seconds=min_time)
+        return Pick(model=best.model, min_time_seconds=min_time, estimated_load_seconds=load_time)
 
     # ─── Eligibility Check (Layer 1) ─────────────────────────────────────────
 
@@ -212,6 +222,11 @@ class Selector:
         # local_only — reject cloud models
         if reqs.local_only and not model.is_local:
             return "local_only"
+
+        # Cloud provider API key check — reject cloud models without a key
+        if not model.is_local and self._available_providers is not None:
+            if model.provider not in self._available_providers:
+                return f"no_api_key({model.provider})"
 
         # Context length check
         needed_ctx = reqs.effective_context_needed
@@ -293,10 +308,18 @@ class Selector:
         estimated_output_tokens: int,
         needs_thinking: bool,
     ) -> float:
-        """Calculate the minimum expected generation time in seconds."""
+        """Calculate the minimum expected generation time in seconds.
+
+        When the model is a thinking variant, it generates thinking tokens
+        regardless of the ``needs_thinking`` flag (server-level setting).
+        Apply a multiplier even for overhead calls that reuse a loaded
+        thinking model — otherwise the timeout is too short.
+        """
         tps = model.tokens_per_second or 10.0
         est_output = estimated_output_tokens or 500
         min_time = est_output / tps
-        if model.thinking_model and needs_thinking:
-            min_time *= 3
+        if model.thinking_model:
+            # 3× when thinking is requested, 1.5× when it's not but the
+            # server-side thinking is still active (generates think tokens).
+            min_time *= 3.0 if needs_thinking else 1.5
         return min_time

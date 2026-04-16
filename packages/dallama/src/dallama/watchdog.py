@@ -52,7 +52,7 @@ class HealthWatchdog:
         if current_config is None:
             return  # No model loaded — nothing to watch.
 
-        if self._swap.swap_in_progress:
+        if self._swap.swap_in_progress or self._swap.intentional_unload:
             self._fail_count = 0
             return
 
@@ -158,7 +158,11 @@ class IdleUnloader:
             f"IdleUnloader: model idle for {self.idle_seconds:.1f}s "
             f"(timeout {self._config.idle_timeout_seconds}s) — unloading"
         )
-        await self._server.stop()
+        self._swap.intentional_unload = True
+        try:
+            await self._server.stop()
+        finally:
+            self._swap.intentional_unload = False
 
         cb = self._config.on_ready
         if cb is not None:

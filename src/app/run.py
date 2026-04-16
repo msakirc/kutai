@@ -2,6 +2,7 @@
 import asyncio
 import io
 import os
+import signal as _signal
 import subprocess
 import sys
 import time
@@ -27,7 +28,27 @@ from src.app.config import DOCKER_CONTAINER_NAME, print_config
 
 # ── Logging must be initialized before any other import that might log ────────
 from src.infra.logging_config import init_logging, get_logger
-init_logging(log_dir="logs", project="kutai")
+init_logging(
+    log_dir="logs",
+    project="kutai",
+    package_logs={
+        # dallama uses logging.getLogger(__name__) → "dallama.*"
+        "dallama": "dallama.jsonl",
+        # hallederiz_kadir uses get_logger() → "kutai.hallederiz_kadir",
+        # with fallback to logging.getLogger() → "hallederiz_kadir"
+        "kutai.hallederiz_kadir": "hallederiz_kadir.jsonl",
+        "hallederiz_kadir": "hallederiz_kadir.jsonl",
+        # LiteLLM and openai log from within hallederiz_kadir calls
+        "LiteLLM": "hallederiz_kadir.jsonl",
+        "openai": "hallederiz_kadir.jsonl",
+        # nerd_herd uses get_logger() → "kutai.nerd_herd.*"
+        "kutai.nerd_herd": "nerd_herd.jsonl",
+        # vecihi uses logging.getLogger("vecihi")
+        "vecihi": "vecihi.jsonl",
+        # kuleden_donen_var uses logging.getLogger(__name__) → "kuleden_donen_var.*"
+        "kuleden_donen_var": "kuleden_donen_var.jsonl",
+    },
+)
 _log = get_logger("app.run")
 
 # Attach Telegram alert handler (ERROR+) to root logger
@@ -45,6 +66,28 @@ _nerd_herd: NerdHerdClient | None = None
 
 def get_nerd_herd() -> NerdHerdClient | None:
     return _nerd_herd
+
+_NERD_HERD_PID_FILE = os.path.join("logs", "nerd_herd.pid")
+
+def _restart_stale_sidecar() -> None:
+    """Kill a stale NerdHerd sidecar via its PID file.
+
+    Yaşar Usta's ``ensure()`` cycle will notice it's gone and restart it
+    with the current code.
+    """
+    _rlog = get_logger("app.run")
+    try:
+        pid = int(open(_NERD_HERD_PID_FILE).read().strip())
+        os.kill(pid, _signal.SIGTERM)
+        _rlog.info(
+            "Killed stale NerdHerd sidecar (version mismatch, not a crash) "
+            "— Yaşar Usta will restart it with current code",
+            pid=pid,
+        )
+    except FileNotFoundError:
+        _rlog.debug("No NerdHerd PID file found — sidecar may not be running")
+    except (ValueError, OSError) as exc:
+        _rlog.warning("Could not kill stale NerdHerd sidecar", error=str(exc))
 
 from src.core.orchestrator import Orchestrator
 from src.infra.runtime_state import runtime_state, mark_degraded
@@ -405,9 +448,20 @@ async def main():
     try:
         global _nerd_herd
         _nerd_herd = NerdHerdClient(port=9881)
-        # Verify sidecar is reachable
-        _mode = await _nerd_herd.get_load_mode()
-        _log.info("Connected to NerdHerd sidecar", load_mode=_mode)
+
+        # Version handshake — restart stale sidecar so new endpoints work
+        if not await _nerd_herd.check_version():
+            _log.warning("NerdHerd sidecar is stale — killing so Yaşar Usta restarts it")
+            _restart_stale_sidecar()
+            # Give Yaşar Usta's ensure() cycle time to restart it
+            await asyncio.sleep(5)
+            if not await _nerd_herd.check_version():
+                _log.warning("NerdHerd sidecar still stale after restart — running without it")
+                _nerd_herd = None
+
+        if _nerd_herd is not None:
+            _mode = await _nerd_herd.get_load_mode()
+            _log.info("Connected to NerdHerd sidecar", load_mode=_mode)
     except Exception as exc:
         _log.warning("NerdHerd client init failed — running without GPU monitoring",
                      error=str(exc))
@@ -421,6 +475,51 @@ async def main():
     except Exception as exc:
         _log.debug("Could not wire NerdHerd to LocalModelManager", error=str(exc))
 
+    # Phase 3b: Initialize Fatih Hoca model selection with NerdHerd snapshot
+    try:
+        import fatih_hoca
+        from pathlib import Path as _Path
+        from src.app.config import AVAILABLE_KEYS
+
+        _catalog = str(_Path(__file__).resolve().parent.parent / "models" / "models.yaml")
+        _models_dir = os.getenv("MODEL_DIR", "") or None
+        _providers = {p for p, ok in AVAILABLE_KEYS.items() if ok}
+
+        # Seed the snapshot cache before init so first select() has VRAM data
+        if _nerd_herd:
+            try:
+                await _nerd_herd.refresh_snapshot()
+            except Exception:
+                pass
+
+        _fh_models = fatih_hoca.init(
+            catalog_path=_catalog,
+            models_dir=_models_dir,
+            nerd_herd=_nerd_herd,  # has sync snapshot() returning cached value
+            available_providers=_providers,
+        )
+        _log.info("Fatih Hoca initialized", model_count=len(_fh_models),
+                   cloud_providers=sorted(_providers) if _providers else "none")
+    except Exception as exc:
+        _log.error("Fatih Hoca init failed — model selection degraded", error=str(exc))
+
+    # Phase 3c: Background snapshot refresh (keeps Fatih Hoca's cached snapshot fresh)
+    _snapshot_task = None
+    if _nerd_herd:
+        async def _snapshot_refresh_loop():
+            while True:
+                try:
+                    await asyncio.sleep(2)
+                    await _nerd_herd.refresh_snapshot()
+                except asyncio.CancelledError:
+                    break
+                except Exception:
+                    pass  # sidecar temporarily unreachable — use stale cache
+
+        _snapshot_task = asyncio.create_task(
+            _snapshot_refresh_loop(), name="snapshot_refresh"
+        )
+
     # Cancel startup heartbeat — the orchestrator's own _heartbeat_loop
     # takes over once start() creates its background tasks.
     _hb_task.cancel()
@@ -432,6 +531,8 @@ async def main():
         api_task.cancel()
     if monitor_task and not monitor_task.done():
         monitor_task.cancel()
+    if _snapshot_task and not _snapshot_task.done():
+        _snapshot_task.cancel()
     if _nerd_herd:
         await _nerd_herd.close()
 

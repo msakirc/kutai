@@ -189,6 +189,7 @@ class LocalModelManager:
         enable_thinking: bool = False,
         enable_vision: bool = False,
         min_context: int = 0,
+        load_timeout: float = 0.0,
     ) -> bool:
         """Load a model by name, translating to DaLLaMa ServerConfig.
 
@@ -306,7 +307,7 @@ class LocalModelManager:
         self.swap_started_at = time.monotonic()
         self._swap_ready.clear()
         try:
-            success = await self._dallama._swap.swap(self._dallama._server, sc)
+            success = await self._dallama._swap.swap(self._dallama._server, sc, load_timeout=load_timeout)
             if success:
                 self._dallama._current_config = sc
         finally:

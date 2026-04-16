@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 class Pick:
     model: object  # ModelInfo — typed loosely here, fully typed in __init__
     min_time_seconds: float
+    estimated_load_seconds: float = 0.0  # 0 if already loaded, else expected swap time
 
 
 @dataclass

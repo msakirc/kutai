@@ -58,6 +58,7 @@ class ServerProcess:
             "--host", self._cfg.host,
             "--ctx-size", str(config.context_length),
             "--flash-attn", "auto",
+            "--parallel", "1",
             "--metrics",
             "--batch-size", "2048",
             "--ubatch-size", "512",
@@ -86,8 +87,14 @@ class ServerProcess:
 
         return cmd
 
-    async def start(self, config) -> bool:
+    async def start(self, config, load_timeout: float = 0.0) -> bool:
         """Launch llama-server and wait until healthy.
+
+        Parameters
+        ----------
+        load_timeout:
+            Caller-provided ceiling for the health-wait.  When >0 the
+            actual timeout is ``min(internal_estimate, load_timeout)``.
 
         Returns True on success, False if the process fails to become healthy.
         """
@@ -115,6 +122,8 @@ class ServerProcess:
             return False
 
         timeout = self._estimate_load_timeout(config)
+        if load_timeout > 0:
+            timeout = min(timeout, load_timeout)
         logger.info("Waiting up to %.0fs for llama-server to become healthy", timeout)
 
         healthy = await self._wait_for_healthy(timeout)
@@ -210,7 +219,8 @@ class ServerProcess:
 
         Formula: ``file_size_mb / 500 + ctx_factor * 15``
         where ctx_factor scales context length (4096 baseline → 1.0).
-        Result clamped to [45, 300] then doubled for safety margin.
+        Result clamped to [30, 150].  Observed worst case is ~113s
+        for the largest models on an 8 GB GPU.
         """
         try:
             size_bytes = os.path.getsize(config.model_path)
@@ -220,5 +230,4 @@ class ServerProcess:
 
         ctx_factor = max(1.0, config.context_length / 4096)
         estimate = size_mb / 500 + ctx_factor * 15
-        clamped = max(45.0, min(300.0, estimate))
-        return clamped * 2.0
+        return max(30.0, min(150.0, estimate))

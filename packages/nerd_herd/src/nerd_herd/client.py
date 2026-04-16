@@ -10,6 +10,13 @@ from typing import Any
 
 import aiohttp
 
+from nerd_herd.exposition import API_VERSION
+from nerd_herd.types import (
+    CloudProviderState,
+    LocalModelState,
+    RateLimits,
+    SystemSnapshot,
+)
 from yazbunu import get_logger
 
 logger = get_logger("nerd_herd.client")
@@ -47,6 +54,7 @@ class NerdHerdClient:
         self._base = f"http://{host}:{port}"
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: aiohttp.ClientSession | None = None
+        self._cached_snapshot = SystemSnapshot()
 
     # ------------------------------------------------------------------
     # Session management
@@ -63,6 +71,30 @@ class NerdHerdClient:
         if self._session and not self._session.closed:
             await self._session.close()
             self._session = None
+
+    # ------------------------------------------------------------------
+    # Version handshake
+    # ------------------------------------------------------------------
+
+    async def check_version(self) -> bool:
+        """Return True if sidecar API version matches this client.
+
+        Returns False (stale) when the sidecar is unreachable or reports
+        a different API_VERSION.  The caller should restart the sidecar
+        in that case.
+        """
+        data = await self._get_json("/health", default=None)
+        if not isinstance(data, dict):
+            return False
+        remote = data.get("api_version")
+        if remote == API_VERSION:
+            return True
+        logger.warning(
+            "Sidecar API version mismatch",
+            remote=remote,
+            expected=API_VERSION,
+        )
+        return False
 
     # ------------------------------------------------------------------
     # Low-level helpers
@@ -178,6 +210,76 @@ class NerdHerdClient:
             "is_swapping": is_swapping,
             "kv_cache_ratio": kv_cache_ratio,
         })
+
+    # ------------------------------------------------------------------
+    # Snapshot (sync cached + async refresh)
+    # ------------------------------------------------------------------
+
+    def snapshot(self) -> SystemSnapshot:
+        """Return the last cached SystemSnapshot (sync, for Fatih Hoca).
+
+        Call refresh_snapshot() periodically to keep this fresh.
+        """
+        return self._cached_snapshot
+
+    async def refresh_snapshot(self) -> SystemSnapshot:
+        """Fetch a fresh SystemSnapshot from the sidecar and cache it.
+
+        Tries /api/snapshot first (new sidecar). Falls back to building
+        a snapshot from /api/state + /api/gpu (old sidecar without the
+        snapshot endpoint).
+        """
+        data = await self._get_json("/api/snapshot", default=None)
+        if isinstance(data, dict):
+            self._cached_snapshot = self._parse_snapshot(data)
+            return self._cached_snapshot
+
+        # Fallback: build snapshot from existing endpoints
+        state = await self._get_state()
+        gpu_data = await self._get_json("/api/gpu", default={})
+        if not isinstance(gpu_data, dict):
+            gpu_data = {}
+
+        vram_mb = int(state.get("vram_budget_mb", 0))
+        # If vram_budget_mb is 0 but GPU reports free VRAM, use that
+        if vram_mb == 0:
+            vram_mb = int(gpu_data.get("vram_free_mb", 0))
+
+        self._cached_snapshot = SystemSnapshot(
+            vram_available_mb=vram_mb,
+            local=self._cached_snapshot.local,   # preserve last known local state
+            cloud=self._cached_snapshot.cloud,    # preserve last known cloud state
+        )
+        return self._cached_snapshot
+
+    def _parse_snapshot(self, data: dict) -> SystemSnapshot:
+        """Parse a SystemSnapshot from the /api/snapshot JSON response."""
+        local_data = data.get("local") or {}
+        local = LocalModelState(
+            model_name=local_data.get("model_name"),
+            thinking_enabled=bool(local_data.get("thinking_enabled", False)),
+            vision_enabled=bool(local_data.get("vision_enabled", False)),
+            measured_tps=float(local_data.get("measured_tps", 0.0)),
+            context_length=int(local_data.get("context_length", 0)),
+            is_swapping=bool(local_data.get("is_swapping", False)),
+            kv_cache_ratio=float(local_data.get("kv_cache_ratio", 0.0)),
+        )
+
+        cloud: dict[str, CloudProviderState] = {}
+        for prov, prov_data in (data.get("cloud") or {}).items():
+            cloud[prov] = CloudProviderState(
+                provider=prov_data.get("provider", prov),
+                utilization_pct=float(prov_data.get("utilization_pct", 0.0)),
+                consecutive_failures=int(prov_data.get("consecutive_failures", 0)),
+                last_failure_at=prov_data.get("last_failure_at"),
+                limits=RateLimits(),
+            )
+
+        return SystemSnapshot(
+            vram_available_mb=int(data.get("vram_available_mb", 0)),
+            local=local,
+            cloud=cloud,
+        )
 
     async def mark_degraded(self, capability: str) -> None:
         """Mark a capability as degraded on the sidecar."""

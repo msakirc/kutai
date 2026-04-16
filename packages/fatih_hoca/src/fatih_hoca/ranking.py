@@ -114,6 +114,7 @@ def rank_candidates(
     reqs: ModelRequirements,
     snapshot: SystemSnapshot,
     failures: list[Failure],
+    remaining_budget: float = 0.0,
 ) -> list[ScoredModel]:
     """
     Score and rank an already-filtered list of ModelInfo objects.
@@ -210,12 +211,9 @@ def rank_candidates(
                 model.name, cap_score_raw,
             )
             continue
-        if min_score > 0 and cap_score_raw < min_score:
-            logger.debug(
-                "model below min_score: model=%s cap_score_raw=%.2f min_score=%.2f",
-                model.name, cap_score_raw, min_score,
-            )
-            continue
+        # No min_score gate — ranking sorts by score, best model wins.
+        # Filtering low scorers risks zero candidates (worse than a
+        # mediocre pick) and triggers unnecessary swaps.
 
         cap_score = min(cap_score_raw * 10, 100)
         reasons.append(f"cap={cap_score_raw:.1f}")
@@ -262,6 +260,14 @@ def rank_candidates(
             else:
                 swap_time = model.load_time_seconds
                 avail_score = 75 if swap_time < 10 else (55 if swap_time < 30 else 35)
+                # Budget-aware penalty: loading that eats >50% of remaining
+                # budget gets a steep discount so faster-loading models win.
+                if remaining_budget > 0 and swap_time > remaining_budget * 0.5:
+                    ratio = swap_time / remaining_budget
+                    # ratio 0.5→penalty 0, ratio 1.0→penalty 30
+                    budget_penalty = min(30, int((ratio - 0.5) * 60))
+                    avail_score = max(5, avail_score - budget_penalty)
+                    reasons.append(f"load_budget({swap_time:.0f}s/{remaining_budget:.0f}s)")
                 reasons.append(f"swap_{swap_time:.0f}s")
         else:
             # Use snapshot.cloud for utilization data

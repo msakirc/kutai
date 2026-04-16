@@ -145,7 +145,10 @@ class LLMDispatcher:
         # Load local model if needed
         if model.is_local and getattr(model, "location", "") != "ollama":
             is_thinking = model.thinking_model and needs_thinking
-            ok = await self._ensure_local_model(model, needs_thinking=is_thinking)
+            ok = await self._ensure_local_model(
+                model, needs_thinking=is_thinking,
+                load_timeout=pick.estimated_load_seconds or 0.0,
+            )
             if not ok:
                 task_desc = task or agent_type or category.value
                 if is_overhead:
@@ -215,7 +218,7 @@ class LLMDispatcher:
         )
 
     def _timeout_floor(self, category: CallCategory) -> float:
-        return 20.0 if category == CallCategory.OVERHEAD else 30.0
+        return 45.0 if category == CallCategory.OVERHEAD else 60.0
 
     async def _ensure_local_model(
         self,
@@ -225,6 +228,7 @@ class LLMDispatcher:
         agent_type: str = "",
         task: str = "",
         estimated_context: int = 0,
+        load_timeout: float = 0.0,
     ) -> bool:
         """Ensure the local model is loaded with correct vision/thinking state.
 
@@ -255,6 +259,7 @@ class LLMDispatcher:
             enable_thinking=needs_thinking,
             enable_vision=needs_vision_load,
             min_context=estimated_context,
+            load_timeout=load_timeout,
         )
         return success
 

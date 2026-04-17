@@ -23,7 +23,6 @@ from src.infra.logging_config import get_logger
 from .router import ModelCallFailed, get_kdv
 from .task_context import parse_context, set_context
 from .task_gates import run_gates
-from .mechanical.workspace_snapshot import snapshot_workspace
 import salako
 from .decisions import Cancel as GateCancel
 from .result_router import (
@@ -625,16 +624,23 @@ class Orchestrator:
             return None
 
         # ── Phase 6: Snapshot workspace before coder/pipeline tasks ──
+        # Option B (plan Task 7): funnel through salako.run() so both entry
+        # points share one seam. A failed Action is non-fatal here, matching
+        # the original None-on-failure semantics.
         mission_id = task.get("mission_id")
         if mission_id and agent_type in ("coder", "pipeline", "implementer", "fixer"):
             ws_path = get_mission_workspace(mission_id)
             repo_path = get_mission_workspace_relative(mission_id)
-            await snapshot_workspace(
-                mission_id=mission_id,
-                task_id=task_id,
-                workspace_path=ws_path,
-                repo_path=repo_path,
-            )
+            _snap_task = {
+                "id": task_id,
+                "mission_id": mission_id,
+                "payload": {
+                    "action": "workspace_snapshot",
+                    "workspace_path": ws_path,
+                    "repo_path": repo_path,
+                },
+            }
+            await salako.run(_snap_task)
 
         # ── Internet connectivity pre-check for web-dependent tasks ──
         classification = task_ctx.get("classification", {})

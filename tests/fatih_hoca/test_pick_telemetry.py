@@ -50,7 +50,6 @@ async def test_select_persists_pick_to_db(tmp_path, monkeypatch, caplog):
     import asyncio
 
     db_file = tmp_path / "test.db"
-    monkeypatch.setenv("DB_PATH", str(db_file))
 
     # Patch the module-level DB_PATH in src.infra.db (captured at import time)
     import src.infra.db as _db_mod
@@ -95,6 +94,9 @@ async def test_select_persists_pick_to_db(tmp_path, monkeypatch, caplog):
     fatih_hoca._registry = reg
     fatih_hoca._selector = Selector(registry=reg, nerd_herd=_Nh())
 
+    from fatih_hoca import selector as _sel_mod
+    monkeypatch.setattr(_sel_mod, "_telemetry_db_path", str(tmp_path / "test.db"))
+
     with caplog.at_level(logging.INFO, logger="fatih_hoca.selector"):
         pick = fatih_hoca.select(
             task="coder", agent_type="coder", difficulty=5,
@@ -128,3 +130,154 @@ async def test_select_persists_pick_to_db(tmp_path, monkeypatch, caplog):
     if _db_mod._db_connection is not None:
         await _db_mod._db_connection.close()
         _db_mod._db_connection = None
+
+
+@pytest.mark.asyncio
+async def test_telemetry_does_not_leak_when_os_env_has_db_path(tmp_path, monkeypatch):
+    """Repro for 2026-04-17 production pollution: OS-level DB_PATH must not
+    drive telemetry writes. Requires explicit enable_telemetry() opt-in."""
+    prod_db = tmp_path / "fake_production.db"
+    monkeypatch.setenv("DB_PATH", str(prod_db))
+
+    # Reset shared connection so init_db() opens the tmp path this test wants.
+    import src.infra.db as _db_mod
+    monkeypatch.setattr(_db_mod, "DB_PATH", str(prod_db))
+    if _db_mod._db_connection is not None:
+        await _db_mod._db_connection.close()
+        _db_mod._db_connection = None
+
+    from src.infra.db import init_db
+    await init_db()
+
+    import fatih_hoca
+    from fatih_hoca.registry import ModelInfo, ModelRegistry
+    from fatih_hoca.selector import Selector
+
+    fatih_hoca._registry = None
+    fatih_hoca._selector = None
+    reg = ModelRegistry()
+    reg._models["leaky_fixture"] = ModelInfo(
+        name="leaky_fixture", location="local",
+        provider="llama_cpp", litellm_name="openai/leaky_fixture",
+        path="/fake/leaky_fixture.gguf",
+        total_params_b=8.0, active_params_b=8.0,
+        capabilities={c: 7.0 for c in ["reasoning","code_generation","analysis","instruction_adherence"]},
+    )
+
+    class _Nh:
+        def snapshot(self):
+            from nerd_herd.types import SystemSnapshot
+            return SystemSnapshot(vram_available_mb=24000)
+    fatih_hoca._registry = reg
+    fatih_hoca._selector = Selector(registry=reg, nerd_herd=_Nh())
+
+    pick = fatih_hoca.select(
+        task="coder", agent_type="coder", difficulty=5,
+        estimated_input_tokens=500, estimated_output_tokens=500,
+        call_category="main_work",
+    )
+    assert pick is not None, "precondition: selector must make a pick for this test to meaningfully probe leak"
+
+    import asyncio
+    await asyncio.sleep(0.2)
+
+    import sqlite3
+    if not prod_db.exists():
+        count = 0
+    else:
+        conn = sqlite3.connect(prod_db)
+        try:
+            try:
+                cur = conn.execute(
+                    "SELECT COUNT(*) FROM model_pick_log WHERE picked_model='leaky_fixture'"
+                )
+                count = cur.fetchone()[0]
+            except sqlite3.OperationalError:
+                # Table missing → no telemetry write happened → no leak.
+                count = 0
+        finally:
+            conn.close()
+
+    assert count == 0, (
+        f"telemetry leaked: {count} rows for leaky_fixture. "
+        f"tests must not write without explicit enable_telemetry() opt-in."
+    )
+
+
+def test_select_in_sync_context_skips_telemetry_cleanly(tmp_path, monkeypatch):
+    """When fatih_hoca.select() runs in a pure sync context with no event loop,
+    pick telemetry must be silently skipped — no crash, no DeprecationWarning,
+    no DB row. Python 3.12+ will break get_event_loop() in this path.
+    """
+    import warnings
+    import asyncio
+
+    # Set up DB schema (if telemetry accidentally writes, we'd see it)
+    from src.infra.db import init_db
+    import src.infra.db as _db_mod
+
+    db_file = tmp_path / "sync_test.db"
+    monkeypatch.setattr(_db_mod, "DB_PATH", str(db_file))
+    if _db_mod._db_connection is not None:
+        async def _close():
+            await _db_mod._db_connection.close()
+        asyncio.run(_close())
+        _db_mod._db_connection = None
+    asyncio.run(init_db())
+
+    # Opt telemetry IN so we'd actually see a write if the sync path leaked
+    from fatih_hoca import selector as _sel_mod
+    monkeypatch.setattr(_sel_mod, "_telemetry_db_path", str(db_file))
+
+    import fatih_hoca
+    from fatih_hoca.registry import ModelInfo, ModelRegistry
+    from fatih_hoca.selector import Selector
+
+    fatih_hoca._registry = None
+    fatih_hoca._selector = None
+    reg = ModelRegistry()
+    reg._models["a"] = ModelInfo(
+        name="a", location="local",
+        provider="llama_cpp", litellm_name="openai/a",
+        path="/fake/a.gguf",
+        total_params_b=8.0, active_params_b=8.0,
+        capabilities={c: 7.0 for c in ["reasoning", "code_generation", "analysis", "instruction_adherence"]},
+    )
+    reg._models["b"] = ModelInfo(
+        name="b", location="local",
+        provider="llama_cpp", litellm_name="openai/b",
+        path="/fake/b.gguf",
+        total_params_b=8.0, active_params_b=8.0,
+        capabilities={c: 5.0 for c in ["reasoning", "code_generation", "analysis", "instruction_adherence"]},
+    )
+
+    class _Nh:
+        def snapshot(self):
+            from nerd_herd.types import SystemSnapshot
+            return SystemSnapshot(vram_available_mb=24000)
+
+    fatih_hoca._registry = reg
+    fatih_hoca._selector = Selector(registry=reg, nerd_herd=_Nh())
+
+    # Sync call — no asyncio.run wrapper. Promote DeprecationWarning to error
+    # so we catch the get_event_loop() call.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        pick = fatih_hoca.select(
+            task="coder", agent_type="coder", difficulty=5,
+            estimated_input_tokens=500, estimated_output_tokens=500,
+            call_category="main_work",
+        )
+
+    assert pick is not None, "select() must return a Pick even when telemetry skipped"
+    assert pick.model.name in ("a", "b"), f"expected a or b, got {pick.model.name}"
+
+    # No row written (sync context must skip telemetry)
+    import sqlite3
+    conn = sqlite3.connect(db_file)
+    try:
+        cur = conn.execute("SELECT COUNT(*) FROM model_pick_log")
+        count = cur.fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 0, f"sync-context select() must not write telemetry, got {count} rows"

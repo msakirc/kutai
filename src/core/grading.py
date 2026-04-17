@@ -562,21 +562,38 @@ async def drain_ungraded_tasks() -> int:
             verdict = await grade_task(task)
             await apply_grade_result(task_id, verdict)
             graded += 1
-        except ValueError:
-            # Grader parse failure (QualityError)
+        except ValueError as parse_err:
+            # Grader parse failure: grader's output was unparseable. Output is
+            # UNGRADED — we cannot vouch for it. Retry up to max_grade_attempts
+            # (a different grader model may parse cleanly); on exhaustion,
+            # quarantine to DLQ for human review. Never silently promote to
+            # completed — ungraded output is not trustworthy.
             g_attempts = (task.get("grade_attempts") or 0) + 1
             max_g = task.get("max_grade_attempts") or 3
 
             if g_attempts >= max_g:
                 from src.core.state_machine import transition_task
-                await transition_task(
-                    task_id, "completed",
-                    grade_attempts=g_attempts,
-                    completed_at=db_now(),
-                    context=json.dumps(ctx),
+                try:
+                    from src.infra.dead_letter import quarantine_task
+                    await transition_task(
+                        task_id, "failed",
+                        failed_in_phase="grading",
+                        grade_attempts=g_attempts,
+                        error=f"grader parse failures exhausted ({g_attempts}/{max_g})",
+                        context=json.dumps(ctx),
+                    )
+                    await quarantine_task(
+                        task_id=task_id,
+                        mission_id=task.get("mission_id"),
+                        error=f"Grader parse failures exhausted: {parse_err}",
+                        error_category="grading_parse",
+                    )
+                except Exception as dlq_err:
+                    logger.warning(f"grading DLQ failed: {dlq_err}")
+                logger.warning(
+                    f"grading parse-fail DLQ (output untrusted) | "
+                    f"task_id={task_id} grade_attempts={g_attempts}"
                 )
-                logger.warning(f"grading waived (parse failures) | task_id={task_id} grade_attempts={g_attempts}")
-                graded += 1
             else:
                 await update_task(
                     task_id,

@@ -144,3 +144,73 @@ class TestFailurePenaltyScope:
         by_name = {r.model.name: r for r in ranked}
         assert any("provider" in r.lower() for r in by_name["groq-b"].reasons), \
             f"sibling should be penalized when circuit breaker shows provider outage, got {by_name['groq-b'].reasons}"
+
+
+class TestSpecialtyBonusRemoval:
+    """After Phase 2a, the 1.15× specialty multiplier is gone. The specialty
+    field is kept for eligibility filtering (in selector.py) and for
+    observability in reasons — but it must not bend the composite score."""
+
+    def test_equal_caps_specialty_does_not_win(self):
+        """Two models with identical capabilities — one specialty=coding, one
+        specialty=None — on a coder task. They must tie on composite. Before
+        removal, specialist would get 1.15× bonus."""
+        caps = {"reasoning": 7.0, "code_generation": 7.0, "code_reasoning": 7.0,
+                "analysis": 6.5, "instruction_adherence": 7.0}
+        specialist = _make_model("specialist", caps, specialty="coding")
+        general = _make_model("general", caps)  # specialty defaults to None
+
+        # Parity on speed and size so only specialty differs
+        specialist.tokens_per_second = 20.0
+        general.tokens_per_second = 20.0
+
+        reqs = ModelRequirements(
+            task="coder",
+            primary_capability="code_generation",
+            difficulty=5,
+            estimated_input_tokens=500,
+            estimated_output_tokens=500,
+        )
+
+        snap = SystemSnapshot()
+        ranked = rank_candidates([specialist, general], reqs, snap, failures=[])
+        by_name = {r.model.name: r for r in ranked}
+
+        specialist_score = by_name["specialist"].composite_score
+        general_score = by_name["general"].composite_score
+
+        assert abs(specialist_score - general_score) < 0.01, (
+            f"specialty must not bend composite: specialist={specialist_score:.3f} "
+            f"vs general={general_score:.3f} — bonus not removed"
+        )
+
+    def test_benchmark_signal_beats_specialty_tag(self):
+        """A general model with strong caps must beat a specialty-tagged model
+        with weaker caps on the same task. The core business outcome of Phase 2a."""
+        weak_caps = {"reasoning": 6.0, "code_generation": 5.5, "code_reasoning": 5.5,
+                     "analysis": 6.0, "instruction_adherence": 6.5}
+        strong_caps = {"reasoning": 7.5, "code_generation": 8.5, "code_reasoning": 8.0,
+                       "analysis": 7.0, "instruction_adherence": 7.0}
+
+        weak_specialist = _make_model("weak_coder_specialist", weak_caps, specialty="coding")
+        strong_general = _make_model("strong_general", strong_caps)
+
+        weak_specialist.tokens_per_second = 20.0
+        strong_general.tokens_per_second = 20.0
+
+        reqs = ModelRequirements(
+            task="coder",
+            primary_capability="code_generation",
+            difficulty=6,
+            estimated_input_tokens=500,
+            estimated_output_tokens=500,
+        )
+
+        snap = SystemSnapshot()
+        ranked = rank_candidates([weak_specialist, strong_general], reqs, snap, failures=[])
+
+        winner = ranked[0].model.name
+        assert winner == "strong_general", (
+            f"benchmark signal must dominate specialty tag: winner={winner}, "
+            f"scores={[(r.model.name, round(r.composite_score, 2)) for r in ranked]}"
+        )

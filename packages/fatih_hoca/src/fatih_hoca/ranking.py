@@ -441,7 +441,14 @@ def rank_candidates(
             composite *= 1.20
             reasons.append("thinking_bonus")
 
-        # Group B: Specialty alignment
+        # Group B: Specialty alignment (observability only, no composite effect).
+        # The 1.15× multiplier was removed in Phase 2a: after Phase 1 blended AA
+        # benchmark signal into ModelInfo.capabilities, a coding-specialty model
+        # on a coder task already gets its code_* dims heavily boosted via the
+        # profile dot-product; multiplying again caused specialty models to beat
+        # general models with objectively stronger benchmark coder scores.
+        # Hard filtering for coding specialty on non-coder tasks still lives
+        # in selector._check_eligibility, which is unchanged.
         if model.specialty and effective_task:
             _specialty_tasks = {
                 "coding": {"coder", "implementer", "fixer", "test_generator"},
@@ -450,7 +457,6 @@ def rank_candidates(
             }
             matched = _specialty_tasks.get(model.specialty, set())
             if effective_task in matched:
-                composite *= 1.15
                 reasons.append(f"specialty={model.specialty}")
 
         # Group C: Swap stickiness — prefer the already-loaded model

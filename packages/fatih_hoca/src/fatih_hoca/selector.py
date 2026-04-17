@@ -20,6 +20,30 @@ from fatih_hoca.types import Failure, Pick, SwapBudget
 logger = logging.getLogger("fatih_hoca.selector")
 
 
+# ─── Telemetry DB Path (explicit opt-in for production) ──────────────────────
+#
+# Tests must never leak telemetry writes to the real DB. The previous guard
+# relied on os.getenv("DB_PATH") + "src.app.config in sys.modules" — but the
+# OS env var is set on the production host independently of module imports,
+# so tests that inherit it would still write (see 2026-04-17 incident).
+#
+# Now: production explicitly calls enable_telemetry(db_path) during startup.
+# Default is None → _persist_pick_telemetry silently skips the write.
+_telemetry_db_path: str | None = None
+
+
+def enable_telemetry(db_path: str) -> None:
+    """Opt telemetry in. Call once at production startup with the real DB path."""
+    global _telemetry_db_path
+    _telemetry_db_path = db_path
+
+
+def disable_telemetry() -> None:
+    """Opt telemetry out (e.g., in a test fixture teardown)."""
+    global _telemetry_db_path
+    _telemetry_db_path = None
+
+
 class Selector:
     """
     Model selector — owns swap budget, applies eligibility filtering,
@@ -177,7 +201,121 @@ class Selector:
             "selector pick: model=%s score=%.1f min_time=%.1fs load=%.0fs task=%s",
             best.model.name, best.score, min_time, load_time, task,
         )
+
+        # Pick telemetry — structured log + fire-and-forget DB write
+        try:
+            effective_task = reqs.effective_task or task
+            top_n = min(len(scored), 5)
+            top_summary = ", ".join(
+                f"{r.model.name}={r.score:.1f}"
+                for r in scored[:top_n]
+            )
+            logger.info(
+                "picked=%s score=%.1f task=%s diff=%d category=%s candidates=[%s]",
+                best.model.name, best.score,
+                effective_task, reqs.difficulty, call_category,
+                top_summary,
+            )
+            self._persist_pick_telemetry(
+                scored, reqs, effective_task, call_category, failures, snapshot,
+            )
+        except Exception as e:
+            logger.debug("pick telemetry log/persist failed: %s", e)
+
         return Pick(model=best.model, min_time_seconds=min_time, estimated_load_seconds=load_time)
+
+    # ─── Pick Telemetry ──────────────────────────────────────────────────────
+
+    def _persist_pick_telemetry(
+        self,
+        scored: list,
+        reqs,
+        task_name: str,
+        call_category: str,
+        failures: list,
+        snapshot,
+    ) -> None:
+        """Fire-and-forget write to model_pick_log. Never raises; never blocks selection."""
+        import asyncio
+        import json
+
+        candidates_payload = [
+            {
+                "name": r.model.name,
+                "composite": round(r.score, 2),
+                "reasons": list(r.reasons),
+            }
+            for r in scored[:10]
+        ]
+        failures_payload = [
+            {
+                "model": f.model,
+                "reason": getattr(f, "reason", None) or getattr(f, "error_type", None),
+                "msg": (getattr(f, "message", "") or "")[:100],
+            }
+            for f in (failures or [])
+        ]
+        local_state = getattr(snapshot, "local", None)
+        snapshot_summary = {
+            "vram_free_mb": getattr(snapshot, "vram_available_mb", 0),
+            "loaded": getattr(local_state, "model_name", None) if local_state else None,
+        }
+
+        picked_model = scored[0].model.name
+        picked_score = round(scored[0].score, 2)
+        picked_reasons_json = json.dumps(list(scored[0].reasons))
+        candidates_json = json.dumps(candidates_payload)
+        failures_json = json.dumps(failures_payload)
+        snapshot_summary_json = json.dumps(snapshot_summary)
+        agent_type = getattr(reqs, "agent_type", None)
+        difficulty = getattr(reqs, "difficulty", 0)
+
+        async def _write():
+            try:
+                # Use a short-lived dedicated connection — avoids polluting the
+                # shared singleton (which tests may reset between cases). Only
+                # import/resolve DB_PATH lazily at write time so we don't force
+                # `src.app.config` to be loaded before other tests can set env.
+                import aiosqlite
+                # Explicit opt-in only. Default None → skip.
+                # Tests must monkeypatch fatih_hoca.selector._telemetry_db_path
+                # to a tmp file if they want to inspect writes.
+                db_path = _telemetry_db_path
+                if not db_path:
+                    return
+                async with aiosqlite.connect(db_path) as db:
+                    await db.execute(
+                        """
+                        INSERT INTO model_pick_log
+                          (task_name, agent_type, difficulty, call_category,
+                           picked_model, picked_score, picked_reasons,
+                           candidates_json, failures_json, snapshot_summary)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            task_name or "unknown",
+                            agent_type,
+                            difficulty,
+                            call_category,
+                            picked_model,
+                            picked_score,
+                            picked_reasons_json,
+                            candidates_json,
+                            failures_json,
+                            snapshot_summary_json,
+                        ),
+                    )
+                    await db.commit()
+            except Exception:
+                pass  # telemetry must never break selection
+
+        try:
+            asyncio.get_running_loop()
+            asyncio.create_task(_write())
+        except RuntimeError:
+            # No running loop — sync caller. Telemetry is best-effort; only
+            # meaningful inside an asyncio context. Skip silently.
+            pass
 
     # ─── Eligibility Check (Layer 1) ─────────────────────────────────────────
 

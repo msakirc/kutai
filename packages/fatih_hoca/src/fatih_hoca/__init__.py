@@ -73,6 +73,47 @@ def init(
     # Without this, all models default to 10 tok/s → timeouts are too short.
     _registry._load_speed_cache()
 
+    # ── Benchmark enrichment: populate ModelInfo.benchmark_scores from cached AA data ──
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        from src.models.benchmark.benchmark_fetcher import enrich_registry_with_benchmarks
+
+        enrich_registry_with_benchmarks(_registry)
+        all_models_list = _registry.all_models()
+        matched = sum(1 for m in all_models_list if m.benchmark_scores)
+        total = len(all_models_list)
+        unmatched = [m.name for m in all_models_list if not m.benchmark_scores]
+
+        logger.info(
+            "benchmark coverage: %d/%d matched (unmatched=%d)",
+            matched, total, len(unmatched),
+        )
+        if unmatched:
+            logger.warning(
+                "benchmark coverage: %d unmatched models — %s",
+                len(unmatched), ", ".join(unmatched[:10]),
+            )
+    except Exception as e:
+        logger.warning("benchmark enrichment failed at init: %s", e)
+
+    # ── Blend profile + benchmark into final capabilities vector ──
+    try:
+        from src.models.auto_tuner import blend_capability_scores
+
+        for m in _registry.all_models():
+            if not m.benchmark_scores:
+                continue
+            blended = blend_capability_scores(
+                profile_scores=dict(m.capabilities),
+                benchmark_scores=dict(m.benchmark_scores),
+                grading_scores={},
+                grading_call_count=0,
+            )
+            m.capabilities = blended
+    except Exception as e:
+        logger.warning("capability blending failed at init: %s", e)
+
     _selector = Selector(
         registry=_registry,
         nerd_herd=nerd_herd,

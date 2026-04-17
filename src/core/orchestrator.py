@@ -23,6 +23,7 @@ from src.infra.logging_config import get_logger
 from .router import ModelCallFailed, get_kdv
 from .task_context import parse_context, set_context
 from .task_gates import run_gates
+from .mechanical.workspace_snapshot import snapshot_workspace
 from .decisions import Cancel as GateCancel
 from .result_router import (
     route_result, Complete, SpawnSubtasks, RequestClarification,
@@ -409,6 +410,7 @@ class Orchestrator:
     # ─── NEW: Auto-commit after coder tasks ─────────────────────────────
 
     async def _auto_commit(self, task: dict, result: dict):
+        # Dormant in Phase 1; live copy in src/core/mechanical/git_commit.py.
         """Auto-commit workspace changes after a successful coder task."""
         try:
             # Use mission-specific workspace path if available
@@ -1542,21 +1544,14 @@ class Orchestrator:
             # ── Phase 6: Snapshot workspace before coder/pipeline tasks ──
             mission_id = task.get("mission_id")
             if mission_id and agent_type in ("coder", "pipeline", "implementer", "fixer"):
-                try:
-                    ws_path = get_mission_workspace(mission_id)
-                    hashes = compute_workspace_hashes(ws_path)
-                    repo_path = get_mission_workspace_relative(mission_id)
-                    sha = await get_commit_sha(path=repo_path)
-                    branch = await get_current_branch(path=repo_path)
-                    await save_workspace_snapshot(
-                        mission_id=mission_id,
-                        file_hashes=hashes,
-                        task_id=task_id,
-                        branch_name=branch,
-                        commit_sha=sha,
-                    )
-                except Exception as e:
-                    logger.debug(f"[Task #{task_id}] Snapshot skipped: {e}")
+                ws_path = get_mission_workspace(mission_id)
+                repo_path = get_mission_workspace_relative(mission_id)
+                await snapshot_workspace(
+                    mission_id=mission_id,
+                    task_id=task_id,
+                    workspace_path=ws_path,
+                    repo_path=repo_path,
+                )
 
             # ── Internet connectivity pre-check for web-dependent tasks ──
             classification = task_ctx.get("classification", {})
@@ -1820,9 +1815,11 @@ class Orchestrator:
 
             logger.info("result received", task_id=task_id, status=status)
 
-            # Auto-commit after successful coder tasks
-            if status == "completed" and agent_type == "coder":
-                await self._auto_commit(task, result)
+            # PHASE 1 DISCONNECTED: auto-commit moved to src/core/mechanical/git_commit.py.
+            # Next i2p workflow refactor will re-wire this as an explicit workflow step
+            # or agent tool. Do not delete — code preserved in the mechanical module.
+            # if status == "completed" and agent_type == "coder":
+            #     await self._auto_commit(task, result)
 
             if status == "completed":
                 # Extract structured pipeline artifacts before the post-hook

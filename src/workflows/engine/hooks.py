@@ -16,6 +16,158 @@ from .quality_gates import evaluate_gate, format_gate_result
 
 logger = get_logger("workflows.engine.hooks")
 
+# ── Pending LLM summarization queue ─────────────────────────────────────────
+# Post-hook stores a fast structural summary immediately AND persists a
+# job in the `pending_llm_summaries` table. The orchestrator drains the
+# table between cycles, upgrading each artifact with an LLM summary.
+# Table survives restarts — pending jobs resume on next startup.
+
+
+async def queue_llm_summary(mission_id: int | str, artifact_name: str, text: str) -> None:
+    """Persist a pending LLM-summary job to SQLite."""
+    from src.infra.db import get_db
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO pending_llm_summaries (mission_id, artifact_name, text)
+           VALUES (?, ?, ?)""",
+        (str(mission_id), artifact_name, text),
+    )
+    await db.commit()
+
+
+async def drain_pending_summaries() -> int:
+    """Summarize all queued artifacts via LLM. Called by the orchestrator
+    between task batches so downstream tasks get the upgraded summary.
+
+    Each job is deleted on success, incremented on failure. After 3
+    failed attempts, the structural summary is kept and the job removed.
+
+    Returns number of summaries produced.
+    """
+    from src.infra.db import get_db
+    db = await get_db()
+
+    cursor = await db.execute(
+        """SELECT id, mission_id, artifact_name, text, attempts
+           FROM pending_llm_summaries ORDER BY id"""
+    )
+    jobs = [dict(row) for row in await cursor.fetchall()]
+    if not jobs:
+        return 0
+
+    from .artifacts import get_artifact_store
+    store = get_artifact_store()
+    done = 0
+
+    for job in jobs:
+        job_id = job["id"]
+        mission_id = job["mission_id"]
+        name = job["artifact_name"]
+        text = job["text"]
+        attempts = job["attempts"]
+
+        try:
+            summary = await _llm_summarize(text, name)
+            if summary and len(summary) >= 50:
+                summary_name = f"{name}_summary"
+                await store.store(mission_id, summary_name, summary)
+                await db.execute(
+                    "DELETE FROM pending_llm_summaries WHERE id = ?",
+                    (job_id,),
+                )
+                await db.commit()
+                logger.info(
+                    f"[LLM Summary] '{name}' -> '{summary_name}' "
+                    f"({len(text)} -> {len(summary)} chars)"
+                )
+                done += 1
+            else:
+                # Insufficient/degenerate output — bump attempts or drop
+                new_attempts = attempts + 1
+                if new_attempts >= 3:
+                    await db.execute(
+                        "DELETE FROM pending_llm_summaries WHERE id = ?",
+                        (job_id,),
+                    )
+                    logger.warning(
+                        f"[LLM Summary] '{name}' gave up after {new_attempts} "
+                        f"insufficient outputs, keeping structural"
+                    )
+                else:
+                    await db.execute(
+                        "UPDATE pending_llm_summaries SET attempts = ? WHERE id = ?",
+                        (new_attempts, job_id),
+                    )
+                await db.commit()
+        except Exception as e:
+            new_attempts = attempts + 1
+            if new_attempts >= 3:
+                await db.execute(
+                    "DELETE FROM pending_llm_summaries WHERE id = ?",
+                    (job_id,),
+                )
+                logger.warning(
+                    f"[LLM Summary] '{name}' gave up after {new_attempts} "
+                    f"failures ({e}), keeping structural"
+                )
+            else:
+                await db.execute(
+                    "UPDATE pending_llm_summaries SET attempts = ? WHERE id = ?",
+                    (new_attempts, job_id),
+                )
+            await db.commit()
+            logger.debug(f"[LLM Summary] '{name}' attempt {new_attempts}/3 failed: {e}")
+
+    if done:
+        logger.info(f"drain_pending_summaries | upgraded={done}")
+    return done
+
+
+async def _llm_summarize(text: str, artifact_name: str) -> str | None:
+    """Summarize a large artifact using the LLM (OVERHEAD call)."""
+    from ...core.llm_dispatcher import get_dispatcher, CallCategory
+
+    max_input = 16000
+    truncated_text = text[:max_input]
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a concise summarizer. Produce a summary that "
+                "preserves ALL key facts, decisions, and data points. "
+                "Target: under 400 words. No filler."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Summarize this '{artifact_name}' artifact. Keep every "
+                f"important fact, number, name, and decision:\n\n"
+                f"{truncated_text}"
+            ),
+        },
+    ]
+
+    response = await get_dispatcher().request(
+        CallCategory.OVERHEAD,
+        task="summarizer",
+        difficulty=2,
+        messages=messages,
+        prefer_speed=True,
+        prefer_local=True,
+        estimated_input_tokens=min(len(text) // 4, 4000),
+        estimated_output_tokens=500,
+    )
+    summary = response.get("content", "").strip()
+    if summary and len(summary) > 50:
+        from dogru_mu_samet import assess as cq_assess
+        cq = cq_assess(summary)
+        if not cq.is_degenerate:
+            return summary
+        logger.warning(f"[LLM Summary] degenerate output for '{artifact_name}': {cq.summary}")
+    return None
+
 
 def _unwrap_envelope(text: str) -> str:
     """Strip JSON envelopes, model tokens, and degenerate repetition.
@@ -956,11 +1108,10 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
         )
 
     # ── Auto-summarize large artifacts ──
-    # If an artifact exceeds the context budget, use structural extraction to
-    # produce a compact summary ({name}_summary) that downstream steps consume.
-    # No LLM call — structural summary is fast and does not eat the task timeout.
-    _SUMMARY_THRESHOLD = 3000  # chars — above this, create a summary
-    _MIN_SUMMARY_LEN = 50     # reject garbage summaries (1-char, empty, etc.)
+    # Structural summary is stored immediately (fast, no LLM).
+    # LLM upgrade is queued for the orchestrator to process between cycles.
+    _SUMMARY_THRESHOLD = 3000
+    _MIN_SUMMARY_LEN = 50
     if output_value and len(output_value) > _SUMMARY_THRESHOLD:
         for name in output_names:
             summary = _structural_summary(output_value)
@@ -968,14 +1119,11 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
                 summary_name = f"{name}_summary"
                 await store.store(mission_id, summary_name, summary)
                 logger.info(
-                    f"[Workflow Hook] Summarized '{name}' -> '{summary_name}' "
+                    f"[Workflow Hook] Structural summary '{name}' -> '{summary_name}' "
                     f"({len(output_value)} -> {len(summary)} chars)"
                 )
-            elif summary:
-                logger.warning(
-                    f"[Workflow Hook] Summary too short for '{name}' "
-                    f"({len(summary)} chars < {_MIN_SUMMARY_LEN}), discarding"
-                )
+            # Queue LLM upgrade — orchestrator processes this outside task timeout
+            await queue_llm_summary(mission_id, name, output_value)
 
     # ── Write artifacts to disk in mission directory ──
     if output_value and mission_id:

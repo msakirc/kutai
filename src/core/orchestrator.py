@@ -3493,16 +3493,25 @@ class Orchestrator:
                             )
 
                     await asyncio.sleep(2)
-                else:
+
+                # Drain overhead work — runs after every batch AND during
+                # idle.  Without this, ungraded tasks and pending summaries
+                # pile up while the queue has main work.
+                try:
+                    from src.core.grading import drain_ungraded_tasks
+                    await drain_ungraded_tasks()
+                except Exception as _gd_err:
+                    logger.debug(f"Grade drain failed: {_gd_err}")
+
+                try:
+                    from src.workflows.engine.hooks import drain_pending_summaries
+                    await drain_pending_summaries()
+                except Exception as _sum_err:
+                    logger.debug(f"Summary drain failed: {_sum_err}")
+
+                if not tasks:
                     if self.cycle_count % 20 == 0:
                         logger.info(f"[Cycle {self.cycle_count}] Idle")
-
-                    # Grade ungraded tasks — Fatih Hoca picks the model
-                    try:
-                        from src.core.grading import drain_ungraded_tasks
-                        await drain_ungraded_tasks()
-                    except Exception as _gd_err:
-                        logger.debug(f"Idle grade drain failed: {_gd_err}")
 
                     # Use shutdown-aware sleep instead of plain asyncio.sleep
                     try:

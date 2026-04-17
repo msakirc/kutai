@@ -26,11 +26,15 @@ class TestPostHookNoLLM:
         result = {"status": "completed", "result": "x" * 5000}
 
         with patch("src.workflows.engine.hooks.get_artifact_store") as mock_store, \
+             patch("src.workflows.engine.hooks.queue_llm_summary", new_callable=AsyncMock) as mock_queue, \
              patch("src.core.llm_dispatcher.get_dispatcher") as mock_disp:
             mock_store.return_value = AsyncMock()
             mock_store.return_value.store = AsyncMock()
             run_async(post_execute_workflow_step(task, result))
+            # Post-hook must NOT make LLM calls (dispatcher untouched)
             mock_disp.assert_not_called()
+            # Post-hook MUST queue the artifact for later LLM summarization
+            mock_queue.assert_called()
 
 
 class TestNoInlineGrading:
@@ -118,8 +122,37 @@ class TestTodoSuggestionsGraceful:
             # Reminder should still be sent
             mock_remind.assert_called_once()
 
-        loop.close()
 
+class TestSummaryQueuePersistent:
+    """LLM summary queue must survive restarts — backed by SQLite."""
+
+    def test_pending_summaries_table_exists(self):
+        """init_db must create the pending_llm_summaries table."""
+        import inspect
+        from src.infra import db as db_module
+        source = inspect.getsource(db_module.init_db)
+        assert "CREATE TABLE IF NOT EXISTS pending_llm_summaries" in source, \
+            "pending_llm_summaries table missing from schema"
+
+    def test_queue_function_is_async_and_persists(self):
+        """queue_llm_summary must be async and write to SQLite."""
+        import inspect
+        from src.workflows.engine.hooks import queue_llm_summary
+        assert inspect.iscoroutinefunction(queue_llm_summary), \
+            "queue_llm_summary must be async (it writes to DB)"
+        source = inspect.getsource(queue_llm_summary)
+        assert "pending_llm_summaries" in source, \
+            "queue_llm_summary must write to pending_llm_summaries table"
+
+    def test_drain_reads_from_db(self):
+        """drain_pending_summaries must query the pending_llm_summaries table."""
+        import inspect
+        from src.workflows.engine.hooks import drain_pending_summaries
+        source = inspect.getsource(drain_pending_summaries)
+        assert "pending_llm_summaries" in source, \
+            "drain_pending_summaries must read from pending_llm_summaries table"
+        assert "DELETE FROM pending_llm_summaries" in source, \
+            "drain must delete completed jobs"
 
 class TestCheckpointResume:
     """Checkpoints must persist across retries and only clear on final completion."""

@@ -457,6 +457,17 @@ async def init_db():
     except Exception:
         pass  # column already exists
 
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS pending_llm_summaries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mission_id TEXT NOT NULL,
+            artifact_name TEXT NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
+            attempts INTEGER DEFAULT 0
+        )
+    """)
+
     await db.commit()
 
     # Seed todo reminder (every 2h during Turkey daytime: 9,11,13,15,17,19,21 TR = 6,8,10,12,14,16,18 UTC)

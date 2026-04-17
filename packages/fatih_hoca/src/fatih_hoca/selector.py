@@ -20,6 +20,30 @@ from fatih_hoca.types import Failure, Pick, SwapBudget
 logger = logging.getLogger("fatih_hoca.selector")
 
 
+# ─── Telemetry DB Path (explicit opt-in for production) ──────────────────────
+#
+# Tests must never leak telemetry writes to the real DB. The previous guard
+# relied on os.getenv("DB_PATH") + "src.app.config in sys.modules" — but the
+# OS env var is set on the production host independently of module imports,
+# so tests that inherit it would still write (see 2026-04-17 incident).
+#
+# Now: production explicitly calls enable_telemetry(db_path) during startup.
+# Default is None → _persist_pick_telemetry silently skips the write.
+_telemetry_db_path: str | None = None
+
+
+def enable_telemetry(db_path: str) -> None:
+    """Opt telemetry in. Call once at production startup with the real DB path."""
+    global _telemetry_db_path
+    _telemetry_db_path = db_path
+
+
+def disable_telemetry() -> None:
+    """Opt telemetry out (e.g., in a test fixture teardown)."""
+    global _telemetry_db_path
+    _telemetry_db_path = None
+
+
 class Selector:
     """
     Model selector — owns swap budget, applies eligibility filtering,
@@ -252,18 +276,11 @@ class Selector:
                 # shared singleton (which tests may reset between cases). Only
                 # import/resolve DB_PATH lazily at write time so we don't force
                 # `src.app.config` to be loaded before other tests can set env.
-                import os
-                import sys
                 import aiosqlite
-                db_path = os.getenv("DB_PATH")
-                if not db_path:
-                    # Only use src.app.config if already imported — don't force
-                    # its load here, which could freeze DB_PATH before test
-                    # env monkeypatches take effect.
-                    cfg_mod = sys.modules.get("src.app.config")
-                    if cfg_mod is None:
-                        return  # no config loaded yet — skip telemetry
-                    db_path = getattr(cfg_mod, "DB_PATH", None)
+                # Explicit opt-in only. Default None → skip.
+                # Tests must monkeypatch fatih_hoca.selector._telemetry_db_path
+                # to a tmp file if they want to inspect writes.
+                db_path = _telemetry_db_path
                 if not db_path:
                     return
                 async with aiosqlite.connect(db_path) as db:

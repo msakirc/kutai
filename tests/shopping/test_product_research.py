@@ -160,3 +160,29 @@ class TestProductResearchHandlers(unittest.TestCase):
         data = json.loads(out["result"])
         self.assertEqual(data["status"], "disabled")
         self.assertIn("scraper", data["reason"].lower())
+
+
+class TestProductResearchWorkflow(unittest.TestCase):
+    def test_workflow_loads(self):
+        from src.workflows.engine.loader import load_workflow
+        wf = load_workflow("product_research")
+        self.assertEqual(wf.plan_id, "product_research")
+        step_names = [s["name"] for s in wf.steps]
+        self.assertIn("search_for_product", step_names)
+        self.assertIn("enrich_product_results", step_names)
+        self.assertIn("deliver_product_research", step_names)
+        self.assertIn("synthesize_product_reviews", step_names)
+        self.assertIn("compare_delivery_options", step_names)
+        self.assertIn("advise_buy_timing", step_names)
+
+    def test_every_step_has_a_registered_handler(self):
+        from src.workflows.engine.loader import load_workflow
+        from src.workflows.shopping.pipeline import _STEP_HANDLERS
+
+        wf = load_workflow("product_research")
+        for step in wf.steps:
+            name = step["name"]
+            self.assertIn(
+                name, _STEP_HANDLERS,
+                f"Step {name!r} has no handler in _STEP_HANDLERS",
+            )

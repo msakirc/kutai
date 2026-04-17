@@ -55,7 +55,6 @@ async def drain_pending_summaries() -> int:
     if not jobs:
         return 0
 
-    from .artifacts import get_artifact_store
     store = get_artifact_store()
     done = 0
 

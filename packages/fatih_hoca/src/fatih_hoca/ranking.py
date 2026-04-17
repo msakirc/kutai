@@ -422,6 +422,10 @@ def rank_candidates(
                 reasons.append(f"specialty={model.specialty}")
 
         # Group C: Swap stickiness — prefer the already-loaded model
+        # Overhead calls (classifier, grader, reflection) get much stronger
+        # stickiness — swapping the model for a quick overhead call is
+        # wasteful on a single-slot llama-server.
+        _is_overhead = reqs.call_category == "overhead"
         if model.is_local and model.is_loaded:
             _thinking_mismatch = (
                 reqs.needs_thinking
@@ -432,11 +436,13 @@ def rank_candidates(
                 composite *= 1.10
                 reasons.append("thinking_mismatch")
             else:
-                composite *= 1.40
-                reasons.append("loaded")
+                _stick = 2.0 if _is_overhead else 1.40
+                composite *= _stick
+                reasons.append("loaded" if not _is_overhead else "loaded_overhead")
         elif model.is_local and not model.is_loaded:
-            composite *= 0.75
-            reasons.append("needs_swap")
+            _swap_penalty = 0.30 if _is_overhead else 0.75
+            composite *= _swap_penalty
+            reasons.append("needs_swap" if not _is_overhead else "needs_swap_overhead")
 
         # Apply failure penalty multiplier (from adaptation above)
         if fail_mult < 1.0:

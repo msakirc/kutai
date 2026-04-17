@@ -153,6 +153,7 @@ def test_rank_prefers_stronger_for_hard():
         provider="anthropic",
         cost_in=0.003,
         cost_out=0.015,
+        tier="paid",
         capabilities={
             "reasoning": 9.5,
             "code_generation": 9.0,
@@ -161,9 +162,12 @@ def test_rank_prefers_stronger_for_hard():
         },
     )
     weak = _make_model(
-        "groq-llama",
+        "weak-cloud",
         location="cloud",
-        provider="groq",
+        provider="anthropic",
+        cost_in=0.001,
+        cost_out=0.005,
+        tier="paid",
         capabilities={
             "reasoning": 5.0,
             "code_generation": 5.0,
@@ -174,6 +178,8 @@ def test_rank_prefers_stronger_for_hard():
     snap = SystemSnapshot()
     reqs = ModelRequirements(task="coder", difficulty=9)
     ranked = rank_candidates([strong, weak], reqs, snap, failures=[])
+    # At difficulty 9, capability weight (45%) dominates when cost/speed
+    # are comparable — no min_score gate needed.
     assert ranked[0].model.name == "claude"
 
 

@@ -1375,6 +1375,32 @@ class ModelRegistry:
             if m is not None:
                 m._demoted_until = time.time() + duration  # type: ignore[attr-defined]
 
+    def get_overrides(self, model_name: str) -> dict:
+        """Return user overrides from models.yaml for a specific model."""
+        return self._raw_config.get("overrides", {}).get(model_name, {})
+
+    def mark_loaded(self, name: str, api_base: str) -> None:
+        """Mark a local model as loaded (only one at a time)."""
+        with self._lock:
+            for m in self._models.values():
+                if m.location == "local":
+                    m.is_loaded = False
+                    m.api_base = None
+            if name in self._models:
+                self._models[name].is_loaded = True
+                self._models[name].api_base = api_base
+
+    def mark_unloaded(self, name: str) -> None:
+        """Mark a model as unloaded."""
+        with self._lock:
+            if name in self._models:
+                self._models[name].is_loaded = False
+                self._models[name].api_base = None
+
+    def demote_model(self, name: str, duration: int = 300) -> None:
+        """Alias for demote() — backward compat with local_model_manager."""
+        self.demote(name, float(duration))
+
     def load(self, config_path: "Path | str | None" = None) -> None:
         """Load the model catalog from models.yaml (legacy compat)."""
         _REGISTRY_PATH = Path(__file__).parent.parent.parent.parent / "src" / "models" / "models.yaml"

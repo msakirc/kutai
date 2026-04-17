@@ -15,20 +15,10 @@ async def analyze_image(filepath: str, question: str = "Describe what you see in
         media_type = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
                       "gif": "image/gif", "webp": "image/webp"}.get(ext, "image/png")
 
-        from src.models.model_registry import get_registry
-        # Pick first vision-capable model available
-        registry = get_registry()
-        vision_model = next(
-            (m for m in registry.models.values() if m.has_vision and not m.demoted),
-            None
-        )
-        if not vision_model:
-            return "Error: no vision-capable model available"
+        logger.info("analyzing image", filepath=filepath)
 
-        logger.info("analyzing image", filepath=filepath, model=vision_model.name)
-
-        # Route through dispatcher as MAIN_WORK — vision is real task work,
-        # not overhead. Using model_override to pin the vision-capable model.
+        # Route through dispatcher as MAIN_WORK — Fatih Hoca picks the
+        # best vision-capable model via needs_vision=True.
         from src.core.llm_dispatcher import get_dispatcher, CallCategory
 
         messages = [{"role": "user", "content": [
@@ -44,7 +34,7 @@ async def analyze_image(filepath: str, question: str = "Describe what you see in
             priority=5,
             estimated_input_tokens=1500,
             estimated_output_tokens=500,
-            model_override=vision_model.litellm_name,
+            needs_vision=True,
         )
         analysis = result.get("content", "")
         from dogru_mu_samet import assess as cq_assess

@@ -96,9 +96,12 @@ class ModelRequirements:
     # ── Priority ──
     priority: int = 5
 
-    # ── Exclusion / pinning ──
+    # ── Exclusion ──
     exclude_models: list[str] = field(default_factory=list)
-    model_override: str | None = None
+
+    # ── Call category ──
+    # "main_work" (default) or "overhead" (classifier, grader, reflection)
+    call_category: str = "main_work"
 
     # ── Agent context ──
     agent_type: str = ""

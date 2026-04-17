@@ -244,22 +244,3 @@ def test_select_passes_kwargs_to_selector():
     assert result.model.supports_function_calling is True
 
 
-def test_select_model_override_via_api():
-    """model_override kwarg works through the module-level select()."""
-    nerd_herd = MagicMock()
-    nerd_herd.snapshot.return_value = SystemSnapshot(vram_available_mb=8192)
-    fatih_hoca.init(nerd_herd=nerd_herd)
-
-    from fatih_hoca.registry import ModelInfo
-    m = ModelInfo(
-        name="override-target",
-        location="local",
-        provider="llama_cpp",
-        litellm_name="openai/override-target",
-        context_length=32768,
-    )
-    fatih_hoca._registry.register(m)
-
-    result = fatih_hoca.select(model_override="override-target")
-    assert result is not None
-    assert result.model.name == "override-target"

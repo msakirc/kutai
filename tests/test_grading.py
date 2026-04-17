@@ -504,7 +504,7 @@ class TestGradeTaskAutoFail:
     async def test_empty_result_auto_fails(self):
         from src.core.grading import grade_task
         task = {"title": "Test", "description": "Test", "result": "", "context": "{}"}
-        result = await grade_task(task, "test-model")
+        result = await grade_task(task)
         assert result.passed is False
         assert "auto-fail" in result.raw
 
@@ -512,6 +512,6 @@ class TestGradeTaskAutoFail:
     async def test_short_result_auto_fails(self):
         from src.core.grading import grade_task
         task = {"title": "Test", "description": "Test", "result": "ok", "context": "{}"}
-        result = await grade_task(task, "test-model")
+        result = await grade_task(task)
         assert result.passed is False
         assert "auto-fail" in result.raw

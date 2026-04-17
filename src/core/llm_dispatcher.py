@@ -124,6 +124,7 @@ class LLMDispatcher:
             needs_thinking=needs_thinking,
             needs_function_calling=needs_function_calling,
             failures=failures,
+            call_category=category.value,
             **kwargs,
         )
 
@@ -385,14 +386,13 @@ class LLMDispatcher:
         except Exception as e:
             logger.debug(f"accelerate_retries failed: {e}")
 
-        if new_model:
-            try:
-                from src.core.grading import drain_ungraded_tasks
-                graded = await drain_ungraded_tasks(new_model)
-                if graded:
-                    logger.info(f"graded {graded} task(s) after swap to {new_model}")
-            except Exception as e:
-                logger.debug(f"drain_ungraded_tasks failed: {e}")
+        try:
+            from src.core.grading import drain_ungraded_tasks
+            graded = await drain_ungraded_tasks()
+            if graded:
+                logger.info(f"graded {graded} task(s) after swap")
+        except Exception as e:
+            logger.debug(f"drain_ungraded_tasks failed: {e}")
 
     def get_stats(self) -> dict:
         return {

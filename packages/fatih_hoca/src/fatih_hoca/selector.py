@@ -59,8 +59,8 @@ class Selector:
         local_only: bool = False,
         failures: list[Failure] | None = None,
         exclude_models: list[str] | None = None,
-        model_override: str | None = None,
         remaining_budget: float = 0.0,
+        call_category: str = "main_work",
     ) -> Pick | None:
         """
         Select the best model for a task.
@@ -70,20 +70,6 @@ class Selector:
         """
         failures = failures or []
         exclude_models = exclude_models or []
-
-        # ── model_override: return directly without scoring ──────────────────
-        if model_override:
-            model = self._registry.get(model_override)
-            if model is None:
-                # Try by litellm_name
-                model = self._registry.by_litellm_name(model_override)
-            if model is None:
-                logger.warning(
-                    "model_override not found in registry: name=%s", model_override
-                )
-                return None
-            min_time = self._calc_min_time(model, estimated_output_tokens, needs_thinking)
-            return Pick(model=model, min_time_seconds=min_time)
 
         # ── Get system snapshot ──────────────────────────────────────────────
         snapshot = self._nerd_herd.snapshot()
@@ -106,6 +92,7 @@ class Selector:
             priority=priority,
             local_only=local_only,
             exclude_models=exclude_models,
+            call_category=call_category,
         )
 
         # Build failed model set for quick lookup

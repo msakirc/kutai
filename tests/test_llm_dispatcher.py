@@ -553,11 +553,11 @@ class TestOnModelSwap:
              patch("src.core.grading.drain_ungraded_tasks", mock_drain):
             await dispatcher.on_model_swap("old-model", "new-model")
 
-        mock_drain.assert_called_once_with("new-model")
+        mock_drain.assert_called_once_with()
 
     @pytest.mark.asyncio
-    async def test_skips_drain_when_no_new_model(self):
-        """When new_model is None, drain_ungraded_tasks should not be called."""
+    async def test_calls_drain_when_no_new_model(self):
+        """drain_ungraded_tasks is always called — Fatih Hoca picks the model."""
         dispatcher = _fresh_dispatcher()
 
         mock_accelerate = AsyncMock(return_value=0)
@@ -567,7 +567,7 @@ class TestOnModelSwap:
              patch("src.core.grading.drain_ungraded_tasks", mock_drain):
             await dispatcher.on_model_swap("old-model", None)
 
-        mock_drain.assert_not_called()
+        mock_drain.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_survives_accelerate_retries_exception(self):
@@ -711,15 +711,15 @@ class TestGetDispatcherSingleton:
 
 class TestTimeoutFloor:
 
-    def test_overhead_floor_is_20(self):
+    def test_overhead_floor(self):
         from src.core.llm_dispatcher import CallCategory
         dispatcher = _fresh_dispatcher()
-        assert dispatcher._timeout_floor(CallCategory.OVERHEAD) == 20.0
+        assert dispatcher._timeout_floor(CallCategory.OVERHEAD) == 45.0
 
-    def test_main_work_floor_is_30(self):
+    def test_main_work_floor(self):
         from src.core.llm_dispatcher import CallCategory
         dispatcher = _fresh_dispatcher()
-        assert dispatcher._timeout_floor(CallCategory.MAIN_WORK) == 30.0
+        assert dispatcher._timeout_floor(CallCategory.MAIN_WORK) == 60.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

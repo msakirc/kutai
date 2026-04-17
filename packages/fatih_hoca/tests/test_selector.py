@@ -326,32 +326,6 @@ def test_select_swap_budget_exempt_for_local_only():
     assert result is not None
 
 
-# ─── model_override ───────────────────────────────────────────────────────────
-
-def test_select_model_override_returns_that_model():
-    alpha = _make_model("alpha")
-    beta = _make_model("beta")
-    sel = _make_selector([alpha, beta])
-    result = sel.select(task="coder", model_override="alpha")
-    assert result is not None
-    assert result.model.name == "alpha"
-
-
-def test_select_model_override_by_litellm_name():
-    model = _make_model("mymodel", litellm_name="openai/mymodel")
-    sel = _make_selector([model])
-    result = sel.select(task="coder", model_override="openai/mymodel")
-    assert result is not None
-    assert result.model.name == "mymodel"
-
-
-def test_select_returns_none_when_model_override_not_found():
-    model = _make_model("alpha")
-    sel = _make_selector([model])
-    result = sel.select(task="coder", model_override="nonexistent-model")
-    assert result is None
-
-
 # ─── min_time_seconds calculation ────────────────────────────────────────────
 
 def test_select_min_time_calculation():

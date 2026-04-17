@@ -5,7 +5,7 @@ import signal
 from datetime import datetime
 from pathlib import Path
 from src.infra.logging_config import get_logger
-from ..infra.times import utc_now, to_turkey, TZ_TR, tr_hour_to_utc
+from ..infra.times import utc_now, to_turkey, to_db, TZ_TR, tr_hour_to_utc
 from .config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, TASK_PRIORITY
 
 logger = get_logger("app.telegram_bot")
@@ -1966,16 +1966,6 @@ class TelegramInterface:
         chat_id = update.message.chat_id
         parent_id = self.user_last_task_id.get(chat_id)
 
-        # Phase 10.5: Parse --model flag
-        model_override = None
-        if "--model" in raw_args:
-            idx = raw_args.index("--model")
-            if idx + 1 < len(raw_args):
-                model_override = raw_args[idx + 1]
-                raw_args = raw_args[:idx] + raw_args[idx + 2:]
-            else:
-                raw_args = raw_args[:idx]
-
         description = " ".join(raw_args)
 
         task_id = await add_task(
@@ -1984,11 +1974,9 @@ class TelegramInterface:
             tier="auto",
             parent_task_id=parent_id,
             priority=TASK_PRIORITY["critical"],
-            context={"model_override": model_override} if model_override else None,
         )
         self.user_last_task_id[chat_id] = task_id
-        pin_msg = f" (pinned: {model_override})" if model_override else ""
-        await self._reply(update,f"✅ Task #{task_id} queued.{pin_msg}")
+        await self._reply(update, f"✅ Task #{task_id} queued.")
 
 
     async def cmd_view_queue(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3553,7 +3541,7 @@ class TelegramInterface:
                         return
                     try:
                         from src.infra.db import add_scheduled_task
-                        next_run_str = reminder_time.strftime("%Y-%m-%d %H:%M:%S")
+                        next_run_str = to_db(reminder_time)
                         task_id = await add_scheduled_task(
                             title=f"Hatırlatma: {text[:60]}",
                             description=text,
@@ -3575,7 +3563,7 @@ class TelegramInterface:
                             (next_run_str, task_id),
                         )
                         await db.commit()
-                        time_str = reminder_time.strftime("%d.%m.%Y %H:%M")
+                        time_str = to_turkey(reminder_time).strftime("%d.%m.%Y %H:%M")
                         await self._reply(update,
                             f"✅ Hatırlatma kaydedildi!\n"
                             f"⏰ {time_str}\n"

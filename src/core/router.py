@@ -690,7 +690,6 @@ async def call_model(
         estimated_output_tokens=reqs.estimated_output_tokens,
         priority=reqs.priority,
         exclude_models=reqs.exclude_models or [],
-        model_override=reqs.model_override,
     )
 
 

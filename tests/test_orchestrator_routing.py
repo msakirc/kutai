@@ -1,14 +1,10 @@
 """
-Integration tests for orchestrator routing helpers and LLMDispatcher GPU utilities.
+Integration tests for orchestrator routing helpers and LLMDispatcher.
 
 Covers:
   - _parse_task_difficulty: extraction from classification context, defaults, clamping
   - _reorder_by_model_affinity: empty list, no loaded model, boost matching tasks,
     never override 2-priority gap, single task
-  - LLMDispatcher.ensure_gpu_utilized: proactive load when idle, skip when loaded,
-    skip when empty queue
-  - LLMDispatcher._find_best_local_for_batch: picks most-matching model,
-    skips demoted models, returns None for empty task list
 """
 from __future__ import annotations
 
@@ -253,148 +249,8 @@ class TestReorderByModelAffinity(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# LLMDispatcher.ensure_gpu_utilized Tests
+# LLMDispatcher model selection Tests
 # ═══════════════════════════════════════════════════════════════════════════════
-
-class TestEnsureGpuUtilized(unittest.TestCase):
-
-    def _make_dispatcher(self):
-        import src.core.llm_dispatcher as mod
-        mod._dispatcher = None
-        from src.core.llm_dispatcher import LLMDispatcher
-        return LLMDispatcher()
-
-    # 10. no model loaded + tasks present → load best model
-    def test_proactive_load_when_idle(self):
-        dispatcher = self._make_dispatcher()
-        tasks = [_make_task(priority=5)]
-
-        mock_manager = MagicMock()
-        mock_manager.current_model = None  # nothing loaded
-        mock_manager.ensure_model = AsyncMock()
-
-        with patch("src.models.local_model_manager.get_local_manager",
-                   return_value=mock_manager), \
-             patch.object(dispatcher, "_find_best_local_for_batch",
-                          return_value="best-model"):
-            run_async(dispatcher.ensure_gpu_utilized(tasks))
-
-        mock_manager.ensure_model.assert_called_once_with(
-            "best-model", reason="proactive_load"
-        )
-
-    # 11. model already loaded → skip ensure_model
-    def test_proactive_load_skips_when_loaded(self):
-        dispatcher = self._make_dispatcher()
-        tasks = [_make_task(priority=5)]
-
-        mock_manager = MagicMock()
-        mock_manager.current_model = "already-loaded"
-        mock_manager.ensure_model = AsyncMock()
-
-        with patch("src.models.local_model_manager.get_local_manager",
-                   return_value=mock_manager):
-            run_async(dispatcher.ensure_gpu_utilized(tasks))
-
-        mock_manager.ensure_model.assert_not_called()
-
-    # 12. empty queue → skip ensure_model (save power)
-    def test_proactive_load_skips_when_empty_queue(self):
-        dispatcher = self._make_dispatcher()
-
-        mock_manager = MagicMock()
-        mock_manager.current_model = None  # idle
-        mock_manager.ensure_model = AsyncMock()
-
-        with patch("src.models.local_model_manager.get_local_manager",
-                   return_value=mock_manager):
-            run_async(dispatcher.ensure_gpu_utilized([]))
-
-        mock_manager.ensure_model.assert_not_called()
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# LLMDispatcher._find_best_local_for_batch Tests
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestFindBestLocalForBatch(unittest.TestCase):
-
-    def _make_dispatcher(self):
-        import src.core.llm_dispatcher as mod
-        mod._dispatcher = None
-        from src.core.llm_dispatcher import LLMDispatcher
-        return LLMDispatcher()
-
-    # 13. model matching more tasks wins
-    def test_find_best_picks_most_matching(self):
-        dispatcher = self._make_dispatcher()
-
-        # model-a capabilities — will be used to identify it in side-effect
-        caps_a = {k: 8.0 for k in ALL_CAPS}
-        caps_b = {k: 1.0 for k in ALL_CAPS}
-
-        model_a = _make_model_info(name="model-a", is_local=True,
-                                   demoted=False, capabilities=caps_a)
-        model_b = _make_model_info(name="model-b", is_local=True,
-                                   demoted=False, capabilities=caps_b)
-
-        tasks = [
-            _make_task(priority=5, agent_type="coder", difficulty=3),
-            _make_task(priority=5, agent_type="coder", difficulty=3),
-            _make_task(priority=5, agent_type="coder", difficulty=3),
-        ]
-
-        from src.models.capabilities import TASK_PROFILES
-
-        # model-a scores 7.0 for coder; model-b scores 0
-        def score_side_effect(caps, ops, reqs):
-            if caps is caps_a:
-                return 7.0
-            return 0.0
-
-        mock_registry = MagicMock()
-        mock_registry.all_models.return_value = [model_a, model_b]
-        mock_registry.get.side_effect = lambda name: model_a if name == "model-a" else model_b
-
-        with patch("src.models.model_registry.get_registry",
-                   return_value=mock_registry), \
-             patch("src.models.capabilities.score_model_for_task",
-                   side_effect=score_side_effect):
-            result = dispatcher._find_best_local_for_batch(tasks)
-
-        self.assertEqual(result, "model-a")
-
-    # 14. demoted models are skipped
-    def test_find_best_skips_demoted(self):
-        dispatcher = self._make_dispatcher()
-
-        demoted_model = _make_model_info(name="demoted-model", is_local=True,
-                                         demoted=True)
-
-        tasks = [_make_task(priority=5, agent_type="coder")]
-
-        mock_registry = MagicMock()
-        mock_registry.all_models.return_value = [demoted_model]
-
-        with patch("src.models.model_registry.get_registry",
-                   return_value=mock_registry):
-            result = dispatcher._find_best_local_for_batch(tasks)
-
-        self.assertIsNone(result)
-
-    # 15. no tasks → None
-    def test_find_best_empty_returns_none(self):
-        dispatcher = self._make_dispatcher()
-
-        model_x = _make_model_info(name="model-x", is_local=True)
-        mock_registry = MagicMock()
-        mock_registry.all_models.return_value = [model_x]
-
-        with patch("src.models.model_registry.get_registry",
-                   return_value=mock_registry):
-            result = dispatcher._find_best_local_for_batch([])
-
-        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

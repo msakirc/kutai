@@ -23,6 +23,7 @@ def init(
     models_dir: str | None = None,
     catalog_path: str | None = None,
     nerd_herd: object = None,
+    available_providers: set[str] | None = None,
 ) -> list[str]:
     """
     Initialize the Fatih Hoca model registry and selector.
@@ -36,6 +37,10 @@ def init(
     nerd_herd : object, optional
         Nerd Herd instance providing system snapshots. If None, a no-op
         stub is used (snapshot() returns an empty SystemSnapshot).
+    available_providers : set[str], optional
+        Set of cloud provider names that have API keys configured.
+        Cloud models whose provider is not in this set are filtered out.
+        If None, all cloud models are eligible (no API key check).
 
     Returns
     -------
@@ -64,7 +69,15 @@ def init(
         models = _registry.load_gguf_dir(models_dir)
         model_names.extend(m.name for m in models)
 
-    _selector = Selector(registry=_registry, nerd_herd=nerd_herd)
+    # Load persisted speed measurements + demoted flags into model objects.
+    # Without this, all models default to 10 tok/s → timeouts are too short.
+    _registry._load_speed_cache()
+
+    _selector = Selector(
+        registry=_registry,
+        nerd_herd=nerd_herd,
+        available_providers=available_providers,
+    )
     return model_names
 
 

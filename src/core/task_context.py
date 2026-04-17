@@ -6,7 +6,6 @@ parse-with-fallback and the serialize-back pattern.
 """
 
 import json
-from typing import Any
 
 
 def parse_context(task: dict) -> dict:

@@ -12,7 +12,7 @@ import math
 import re
 from collections import Counter
 
-HARD_CAP = 50_000
+HARD_CAP = 60_000
 
 MIN_SECTIONS_FOR_HEADER_CHECK = 5
 MIN_PARAGRAPHS_FOR_CHECK = 4

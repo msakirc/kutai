@@ -44,7 +44,12 @@ class ContentQualityResult:
         return "degenerate: " + ", ".join(parts)
 
 
-def assess(text: str, max_size: int = 20_000) -> ContentQualityResult:
+def assess(text, max_size: int = 20_000) -> ContentQualityResult:
+    if isinstance(text, dict):
+        import json
+        text = json.dumps(text, ensure_ascii=False)
+    elif not isinstance(text, str):
+        text = str(text)
     effective_max = min(max_size, HARD_CAP)
     reasons: list[str] = []
 
@@ -64,12 +69,19 @@ def assess(text: str, max_size: int = 20_000) -> ContentQualityResult:
     if entropy_breached and entropy_reason:
         reasons.append(entropy_reason)
 
+    # Size alone is not degenerate — large but unique content (e.g. shopping
+    # search aggregating 16 scrapers) is legitimate.  Only flag degenerate
+    # when there is at least one *quality* signal (repetition / low entropy),
+    # or when size exceeds the absolute HARD_CAP.
+    quality_reasons = [r for r in reasons if r != "size_exceeded"]
+    is_deg = bool(quality_reasons) or (size_val > HARD_CAP)
+
     return ContentQualityResult(
         size=size_val,
         max_size=effective_max,
         repetition_ratio=header_ratio,
         paragraph_repetition=para_ratio,
         token_entropy=entropy_val,
-        is_degenerate=bool(reasons),
+        is_degenerate=is_deg,
         reasons=reasons,
     )

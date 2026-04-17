@@ -27,7 +27,7 @@ class TestCheckSize:
         assert reason == "size_exceeded"
 
     def test_hard_cap(self):
-        text = "x" * 50_001
+        text = "x" * 60_001
         score, breached, reason = check_size(text, max_size=999_999)
         assert breached is True
         assert reason == "size_exceeded"

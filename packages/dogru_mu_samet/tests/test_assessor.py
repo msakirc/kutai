@@ -36,11 +36,22 @@ class TestAssess:
         assert result.reasons == []
         assert result.size == len(text)
 
-    def test_oversized(self):
-        text = "word " * 5000  # 25K chars
+    def test_oversized_with_low_entropy(self):
+        # Large AND low entropy → degenerate (quality signal present)
+        text = "word " * 5000  # 25K chars, low entropy
         result = assess(text, max_size=20_000)
         assert result.is_degenerate is True
         assert "size_exceeded" in result.reasons
+        assert "low_entropy" in result.reasons
+
+    def test_oversized_but_unique_content_is_not_degenerate(self):
+        # Large but high-entropy, no repetition → NOT degenerate
+        # (e.g. shopping search aggregating 16 scrapers)
+        words = [f"product{i} price{i*100} review{i}" for i in range(900)]
+        text = " ".join(words)  # ~30K chars of unique content, under HARD_CAP
+        result = assess(text, max_size=20_000)
+        assert result.is_degenerate is False
+        assert "size_exceeded" in result.reasons  # noted but not fatal
 
     def test_header_repetition_detected(self):
         sections = []
@@ -68,10 +79,10 @@ class TestAssess:
         assert "paragraph_repetition" in result.reasons
 
     def test_max_size_clamped_to_hard_cap(self):
-        text = "x" * 50_001
+        text = "x" * 60_001
         result = assess(text, max_size=999_999)
         assert result.is_degenerate is True
-        assert result.max_size == 50_000
+        assert result.max_size == 60_000
 
     def test_multiple_reasons(self):
         text = " ".join(["the"] * 10_000)

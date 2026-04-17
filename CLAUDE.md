@@ -8,6 +8,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 - **Telegram interface**: `src/app/telegram_bot.py` (TelegramInterface class, ~5800 lines)
 - **Agents**: `src/agents/` — base.py (ReAct loop), specialized agents (coder, researcher, planner, etc.)
 - **Model selection**: `packages/fatih_hoca/` (Fatih Hoca) — 15-dimension scoring, task profiles, swap budget, failure adaptation
+- **Mechanical dispatcher**: `packages/salako/` (Salako) — non-LLM executors (workspace snapshot, git auto-commit) invoked via `salako.run(task)` when `agent_type == "mechanical"`
 - **LLM dispatch**: `src/core/llm_dispatcher.py` — thin ask→load→call→retry loop, delegates selection to Fatih Hoca
 - **LLM execution**: `packages/hallederiz_kadir/` (HaLLederiz Kadir) — litellm calls, streaming, retries, response parsing, quality checks
 - **Model management**: `packages/dallama/` (DaLLaMa) — llama-server process lifecycle, swap orchestration, health polling
@@ -82,6 +83,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 - **Never call `call_model()` directly** — always use `LLMDispatcher.request()`. `call_model()` is a legacy shim; direct calls bypass failure tracking and retry logic.
 - **LLM call bugs go to `packages/hallederiz_kadir/`** — timeout, retry, streaming, response parsing, quality check issues live there. Don't touch dispatcher for call execution bugs.
 - **Model selection bugs go to `packages/fatih_hoca/`** — scoring, task profiles, swap budget, eligibility filtering. Don't touch dispatcher for selection bugs.
+- **Mechanical executor (salako)**: steps with `agent: "mechanical"` in a workflow are routed to `salako.run()` before the LLM path. Expander propagates `executor` + `payload` into task context so they survive the DB round-trip. Auto-commit is now an **explicit** i2p step (3.git_commit siblings after key coder milestones) — ad-hoc `/task` with a coder agent no longer auto-commits; add a mechanical sibling step if needed.
 - **Benchmark cache staleness**: `.benchmark_cache/_bulk_*.json` TTL is 48h. When stale, `BenchmarkCache.load()` returns None with a WARNING log (no silent fallback). Refresh with `python -m src.models.benchmark.benchmark_cli benchmarks`. Check `model_pick_log.snapshot_summary` if selection quality drops; query `SELECT picked_model, AVG(picked_score), COUNT(*) FROM model_pick_log GROUP BY picked_model ORDER BY 3 DESC` to see usage.
 - **Never pass `--n-gpu-layers` to llama-server** — it overrides `--fit` (default-on since v8000+). `--fit` auto-calculates optimal GPU layer allocation. Forcing `--n-gpu-layers 99` causes VRAM thrashing for models that don't fully fit (e.g. Apriel 8.7GB on 8GB GPU: 3.7→6.8 tok/s). Only pass `--n-gpu-layers` when `models.yaml` has an explicit `gpu_layers` override.
 
@@ -106,6 +108,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 | `kutai_wrapper.py` | Thin entry point → delegates to `packages/yasar_usta/` |
 | `packages/yasar_usta/` | **Yaşar Usta** — process manager, auto-restart, heartbeat watchdog, own Telegram bot when KutAI is down |
 | `packages/fatih_hoca/` | **Fatih Hoca** — model selection: scoring, task profiles, swap budget, failure adaptation |
+| `packages/salako/` | **Salako** — mechanical dispatcher: workspace snapshot + git auto-commit (non-LLM executors) |
 | `packages/dallama/` | **DaLLaMa** — llama-server process lifecycle, swap orchestration, health polling |
 | `packages/hallederiz_kadir/` | **HaLLederiz Kadir** — LLM call execution: litellm, streaming, retries, quality checks |
 | `packages/nerd_herd/` | **Nerd Herd** — system state: GPU, VRAM, inference metrics, snapshots for Fatih Hoca |

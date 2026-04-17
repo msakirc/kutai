@@ -358,7 +358,8 @@ class Orchestrator:
     # ─── NEW: Auto-commit after coder tasks ─────────────────────────────
 
     async def _auto_commit(self, task: dict, result: dict):
-        # Dormant in Phase 1; live copy in src/core/mechanical/git_commit.py.
+        # Dormant legacy copy; live implementation is in packages/salako/
+        # (invoked via explicit mechanical i2p steps, not this method).
         """Auto-commit workspace changes after a successful coder task."""
         try:
             # Use mission-specific workspace path if available
@@ -956,9 +957,10 @@ class Orchestrator:
 
             logger.info("result received", task_id=task_id, status=status)
 
-            # PHASE 1 DISCONNECTED: auto-commit moved to src/core/mechanical/git_commit.py.
-            # Next i2p workflow refactor will re-wire this as an explicit workflow step
-            # or agent tool. Do not delete — code preserved in the mechanical module.
+            # Phase 2a: auto-commit lives in packages/salako/ and is invoked
+            # by explicit mechanical workflow steps (e.g. i2p_v3 7.3.git_commit).
+            # The old implicit "auto-commit after every coder task" is gone by
+            # design — add a mechanical sibling step if a flow needs it.
             # if status == "completed" and agent_type == "coder":
             #     await self._auto_commit(task, result)
 

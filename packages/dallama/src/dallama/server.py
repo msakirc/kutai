@@ -5,6 +5,7 @@ stderr log tailing for crash diagnostics. No KutAI imports — standalone.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import subprocess
@@ -109,6 +110,21 @@ class ServerProcess:
             self._platform._close_stderr(self.process)
             self.process = None
 
+        # Guard: refuse to start if something is already listening on our port.
+        # This catches double-server scenarios from races, stale processes,
+        # or external llama-server instances.
+        if await self._port_in_use():
+            logger.error(
+                "Port %d already in use — refusing to start a second "
+                "llama-server. Killing orphans and retrying once.",
+                self._cfg.port,
+            )
+            self._platform.kill_orphans()
+            await asyncio.sleep(3)
+            if await self._port_in_use():
+                logger.error("Port %d still in use after orphan kill — aborting start", self._cfg.port)
+                return False
+
         cmd = self.build_cmd(config)
         log_dir = os.environ.get("DALLAMA_LOG_DIR", ".")
         self._stderr_path = os.path.join(log_dir, "llama-server.stderr.log")
@@ -139,13 +155,18 @@ class ServerProcess:
         return True
 
     async def stop(self) -> None:
-        """Gracefully stop the llama-server process."""
+        """Gracefully stop the llama-server process.
+
+        Sets self.process = None only AFTER the process is confirmed dead,
+        so is_alive() remains True during shutdown and concurrent callers
+        don't skip the stop step.
+        """
         if self.process is None:
             return
         proc = self.process
-        self.process = None
         logger.info("Stopping llama-server (pid=%s)…", proc.pid)
         await self._platform.graceful_stop(proc)
+        self.process = None
         logger.info("llama-server stopped")
 
     async def health_check(self) -> bool:
@@ -186,13 +207,23 @@ class ServerProcess:
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 
+    async def _port_in_use(self) -> bool:
+        """Check if our port is already listening. Fast TCP connect probe."""
+        import socket
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(1)
+                s.connect(("127.0.0.1", self._cfg.port))
+                return True
+        except (ConnectionRefusedError, OSError, TimeoutError):
+            return False
+
     async def _wait_for_healthy(self, timeout: float) -> bool:
         """Poll /health until HTTP 200 or timeout.
 
         Interval grows from 1 s to 3 s after the first few attempts to avoid
         hammering the server while it loads weights.
         """
-        import asyncio
 
         elapsed = 0.0
         interval = 1.0

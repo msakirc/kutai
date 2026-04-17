@@ -215,5 +215,75 @@ class TestSilentTaskNotification(unittest.TestCase):
         self.assertIn('task_ctx_parsed.get("silent")', source)
 
 
+class TestShopIntentFork(unittest.TestCase):
+    def _fresh_interface(self):
+        """Build a minimal TelegramInterface shell for testing."""
+        from src.app.telegram_bot import TelegramInterface
+        iface = TelegramInterface.__new__(TelegramInterface)
+        iface._pending_action = {}
+        iface._pending_shop_subintent = {}
+        iface._kb_state = {}
+        return iface
+
+    def test_cmd_shop_no_args_sends_inline_buttons(self):
+        from unittest.mock import AsyncMock, MagicMock
+        iface = self._fresh_interface()
+        update = MagicMock()
+        update.effective_chat.id = 42
+        msg = MagicMock()
+        msg.reply_text = AsyncMock()
+        update.message = msg
+        context = MagicMock()
+        context.args = []
+
+        run_async(iface.cmd_shop(update, context))
+
+        _args, kwargs = msg.reply_text.call_args
+        self.assertIn("reply_markup", kwargs)
+        markup = kwargs["reply_markup"]
+        callback_values = []
+        for row in markup.inline_keyboard:
+            for btn in row:
+                callback_values.append(btn.callback_data)
+        self.assertIn("shop:specific", callback_values)
+        self.assertIn("shop:category", callback_values)
+
+    def test_callback_shop_specific_sets_pending_subintent(self):
+        from unittest.mock import AsyncMock, MagicMock
+        iface = self._fresh_interface()
+        query = MagicMock()
+        query.answer = AsyncMock()
+        query.data = "shop:specific"
+        query.message = MagicMock()
+        query.message.reply_text = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+        update.effective_chat.id = 42
+        context = MagicMock()
+
+        run_async(iface.handle_callback(update, context))
+
+        self.assertIn(42, iface._pending_action)
+        self.assertEqual(iface._pending_action[42]["command"], "shop")
+        self.assertEqual(iface._pending_shop_subintent.get(42), "specific")
+
+    def test_callback_shop_category_sets_pending_subintent(self):
+        from unittest.mock import AsyncMock, MagicMock
+        iface = self._fresh_interface()
+        query = MagicMock()
+        query.answer = AsyncMock()
+        query.data = "shop:category"
+        query.message = MagicMock()
+        query.message.reply_text = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+        update.effective_chat.id = 42
+        context = MagicMock()
+
+        run_async(iface.handle_callback(update, context))
+
+        self.assertEqual(iface._pending_shop_subintent.get(42), "category")
+
+
 if __name__ == "__main__":
     unittest.main()

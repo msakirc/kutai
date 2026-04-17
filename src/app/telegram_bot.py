@@ -314,6 +314,8 @@ class TelegramInterface:
         self._clarification_msg_ids: dict[int, int] = {}
         # Conversation flow: chat_id → {"command": str, "ts": float} for button-initiated arg prompts
         self._pending_action: dict[int, dict] = {}
+        # Shopping intent fork: chat_id → "specific" | "category"
+        self._pending_shop_subintent: dict[int, str] = {}
         # Track current keyboard state per chat: chat_id → state name
         self._kb_state: dict[int, str] = {}
         # Store mission description during workflow selection
@@ -4478,6 +4480,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             "gift": "gift_recommendation",
             "deals": "exploration",
             "quick_search": "quick_search",
+            "product_research": "product_research",
         }
         workflow_name = wf_map.get(sub_intent or "shopping", "shopping")
 
@@ -4496,11 +4499,39 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         """General shopping assistant. /shop <query>"""
         if not context.args:
             chat_id = update.effective_chat.id
-            self._pending_action[chat_id] = {"command": "shop"}
-            await self._reply(update, "🛒 What are you looking for?")
+            buttons = [[
+                InlineKeyboardButton("🎯 Belirli ürün", callback_data="shop:specific"),
+                InlineKeyboardButton("🏷 Kategori", callback_data="shop:category"),
+            ]]
+            await update.message.reply_text(
+                "🛒 Ne arıyorsunuz?",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
             return
         query = " ".join(context.args)
         chat_id = update.effective_chat.id
+
+        sub = self._pending_shop_subintent.pop(chat_id, None)
+        if sub == "specific":
+            mission_id = await self._create_shopping_mission(
+                query, chat_id, sub_intent="product_research"
+            )
+            await self._reply(
+                update,
+                f"🔬 Ürün araştırması başladı: *{query}* (mission #{mission_id})",
+                parse_mode="Markdown",
+            )
+            return
+        if sub == "category":
+            mission_id = await self._create_shopping_mission(
+                query, chat_id, sub_intent="deep_research"
+            )
+            await self._reply(
+                update,
+                f"🏷 Kategori araştırması başladı: *{query}* (mission #{mission_id})",
+                parse_mode="Markdown",
+            )
+            return
 
         # Two-tier routing: complex queries get a full research mission
         if self._is_complex_shopping_query(query):
@@ -4822,6 +4853,24 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         query = update.callback_query
         await query.answer()
         data = query.data
+
+        # ── Shopping Intent Fork ──────────────────────────────────
+        if data.startswith("shop:"):
+            sub = data.split(":", 1)[1]
+            chat_id = update.effective_chat.id
+            import time as _time
+            self._pending_action[chat_id] = {
+                "command": "shop",
+                "ts": _time.time(),
+            }
+            self._pending_shop_subintent[chat_id] = sub
+            prompt = (
+                "🎯 Hangi ürün? (marka + model yazın)"
+                if sub == "specific" else
+                "🏷 Hangi kategori? (örn. 'kahve makinesi 5000 TL altı')"
+            )
+            await query.message.reply_text(prompt)
+            return
 
         # ── Mission Detail Callbacks ──────────────────────────────
         if data.startswith("m:task:detail:"):

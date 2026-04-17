@@ -4,7 +4,7 @@ from src.core.result_router import route_result, Complete, SpawnSubtasks, Reques
 
 def test_complete_result_produces_complete_action():
     task = {"id": 1, "title": "t"}
-    agent_result = {"status": "complete", "result": "done", "iterations": 3}
+    agent_result = {"status": "completed", "result": "done", "iterations": 3}
     actions = route_result(task, agent_result)
     assert len(actions) == 1
     assert isinstance(actions[0], Complete)
@@ -13,7 +13,7 @@ def test_complete_result_produces_complete_action():
 
 def test_subtasks_result_produces_spawn_action():
     task = {"id": 1, "title": "t"}
-    agent_result = {"status": "subtasks", "subtasks": [{"title": "s1"}, {"title": "s2"}]}
+    agent_result = {"status": "needs_subtasks", "subtasks": [{"title": "s1"}, {"title": "s2"}]}
     actions = route_result(task, agent_result)
     assert len(actions) == 1
     assert isinstance(actions[0], SpawnSubtasks)
@@ -22,7 +22,7 @@ def test_subtasks_result_produces_spawn_action():
 
 def test_clarification_result_produces_clarification_action():
     task = {"id": 1, "title": "t", "chat_id": 42}
-    agent_result = {"status": "clarification", "question": "which one?"}
+    agent_result = {"status": "needs_clarification", "question": "which one?"}
     actions = route_result(task, agent_result)
     assert len(actions) == 1
     assert isinstance(actions[0], RequestClarification)
@@ -31,7 +31,7 @@ def test_clarification_result_produces_clarification_action():
 
 def test_review_result_produces_review_action():
     task = {"id": 1, "title": "t"}
-    agent_result = {"status": "review", "summary": "please review"}
+    agent_result = {"status": "needs_review", "summary": "please review"}
     actions = route_result(task, agent_result)
     assert len(actions) == 1
     assert isinstance(actions[0], RequestReview)

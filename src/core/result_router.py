@@ -60,7 +60,7 @@ def route_result(task: dict, agent_result: dict | None) -> list[Action]:
 
     status = agent_result.get("status")
 
-    if status == "complete":
+    if status == "completed":
         return [Complete(
             task_id=task_id,
             result=agent_result.get("result", ""),
@@ -68,18 +68,18 @@ def route_result(task: dict, agent_result: dict | None) -> list[Action]:
             metadata=agent_result.get("metadata", {}),
         )]
 
-    if status == "subtasks":
+    if status == "needs_subtasks":
         subtasks = agent_result.get("subtasks", [])
         return [SpawnSubtasks(parent_task_id=task_id, subtasks=subtasks)]
 
-    if status == "clarification":
+    if status == "needs_clarification":
         return [RequestClarification(
             task_id=task_id,
             question=agent_result.get("question", ""),
             chat_id=task.get("chat_id"),
         )]
 
-    if status == "review":
+    if status == "needs_review":
         return [RequestReview(
             task_id=task_id,
             summary=agent_result.get("summary", ""),

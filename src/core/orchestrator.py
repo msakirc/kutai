@@ -1299,59 +1299,7 @@ class Orchestrator:
                 await self._handle_exhausted(task, result)
 
             elif status == "failed":
-                error_str = result.get("error", result.get("result", "Unknown error"))
-                from src.core.retry import RetryContext
-                retry_ctx = RetryContext.from_task(task)
-                decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
-
-                if decision.action == "terminal":
-                    task_ctx.update(retry_ctx.to_context_patch())
-                    await update_task(
-                        task_id, status="failed",
-                        error=error_str[:500],
-                        context=json.dumps(task_ctx),
-                        **retry_ctx.to_db_fields(),
-                    )
-                    logger.error("agent failure terminal", task_id=task_id,
-                                 error=error_str[:200])
-                    await self.telegram.send_error(task_id, title, error_str)
-                    try:
-                        from src.infra.dead_letter import quarantine_task
-                        await quarantine_task(
-                            task_id=task_id,
-                            mission_id=task.get("mission_id"),
-                            error=error_str[:500],
-                            error_category="quality",
-                            original_agent=task.get("agent_type", "executor"),
-                            attempts_snapshot=retry_ctx.worker_attempts,
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        await self.telegram.send_notification(
-                            f"🪦 Task #{task_id} → DLQ\n"
-                            f"_{title[:60]}_\n"
-                            f"Attempts: {retry_ctx.worker_attempts} | "
-                            f"Reason: {error_str[:100]}"
-                        )
-                    except Exception:
-                        pass
-                else:
-                    next_retry = None
-                    if decision.action == "delayed":
-                        next_retry = to_db(
-                            utc_now() + timedelta(seconds=decision.delay_seconds)
-                        )
-                    retry_ctx.next_retry_at = next_retry
-                    task_ctx.update(retry_ctx.to_context_patch())
-                    await update_task(
-                        task_id, status="pending",
-                        error=error_str[:500],
-                        context=json.dumps(task_ctx),
-                        **retry_ctx.to_db_fields(),
-                    )
-                    logger.warning(f"agent failed, worker-retry {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts}",
-                                   task_id=task_id, error=error_str[:200])
+                await self._handle_failed(task, result)
             else:
                 logger.warning("unknown task status", task_id=task_id, status=status)
                 await self._handle_complete(task, result)
@@ -2034,6 +1982,66 @@ class Orchestrator:
                     context=json.dumps(task_ctx),
                     **retry_ctx.to_db_fields(),
                 )
+
+    async def _handle_failed(self, task, result):
+        """Verbatim move from process_task: agent-reported failure handling."""
+        task_id = task["id"]
+        title = task["title"]
+        task_ctx = parse_context(task)
+
+        error_str = result.get("error", result.get("result", "Unknown error"))
+        from src.core.retry import RetryContext
+        retry_ctx = RetryContext.from_task(task)
+        decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
+
+        if decision.action == "terminal":
+            task_ctx.update(retry_ctx.to_context_patch())
+            await update_task(
+                task_id, status="failed",
+                error=error_str[:500],
+                context=json.dumps(task_ctx),
+                **retry_ctx.to_db_fields(),
+            )
+            logger.error("agent failure terminal", task_id=task_id,
+                         error=error_str[:200])
+            await self.telegram.send_error(task_id, title, error_str)
+            try:
+                from src.infra.dead_letter import quarantine_task
+                await quarantine_task(
+                    task_id=task_id,
+                    mission_id=task.get("mission_id"),
+                    error=error_str[:500],
+                    error_category="quality",
+                    original_agent=task.get("agent_type", "executor"),
+                    attempts_snapshot=retry_ctx.worker_attempts,
+                )
+            except Exception:
+                pass
+            try:
+                await self.telegram.send_notification(
+                    f"🪦 Task #{task_id} → DLQ\n"
+                    f"_{title[:60]}_\n"
+                    f"Attempts: {retry_ctx.worker_attempts} | "
+                    f"Reason: {error_str[:100]}"
+                )
+            except Exception:
+                pass
+        else:
+            next_retry = None
+            if decision.action == "delayed":
+                next_retry = to_db(
+                    utc_now() + timedelta(seconds=decision.delay_seconds)
+                )
+            retry_ctx.next_retry_at = next_retry
+            task_ctx.update(retry_ctx.to_context_patch())
+            await update_task(
+                task_id, status="pending",
+                error=error_str[:500],
+                context=json.dumps(task_ctx),
+                **retry_ctx.to_db_fields(),
+            )
+            logger.warning(f"agent failed, worker-retry {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts}",
+                           task_id=task_id, error=error_str[:200])
 
     # ─── Mission Completion ───────────────────────────────────────────────
 

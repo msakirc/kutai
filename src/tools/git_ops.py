@@ -15,10 +15,8 @@ logger = get_logger("tools.git_ops")
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-WORKSPACE_DIR: str = os.environ.get(
-    "WORKSPACE_DIR",
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workspace")),
-)
+from src.app.config import WORKSPACE_ROOT as _DEFAULT_WORKSPACE
+WORKSPACE_DIR: str = os.environ.get("WORKSPACE_DIR", _DEFAULT_WORKSPACE)
 
 DEFAULT_GITIGNORE = (
     "__pycache__/\n*.pyc\n*.pyo\nnode_modules/\n.env\nvenv/\n"

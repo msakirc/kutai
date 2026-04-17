@@ -14,10 +14,8 @@ logger = get_logger("tools.workspace")
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-WORKSPACE_DIR: str = os.environ.get(
-    "WORKSPACE_DIR",
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "workspace")),
-)
+from src.app.config import WORKSPACE_ROOT as _DEFAULT_WORKSPACE
+WORKSPACE_DIR: str = os.environ.get("WORKSPACE_DIR", _DEFAULT_WORKSPACE)
 
 MAX_TREE_DEPTH = 5
 MAX_TREE_ITEMS = 200

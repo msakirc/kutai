@@ -77,15 +77,35 @@ STACKS = {
 async def scaffold_project(stack: str, project_name: str, output_dir: str = "") -> str:
     """Generate a project skeleton for the given stack.
 
+    output_dir, if given, must resolve inside WORKSPACE_ROOT.  If empty,
+    scaffolds into ``<WORKSPACE_ROOT>/<slugified-project-name>``.  This
+    prevents Next.js templates (which include ``src/app/layout.tsx``) from
+    overwriting KutAI's own source tree.
+
     Returns a summary of created files.
     """
     if stack not in STACKS:
         available = ", ".join(STACKS.keys())
         return f"Unknown stack: '{stack}'. Available: {available}"
 
+    from src.app.config import WORKSPACE_ROOT
+    ws_root = os.path.abspath(WORKSPACE_ROOT)
+
     template = STACKS[stack]
+    slug = project_name.lower().replace(" ", "_")
     if not output_dir:
-        output_dir = project_name.lower().replace(" ", "_")
+        output_dir = os.path.join(ws_root, slug)
+    elif not os.path.isabs(output_dir):
+        output_dir = os.path.join(ws_root, output_dir)
+
+    output_dir = os.path.abspath(output_dir)
+    if not (output_dir == ws_root or output_dir.startswith(ws_root + os.sep)):
+        return (
+            f"Error: output_dir {output_dir!r} escapes WORKSPACE_ROOT "
+            f"({ws_root!r}). Refusing to scaffold outside the workspace."
+        )
+
+    os.makedirs(output_dir, exist_ok=True)
 
     created = []
     for rel_path, content in template["files"].items():

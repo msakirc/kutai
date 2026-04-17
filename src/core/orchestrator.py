@@ -3243,7 +3243,8 @@ class Orchestrator:
         # Ensure workspace and git are ready
         try:
             import os
-            os.makedirs("workspace", exist_ok=True)
+            from src.app.config import WORKSPACE_ROOT
+            os.makedirs(WORKSPACE_ROOT, exist_ok=True)
             await ensure_git_repo()
         except Exception as e:
             logger.warning(f"Workspace/git init: {e}")

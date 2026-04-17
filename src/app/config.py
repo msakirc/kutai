@@ -28,8 +28,13 @@ if not os.path.isabs(DB_PATH):
         f"DB_PATH must be absolute to prevent forked databases; got {DB_PATH!r}"
     )
 
-WORKSPACE_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "workspace")
+# Canonical workspace root — project-root/workspace/.  All modules that
+# read or write mission output MUST derive from this (scaffolder,
+# orchestrator, tools/shell, tools/git_ops, tools/workspace).  Gitignored
+# so mission output never pollutes the repo.
+WORKSPACE_ROOT = os.environ.get(
+    "WORKSPACE_DIR",
+    os.path.join(_PROJECT_ROOT, "workspace"),
 )
 DOCKER_CONTAINER_NAME = "orchestrator-sandbox"
 MODEL_DIR = os.getenv("MODEL_DIR", "")

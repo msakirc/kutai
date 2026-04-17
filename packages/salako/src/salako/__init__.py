@@ -1,7 +1,40 @@
 """Salako — mechanical dispatcher: non-LLM task executors."""
 from __future__ import annotations
 
+from salako.actions import Action
 from salako.workspace_snapshot import snapshot_workspace
 from salako.git_commit import auto_commit
 
 __all__ = ["Action", "run", "snapshot_workspace", "auto_commit"]
+
+
+async def run(task: dict) -> Action:
+    """Route a mechanical task to the appropriate executor.
+
+    ``task["payload"]["action"]`` selects the executor:
+
+    - ``"workspace_snapshot"`` → :func:`salako.snapshot_workspace`
+    - ``"git_commit"``         → :func:`salako.auto_commit`
+
+    Unknown actions return an ``Action(status="failed", error=...)``; the
+    orchestrator is responsible for marking the task failed.
+    """
+    payload = task.get("payload") or {}
+    action = payload.get("action")
+
+    if action == "workspace_snapshot":
+        snap = await snapshot_workspace(
+            mission_id=task["mission_id"],
+            task_id=task["id"],
+            workspace_path=payload["workspace_path"],
+            repo_path=payload.get("repo_path"),
+        )
+        if snap is None:
+            return Action(status="failed", error="snapshot failed")
+        return Action(status="completed", result=snap)
+
+    if action == "git_commit":
+        await auto_commit(task, payload.get("result") or {})
+        return Action(status="completed")
+
+    return Action(status="failed", error=f"unknown mechanical action: {action!r}")

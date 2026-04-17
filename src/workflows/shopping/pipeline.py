@@ -45,13 +45,16 @@ def _relevance_score(product_name: str, query: str) -> float:
     return matched / len(tokens)
 
 
-def _filter_relevant(products: list, query: str) -> list:
+def _filter_relevant(products: list, query: str, strict: bool = False) -> list:
     """Keep only products whose names are relevant to *query*.
 
     Strategy: score every product, then keep those within 20% of the best
     score, with a hard floor of 0.5 (at least half the query tokens must
-    appear).  If nothing passes the floor, return the original list so the
-    user still gets *something*.
+    appear).  If nothing passes the floor:
+      - strict=False (default): return the original list so the user still
+        gets *something* (safe for product results).
+      - strict=True: return an empty list (used for community results
+        where irrelevant complaints are worse than no data).
     """
     if not products or not query:
         return products
@@ -70,11 +73,13 @@ def _filter_relevant(products: list, query: str) -> list:
     dropped = len(products) - len(filtered)
     if dropped:
         logger.info(
-            "relevance filter: %d/%d products kept (threshold=%.2f)",
-            len(filtered), len(products), threshold,
+            "relevance filter: %d/%d kept (threshold=%.2f, strict=%s)",
+            len(filtered), len(products), threshold, strict,
         )
 
-    return filtered if filtered else products
+    if filtered:
+        return filtered
+    return [] if strict else products
 
 
 async def _match_and_flatten(products: list) -> list[dict]:
@@ -207,6 +212,7 @@ async def _step_search(task: dict, artifacts: dict) -> str:
 
     # ── Relevance filtering ──
     products = _filter_relevant(products, query)
+    community = _filter_relevant(community, query, strict=True)
 
     # ── Value scoring (pure Python, no LLM) ──
     score_lookup: dict[str, dict] = {}
@@ -284,6 +290,7 @@ async def _step_search_and_reviews(task: dict, artifacts: dict) -> str:
 
     # ── Relevance filtering ──
     products = _filter_relevant(products, query)
+    community = _filter_relevant(community, query, strict=True)
 
     # ── Value scoring (pure Python, no LLM) ──
     score_lookup: dict[str, dict] = {}

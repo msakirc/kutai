@@ -218,5 +218,34 @@ class TestShoppingPipeline(unittest.TestCase):
         self.assertEqual(result["model"], "shopping_pipeline")
 
 
+class TestCommunityRelevanceFilter(unittest.TestCase):
+    def test_strict_mode_returns_empty_when_no_match(self):
+        from src.workflows.shopping.pipeline import _filter_relevant
+        items = [
+            {"name": "Ahmet'in cezaevi telefon sikayeti", "source": "sikayetvar"},
+            {"name": "Cepte fatura sorunu", "source": "sikayetvar"},
+        ]
+        out = _filter_relevant(items, "siemens s100 kahve makinesi", strict=True)
+        self.assertEqual(out, [])
+
+    def test_strict_mode_keeps_matches(self):
+        from src.workflows.shopping.pipeline import _filter_relevant
+        items = [
+            {"name": "Siemens S100 kahve makinesi arıza", "source": "sikayetvar"},
+            {"name": "Tamamen alakasız bir post", "source": "teknopat"},
+        ]
+        out = _filter_relevant(items, "siemens s100 kahve", strict=True)
+        names = [i["name"] for i in out]
+        self.assertIn("Siemens S100 kahve makinesi arıza", names)
+        self.assertNotIn("Tamamen alakasız bir post", names)
+
+    def test_default_mode_still_falls_back(self):
+        """Non-strict mode keeps existing behavior — return original if nothing passes."""
+        from src.workflows.shopping.pipeline import _filter_relevant
+        items = [{"name": "Cezaevi telefon", "source": "sikayetvar"}]
+        out = _filter_relevant(items, "coffee machine", strict=False)
+        self.assertEqual(out, items)  # fallback to original
+
+
 if __name__ == "__main__":
     unittest.main()

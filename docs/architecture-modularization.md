@@ -206,3 +206,41 @@ The real logic is in `packages/hallederiz_kadir/src/hallederiz_kadir/`. Dispatch
 
 **If you're adding a new package:**
 Follow the convention: `packages/<name>/`, src layout, pyproject.toml, editable install.
+
+---
+
+## Phase 1 In-Tree Refactor (2026-04-17)
+
+Orchestrator untangled in-tree without package extraction. New in-tree modules:
+
+- `src/core/decisions.py` — `Allow`, `Block`, `Cancel`, `GateDecision`, `Dispatch`, `NotifyUser` types (Phase 2b targets)
+- `src/core/task_context.py` — centralized `parse_context` / `set_context` helpers
+- `src/core/task_gates.py` — async `run_gates(task, task_ctx, approval_fn) -> GateDecision`
+- `src/core/result_router.py` — pure `route_result(task, agent_result) -> list[Action]` (dataclasses + state machine). **Not wired into `process_task` yet** — existing branches have 30-80 lines of per-status guard logic that doesn't fit a simple handler dispatch. Phase 2b handles this.
+- `src/core/watchdog.py` — `check_stuck_tasks` + `check_resources` (natural 2-function split, not 4)
+- `src/core/mechanical/` — in-tree home for non-LLM executors (Phase 2a target): `workspace_snapshot.py` live; `git_commit.py` dormant (call site disconnected per user direction)
+- `src/app/scheduled_jobs.py` — proactive/cron-triggered jobs (todo reminders, API discovery, daily digest, price watches)
+
+**Line counts:**
+
+- `src/core/orchestrator.py`: 3,865 → 2,800 (−1,065, −28%)
+- `process_task`: 1,143 → 945 (−198, via `_prepare` extraction; `_dispatch` / `_record` deferred)
+- `watchdog`: 519 → ~10 line delegator
+
+**What shipped:**
+- Task 1: Decision vocabulary
+- Task 2: Centralized task context parsing (4+ call sites → one module)
+- Task 3: `assess_risk` made async (no more event-loop blocking)
+- Task 4: Gate logic extracted (`run_gates` returns `GateDecision`; orchestrator still owns Telegram I/O via injected `approval_fn`)
+- Task 5: `result_router` module and tests; wire-up deferred to Phase 2b
+- Task 6: `mechanical/` directory with `workspace_snapshot`; `_auto_commit` dormant pending i2p refactor
+- Task 7: Proactive jobs moved to `ScheduledJobs` class (todo reminders, API discovery, digest, price watches)
+- Task 8 (scoped): `_prepare` stage extracted; `_dispatch` / `_record` stay inline pending Phase 2b
+- Task 9: `watchdog` split into focused async module functions
+
+**Deferred to Phase 2:**
+- `result_router` wire-up in `process_task` (needs handler signature normalization + guard-code triage)
+- `process_task` reduction from 945 → ~25 lines (depends on router wire-up)
+- `mechanical/` extraction to `packages/mechanical_dispatcher/` (Phase 2a)
+- Gates / context / watchdog extraction to `packages/gorev_ustasi/` (Phase 2b)
+- `_handle_*` → Decision emissions (inverts Telegram coupling fully)

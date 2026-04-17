@@ -468,6 +468,30 @@ async def init_db():
         )
     """)
 
+    # Model pick telemetry (Phase 1 selection-intelligence plan)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS model_pick_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            task_name TEXT NOT NULL,
+            agent_type TEXT,
+            difficulty INTEGER,
+            call_category TEXT,
+            picked_model TEXT NOT NULL,
+            picked_score REAL NOT NULL,
+            picked_reasons TEXT,
+            candidates_json TEXT NOT NULL,
+            failures_json TEXT,
+            snapshot_summary TEXT
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pick_log_task ON model_pick_log(task_name, timestamp DESC)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pick_log_model ON model_pick_log(picked_model, timestamp DESC)"
+    )
+
     await db.commit()
 
     # Seed todo reminder (every 2h during Turkey daytime: 9,11,13,15,17,19,21 TR = 6,8,10,12,14,16,18 UTC)

@@ -68,9 +68,16 @@ def _failure_penalty(
     model: ModelInfo,
     failure_idx: dict[str, list[Failure]],
     all_failures: list[Failure],
+    snapshot: SystemSnapshot,
 ) -> tuple[float, bool, list[str]]:
     """
     Compute a multiplier (0-1) and exclusion flag for failure adaptation.
+
+    Rate-limit policy (narrowed 2026-04-17):
+    - Per-model 429 → penalize ONLY that litellm_name (0.3×).
+    - Provider-wide penalty (0.3× on siblings) applies ONLY when
+      snapshot.cloud[provider].consecutive_failures >= 3. This prevents
+      a single-model quota hit from poisoning healthy siblings.
 
     Returns (multiplier, exclude, reasons).
     """
@@ -92,16 +99,27 @@ def _failure_penalty(
         elif f.reason == "server_error":
             multiplier = min(multiplier, 0.3)
             reasons.append("fail_server_error")
+        elif f.reason == "rate_limit":
+            multiplier = min(multiplier, 0.3)
+            reasons.append("fail_rate_limit")
 
-    # Provider-level rate limit penalty — applies to all models from that provider
+    # Provider-wide rate-limit penalty: ONLY when the circuit breaker trips
+    # (consecutive_failures >= 3). Otherwise a single model's 429 does not
+    # poison its siblings.
     model_provider = model.provider
-    if model_provider:
-        for failure in all_failures:
-            if failure.reason == "rate_limit":
+    if model_provider and getattr(model, "location", None) == "cloud":
+        prov_state = snapshot.cloud.get(model_provider) if snapshot else None
+        consec = getattr(prov_state, "consecutive_failures", 0) if prov_state else 0
+        if consec >= 3:
+            for failure in all_failures:
+                if failure.reason != "rate_limit":
+                    continue
+                if failure.model == model.litellm_name:
+                    continue  # already counted as direct
                 fp = _provider_from_litellm(failure.model)
                 if fp == model_provider:
                     multiplier = min(multiplier, 0.3)
-                    reasons.append(f"fail_rate_limit({model_provider})")
+                    reasons.append(f"fail_provider_rate_limit({model_provider},consec={consec})")
                     break
 
     return multiplier, exclude, reasons
@@ -152,7 +170,7 @@ def rank_candidates(
         reasons: list[str] = []
 
         # ── Failure adaptation: exclude or penalize failed models ──
-        fail_mult, fail_exclude, fail_reasons = _failure_penalty(model, failure_idx, failures)
+        fail_mult, fail_exclude, fail_reasons = _failure_penalty(model, failure_idx, failures, snapshot)
         if fail_exclude:
             logger.debug(
                 "model excluded by failure adaptation: model=%s reasons=%s",
@@ -215,8 +233,11 @@ def rank_candidates(
         # Filtering low scorers risks zero candidates (worse than a
         # mediocre pick) and triggers unnecessary swaps.
 
-        cap_score = min(cap_score_raw * 10, 100)
-        reasons.append(f"cap={cap_score_raw:.1f}")
+        # cap_score_raw is a 0–10 weighted mean of per-dim 0–10 scores.
+        # Scale cleanly to 0–100 without a min() ceiling so that models scoring
+        # above 10 raw (possible when specialty weights exceed 1.0) preserve signal.
+        cap_score = cap_score_raw * 10.0
+        reasons.append(f"cap={cap_score_raw:.2f}")
         if effective_task:
             reasons.append(f"task={effective_task}")
 
@@ -291,8 +312,19 @@ def rank_candidates(
                     reasons.append(f"util={effective_util:.0f}%")
 
         # ── 4. Performance History (0–100) ──
-        # TODO: wire up performance cache (refresh from DB stats)
-        perf_score = 50
+        # Derive from measured tps when this is the loaded local model.
+        # TODO(phase-2): replace with grading-based quality score from model_stats.
+        if model.is_local and model.is_loaded and \
+           local_state.model_name == model.name and local_state.measured_tps > 0:
+            tps = local_state.measured_tps
+            # 10 tps → 50, 20 tps → 65, 40 tps → 80, 80+ tps → 95
+            perf_score = min(95.0, 50.0 + (tps - 10) * 1.5) if tps >= 10 else max(20.0, 20.0 + tps * 3.0)
+        elif model.is_local and model.tokens_per_second > 0:
+            tps = model.tokens_per_second
+            perf_score = min(90.0, 45.0 + (tps - 10) * 1.2) if tps >= 10 else max(15.0, 15.0 + tps * 3.0)
+        else:
+            perf_score = 50.0
+        reasons.append(f"perf={perf_score:.0f}")
 
         # ── 5. Speed (0–100) ──
         if model.is_local:

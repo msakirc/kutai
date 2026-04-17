@@ -122,8 +122,8 @@ class ServerProcess:
             return False
 
         timeout = self._estimate_load_timeout(config)
-        if load_timeout > 0:
-            timeout = min(timeout, load_timeout)
+        if load_timeout > timeout:
+            timeout = load_timeout
         logger.info("Waiting up to %.0fs for llama-server to become healthy", timeout)
 
         healthy = await self._wait_for_healthy(timeout)

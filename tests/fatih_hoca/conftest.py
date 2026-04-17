@@ -97,7 +97,7 @@ def registry_with_qwen_trio() -> ModelRegistry:
         path="/fake/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
         total_params_b=30.0,
         active_params_b=3.0,
-        family="qwen3_coder",
+        family="qwen3-coder",
         capabilities={"reasoning": 6.0, "code_generation": 7.5},
         specialty="coding",
     )

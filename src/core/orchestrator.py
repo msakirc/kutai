@@ -24,6 +24,10 @@ from .router import ModelCallFailed, get_kdv
 from .task_context import parse_context, set_context
 from .task_gates import run_gates
 from .decisions import Cancel as GateCancel
+from .result_router import (
+    route_result, Complete, SpawnSubtasks, RequestClarification,
+    RequestReview, Exhausted, Failed as FailedAction,
+)
 from ..agents import get_agent
 from ..tools import execute_tool
 from ..tools.workspace import (

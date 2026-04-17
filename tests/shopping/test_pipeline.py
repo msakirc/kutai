@@ -248,5 +248,46 @@ class TestCommunityRelevanceFilter(unittest.TestCase):
         self.assertEqual(out, items)  # fallback to original
 
 
+class TestFakeDiscountAnnotation(unittest.TestCase):
+    def test_outlier_ratio_flagged(self):
+        from src.workflows.shopping.pipeline import _annotate_fake_discounts
+        group = {
+            "products": [
+                {"name": "X", "source": "trendyol",
+                 "original_price": 10000, "discounted_price": 5000, "url": "a"},
+                {"name": "X", "source": "hepsiburada",
+                 "original_price": 5500, "discounted_price": 5000, "url": "b"},
+                {"name": "X", "source": "amazon_tr",
+                 "original_price": 5200, "discounted_price": 4800, "url": "c"},
+            ],
+        }
+        flags = _annotate_fake_discounts([group])
+        self.assertTrue(flags[("X", "trendyol", "a")]["is_suspicious_discount"])
+        self.assertFalse(flags.get(("X", "hepsiburada", "b"), {}).get("is_suspicious_discount", False))
+
+    def test_no_flag_when_consistent(self):
+        from src.workflows.shopping.pipeline import _annotate_fake_discounts
+        group = {
+            "products": [
+                {"name": "Y", "source": "trendyol",
+                 "original_price": 5200, "discounted_price": 5000, "url": "a"},
+                {"name": "Y", "source": "hepsiburada",
+                 "original_price": 5500, "discounted_price": 5000, "url": "b"},
+            ],
+        }
+        flags = _annotate_fake_discounts([group])
+        for key, f in flags.items():
+            self.assertFalse(f.get("is_suspicious_discount", False))
+
+    def test_single_entry_group_skipped(self):
+        from src.workflows.shopping.pipeline import _annotate_fake_discounts
+        group = {"products": [
+            {"name": "Z", "source": "trendyol",
+             "original_price": 10000, "discounted_price": 1000, "url": "a"},
+        ]}
+        flags = _annotate_fake_discounts([group])
+        self.assertEqual(flags, {})
+
+
 if __name__ == "__main__":
     unittest.main()

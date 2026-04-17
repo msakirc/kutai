@@ -84,6 +84,51 @@ def _filter_relevant(products: list, query: str, strict: bool = False) -> list:
     return [] if strict else products
 
 
+def _annotate_fake_discounts(groups: list[dict]) -> dict[tuple, dict]:
+    """Flag stores whose discount ratio is way off from the group median.
+
+    For each matched-product group, compute ``original_price /
+    discounted_price`` per store. If the group has ≥2 entries with both
+    fields populated, flag any entry whose ratio is >1.5× the median AND
+    >1.2 absolute (i.e. claiming at least 20% off when peers aren't).
+
+    Returns a dict keyed by ``(name, source, url)`` tuple → flag payload.
+    Empty dict when no flags apply.
+    """
+    import statistics
+
+    flags: dict[tuple, dict] = {}
+    for group in groups:
+        entries = group.get("products", [])
+        if len(entries) < 2:
+            continue
+
+        pairs: list[tuple[dict, float]] = []
+        for e in entries:
+            orig = e.get("original_price")
+            disc = e.get("discounted_price")
+            if orig and disc and disc > 0 and orig > disc:
+                pairs.append((e, orig / disc))
+
+        if len(pairs) < 2:
+            continue
+
+        ratios = [r for _, r in pairs]
+        median = statistics.median(ratios)
+        for entry, ratio in pairs:
+            if ratio > median * 1.5 and ratio > 1.2:
+                key = (entry.get("name", ""), entry.get("source", ""), entry.get("url", ""))
+                flags[key] = {
+                    "is_suspicious_discount": True,
+                    "discount_flag_reason": (
+                        f"Bu mağazada indirim oranı ({(ratio - 1) * 100:.0f}%) "
+                        f"diğer mağazalardaki medyana ({(median - 1) * 100:.0f}%) "
+                        f"göre çok yüksek — 'orijinal fiyat' şişirilmiş olabilir"
+                    ),
+                }
+    return flags
+
+
 async def _match_and_flatten(products: list) -> list[dict]:
     """Run product matching, then flatten groups back to a sorted list.
 
@@ -119,6 +164,9 @@ async def _match_and_flatten(products: list) -> list[dict]:
         logger.warning("product_matcher failed, returning unmatched: %s", exc)
         return list(orig_lookup.values()) + plain_dicts
 
+    # ── Fake-discount flags from cross-store ratio analysis ──
+    flags = _annotate_fake_discounts(groups)
+
     # Flatten: for each group, look up the original full dict for every
     # product entry.  Fall back to the matcher's stripped dict if lookup
     # misses (shouldn't happen, but be safe).
@@ -127,6 +175,9 @@ async def _match_and_flatten(products: list) -> list[dict]:
         for prod in group.get("products", []):
             key = (prod.get("name", ""), prod.get("source", ""), prod.get("url", ""))
             full = orig_lookup.get(key, prod)
+            flag = flags.get(key)
+            if flag:
+                full = {**full, **flag}
             flat.append(full)
 
     flat.extend(plain_dicts)

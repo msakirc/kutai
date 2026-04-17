@@ -310,13 +310,12 @@ class Selector:
                 pass  # telemetry must never break selection
 
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.create_task(_write())
-            else:
-                loop.run_until_complete(_write())
+            asyncio.get_running_loop()
+            asyncio.create_task(_write())
         except RuntimeError:
-            pass  # no event loop available — skip this call
+            # No running loop — sync caller. Telemetry is best-effort; only
+            # meaningful inside an asyncio context. Skip silently.
+            pass
 
     # ─── Eligibility Check (Layer 1) ─────────────────────────────────────────
 

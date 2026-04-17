@@ -21,6 +21,7 @@ from ..infra.db import (
 )
 from src.infra.logging_config import get_logger
 from .router import ModelCallFailed, get_kdv
+from .task_context import parse_context, set_context
 from ..agents import get_agent
 from ..tools import execute_tool
 from ..tools.workspace import (
@@ -175,12 +176,7 @@ def _reorder_by_model_affinity(tasks: list[dict]) -> list[dict]:
 
         def _sort_key(task: dict):
             priority = task.get("_effective_priority", task.get("priority", 5))
-            ctx = task.get("context", {})
-            if isinstance(ctx, str):
-                try:
-                    ctx = json.loads(ctx)
-                except (json.JSONDecodeError, TypeError):
-                    ctx = {}
+            ctx = parse_context(task)
             cls = ctx.get("classification", {})
             agent_type = task.get("agent_type", cls.get("agent_type", "executor"))
             difficulty = max(1, min(10, int(cls.get("difficulty", 5))))
@@ -237,12 +233,7 @@ def _parse_task_difficulty(task: dict) -> int:
 
     Falls back to 5 (moderate) if not classified yet.
     """
-    ctx = task.get("context", {})
-    if isinstance(ctx, str):
-        try:
-            ctx = json.loads(ctx)
-        except (json.JSONDecodeError, TypeError):
-            ctx = {}
+    ctx = parse_context(task)
     cls = ctx.get("classification", {})
     return max(1, min(10, int(cls.get("difficulty", 5))))
 
@@ -252,12 +243,7 @@ def _should_defer_for_loaded_model(task: dict, loaded_model: str) -> bool:
     worker_attempts = task.get("worker_attempts", task.get("attempts", 0)) or 0
     if worker_attempts < 3:
         return False
-    ctx = task.get("context", {})
-    if isinstance(ctx, str):
-        try:
-            ctx = json.loads(ctx)
-        except (json.JSONDecodeError, TypeError):
-            return False
+    ctx = parse_context(task)
     return loaded_model in ctx.get("failed_models", [])
 
 
@@ -341,15 +327,7 @@ class Orchestrator:
         (prior steps in the same mission) and a workspace snapshot into its context.
         This is how step 5 knows what steps 1-4 produced.
         """
-        task_context = {}
-        raw_context = task.get("context", "{}")
-        if isinstance(raw_context, str):
-            try:
-                task_context = json.loads(raw_context)
-            except (json.JSONDecodeError, TypeError):
-                task_context = {}
-        elif isinstance(raw_context, dict):
-            task_context = raw_context
+        task_context = parse_context(task)
 
         # ── Gather completed sibling tasks (same parent or same mission) ──
         parent_id = task.get("parent_task_id")
@@ -419,7 +397,7 @@ class Orchestrator:
                 logger.debug(f"Could not get workspace snapshot: {e}")
 
         # Write context back to task dict
-        task["context"] = json.dumps(task_context)
+        task = set_context(task, task_context)
         return task
 
     # ─── NEW: Auto-commit after coder tasks ─────────────────────────────
@@ -622,11 +600,7 @@ class Orchestrator:
         all_ungraded = [dict(row) for row in await cursor_ung.fetchall()]
         stuck_ungraded = []
         for task in all_ungraded:
-            raw_ctx = task.get("context", "{}")
-            try:
-                ctx = json.loads(raw_ctx) if isinstance(raw_ctx, str) else (raw_ctx or {})
-            except (json.JSONDecodeError, TypeError):
-                ctx = {}
+            ctx = parse_context(task)
             ref_time_str = ctx.get("worker_completed_at") or task.get("started_at")
             if not ref_time_str:
                 continue
@@ -791,15 +765,7 @@ class Orchestrator:
         )
         nudge_tasks = [dict(row) for row in await cursor_nudge.fetchall()]
         for task in nudge_tasks:
-            raw_ctx = task.get("context", "{}")
-            if isinstance(raw_ctx, str):
-                try:
-                    task_ctx = json.loads(raw_ctx)
-                except (json.JSONDecodeError, TypeError):
-                    task_ctx = {}
-            else:
-                task_ctx = raw_ctx if isinstance(raw_ctx, dict) else {}
-
+            task_ctx = parse_context(task)
             if not task_ctx.get("nudge_sent"):
                 task_ctx["nudge_sent"] = True
                 await update_task(task["id"], context=json.dumps(task_ctx))
@@ -817,15 +783,7 @@ class Orchestrator:
         stale = [dict(row) for row in await cursor_clar.fetchall()]
         for task in stale:
             # Parse escalation_count from task context
-            raw_ctx = task.get("context", "{}")
-            if isinstance(raw_ctx, str):
-                try:
-                    task_ctx = json.loads(raw_ctx)
-                except (json.JSONDecodeError, TypeError):
-                    task_ctx = {}
-            else:
-                task_ctx = raw_ctx if isinstance(raw_ctx, dict) else {}
-
+            task_ctx = parse_context(task)
             escalation_count = task_ctx.get("escalation_count", 0)
             tid = task["id"]
             ttitle = task["title"]
@@ -1480,14 +1438,7 @@ class Orchestrator:
             task = await self._inject_chain_context(task)
 
             # ── Classify task if not already classified ──
-            task_ctx = task.get("context", "{}")
-            if isinstance(task_ctx, str):
-                try:
-                    task_ctx = json.loads(task_ctx)
-                except (json.JSONDecodeError, TypeError):
-                    task_ctx = {}
-            if not isinstance(task_ctx, dict):
-                task_ctx = {}
+            task_ctx = parse_context(task)
 
             if "classification" not in task_ctx and agent_type == "executor":
                 from .task_classifier import classify_task as classify
@@ -1504,7 +1455,7 @@ class Orchestrator:
                     agent_type = classification.agent_type
                 if classification.agent_type == "shopping_advisor" and classification.shopping_sub_intent:
                     task_ctx["shopping_workflow"] = classification.shopping_sub_intent
-                task["context"] = json.dumps(task_ctx)
+                task = set_context(task, task_ctx)
 
             # ── Layer 0: Fast-path resolution via API registry ──
             # Skip for pipeline agent types — they have their own execution.
@@ -1535,7 +1486,7 @@ class Orchestrator:
                     agent_type = "shopping_advisor"
                     task["agent_type"] = "shopping_advisor"
                     task_ctx["shopping_workflow"] = shopping_wf
-                    task["context"] = json.dumps(task_ctx)
+                    task = set_context(task, task_ctx)
                     logger.info(
                         "shopping intent detected via dispatch fallback",
                         task_id=task_id,
@@ -1566,7 +1517,7 @@ class Orchestrator:
                 enrichment = None if _skip_fast_path else await enrich_context(task)
                 if enrichment:
                     task_ctx["api_enrichment"] = enrichment
-                    task["context"] = json.dumps(task_ctx)
+                    task = set_context(task, task_ctx)
                     logger.info("task enriched with API data", task_id=task_id)
             except Exception as exc:
                 logger.debug("context enrichment failed (non-critical): %s", exc)
@@ -1700,7 +1651,7 @@ class Orchestrator:
 
                 # Send "task started" notification
                 try:
-                    task_ctx = json.loads(task.get("context", "{}"))
+                    task_ctx = parse_context(task)
                     if not task_ctx.get("silent"):
                         chat_id = task_ctx.get("chat_id")
                         if chat_id and hasattr(self, 'telegram') and self.telegram:
@@ -1769,12 +1720,7 @@ class Orchestrator:
                             # as completed — they bypass the post-hook and
                             # poison downstream tasks with garbage.  Let them
                             # fail and go through normal retry/DLQ.
-                            task_ctx = task.get("context", {})
-                            if isinstance(task_ctx, str):
-                                try:
-                                    task_ctx = json.loads(task_ctx)
-                                except (json.JSONDecodeError, TypeError):
-                                    task_ctx = {}
+                            task_ctx = parse_context(task)
 
                             if is_workflow_step(task_ctx):
                                 logger.warning(
@@ -1818,12 +1764,7 @@ class Orchestrator:
                     pass
 
                 # Use the same retry/DLQ pipeline as other failure paths
-                task_ctx = task.get("context", {})
-                if isinstance(task_ctx, str):
-                    try:
-                        task_ctx = json.loads(task_ctx)
-                    except (json.JSONDecodeError, TypeError):
-                        task_ctx = {}
+                task_ctx = parse_context(task)
 
                 # Inject partial output so next attempt can continue
                 if partial_result:
@@ -2200,13 +2141,7 @@ class Orchestrator:
                     await self._handle_subtasks(task, result)
             elif status == "needs_clarification":
                 # Silent/background tasks must not ask the user for clarification
-                task_ctx = task.get("context") or {}
-                if isinstance(task_ctx, str):
-                    import json as _json
-                    try:
-                        task_ctx = _json.loads(task_ctx)
-                    except (ValueError, TypeError):
-                        task_ctx = {}
+                task_ctx = parse_context(task)
                 if task_ctx.get("silent"):
                     logger.info(f"[Task #{task_id}] Suppressed clarification (silent task)")
                     await update_task(task_id, status="failed",
@@ -2615,14 +2550,7 @@ class Orchestrator:
         iterations = result.get("iterations", 1)
 
         # Parse task context for workflow-aware handling
-        task_ctx = task.get("context", "{}")
-        if isinstance(task_ctx, str):
-            try:
-                task_ctx = json.loads(task_ctx)
-            except (json.JSONDecodeError, ValueError):
-                task_ctx = {}
-        if not isinstance(task_ctx, dict):
-            task_ctx = {}
+        task_ctx = parse_context(task)
 
         await update_task(
             task_id, status="completed", result=result_text,
@@ -2705,16 +2633,7 @@ class Orchestrator:
         # Always notify for interactive (critical priority) tasks
         # Skip only background subtasks from mission decomposition
         # Silent tasks (e.g., todo suggestions) skip Telegram notification entirely
-        task_ctx_raw = task.get("context", "{}")
-        if isinstance(task_ctx_raw, str):
-            try:
-                task_ctx_parsed = json.loads(task_ctx_raw)
-            except (json.JSONDecodeError, ValueError, TypeError):
-                task_ctx_parsed = {}
-        else:
-            task_ctx_parsed = task_ctx_raw
-        if not isinstance(task_ctx_parsed, dict):
-            task_ctx_parsed = {}
+        task_ctx_parsed = task_ctx  # already parsed above
         is_interactive = task.get("priority", 5) >= TASK_PRIORITY.get("critical", 10)
         is_mission_subtask = task.get("mission_id") and task.get("parent_task_id")
 

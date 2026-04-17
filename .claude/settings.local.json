@@ -349,7 +349,30 @@
       "Bash(ls /c/Users/sakir/ai/models/*.gguf)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:github.com)",
-      "Bash(tasklist /FI 'IMAGENAME eq python.exe')"
+      "Bash(tasklist /FI 'IMAGENAME eq python.exe')",
+      "Bash(.venv/Scripts/python.exe -c ':*)",
+      "Bash(git reset:*)",
+      "Bash(curl -s http://localhost:9880/api/config)",
+      "Bash(curl -s http://localhost:9880/api/logs/all?lines=5)",
+      "Bash(tasklist //FI \"PID eq 72144\")",
+      "Bash(taskkill //PID 72144 //F)",
+      "Bash(curl -s \"http://localhost:9880/api/logs/all?lines=3\")",
+      "Bash(git rm:*)",
+      "Bash(gh repo:*)",
+      "Bash(git ls-remote:*)",
+      "Bash(wc -l src/yazbunu/*.py src/yazbunu/static/*.html src/yazbunu/static/*.js)",
+      "Bash(cp /c/Users/sakir/Dropbox/Workspaces/kutay/packages/yazbunu/src/yazbunu/__init__.py /tmp/yazbunu-sync/src/yazbunu/__init__.py)",
+      "Bash(cp /c/Users/sakir/Dropbox/Workspaces/kutay/packages/yazbunu/src/yazbunu/__main__.py /tmp/yazbunu-sync/src/yazbunu/__main__.py)",
+      "Bash(cp /c/Users/sakir/Dropbox/Workspaces/kutay/packages/yazbunu/src/yazbunu/formatter.py /tmp/yazbunu-sync/src/yazbunu/formatter.py)",
+      "Bash(cp /c/Users/sakir/Dropbox/Workspaces/kutay/packages/yazbunu/src/yazbunu/server.py /tmp/yazbunu-sync/src/yazbunu/server.py)",
+      "Bash(cp /c/Users/sakir/Dropbox/Workspaces/kutay/packages/yazbunu/src/yazbunu/static/viewer.html /tmp/yazbunu-sync/src/yazbunu/static/viewer.html)",
+      "Bash(wc -l src/yazbunu/*.py src/yazbunu/static/viewer.html)",
+      "Bash(ls -lt \"/c/Users/sakir/.claude/projects/C--Users-sakir-Dropbox-Workspaces-kutay\"/*.jsonl)",
+      "Bash(grep -l \"51 stale Python processes\" \"/c/Users/sakir/.claude/projects/C--Users-sakir-Dropbox-Workspaces-kutay\"/*.jsonl)",
+      "Bash(powershell -NoProfile -Command ':*)",
+      "Bash(powershell -NoProfile -Command \"irm https://claude.ai/install.ps1 | iex\")",
+      "Bash(powershell -NoProfile -Command \"[Environment]::GetEnvironmentVariable\\('PATH', 'User'\\)\")",
+      "Bash(\"C:\\\\Users\\\\sakir\\\\.local\\\\bin\\\\claude.exe\" --version)"
     ]
   }
 }

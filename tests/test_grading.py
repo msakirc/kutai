@@ -161,6 +161,53 @@ class TestParseGradeResponse:
         assert result.tools == ["smart_search", "web_search", "api_call"]
 
 
+class TestThinkingPreambleStrip:
+    """Thinking-model preambles must not hide a valid structured grade."""
+
+    def test_strip_think_xml_block(self):
+        raw = (
+            "<think>Let me analyze this task. The result looks good.</think>\n"
+            "RELEVANT: YES\nCOMPLETE: YES\nVERDICT: PASS\n"
+            "WELL_FORMED: PASS\nCOHERENT: PASS\n"
+            "SITUATION: test\nSTRATEGY: test\nTOOLS: api_call"
+        )
+        result = parse_grade_response(raw)
+        assert result.passed is True
+        assert result.relevant is True
+
+    def test_strip_thinking_process_preamble(self):
+        raw = (
+            "Thinking Process:\n"
+            "1. Analyze the request: the user wants X.\n"
+            "2. Evaluate: the result covers X correctly.\n\n"
+            "RELEVANT: YES\nCOMPLETE: YES\nVERDICT: PASS\n"
+            "WELL_FORMED: PASS\nCOHERENT: PASS\n"
+            "SITUATION: test\nSTRATEGY: test\nTOOLS: api_call"
+        )
+        result = parse_grade_response(raw)
+        assert result.passed is True
+
+    def test_strip_markdown_thinking_header(self):
+        raw = (
+            "## Thinking\n"
+            "The task asks for X. The response provides X. Looks complete.\n\n"
+            "VERDICT: PASS\nWELL_FORMED: PASS\nCOHERENT: PASS"
+        )
+        result = parse_grade_response(raw)
+        assert result.passed is True
+
+    def test_pure_thinking_no_verdict_still_raises(self):
+        """If the model spilled ONLY reasoning and no structured fields, fail loudly."""
+        raw = (
+            "Thinking Process:\n"
+            "1. I am analyzing the request carefully.\n"
+            "2. Considering all angles.\n"
+            "3. Here are my thoughts on..."
+        )
+        with pytest.raises(ValueError):
+            parse_grade_response(raw)
+
+
 class TestPreferenceField:
     def test_preference_parsed(self):
         raw = (

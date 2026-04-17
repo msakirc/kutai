@@ -55,6 +55,35 @@ class GradeResult:
     raw: str = ""
 
 
+_THINKING_PATTERNS = [
+    # <think>...</think> blocks (Qwen, DeepSeek-R1 style)
+    re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE),
+    # "Thinking Process:" / "Thought Process:" preambles until a double newline or a KEY:
+    re.compile(
+        r"(?:^|\n)(?:thinking|thought)\s+process\s*:.*?(?=\n\s*\n|\n[A-Z_]{2,}\s*:|\Z)",
+        re.DOTALL | re.IGNORECASE,
+    ),
+    # "## Thinking" / "### Reasoning" markdown sections
+    re.compile(
+        r"(?:^|\n)#{1,6}\s*(?:thinking|reasoning|thought|analysis)\b.*?(?=\n#{1,6}\s|\n[A-Z_]{2,}\s*:|\Z)",
+        re.DOTALL | re.IGNORECASE,
+    ),
+]
+
+
+def _strip_thinking(raw: str) -> str:
+    """Remove visible chain-of-thought from grader output.
+
+    Some graders (thinking models without reasoning suppressed) emit
+    `<think>...</think>` blocks or `Thinking Process:` preambles before
+    the structured fields. Strip these so parsing can still find VERDICT.
+    """
+    stripped = raw
+    for pattern in _THINKING_PATTERNS:
+        stripped = pattern.sub("", stripped)
+    return stripped.strip()
+
+
 def _parse_yes_no(text: str, key: str) -> Optional[bool]:
     """Extract a YES/NO value for a given key from grader output."""
     pattern = rf"{key}\s*:\s*(YES|NO|PASS|FAIL)"
@@ -101,7 +130,11 @@ def parse_grade_response(raw: str) -> GradeResult:
       3. If RELEVANT/COMPLETE fail → derive from VERDICT
       4. If VERDICT not found → scan for bare PASS/FAIL keyword
       5. Nothing → raise ValueError
+
+    Thinking-model preambles (`<think>...</think>`, `Thinking Process: ...`)
+    are stripped before parsing so reasoning leak doesn't hide a valid grade.
     """
+    raw = _strip_thinking(raw)
     relevant = _parse_yes_no(raw, "RELEVANT")
     complete = _parse_yes_no(raw, "COMPLETE")
     verdict = _parse_yes_no(raw, "VERDICT")
@@ -222,7 +255,10 @@ async def grade_task(task: dict) -> GradeResult:
         ],
         priority=1,
         estimated_input_tokens=800,
-        estimated_output_tokens=100,
+        # 100 was too tight: thinking-capable models burned the entire budget on
+        # visible reasoning ("Thinking Process: ...") and never reached VERDICT.
+        # 600 gives room for preamble + the 10 structured fields.
+        estimated_output_tokens=600,
         prefer_speed=True,
         exclude_models=all_excluded,
     )
@@ -239,7 +275,15 @@ async def grade_task(task: dict) -> GradeResult:
         f"grader raw response ({len(raw_str)} chars): {raw_str[:300]}",
         task_id=task.get("id"),
     )
-    return parse_grade_response(raw_str)
+    try:
+        return parse_grade_response(raw_str)
+    except ValueError:
+        # Surface the full raw response so the next failure is diagnosable.
+        logger.warning(
+            f"grader parse failed, full raw ({len(raw_str)} chars): {raw_str[:2000]}",
+            task_id=task.get("id"),
+        )
+        raise
 
 
 async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:

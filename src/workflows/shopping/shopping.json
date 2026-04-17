@@ -2,7 +2,7 @@
   "plan_id": "shopping",
   "version": "2.0",
   "metadata": {
-    "description": "Full deep-research shopping workflow. Takes a user shopping query through intent parsing, optional clarification, multi-source search (16 e-commerce sites + 4 community forums via shopping_search), review collection, deal analysis, recommendation synthesis, and Telegram-optimized delivery. shopping_search handles scraping, matching, and community data automatically — LLM steps focus on analysis, judgment, and presentation.",
+    "description": "Category/discovery shopping workflow. Handles broad exploratory queries like 'good coffee machine' or 'gaming laptop under 30k' — parses category + constraints, clarifies when too vague, searches the category across 16 e-commerce sites + 4 community forums, analyzes value/risks across options, and synthesizes a tiered recommendation (best overall / budget pick / alternatives). For named specific products (brand+model), the product_research workflow is used instead.",
     "agents_required": [
       "shopping_advisor",
       "product_researcher",
@@ -72,7 +72,7 @@
       "depends_on": [],
       "input_artifacts": ["user_query"],
       "output_artifacts": ["parsed_intent"],
-      "instruction": "Read the user's query. Determine: is this a specific product lookup (e.g. 'siemens s100') or a vague exploration (e.g. 'good coffee machine')? Extract product name, category, budget if mentioned, brand preferences. Check user profile for past preferences. If the query is too vague to search effectively (no product category, no brand, no use case), set needs_clarification=true and list 1-3 specific questions. If the query is clear enough, set needs_clarification=false.",
+      "instruction": "Read the user's query — this workflow handles category/discovery queries (specific product lookups are routed to product_research). Extract: category or product-type, budget if mentioned, key use case, brand preferences if narrow. Check user profile for past preferences. If the query has no category AND no use case AND no constraint, set needs_clarification=true and list 1-3 specific questions (budget? use case? must-have feature?). Otherwise set needs_clarification=false.",
       "done_when": "parsed_intent has product/category/constraints extracted, or needs_clarification is set.",
       "artifact_schema": {
         "parsed_intent": {
@@ -92,7 +92,7 @@
       "depends_on": ["0.1"],
       "input_artifacts": ["parsed_intent", "user_query"],
       "output_artifacts": ["clarified_query"],
-      "instruction": "Read parsed_intent and user_query. Decide: is this query specific enough to research directly, or would 2-3 questions help narrow the search?\n\nSPECIFIC (research directly): brand+model ('siemens s100'), exact product ('dyson v15'), specific comparison ('iphone 15 vs samsung s24'). Return the query as clarified_query immediately.\n\nNEEDS CLARIFICATION: generic category ('coffee machines', '3d printers', 'laptop'), broad brand ('samsung phones'). Ask 2-3 questions about budget, use case, and key constraint. Use the needs_clarification response to pause and ask the user via Telegram.\n\nIMPORTANT: If the query is specific, do NOT ask questions. Just return it.",
+      "instruction": "Read parsed_intent and user_query. This workflow handles CATEGORY/DISCOVERY queries — the user named a category or broad need, not a specific brand+model. Decide: does the query have enough constraints (budget, use case, key feature) to shortlist candidates, or should we ask 2-3 questions first?\n\nHAS ENOUGH: e.g. 'coffee machine under 5000 TL for a household of 2', 'gaming laptop for League of Legends on 1080p'. Return the query as clarified_query immediately.\n\nNEEDS CLARIFICATION: generic category with no constraints ('coffee machine', '3d printers', 'laptop'). Ask 2-3 tight questions about budget, use case, and one must-have constraint. Use the needs_clarification response to pause.",
       "done_when": "clarified_query is ready for search — either the original specific query or the user's answers incorporated.",
       "may_need_clarification": true
     },
@@ -128,7 +128,7 @@
       "depends_on": ["2.1"],
       "input_artifacts": ["search_results", "review_data", "parsed_intent"],
       "output_artifacts": ["deal_analysis"],
-      "instruction": "Read search_results and review_data. Evaluate: Are any discounts fake (original price inflated)? Are there red flags in reviews (recurring defects, complaints on Şikayetvar)? Is now a good time to buy or should the user wait for a sale? Use shopping_compare for value scoring if multiple products. Use shopping_reviews to synthesize review themes if raw reviews available. Produce a deal_analysis with: value verdict per product, risk flags, timing recommendation.",
+      "instruction": "Read search_results and review_data. This is a category-discovery analysis: compare candidates against each other on value (price-to-performance), coverage of the user's use case, and risk (recurring complaints on Şikayetvar, thin review counts). Do NOT frame as buy-or-wait for a specific SKU — frame as which segment of the category matches the user best. Use shopping_compare for value scoring across the shortlist. Produce deal_analysis with: per-candidate value verdict, segment recommendations, and red flags to avoid.",
       "done_when": "deal_analysis covers value scoring, risk flags, and buy/wait timing.",
       "artifact_schema": {
         "deal_analysis": {
@@ -148,7 +148,7 @@
       "depends_on": ["3.1"],
       "input_artifacts": ["search_results", "deal_analysis", "review_data", "parsed_intent"],
       "output_artifacts": ["recommendation"],
-      "instruction": "Read all artifacts. Build a tiered recommendation: Best Overall (best value score + good reviews), Budget Pick (lowest price meeting requirements), and any alternatives. Use shopping_alternatives if the user might benefit from different brands or previous-gen models. Use shopping_timing for category-specific buy timing advice. Include warnings from deal_analysis. Structure as clear readable text with product names, prices, sources, pros/cons.",
+      "instruction": "Read all artifacts. Build a tiered CATEGORY recommendation: Best Overall (best value across the shortlist matching the use case), Budget Pick (cheapest that still meets the key requirement), and 1-2 alternatives from adjacent segments. Use shopping_alternatives if a different brand family or previous-gen meets the need at lower cost. Include warnings from deal_analysis. Structure as clear readable text with category rationale, product names, prices, sources, and when each pick fits best.",
       "done_when": "recommendation has top pick, budget option, and timing advice."
     },
     {

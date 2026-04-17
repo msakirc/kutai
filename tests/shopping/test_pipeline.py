@@ -238,6 +238,7 @@ class TestCommunityRelevanceFilter(unittest.TestCase):
         names = [i["name"] for i in out]
         self.assertIn("Siemens S100 kahve makinesi arıza", names)
         self.assertNotIn("Tamamen alakasız bir post", names)
+        self.assertEqual(len(out), 1)
 
     def test_default_mode_still_falls_back(self):
         """Non-strict mode keeps existing behavior — return original if nothing passes."""

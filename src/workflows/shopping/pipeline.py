@@ -56,8 +56,10 @@ def _filter_relevant(products: list, query: str, strict: bool = False) -> list:
       - strict=True: return an empty list (used for community results
         where irrelevant complaints are worse than no data).
     """
-    if not products or not query:
+    if not products:
         return products
+    if not query:
+        return [] if strict else products
 
     scored = []
     for p in products:

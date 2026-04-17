@@ -130,7 +130,8 @@ async def start_claude_remote(
         proc = _sp.Popen(
             [claude_cmd, "remote-control",
              "--name", name,
-             "--permission-mode", "bypassPermissions"],
+             "--permission-mode", "bypassPermissions",
+             "--no-create-session-in-dir"],
             cwd=cwd,
             **kwargs,
         )
@@ -184,7 +185,7 @@ async def start_claude_remote(
 
 
 async def _poll_log_for_url_or_error(
-    log_path: Path, timeout: float = 30,
+    log_path: Path, timeout: float = 60,
 ) -> tuple[str | None, str | None]:
     """Poll a log file for URL or error.
 
@@ -194,6 +195,7 @@ async def _poll_log_for_url_or_error(
     """
     deadline = time.monotonic() + timeout
     seen_bytes = 0
+    last_error: str | None = None
 
     while time.monotonic() < deadline:
         await asyncio.sleep(0.5)
@@ -206,23 +208,27 @@ async def _poll_log_for_url_or_error(
                 new_text = f.read()
             seen_bytes = size
             for line in new_text.splitlines():
-                line = line.strip()
+                line = line.strip("\x00 \t\r\n")
                 if not line:
                     continue
-                # URL found — success
+                # URL found — success (takes priority over earlier errors)
                 if "claude.ai" in line or "http" in line.lower():
                     url_match = re.search(r"https?://\S+", line)
                     if url_match:
                         url = url_match.group(0)
                         logger.info("Claude session URL: %s", url)
                         return url, None
-                # Error detection
+                # Record errors but keep looking — the process may recover
                 if line.lower().startswith("error:"):
-                    return None, line
+                    last_error = line
+                    logger.warning("Claude session error (continuing): %s", line)
         except FileNotFoundError:
             continue
         except Exception as e:
             logger.warning("Error polling Claude log: %s", e)
 
+    if last_error:
+        logger.warning("Timed out with last error: %s", last_error)
+        return None, last_error
     logger.warning("Timed out waiting for Claude session URL")
     return None, None

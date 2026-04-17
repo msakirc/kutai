@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess as _sp
 import sys
 import time
@@ -26,6 +27,8 @@ def build_status_text(
     sidecar_health_url: str | None = None,
     sidecar_http_alive: bool = False,
     extra_processes: list[dict] | None = None,
+    guard_script: str | None = None,
+    app_script: str | None = None,
     messages=None,
 ) -> str:
     """Build the status panel text.
@@ -33,12 +36,29 @@ def build_status_text(
     Args:
         extra_processes: List of dicts with keys: name, exe (process name to check),
             label (display label).
+        guard_script: Basename of the guard script (e.g. "kutai_wrapper.py")
+            for duplicate detection.
+        app_script: Basename of the app script (e.g. "run.py") for duplicate
+            detection.
     """
     uptime_w = int(time.time() - guard_start_time)
     uptime_str = f"{uptime_w // 3600}h {(uptime_w % 3600) // 60}m"
 
     lines = [f"🔧 *{name}*\n"]
     lines.append(f"🔵 {name}: running ({uptime_str})")
+
+    # Duplicate process warnings
+    my_pid = os.getpid()
+    if guard_script:
+        dup_guard = _count_python_processes(guard_script, exclude_pid=my_pid)
+        if dup_guard:
+            pids = ", ".join(str(p) for p in dup_guard)
+            lines.append(f"⚠️ DUAL WRAPPER: {len(dup_guard)} extra ({pids})")
+    if app_script:
+        dup_app = _count_python_processes(app_script)
+        if len(dup_app) > 1:
+            pids = ", ".join(str(p) for p in dup_app)
+            lines.append(f"⚠️ DUAL ORCHESTRATOR: {len(dup_app)} instances ({pids})")
 
     # App health
     if not app_running:
@@ -87,6 +107,58 @@ def build_status_text(
     ts = time.strftime("%H:%M:%S")
     lines.append(f"\n_Last update: {ts}_")
     return "\n".join(lines)
+
+
+def _count_python_processes(
+    script_name: str,
+    exclude_pid: int | None = None,
+) -> list[int]:
+    """Return PIDs of python.exe processes whose command line contains script_name."""
+    pids: list[int] = []
+    if sys.platform == "win32":
+        try:
+            raw = _sp.check_output(
+                ['wmic', 'process', 'where', "name='python.exe'",
+                 'get', 'ProcessId,CommandLine', '/format:csv'],
+                text=True, timeout=5,
+            )
+            for line in raw.strip().splitlines():
+                line = line.strip()
+                if not line or line.startswith("Node"):
+                    continue
+                if script_name not in line:
+                    continue
+                # CSV format: Node,CommandLine,ProcessId
+                pid_str = line.rsplit(",", 1)[-1].strip()
+                try:
+                    pid = int(pid_str)
+                except ValueError:
+                    continue
+                if pid == exclude_pid:
+                    continue
+                pids.append(pid)
+        except Exception:
+            pass
+    else:
+        try:
+            raw = _sp.check_output(
+                ['pgrep', '-af', script_name],
+                text=True, timeout=5,
+            )
+            for line in raw.strip().splitlines():
+                parts = line.split(None, 1)
+                if not parts:
+                    continue
+                try:
+                    pid = int(parts[0])
+                except ValueError:
+                    continue
+                if pid == exclude_pid:
+                    continue
+                pids.append(pid)
+        except Exception:
+            pass
+    return pids
 
 
 def _check_process_running(exe_name: str) -> bool:

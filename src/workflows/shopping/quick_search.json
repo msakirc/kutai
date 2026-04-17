@@ -42,6 +42,7 @@
       "instruction": "Call the shopping_search tool with the user's query from user_query artifact. The tool automatically searches 16 Turkish e-commerce sites (Trendyol, Hepsiburada, Amazon TR, etc.) and 4 community sources (Technopat, Şikayetvar, DonanımHaber, Ekşi Sözlük) in parallel, returning structured products with prices, ratings, and community opinions. Do NOT fabricate any product names, prices, or availability data — only report what the tool returns. If the tool returns at least one product with a price, capture the full tool output in search_results. If the tool returns zero products, set escalation_needed=true in search_results with reason='no_products_found'.",
       "done_when": "shopping_search has been called and its output is captured in search_results, OR escalation_needed is set to true.",
       "artifact_schema": {
+        "max_output_chars": 50000,
         "search_results": {
           "type": "object",
           "required_fields": ["formatted_text"]

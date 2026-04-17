@@ -228,6 +228,8 @@ def _evaluate_check_expression(check_expr: str, artifact_value: str) -> bool:
             actual = _parse_coverage(artifact_value)
         elif 'clean' in field or 'scan' in field:
             actual = _check_security_scan(artifact_value)
+        elif 'approv' in field:
+            actual = artifact_value.strip().lower() == 'approved'
 
     if actual is None:
         return False

@@ -110,6 +110,7 @@
       "instruction": "Call shopping_search with the query from clarified_query (or user_query if clarification was skipped). The tool returns products from 16 e-commerce sites + community data from 4 forums. Then for the top 2-3 product URLs in the results, call shopping_fetch_reviews to get detailed reviews. If shopping_search returned few/no products, use web_search as a supplement for manufacturer specs or international retailers. Combine everything into search_results (products + community) and review_data (detailed reviews from URLs). Do NOT fabricate any data.",
       "done_when": "search_results has products with real prices from the tool, review_data has reviews from at least 1 source.",
       "artifact_schema": {
+        "max_output_chars": 50000,
         "search_results": {
           "type": "object",
           "required_fields": ["formatted_text"]

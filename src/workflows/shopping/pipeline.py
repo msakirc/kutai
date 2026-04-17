@@ -208,8 +208,28 @@ async def _step_search(task: dict, artifacts: dict) -> str:
     # ── Relevance filtering ──
     products = _filter_relevant(products, query)
 
+    # ── Value scoring (pure Python, no LLM) ──
+    score_lookup: dict[str, dict] = {}
+    product_objs = [p for p in products if dataclasses.is_dataclass(p)]
+    if product_objs:
+        try:
+            from src.shopping.intelligence.value_scorer import score_products
+            scores = await score_products(product_objs)
+            for s in scores:
+                score_lookup[s["product_name"]] = s
+        except Exception as exc:
+            logger.warning("value_scorer failed, continuing without scores: %s", exc)
+
     # ── Product matching / deduplication ──
     products_dicts = await _match_and_flatten(products)
+
+    # ── Merge value scores into product dicts ──
+    for p in products_dicts:
+        name = p.get("name", "")
+        if name in score_lookup:
+            p["value_score"] = score_lookup[name]["value_score"]
+            p["value_rank"] = score_lookup[name]["rank"]
+            p["score_breakdown"] = score_lookup[name]["breakdown"]
 
     community_dicts = [
         dataclasses.asdict(c) if dataclasses.is_dataclass(c) else c
@@ -265,8 +285,28 @@ async def _step_search_and_reviews(task: dict, artifacts: dict) -> str:
     # ── Relevance filtering ──
     products = _filter_relevant(products, query)
 
+    # ── Value scoring (pure Python, no LLM) ──
+    score_lookup: dict[str, dict] = {}
+    product_objs = [p for p in products if dataclasses.is_dataclass(p)]
+    if product_objs:
+        try:
+            from src.shopping.intelligence.value_scorer import score_products
+            scores = await score_products(product_objs)
+            for s in scores:
+                score_lookup[s["product_name"]] = s
+        except Exception as exc:
+            logger.warning("value_scorer failed, continuing without scores: %s", exc)
+
     # ── Product matching / deduplication ──
     products_dicts = await _match_and_flatten(products)
+
+    # ── Merge value scores into product dicts ──
+    for p in products_dicts:
+        name = p.get("name", "")
+        if name in score_lookup:
+            p["value_score"] = score_lookup[name]["value_score"]
+            p["value_rank"] = score_lookup[name]["rank"]
+            p["score_breakdown"] = score_lookup[name]["breakdown"]
 
     community_dicts = [
         dataclasses.asdict(c) if dataclasses.is_dataclass(c) else c
@@ -368,16 +408,13 @@ async def _step_format(task: dict, artifacts: dict) -> str:
         return "No results found. Try a more specific search."
 
     # ── Build formatted output directly ──
-    # The output formatters (format_recommendation_summary) expect a specific
-    # dict structure that doesn't map well to raw scraper data. Build the
-    # Telegram message directly — it's clearer and shows all available data.
-
     lines: list[str] = []
 
-    # ── Pick best product per source (trust site ranking order) ──
+    # ── Pick best product per source, rank by value_score ──
     # Each site returns its most relevant result first.  Take the #1
-    # result from each source, then pick the "winner" as the one with
-    # the highest price (main product, not accessories/spare parts).
+    # result from each source, then rank by value_score (composite of
+    # price, rating, seller, shipping, warranty).  Falls back to
+    # highest-price heuristic when scores are unavailable.
     best_per_source: dict[str, dict] = {}
     for p in products:
         src = p.get("source", "")
@@ -386,19 +423,26 @@ async def _step_format(task: dict, artifacts: dict) -> str:
 
     top_products = list(best_per_source.values())
 
-    # Sort by price descending — the actual product is typically the
-    # most expensive among top-per-source results (spare parts are cheap).
-    priced_tops = sorted(
-        [p for p in top_products if p.get("original_price") or p.get("discounted_price")],
-        key=lambda p: p.get("discounted_price") or p.get("original_price") or 0,
-        reverse=True,
-    )
+    has_scores = any(p.get("value_score") for p in top_products)
+    priced_tops = [p for p in top_products if p.get("original_price") or p.get("discounted_price")]
+
+    if has_scores:
+        # Rank by value_score descending (best value first)
+        priced_tops.sort(key=lambda p: p.get("value_score", 0), reverse=True)
+    else:
+        # Fallback: highest price first (main product vs spare parts)
+        priced_tops.sort(
+            key=lambda p: p.get("discounted_price") or p.get("original_price") or 0,
+            reverse=True,
+        )
 
     if priced_tops:
         best = priced_tops[0]
         best_price = best.get("discounted_price") or best.get("original_price")
+        score = best.get("value_score")
+        score_str = f"  ({score:.0f}/100)" if score else ""
         lines.append(
-            f"🏆 *{best.get('name', '')}*\n"
+            f"🏆 *{best.get('name', '')}*{score_str}\n"
             f"   💰 {format_price(best_price)} — {best.get('source', '')}"
         )
         if best.get("url"):
@@ -411,7 +455,31 @@ async def _step_format(task: dict, artifacts: dict) -> str:
             rc_str = f" ({review_count} değerlendirme)" if review_count else ""
             lines.append(f"   {stars} {best['rating']}/5{rc_str}")
 
-        # Other sources — show their #1 result price
+        # Installment info for winner
+        try:
+            from src.shopping.intelligence.installment_calculator import calculate_installments
+            best_source = best.get("source", "")
+            if best_price and best_source:
+                installments = await calculate_installments(best_price, best_source)
+                # Show best faizsiz option (longest interest-free term)
+                faizsiz = [i for i in installments if i.get("is_faizsiz") and i["tier"] > 1]
+                if faizsiz:
+                    best_inst = max(faizsiz, key=lambda i: i["tier"])
+                    lines.append(
+                        f"   💳 {best_inst['tier']} ay x {format_price(best_inst['monthly_payment'])} (faizsiz)"
+                    )
+                else:
+                    # Show cheapest non-peşin option
+                    non_pesin = [i for i in installments if i["tier"] > 1]
+                    if non_pesin:
+                        cheapest = non_pesin[0]
+                        lines.append(
+                            f"   💳 {cheapest['tier']} ay x {format_price(cheapest['monthly_payment'])}"
+                        )
+        except Exception as exc:
+            logger.debug("installment calc failed for winner: %s", exc)
+
+        # Other sources — show their #1 result price + score
         others = [p for p in priced_tops[1:] if p.get("source") != best.get("source")]
         if others:
             lines.append("\n📍 *Diğer Fiyatlar:*")
@@ -425,7 +493,9 @@ async def _step_format(task: dict, artifacts: dict) -> str:
                 src = p.get("source", "?")
                 url = p.get("url", "")
                 url_str = f"  {url}" if url else ""
-                lines.append(f"  • {src} — {price_str}{url_str}")
+                p_score = p.get("value_score")
+                score_tag = f" [{p_score:.0f}]" if p_score else ""
+                lines.append(f"  • {src} — {price_str}{score_tag}{url_str}")
     else:
         # Products found but no prices
         top = products[0]

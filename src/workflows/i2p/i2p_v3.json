@@ -2398,7 +2398,8 @@
       "input_artifacts": [
         "requirements_spec_summary",
         "nfr_scalability",
-        "nfr_performance"
+        "nfr_performance",
+        "conflict_resolutions"
       ],
       "output_artifacts": [
         "architecture_pattern_decision"
@@ -2986,7 +2987,9 @@
         "caching_strategy",
         "file_storage_design",
         "email_system_design",
-        "search_system_design"
+        "search_system_design",
+        "background_job_design",
+        "realtime_design"
       ],
       "output_artifacts": [
         "backend_design_compilation"
@@ -3557,7 +3560,10 @@
         "screen_specifications",
         "interaction_spec",
         "responsive_spec",
-        "accessibility_spec"
+        "accessibility_spec",
+        "user_flow_auth",
+        "user_flow_settings",
+        "brand_identity"
       ],
       "output_artifacts": [
         "design_handoff"
@@ -4390,7 +4396,8 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "staging_deployment_verified"
+        "staging_deployment_verified",
+        "sprint_0_plan"
       ],
       "output_artifacts": [
         "sprint_0_smoke_result"
@@ -4533,7 +4540,8 @@
       "input_artifacts": [
         "sprint_plans",
         "work_breakdown",
-        "dependency_graph"
+        "dependency_graph",
+        "sprint_0_review_result"
       ],
       "output_artifacts": [
         "implementation_backlog"
@@ -6310,7 +6318,8 @@
       "may_need_clarification": false,
       "input_artifacts": [
         "scalability_plan",
-        "openapi_spec"
+        "openapi_spec",
+        "stress_test_results"
       ],
       "output_artifacts": [
         "autoscaling_config",
@@ -6355,7 +6364,8 @@
       "input_artifacts": [
         "implementation_backlog",
         "performance_test_scripts",
-        "nfr_performance"
+        "nfr_performance",
+        "a11y_scan_results"
       ],
       "output_artifacts": [
         "final_regression_results",
@@ -6593,7 +6603,8 @@
         "production_security_scan",
         "email_deliverability_results",
         "backup_verification",
-        "rollback_verification"
+        "rollback_verification",
+        "security_retest_results"
       ],
       "output_artifacts": [
         "launch_go_no_go"
@@ -7586,7 +7597,8 @@
         "openapi_spec",
         "database_schema",
         "screen_specifications",
-        "business_rules"
+        "business_rules",
+        "spike_results"
       ],
       "context_strategy": {
         "primary": [
@@ -7597,7 +7609,8 @@
         "reference": [
           "openapi_spec",
           "database_schema",
-          "design_handoff"
+          "design_handoff",
+          "spike_results"
         ],
         "full_only_if_needed": [
           "prd_final",

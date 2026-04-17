@@ -25,7 +25,21 @@ _registry: ModelRegistry | None = None
 
 
 def get_registry() -> ModelRegistry:
+    """Return the canonical model registry.
+
+    Prefers fatih_hoca's registry (populated by fatih_hoca.init() with
+    YAML + GGUF + variants).  Falls back to a local-only YAML registry
+    if fatih_hoca hasn't been initialized yet.
+    """
     global _registry
+    try:
+        import fatih_hoca
+        fh_reg = fatih_hoca._registry
+        if fh_reg is not None:
+            _registry = fh_reg
+            return fh_reg
+    except Exception:
+        pass
     if _registry is None:
         _registry = ModelRegistry()
         _registry.load()

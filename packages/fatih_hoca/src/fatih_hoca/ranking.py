@@ -68,9 +68,16 @@ def _failure_penalty(
     model: ModelInfo,
     failure_idx: dict[str, list[Failure]],
     all_failures: list[Failure],
+    snapshot: SystemSnapshot,
 ) -> tuple[float, bool, list[str]]:
     """
     Compute a multiplier (0-1) and exclusion flag for failure adaptation.
+
+    Rate-limit policy (narrowed 2026-04-17):
+    - Per-model 429 → penalize ONLY that litellm_name (0.3×).
+    - Provider-wide penalty (0.3× on siblings) applies ONLY when
+      snapshot.cloud[provider].consecutive_failures >= 3. This prevents
+      a single-model quota hit from poisoning healthy siblings.
 
     Returns (multiplier, exclude, reasons).
     """
@@ -92,16 +99,27 @@ def _failure_penalty(
         elif f.reason == "server_error":
             multiplier = min(multiplier, 0.3)
             reasons.append("fail_server_error")
+        elif f.reason == "rate_limit":
+            multiplier = min(multiplier, 0.3)
+            reasons.append("fail_rate_limit")
 
-    # Provider-level rate limit penalty — applies to all models from that provider
+    # Provider-wide rate-limit penalty: ONLY when the circuit breaker trips
+    # (consecutive_failures >= 3). Otherwise a single model's 429 does not
+    # poison its siblings.
     model_provider = model.provider
-    if model_provider:
-        for failure in all_failures:
-            if failure.reason == "rate_limit":
+    if model_provider and getattr(model, "location", None) == "cloud":
+        prov_state = snapshot.cloud.get(model_provider) if snapshot else None
+        consec = getattr(prov_state, "consecutive_failures", 0) if prov_state else 0
+        if consec >= 3:
+            for failure in all_failures:
+                if failure.reason != "rate_limit":
+                    continue
+                if failure.model == model.litellm_name:
+                    continue  # already counted as direct
                 fp = _provider_from_litellm(failure.model)
                 if fp == model_provider:
                     multiplier = min(multiplier, 0.3)
-                    reasons.append(f"fail_rate_limit({model_provider})")
+                    reasons.append(f"fail_provider_rate_limit({model_provider},consec={consec})")
                     break
 
     return multiplier, exclude, reasons
@@ -152,7 +170,7 @@ def rank_candidates(
         reasons: list[str] = []
 
         # ── Failure adaptation: exclude or penalize failed models ──
-        fail_mult, fail_exclude, fail_reasons = _failure_penalty(model, failure_idx, failures)
+        fail_mult, fail_exclude, fail_reasons = _failure_penalty(model, failure_idx, failures, snapshot)
         if fail_exclude:
             logger.debug(
                 "model excluded by failure adaptation: model=%s reasons=%s",

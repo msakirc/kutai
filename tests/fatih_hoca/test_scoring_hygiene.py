@@ -86,3 +86,61 @@ class TestPerfScoreFromTps:
         assert perf_reason is not None
         perf_val = float(perf_reason.split("=")[1])
         assert perf_val == 50.0, f"cloud model with no history should fall back to 50, got {perf_val}"
+
+
+class TestFailurePenaltyScope:
+    """A single model's 429 must not poison its provider siblings."""
+
+    def test_single_model_rate_limit_does_not_penalize_siblings(self):
+        from fatih_hoca.types import Failure
+        from nerd_herd.types import CloudProviderState
+
+        rate_limited = _make_model("groq-llama-70b",
+            {"reasoning": 7.0}, location="cloud",
+            provider="groq", litellm_name="groq/llama-3.3-70b",
+            path=None)
+        sibling = _make_model("groq-mixtral",
+            {"reasoning": 7.0}, location="cloud",
+            provider="groq", litellm_name="groq/mixtral-8x7b",
+            path=None)
+
+        reqs = ModelRequirements(primary_capability="reasoning", difficulty=5)
+        snap = SystemSnapshot()
+        snap.cloud["groq"] = CloudProviderState(provider="groq", consecutive_failures=0)
+
+        failures = [Failure(
+            model="groq/llama-3.3-70b",
+            reason="rate_limit",
+        )]
+
+        ranked = rank_candidates([rate_limited, sibling], reqs, snap, failures=failures)
+        by_name = {r.model.name: r for r in ranked}
+
+        sibling_reasons = by_name["groq-mixtral"].reasons
+        assert not any("rate_limit" in r.lower() for r in sibling_reasons), \
+            f"sibling should not be penalized for another model's 429, got reasons={sibling_reasons}"
+
+        rl_reasons = by_name["groq-llama-70b"].reasons
+        assert any("rate_limit" in r.lower() for r in rl_reasons), \
+            "rate-limited model must show rate_limit in reasons"
+
+    def test_provider_wide_penalty_applies_when_circuit_breaker_trips(self):
+        """When Nerd Herd reports consecutive_failures >= 3, treat as provider outage."""
+        from fatih_hoca.types import Failure
+        from nerd_herd.types import CloudProviderState
+
+        m1 = _make_model("groq-a", {"reasoning": 7.0}, location="cloud",
+                         provider="groq", litellm_name="groq/a", path=None)
+        m2 = _make_model("groq-b", {"reasoning": 7.0}, location="cloud",
+                         provider="groq", litellm_name="groq/b", path=None)
+
+        reqs = ModelRequirements(primary_capability="reasoning", difficulty=5)
+        snap = SystemSnapshot()
+        snap.cloud["groq"] = CloudProviderState(provider="groq", consecutive_failures=3)
+
+        failures = [Failure(model="groq/a", reason="rate_limit")]
+
+        ranked = rank_candidates([m1, m2], reqs, snap, failures=failures)
+        by_name = {r.model.name: r for r in ranked}
+        assert any("provider" in r.lower() for r in by_name["groq-b"].reasons), \
+            f"sibling should be penalized when circuit breaker shows provider outage, got {by_name['groq-b'].reasons}"

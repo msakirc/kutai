@@ -17,7 +17,7 @@ from ..infra.db import (
     store_memory, compute_task_hash,
     get_due_scheduled_tasks, update_scheduled_task,
     cancel_task, get_task, get_mission,
-    save_workspace_snapshot, release_task_locks, release_mission_locks,
+    release_task_locks, release_mission_locks,
 )
 from src.infra.logging_config import get_logger
 from .router import ModelCallFailed, get_kdv
@@ -35,11 +35,10 @@ from ..tools.workspace import (
     get_file_tree,
     get_mission_workspace,
     get_mission_workspace_relative,
-    compute_workspace_hashes,
 )
 from ..tools.git_ops import (
     git_commit, ensure_git_repo,
-    create_mission_branch, get_current_branch, get_commit_sha,
+    create_mission_branch,
 )
 from ..app.telegram_bot import TelegramInterface
 

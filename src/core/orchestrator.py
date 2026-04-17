@@ -1548,7 +1548,7 @@ class Orchestrator:
             is_workflow = task_ctx.get("is_workflow_step", False)
             try:
                 from ..security.risk_assessor import assess_risk, format_risk_assessment
-                risk = assess_risk(
+                risk = await assess_risk(
                     task_title=task.get("title", ""),
                     task_description=task.get("description", ""),
                 )

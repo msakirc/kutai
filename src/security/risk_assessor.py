@@ -39,7 +39,7 @@ _LOW_RISK_PATTERNS = [
 ]
 
 
-def assess_risk(task_title: str, task_description: str) -> dict:
+async def assess_risk(task_title: str, task_description: str) -> dict:
     """
     Assess task risk score and whether it needs human approval.
 

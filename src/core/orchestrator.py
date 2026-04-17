@@ -24,6 +24,7 @@ from .router import ModelCallFailed, get_kdv
 from .task_context import parse_context, set_context
 from .task_gates import run_gates
 from .mechanical.workspace_snapshot import snapshot_workspace
+import salako
 from .decisions import Cancel as GateCancel
 from .result_router import (
     route_result, Complete, SpawnSubtasks, RequestClarification,
@@ -672,6 +673,25 @@ class Orchestrator:
                 return
             task, agent_type, timeout_seconds = prepared
             title = task["title"]
+
+            # Mechanical executor path — route non-LLM tasks to salako before
+            # touching the LLM dispatch machinery. Mechanical tasks must never
+            # hit model selection or burn swap budget.
+            if task.get("executor") == "mechanical":
+                mech_action = await salako.run(task)
+                if mech_action.status == "completed":
+                    await update_task(
+                        task_id,
+                        status="completed",
+                        result=json.dumps(mech_action.result),
+                    )
+                else:
+                    await update_task(
+                        task_id,
+                        status="failed",
+                        error=mech_action.error or "mechanical action failed",
+                    )
+                return
 
             # Make workflow hook functions available for the dispatch and
             # result-handling code below (they were lazily imported inside the

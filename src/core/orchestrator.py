@@ -676,8 +676,17 @@ class Orchestrator:
 
             # Mechanical executor path — route non-LLM tasks to salako before
             # touching the LLM dispatch machinery. Mechanical tasks must never
-            # hit model selection or burn swap budget.
-            if task.get("executor") == "mechanical":
+            # hit model selection or burn swap budget. Triggers: either
+            # task["executor"] == "mechanical" (in-process tag) or
+            # agent_type == "mechanical" (survives the DB round-trip via
+            # the workflow engine — payload is stashed in context).
+            _ctx = parse_context(task)
+            _exec = task.get("executor") or _ctx.get("executor")
+            if _exec == "mechanical" or agent_type == "mechanical":
+                # Ensure payload is on the task dict for salako.run().
+                if "payload" not in task and "payload" in _ctx:
+                    task = dict(task)
+                    task["payload"] = _ctx["payload"]
                 mech_action = await salako.run(task)
                 if mech_action.status == "completed":
                     await update_task(

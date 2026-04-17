@@ -418,6 +418,18 @@ async def _step_search_and_reviews(task: dict, artifacts: dict) -> str:
     return json.dumps(result, default=str)
 
 
+async def _step_search_for_product(task: dict, artifacts: dict) -> str:
+    """Search step for product_research workflow.
+
+    Same search/filter/score/match logic as _step_search_and_reviews but
+    named distinctly so the workflow JSON can be read for its intent.
+    Reviews are fetched when a matching scraper exists; if the scraper
+    doesn't expose detailed reviews yet, the reviews field is an empty
+    list — the enrich step treats that as 'no data' gracefully.
+    """
+    return await _step_search_and_reviews(task, artifacts)
+
+
 async def _step_format(task: dict, artifacts: dict) -> str:
     """Format search results into a Telegram-ready message.
 
@@ -691,11 +703,129 @@ async def _step_clarify(task: dict, artifacts: dict) -> str | dict:
     }
 
 
+async def _step_enrich_product(task: dict, artifacts: dict) -> str:
+    """Deterministic enrichment for specific-product research.
+
+    Reads ``search_results``, attaches a ``cross_store_summary`` section
+    (store count, how many flagged as suspicious discounts, price spread),
+    and passes the product list through unchanged.  No LLM. No review
+    synthesis, delivery calculation, or timing — those are stubs until
+    scrapers provide the underlying data.
+    """
+    from src.shopping.intelligence.special.fake_discount_detector import (
+        check_cross_store_consistency,
+    )
+
+    raw = artifacts.get("search_results", "{}")
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            data = {}
+    else:
+        data = raw if isinstance(raw, dict) else {}
+
+    products = data.get("products", [])
+    community = data.get("community", [])
+    reviews = data.get("reviews", [])
+
+    prices_by_source: dict[str, float] = {}
+    for p in products:
+        src = p.get("source", "")
+        price = p.get("discounted_price") or p.get("original_price")
+        if src and price and src not in prices_by_source:
+            prices_by_source[src] = float(price)
+
+    consistency = check_cross_store_consistency(prices_by_source)
+    suspicious_count = sum(
+        1 for p in products if p.get("is_suspicious_discount")
+    )
+
+    cross_store_summary = {
+        "store_count": len(prices_by_source),
+        "suspicious_discount_count": suspicious_count,
+        "price_spread_pct": consistency.get("spread_pct", 0.0),
+        "cheapest_store": consistency.get("cheapest"),
+        "most_expensive_store": consistency.get("most_expensive"),
+        "notes": consistency.get("notes", []),
+    }
+
+    enriched = {
+        "products": products,
+        "community": community,
+        "reviews": reviews,
+        "cross_store_summary": cross_store_summary,
+        "product_count": data.get("product_count", len(products)),
+        "community_count": data.get("community_count", len(community)),
+    }
+    return json.dumps(enriched, default=str, ensure_ascii=False)
+
+
+async def _step_deliver_product_research(task: dict, artifacts: dict) -> str:
+    """Format enriched product research data for Telegram delivery.
+
+    Reuses _step_format but passes the enriched artifact in under the
+    ``search_results`` key so the existing formatter logic (winner,
+    others, community, reviews) runs unchanged. Adds a "fake discount"
+    callout when any products carry is_suspicious_discount=True.
+    """
+    enriched_raw = artifacts.get("enriched_product_data", "{}")
+    adapted = {
+        "search_results": enriched_raw,
+        "user_query": artifacts.get("user_query", ""),
+    }
+    base = await _step_format(task, adapted)
+
+    try:
+        data = json.loads(enriched_raw) if isinstance(enriched_raw, str) else enriched_raw
+    except (json.JSONDecodeError, ValueError):
+        data = {}
+    suspicious = [
+        p for p in data.get("products", [])
+        if p.get("is_suspicious_discount")
+    ]
+    if suspicious:
+        base += "\n\n⚠️ *Şüpheli İndirim:*\n"
+        for p in suspicious[:3]:
+            src = p.get("source", "?")
+            reason = p.get("discount_flag_reason", "")
+            base += f"  • {src}: {reason}\n"
+
+    return base
+
+
+async def _step_stub_disabled(task: dict, artifacts: dict) -> str:
+    """Placeholder for steps that depend on data scrapers don't provide yet.
+
+    Returns a neutral status=disabled artifact so downstream steps can
+    check and skip. When scrapers improve (review text, price history,
+    shipping fields), replace this handler with the real implementation.
+    """
+    context = task.get("context", {}) if isinstance(task, dict) else {}
+    step_name = context.get("step_name", "unknown") if isinstance(context, dict) else "unknown"
+    return json.dumps({
+        "status": "disabled",
+        "step": step_name,
+        "reason": "Scraper data insufficient — this module activates when "
+                  "scrapers populate review text / shipping fields / price history.",
+    }, ensure_ascii=False)
+
+
 _STEP_HANDLERS = {
+    # quick_search
     "execute_product_search": _step_search,
     "format_and_deliver": _step_format,
+    # shopping (full category/discovery workflow)
     "search_and_collect_reviews": _step_search_and_reviews,
     "understand_query_check_clarity": _step_analyze_query,
+    # product_research (specific product workflow — NEW)
+    "search_for_product": _step_search_for_product,
+    "enrich_product_results": _step_enrich_product,
+    "deliver_product_research": _step_deliver_product_research,
+    # product_research stubs — scaffolded, activate when scrapers improve
+    "synthesize_product_reviews": _step_stub_disabled,
+    "compare_delivery_options": _step_stub_disabled,
+    "advise_buy_timing": _step_stub_disabled,
 }
 
 

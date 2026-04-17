@@ -656,6 +656,257 @@ class Orchestrator:
 
         return task, agent_type, timeout_seconds
 
+    async def _dispatch(self, task: dict, agent_type: str, timeout_seconds: int):
+        """Run the agent/pipeline under a timeout; recover partial results and
+        route timeouts through retry/DLQ.
+
+        Returns the agent's result dict on success.  Returns None if a timeout
+        occurred and was fully handled (caller must stop processing the task).
+        """
+        from ..workflows.engine.hooks import is_workflow_step
+
+        task_id = task["id"]
+        title = task["title"]
+
+        if agent_type == "pipeline":
+            from ..workflows.pipeline import CodingPipeline
+            pipeline = CodingPipeline()
+            logger.info("delegating to pipeline", task_id=task_id)
+            coro = pipeline.run(task)
+        elif agent_type == "shopping_pipeline":
+            from ..workflows.shopping.pipeline import ShoppingPipeline
+            pipeline = ShoppingPipeline()
+            logger.info("delegating to shopping pipeline", task_id=task_id)
+            coro = pipeline.run(task)
+        else:
+            agent = get_agent(agent_type)
+            logger.info(
+                "agent dispatched",
+                task_id=task_id,
+                agent_name=agent.name,
+                agent_type=agent_type,
+                tier=task.get('tier', 'auto'),
+                timeout_seconds=timeout_seconds,
+            )
+            # Phase 4.6: Wire progress streaming
+            _task_start_time = time.time()
+
+            _attempt_num = (task.get("worker_attempts") or 0) + 1
+
+            async def _progress_cb(tid, iteration, max_iter, summary):
+                if self.telegram:
+                    elapsed = int(time.time() - _task_start_time)
+                    attempt_tag = f" | attempt {_attempt_num}" if _attempt_num > 1 else ""
+                    msg = (
+                        f"\U0001f504 *Task #{tid}* — iteration {iteration}/{max_iter} ({elapsed}s elapsed{attempt_tag})\n"
+                        f"{summary[:200]}"
+                    )
+                    try:
+                        await self.telegram.send_notification(msg)
+                    except Exception:
+                        pass
+
+            # Send "task started" notification
+            try:
+                task_ctx = parse_context(task)
+                if not task_ctx.get("silent"):
+                    chat_id = task_ctx.get("chat_id")
+                    if chat_id and hasattr(self, 'telegram') and self.telegram:
+                        await self.telegram.app.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"\U0001f680 Task #{task['id']} assigned to {agent_type}, starting...",
+                        )
+            except Exception:
+                pass
+
+            agent._task_timeout = timeout_seconds
+            coro = agent.execute(task, progress_callback=_progress_cb)
+
+        # Wrap with timeout
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            timeout_err = f"TimeoutError: Task timed out after {timeout_seconds}s"
+            logger.error("task timeout", task_id=task_id, timeout_seconds=timeout_seconds, error=timeout_err)
+
+            # Try to recover partial results from the last checkpoint
+            # before marking the task as failed.
+            partial_result = None
+            try:
+                from src.infra.db import load_task_checkpoint
+                checkpoint = await load_task_checkpoint(task_id)
+                if checkpoint:
+                    last_messages = checkpoint.get("messages", [])
+                    iter_num = checkpoint.get("iteration", "?")
+                    # Strategy 1: look for assistant final_answer that
+                    # was produced but not yet returned (agent timed out
+                    # between producing the answer and returning it).
+                    for msg in reversed(last_messages):
+                        if msg.get("role") == "assistant" and msg.get("content"):
+                            c = msg["content"]
+                            # Quick check for final_answer JSON
+                            if "final_answer" in c and len(c) > 100:
+                                try:
+                                    _p = json.loads(c)
+                                    partial_result = _p.get("result", c)[:8000]
+                                except (json.JSONDecodeError, TypeError):
+                                    partial_result = c[:8000]
+                                break
+                    # Strategy 2: last substantial assistant message
+                    # (the LLM's reasoning or partial answer — far more
+                    # useful than raw tool output).
+                    if not partial_result:
+                        for msg in reversed(last_messages):
+                            if msg.get("role") == "assistant" and len(msg.get("content", "")) > 100:
+                                partial_result = msg["content"][:8000]
+                                break
+                    # Strategy 3: last tool result (user message echoing
+                    # a tool's output — last resort, often just a search
+                    # cache snippet that's not useful as a result).
+                    if not partial_result:
+                        for msg in reversed(last_messages):
+                            if msg.get("role") == "user" and "Tool Result" in msg.get("content", ""):
+                                partial_result = msg["content"][:8000]
+                                break
+
+                    if partial_result:
+                        logger.info(f"[Task #{task_id}] Timeout recovery: using checkpoint from iteration {iter_num}")
+                        result_text = f"(Partial result from iteration {iter_num} before timeout)\n\n{partial_result}"
+
+                        # For workflow steps, don't mark partial results
+                        # as completed — they bypass the post-hook and
+                        # poison downstream tasks with garbage.  Let them
+                        # fail and go through normal retry/DLQ.
+                        task_ctx = parse_context(task)
+
+                        if is_workflow_step(task_ctx):
+                            logger.warning(
+                                f"[Task #{task_id}] Timeout recovery: "
+                                f"workflow step — failing instead of "
+                                f"completing with partial result"
+                            )
+                            # Fall through to the failed path below
+                        else:
+                            task_ctx["partial"] = True
+                            await update_task(
+                                task_id, status="completed",
+                                result=result_text,
+                                context=json.dumps(task_ctx),
+                            )
+                            await self.telegram.send_result(task_id, title, result_text, "timeout-recovery", 0,
+                                                            mission_id=task.get("mission_id"))
+                            return None
+            except Exception as recovery_err:
+                logger.debug(f"[Task #{task_id}] Checkpoint recovery failed: {recovery_err}")
+
+            # Roll back the checkpoint iteration counter so the retry
+            # gets more than 1 shot.  Keep messages intact — the partial
+            # output from the interrupted generation is valuable (often
+            # 6-7k of 8k chars done) and the next attempt can finish it
+            # quickly instead of regenerating from scratch.
+            try:
+                from src.infra.db import load_task_checkpoint, save_task_checkpoint
+                cp = await load_task_checkpoint(task_id)
+                if cp:
+                    old_iter = cp.get("iteration", 0)
+                    new_iter = max(old_iter - 2, 0)
+                    cp["iteration"] = new_iter
+                    await save_task_checkpoint(task_id, cp)
+                    logger.info(
+                        f"[Task #{task_id}] Timeout: rolled back checkpoint "
+                        f"iteration {old_iter}→{new_iter}, "
+                        f"{len(cp.get('messages', []))} messages preserved"
+                    )
+            except Exception:
+                pass
+
+            # Use the same retry/DLQ pipeline as other failure paths
+            task_ctx = parse_context(task)
+
+            # Inject partial output so next attempt can continue
+            if partial_result:
+                task_ctx["_prev_output"] = partial_result[:6000]
+                task_ctx["_timeout_hint"] = (
+                    "Your previous attempt timed out while generating "
+                    "a large output. Your partial work is shown in the "
+                    "context. CONTINUE from where you left off — do NOT "
+                    "start over. If the output is too large for one "
+                    "write_file call, break it into sections."
+                )
+
+            from src.core.retry import RetryContext
+            retry_ctx = RetryContext.from_task(task)
+            decision = retry_ctx.record_failure("timeout")
+
+            # ── Bonus attempt: if terminal but task made real progress,
+            # grant one more try instead of DLQ.  The timeout is a safety
+            # net, not a quality judgment — if the agent was productive
+            # (wrote files, completed iterations), let it finish.
+            _MAX_BONUS_ATTEMPTS = 2  # hard cap on bonus attempts per task lifetime
+            if decision.action == "terminal":
+                bonus_granted = False
+                bonus_count = task_ctx.get("_bonus_count", 0)
+                if bonus_count < _MAX_BONUS_ATTEMPTS:
+                    try:
+                        progress = await self._assess_timeout_progress(
+                            task_id, task_ctx
+                        )
+                        if progress >= 0.5:
+                            bonus_granted = True
+                            task_ctx["_bonus_count"] = bonus_count + 1
+                            retry_ctx.max_worker_attempts += 1
+                            decision = retry_ctx.record_failure("timeout")
+                            logger.info(
+                                f"[Task #{task_id}] Bonus attempt granted "
+                                f"({bonus_count + 1}/{_MAX_BONUS_ATTEMPTS}, "
+                                f"progress={progress:.0%})"
+                            )
+                    except Exception:
+                        pass
+
+            if decision.action == "terminal":
+                task_ctx.update(retry_ctx.to_context_patch())
+                await update_task(
+                    task_id, status="failed",
+                    error=timeout_err,
+                    context=json.dumps(task_ctx),
+                    **retry_ctx.to_db_fields(),
+                )
+                try:
+                    from src.infra.dead_letter import quarantine_task
+                    await quarantine_task(
+                        task_id=task_id,
+                        mission_id=task.get("mission_id"),
+                        error=f"Timeout after {retry_ctx.worker_attempts} worker attempts: {timeout_err}",
+                        error_category="timeout",
+                        original_agent=agent_type,
+                        attempts_snapshot=retry_ctx.worker_attempts,
+                    )
+                except Exception:
+                    pass
+                await self.telegram.send_notification(
+                    f"❌ Task #{task_id} timeout → DLQ\n"
+                    f"**{title[:60]}**\n"
+                    f"Failed {retry_ctx.worker_attempts} worker attempts"
+                )
+            else:
+                next_retry = None
+                if decision.action == "delayed":
+                    next_retry = to_db(
+                        utc_now() + timedelta(seconds=decision.delay_seconds)
+                    )
+                retry_ctx.next_retry_at = next_retry
+                task_ctx.update(retry_ctx.to_context_patch())
+                await update_task(
+                    task_id, status="pending",
+                    error=timeout_err,
+                    context=json.dumps(task_ctx),
+                    **retry_ctx.to_db_fields(),
+                )
+                await self.telegram.send_error(task_id, title,
+                    f"{timeout_err} (worker-retry {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts})")
+            return None  # timeout fully handled; caller must stop
+
     async def process_task(self, task: dict):
         """Process a single task through the appropriate agent with context injection."""
         task_id = task["id"]
@@ -673,249 +924,10 @@ class Orchestrator:
             task, agent_type, timeout_seconds = prepared
             title = task["title"]
 
-            # Make workflow hook functions available for the dispatch and
-            # result-handling code below (they were lazily imported inside the
-            # old process_task prefix; _prepare owns that import now).
-            from ..workflows.engine.hooks import post_execute_workflow_step, is_workflow_step
-
-            if agent_type == "pipeline":
-                from ..workflows.pipeline import CodingPipeline
-                pipeline = CodingPipeline()
-                logger.info("delegating to pipeline", task_id=task_id)
-                coro = pipeline.run(task)
-            elif agent_type == "shopping_pipeline":
-                from ..workflows.shopping.pipeline import ShoppingPipeline
-                pipeline = ShoppingPipeline()
-                logger.info("delegating to shopping pipeline", task_id=task_id)
-                coro = pipeline.run(task)
-            else:
-                agent = get_agent(agent_type)
-                logger.info(
-                    "agent dispatched",
-                    task_id=task_id,
-                    agent_name=agent.name,
-                    agent_type=agent_type,
-                    tier=task.get('tier', 'auto'),
-                    timeout_seconds=timeout_seconds,
-                )
-                # Phase 4.6: Wire progress streaming
-                _task_start_time = time.time()
-
-                _attempt_num = (task.get("worker_attempts") or 0) + 1
-
-                async def _progress_cb(tid, iteration, max_iter, summary):
-                    if self.telegram:
-                        elapsed = int(time.time() - _task_start_time)
-                        attempt_tag = f" | attempt {_attempt_num}" if _attempt_num > 1 else ""
-                        msg = (
-                            f"\U0001f504 *Task #{tid}* — iteration {iteration}/{max_iter} ({elapsed}s elapsed{attempt_tag})\n"
-                            f"{summary[:200]}"
-                        )
-                        try:
-                            await self.telegram.send_notification(msg)
-                        except Exception:
-                            pass
-
-                # Send "task started" notification
-                try:
-                    task_ctx = parse_context(task)
-                    if not task_ctx.get("silent"):
-                        chat_id = task_ctx.get("chat_id")
-                        if chat_id and hasattr(self, 'telegram') and self.telegram:
-                            await self.telegram.app.bot.send_message(
-                                chat_id=chat_id,
-                                text=f"\U0001f680 Task #{task['id']} assigned to {agent_type}, starting...",
-                            )
-                except Exception:
-                    pass
-
-                agent._task_timeout = timeout_seconds
-                coro = agent.execute(task, progress_callback=_progress_cb)
-
-            # Wrap with timeout
-            try:
-                result = await asyncio.wait_for(coro, timeout=timeout_seconds)
-            except asyncio.TimeoutError:
-                timeout_err = f"TimeoutError: Task timed out after {timeout_seconds}s"
-                logger.error("task timeout", task_id=task_id, timeout_seconds=timeout_seconds, error=timeout_err)
-
-                # Try to recover partial results from the last checkpoint
-                # before marking the task as failed.
-                partial_result = None
-                try:
-                    from src.infra.db import load_task_checkpoint
-                    checkpoint = await load_task_checkpoint(task_id)
-                    if checkpoint:
-                        last_messages = checkpoint.get("messages", [])
-                        iter_num = checkpoint.get("iteration", "?")
-                        # Strategy 1: look for assistant final_answer that
-                        # was produced but not yet returned (agent timed out
-                        # between producing the answer and returning it).
-                        for msg in reversed(last_messages):
-                            if msg.get("role") == "assistant" and msg.get("content"):
-                                c = msg["content"]
-                                # Quick check for final_answer JSON
-                                if "final_answer" in c and len(c) > 100:
-                                    try:
-                                        _p = json.loads(c)
-                                        partial_result = _p.get("result", c)[:8000]
-                                    except (json.JSONDecodeError, TypeError):
-                                        partial_result = c[:8000]
-                                    break
-                        # Strategy 2: last substantial assistant message
-                        # (the LLM's reasoning or partial answer — far more
-                        # useful than raw tool output).
-                        if not partial_result:
-                            for msg in reversed(last_messages):
-                                if msg.get("role") == "assistant" and len(msg.get("content", "")) > 100:
-                                    partial_result = msg["content"][:8000]
-                                    break
-                        # Strategy 3: last tool result (user message echoing
-                        # a tool's output — last resort, often just a search
-                        # cache snippet that's not useful as a result).
-                        if not partial_result:
-                            for msg in reversed(last_messages):
-                                if msg.get("role") == "user" and "Tool Result" in msg.get("content", ""):
-                                    partial_result = msg["content"][:8000]
-                                    break
-
-                        if partial_result:
-                            logger.info(f"[Task #{task_id}] Timeout recovery: using checkpoint from iteration {iter_num}")
-                            result_text = f"(Partial result from iteration {iter_num} before timeout)\n\n{partial_result}"
-
-                            # For workflow steps, don't mark partial results
-                            # as completed — they bypass the post-hook and
-                            # poison downstream tasks with garbage.  Let them
-                            # fail and go through normal retry/DLQ.
-                            task_ctx = parse_context(task)
-
-                            if is_workflow_step(task_ctx):
-                                logger.warning(
-                                    f"[Task #{task_id}] Timeout recovery: "
-                                    f"workflow step — failing instead of "
-                                    f"completing with partial result"
-                                )
-                                # Fall through to the failed path below
-                            else:
-                                task_ctx["partial"] = True
-                                await update_task(
-                                    task_id, status="completed",
-                                    result=result_text,
-                                    context=json.dumps(task_ctx),
-                                )
-                                await self.telegram.send_result(task_id, title, result_text, "timeout-recovery", 0,
-                                                                mission_id=task.get("mission_id"))
-                                return
-                except Exception as recovery_err:
-                    logger.debug(f"[Task #{task_id}] Checkpoint recovery failed: {recovery_err}")
-
-                # Roll back the checkpoint iteration counter so the retry
-                # gets more than 1 shot.  Keep messages intact — the partial
-                # output from the interrupted generation is valuable (often
-                # 6-7k of 8k chars done) and the next attempt can finish it
-                # quickly instead of regenerating from scratch.
-                try:
-                    from src.infra.db import load_task_checkpoint, save_task_checkpoint
-                    cp = await load_task_checkpoint(task_id)
-                    if cp:
-                        old_iter = cp.get("iteration", 0)
-                        new_iter = max(old_iter - 2, 0)
-                        cp["iteration"] = new_iter
-                        await save_task_checkpoint(task_id, cp)
-                        logger.info(
-                            f"[Task #{task_id}] Timeout: rolled back checkpoint "
-                            f"iteration {old_iter}→{new_iter}, "
-                            f"{len(cp.get('messages', []))} messages preserved"
-                        )
-                except Exception:
-                    pass
-
-                # Use the same retry/DLQ pipeline as other failure paths
-                task_ctx = parse_context(task)
-
-                # Inject partial output so next attempt can continue
-                if partial_result:
-                    task_ctx["_prev_output"] = partial_result[:6000]
-                    task_ctx["_timeout_hint"] = (
-                        "Your previous attempt timed out while generating "
-                        "a large output. Your partial work is shown in the "
-                        "context. CONTINUE from where you left off — do NOT "
-                        "start over. If the output is too large for one "
-                        "write_file call, break it into sections."
-                    )
-
-                from src.core.retry import RetryContext
-                retry_ctx = RetryContext.from_task(task)
-                decision = retry_ctx.record_failure("timeout")
-
-                # ── Bonus attempt: if terminal but task made real progress,
-                # grant one more try instead of DLQ.  The timeout is a safety
-                # net, not a quality judgment — if the agent was productive
-                # (wrote files, completed iterations), let it finish.
-                _MAX_BONUS_ATTEMPTS = 2  # hard cap on bonus attempts per task lifetime
-                if decision.action == "terminal":
-                    bonus_granted = False
-                    bonus_count = task_ctx.get("_bonus_count", 0)
-                    if bonus_count < _MAX_BONUS_ATTEMPTS:
-                        try:
-                            progress = await self._assess_timeout_progress(
-                                task_id, task_ctx
-                            )
-                            if progress >= 0.5:
-                                bonus_granted = True
-                                task_ctx["_bonus_count"] = bonus_count + 1
-                                retry_ctx.max_worker_attempts += 1
-                                decision = retry_ctx.record_failure("timeout")
-                                logger.info(
-                                    f"[Task #{task_id}] Bonus attempt granted "
-                                    f"({bonus_count + 1}/{_MAX_BONUS_ATTEMPTS}, "
-                                    f"progress={progress:.0%})"
-                                )
-                        except Exception:
-                            pass
-
-                if decision.action == "terminal":
-                    task_ctx.update(retry_ctx.to_context_patch())
-                    await update_task(
-                        task_id, status="failed",
-                        error=timeout_err,
-                        context=json.dumps(task_ctx),
-                        **retry_ctx.to_db_fields(),
-                    )
-                    try:
-                        from src.infra.dead_letter import quarantine_task
-                        await quarantine_task(
-                            task_id=task_id,
-                            mission_id=task.get("mission_id"),
-                            error=f"Timeout after {retry_ctx.worker_attempts} worker attempts: {timeout_err}",
-                            error_category="timeout",
-                            original_agent=agent_type,
-                            attempts_snapshot=retry_ctx.worker_attempts,
-                        )
-                    except Exception:
-                        pass
-                    await self.telegram.send_notification(
-                        f"❌ Task #{task_id} timeout → DLQ\n"
-                        f"**{title[:60]}**\n"
-                        f"Failed {retry_ctx.worker_attempts} worker attempts"
-                    )
-                else:
-                    next_retry = None
-                    if decision.action == "delayed":
-                        next_retry = to_db(
-                            utc_now() + timedelta(seconds=decision.delay_seconds)
-                        )
-                    retry_ctx.next_retry_at = next_retry
-                    task_ctx.update(retry_ctx.to_context_patch())
-                    await update_task(
-                        task_id, status="pending",
-                        error=timeout_err,
-                        context=json.dumps(task_ctx),
-                        **retry_ctx.to_db_fields(),
-                    )
-                    await self.telegram.send_error(task_id, title,
-                        f"{timeout_err} (worker-retry {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts})")
-                return  # timeout fully handled above — don't fall through
+            result = await self._dispatch(task, agent_type, timeout_seconds)
+            if result is None:
+                return  # timeout handler in _dispatch fully consumed the task
+            task_ctx = parse_context(task)
 
             status = result.get("status", "completed")
 

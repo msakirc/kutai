@@ -75,10 +75,11 @@ class TestPrevOutputInjection:
         import inspect
         from src.core.orchestrator import Orchestrator
         from src.core import result_guards
-        inline = inspect.getsource(Orchestrator.process_task)
+        # Timeout path lives in Orchestrator._dispatch after the refactor
+        dispatch_src = inspect.getsource(Orchestrator._dispatch)
         guards = inspect.getsource(result_guards)
-        assert inline.count('"_prev_output"') >= 1, \
-            "timeout path must inject _prev_output"
+        assert dispatch_src.count('"_prev_output"') >= 1, \
+            "timeout path in _dispatch must inject _prev_output"
         # Disguised-failure flow (shared by completed + ungraded post-hook)
         assert guards.count('"_prev_output"') >= 1, \
             "result_guards must inject _prev_output for disguised failures"

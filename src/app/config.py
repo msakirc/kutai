@@ -18,7 +18,15 @@ TELEGRAM_ADMIN_CHAT_ID = os.getenv("TELEGRAM_ADMIN_CHAT_ID")
 
 # ─── Core Settings ───────────────────────────────────────────────────────────
 
-DB_PATH = os.getenv("DB_PATH", "orchestrator.db")
+# DB_PATH must be absolute so that any process — tests, CLIs, subprocesses that
+# don't load .env — all resolve to the same database. A relative default would
+# silently fork the DB into the caller's cwd.
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+DB_PATH = os.getenv("DB_PATH") or os.path.join(_PROJECT_ROOT, "data", "kutai.db")
+if not os.path.isabs(DB_PATH):
+    raise RuntimeError(
+        f"DB_PATH must be absolute to prevent forked databases; got {DB_PATH!r}"
+    )
 
 WORKSPACE_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "workspace")

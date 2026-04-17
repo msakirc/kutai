@@ -1296,95 +1296,7 @@ class Orchestrator:
             elif status == "needs_review":
                 await self._handle_review(task, result)
             elif status == "exhausted":
-                exhaustion_reason = result.get("exhaustion_reason", "budget")
-                exhaustion_guard_burns = result.get("guard_burns", 0)
-                useful_iters = result.get("useful_iterations", 0)
-
-                logger.warning(
-                    "exhausted",
-                    task_id=task_id,
-                    reason=exhaustion_reason,
-                    guards=exhaustion_guard_burns,
-                    useful=useful_iters,
-                )
-
-                from src.core.retry import RetryContext
-                retry_ctx = RetryContext.from_task(task)
-
-                # Reason-aware retry
-                if exhaustion_reason == "budget" and retry_ctx.worker_attempts < 2:
-                    # First budget exhaustion — retry with more iterations
-                    task_ctx["iteration_budget_boost"] = 1.5
-                    retry_ctx.worker_attempts += 1
-                    if result.get("model"):
-                        if result["model"] not in retry_ctx.failed_models:
-                            retry_ctx.failed_models.append(result["model"])
-                    task_ctx.update(retry_ctx.to_context_patch())
-                    await update_task(
-                        task_id, status="pending",
-                        context=json.dumps(task_ctx),
-                        **retry_ctx.to_db_fields(),
-                    )
-                    logger.info(
-                        "exhaustion budget retry",
-                        task_id=task_id,
-                        boost="1.5x",
-                    )
-
-                elif exhaustion_reason == "guards":
-                    # Guards ate budget — suppress on retry
-                    task_ctx["suppress_guards"] = True
-                    retry_ctx.worker_attempts += 1
-                    task_ctx.update(retry_ctx.to_context_patch())
-                    await update_task(
-                        task_id, status="pending",
-                        context=json.dumps(task_ctx),
-                        **retry_ctx.to_db_fields(),
-                    )
-                    logger.info(
-                        "exhaustion guards retry",
-                        task_id=task_id,
-                        suppress_guards=True,
-                    )
-
-                else:
-                    # tool_failures or repeated budget — standard quality retry
-                    decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
-                    if decision.action == "terminal":
-                        await update_task(
-                            task_id, status="failed",
-                            error=f"Exhausted after {retry_ctx.worker_attempts} attempts (reason={exhaustion_reason})",
-                            **retry_ctx.to_db_fields(),
-                        )
-                        try:
-                            from src.infra.dead_letter import quarantine_task
-                            await quarantine_task(
-                                task_id=task_id,
-                                mission_id=task.get("mission_id"),
-                                error=f"Iteration exhaustion ({exhaustion_reason})",
-                                error_category="quality",
-                                original_agent=task.get("agent_type", "executor"),
-                                attempts_snapshot=retry_ctx.worker_attempts,
-                            )
-                        except Exception:
-                            pass
-                        await self.telegram.send_notification(
-                            f"❌ Task #{task_id} exhaustion → DLQ\n"
-                            f"**{title[:60]}**\n"
-                            f"Reason: {exhaustion_reason}"
-                        )
-                    else:
-                        next_retry = None
-                        if decision.action == "delayed":
-                            next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
-                        retry_ctx.next_retry_at = next_retry
-                        retry_ctx.retry_reason = "quality"
-                        task_ctx.update(retry_ctx.to_context_patch())
-                        await update_task(
-                            task_id, status="pending",
-                            context=json.dumps(task_ctx),
-                            **retry_ctx.to_db_fields(),
-                        )
+                await self._handle_exhausted(task, result)
 
             elif status == "failed":
                 error_str = result.get("error", result.get("result", "Unknown error"))
@@ -2026,6 +1938,102 @@ class Orchestrator:
             logger.info(f"[Task #{task_id}] Sent to reviewer (Task #{review_task_id})")
         else:
             logger.info(f"[Task #{task_id}] Review task deduped, skipping")
+
+    async def _handle_exhausted(self, task, result):
+        """Verbatim move from process_task: iteration-exhaustion handling."""
+        task_id = task["id"]
+        title = task["title"]
+        task_ctx = parse_context(task)
+
+        exhaustion_reason = result.get("exhaustion_reason", "budget")
+        exhaustion_guard_burns = result.get("guard_burns", 0)
+        useful_iters = result.get("useful_iterations", 0)
+
+        logger.warning(
+            "exhausted",
+            task_id=task_id,
+            reason=exhaustion_reason,
+            guards=exhaustion_guard_burns,
+            useful=useful_iters,
+        )
+
+        from src.core.retry import RetryContext
+        retry_ctx = RetryContext.from_task(task)
+
+        # Reason-aware retry
+        if exhaustion_reason == "budget" and retry_ctx.worker_attempts < 2:
+            # First budget exhaustion — retry with more iterations
+            task_ctx["iteration_budget_boost"] = 1.5
+            retry_ctx.worker_attempts += 1
+            if result.get("model"):
+                if result["model"] not in retry_ctx.failed_models:
+                    retry_ctx.failed_models.append(result["model"])
+            task_ctx.update(retry_ctx.to_context_patch())
+            await update_task(
+                task_id, status="pending",
+                context=json.dumps(task_ctx),
+                **retry_ctx.to_db_fields(),
+            )
+            logger.info(
+                "exhaustion budget retry",
+                task_id=task_id,
+                boost="1.5x",
+            )
+
+        elif exhaustion_reason == "guards":
+            # Guards ate budget — suppress on retry
+            task_ctx["suppress_guards"] = True
+            retry_ctx.worker_attempts += 1
+            task_ctx.update(retry_ctx.to_context_patch())
+            await update_task(
+                task_id, status="pending",
+                context=json.dumps(task_ctx),
+                **retry_ctx.to_db_fields(),
+            )
+            logger.info(
+                "exhaustion guards retry",
+                task_id=task_id,
+                suppress_guards=True,
+            )
+
+        else:
+            # tool_failures or repeated budget — standard quality retry
+            decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
+            if decision.action == "terminal":
+                await update_task(
+                    task_id, status="failed",
+                    error=f"Exhausted after {retry_ctx.worker_attempts} attempts (reason={exhaustion_reason})",
+                    **retry_ctx.to_db_fields(),
+                )
+                try:
+                    from src.infra.dead_letter import quarantine_task
+                    await quarantine_task(
+                        task_id=task_id,
+                        mission_id=task.get("mission_id"),
+                        error=f"Iteration exhaustion ({exhaustion_reason})",
+                        error_category="quality",
+                        original_agent=task.get("agent_type", "executor"),
+                        attempts_snapshot=retry_ctx.worker_attempts,
+                    )
+                except Exception:
+                    pass
+                await self.telegram.send_notification(
+                    f"❌ Task #{task_id} exhaustion → DLQ\n"
+                    f"**{title[:60]}**\n"
+                    f"Reason: {exhaustion_reason}"
+                )
+            else:
+                next_retry = None
+                if decision.action == "delayed":
+                    next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
+                retry_ctx.next_retry_at = next_retry
+                retry_ctx.retry_reason = "quality"
+                task_ctx.update(retry_ctx.to_context_patch())
+                await update_task(
+                    task_id, status="pending",
+                    context=json.dumps(task_ctx),
+                    **retry_ctx.to_db_fields(),
+                )
 
     # ─── Mission Completion ───────────────────────────────────────────────
 

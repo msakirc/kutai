@@ -253,5 +253,29 @@ class TestReorderByModelAffinity(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# _handle_exhausted / _handle_failed method-existence regression tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestHandleExhaustedExists(unittest.TestCase):
+    """Plan A Task 1: regression — the exhausted handler must exist as a method."""
+
+    def test_handle_exhausted_is_method(self):
+        from src.core.orchestrator import Orchestrator
+        self.assertTrue(hasattr(Orchestrator, "_handle_exhausted"),
+                        "Orchestrator._handle_exhausted should be defined as a method")
+        self.assertTrue(asyncio.iscoroutinefunction(Orchestrator._handle_exhausted))
+
+
+class TestHandleFailedExists(unittest.TestCase):
+    """Plan A Task 2: regression — the failed handler must exist as a method."""
+
+    def test_handle_failed_is_method(self):
+        from src.core.orchestrator import Orchestrator
+        self.assertTrue(hasattr(Orchestrator, "_handle_failed"),
+                        "Orchestrator._handle_failed should be defined as a method")
+        self.assertTrue(asyncio.iscoroutinefunction(Orchestrator._handle_failed))
+
+
 if __name__ == "__main__":
     unittest.main()

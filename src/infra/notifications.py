@@ -12,7 +12,9 @@ Logging handlers for the Python logging system:
 
 import json
 import logging
+import logging.handlers
 import os
+import shutil
 import threading
 import time
 from datetime import datetime, timezone
@@ -33,11 +35,31 @@ _handler_error_logger = logging.getLogger("infra.notifications._internal")
 _handler_error_logger.propagate = False  # never re-enter ourselves
 
 
+def _safe_rotator(source: str, dest: str) -> None:
+    """Rename with retry — survives Dropbox/antivirus holding the file on Windows."""
+    for attempt in range(5):
+        try:
+            if os.path.exists(dest):
+                os.remove(dest)
+            os.rename(source, dest)
+            return
+        except PermissionError:
+            time.sleep(0.1 * (attempt + 1))
+    try:
+        shutil.copy2(source, dest)
+        with open(source, "w"):
+            pass
+    except Exception:
+        pass
+
+
 def _attach_file_sink():
     """Attach a bare file handler to the internal logger (called once)."""
-    import os
     os.makedirs("logs", exist_ok=True)
-    fh = logging.FileHandler("logs/notification_errors.log", encoding="utf-8")
+    fh = logging.handlers.RotatingFileHandler(
+        "logs/notification_errors.log", maxBytes=5_000_000,
+        backupCount=2, encoding="utf-8")
+    fh.rotator = _safe_rotator
     fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     _handler_error_logger.addHandler(fh)
     _handler_error_logger.setLevel(logging.WARNING)
@@ -55,7 +77,10 @@ _notification_logger.propagate = False
 def _attach_notification_file_sink():
     """Attach a JSON-line file handler to the notification file logger."""
     os.makedirs("logs", exist_ok=True)
-    fh = logging.FileHandler("logs/notifications.log", encoding="utf-8")
+    fh = logging.handlers.RotatingFileHandler(
+        "logs/notifications.log", maxBytes=10_000_000,
+        backupCount=3, encoding="utf-8")
+    fh.rotator = _safe_rotator
     fh.setFormatter(logging.Formatter("%(message)s"))  # raw JSON lines
     _notification_logger.addHandler(fh)
     _notification_logger.setLevel(logging.INFO)

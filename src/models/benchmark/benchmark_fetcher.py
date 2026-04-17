@@ -106,6 +106,34 @@ class BenchmarkCache:
         except Exception:
             return None
 
+    def load(self, source: str) -> Optional[dict]:
+        """Load cached data for a source. Returns None if missing, unreadable, or stale.
+
+        Unlike get_all_models(), this method emits a WARNING log when returning None
+        due to staleness (age > TTL), so callers know the cache expired rather than
+        being missing.
+        """
+        path = self.cache_dir / f"_bulk_{source}.json"
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text())
+            ts = data.get("timestamp", 0)
+            age_hours = (time.time() - ts) / 3600
+            if age_hours > CACHE_TTL_HOURS:
+                logger.warning(
+                    "benchmark cache stale: source=%s age=%.1fh ttl=%dh — returning None",
+                    source, age_hours, CACHE_TTL_HOURS,
+                )
+                return None
+            return data
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("benchmark cache unreadable: source=%s err=%s", source, e)
+            return None
+        except Exception as e:
+            logger.warning("benchmark cache error: source=%s err=%s", source, e)
+            return None
+
     def put_all_models(self, source: str, data: dict) -> None:
         data["timestamp"] = time.time()
         path = self.cache_dir / f"_bulk_{source}.json"

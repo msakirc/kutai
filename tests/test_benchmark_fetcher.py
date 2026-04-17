@@ -645,3 +645,43 @@ class TestAAThinkingPairs:
 
         assert "llama-3-3-70b" in result
         assert "llama-3-3-70b::thinking" not in result
+
+
+# --- BenchmarkCache Staleness -----------------------------------------------
+
+class TestBenchmarkCacheStaleness:
+    """Stale cache entries (age > TTL) must be purged, not served."""
+
+    def test_fresh_cache_loads_normally(self, tmp_path):
+        from src.models.benchmark.benchmark_fetcher import BenchmarkCache
+
+        cache_dir = tmp_path / "c"
+        cache_dir.mkdir()
+        p = cache_dir / "_bulk_source.json"
+        p.write_text(json.dumps({
+            "timestamp": time.time() - 60,  # 1 minute old
+            "models": {"m1": {"reasoning": 7.0}},
+        }))
+        cache = BenchmarkCache(cache_dir=cache_dir)
+        data = cache.load("source")
+        assert data is not None
+        assert "m1" in data.get("models", {})
+
+    def test_stale_cache_returns_none_with_warning(self, tmp_path, caplog):
+        from src.models.benchmark.benchmark_fetcher import BenchmarkCache, CACHE_TTL_HOURS
+        import logging
+
+        cache_dir = tmp_path / "c"
+        cache_dir.mkdir()
+        p = cache_dir / "_bulk_source.json"
+        stale_ts = time.time() - (CACHE_TTL_HOURS + 1) * 3600
+        p.write_text(json.dumps({
+            "timestamp": stale_ts,
+            "models": {"m1": {"reasoning": 7.0}},
+        }))
+        cache = BenchmarkCache(cache_dir=cache_dir)
+        with caplog.at_level(logging.WARNING):
+            data = cache.load("source")
+        assert data is None, "stale cache must not be served"
+        assert any("stale" in r.message.lower() for r in caplog.records), \
+            "must warn when returning None due to staleness"

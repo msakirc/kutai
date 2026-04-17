@@ -215,8 +215,11 @@ def rank_candidates(
         # Filtering low scorers risks zero candidates (worse than a
         # mediocre pick) and triggers unnecessary swaps.
 
-        cap_score = min(cap_score_raw * 10, 100)
-        reasons.append(f"cap={cap_score_raw:.1f}")
+        # cap_score_raw is a 0–10 weighted mean of per-dim 0–10 scores.
+        # Scale cleanly to 0–100 without a min() ceiling so that models scoring
+        # above 10 raw (possible when specialty weights exceed 1.0) preserve signal.
+        cap_score = cap_score_raw * 10.0
+        reasons.append(f"cap={cap_score_raw:.2f}")
         if effective_task:
             reasons.append(f"task={effective_task}")
 

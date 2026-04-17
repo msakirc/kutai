@@ -26,6 +26,208 @@
 
 ---
 
+## Task 0: Tighten telemetry write guard (emergency — Phase 1 regression)
+
+**Context:** During Phase 2a development, `model_pick_log` in `C:\Users\sakir\ai\kutai\kutai.db` was found polluted with ~184 rows of test-fixture model names (`a`, `b`, `good`, `alpha`, `thinker`, etc.). Root cause: `asyncio.create_task(_write())` in `_persist_pick_telemetry` schedules the DB write on the event loop. In tests, the write runs **after** `monkeypatch.setenv("DB_PATH", ...)` has reverted via fixture teardown. When it eventually runs, `os.getenv("DB_PATH")` reads the OS-level production value (set system-wide on this Windows host). The existing guard (`if "src.app.config" not in sys.modules: return`) doesn't help — OS env is set independently of module imports.
+
+**Consequence in production:** orchestrator picked a fake-path model from polluted telemetry → tried to load `/fake/a.gguf` → failed load → 5-min demotion → user saw `🟠 [ERROR] models.local_model_manager Failed to load a (demoted for 5 min)`. Polluted rows already purged; this task prevents recurrence.
+
+**Fix:** require explicit production opt-in via `enable_telemetry(db_path)`. Default `_telemetry_db_path = None` → skip write. Tests monkeypatch the module attribute directly.
+
+**Files:**
+- Modify: `packages/fatih_hoca/src/fatih_hoca/selector.py`
+- Modify: `src/app/run.py` (one-line opt-in at startup)
+- Modify: `tests/fatih_hoca/test_pick_telemetry.py` (new leak test + update existing)
+
+- [ ] **Step 1: Read current `_write` block**
+
+```bash
+sed -n '245,305p' packages/fatih_hoca/src/fatih_hoca/selector.py
+```
+
+- [ ] **Step 2: Write the failing leak test**
+
+Append to `tests/fatih_hoca/test_pick_telemetry.py`:
+
+```python
+@pytest.mark.asyncio
+async def test_telemetry_does_not_leak_when_os_env_has_db_path(tmp_path, monkeypatch):
+    """Repro for 2026-04-17 production pollution: OS-level DB_PATH must not
+    drive telemetry writes. Requires explicit enable_telemetry() opt-in."""
+    prod_db = tmp_path / "fake_production.db"
+    monkeypatch.setenv("DB_PATH", str(prod_db))
+
+    from src.infra.db import init_db
+    await init_db()
+
+    import fatih_hoca
+    from fatih_hoca.registry import ModelInfo, ModelRegistry
+    from fatih_hoca.selector import Selector
+
+    fatih_hoca._registry = None
+    fatih_hoca._selector = None
+    reg = ModelRegistry()
+    reg._models["leaky_fixture"] = ModelInfo(
+        name="leaky_fixture", location="local",
+        provider="llama_cpp", litellm_name="openai/leaky_fixture",
+        path="/fake/leaky_fixture.gguf",
+        total_params_b=8.0, active_params_b=8.0,
+        capabilities={c: 7.0 for c in ["reasoning","code_generation","analysis","instruction_adherence"]},
+    )
+
+    class _Nh:
+        def snapshot(self):
+            from nerd_herd.types import SystemSnapshot
+            return SystemSnapshot()
+    fatih_hoca._registry = reg
+    fatih_hoca._selector = Selector(registry=reg, nerd_herd=_Nh())
+
+    fatih_hoca.select(
+        task="coder", agent_type="coder", difficulty=5,
+        estimated_input_tokens=500, estimated_output_tokens=500,
+        call_category="main_work",
+    )
+
+    import asyncio
+    await asyncio.sleep(0.2)
+
+    import sqlite3
+    conn = sqlite3.connect(prod_db)
+    try:
+        cur = conn.execute(
+            "SELECT COUNT(*) FROM model_pick_log WHERE picked_model='leaky_fixture'"
+        )
+        count = cur.fetchone()[0]
+    finally:
+        conn.close()
+
+    assert count == 0, (
+        f"telemetry leaked: {count} rows. tests must not write without "
+        f"explicit enable_telemetry() opt-in."
+    )
+```
+
+- [ ] **Step 3: Run the test — expect FAIL**
+
+```bash
+cd ".worktrees/fatih-hoca-phase2a" && source ../../.venv/Scripts/activate
+timeout 30 python -m pytest tests/fatih_hoca/test_pick_telemetry.py::test_telemetry_does_not_leak_when_os_env_has_db_path -v
+```
+
+Expected: FAIL (`telemetry leaked: 1 rows for leaky_fixture`).
+
+- [ ] **Step 4: Add module-level marker + helpers in `selector.py`**
+
+After imports, before the `Selector` class:
+
+```python
+# ─── Telemetry DB Path (explicit opt-in for production) ──────────────────────
+#
+# Tests must never leak to the real DB. The previous guard relied on
+# os.getenv("DB_PATH") + "src.app.config in sys.modules" — but the OS env
+# var is set on the production host independently of module imports, so
+# tests that inherit it would still write (see 2026-04-17 incident).
+_telemetry_db_path: str | None = None
+
+
+def enable_telemetry(db_path: str) -> None:
+    """Opt telemetry in. Call once at production startup."""
+    global _telemetry_db_path
+    _telemetry_db_path = db_path
+
+
+def disable_telemetry() -> None:
+    """Opt telemetry out (test teardown)."""
+    global _telemetry_db_path
+    _telemetry_db_path = None
+```
+
+- [ ] **Step 5: Rewrite the `_write` DB-resolution block**
+
+Find (around line 248–265):
+
+```python
+                import os
+                import sys
+                import aiosqlite
+                db_path = os.getenv("DB_PATH")
+                if not db_path:
+                    cfg_mod = sys.modules.get("src.app.config")
+                    if cfg_mod is None:
+                        return
+                    db_path = getattr(cfg_mod, "DB_PATH", None)
+                if not db_path:
+                    return
+```
+
+Replace with:
+
+```python
+                import aiosqlite
+                db_path = _telemetry_db_path
+                if not db_path:
+                    return
+```
+
+- [ ] **Step 6: Update `test_select_persists_pick_to_db`**
+
+Before the `with caplog.at_level(...)` block, add:
+
+```python
+    from fatih_hoca import selector as _sel_mod
+    monkeypatch.setattr(_sel_mod, "_telemetry_db_path", str(tmp_path / "test.db"))
+```
+
+Remove the now-unused `monkeypatch.setenv("DB_PATH", ...)` line from that test.
+
+- [ ] **Step 7: Wire production opt-in in `src/app/run.py`**
+
+```bash
+grep -n "def main\|init_db\|DB_PATH\|load_dotenv" src/app/run.py | head
+```
+
+After `init_db()` completes, add:
+
+```python
+    try:
+        from fatih_hoca.selector import enable_telemetry
+        from src.app.config import DB_PATH as _DB_PATH
+        enable_telemetry(_DB_PATH)
+    except Exception:
+        pass
+```
+
+- [ ] **Step 8: Re-run leak test — expect PASS**
+
+```bash
+timeout 30 python -m pytest tests/fatih_hoca/test_pick_telemetry.py::test_telemetry_does_not_leak_when_os_env_has_db_path -v
+```
+
+- [ ] **Step 9: Re-run existing persist test**
+
+```bash
+timeout 30 python -m pytest tests/fatih_hoca/test_pick_telemetry.py::test_select_persists_pick_to_db -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 10: Full suite regression check**
+
+```bash
+timeout 120 python -m pytest packages/fatih_hoca/tests/ tests/fatih_hoca/ tests/test_benchmark_fetcher.py -q 2>&1 | tail -5
+```
+
+Expected: 206 passed (Phase 1 baseline 205 + new leak test).
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add packages/fatih_hoca/src/fatih_hoca/selector.py src/app/run.py tests/fatih_hoca/test_pick_telemetry.py
+git commit -m "fix(fatih_hoca): telemetry writes require explicit enable_telemetry() opt-in"
+```
+
+---
+
 ## Task 1: Replace deprecated `asyncio.get_event_loop()`
 
 **Files:**

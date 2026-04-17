@@ -18,7 +18,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 # Ensure project root is on path
@@ -89,8 +89,9 @@ async def _run_nudge_logic(db_mod, send_notification):
     from src.infra.db import get_db, update_task
     db = await get_db()
 
-    threshold_24h = (datetime.now() - timedelta(hours=24)).isoformat()
-    threshold_4h = (datetime.now() - timedelta(hours=4)).isoformat()
+    DB_FMT = "%Y-%m-%d %H:%M:%S"
+    threshold_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime(DB_FMT)
+    threshold_4h = (datetime.now(timezone.utc) - timedelta(hours=4)).strftime(DB_FMT)
 
     cursor_nudge = await db.execute(
         """SELECT id, title, context FROM tasks
@@ -315,23 +316,26 @@ class TestNudgeThresholds(unittest.TestCase):
         self.assertTrue(ctx.get("nudge_sent", False))
 
     def test_nudge_threshold_calculation(self):
-        now = datetime.now()
-        threshold_4h = (now - timedelta(hours=4)).isoformat()
-        threshold_24h = (now - timedelta(hours=24)).isoformat()
-        started_6h_ago = (now - timedelta(hours=6)).isoformat()
+        DB_FMT = "%Y-%m-%d %H:%M:%S"
+        now = datetime.now(timezone.utc)
+        threshold_4h = (now - timedelta(hours=4)).strftime(DB_FMT)
+        threshold_24h = (now - timedelta(hours=24)).strftime(DB_FMT)
+        started_6h_ago = (now - timedelta(hours=6)).strftime(DB_FMT)
         self.assertGreater(started_6h_ago, threshold_24h)
         self.assertLess(started_6h_ago, threshold_4h)
 
     def test_recent_task_not_nudged(self):
-        now = datetime.now()
-        threshold_4h = (now - timedelta(hours=4)).isoformat()
-        started_2h_ago = (now - timedelta(hours=2)).isoformat()
+        DB_FMT = "%Y-%m-%d %H:%M:%S"
+        now = datetime.now(timezone.utc)
+        threshold_4h = (now - timedelta(hours=4)).strftime(DB_FMT)
+        started_2h_ago = (now - timedelta(hours=2)).strftime(DB_FMT)
         self.assertGreater(started_2h_ago, threshold_4h)
 
     def test_old_task_not_nudged(self):
-        now = datetime.now()
-        threshold_24h = (now - timedelta(hours=24)).isoformat()
-        started_30h_ago = (now - timedelta(hours=30)).isoformat()
+        DB_FMT = "%Y-%m-%d %H:%M:%S"
+        now = datetime.now(timezone.utc)
+        threshold_24h = (now - timedelta(hours=24)).strftime(DB_FMT)
+        started_30h_ago = (now - timedelta(hours=30)).strftime(DB_FMT)
         self.assertLess(started_30h_ago, threshold_24h)
 
 
@@ -347,7 +351,7 @@ class TestFourHourNudge(_DBTestBase):
 
         async def _run():
             db = await self.db_mod.get_db()
-            started_at = (datetime.now() - timedelta(hours=6)).isoformat()
+            started_at = (datetime.now(timezone.utc) - timedelta(hours=6)).strftime("%Y-%m-%d %H:%M:%S")
             await db.execute(
                 """INSERT INTO tasks
                    (id, title, description, status, agent_type, tier,
@@ -372,7 +376,7 @@ class TestFourHourNudge(_DBTestBase):
 
         async def _run():
             db = await self.db_mod.get_db()
-            started_at = (datetime.now() - timedelta(hours=6)).isoformat()
+            started_at = (datetime.now(timezone.utc) - timedelta(hours=6)).strftime("%Y-%m-%d %H:%M:%S")
             ctx = json.dumps({"nudge_sent": True})
             await db.execute(
                 """INSERT INTO tasks
@@ -395,7 +399,7 @@ class TestFourHourNudge(_DBTestBase):
 
         async def _run():
             db = await self.db_mod.get_db()
-            started_at = (datetime.now() - timedelta(hours=2)).isoformat()
+            started_at = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
             await db.execute(
                 """INSERT INTO tasks
                    (id, title, description, status, agent_type, tier,
@@ -417,7 +421,7 @@ class TestFourHourNudge(_DBTestBase):
 
         async def _run():
             db = await self.db_mod.get_db()
-            started_at = (datetime.now() - timedelta(hours=30)).isoformat()
+            started_at = (datetime.now(timezone.utc) - timedelta(hours=30)).strftime("%Y-%m-%d %H:%M:%S")
             await db.execute(
                 """INSERT INTO tasks
                    (id, title, description, status, agent_type, tier,
@@ -439,7 +443,7 @@ class TestFourHourNudge(_DBTestBase):
 
         async def _run():
             db = await self.db_mod.get_db()
-            started_at = (datetime.now() - timedelta(hours=8)).isoformat()
+            started_at = (datetime.now(timezone.utc) - timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
             await db.execute(
                 """INSERT INTO tasks
                    (id, title, description, status, agent_type, tier,

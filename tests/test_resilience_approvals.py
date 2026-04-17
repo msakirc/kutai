@@ -10,7 +10,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Ensure project root is on path
@@ -86,7 +86,7 @@ class _DBTestBase(unittest.TestCase):
             title, "", "executor", mission_id, None
         )
         ctx = json.dumps(context or {})
-        sa = started_at or datetime.now().isoformat()
+        sa = started_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         cursor = await db.execute(
             """INSERT INTO tasks
                (mission_id, title, description, agent_type, status,
@@ -218,16 +218,14 @@ async def _run_escalation_logic(db_mod, send_notification):
     This keeps tests self-contained without importing the Orchestrator.
     ``send_notification`` is an AsyncMock that captures messages.
 
-    NOTE: SQLite's datetime('now') is UTC-based.  The production orchestrator
-    stores started_at via datetime.now() (local time) and compares against
-    datetime('now') (UTC).  In tests we use datetime.now(timezone.utc) for both
-    to avoid timezone mismatches.
+    NOTE: The production orchestrator stores started_at via db_now() (UTC,
+    space-separated format).  Tests must use the same format.
     """
     from src.infra.db import get_db, update_task
     db = await get_db()
 
-    # Use isoformat threshold to match the format stored in started_at
-    threshold_24h = (datetime.now() - timedelta(hours=24)).isoformat()
+    DB_FMT = "%Y-%m-%d %H:%M:%S"
+    threshold_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime(DB_FMT)
     cursor_clar = await db.execute(
         """SELECT id, title, context, started_at FROM tasks
            WHERE status = 'needs_clarification'
@@ -236,7 +234,7 @@ async def _run_escalation_logic(db_mod, send_notification):
     )
     stale = [dict(row) for row in await cursor_clar.fetchall()]
 
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
 
     for task in stale:
         raw_ctx = task.get("context", "{}")
@@ -253,9 +251,10 @@ async def _run_escalation_logic(db_mod, send_notification):
         ttitle = task["title"]
 
         try:
-            started = datetime.fromisoformat(task["started_at"])
+            sa_str = task["started_at"].replace("T", " ")[:19]
+            started = datetime.strptime(sa_str, DB_FMT).replace(tzinfo=timezone.utc)
         except (ValueError, TypeError):
-            started = datetime.min
+            started = datetime.min.replace(tzinfo=timezone.utc)
         hours_waiting = (now - started).total_seconds() / 3600
 
         if escalation_count == 0 and hours_waiting >= 24:
@@ -292,7 +291,7 @@ class TestEscalationTiers(_DBTestBase):
         """After 24h with escalation_count=0, send reminder and set count=1."""
         async def go():
             mission_id = await self._create_mission()
-            started = (datetime.now() - timedelta(hours=25)).isoformat()
+            started = (datetime.now(timezone.utc) - timedelta(hours=25)).strftime("%Y-%m-%d %H:%M:%S")
             task_id = await self._create_task(
                 mission_id, "Stuck task",
                 status="needs_clarification",
@@ -319,7 +318,7 @@ class TestEscalationTiers(_DBTestBase):
         """After 48h with escalation_count=1, send urgent and set count=2."""
         async def go():
             mission_id = await self._create_mission()
-            started = (datetime.now() - timedelta(hours=49)).isoformat()
+            started = (datetime.now(timezone.utc) - timedelta(hours=49)).strftime("%Y-%m-%d %H:%M:%S")
             task_id = await self._create_task(
                 mission_id, "Really stuck task",
                 status="needs_clarification",
@@ -346,7 +345,7 @@ class TestEscalationTiers(_DBTestBase):
         """After 72h with escalation_count=2, cancel with notification."""
         async def go():
             mission_id = await self._create_mission()
-            started = (datetime.now() - timedelta(hours=73)).isoformat()
+            started = (datetime.now(timezone.utc) - timedelta(hours=73)).strftime("%Y-%m-%d %H:%M:%S")
             task_id = await self._create_task(
                 mission_id, "Very stuck task",
                 status="needs_clarification",
@@ -373,7 +372,7 @@ class TestEscalationTiers(_DBTestBase):
         """Tasks less than 24h old should not be escalated."""
         async def go():
             mission_id = await self._create_mission()
-            started = (datetime.now() - timedelta(hours=12)).isoformat()
+            started = (datetime.now(timezone.utc) - timedelta(hours=12)).strftime("%Y-%m-%d %H:%M:%S")
             task_id = await self._create_task(
                 mission_id, "Fresh task",
                 status="needs_clarification",
@@ -395,7 +394,7 @@ class TestEscalationTiers(_DBTestBase):
         """Running escalation multiple times increments count correctly."""
         async def go():
             mission_id = await self._create_mission()
-            started = (datetime.now() - timedelta(hours=25)).isoformat()
+            started = (datetime.now(timezone.utc) - timedelta(hours=25)).strftime("%Y-%m-%d %H:%M:%S")
             task_id = await self._create_task(
                 mission_id, "Sequential escalation",
                 status="needs_clarification",
@@ -413,7 +412,7 @@ class TestEscalationTiers(_DBTestBase):
 
             # Move started_at to 49h ago, run again -> tier 2
             db = await self.db_mod.get_db()
-            new_started = (datetime.now() - timedelta(hours=49)).isoformat()
+            new_started = (datetime.now(timezone.utc) - timedelta(hours=49)).strftime("%Y-%m-%d %H:%M:%S")
             await db.execute(
                 "UPDATE tasks SET started_at = ? WHERE id = ?",
                 (new_started, task_id),
@@ -427,7 +426,7 @@ class TestEscalationTiers(_DBTestBase):
             self.assertEqual(ctx["escalation_count"], 2)
 
             # Move started_at to 73h ago, run again -> tier 3 (cancel)
-            new_started = (datetime.now() - timedelta(hours=73)).isoformat()
+            new_started = (datetime.now(timezone.utc) - timedelta(hours=73)).strftime("%Y-%m-%d %H:%M:%S")
             await db.execute(
                 "UPDATE tasks SET started_at = ? WHERE id = ?",
                 (new_started, task_id),

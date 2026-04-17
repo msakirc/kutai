@@ -64,11 +64,20 @@ async def execute_with_fallback(
     )
 
 
+# Top-K per site — mature e-commerce search already ranks by relevance;
+# the tail is mostly spare parts and accessories. Keep the head, drop
+# the rest. Tune by site if needed later.
+_TOP_K_PER_SITE = 5
+
+
 async def _search_scraper(source: str, query: str) -> list:
-    """Run a single scraper, return results or empty list on failure.
+    """Run a single scraper, return top-K results in site order.
 
     Each scraper gets its own 20s timeout so one blocked site can't
-    eat the entire budget.
+    eat the entire budget. Results are truncated to the first
+    ``_TOP_K_PER_SITE`` and stamped with ``site_rank`` (0-indexed
+    position within the site's response) so downstream ranking can
+    preserve per-site relevance.
     """
     try:
         from src.shopping.scrapers import get_scraper
@@ -77,8 +86,20 @@ async def _search_scraper(source: str, query: str) -> list:
             return []
         scraper = scraper_cls()
         results = await asyncio.wait_for(scraper.search(query), timeout=20)
-        if results and isinstance(results, list):
-            return results
+        if not (results and isinstance(results, list)):
+            return []
+        trimmed = results[:_TOP_K_PER_SITE]
+        for i, p in enumerate(trimmed):
+            # Works for dataclass Products AND for any scraper that
+            # happens to return plain dicts. Ignore if neither.
+            if hasattr(p, "site_rank"):
+                try:
+                    p.site_rank = i
+                except Exception:
+                    pass
+            elif isinstance(p, dict):
+                p["site_rank"] = i
+        return trimmed
     except asyncio.TimeoutError:
         logger.warning("Scraper %s timed out for '%s'", source, query)
     except Exception as exc:

@@ -495,18 +495,21 @@ async def _step_format(task: dict, artifacts: dict) -> str:
 
     top_products = list(best_per_source.values())
 
-    has_scores = any(p.get("value_score") for p in top_products)
     priced_tops = [p for p in top_products if p.get("original_price") or p.get("discounted_price")]
 
-    if has_scores:
-        # Rank by value_score descending (best value first)
-        priced_tops.sort(key=lambda p: p.get("value_score", 0), reverse=True)
-    else:
-        # Fallback: highest price first (main product vs spare parts)
-        priced_tops.sort(
-            key=lambda p: p.get("discounted_price") or p.get("original_price") or 0,
-            reverse=True,
-        )
+    # Primary sort: site_rank ascending (trust the site's own ranking —
+    # rank 0 = main product, higher = accessories/spares). Missing
+    # site_rank (older cached results) falls to the back via a large
+    # sentinel. Within the same site_rank tier we prefer higher
+    # value_score; within the same score we prefer cheaper.
+    def _sort_key(p: dict):
+        rank = p.get("site_rank")
+        rank = rank if rank is not None else 999
+        score = p.get("value_score") or 0
+        price = p.get("discounted_price") or p.get("original_price") or 0
+        return (rank, -score, price)
+
+    priced_tops.sort(key=_sort_key)
 
     if priced_tops:
         best = priced_tops[0]

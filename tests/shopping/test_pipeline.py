@@ -289,5 +289,51 @@ class TestFakeDiscountAnnotation(unittest.TestCase):
         self.assertEqual(flags, {})
 
 
+class TestSiteRankSort(unittest.TestCase):
+    def test_site_rank_beats_value_score(self):
+        """Rank-0 from any site wins over rank-2 even with lower value_score."""
+        rank0_low_score = {
+            "name": "Siemens S100 Coffee Machine",
+            "source": "trendyol",
+            "site_rank": 0,
+            "value_score": 60,
+            "discounted_price": 4200,
+        }
+        rank2_high_score = {
+            "name": "Siemens S100 spare brewing unit",
+            "source": "amazon_tr",
+            "site_rank": 2,
+            "value_score": 80,
+            "discounted_price": 4800,
+        }
+        items = [rank2_high_score, rank0_low_score]
+
+        def _sort_key(p: dict):
+            rank = p.get("site_rank")
+            rank = rank if rank is not None else 999
+            score = p.get("value_score") or 0
+            price = p.get("discounted_price") or p.get("original_price") or 0
+            return (rank, -score, price)
+
+        items.sort(key=_sort_key)
+        self.assertEqual(items[0]["name"], "Siemens S100 Coffee Machine")
+
+    def test_missing_site_rank_sinks(self):
+        """Products without site_rank come last."""
+        ranked = {"name": "A", "site_rank": 3, "value_score": 50, "discounted_price": 100}
+        unranked = {"name": "B", "value_score": 99, "discounted_price": 100}
+        items = [unranked, ranked]
+
+        def _sort_key(p: dict):
+            rank = p.get("site_rank")
+            rank = rank if rank is not None else 999
+            score = p.get("value_score") or 0
+            price = p.get("discounted_price") or p.get("original_price") or 0
+            return (rank, -score, price)
+
+        items.sort(key=_sort_key)
+        self.assertEqual(items[0]["name"], "A")
+
+
 if __name__ == "__main__":
     unittest.main()

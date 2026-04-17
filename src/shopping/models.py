@@ -16,6 +16,7 @@ class Product:
     specs: dict = field(default_factory=dict)
     rating: float | None = None
     review_count: int | None = None
+    site_rank: int | None = None  # 0-indexed position in the site's own response
     availability: str = "in_stock"  # in_stock / low_stock / out_of_stock / preorder
     seller_name: str | None = None
     seller_rating: float | None = None

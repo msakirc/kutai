@@ -545,5 +545,35 @@ class TestGetCommunityData(unittest.TestCase):
         self.assertIn(fake_b, result)
 
 
+class TestSearchScraperTopK(unittest.TestCase):
+    def test_truncates_to_top_k_and_stamps_site_rank(self):
+        from src.shopping.resilience.fallback_chain import _search_scraper, _TOP_K_PER_SITE
+        from src.shopping.models import Product
+
+        fake_products = [
+            Product(name=f"Product {i}", url=f"https://x/{i}", source="trendyol",
+                    discounted_price=100.0 + i)
+            for i in range(10)
+        ]
+
+        fake_scraper_instance = MagicMock()
+
+        async def _fake_search(q):
+            return fake_products
+
+        fake_scraper_instance.search = _fake_search
+        fake_scraper_cls = MagicMock(return_value=fake_scraper_instance)
+
+        async def _run():
+            with patch("src.shopping.scrapers.get_scraper", return_value=fake_scraper_cls):
+                return await _search_scraper("trendyol", "test")
+
+        result = run_async(_run())
+
+        self.assertEqual(len(result), _TOP_K_PER_SITE)
+        self.assertEqual(result[0].site_rank, 0)
+        self.assertEqual(result[_TOP_K_PER_SITE - 1].site_rank, _TOP_K_PER_SITE - 1)
+
+
 if __name__ == "__main__":
     unittest.main()

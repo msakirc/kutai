@@ -194,6 +194,13 @@ def _strip_gguf_suffixes(name: str) -> str:
     return name
 
 
+_MODE_SUFFIXES: tuple[str, ...] = ("::thinking", "::reasoning", "::nonthinking")
+_FAMILY_SHIFTERS: frozenset[str] = frozenset({
+    "coder", "vl", "omni", "next", "max",
+    "nemotron", "thinker", "thinking", "reasoning", "vision",
+})
+
+
 def _extract_size_tokens(segments: list[str]) -> set[str]:
     """Extract size-tokens from a list of segments.
 
@@ -222,7 +229,7 @@ def _normalize_for_matching(name: str) -> str:
     """
     n = name.lower()
     # Strip AA mode suffix BEFORE other transforms — :: is preserved literally otherwise
-    for mode_suffix in ("::thinking", "::reasoning", "::nonthinking"):
+    for mode_suffix in _MODE_SUFFIXES:
         if n.endswith(mode_suffix):
             n = n[: -len(mode_suffix)]
     # Remove org prefixes
@@ -296,8 +303,6 @@ def _fuzzy_match_model(query: str, candidates: list[str]) -> Optional[str]:
     # Family-shifter segments: tokens that change which model family this is.
     # If the query contains one of these and the alias key does NOT, the alias
     # must not match (e.g. 'qwen3-30b-a3b' alias must not match 'qwen3-coder-30b-a3b').
-    _FAMILY_SHIFTERS = {"coder", "vl", "omni", "next", "max", "nemotron",
-                        "thinker", "thinking", "reasoning", "vision"}
     for alias_key, alias_list in _MODEL_ALIASES.items():
         ak = _normalize_for_matching(alias_key)
         query_test = _normalize_for_matching(query_stripped)

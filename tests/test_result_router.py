@@ -67,3 +67,47 @@ def test_none_result_treated_as_failed():
     actions = route_result(task, None)
     assert len(actions) == 1
     assert isinstance(actions[0], Failed)
+
+
+# ─── Task 3: raw dict carried on every Action ────────────────────────────
+
+def test_complete_action_carries_raw_result():
+    task = {"id": 1, "title": "t"}
+    agent_result = {"status": "completed", "result": "done", "iterations": 3}
+    actions = route_result(task, agent_result)
+    assert actions[0].raw == agent_result
+
+
+def test_subtasks_action_carries_raw_result():
+    task = {"id": 1, "title": "t"}
+    agent_result = {"status": "needs_subtasks", "subtasks": [{"title": "s1"}]}
+    actions = route_result(task, agent_result)
+    assert actions[0].raw == agent_result
+
+
+def test_clarification_action_carries_raw_result():
+    task = {"id": 1, "title": "t", "chat_id": 42}
+    agent_result = {"status": "needs_clarification", "question": "which?"}
+    actions = route_result(task, agent_result)
+    assert actions[0].raw == agent_result
+
+
+def test_review_action_carries_raw_result():
+    task = {"id": 1, "title": "t"}
+    agent_result = {"status": "needs_review", "summary": "please review"}
+    actions = route_result(task, agent_result)
+    assert actions[0].raw == agent_result
+
+
+def test_exhausted_action_carries_raw_result():
+    task = {"id": 1, "title": "t"}
+    agent_result = {"status": "exhausted", "error": "max"}
+    actions = route_result(task, agent_result)
+    assert actions[0].raw == agent_result
+
+
+def test_failed_action_carries_raw_result():
+    task = {"id": 1, "title": "t"}
+    agent_result = {"status": "failed", "error": "oops"}
+    actions = route_result(task, agent_result)
+    assert actions[0].raw == agent_result

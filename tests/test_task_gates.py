@@ -1,7 +1,7 @@
 import pytest
-from unittest.mock import AsyncMock
-from src.core.task_gates import run_gates, GateContext
-from src.core.decisions import Allow, Block, Cancel
+from unittest.mock import AsyncMock, patch
+from src.core.task_gates import run_gates
+from src.core.decisions import Allow, Cancel
 
 
 @pytest.mark.asyncio
@@ -52,5 +52,17 @@ async def test_workflow_step_skips_risk_gate():
     ctx = {"is_workflow_step": True}
     approval = AsyncMock(return_value=False)
     decision = await run_gates(task, ctx, approval_fn=approval)
+    assert isinstance(decision, Allow)
+    approval.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_risk_assessor_exception_opens_circuit():
+    """If risk assessment raises, gate defaults to Allow (open-circuit)."""
+    task = {"id": 1, "title": "anything", "description": ""}
+    ctx = {}
+    approval = AsyncMock(return_value=False)
+    with patch("src.security.risk_assessor.assess_risk", side_effect=RuntimeError("boom")):
+        decision = await run_gates(task, ctx, approval_fn=approval)
     assert isinstance(decision, Allow)
     approval.assert_not_called()

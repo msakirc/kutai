@@ -927,248 +927,14 @@ class Orchestrator:
             # if status == "completed" and agent_type == "coder":
             #     await self._auto_commit(task, result)
 
-            if status == "completed":
-                # Extract structured pipeline artifacts before the post-hook
-                if agent_type == "pipeline" and is_workflow_step(task_ctx):
-                    try:
-                        from ..workflows.engine.pipeline_artifacts import extract_pipeline_artifacts
-                        from ..workflows.engine.hooks import get_artifact_store
-
-                        ws_path = None
-                        if task.get("mission_id"):
-                            try:
-                                ws_path = get_mission_workspace(task["mission_id"])
-                            except Exception:
-                                pass
-
-                        extra_artifacts = await extract_pipeline_artifacts(task, result, ws_path)
-                        if extra_artifacts:
-                            store = get_artifact_store()
-                            mission_id = task.get("mission_id")
-                            for name, content in extra_artifacts.items():
-                                await store.store(mission_id, name, content)
-                            logger.info(f"[Task #{task_id}] Stored {len(extra_artifacts)} pipeline artifacts")
-                    except Exception as e:
-                        logger.debug(f"[Task #{task_id}] Pipeline artifact extraction failed: {e}")
-
-                # Workflow step post-hook: store output artifacts
-                if is_workflow_step(task_ctx):
-                    await post_execute_workflow_step(task, result)
-                    # Re-read context from DB — the post-hook may have
-                    # stored _schema_error or other fields.  Without this,
-                    # the retry update below overwrites them with the stale
-                    # task_ctx snapshot from the start of process_task.
-                    try:
-                        _fresh = await get_task(task_id)
-                        if _fresh:
-                            _fc = _fresh.get("context", "{}")
-                            if isinstance(_fc, str):
-                                _fc = json.loads(_fc)
-                            if isinstance(_fc, dict):
-                                task_ctx.update(_fc)
-                    except Exception:
-                        pass
-                    # Post-hook may override status
-                    if result.get("status") == "needs_clarification":
-                        if not await self._validate_clarification(
-                            task_id, task, task_ctx, result
-                        ):
-                            # Validation failed — fall through to retry
-                            result["status"] = "failed"
-                        else:
-                            await self._handle_clarification(task, result)
-                            return
-                    if result.get("status") == "failed":
-                        error_msg = result.get("error", "Disguised failure detected")
-                        from src.core.retry import RetryContext
-                        retry_ctx = RetryContext.from_task(task)
-                        decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
-
-                        # Bonus attempt for quality failures with real progress
-                        _MAX_BONUS = 2
-                        if decision.action == "terminal":
-                            bonus_count = task_ctx.get("_bonus_count", 0)
-                            if bonus_count < _MAX_BONUS:
-                                try:
-                                    progress = await self._assess_timeout_progress(
-                                        task_id, task_ctx
-                                    )
-                                    if progress >= 0.5:
-                                        task_ctx["_bonus_count"] = bonus_count + 1
-                                        retry_ctx.max_worker_attempts += 1
-                                        decision = retry_ctx.record_failure("quality",
-                                            model=result.get("model", ""))
-                                        logger.info(
-                                            f"[Task #{task_id}] Quality bonus attempt "
-                                            f"({bonus_count + 1}/{_MAX_BONUS}, "
-                                            f"progress={progress:.0%})"
-                                        )
-                                except Exception:
-                                    pass
-
-                        if decision.action == "terminal":
-                            task_ctx.update(retry_ctx.to_context_patch())
-                            await update_task(
-                                task_id, status="failed",
-                                error=f"Disguised failure exhausted: {error_msg[:300]}",
-                                context=json.dumps(task_ctx),
-                                **retry_ctx.to_db_fields(),
-                            )
-                            try:
-                                from src.infra.dead_letter import quarantine_task
-                                await quarantine_task(
-                                    task_id=task_id,
-                                    mission_id=task.get("mission_id"),
-                                    error=f"Disguised failure after {retry_ctx.worker_attempts} attempts: {error_msg[:300]}",
-                                    error_category="quality",
-                                    original_agent=task.get("agent_type", "executor"),
-                                    attempts_snapshot=retry_ctx.worker_attempts,
-                                )
-                            except Exception:
-                                pass
-                            await self.telegram.send_notification(
-                                f"❌ Task #{task_id} disguised failure → DLQ\n"
-                                f"**{task.get('title', '')[:60]}**\n"
-                                f"Reason: {error_msg[:100]}"
-                            )
-                            logger.warning(
-                                "disguised failure terminal",
-                                task_id=task_id,
-                                attempts=retry_ctx.worker_attempts,
-                            )
-                        else:
-                            next_retry = None
-                            if decision.action == "delayed":
-                                next_retry = to_db(
-                                    utc_now() + timedelta(seconds=decision.delay_seconds)
-                                )
-                            retry_ctx.next_retry_at = next_retry
-                            task_ctx.update(retry_ctx.to_context_patch())
-                            # Inject previous output so next attempt can continue
-                            result_text = result.get("result", "")
-                            if result_text:
-                                task_ctx["_prev_output"] = str(result_text)[:6000]
-                                task_ctx["_retry_hint"] = (
-                                    "Your previous attempt's output failed quality checks. "
-                                    "Your partial work is shown in context. Build on it — "
-                                    "do NOT start over."
-                                )
-                            await update_task(
-                                task_id, status="pending",
-                                error=error_msg[:500],
-                                context=json.dumps(task_ctx),
-                                **retry_ctx.to_db_fields(),
-                            )
-                            logger.warning(
-                                f"disguised failure, retrying"
-                                f"{retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts}",
-                                task_id=task_id,
-                            )
-                        return
-                await self._handle_complete(task, result)
-            elif status == "ungraded":
+            # ── ungraded + pending are still handled inline (not router Actions) ──
+            if status == "ungraded":
                 # Task deferred to grading phase — store result, don't notify.
-                # BUT: still run the workflow post-hook so artifacts are stored
-                # and phase completion is tracked. Grading only affects the
-                # task status (ungraded→completed vs ungraded→retry), not
-                # whether the output artifacts should be persisted.
-                if is_workflow_step(task_ctx):
-                    await post_execute_workflow_step(task, result)
-                    # Re-read context — post-hook may have stored _schema_error.
-                    try:
-                        _fresh = await get_task(task_id)
-                        if _fresh:
-                            _fc = _fresh.get("context", "{}")
-                            if isinstance(_fc, str):
-                                _fc = json.loads(_fc)
-                            if isinstance(_fc, dict):
-                                task_ctx.update(_fc)
-                    except Exception:
-                        pass
-                    # Post-hook may override status
-                    if result.get("status") == "needs_clarification":
-                        if not await self._validate_clarification(
-                            task_id, task, task_ctx, result
-                        ):
-                            result["status"] = "failed"
-                        else:
-                            await self._handle_clarification(task, result)
-                            return
-                    if result.get("status") == "failed":
-                        error_msg = result.get("error", "Disguised failure detected")
-                        from src.core.retry import RetryContext
-                        retry_ctx = RetryContext.from_task(task)
-                        decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
-
-                        # Bonus attempt for quality failures with real progress
-                        _MAX_BONUS = 2
-                        if decision.action == "terminal":
-                            bonus_count = task_ctx.get("_bonus_count", 0)
-                            if bonus_count < _MAX_BONUS:
-                                try:
-                                    progress = await self._assess_timeout_progress(
-                                        task_id, task_ctx
-                                    )
-                                    if progress >= 0.5:
-                                        task_ctx["_bonus_count"] = bonus_count + 1
-                                        retry_ctx.max_worker_attempts += 1
-                                        decision = retry_ctx.record_failure("quality",
-                                            model=result.get("model", ""))
-                                        logger.info(
-                                            f"[Task #{task_id}] Quality bonus attempt "
-                                            f"({bonus_count + 1}/{_MAX_BONUS}, "
-                                            f"progress={progress:.0%})"
-                                        )
-                                except Exception:
-                                    pass
-
-                        if decision.action == "terminal":
-                            task_ctx.update(retry_ctx.to_context_patch())
-                            await update_task(
-                                task_id, status="failed",
-                                error=f"Disguised failure exhausted: {error_msg[:300]}",
-                                context=json.dumps(task_ctx),
-                                **retry_ctx.to_db_fields(),
-                            )
-                            try:
-                                from src.infra.dead_letter import quarantine_task
-                                await quarantine_task(
-                                    task_id=task_id,
-                                    mission_id=task.get("mission_id"),
-                                    error=f"Disguised failure after {retry_ctx.worker_attempts} attempts: {error_msg[:300]}",
-                                    error_category="quality",
-                                    original_agent=task.get("agent_type", "executor"),
-                                    attempts_snapshot=retry_ctx.worker_attempts,
-                                )
-                            except Exception:
-                                pass
-                            await self.telegram.send_notification(
-                                f"❌ Task #{task_id} disguised failure → DLQ\n"
-                                f"**{task.get('title', '')[:60]}**\n"
-                                f"Reason: {error_msg[:100]}"
-                            )
-                        else:
-                            next_retry = None
-                            if decision.action == "delayed":
-                                next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
-                            retry_ctx.next_retry_at = next_retry
-                            task_ctx.update(retry_ctx.to_context_patch())
-                            # Inject previous output so next attempt can continue
-                            result_text = result.get("result", "")
-                            if result_text:
-                                task_ctx["_prev_output"] = str(result_text)[:6000]
-                                task_ctx["_retry_hint"] = (
-                                    "Your previous attempt's output failed quality checks. "
-                                    "Your partial work is shown in context. Build on it — "
-                                    "do NOT start over."
-                                )
-                            await update_task(
-                                task_id, status="pending",
-                                error=error_msg[:500],
-                                context=json.dumps(task_ctx),
-                                **retry_ctx.to_db_fields(),
-                            )
-                        return
+                # Still run workflow post-hook so artifacts are stored.
+                from src.core.result_guards import guard_ungraded_post_hook
+                guard_out = await guard_ungraded_post_hook(self, task, task_ctx, result)
+                if guard_out is not None:
+                    return
 
                 result_text = result.get("result", "No result")
                 cost = result.get("cost", 0)
@@ -1179,130 +945,20 @@ class Orchestrator:
                             model=result.get("model", "unknown"))
             elif status == "pending":
                 # Grade FAIL may have triggered retry or terminal DLQ.
-                # Check actual DB state — apply_grade_result may have already
-                # transitioned to 'failed' (terminal) since this status was set.
                 db_task = await get_task(task_id)
                 actual = db_task["status"] if db_task else "unknown"
                 if actual == "failed":
                     logger.info("task grade-failed terminal (DLQ)", task_id=task_id)
                 else:
                     logger.info("task grade-failed, retrying", task_id=task_id)
-            elif status == "needs_subtasks":
-                if is_workflow_step(task_ctx):
-                    # Workflow steps must not decompose — they should produce
-                    # their artifact directly.  Treat subtask plan as a
-                    # quality failure so the task retries with a different model.
-                    logger.warning(
-                        f"[Task #{task_id}] Blocked subtask creation for "
-                        f"workflow step — retrying"
-                    )
-                    from src.core.retry import RetryContext
-                    retry_ctx = RetryContext.from_task(task)
-                    retry_ctx.record_failure("quality", model=result.get("model", ""))
-                    task_ctx.update(retry_ctx.to_context_patch())
-                    await update_task(
-                        task_id, status="pending",
-                        error="Workflow step tried to decompose instead of producing artifact",
-                        context=json.dumps(task_ctx),
-                        **retry_ctx.to_db_fields(),
-                    )
-                else:
-                    await self._handle_subtasks(task, result)
-            elif status == "needs_clarification":
-                # Silent/background tasks must not ask the user for clarification
-                task_ctx = parse_context(task)
-                if task_ctx.get("silent"):
-                    logger.info(f"[Task #{task_id}] Suppressed clarification (silent task)")
-                    await update_task(task_id, status="failed",
-                                      error="Insufficient info (silent task, no clarification)",
-                                      failed_in_phase="worker")
-                elif task_ctx.get("may_need_clarification") is False:
-                    # Workflow step declared it doesn't need clarification —
-                    # agent is confused, retry with a different model.
-                    logger.warning(
-                        f"[Task #{task_id}] Suppressed clarification "
-                        f"(may_need_clarification=false), retrying"
-                    )
-                    from src.core.retry import RetryContext
-                    retry_ctx = RetryContext.from_task(task)
-                    decision = retry_ctx.record_failure("quality")
-                    if decision.action == "terminal":
-                        await update_task(task_id, status="failed",
-                                          error="Agent requested clarification on no-clarification step",
-                                          **retry_ctx.to_db_fields())
-                    else:
-                        next_retry = None
-                        if decision.action == "delayed":
-                            next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
-                        retry_ctx.next_retry_at = next_retry
-                        await update_task(task_id, status="pending",
-                                          error="Suppressed clarification, retrying",
-                                          **retry_ctx.to_db_fields())
-                elif task_ctx.get("clarification_history"):
-                    # Agent tried to clarify again despite having answers —
-                    # treat as completed, using the Q&A exchange as the result
-                    # so downstream artifacts capture the human's input.
-                    logger.info(f"[Task #{task_id}] Suppressed repeat clarification "
-                                f"(clarification_history already exists)")
-                    history = task_ctx["clarification_history"]
-                    # Build a readable Q&A result from the clarification exchange
-                    qa_parts = []
-                    for entry in history:
-                        if isinstance(entry, dict):
-                            q = entry.get("question", "")
-                            a = entry.get("answer", "")
-                        else:
-                            # Legacy: plain string entries (answer only)
-                            q, a = "", str(entry)
-                        if q or a:
-                            qa_parts.append(f"**Q:** {q}\n**A:** {a}")
-                    qa_result = "\n\n".join(qa_parts) if qa_parts else task_ctx.get("user_clarification", "")
-                    result["status"] = "completed"
-                    result["result"] = qa_result or result.get("result", "")
-                    # Run post-hook if this is a workflow step
-                    if is_workflow_step(task_ctx):
-                        await post_execute_workflow_step(task, result)
-                    await self._handle_complete(task, result)
-                else:
-                    if is_workflow_step(task_ctx) and not await self._validate_clarification(
-                        task_id, task, task_ctx, result
-                    ):
-                        # Validation failed — retry via the standard pipeline
-                        from src.core.retry import RetryContext
-                        retry_ctx = RetryContext.from_task(task)
-                        decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
-                        if decision.action == "terminal":
-                            task_ctx.update(retry_ctx.to_context_patch())
-                            await update_task(
-                                task_id, status="failed",
-                                error=f"Clarification schema failed: {result.get('error', '')[:300]}",
-                                context=json.dumps(task_ctx),
-                                **retry_ctx.to_db_fields(),
-                            )
-                        else:
-                            next_retry = None
-                            if decision.action == "delayed":
-                                next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
-                            retry_ctx.next_retry_at = next_retry
-                            task_ctx.update(retry_ctx.to_context_patch())
-                            await update_task(
-                                task_id, status="pending",
-                                error=f"Clarification schema failed: {result.get('error', '')[:200]}",
-                                context=json.dumps(task_ctx),
-                                **retry_ctx.to_db_fields(),
-                            )
-                    else:
-                        await self._handle_clarification(task, result)
-            elif status == "needs_review":
-                await self._handle_review(task, result)
-            elif status == "exhausted":
-                await self._handle_exhausted(task, result)
-
-            elif status == "failed":
-                await self._handle_failed(task, result)
             else:
-                logger.warning("unknown task status", task_id=task_id, status=status)
-                await self._handle_complete(task, result)
+                # Route everything else through result_router + guards + handlers.
+                from src.core.result_router import route_result
+                actions = route_result(task, result)
+                for action in actions:
+                    if await self._run_guards_for(action, task, task_ctx, result, agent_type):
+                        return
+                    await self._dispatch_action(action, task)
 
             # ── Phase 6: Release file locks held by this task ──
             try:
@@ -2042,6 +1698,73 @@ class Orchestrator:
             )
             logger.warning(f"agent failed, worker-retry {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts}",
                            task_id=task_id, error=error_str[:200])
+
+    # ─── Router action dispatch + guard coordination ─────────────────────
+
+    async def _dispatch_action(self, action, task):
+        """Dispatch a router Action to the matching _handle_* method.
+        Uses `action.raw` so handlers keep their original (task, result) signature.
+        """
+        from src.core.result_router import (
+            Complete, SpawnSubtasks, RequestClarification,
+            RequestReview, Exhausted, Failed as FailedAction,
+        )
+        if isinstance(action, Complete):
+            await self._handle_complete(task, action.raw)
+        elif isinstance(action, SpawnSubtasks):
+            await self._handle_subtasks(task, action.raw)
+        elif isinstance(action, RequestClarification):
+            await self._handle_clarification(task, action.raw)
+        elif isinstance(action, RequestReview):
+            await self._handle_review(task, action.raw)
+        elif isinstance(action, Exhausted):
+            await self._handle_exhausted(task, action.raw)
+        elif isinstance(action, FailedAction):
+            await self._handle_failed(task, action.raw)
+        else:
+            logger.warning("unknown action type", action=type(action).__name__)
+            await self._handle_complete(task, action.raw)
+
+    async def _run_guards_for(self, action, task, task_ctx, result, agent_type):
+        """Run the guards that apply to `action`.  Returns True if a guard
+        fully handled the task (caller must stop processing).
+        """
+        from src.core.result_router import (
+            Complete, SpawnSubtasks, RequestClarification,
+        )
+        from src.core.result_guards import (
+            guard_pipeline_artifacts,
+            guard_workflow_step_post_hook,
+            guard_subtasks_blocked_for_workflow,
+            guard_clarification_suppression,
+        )
+
+        if isinstance(action, Complete):
+            # Pipeline artifact extraction (no terminal outcome)
+            await guard_pipeline_artifacts(self, task, task_ctx, result, agent_type)
+            # Workflow step post-hook may flip status and consume the task
+            out = await guard_workflow_step_post_hook(self, task, task_ctx, result)
+            if out is not None:
+                return True
+            return False
+
+        if isinstance(action, SpawnSubtasks):
+            out = await guard_subtasks_blocked_for_workflow(self, task, task_ctx, result)
+            if out is not None:
+                return True
+            return False
+
+        if isinstance(action, RequestClarification):
+            # Re-parse context to match pre-refactor semantics (it was re-parsed
+            # inside the old `elif status == 'needs_clarification':` branch).
+            task_ctx.clear()
+            task_ctx.update(parse_context(task))
+            out = await guard_clarification_suppression(self, task, task_ctx, result)
+            if out is not None:
+                return True
+            return False
+
+        return False
 
     # ─── Mission Completion ───────────────────────────────────────────────
 

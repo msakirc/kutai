@@ -147,27 +147,29 @@ def _normalize_elo(elo: float) -> float:
 
 # Maps our local model family names to patterns found in leaderboard data
 _MODEL_ALIASES: dict[str, list[str]] = {
-    # ── Local models on disk (verified against AA bulk cache 2026-04-17) ──
-    # Qwen3 trio — three distinct models, three distinct AA keys
-    "qwen3-30b-a3b":   ["qwen3-30b-a3b-instruct::thinking", "qwen3-30b-a3b-instruct"],
-    "qwen3-32b":       ["qwen3-32b-instruct", "qwen3-32b-instruct::thinking"],
-    # Note: NO entry for qwen3-coder-30b — AA has no 30B coder.
-    "qwen3-8b":        ["qwen3-8b-instruct"],
-    "qwen3-14b":       ["qwen3-14b-instruct"],
-    "qwen3-235b":      ["qwen3-235b-a22b-instruct-2507", "qwen3-235b-a22b-instruct"],
+    # ── Local models on disk (verified against live AA cache 2026-04-17) ──
+    # Qwen3 local trio — three distinct models, three distinct AA keys
+    "qwen3-30b-a3b":       ["qwen3-30b-a3b-instruct::thinking", "qwen3-30b-a3b-instruct", "qwen3-30b-a3b-2507"],
+    "qwen3-32b":           ["qwen3-32b-instruct", "qwen3-32b-instruct::thinking"],
+    "qwen3-coder-30b":     ["qwen3-coder-30b-a3b-instruct"],  # 30B Coder DOES exist in AA
+    "qwen3-8b":            ["qwen3-8b-instruct", "qwen3-8b-instruct::thinking"],
+    "qwen3-14b":           ["qwen3-14b-instruct", "qwen3-14b-instruct::thinking"],
+    "qwen3-235b":          ["qwen3-235b-a22b-instruct-2507", "qwen3-235b-a22b-instruct"],
 
-    "gpt-oss-20b":     ["gpt-oss-20b"],
-    "gpt-oss-120b":    ["gpt-oss-120b"],
-    "apriel-15b":      ["apriel-1-6-15b-thinker"],
-    "llama-3-3-70b":   ["llama-3-3-70b-instruct"],
+    "gpt-oss-20b":         ["gpt-oss-20b"],
+    "gpt-oss-120b":        ["gpt-oss-120b"],
+    "apriel-15b":          ["apriel-v1-6-15b-thinker", "apriel-v1-5-15b-thinker"],
+    "llama-3-3-70b":       ["llama-3-3-instruct-70b"],
 
-    # ── Cloud models ──
-    "gpt-4o":          ["gpt-4o", "gpt-4o-2024-11-20"],
-    "gpt-4o-mini":     ["gpt-4o-mini", "gpt-4o-mini-2024-07-18"],
-    "claude-sonnet-4": ["claude-sonnet-4-5", "claude-sonnet-4-20250514"],
-    "gemini-flash":    ["gemini-2-5-flash", "gemini-2-0-flash"],
-    "o4-mini":         ["o4-mini", "o4-mini-2025-04-16"],
-    "deepseek-r1":     ["deepseek-r1", "deepseek-r1-0528"],
+    # ── Cloud models (live AA key order: creator-version-family, not family-version) ──
+    "gpt-4o":              ["gpt-4o", "gpt-4o-2024-08-06"],
+    "gpt-4o-mini":         ["gpt-4o-mini"],
+    "claude-sonnet-4-5":   ["claude-4-5-sonnet", "claude-4-5-sonnet::thinking"],
+    "claude-sonnet-4-6":   ["claude-sonnet-4-6", "claude-sonnet-4-6-adaptive"],
+    "claude-haiku-4-5":    ["claude-4-5-haiku", "claude-4-5-haiku::thinking"],
+    "gemini-flash":        ["gemini-3-flash", "gemini-3-flash::thinking"],
+    "o4-mini":             ["o4-mini"],
+    "deepseek-r1":         ["deepseek-r1"],
 }
 
 

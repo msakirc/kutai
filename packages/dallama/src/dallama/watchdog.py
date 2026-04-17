@@ -158,11 +158,14 @@ class IdleUnloader:
             f"IdleUnloader: model idle for {self.idle_seconds:.1f}s "
             f"(timeout {self._config.idle_timeout_seconds}s) — unloading"
         )
-        self._swap.intentional_unload = True
-        try:
-            await self._server.stop()
-        finally:
-            self._swap.intentional_unload = False
+        # Acquire the swap lock so concurrent swap requests wait until
+        # the server is fully stopped and VRAM is released.
+        async with self._swap._lock:
+            self._swap.intentional_unload = True
+            try:
+                await self._server.stop()
+            finally:
+                self._swap.intentional_unload = False
 
         cb = self._config.on_ready
         if cb is not None:

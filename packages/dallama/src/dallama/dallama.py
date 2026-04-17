@@ -30,6 +30,10 @@ class DaLLaMa:
         self._idle_task: asyncio.Task | None = None
 
     async def start(self):
+        # Cancel stale tasks from a previous start() (defensive)
+        for task in (self._watchdog_task, self._idle_task):
+            if task is not None and not task.done():
+                task.cancel()
         self._platform.kill_orphans()
         self._watchdog_task = asyncio.create_task(self._watchdog.run(lambda: self._current_config))
         self._idle_task = asyncio.create_task(self._idle_unloader.run())

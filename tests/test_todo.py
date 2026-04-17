@@ -349,7 +349,7 @@ class TestSuggestionParser(unittest.TestCase):
     @staticmethod
     def _parse(raw: str, todo_count: int) -> list[dict]:
         """Import and call the parser."""
-        from src.core.orchestrator import _parse_todo_suggestions
+        from src.app.scheduled_jobs import _parse_todo_suggestions
         return _parse_todo_suggestions(raw, todo_count)
 
     def test_standard_format(self):

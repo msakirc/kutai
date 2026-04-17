@@ -26,13 +26,60 @@ logger = get_logger("memory.skills")
 
 # ─── Constants / Thresholds ──────────────────────────────────────────────────
 
-DEDUP_SIMILARITY_THRESHOLD = 0.85
+DEDUP_SIMILARITY_THRESHOLD = 0.93
 MATCH_SIMILARITY_THRESHOLD = 0.75  # was 0.6
 HIGH_CONFIDENCE_THRESHOLD = 0.8
 MIN_INJECTIONS_FOR_CONFIDENCE = 5
 MAX_STRATEGIES_PER_SKILL = 5
 TOOL_INJECTION_THRESHOLD = 0.7
 TOOL_INJECTION_MIN_COUNT = 5
+STRATEGY_RELEVANCE_MIN_OVERLAP = 0.25  # min keyword overlap to allow merge
+
+
+# ─── Stopwords for keyword overlap (Turkish + English) ──────────────────────
+
+_STOPWORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "in", "on", "at", "to", "for", "of", "with", "by", "from", "and",
+    "or", "not", "no", "but", "if", "then", "so", "as", "it", "its",
+    "this", "that", "use", "using", "used", "via", "get", "set",
+    "bir", "ve", "ile", "için", "de", "da", "den", "dan", "bu", "şu",
+})
+
+
+def _tokenize(text: str) -> set[str]:
+    """Lowercase split, strip punctuation, naive deplural, drop short/stop."""
+    import re as _re
+    tokens = set()
+    for w in _re.split(r'[\s,;.:/()]+', text.lower()):
+        # Split compound tokens (shopping_search → shopping, search)
+        parts = w.split("_") if "_" in w else [w]
+        for p in parts:
+            p = p.strip("'\"")
+            if len(p) <= 2 or p in _STOPWORDS:
+                continue
+            tokens.add(p)
+            # Naive English deplural for overlap matching
+            if p.endswith("s") and len(p) > 3:
+                tokens.add(p[:-1])
+    return tokens
+
+
+def _strategy_relevant_to_skill(strategy_text: str, skill_description: str) -> bool:
+    """Check if a strategy is relevant to a skill's domain via keyword overlap.
+
+    Uses lightweight token overlap instead of an embedding call to avoid
+    latency and circular imports. A strategy about "currency rates" should
+    NOT merge into a "weather forecast" skill even if embeddings are close.
+    """
+    strat_tokens = _tokenize(strategy_text)
+    skill_tokens = _tokenize(skill_description)
+    if not strat_tokens or not skill_tokens:
+        return True  # can't judge, allow merge
+    overlap = len(strat_tokens & skill_tokens)
+    smaller = min(len(strat_tokens), len(skill_tokens))
+    ratio = overlap / smaller
+    return ratio >= STRATEGY_RELEVANCE_MIN_OVERLAP
 
 
 # ─── Helper Functions ────────────────────────────────────────────────────────
@@ -214,28 +261,40 @@ async def add_skill(
     # Check for duplicate
     duplicate = await _find_duplicate_skill(description)
     if duplicate:
-        # Merge strategy into existing skill
-        dup_name = duplicate["name"]
-        strategies_raw = duplicate.get("strategies", "[]")
-        if isinstance(strategies_raw, str):
-            try:
-                strategies = json.loads(strategies_raw)
-            except (json.JSONDecodeError, TypeError):
-                strategies = []
+        # Verify strategy is relevant to the duplicate's domain before merging.
+        # Without this check, "currency lookup" strategies merge into "weather check"
+        # because both use api_call and have similar embeddings.
+        dup_desc = duplicate.get("description", "")
+        strategy_text = strategy_summary or description
+        if not _strategy_relevant_to_skill(strategy_text, dup_desc):
+            logger.info(
+                f"Skill dedup blocked: strategy not relevant to {duplicate['name']} "
+                f"(strategy={strategy_text[:60]}, skill={dup_desc[:60]})"
+            )
+            # Fall through to create new skill instead of merging
         else:
-            strategies = strategies_raw or []
+            # Merge strategy into existing skill
+            dup_name = duplicate["name"]
+            strategies_raw = duplicate.get("strategies", "[]")
+            if isinstance(strategies_raw, str):
+                try:
+                    strategies = json.loads(strategies_raw)
+                except (json.JSONDecodeError, TypeError):
+                    strategies = []
+            else:
+                strategies = strategies_raw or []
 
-        strategies.append(strategy)
-        strategies = _prune_strategies(strategies)
+            strategies.append(strategy)
+            strategies = _prune_strategies(strategies)
 
-        await upsert_skill(
-            name=dup_name,
-            description=duplicate["description"],
-            skill_type=duplicate.get("skill_type", "auto"),
-            strategies=strategies,
-        )
-        logger.info(f"Skill merged into existing: {dup_name} (from {name})")
-        return dup_name
+            await upsert_skill(
+                name=dup_name,
+                description=duplicate["description"],
+                skill_type=duplicate.get("skill_type", "auto"),
+                strategies=strategies,
+            )
+            logger.info(f"Skill merged into existing: {dup_name} (from {name})")
+            return dup_name
 
     # Create new skill
     await upsert_skill(
@@ -456,4 +515,30 @@ async def record_injection_success(skill_names: list[str]) -> None:
 async def list_skills() -> list[dict]:
     """List all skills. Delegates to get_all_skills() from db.py."""
     return await get_all_skills()
+
+
+async def reset_all_skills() -> int:
+    """Wipe all skills from DB and ChromaDB, then re-seed.
+
+    Returns number of seeds added.
+    """
+    db = await get_db()
+
+    # Wipe DB
+    await db.execute("DELETE FROM skills")
+    await db.execute("DELETE FROM skill_metrics")
+    await db.commit()
+
+    # Wipe skill embeddings from ChromaDB
+    try:
+        from src.memory.vector_store import delete_by_metadata
+        await delete_by_metadata(collection="semantic", where={"type": "skill"})
+    except Exception as exc:
+        logger.warning(f"ChromaDB skill cleanup failed (non-critical): {exc}")
+
+    # Re-seed
+    from src.memory.seed_skills import seed_skills
+    added = await seed_skills()
+    logger.info(f"Skills reset: wiped all, re-seeded {added}")
+    return added
 

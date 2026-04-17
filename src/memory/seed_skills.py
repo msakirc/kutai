@@ -156,9 +156,13 @@ async def seed_skills():
     """Seed the skills database with curated execution recipe skills.
 
     Only adds skills that don't already exist (by name).
+    Bypasses dedup — seeds are curated with distinct names and must not merge.
     Returns the number of new skills added.
     """
-    from .skills import list_skills, add_skill
+    import json
+    import time
+    from .skills import list_skills, _embed_skill
+    from src.infra.db import upsert_skill
 
     existing = await list_skills()
     existing_names = {s["name"] for s in existing}
@@ -167,13 +171,24 @@ async def seed_skills():
     for skill in SEED_SKILLS:
         if skill["name"] in existing_names:
             continue
-        await add_skill(
+        strategy = {
+            "summary": skill["strategy_summary"],
+            "tool_template": "",
+            "tools_used": skill.get("tools_used", []),
+            "avg_iterations": 0,
+            "source_grade": "seed",
+            "source_task_id": 0,
+            "injection_count": 0,
+            "injection_success": 0,
+            "created_at": time.time(),
+        }
+        await upsert_skill(
             name=skill["name"],
             description=skill["description"],
-            strategy_summary=skill["strategy_summary"],
-            tools_used=skill.get("tools_used", []),
-            source_grade="seed",
+            skill_type="seed",
+            strategies=[strategy],
         )
+        await _embed_skill(skill["name"], skill["description"])
         added += 1
 
     if added:

@@ -270,16 +270,15 @@ async def query(
     # Get embedding for query (as query, not passage)
     embedding = await _get_embed_fn()(text, is_query=True)
 
+    if embedding is None:
+        logger.warning(f"Embedding unavailable — skipping vector query on '{collection}'")
+        return []
+
     try:
         query_kwargs = {
             "n_results": min(top_k, col.count()),
+            "query_embeddings": [embedding],
         }
-
-        if embedding is not None:
-            query_kwargs["query_embeddings"] = [embedding]
-        else:
-            # Fallback: let ChromaDB handle text-based query
-            query_kwargs["query_texts"] = [text]
 
         if where:
             query_kwargs["where"] = where

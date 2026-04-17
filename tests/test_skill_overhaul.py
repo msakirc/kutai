@@ -250,16 +250,16 @@ class TestSkillsV2Core(unittest.TestCase):
         run_async(_test())
 
     def test_add_skill_merges_duplicate(self):
-        """add_skill merges strategy into existing skill when duplicate found."""
+        """add_skill merges strategy into existing skill when duplicate found and relevant."""
         from src.infra.db import init_db, upsert_skill, get_skill_by_name
         from unittest.mock import AsyncMock, patch
 
         async def _test():
             await init_db()
-            # Pre-create existing skill
+            # Pre-create existing skill — description has keyword overlap with strategy
             await upsert_skill(
-                "existing_skill", "Does something", "auto",
-                [{"summary": "Original approach", "tools_used": ["tool_a"],
+                "existing_skill", "Looking up currency exchange rates and conversion", "auto",
+                [{"summary": "Use TCMB for Turkish currency rates", "tools_used": ["tool_a"],
                   "tool_template": "", "injection_count": 0, "injection_success": 0}],
             )
             existing = await get_skill_by_name("existing_skill")
@@ -268,8 +268,8 @@ class TestSkillsV2Core(unittest.TestCase):
                 from src.memory.skills import add_skill
                 result = await add_skill(
                     name="new_name_ignored",
-                    description="Does something similar",
-                    strategy_summary="New approach",
+                    description="Currency rate lookup for international exchange",
+                    strategy_summary="Use Frankfurter API for currency rates",
                     tools_used=["tool_b"],
                 )
                 self.assertEqual(result, "existing_skill")
@@ -277,7 +277,7 @@ class TestSkillsV2Core(unittest.TestCase):
             skill = await get_skill_by_name("existing_skill")
             strategies = json.loads(skill["strategies"])
             self.assertEqual(len(strategies), 2)
-            self.assertEqual(strategies[1]["summary"], "New approach")
+            self.assertEqual(strategies[1]["summary"], "Use Frankfurter API for currency rates")
 
         run_async(_test())
 

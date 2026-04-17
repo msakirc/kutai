@@ -1009,6 +1009,161 @@ class Orchestrator:
 
     # ─── Core Task Processing ────────────────────────────────────────────
 
+    async def _prepare(self, task: dict) -> "tuple[dict, str, int] | None":
+        """Run all pre-dispatch work.
+
+        Returns (prepared_task, agent_type, timeout_seconds) or None if the task
+        should not proceed (already claimed, cancelled, fast-resolved, gate-blocked,
+        or waiting on internet).
+        """
+        task_id = task["id"]
+        title = task["title"]
+        agent_type = task.get("agent_type", "executor")
+
+        # Atomic claim — if another worker grabbed it first, skip
+        claimed = await claim_task(task_id)
+        if not claimed:
+            logger.info("task already claimed", task_id=task_id)
+            return None
+
+        # ── Check for cancellation before starting ──
+        fresh = await get_task(task_id)
+        if fresh and fresh.get("status") == "cancelled":
+            logger.info("task cancelled before execution", task_id=task_id)
+            return None
+
+        # ── Inject context from prior steps + workspace snapshot ──
+        task = await self._inject_chain_context(task)
+
+        # ── Classify task if not already classified ──
+        task_ctx = parse_context(task)
+
+        if "classification" not in task_ctx and agent_type == "executor":
+            from .task_classifier import classify_task as classify
+            classification = await classify(
+                task["title"], task.get("description", ""),
+            )
+            task_ctx["classification"] = dataclasses.asdict(classification)
+            # Only let the classifier set agent_type when the task was
+            # created with the default ("executor").  Command handlers
+            # (e.g. /shop) explicitly set agent_type at creation time;
+            # the classifier must not overwrite those.
+            if classification.confidence >= 0.7 and agent_type == "executor":
+                task["agent_type"] = classification.agent_type
+                agent_type = classification.agent_type
+            if classification.agent_type == "shopping_advisor" and classification.shopping_sub_intent:
+                task_ctx["shopping_workflow"] = classification.shopping_sub_intent
+            task = set_context(task, task_ctx)
+
+        # ── Layer 0: Fast-path resolution via API registry ──
+        # Skip for pipeline agent types — they have their own execution.
+        _skip_fast_path = agent_type in ("pipeline", "shopping_pipeline")
+        try:
+            from ..core.fast_resolver import try_resolve
+            fast_result = None if _skip_fast_path else await try_resolve(task)
+            if fast_result:
+                logger.info("task resolved via fast-path", task_id=task_id)
+                await update_task(task_id, status="completed", result=fast_result,
+                                  completed_at=db_now())
+                if self.telegram and task.get("chat_id"):
+                    await self.telegram.send_notification(fast_result)
+                return None
+        except Exception as exc:
+            logger.debug("fast-path check failed (continuing to agent): %s", exc)
+
+        # ── Shopping intent detection fallback ──
+        # If the LLM classifier didn't confidently pick shopping_advisor,
+        # use regex-based detection from dispatch as a fallback.
+        if agent_type not in ("shopping_advisor", "product_researcher",
+                              "deal_analyst", "shopping_clarifier"):
+            from ..workflows.engine.dispatch import (
+                should_start_shopping_workflow,
+            )
+            shopping_wf = should_start_shopping_workflow(title)
+            if shopping_wf:
+                agent_type = "shopping_advisor"
+                task["agent_type"] = "shopping_advisor"
+                task_ctx["shopping_workflow"] = shopping_wf
+                task = set_context(task, task_ctx)
+                logger.info(
+                    "shopping intent detected via dispatch fallback",
+                    task_id=task_id,
+                    shopping_workflow=shopping_wf,
+                )
+
+        # ── Workflow step pre-hook: inject artifact context ──
+        from ..workflows.engine.hooks import (
+            pre_execute_workflow_step,
+            post_execute_workflow_step,
+            is_workflow_step,
+        )
+        if is_workflow_step(task_ctx):
+            task = await pre_execute_workflow_step(task)
+
+            # Check if this step should delegate to CodingPipeline
+            from ..workflows.engine.pipeline_bridge import should_delegate_to_pipeline
+            template_step_id = task_ctx.get("workflow_step_id", "")
+            if should_delegate_to_pipeline(template_step_id, agent_type):
+                agent_type = "pipeline"
+                task["agent_type"] = "pipeline"
+                logger.info("workflow step delegated to pipeline", task_id=task_id)
+
+        # ── Layer 1: Enrich context with pre-fetched API data ──
+        # Skip for pipeline agent types — they don't need API enrichment.
+        try:
+            from ..core.fast_resolver import enrich_context
+            enrichment = None if _skip_fast_path else await enrich_context(task)
+            if enrichment:
+                task_ctx["api_enrichment"] = enrichment
+                task = set_context(task, task_ctx)
+                logger.info("task enriched with API data", task_id=task_id)
+        except Exception as exc:
+            logger.debug("context enrichment failed (non-critical): %s", exc)
+
+        # ── Human approval + risk gates ──
+        gate_decision = await run_gates(
+            task=task,
+            task_ctx=task_ctx,
+            approval_fn=self.telegram.request_approval,
+        )
+        if isinstance(gate_decision, GateCancel):
+            logger.info("gate rejected", task_id=task_id, reason=gate_decision.reason)
+            await update_task(task_id, status="cancelled")
+            return None
+
+        # ── Phase 6: Snapshot workspace before coder/pipeline tasks ──
+        mission_id = task.get("mission_id")
+        if mission_id and agent_type in ("coder", "pipeline", "implementer", "fixer"):
+            ws_path = get_mission_workspace(mission_id)
+            repo_path = get_mission_workspace_relative(mission_id)
+            await snapshot_workspace(
+                mission_id=mission_id,
+                task_id=task_id,
+                workspace_path=ws_path,
+                repo_path=repo_path,
+            )
+
+        # ── Internet connectivity pre-check for web-dependent tasks ──
+        classification = task_ctx.get("classification", {})
+        if classification.get("search_depth", "none") != "none":
+            if not await _check_internet():
+                logger.warning(
+                    "internet unreachable, deferring web task",
+                    task_id=task_id,
+                )
+                await update_task(
+                    task_id, started_at=None, status="pending",
+                )
+                return None
+
+        # ── Determine timeout ──
+        timeout_seconds = (
+            task.get("timeout_seconds")
+            or AGENT_TIMEOUTS.get(agent_type, 240)
+        )
+
+        return task, agent_type, timeout_seconds
+
     async def process_task(self, task: dict):
         """Process a single task through the appropriate agent with context injection."""
         task_id = task["id"]
@@ -1020,147 +1175,16 @@ class Orchestrator:
         task_ctx = {}  # initialized here so except handler can safely access it
         result = None  # initialized here so except handler can safely access it
         try:
-            # Atomic claim — if another worker grabbed it first, skip
-            claimed = await claim_task(task_id)
-            if not claimed:
-                logger.info("task already claimed", task_id=task_id)
+            prepared = await self._prepare(task)
+            if prepared is None:
                 return
+            task, agent_type, timeout_seconds = prepared
+            title = task["title"]
 
-            # ── Check for cancellation before starting ──
-            fresh = await get_task(task_id)
-            if fresh and fresh.get("status") == "cancelled":
-                logger.info("task cancelled before execution", task_id=task_id)
-                return
-
-            # ── Inject context from prior steps + workspace snapshot ──
-            task = await self._inject_chain_context(task)
-
-            # ── Classify task if not already classified ──
-            task_ctx = parse_context(task)
-
-            if "classification" not in task_ctx and agent_type == "executor":
-                from .task_classifier import classify_task as classify
-                classification = await classify(
-                    task["title"], task.get("description", ""),
-                )
-                task_ctx["classification"] = dataclasses.asdict(classification)
-                # Only let the classifier set agent_type when the task was
-                # created with the default ("executor").  Command handlers
-                # (e.g. /shop) explicitly set agent_type at creation time;
-                # the classifier must not overwrite those.
-                if classification.confidence >= 0.7 and agent_type == "executor":
-                    task["agent_type"] = classification.agent_type
-                    agent_type = classification.agent_type
-                if classification.agent_type == "shopping_advisor" and classification.shopping_sub_intent:
-                    task_ctx["shopping_workflow"] = classification.shopping_sub_intent
-                task = set_context(task, task_ctx)
-
-            # ── Layer 0: Fast-path resolution via API registry ──
-            # Skip for pipeline agent types — they have their own execution.
-            _skip_fast_path = agent_type in ("pipeline", "shopping_pipeline")
-            try:
-                from ..core.fast_resolver import try_resolve
-                fast_result = None if _skip_fast_path else await try_resolve(task)
-                if fast_result:
-                    logger.info("task resolved via fast-path", task_id=task_id)
-                    await update_task(task_id, status="completed", result=fast_result,
-                                      completed_at=db_now())
-                    if self.telegram and task.get("chat_id"):
-                        await self.telegram.send_notification(fast_result)
-                    return
-            except Exception as exc:
-                logger.debug("fast-path check failed (continuing to agent): %s", exc)
-
-            # ── Shopping intent detection fallback ──
-            # If the LLM classifier didn't confidently pick shopping_advisor,
-            # use regex-based detection from dispatch as a fallback.
-            if agent_type not in ("shopping_advisor", "product_researcher",
-                                  "deal_analyst", "shopping_clarifier"):
-                from ..workflows.engine.dispatch import (
-                    should_start_shopping_workflow,
-                )
-                shopping_wf = should_start_shopping_workflow(title)
-                if shopping_wf:
-                    agent_type = "shopping_advisor"
-                    task["agent_type"] = "shopping_advisor"
-                    task_ctx["shopping_workflow"] = shopping_wf
-                    task = set_context(task, task_ctx)
-                    logger.info(
-                        "shopping intent detected via dispatch fallback",
-                        task_id=task_id,
-                        shopping_workflow=shopping_wf,
-                    )
-
-            # ── Workflow step pre-hook: inject artifact context ──
-            from ..workflows.engine.hooks import (
-                pre_execute_workflow_step,
-                post_execute_workflow_step,
-                is_workflow_step,
-            )
-            if is_workflow_step(task_ctx):
-                task = await pre_execute_workflow_step(task)
-
-                # Check if this step should delegate to CodingPipeline
-                from ..workflows.engine.pipeline_bridge import should_delegate_to_pipeline
-                template_step_id = task_ctx.get("workflow_step_id", "")
-                if should_delegate_to_pipeline(template_step_id, agent_type):
-                    agent_type = "pipeline"
-                    task["agent_type"] = "pipeline"
-                    logger.info("workflow step delegated to pipeline", task_id=task_id)
-
-            # ── Layer 1: Enrich context with pre-fetched API data ──
-            # Skip for pipeline agent types — they don't need API enrichment.
-            try:
-                from ..core.fast_resolver import enrich_context
-                enrichment = None if _skip_fast_path else await enrich_context(task)
-                if enrichment:
-                    task_ctx["api_enrichment"] = enrichment
-                    task = set_context(task, task_ctx)
-                    logger.info("task enriched with API data", task_id=task_id)
-            except Exception as exc:
-                logger.debug("context enrichment failed (non-critical): %s", exc)
-
-            # ── Human approval + risk gates ──
-            gate_decision = await run_gates(
-                task=task,
-                task_ctx=task_ctx,
-                approval_fn=self.telegram.request_approval,
-            )
-            if isinstance(gate_decision, GateCancel):
-                logger.info("gate rejected", task_id=task_id, reason=gate_decision.reason)
-                await update_task(task_id, status="cancelled")
-                return
-
-            # ── Phase 6: Snapshot workspace before coder/pipeline tasks ──
-            mission_id = task.get("mission_id")
-            if mission_id and agent_type in ("coder", "pipeline", "implementer", "fixer"):
-                ws_path = get_mission_workspace(mission_id)
-                repo_path = get_mission_workspace_relative(mission_id)
-                await snapshot_workspace(
-                    mission_id=mission_id,
-                    task_id=task_id,
-                    workspace_path=ws_path,
-                    repo_path=repo_path,
-                )
-
-            # ── Internet connectivity pre-check for web-dependent tasks ──
-            classification = task_ctx.get("classification", {})
-            if classification.get("search_depth", "none") != "none":
-                if not await _check_internet():
-                    logger.warning(
-                        "internet unreachable, deferring web task",
-                        task_id=task_id,
-                    )
-                    await update_task(
-                        task_id, started_at=None, status="pending",
-                    )
-                    return
-
-            # ── Determine timeout ──
-            timeout_seconds = (
-                task.get("timeout_seconds")
-                or AGENT_TIMEOUTS.get(agent_type, 240)
-            )
+            # Make workflow hook functions available for the dispatch and
+            # result-handling code below (they were lazily imported inside the
+            # old process_task prefix; _prepare owns that import now).
+            from ..workflows.engine.hooks import post_execute_workflow_step, is_workflow_step
 
             if agent_type == "pipeline":
                 from ..workflows.pipeline import CodingPipeline

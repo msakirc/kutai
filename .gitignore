@@ -4,3 +4,33 @@ node_modules/
 __pycache__/
 *.pyc
 .worktrees/
+
+# Runtime + caches
+logs/
+*.log
+.benchmark_cache/
+.idea/
+.vscode/
+data/chroma/
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# Build / packaging artifacts
+*.egg-info/
+dist/
+build/
+
+# Mission workspaces (runtime output — never commit)
+workspace/
+src/workspace/
+src/app/workspace/
+frontend_scaffold/
+backend_5.0.0/
+
+# Leaked Next.js scaffold at project root (should never exist here)
+/package.json
+/package-lock.json
+/tsconfig.json
+/src/app/layout.tsx
+/src/app/page.tsx

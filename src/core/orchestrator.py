@@ -22,6 +22,8 @@ from ..infra.db import (
 from src.infra.logging_config import get_logger
 from .router import ModelCallFailed, get_kdv
 from .task_context import parse_context, set_context
+from .task_gates import run_gates
+from .decisions import Cancel as GateCancel
 from ..agents import get_agent
 from ..tools import execute_tool
 from ..tools.workspace import (
@@ -1522,56 +1524,16 @@ class Orchestrator:
             except Exception as exc:
                 logger.debug("context enrichment failed (non-critical): %s", exc)
 
-            # ── Human approval gate ──
-            if task_ctx.get("human_gate"):
-                try:
-                    logger.info("human approval gate triggered", task_id=task_id)
-                    approved = await self.telegram.request_approval(
-                        task_id,
-                        task.get("title", ""),
-                        task.get("description", "")[:200],
-                        tier=task.get("tier", "auto"),
-                        mission_id=task.get("mission_id"),
-                    )
-                    if not approved:
-                        logger.info("human gate rejected", task_id=task_id)
-                        await update_task(task_id, status="cancelled")
-                        return
-                    logger.info("human gate approved", task_id=task_id)
-                except Exception as e:
-                    logger.error("human gate error", task_id=task_id, error=str(e))
-
-            # ── Phase 14.2: Risk assessment gate ──
-            # Skip for workflow steps — they are pre-defined in the workflow
-            # JSON and approval would block the automated pipeline.  Workflow
-            # human gates are handled separately via needs_clarification.
-            is_workflow = task_ctx.get("is_workflow_step", False)
-            try:
-                from ..security.risk_assessor import assess_risk, format_risk_assessment
-                risk = await assess_risk(
-                    task_title=task.get("title", ""),
-                    task_description=task.get("description", ""),
-                )
-                if risk["needs_approval"] and not task_ctx.get("human_gate") and not is_workflow:
-                    logger.info(
-                        "risk gate triggered",
-                        task_id=task_id,
-                        risk_score=risk["score"],
-                        factors=risk["risk_factors"],
-                    )
-                    approved = await self.telegram.request_approval(
-                        task_id,
-                        task.get("title", ""),
-                        format_risk_assessment(risk),
-                        tier=task.get("tier", "auto"),
-                        mission_id=task.get("mission_id"),
-                    )
-                    if not approved:
-                        logger.info("risk gate rejected", task_id=task_id)
-                        await update_task(task_id, status="cancelled")
-                        return
-            except Exception as e:
-                logger.debug(f"Risk assessment skipped: {e}")
+            # ── Human approval + risk gates ──
+            gate_decision = await run_gates(
+                task=task,
+                task_ctx=task_ctx,
+                approval_fn=self.telegram.request_approval,
+            )
+            if isinstance(gate_decision, GateCancel):
+                logger.info("gate rejected", task_id=task_id, reason=gate_decision.reason)
+                await update_task(task_id, status="cancelled")
+                return
 
             # ── Phase 6: Snapshot workspace before coder/pipeline tasks ──
             mission_id = task.get("mission_id")

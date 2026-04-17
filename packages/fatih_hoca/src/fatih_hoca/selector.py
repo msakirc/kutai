@@ -177,7 +177,129 @@ class Selector:
             "selector pick: model=%s score=%.1f min_time=%.1fs load=%.0fs task=%s",
             best.model.name, best.score, min_time, load_time, task,
         )
+
+        # Pick telemetry — structured log + fire-and-forget DB write
+        try:
+            effective_task = reqs.effective_task or task
+            top_n = min(len(scored), 5)
+            top_summary = ", ".join(
+                f"{r.model.name}={r.score:.1f}"
+                for r in scored[:top_n]
+            )
+            logger.info(
+                "picked=%s score=%.1f task=%s diff=%d category=%s candidates=[%s]",
+                best.model.name, best.score,
+                effective_task, reqs.difficulty, call_category,
+                top_summary,
+            )
+            self._persist_pick_telemetry(
+                scored, reqs, effective_task, call_category, failures, snapshot,
+            )
+        except Exception as e:
+            logger.debug("pick telemetry log/persist failed: %s", e)
+
         return Pick(model=best.model, min_time_seconds=min_time, estimated_load_seconds=load_time)
+
+    # ─── Pick Telemetry ──────────────────────────────────────────────────────
+
+    def _persist_pick_telemetry(
+        self,
+        scored: list,
+        reqs,
+        task_name: str,
+        call_category: str,
+        failures: list,
+        snapshot,
+    ) -> None:
+        """Fire-and-forget write to model_pick_log. Never raises; never blocks selection."""
+        import asyncio
+        import json
+
+        candidates_payload = [
+            {
+                "name": r.model.name,
+                "composite": round(r.score, 2),
+                "reasons": list(r.reasons),
+            }
+            for r in scored[:10]
+        ]
+        failures_payload = [
+            {
+                "model": f.model,
+                "reason": getattr(f, "reason", None) or getattr(f, "error_type", None),
+                "msg": (getattr(f, "message", "") or "")[:100],
+            }
+            for f in (failures or [])
+        ]
+        local_state = getattr(snapshot, "local", None)
+        snapshot_summary = {
+            "vram_free_mb": getattr(snapshot, "vram_available_mb", 0),
+            "loaded": getattr(local_state, "model_name", None) if local_state else None,
+        }
+
+        picked_model = scored[0].model.name
+        picked_score = round(scored[0].score, 2)
+        picked_reasons_json = json.dumps(list(scored[0].reasons))
+        candidates_json = json.dumps(candidates_payload)
+        failures_json = json.dumps(failures_payload)
+        snapshot_summary_json = json.dumps(snapshot_summary)
+        agent_type = getattr(reqs, "agent_type", None)
+        difficulty = getattr(reqs, "difficulty", 0)
+
+        async def _write():
+            try:
+                # Use a short-lived dedicated connection — avoids polluting the
+                # shared singleton (which tests may reset between cases). Only
+                # import/resolve DB_PATH lazily at write time so we don't force
+                # `src.app.config` to be loaded before other tests can set env.
+                import os
+                import sys
+                import aiosqlite
+                db_path = os.getenv("DB_PATH")
+                if not db_path:
+                    # Only use src.app.config if already imported — don't force
+                    # its load here, which could freeze DB_PATH before test
+                    # env monkeypatches take effect.
+                    cfg_mod = sys.modules.get("src.app.config")
+                    if cfg_mod is None:
+                        return  # no config loaded yet — skip telemetry
+                    db_path = getattr(cfg_mod, "DB_PATH", None)
+                if not db_path:
+                    return
+                async with aiosqlite.connect(db_path) as db:
+                    await db.execute(
+                        """
+                        INSERT INTO model_pick_log
+                          (task_name, agent_type, difficulty, call_category,
+                           picked_model, picked_score, picked_reasons,
+                           candidates_json, failures_json, snapshot_summary)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            task_name or "unknown",
+                            agent_type,
+                            difficulty,
+                            call_category,
+                            picked_model,
+                            picked_score,
+                            picked_reasons_json,
+                            candidates_json,
+                            failures_json,
+                            snapshot_summary_json,
+                        ),
+                    )
+                    await db.commit()
+            except Exception:
+                pass  # telemetry must never break selection
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(_write())
+            else:
+                loop.run_until_complete(_write())
+        except RuntimeError:
+            pass  # no event loop available — skip this call
 
     # ─── Eligibility Check (Layer 1) ─────────────────────────────────────────
 

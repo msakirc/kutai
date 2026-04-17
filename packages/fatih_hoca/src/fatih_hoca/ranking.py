@@ -294,8 +294,19 @@ def rank_candidates(
                     reasons.append(f"util={effective_util:.0f}%")
 
         # ── 4. Performance History (0–100) ──
-        # TODO: wire up performance cache (refresh from DB stats)
-        perf_score = 50
+        # Derive from measured tps when this is the loaded local model.
+        # TODO(phase-2): replace with grading-based quality score from model_stats.
+        if model.is_local and model.is_loaded and \
+           local_state.model_name == model.name and local_state.measured_tps > 0:
+            tps = local_state.measured_tps
+            # 10 tps → 50, 20 tps → 65, 40 tps → 80, 80+ tps → 95
+            perf_score = min(95.0, 50.0 + (tps - 10) * 1.5) if tps >= 10 else max(20.0, 20.0 + tps * 3.0)
+        elif model.is_local and model.tokens_per_second > 0:
+            tps = model.tokens_per_second
+            perf_score = min(90.0, 45.0 + (tps - 10) * 1.2) if tps >= 10 else max(15.0, 15.0 + tps * 3.0)
+        else:
+            perf_score = 50.0
+        reasons.append(f"perf={perf_score:.0f}")
 
         # ── 5. Speed (0–100) ──
         if model.is_local:

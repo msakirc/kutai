@@ -52,3 +52,37 @@ class TestCapabilityClampRemoval:
         # Meaningful separation: clamp removal must not be a no-op here
         assert ranked[0].composite_score > ranked[1].composite_score, \
             "ten must have strictly higher composite than nine"
+
+
+class TestPerfScoreFromTps:
+    """perf_score must reflect measured tps, not a hardcoded 50."""
+
+    def test_loaded_model_with_high_tps_scores_above_50(self):
+        m = _make_model("fast", {"reasoning": 7.0}, tps=40.0)
+        m.is_loaded = True
+        reqs = ModelRequirements(primary_capability="reasoning", difficulty=5)
+
+        from nerd_herd.types import LocalModelState
+        snap = SystemSnapshot()
+        snap.local = LocalModelState(model_name="fast", measured_tps=40.0)
+
+        ranked = rank_candidates([m], reqs, snap, failures=[])
+        reasons = ranked[0].reasons
+        perf_reason = next((r for r in reasons if r.startswith("perf=")), None)
+        assert perf_reason is not None, "ranking must expose perf= in reasons"
+        perf_val = float(perf_reason.split("=")[1])
+        assert perf_val > 50, f"40 tps should beat baseline 50, got perf={perf_val}"
+
+    def test_unmeasured_cloud_model_falls_back_to_50(self):
+        m = _make_model("cloud", {"reasoning": 7.0}, location="cloud",
+                        provider="anthropic", litellm_name="claude/sonnet",
+                        path="")
+        reqs = ModelRequirements(primary_capability="reasoning", difficulty=5)
+        snap = SystemSnapshot()
+
+        ranked = rank_candidates([m], reqs, snap, failures=[])
+        reasons = ranked[0].reasons
+        perf_reason = next((r for r in reasons if r.startswith("perf=")), None)
+        assert perf_reason is not None
+        perf_val = float(perf_reason.split("=")[1])
+        assert perf_val == 50.0, f"cloud model with no history should fall back to 50, got {perf_val}"

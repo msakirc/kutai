@@ -147,25 +147,27 @@ def _normalize_elo(elo: float) -> float:
 
 # Maps our local model family names to patterns found in leaderboard data
 _MODEL_ALIASES: dict[str, list[str]] = {
-    # ── Local models on disk ──
-    "qwen3.5-35b":     ["Qwen3.5-35B", "qwen3-5-35b", "Qwen/Qwen3.5-35B-A3B", "qwen-3.5-35b"],
-    "qwen3.5-27b":     ["Qwen3.5-27B", "qwen3-5-27b", "Qwen/Qwen3.5-27B"],
-    "qwen3.5-9b":      ["Qwen3.5-9B", "qwen3-5-9b", "Qwen/Qwen3.5-9B"],
-    "qwen3-coder-30b": ["Qwen3-Coder-30B", "Qwen/Qwen3-Coder-30B-A3B-Instruct"],
-    "glm-4.7-flash":   ["GLM-4.7-Flash", "glm4-flash", "THUDM/GLM-4.7-Flash"],
-    "gemma-4-26b":     ["Gemma-4-26B", "gemma-4-26b-it", "google/gemma-4-26b-it", "gemma4"],
-    "gpt-oss-20b":     ["gpt-oss-20b", "GPT-OSS-20B", "openai/gpt-oss-20b"],
-    "apriel-15b":      ["Apriel-15B-Thinker", "ServiceNow/Apriel-15B-Thinker", "apriel-thinker"],
-    "gigachat-lightning": ["GigaChat3.1-Lightning", "gigachat", "Sber/GigaChat3.1-Lightning"],
-    "nerdsking-7b":    ["nerdsking-python-coder-7B", "nerdsking-python-7B"],
+    # ── Local models on disk (verified against AA bulk cache 2026-04-17) ──
+    # Qwen3 trio — three distinct models, three distinct AA keys
+    "qwen3-30b-a3b":   ["qwen3-30b-a3b-instruct::thinking", "qwen3-30b-a3b-instruct"],
+    "qwen3-32b":       ["qwen3-32b-instruct", "qwen3-32b-instruct::thinking"],
+    # Note: NO entry for qwen3-coder-30b — AA has no 30B coder.
+    "qwen3-8b":        ["qwen3-8b-instruct"],
+    "qwen3-14b":       ["qwen3-14b-instruct"],
+    "qwen3-235b":      ["qwen3-235b-a22b-instruct-2507", "qwen3-235b-a22b-instruct"],
+
+    "gpt-oss-20b":     ["gpt-oss-20b"],
+    "gpt-oss-120b":    ["gpt-oss-120b"],
+    "apriel-15b":      ["apriel-1-6-15b-thinker"],
+    "llama-3-3-70b":   ["llama-3-3-70b-instruct"],
+
     # ── Cloud models ──
-    "gpt-4o":          ["GPT-4o", "gpt-4o-2024-11-20", "chatgpt-4o-latest"],
-    "gpt-4o-mini":     ["GPT-4o-mini", "gpt-4o-mini-2024-07-18"],
-    "claude-sonnet":   ["Claude-Sonnet-4", "claude-sonnet-4-20250514", "anthropic/claude-sonnet-4"],
-    "gemini-flash":    ["Gemini-2.0-Flash", "gemini-2.0-flash", "google/gemini-2.0-flash"],
-    "gemini-flash-thinking": ["Gemini-2.5-Flash", "gemini-2.5-flash-preview", "gemini-2.5-flash"],
-    "groq-llama-70b":  ["Llama-3.3-70B", "meta-llama/Llama-3.3-70B-Instruct"],
+    "gpt-4o":          ["gpt-4o", "gpt-4o-2024-11-20"],
+    "gpt-4o-mini":     ["gpt-4o-mini", "gpt-4o-mini-2024-07-18"],
+    "claude-sonnet-4": ["claude-sonnet-4-5", "claude-sonnet-4-20250514"],
+    "gemini-flash":    ["gemini-2-5-flash", "gemini-2-0-flash"],
     "o4-mini":         ["o4-mini", "o4-mini-2025-04-16"],
+    "deepseek-r1":     ["deepseek-r1", "deepseek-r1-0528"],
 }
 
 
@@ -190,13 +192,37 @@ def _strip_gguf_suffixes(name: str) -> str:
     return name
 
 
+def _extract_size_tokens(segments: list[str]) -> set[str]:
+    """Extract size-tokens from a list of segments.
+
+    A size token is a segment ending in 'b' whose body (after optional leading
+    'a' for active-params marker) is purely numeric. Examples: '30b', '480b',
+    '7b', 'a3b', 'a22b', 'a35b'.
+    """
+    out: set[str] = set()
+    for s in segments:
+        if s.endswith("b") and len(s) > 1:
+            core = s[:-1]
+            if core.startswith("a"):
+                core = core[1:]
+            if core.isdigit():
+                out.add(s)
+    return out
+
+
 def _normalize_for_matching(name: str) -> str:
     """Normalize a model name for fuzzy matching.
 
     Preserves version dots as dashes to avoid false matches
     (e.g., 'qwen3.5' -> 'qwen3-5', not 'qwen35').
+    Strips AA mode suffixes ('::thinking', '::reasoning', '::nonthinking') so
+    a local GGUF can still match a thinking-flagged AA entry.
     """
     n = name.lower()
+    # Strip AA mode suffix BEFORE other transforms — :: is preserved literally otherwise
+    for mode_suffix in ("::thinking", "::reasoning", "::nonthinking"):
+        if n.endswith(mode_suffix):
+            n = n[: -len(mode_suffix)]
     # Remove org prefixes
     if "/" in n:
         n = n.rsplit("/", 1)[-1]
@@ -251,18 +277,40 @@ def _fuzzy_match_model(query: str, candidates: list[str]) -> Optional[str]:
                 best_score = score
                 best_match = candidate
 
-        # Full substring match (only if high overlap ratio)
+        # Full substring match (only if high overlap ratio AND size tokens agree)
         if query_norm in cand_norm or cand_norm in query_norm:
             score = min(len(query_norm), len(cand_norm)) / max(len(query_norm), len(cand_norm))
-            if score > 0.7 and score > best_score:
+            # Reject if size-tokens differ (30b vs 480b, 8b vs 80b, etc.)
+            q_sizes = _extract_size_tokens(query_segs)
+            c_sizes = _extract_size_tokens(cand_norm.split("-"))
+            if q_sizes and c_sizes and not (q_sizes & c_sizes):
+                # Different sizes — skip substring match
+                pass
+            elif score > 0.7 and score > best_score:
                 best_score = score
                 best_match = candidate
 
     # Check aliases (separate pass — aliases are authoritative)
+    # Family-shifter segments: tokens that change which model family this is.
+    # If the query contains one of these and the alias key does NOT, the alias
+    # must not match (e.g. 'qwen3-30b-a3b' alias must not match 'qwen3-coder-30b-a3b').
+    _FAMILY_SHIFTERS = {"coder", "vl", "omni", "next", "max", "nemotron",
+                        "thinker", "thinking", "reasoning", "vision"}
     for alias_key, alias_list in _MODEL_ALIASES.items():
         ak = _normalize_for_matching(alias_key)
         query_test = _normalize_for_matching(query_stripped)
         if ak == query_test or _segments_contain(query_test, ak):
+            # Family-shifter guard: if query carries a shifter (e.g. 'coder', 'vl')
+            # that is absent from BOTH the alias key and ALL alias targets, the
+            # alias does not actually describe this family — skip it.
+            ak_segs = set(ak.split("-"))
+            q_segs = set(query_test.split("-"))
+            target_segs: set[str] = set()
+            for alias in alias_list:
+                target_segs.update(_normalize_for_matching(alias).split("-"))
+            extra_shifters = (q_segs - ak_segs - target_segs) & _FAMILY_SHIFTERS
+            if extra_shifters:
+                continue
             for alias in alias_list:
                 an = _normalize_for_matching(alias)
                 for candidate in candidates:

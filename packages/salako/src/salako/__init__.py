@@ -37,4 +37,12 @@ async def run(task: dict) -> Action:
         await auto_commit(task, payload.get("result") or {})
         return Action(status="completed")
 
+    if action == "clarify":
+        from salako.clarify import clarify
+        try:
+            res = await clarify(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

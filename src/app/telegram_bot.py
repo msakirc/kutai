@@ -300,11 +300,32 @@ def _format_log_entries(lines: list[str], n: int = 20) -> str:
     return "\n".join(formatted)
 
 
+_TG_INSTANCE: "TelegramInterface | None" = None
+
+
+def get_telegram() -> "TelegramInterface":
+    """Module-level accessor for the singleton TelegramInterface.
+
+    Raises RuntimeError if called before the interface is constructed. Used by
+    mechanical executors (e.g. salako clarify/notify_user) to reach Telegram
+    without tight coupling.
+    """
+    if _TG_INSTANCE is None:
+        raise RuntimeError("telegram not initialized")
+    return _TG_INSTANCE
+
+
+def set_telegram(instance: "TelegramInterface") -> None:
+    global _TG_INSTANCE
+    _TG_INSTANCE = instance
+
+
 class TelegramInterface:
     def __init__(self, orchestrator=None):
         self.orchestrator = orchestrator
         self.app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
         self._setup_handlers()
+        set_telegram(self)
         self._approval_events = {}
         self._clarification_events = {}
         self.user_last_task_id = {}

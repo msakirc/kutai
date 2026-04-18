@@ -127,6 +127,9 @@ async def test_select_persists_pick_to_db(tmp_path, monkeypatch, caplog):
     cands = json.loads(cand_json)
     assert len(cands) >= 2, "candidates_json must include all ranked candidates"
     assert all("name" in c and "composite" in c and "reasons" in c for c in cands)
+    assert all("cap_score" in c and "pool" in c and "urgency" in c for c in cands), (
+        "candidates_json entries must include cap_score, pool, urgency for counterfactual sweeps"
+    )
 
     # Cleanup: close and reset shared connection so subsequent tests get a fresh DB
     if _db_mod._db_connection is not None:

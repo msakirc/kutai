@@ -248,6 +248,9 @@ class Selector:
                 "name": r.model.name,
                 "composite": round(r.score, 2),
                 "reasons": list(r.reasons),
+                "cap_score": round(r.capability_score * 10.0, 2),
+                "pool": r.pool or None,
+                "urgency": r.urgency,
             }
             for r in scored[:10]
         ]

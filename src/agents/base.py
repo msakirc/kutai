@@ -1608,7 +1608,9 @@ class BaseAgent:
         empty_response_count = 0
 
         try:
-          for iteration in range(start_iteration, effective_max_iterations):
+          # Budget is fresh per attempt. Checkpoint preserves messages/tool ops
+          # for LLM context; it does not consume the new attempt's budget.
+          for iteration in range(effective_max_iterations):
             # ── Check if task was cancelled while running ──
             if iteration > 0 and iteration % 2 == 0:
                 try:

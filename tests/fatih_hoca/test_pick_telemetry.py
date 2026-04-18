@@ -206,6 +206,83 @@ async def test_telemetry_does_not_leak_when_os_env_has_db_path(tmp_path, monkeyp
     )
 
 
+@pytest.mark.asyncio
+async def test_pick_log_records_pool_and_urgency(tmp_path, monkeypatch):
+    """model_pick_log rows must have non-null pool and urgency after a successful select()."""
+    import asyncio
+
+    db_file = tmp_path / "test_pool_urgency.db"
+
+    import src.infra.db as _db_mod
+    monkeypatch.setattr(_db_mod, "DB_PATH", str(db_file))
+    if _db_mod._db_connection is not None:
+        await _db_mod._db_connection.close()
+        _db_mod._db_connection = None
+
+    from src.infra.db import init_db
+    await init_db()
+
+    import fatih_hoca
+    from fatih_hoca.registry import ModelInfo, ModelRegistry
+    from fatih_hoca.selector import Selector
+
+    fatih_hoca._registry = None
+    fatih_hoca._selector = None
+
+    reg = ModelRegistry()
+    reg._models["a"] = ModelInfo(
+        name="a", location="local",
+        provider="llama_cpp", litellm_name="openai/a",
+        path="/fake/a.gguf",
+        total_params_b=8.0, active_params_b=8.0,
+        capabilities={c: 7.0 for c in ["reasoning", "code_generation", "analysis", "instruction_adherence"]},
+    )
+    reg._models["b"] = ModelInfo(
+        name="b", location="local",
+        provider="llama_cpp", litellm_name="openai/b",
+        path="/fake/b.gguf",
+        total_params_b=8.0, active_params_b=8.0,
+        capabilities={c: 5.0 for c in ["reasoning", "code_generation", "analysis", "instruction_adherence"]},
+    )
+
+    class _Nh:
+        def snapshot(self):
+            from nerd_herd.types import SystemSnapshot
+            return SystemSnapshot(vram_available_mb=24000)
+
+    fatih_hoca._registry = reg
+    fatih_hoca._selector = Selector(registry=reg, nerd_herd=_Nh())
+
+    from fatih_hoca import selector as _sel_mod
+    monkeypatch.setattr(_sel_mod, "_telemetry_db_path", str(db_file))
+
+    pick = fatih_hoca.select(
+        task="coder", agent_type="coder", difficulty=5,
+        estimated_input_tokens=500, estimated_output_tokens=500,
+        call_category="main_work",
+    )
+    assert pick is not None, "selector must return a Pick"
+
+    await asyncio.sleep(0.3)
+
+    import aiosqlite
+    async with aiosqlite.connect(db_file) as db:
+        cur = await db.execute("SELECT pool, urgency FROM model_pick_log LIMIT 1")
+        row = await cur.fetchone()
+
+    assert row is not None, "expected at least one row in model_pick_log"
+    pool_val, urgency_val = row
+    assert pool_val in {"local", "time_bucketed", "per_call"}, (
+        f"pool must be one of local/time_bucketed/per_call, got: {pool_val!r}"
+    )
+    assert urgency_val is not None, "urgency must not be NULL"
+    assert 0.0 <= urgency_val <= 1.0, f"urgency must be in [0, 1], got: {urgency_val}"
+
+    if _db_mod._db_connection is not None:
+        await _db_mod._db_connection.close()
+        _db_mod._db_connection = None
+
+
 def test_select_in_sync_context_skips_telemetry_cleanly(tmp_path, monkeypatch):
     """When fatih_hoca.select() runs in a pure sync context with no event loop,
     pick telemetry must be silently skipped — no crash, no DeprecationWarning,

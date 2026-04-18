@@ -273,6 +273,8 @@ class Selector:
         snapshot_summary_json = json.dumps(snapshot_summary)
         agent_type = getattr(reqs, "agent_type", None)
         difficulty = getattr(reqs, "difficulty", 0)
+        picked_pool = scored[0].pool or None
+        picked_urgency = scored[0].urgency
 
         async def _write():
             try:
@@ -293,8 +295,9 @@ class Selector:
                         INSERT INTO model_pick_log
                           (task_name, agent_type, difficulty, call_category,
                            picked_model, picked_score, picked_reasons,
-                           candidates_json, failures_json, snapshot_summary)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           candidates_json, failures_json, snapshot_summary,
+                           pool, urgency)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             task_name or "unknown",
@@ -307,6 +310,8 @@ class Selector:
                             candidates_json,
                             failures_json,
                             snapshot_summary_json,
+                            picked_pool,
+                            picked_urgency,
                         ),
                     )
                     await db.commit()

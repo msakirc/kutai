@@ -60,12 +60,9 @@ except Exception as e:
     _log = get_logger("app.run")
     _log.warning("Could not attach TelegramAlertHandler", error=str(e))
 
-from nerd_herd.client import NerdHerdClient
+from nerd_herd.client import NerdHerdClient, get_default as get_nerd_herd, set_default as _set_nerd_herd_default
 
 _nerd_herd: NerdHerdClient | None = None
-
-def get_nerd_herd() -> NerdHerdClient | None:
-    return _nerd_herd
 
 _NERD_HERD_PID_FILE = os.path.join("logs", "nerd_herd.pid")
 
@@ -472,6 +469,8 @@ async def main():
         _log.warning("NerdHerd client init failed — running without GPU monitoring",
                      error=str(exc))
         _nerd_herd = None
+
+    _set_nerd_herd_default(_nerd_herd)
 
     # Wire NerdHerd client into LocalModelManager so _on_ready can push state
     try:

@@ -25,8 +25,8 @@ def mark_degraded(capability: str) -> None:
     if capability not in runtime_state["degraded_capabilities"]:
         runtime_state["degraded_capabilities"].append(capability)
     try:
-        from src.app.run import get_nerd_herd
-        nh = get_nerd_herd()
+        from nerd_herd.client import get_default
+        nh = get_default()
         if nh is not None:
             try:
                 loop = asyncio.get_running_loop()

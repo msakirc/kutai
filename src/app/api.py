@@ -243,8 +243,8 @@ def create_app() -> Any:
     async def prometheus_metrics():
         """Prometheus-compatible metrics. Delegates to NerdHerd."""
         try:
-            from src.app.run import get_nerd_herd
-            nh = get_nerd_herd()
+            from nerd_herd.client import get_default
+            nh = get_default()
             if nh is not None:
                 return await nh.prometheus_lines()
             return ""

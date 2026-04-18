@@ -14,8 +14,8 @@ from nerd_herd.load import LOAD_MODES, VRAM_BUDGETS, DESCRIPTIONS  # noqa: F401
 def _nh():
     """Get NerdHerdClient instance, or None if not yet initialized."""
     try:
-        from src.app.run import get_nerd_herd
-        return get_nerd_herd()
+        from nerd_herd.client import get_default
+        return get_default()
     except Exception:
         return None
 

@@ -123,8 +123,8 @@ class LocalModelManager:
         nh = self._nerd_herd
         if nh is None:
             try:
-                from src.app.run import get_nerd_herd
-                nh = get_nerd_herd()
+                from nerd_herd.client import get_default
+                nh = get_default()
             except Exception:
                 return
         if nh is None:

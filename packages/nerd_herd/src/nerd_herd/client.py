@@ -296,3 +296,18 @@ class NerdHerdClient:
         except Exception as exc:
             logger.debug("prometheus_lines failed", error=str(exc))
             return ""
+
+
+# Process-wide singleton. Owned by nerd_herd so it resolves to the same module
+# regardless of how the entry-point script is launched (avoids __main__ vs
+# src.app.run module-identity splits).
+_default: NerdHerdClient | None = None
+
+
+def get_default() -> NerdHerdClient | None:
+    return _default
+
+
+def set_default(client: NerdHerdClient | None) -> None:
+    global _default
+    _default = client

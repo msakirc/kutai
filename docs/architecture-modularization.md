@@ -11,9 +11,11 @@ With 237 Python files in `src/` and no enforced boundaries, an agent fixing a sh
 ```
 Telegram / API
        │
-  Orchestrator ─── picks tasks from queue by priority, dependencies
+  Orchestrator ─── thin pump: drain Beckman, dispatch by executor
        │
-  LLM Dispatcher ─── ask, load, call, retry
+  General Beckman ─── task queue, eligibility, look-ahead, lifecycle
+       │
+  LLM Dispatcher ─── ask, load, call, retry    (or Salako, for mechanical)
        │
   ┌────┼──────────────┐
   │    │              │
@@ -28,11 +30,13 @@ Nerd Herd         │           llama-server
            (GPU sem)  (cloud capacity)
 ```
 
-**Orchestrator** reads the task queue, picks next task. Does NOT select models.
+**Orchestrator** drains `beckman.next_task()` to saturation, dispatches each via `salako.run()` (mechanical) or `llm_dispatcher.request()` (LLM), invokes `beckman.on_task_finished()` on return, ticks `beckman.tick()` every 3s. Does NOT select tasks, does NOT select models, does NOT own lifecycle handlers. Post-Task-13 target: ~200 lines.
+
+**General Beckman** is the task master — owns the queue, eligibility/priority filters, lane classification (mechanical / cloud_llm / local_llm), queue look-ahead against cloud quota, watchdog + scheduled-jobs ticks, and post-execution lifecycle (`on_task_finished` drains `result_router` and runs per-action handlers). Consumes `nerd_herd.snapshot()` for capacity state. Runs *before* Fatih Hoca per dispatch. See `docs/superpowers/specs/2026-04-18-phase2b-general-beckman-design.md`.
 
 **Dispatcher** asks Fatih Hoca for a model, loads it via DaLLaMa, calls the Talking Layer, reports failures back for re-selection. Owns message preparation (secret redaction, thinking adaptation) and timeout floors. Does NOT score or select models.
 
-**Fatih Hoca** (planned extraction) is the model manager — knows every model's strengths, picks the best one for each job. Owns model catalog, 15-dimension capability scoring, swap budget, failure-adaptive re-selection. Queries Nerd Herd for system state. See `docs/superpowers/specs/2026-04-14-fatih-hoca-design.md`.
+**Fatih Hoca** is the model manager — knows every model's strengths, picks the best one for each job. Owns model catalog, 15-dimension capability scoring, swap budget, failure-adaptive re-selection. Queries Nerd Herd for system state (same snapshot Beckman uses; different question). See `docs/superpowers/specs/2026-04-14-fatih-hoca-design.md`.
 
 **DaLLaMa** manages the llama-server process. Start, stop, swap, health, idle unload. Three methods: `infer(config)`, `keep_alive()`, `status`. Does NOT select models, route calls, or manage cloud.
 
@@ -74,7 +78,8 @@ Agent needs LLM call
 | **kuleden_donen_var** | Cloud provider capacity tracker: rate limits, quotas, circuit breakers | `packages/kuleden_donen_var/` | Stable v0.1.0 | None |
 | **hallederiz_kadir** | LLM call execution hub: litellm, streaming, retries, quality | `packages/hallederiz_kadir/` | New v0.1.0 | litellm |
 | **fatih_hoca** | Model manager: scoring, selection, swap budget, failure adaptation | `packages/fatih_hoca/` | Stable v0.1.0 | nerd_herd |
-| **salako** | Mechanical dispatcher: non-LLM executors (workspace snapshot, git auto-commit) | `packages/salako/` | New v0.1.0 | None |
+| **salako** | Mechanical dispatcher: non-LLM executors (workspace snapshot, git auto-commit, clarify, notify_user) | `packages/salako/` | Stable v0.1.0 | None |
+| **general_beckman** | Task master: queue, eligibility, lane classification, quota look-ahead, lifecycle drain, watchdog + scheduled-job ticks | `packages/general_beckman/` | New v0.1.0 (transitional — main-loop rewrite pending Task 13 follow-up) | nerd_herd, salako |
 
 All packages: `packages/<name>/`, src layout, editable install via requirements.txt. Original module becomes a thin shim preserving all import paths.
 
@@ -341,8 +346,21 @@ Both executors depend on the new `src.app.telegram_bot.get_telegram() / set_tele
 
 Task 13 of the Phase 2b plan called for a wholesale rewrite of the main loop to `while (task := await beckman.next_task()): asyncio.create_task(dispatch(task))` with the `_handle_*` methods deleted. That rewrite was **not** completed in the initial landing because the existing `run_loop` is ~370 lines of scheduling logic (age-based priority boost, swap-aware deferral, model affinity reordering, quota-planner forward scan) that is not safely replaceable without runtime verification. `orchestrator.py` therefore still holds the old main loop + `_handle_*` handlers; beckman's lifecycle module currently **delegates** back to them via `get_orchestrator()._handle_*`. The new APIs are wired, tested, and ready to be adopted. Finishing the main-loop rewrite is a follow-up.
 
+**Design reasoning (from the 2026-04-18 brainstorm):**
+
+- **Pull, not push.** Orchestrator ticks beckman every 3s + on every task completion; no event bus, no subscriptions. The 3s tick lines up with the 2s `nerd_herd` GPU-state cache; snapshot reads are dict lookups in the fast path (microseconds) and sub-millisecond on cache miss. Event machinery was evaluated and rejected as overkill for this cost profile.
+- **Single-task API + caller loops.** `next_task() -> Task | None` returning at most one task, with the *caller* looping until `None`, beats returning `list[Task]`. Ramp-up is still fast (first tick saturates capacity by looping to `None`), and steady-state completion triggers replace tasks one-for-one. No list-size ceremony, no "how many to emit" question.
+- **Beckman runs *before* Fatih Hoca per dispatch**, not after. Beckman answers "which tasks to release, given capacity?"; Fatih Hoca answers "for this released task, which model?". They consume the same `nerd_herd.snapshot()` but ask different questions.
+- **No artificial parallelism cap.** Capacity sources bound dispatch naturally: llama-server is 1-slot (physical), `kdv` tracks cloud rate limits, `beckman.lookahead` holds back cloud-heavy tasks against quota remaining, mechanical is unbounded. Early drafts proposed an env-flag cap-at-1 per lane; this was removed — the authoritative capacity math is the only cap that should exist.
+- **Capacity short-circuits via `nerd_herd`, not via dispatcher.** `kdv` already registers cloud-provider state to `nerd_herd`; beckman reads the same snapshot Fatih Hoca does. Capacity data never detours through `llm_dispatcher` / `orchestrator` as a message, matching the modularization principle that data flows directly producer→consumer.
+- **Notifications split.** Meaningful notifications (mission complete, DLQ alerts, rejections) go through a `salako.notify_user` mechanical task — they get a DB row and survive restart. Ephemeral progress chatter (scraping progress, iteration counters) stays as direct `get_telegram().send_message(...)` at call sites. A DB row per heartbeat is the anti-pattern being avoided.
+- **Clarification reuses the existing tool pipeline, not a new Decision type.** Agents already emit `{"action": "clarify", "question": "..."}` via the `clarify` tool; `result_router` already maps that to a `RequestClarification` action; `lifecycle.handle_clarification` now emits a `salako.clarify` mechanical task that does the Telegram send. No parallel `RequestApproval` type was introduced. The original `approval_fn` callback path (Telegram yes/no) was dead in production and deleted.
+- **No `Dispatch(task)` wrapper.** Beckman's output reduces to "a task to run." `agent_type == "mechanical"` routes to salako; anything else routes to `llm_dispatcher`. The wrapper would have been ceremony with no consumers.
+
 **Follow-ups (out of scope for Phase 2b):**
-- Main-loop rewrite against `beckman.next_task()` / `beckman.tick()` (orchestrator ≤ 300 lines target).
-- Full deletion of `_handle_*` orchestrator methods.
-- kdv cloud rate-limit state persistence.
+- Main-loop rewrite against `beckman.next_task()` / `beckman.tick()` (orchestrator ≤ 300 lines target). See `docs/superpowers/plans/2026-04-19-phase2b-task13-handoff.md` for the fresh-session handoff.
+- Full deletion of `_handle_*` orchestrator methods (blocked on the main-loop rewrite).
+- `kdv` cloud rate-limit state persistence — currently in-memory only; lost on restart.
+- Full Telegram module extraction (outbound runs through salako executors; inbound reply routing still in `telegram_bot.py`).
+- Progress-chatter standardization — many sites still call `self.telegram.send_message` directly.
 - Progress chatter standardization (ephemeral Telegram sends still scattered).

@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "general_beckman"
+version = "0.1.0"
+description = "Task master — task queue, lifecycle, look-ahead against cloud quota"
+requires-python = ">=3.10"
+dependencies = ["nerd_herd", "salako"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -478,11 +478,21 @@ try:
         except Exception as exc:
             return _json_shopping.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
+    _PRODUCT_FIELDS = {f.name for f in _dataclasses.fields(_Product)}
+
+    def _to_product(d):
+        if not isinstance(d, dict):
+            return d
+        # Drop keys that aren't Product fields — the pipeline annotates
+        # dicts with extras like is_suspicious_discount / site_rank that
+        # the dataclass __init__ rejects.
+        return _Product(**{k: v for k, v in d.items() if k in _PRODUCT_FIELDS})
+
     async def _tool_shopping_compare(products: str) -> str:
         """Compare products with value scoring and delivery comparison."""
         try:
             raw_list = _json_shopping.loads(products)
-            product_list = [_Product(**d) if isinstance(d, dict) else d for d in raw_list]
+            product_list = [_to_product(d) for d in raw_list]
             scores = await _score_products(product_list)
             delivery = await _compare_delivery(product_list)
             return _json_shopping.dumps({"scores": scores, "delivery": delivery}, indent=2, default=str)

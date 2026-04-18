@@ -656,932 +656,239 @@ class Orchestrator:
 
         return task, agent_type, timeout_seconds
 
-    async def process_task(self, task: dict):
-        """Process a single task through the appropriate agent with context injection."""
+    async def _dispatch(self, task: dict, agent_type: str, timeout_seconds: int):
+        """Run the agent/pipeline under a timeout; recover partial results and
+        route timeouts through retry/DLQ.
+
+        Returns the agent's result dict on success.  Returns None if a timeout
+        occurred and was fully handled (caller must stop processing the task).
+        """
+        from ..workflows.engine.hooks import is_workflow_step
+
         task_id = task["id"]
         title = task["title"]
-        agent_type = task.get("agent_type", "executor")
 
-        logger.info("task received", task_id=task_id, title=title, agent_type=agent_type)
+        if agent_type == "pipeline":
+            from ..workflows.pipeline import CodingPipeline
+            pipeline = CodingPipeline()
+            logger.info("delegating to pipeline", task_id=task_id)
+            coro = pipeline.run(task)
+        elif agent_type == "shopping_pipeline":
+            from ..workflows.shopping.pipeline import ShoppingPipeline
+            pipeline = ShoppingPipeline()
+            logger.info("delegating to shopping pipeline", task_id=task_id)
+            coro = pipeline.run(task)
+        else:
+            agent = get_agent(agent_type)
+            logger.info(
+                "agent dispatched",
+                task_id=task_id,
+                agent_name=agent.name,
+                agent_type=agent_type,
+                tier=task.get('tier', 'auto'),
+                timeout_seconds=timeout_seconds,
+            )
+            # Phase 4.6: Wire progress streaming
+            _task_start_time = time.time()
 
-        task_ctx = {}  # initialized here so except handler can safely access it
-        result = None  # initialized here so except handler can safely access it
+            _attempt_num = (task.get("worker_attempts") or 0) + 1
+
+            async def _progress_cb(tid, iteration, max_iter, summary):
+                if self.telegram:
+                    elapsed = int(time.time() - _task_start_time)
+                    attempt_tag = f" | attempt {_attempt_num}" if _attempt_num > 1 else ""
+                    msg = (
+                        f"\U0001f504 *Task #{tid}* — iteration {iteration}/{max_iter} ({elapsed}s elapsed{attempt_tag})\n"
+                        f"{summary[:200]}"
+                    )
+                    try:
+                        await self.telegram.send_notification(msg)
+                    except Exception:
+                        pass
+
+            # Send "task started" notification
+            try:
+                task_ctx = parse_context(task)
+                if not task_ctx.get("silent"):
+                    chat_id = task_ctx.get("chat_id")
+                    if chat_id and hasattr(self, 'telegram') and self.telegram:
+                        await self.telegram.app.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"\U0001f680 Task #{task['id']} assigned to {agent_type}, starting...",
+                        )
+            except Exception:
+                pass
+
+            agent._task_timeout = timeout_seconds
+            coro = agent.execute(task, progress_callback=_progress_cb)
+
+        # Wrap with timeout
         try:
-            prepared = await self._prepare(task)
-            if prepared is None:
-                return
-            task, agent_type, timeout_seconds = prepared
-            title = task["title"]
+            return await asyncio.wait_for(coro, timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            timeout_err = f"TimeoutError: Task timed out after {timeout_seconds}s"
+            logger.error("task timeout", task_id=task_id, timeout_seconds=timeout_seconds, error=timeout_err)
 
-            # Make workflow hook functions available for the dispatch and
-            # result-handling code below (they were lazily imported inside the
-            # old process_task prefix; _prepare owns that import now).
-            from ..workflows.engine.hooks import post_execute_workflow_step, is_workflow_step
-
-            if agent_type == "pipeline":
-                from ..workflows.pipeline import CodingPipeline
-                pipeline = CodingPipeline()
-                logger.info("delegating to pipeline", task_id=task_id)
-                coro = pipeline.run(task)
-            elif agent_type == "shopping_pipeline":
-                from ..workflows.shopping.pipeline import ShoppingPipeline
-                pipeline = ShoppingPipeline()
-                logger.info("delegating to shopping pipeline", task_id=task_id)
-                coro = pipeline.run(task)
-            else:
-                agent = get_agent(agent_type)
-                logger.info(
-                    "agent dispatched",
-                    task_id=task_id,
-                    agent_name=agent.name,
-                    agent_type=agent_type,
-                    tier=task.get('tier', 'auto'),
-                    timeout_seconds=timeout_seconds,
-                )
-                # Phase 4.6: Wire progress streaming
-                _task_start_time = time.time()
-
-                _attempt_num = (task.get("worker_attempts") or 0) + 1
-
-                async def _progress_cb(tid, iteration, max_iter, summary):
-                    if self.telegram:
-                        elapsed = int(time.time() - _task_start_time)
-                        attempt_tag = f" | attempt {_attempt_num}" if _attempt_num > 1 else ""
-                        msg = (
-                            f"\U0001f504 *Task #{tid}* — iteration {iteration}/{max_iter} ({elapsed}s elapsed{attempt_tag})\n"
-                            f"{summary[:200]}"
-                        )
-                        try:
-                            await self.telegram.send_notification(msg)
-                        except Exception:
-                            pass
-
-                # Send "task started" notification
-                try:
-                    task_ctx = parse_context(task)
-                    if not task_ctx.get("silent"):
-                        chat_id = task_ctx.get("chat_id")
-                        if chat_id and hasattr(self, 'telegram') and self.telegram:
-                            await self.telegram.app.bot.send_message(
-                                chat_id=chat_id,
-                                text=f"\U0001f680 Task #{task['id']} assigned to {agent_type}, starting...",
-                            )
-                except Exception:
-                    pass
-
-                agent._task_timeout = timeout_seconds
-                coro = agent.execute(task, progress_callback=_progress_cb)
-
-            # Wrap with timeout
+            # Try to recover partial results from the last checkpoint
+            # before marking the task as failed.
+            partial_result = None
             try:
-                result = await asyncio.wait_for(coro, timeout=timeout_seconds)
-            except asyncio.TimeoutError:
-                timeout_err = f"TimeoutError: Task timed out after {timeout_seconds}s"
-                logger.error("task timeout", task_id=task_id, timeout_seconds=timeout_seconds, error=timeout_err)
-
-                # Try to recover partial results from the last checkpoint
-                # before marking the task as failed.
-                partial_result = None
-                try:
-                    from src.infra.db import load_task_checkpoint
-                    checkpoint = await load_task_checkpoint(task_id)
-                    if checkpoint:
-                        last_messages = checkpoint.get("messages", [])
-                        iter_num = checkpoint.get("iteration", "?")
-                        # Strategy 1: look for assistant final_answer that
-                        # was produced but not yet returned (agent timed out
-                        # between producing the answer and returning it).
+                from src.infra.db import load_task_checkpoint
+                checkpoint = await load_task_checkpoint(task_id)
+                if checkpoint:
+                    last_messages = checkpoint.get("messages", [])
+                    iter_num = checkpoint.get("iteration", "?")
+                    # Strategy 1: look for assistant final_answer that
+                    # was produced but not yet returned (agent timed out
+                    # between producing the answer and returning it).
+                    for msg in reversed(last_messages):
+                        if msg.get("role") == "assistant" and msg.get("content"):
+                            c = msg["content"]
+                            # Quick check for final_answer JSON
+                            if "final_answer" in c and len(c) > 100:
+                                try:
+                                    _p = json.loads(c)
+                                    partial_result = _p.get("result", c)[:8000]
+                                except (json.JSONDecodeError, TypeError):
+                                    partial_result = c[:8000]
+                                break
+                    # Strategy 2: last substantial assistant message
+                    # (the LLM's reasoning or partial answer — far more
+                    # useful than raw tool output).
+                    if not partial_result:
                         for msg in reversed(last_messages):
-                            if msg.get("role") == "assistant" and msg.get("content"):
-                                c = msg["content"]
-                                # Quick check for final_answer JSON
-                                if "final_answer" in c and len(c) > 100:
-                                    try:
-                                        _p = json.loads(c)
-                                        partial_result = _p.get("result", c)[:8000]
-                                    except (json.JSONDecodeError, TypeError):
-                                        partial_result = c[:8000]
-                                    break
-                        # Strategy 2: last substantial assistant message
-                        # (the LLM's reasoning or partial answer — far more
-                        # useful than raw tool output).
-                        if not partial_result:
-                            for msg in reversed(last_messages):
-                                if msg.get("role") == "assistant" and len(msg.get("content", "")) > 100:
-                                    partial_result = msg["content"][:8000]
-                                    break
-                        # Strategy 3: last tool result (user message echoing
-                        # a tool's output — last resort, often just a search
-                        # cache snippet that's not useful as a result).
-                        if not partial_result:
-                            for msg in reversed(last_messages):
-                                if msg.get("role") == "user" and "Tool Result" in msg.get("content", ""):
-                                    partial_result = msg["content"][:8000]
-                                    break
+                            if msg.get("role") == "assistant" and len(msg.get("content", "")) > 100:
+                                partial_result = msg["content"][:8000]
+                                break
+                    # Strategy 3: last tool result (user message echoing
+                    # a tool's output — last resort, often just a search
+                    # cache snippet that's not useful as a result).
+                    if not partial_result:
+                        for msg in reversed(last_messages):
+                            if msg.get("role") == "user" and "Tool Result" in msg.get("content", ""):
+                                partial_result = msg["content"][:8000]
+                                break
 
-                        if partial_result:
-                            logger.info(f"[Task #{task_id}] Timeout recovery: using checkpoint from iteration {iter_num}")
-                            result_text = f"(Partial result from iteration {iter_num} before timeout)\n\n{partial_result}"
+                    if partial_result:
+                        logger.info(f"[Task #{task_id}] Timeout recovery: using checkpoint from iteration {iter_num}")
+                        result_text = f"(Partial result from iteration {iter_num} before timeout)\n\n{partial_result}"
 
-                            # For workflow steps, don't mark partial results
-                            # as completed — they bypass the post-hook and
-                            # poison downstream tasks with garbage.  Let them
-                            # fail and go through normal retry/DLQ.
-                            task_ctx = parse_context(task)
+                        # For workflow steps, don't mark partial results
+                        # as completed — they bypass the post-hook and
+                        # poison downstream tasks with garbage.  Let them
+                        # fail and go through normal retry/DLQ.
+                        task_ctx = parse_context(task)
 
-                            if is_workflow_step(task_ctx):
-                                logger.warning(
-                                    f"[Task #{task_id}] Timeout recovery: "
-                                    f"workflow step — failing instead of "
-                                    f"completing with partial result"
-                                )
-                                # Fall through to the failed path below
-                            else:
-                                task_ctx["partial"] = True
-                                await update_task(
-                                    task_id, status="completed",
-                                    result=result_text,
-                                    context=json.dumps(task_ctx),
-                                )
-                                await self.telegram.send_result(task_id, title, result_text, "timeout-recovery", 0,
-                                                                mission_id=task.get("mission_id"))
-                                return
-                except Exception as recovery_err:
-                    logger.debug(f"[Task #{task_id}] Checkpoint recovery failed: {recovery_err}")
-
-                # Roll back the checkpoint iteration counter so the retry
-                # gets more than 1 shot.  Keep messages intact — the partial
-                # output from the interrupted generation is valuable (often
-                # 6-7k of 8k chars done) and the next attempt can finish it
-                # quickly instead of regenerating from scratch.
-                try:
-                    from src.infra.db import load_task_checkpoint, save_task_checkpoint
-                    cp = await load_task_checkpoint(task_id)
-                    if cp:
-                        old_iter = cp.get("iteration", 0)
-                        new_iter = max(old_iter - 2, 0)
-                        cp["iteration"] = new_iter
-                        await save_task_checkpoint(task_id, cp)
-                        logger.info(
-                            f"[Task #{task_id}] Timeout: rolled back checkpoint "
-                            f"iteration {old_iter}→{new_iter}, "
-                            f"{len(cp.get('messages', []))} messages preserved"
-                        )
-                except Exception:
-                    pass
-
-                # Use the same retry/DLQ pipeline as other failure paths
-                task_ctx = parse_context(task)
-
-                # Inject partial output so next attempt can continue
-                if partial_result:
-                    task_ctx["_prev_output"] = partial_result[:6000]
-                    task_ctx["_timeout_hint"] = (
-                        "Your previous attempt timed out while generating "
-                        "a large output. Your partial work is shown in the "
-                        "context. CONTINUE from where you left off — do NOT "
-                        "start over. If the output is too large for one "
-                        "write_file call, break it into sections."
-                    )
-
-                from src.core.retry import RetryContext
-                retry_ctx = RetryContext.from_task(task)
-                decision = retry_ctx.record_failure("timeout")
-
-                # ── Bonus attempt: if terminal but task made real progress,
-                # grant one more try instead of DLQ.  The timeout is a safety
-                # net, not a quality judgment — if the agent was productive
-                # (wrote files, completed iterations), let it finish.
-                _MAX_BONUS_ATTEMPTS = 2  # hard cap on bonus attempts per task lifetime
-                if decision.action == "terminal":
-                    bonus_granted = False
-                    bonus_count = task_ctx.get("_bonus_count", 0)
-                    if bonus_count < _MAX_BONUS_ATTEMPTS:
-                        try:
-                            progress = await self._assess_timeout_progress(
-                                task_id, task_ctx
-                            )
-                            if progress >= 0.5:
-                                bonus_granted = True
-                                task_ctx["_bonus_count"] = bonus_count + 1
-                                retry_ctx.max_worker_attempts += 1
-                                decision = retry_ctx.record_failure("timeout")
-                                logger.info(
-                                    f"[Task #{task_id}] Bonus attempt granted "
-                                    f"({bonus_count + 1}/{_MAX_BONUS_ATTEMPTS}, "
-                                    f"progress={progress:.0%})"
-                                )
-                        except Exception:
-                            pass
-
-                if decision.action == "terminal":
-                    task_ctx.update(retry_ctx.to_context_patch())
-                    await update_task(
-                        task_id, status="failed",
-                        error=timeout_err,
-                        context=json.dumps(task_ctx),
-                        **retry_ctx.to_db_fields(),
-                    )
-                    try:
-                        from src.infra.dead_letter import quarantine_task
-                        await quarantine_task(
-                            task_id=task_id,
-                            mission_id=task.get("mission_id"),
-                            error=f"Timeout after {retry_ctx.worker_attempts} worker attempts: {timeout_err}",
-                            error_category="timeout",
-                            original_agent=agent_type,
-                            attempts_snapshot=retry_ctx.worker_attempts,
-                        )
-                    except Exception:
-                        pass
-                    await self.telegram.send_notification(
-                        f"❌ Task #{task_id} timeout → DLQ\n"
-                        f"**{title[:60]}**\n"
-                        f"Failed {retry_ctx.worker_attempts} worker attempts"
-                    )
-                else:
-                    next_retry = None
-                    if decision.action == "delayed":
-                        next_retry = to_db(
-                            utc_now() + timedelta(seconds=decision.delay_seconds)
-                        )
-                    retry_ctx.next_retry_at = next_retry
-                    task_ctx.update(retry_ctx.to_context_patch())
-                    await update_task(
-                        task_id, status="pending",
-                        error=timeout_err,
-                        context=json.dumps(task_ctx),
-                        **retry_ctx.to_db_fields(),
-                    )
-                    await self.telegram.send_error(task_id, title,
-                        f"{timeout_err} (worker-retry {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts})")
-                return  # timeout fully handled above — don't fall through
-
-            status = result.get("status", "completed")
-
-            logger.info("result received", task_id=task_id, status=status)
-
-            # PHASE 1 DISCONNECTED: auto-commit moved to src/core/mechanical/git_commit.py.
-            # Next i2p workflow refactor will re-wire this as an explicit workflow step
-            # or agent tool. Do not delete — code preserved in the mechanical module.
-            # if status == "completed" and agent_type == "coder":
-            #     await self._auto_commit(task, result)
-
-            if status == "completed":
-                # Extract structured pipeline artifacts before the post-hook
-                if agent_type == "pipeline" and is_workflow_step(task_ctx):
-                    try:
-                        from ..workflows.engine.pipeline_artifacts import extract_pipeline_artifacts
-                        from ..workflows.engine.hooks import get_artifact_store
-
-                        ws_path = None
-                        if task.get("mission_id"):
-                            try:
-                                ws_path = get_mission_workspace(task["mission_id"])
-                            except Exception:
-                                pass
-
-                        extra_artifacts = await extract_pipeline_artifacts(task, result, ws_path)
-                        if extra_artifacts:
-                            store = get_artifact_store()
-                            mission_id = task.get("mission_id")
-                            for name, content in extra_artifacts.items():
-                                await store.store(mission_id, name, content)
-                            logger.info(f"[Task #{task_id}] Stored {len(extra_artifacts)} pipeline artifacts")
-                    except Exception as e:
-                        logger.debug(f"[Task #{task_id}] Pipeline artifact extraction failed: {e}")
-
-                # Workflow step post-hook: store output artifacts
-                if is_workflow_step(task_ctx):
-                    await post_execute_workflow_step(task, result)
-                    # Re-read context from DB — the post-hook may have
-                    # stored _schema_error or other fields.  Without this,
-                    # the retry update below overwrites them with the stale
-                    # task_ctx snapshot from the start of process_task.
-                    try:
-                        _fresh = await get_task(task_id)
-                        if _fresh:
-                            _fc = _fresh.get("context", "{}")
-                            if isinstance(_fc, str):
-                                _fc = json.loads(_fc)
-                            if isinstance(_fc, dict):
-                                task_ctx.update(_fc)
-                    except Exception:
-                        pass
-                    # Post-hook may override status
-                    if result.get("status") == "needs_clarification":
-                        if not await self._validate_clarification(
-                            task_id, task, task_ctx, result
-                        ):
-                            # Validation failed — fall through to retry
-                            result["status"] = "failed"
-                        else:
-                            await self._handle_clarification(task, result)
-                            return
-                    if result.get("status") == "failed":
-                        error_msg = result.get("error", "Disguised failure detected")
-                        from src.core.retry import RetryContext
-                        retry_ctx = RetryContext.from_task(task)
-                        decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
-
-                        # Bonus attempt for quality failures with real progress
-                        _MAX_BONUS = 2
-                        if decision.action == "terminal":
-                            bonus_count = task_ctx.get("_bonus_count", 0)
-                            if bonus_count < _MAX_BONUS:
-                                try:
-                                    progress = await self._assess_timeout_progress(
-                                        task_id, task_ctx
-                                    )
-                                    if progress >= 0.5:
-                                        task_ctx["_bonus_count"] = bonus_count + 1
-                                        retry_ctx.max_worker_attempts += 1
-                                        decision = retry_ctx.record_failure("quality",
-                                            model=result.get("model", ""))
-                                        logger.info(
-                                            f"[Task #{task_id}] Quality bonus attempt "
-                                            f"({bonus_count + 1}/{_MAX_BONUS}, "
-                                            f"progress={progress:.0%})"
-                                        )
-                                except Exception:
-                                    pass
-
-                        if decision.action == "terminal":
-                            task_ctx.update(retry_ctx.to_context_patch())
-                            await update_task(
-                                task_id, status="failed",
-                                error=f"Disguised failure exhausted: {error_msg[:300]}",
-                                context=json.dumps(task_ctx),
-                                **retry_ctx.to_db_fields(),
-                            )
-                            try:
-                                from src.infra.dead_letter import quarantine_task
-                                await quarantine_task(
-                                    task_id=task_id,
-                                    mission_id=task.get("mission_id"),
-                                    error=f"Disguised failure after {retry_ctx.worker_attempts} attempts: {error_msg[:300]}",
-                                    error_category="quality",
-                                    original_agent=task.get("agent_type", "executor"),
-                                    attempts_snapshot=retry_ctx.worker_attempts,
-                                )
-                            except Exception:
-                                pass
-                            await self.telegram.send_notification(
-                                f"❌ Task #{task_id} disguised failure → DLQ\n"
-                                f"**{task.get('title', '')[:60]}**\n"
-                                f"Reason: {error_msg[:100]}"
-                            )
+                        if is_workflow_step(task_ctx):
                             logger.warning(
-                                "disguised failure terminal",
-                                task_id=task_id,
-                                attempts=retry_ctx.worker_attempts,
+                                f"[Task #{task_id}] Timeout recovery: "
+                                f"workflow step — failing instead of "
+                                f"completing with partial result"
                             )
+                            # Fall through to the failed path below
                         else:
-                            next_retry = None
-                            if decision.action == "delayed":
-                                next_retry = to_db(
-                                    utc_now() + timedelta(seconds=decision.delay_seconds)
-                                )
-                            retry_ctx.next_retry_at = next_retry
-                            task_ctx.update(retry_ctx.to_context_patch())
-                            # Inject previous output so next attempt can continue
-                            result_text = result.get("result", "")
-                            if result_text:
-                                task_ctx["_prev_output"] = str(result_text)[:6000]
-                                task_ctx["_retry_hint"] = (
-                                    "Your previous attempt's output failed quality checks. "
-                                    "Your partial work is shown in context. Build on it — "
-                                    "do NOT start over."
-                                )
+                            task_ctx["partial"] = True
                             await update_task(
-                                task_id, status="pending",
-                                error=error_msg[:500],
+                                task_id, status="completed",
+                                result=result_text,
                                 context=json.dumps(task_ctx),
-                                **retry_ctx.to_db_fields(),
                             )
-                            logger.warning(
-                                f"disguised failure, retrying"
-                                f"{retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts}",
-                                task_id=task_id,
-                            )
-                        return
-                await self._handle_complete(task, result)
-            elif status == "ungraded":
-                # Task deferred to grading phase — store result, don't notify.
-                # BUT: still run the workflow post-hook so artifacts are stored
-                # and phase completion is tracked. Grading only affects the
-                # task status (ungraded→completed vs ungraded→retry), not
-                # whether the output artifacts should be persisted.
-                if is_workflow_step(task_ctx):
-                    await post_execute_workflow_step(task, result)
-                    # Re-read context — post-hook may have stored _schema_error.
-                    try:
-                        _fresh = await get_task(task_id)
-                        if _fresh:
-                            _fc = _fresh.get("context", "{}")
-                            if isinstance(_fc, str):
-                                _fc = json.loads(_fc)
-                            if isinstance(_fc, dict):
-                                task_ctx.update(_fc)
-                    except Exception:
-                        pass
-                    # Post-hook may override status
-                    if result.get("status") == "needs_clarification":
-                        if not await self._validate_clarification(
-                            task_id, task, task_ctx, result
-                        ):
-                            result["status"] = "failed"
-                        else:
-                            await self._handle_clarification(task, result)
-                            return
-                    if result.get("status") == "failed":
-                        error_msg = result.get("error", "Disguised failure detected")
-                        from src.core.retry import RetryContext
-                        retry_ctx = RetryContext.from_task(task)
-                        decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
+                            await self.telegram.send_result(task_id, title, result_text, "timeout-recovery", 0,
+                                                            mission_id=task.get("mission_id"))
+                            return None
+            except Exception as recovery_err:
+                logger.debug(f"[Task #{task_id}] Checkpoint recovery failed: {recovery_err}")
 
-                        # Bonus attempt for quality failures with real progress
-                        _MAX_BONUS = 2
-                        if decision.action == "terminal":
-                            bonus_count = task_ctx.get("_bonus_count", 0)
-                            if bonus_count < _MAX_BONUS:
-                                try:
-                                    progress = await self._assess_timeout_progress(
-                                        task_id, task_ctx
-                                    )
-                                    if progress >= 0.5:
-                                        task_ctx["_bonus_count"] = bonus_count + 1
-                                        retry_ctx.max_worker_attempts += 1
-                                        decision = retry_ctx.record_failure("quality",
-                                            model=result.get("model", ""))
-                                        logger.info(
-                                            f"[Task #{task_id}] Quality bonus attempt "
-                                            f"({bonus_count + 1}/{_MAX_BONUS}, "
-                                            f"progress={progress:.0%})"
-                                        )
-                                except Exception:
-                                    pass
-
-                        if decision.action == "terminal":
-                            task_ctx.update(retry_ctx.to_context_patch())
-                            await update_task(
-                                task_id, status="failed",
-                                error=f"Disguised failure exhausted: {error_msg[:300]}",
-                                context=json.dumps(task_ctx),
-                                **retry_ctx.to_db_fields(),
-                            )
-                            try:
-                                from src.infra.dead_letter import quarantine_task
-                                await quarantine_task(
-                                    task_id=task_id,
-                                    mission_id=task.get("mission_id"),
-                                    error=f"Disguised failure after {retry_ctx.worker_attempts} attempts: {error_msg[:300]}",
-                                    error_category="quality",
-                                    original_agent=task.get("agent_type", "executor"),
-                                    attempts_snapshot=retry_ctx.worker_attempts,
-                                )
-                            except Exception:
-                                pass
-                            await self.telegram.send_notification(
-                                f"❌ Task #{task_id} disguised failure → DLQ\n"
-                                f"**{task.get('title', '')[:60]}**\n"
-                                f"Reason: {error_msg[:100]}"
-                            )
-                        else:
-                            next_retry = None
-                            if decision.action == "delayed":
-                                next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
-                            retry_ctx.next_retry_at = next_retry
-                            task_ctx.update(retry_ctx.to_context_patch())
-                            # Inject previous output so next attempt can continue
-                            result_text = result.get("result", "")
-                            if result_text:
-                                task_ctx["_prev_output"] = str(result_text)[:6000]
-                                task_ctx["_retry_hint"] = (
-                                    "Your previous attempt's output failed quality checks. "
-                                    "Your partial work is shown in context. Build on it — "
-                                    "do NOT start over."
-                                )
-                            await update_task(
-                                task_id, status="pending",
-                                error=error_msg[:500],
-                                context=json.dumps(task_ctx),
-                                **retry_ctx.to_db_fields(),
-                            )
-                        return
-
-                result_text = result.get("result", "No result")
-                cost = result.get("cost", 0)
-                await update_task(
-                    task_id, status="ungraded", result=result_text, cost=cost,
-                )
-                logger.info("task ungraded (deferred grading)", task_id=task_id,
-                            model=result.get("model", "unknown"))
-            elif status == "pending":
-                # Grade FAIL may have triggered retry or terminal DLQ.
-                # Check actual DB state — apply_grade_result may have already
-                # transitioned to 'failed' (terminal) since this status was set.
-                db_task = await get_task(task_id)
-                actual = db_task["status"] if db_task else "unknown"
-                if actual == "failed":
-                    logger.info("task grade-failed terminal (DLQ)", task_id=task_id)
-                else:
-                    logger.info("task grade-failed, retrying", task_id=task_id)
-            elif status == "needs_subtasks":
-                if is_workflow_step(task_ctx):
-                    # Workflow steps must not decompose — they should produce
-                    # their artifact directly.  Treat subtask plan as a
-                    # quality failure so the task retries with a different model.
-                    logger.warning(
-                        f"[Task #{task_id}] Blocked subtask creation for "
-                        f"workflow step — retrying"
-                    )
-                    from src.core.retry import RetryContext
-                    retry_ctx = RetryContext.from_task(task)
-                    retry_ctx.record_failure("quality", model=result.get("model", ""))
-                    task_ctx.update(retry_ctx.to_context_patch())
-                    await update_task(
-                        task_id, status="pending",
-                        error="Workflow step tried to decompose instead of producing artifact",
-                        context=json.dumps(task_ctx),
-                        **retry_ctx.to_db_fields(),
-                    )
-                else:
-                    await self._handle_subtasks(task, result)
-            elif status == "needs_clarification":
-                # Silent/background tasks must not ask the user for clarification
-                task_ctx = parse_context(task)
-                if task_ctx.get("silent"):
-                    logger.info(f"[Task #{task_id}] Suppressed clarification (silent task)")
-                    await update_task(task_id, status="failed",
-                                      error="Insufficient info (silent task, no clarification)",
-                                      failed_in_phase="worker")
-                elif task_ctx.get("may_need_clarification") is False:
-                    # Workflow step declared it doesn't need clarification —
-                    # agent is confused, retry with a different model.
-                    logger.warning(
-                        f"[Task #{task_id}] Suppressed clarification "
-                        f"(may_need_clarification=false), retrying"
-                    )
-                    from src.core.retry import RetryContext
-                    retry_ctx = RetryContext.from_task(task)
-                    decision = retry_ctx.record_failure("quality")
-                    if decision.action == "terminal":
-                        await update_task(task_id, status="failed",
-                                          error="Agent requested clarification on no-clarification step",
-                                          **retry_ctx.to_db_fields())
-                    else:
-                        next_retry = None
-                        if decision.action == "delayed":
-                            next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
-                        retry_ctx.next_retry_at = next_retry
-                        await update_task(task_id, status="pending",
-                                          error="Suppressed clarification, retrying",
-                                          **retry_ctx.to_db_fields())
-                elif task_ctx.get("clarification_history"):
-                    # Agent tried to clarify again despite having answers —
-                    # treat as completed, using the Q&A exchange as the result
-                    # so downstream artifacts capture the human's input.
-                    logger.info(f"[Task #{task_id}] Suppressed repeat clarification "
-                                f"(clarification_history already exists)")
-                    history = task_ctx["clarification_history"]
-                    # Build a readable Q&A result from the clarification exchange
-                    qa_parts = []
-                    for entry in history:
-                        if isinstance(entry, dict):
-                            q = entry.get("question", "")
-                            a = entry.get("answer", "")
-                        else:
-                            # Legacy: plain string entries (answer only)
-                            q, a = "", str(entry)
-                        if q or a:
-                            qa_parts.append(f"**Q:** {q}\n**A:** {a}")
-                    qa_result = "\n\n".join(qa_parts) if qa_parts else task_ctx.get("user_clarification", "")
-                    result["status"] = "completed"
-                    result["result"] = qa_result or result.get("result", "")
-                    # Run post-hook if this is a workflow step
-                    if is_workflow_step(task_ctx):
-                        await post_execute_workflow_step(task, result)
-                    await self._handle_complete(task, result)
-                else:
-                    if is_workflow_step(task_ctx) and not await self._validate_clarification(
-                        task_id, task, task_ctx, result
-                    ):
-                        # Validation failed — retry via the standard pipeline
-                        from src.core.retry import RetryContext
-                        retry_ctx = RetryContext.from_task(task)
-                        decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
-                        if decision.action == "terminal":
-                            task_ctx.update(retry_ctx.to_context_patch())
-                            await update_task(
-                                task_id, status="failed",
-                                error=f"Clarification schema failed: {result.get('error', '')[:300]}",
-                                context=json.dumps(task_ctx),
-                                **retry_ctx.to_db_fields(),
-                            )
-                        else:
-                            next_retry = None
-                            if decision.action == "delayed":
-                                next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
-                            retry_ctx.next_retry_at = next_retry
-                            task_ctx.update(retry_ctx.to_context_patch())
-                            await update_task(
-                                task_id, status="pending",
-                                error=f"Clarification schema failed: {result.get('error', '')[:200]}",
-                                context=json.dumps(task_ctx),
-                                **retry_ctx.to_db_fields(),
-                            )
-                    else:
-                        await self._handle_clarification(task, result)
-            elif status == "needs_review":
-                await self._handle_review(task, result)
-            elif status == "exhausted":
-                exhaustion_reason = result.get("exhaustion_reason", "budget")
-                exhaustion_guard_burns = result.get("guard_burns", 0)
-                useful_iters = result.get("useful_iterations", 0)
-
-                logger.warning(
-                    "exhausted",
-                    task_id=task_id,
-                    reason=exhaustion_reason,
-                    guards=exhaustion_guard_burns,
-                    useful=useful_iters,
-                )
-
-                from src.core.retry import RetryContext
-                retry_ctx = RetryContext.from_task(task)
-
-                # Reason-aware retry
-                if exhaustion_reason == "budget" and retry_ctx.worker_attempts < 2:
-                    # First budget exhaustion — retry with more iterations
-                    task_ctx["iteration_budget_boost"] = 1.5
-                    retry_ctx.worker_attempts += 1
-                    if result.get("model"):
-                        if result["model"] not in retry_ctx.failed_models:
-                            retry_ctx.failed_models.append(result["model"])
-                    task_ctx.update(retry_ctx.to_context_patch())
-                    await update_task(
-                        task_id, status="pending",
-                        context=json.dumps(task_ctx),
-                        **retry_ctx.to_db_fields(),
-                    )
-                    logger.info(
-                        "exhaustion budget retry",
-                        task_id=task_id,
-                        boost="1.5x",
-                    )
-
-                elif exhaustion_reason == "guards":
-                    # Guards ate budget — suppress on retry
-                    task_ctx["suppress_guards"] = True
-                    retry_ctx.worker_attempts += 1
-                    task_ctx.update(retry_ctx.to_context_patch())
-                    await update_task(
-                        task_id, status="pending",
-                        context=json.dumps(task_ctx),
-                        **retry_ctx.to_db_fields(),
-                    )
-                    logger.info(
-                        "exhaustion guards retry",
-                        task_id=task_id,
-                        suppress_guards=True,
-                    )
-
-                else:
-                    # tool_failures or repeated budget — standard quality retry
-                    decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
-                    if decision.action == "terminal":
-                        await update_task(
-                            task_id, status="failed",
-                            error=f"Exhausted after {retry_ctx.worker_attempts} attempts (reason={exhaustion_reason})",
-                            **retry_ctx.to_db_fields(),
-                        )
-                        try:
-                            from src.infra.dead_letter import quarantine_task
-                            await quarantine_task(
-                                task_id=task_id,
-                                mission_id=task.get("mission_id"),
-                                error=f"Iteration exhaustion ({exhaustion_reason})",
-                                error_category="quality",
-                                original_agent=task.get("agent_type", "executor"),
-                                attempts_snapshot=retry_ctx.worker_attempts,
-                            )
-                        except Exception:
-                            pass
-                        await self.telegram.send_notification(
-                            f"❌ Task #{task_id} exhaustion → DLQ\n"
-                            f"**{title[:60]}**\n"
-                            f"Reason: {exhaustion_reason}"
-                        )
-                    else:
-                        next_retry = None
-                        if decision.action == "delayed":
-                            next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
-                        retry_ctx.next_retry_at = next_retry
-                        retry_ctx.retry_reason = "quality"
-                        task_ctx.update(retry_ctx.to_context_patch())
-                        await update_task(
-                            task_id, status="pending",
-                            context=json.dumps(task_ctx),
-                            **retry_ctx.to_db_fields(),
-                        )
-
-            elif status == "failed":
-                error_str = result.get("error", result.get("result", "Unknown error"))
-                from src.core.retry import RetryContext
-                retry_ctx = RetryContext.from_task(task)
-                decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
-
-                if decision.action == "terminal":
-                    task_ctx.update(retry_ctx.to_context_patch())
-                    await update_task(
-                        task_id, status="failed",
-                        error=error_str[:500],
-                        context=json.dumps(task_ctx),
-                        **retry_ctx.to_db_fields(),
-                    )
-                    logger.error("agent failure terminal", task_id=task_id,
-                                 error=error_str[:200])
-                    await self.telegram.send_error(task_id, title, error_str)
-                    try:
-                        from src.infra.dead_letter import quarantine_task
-                        await quarantine_task(
-                            task_id=task_id,
-                            mission_id=task.get("mission_id"),
-                            error=error_str[:500],
-                            error_category="quality",
-                            original_agent=task.get("agent_type", "executor"),
-                            attempts_snapshot=retry_ctx.worker_attempts,
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        await self.telegram.send_notification(
-                            f"🪦 Task #{task_id} → DLQ\n"
-                            f"_{title[:60]}_\n"
-                            f"Attempts: {retry_ctx.worker_attempts} | "
-                            f"Reason: {error_str[:100]}"
-                        )
-                    except Exception:
-                        pass
-                else:
-                    next_retry = None
-                    if decision.action == "delayed":
-                        next_retry = to_db(
-                            utc_now() + timedelta(seconds=decision.delay_seconds)
-                        )
-                    retry_ctx.next_retry_at = next_retry
-                    task_ctx.update(retry_ctx.to_context_patch())
-                    await update_task(
-                        task_id, status="pending",
-                        error=error_str[:500],
-                        context=json.dumps(task_ctx),
-                        **retry_ctx.to_db_fields(),
-                    )
-                    logger.warning(f"agent failed, worker-retry {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts}",
-                                   task_id=task_id, error=error_str[:200])
-            else:
-                logger.warning("unknown task status", task_id=task_id, status=status)
-                await self._handle_complete(task, result)
-
-            # ── Phase 6: Release file locks held by this task ──
+            # Roll back the checkpoint iteration counter so the retry
+            # gets more than 1 shot.  Keep messages intact — the partial
+            # output from the interrupted generation is valuable (often
+            # 6-7k of 8k chars done) and the next attempt can finish it
+            # quickly instead of regenerating from scratch.
             try:
-                await release_task_locks(task_id)
+                from src.infra.db import load_task_checkpoint, save_task_checkpoint
+                cp = await load_task_checkpoint(task_id)
+                if cp:
+                    old_iter = cp.get("iteration", 0)
+                    new_iter = max(old_iter - 2, 0)
+                    cp["iteration"] = new_iter
+                    await save_task_checkpoint(task_id, cp)
+                    logger.info(
+                        f"[Task #{task_id}] Timeout: rolled back checkpoint "
+                        f"iteration {old_iter}→{new_iter}, "
+                        f"{len(cp.get('messages', []))} messages preserved"
+                    )
             except Exception:
                 pass
 
-        except ModelCallFailed as mcf:
-            # ── Availability failure: all models exhausted ──
-            # Use unified retry with backoff. Signal wakes (model_swap,
-            # gpu_available, rate_limit_reset) can accelerate the retry.
-            try:
-                await release_task_locks(task_id)
-            except Exception:
-                pass
+            # Use the same retry/DLQ pipeline as other failure paths
+            task_ctx = parse_context(task)
 
-            # Read last_avail_delay from context for backoff progression
-            _avail_ctx = task_ctx if isinstance(task_ctx, dict) else {}
-            last_delay = _avail_ctx.get("last_avail_delay", 0)
+            # Inject partial output so next attempt can continue
+            if partial_result:
+                task_ctx["_prev_output"] = partial_result[:6000]
+                task_ctx["_timeout_hint"] = (
+                    "Your previous attempt timed out while generating "
+                    "a large output. Your partial work is shown in the "
+                    "context. CONTINUE from where you left off — do NOT "
+                    "start over. If the output is too large for one "
+                    "write_file call, break it into sections."
+                )
 
-            from src.core.retry import compute_retry_timing
-            decision = compute_retry_timing("availability", last_avail_delay=last_delay)
+            from src.core.retry import RetryContext
+            retry_ctx = RetryContext.from_task(task)
+            decision = retry_ctx.record_failure("timeout")
+
+            # ── Bonus attempt: if terminal but task made real progress,
+            # grant one more try instead of DLQ.  The timeout is a safety
+            # net, not a quality judgment — if the agent was productive
+            # (wrote files, completed iterations), let it finish.
+            _MAX_BONUS_ATTEMPTS = 2  # hard cap on bonus attempts per task lifetime
+            if decision.action == "terminal":
+                bonus_granted = False
+                bonus_count = task_ctx.get("_bonus_count", 0)
+                if bonus_count < _MAX_BONUS_ATTEMPTS:
+                    try:
+                        progress = await self._assess_timeout_progress(
+                            task_id, task_ctx
+                        )
+                        if progress >= 0.5:
+                            bonus_granted = True
+                            task_ctx["_bonus_count"] = bonus_count + 1
+                            retry_ctx.max_worker_attempts += 1
+                            decision = retry_ctx.record_failure("timeout")
+                            logger.info(
+                                f"[Task #{task_id}] Bonus attempt granted "
+                                f"({bonus_count + 1}/{_MAX_BONUS_ATTEMPTS}, "
+                                f"progress={progress:.0%})"
+                            )
+                    except Exception:
+                        pass
 
             if decision.action == "terminal":
+                task_ctx.update(retry_ctx.to_context_patch())
                 await update_task(
                     task_id, status="failed",
-                    error=str(mcf)[:500],
-                    failed_in_phase="worker",
-                    retry_reason="availability",
+                    error=timeout_err,
+                    context=json.dumps(task_ctx),
+                    **retry_ctx.to_db_fields(),
                 )
                 try:
                     from src.infra.dead_letter import quarantine_task
                     await quarantine_task(
                         task_id=task_id,
                         mission_id=task.get("mission_id"),
-                        error=str(mcf)[:500],
-                        error_category="availability",
-                        original_agent=task.get("agent_type", "executor"),
-                    )
-                except Exception:
-                    pass
-                logger.warning(
-                    "availability DLQ",
-                    task_id=task_id,
-                    error=str(mcf)[:200],
-                )
-            else:
-                _avail_ctx["last_avail_delay"] = decision.delay_seconds
-                next_retry = to_db(
-                    utc_now() + timedelta(seconds=decision.delay_seconds)
-                )
-                await update_task(
-                    task_id, status="pending",
-                    error=str(mcf)[:500],
-                    next_retry_at=next_retry,
-                    retry_reason="availability",
-                    context=json.dumps(_avail_ctx),
-                )
-                logger.warning(
-                    "availability backoff",
-                    task_id=task_id,
-                    delay=decision.delay_seconds,
-                )
-
-        except Exception as e:
-            logger.exception("task failed", task_id=task_id, error_type=type(e).__name__, error=str(e))
-            # Release locks on failure too
-            try:
-                await release_task_locks(task_id)
-            except Exception:
-                pass
-            error_str = f"{type(e).__name__}: {str(e)[:500]}"
-            failed_model = result.get("model", "unknown") if isinstance(result, dict) else "unknown"
-
-            from src.core.retry import RetryContext
-            retry_ctx = RetryContext.from_task(task)
-            decision = retry_ctx.record_failure("quality", model=failed_model)
-
-            if decision.action == "terminal":
-                try:
-                    from ..infra.dead_letter import _classify_error
-                    error_cat = _classify_error(error_str, "unknown")
-                except Exception:
-                    error_cat = "unknown"
-                if isinstance(task_ctx, dict):
-                    task_ctx.update(retry_ctx.to_context_patch())
-                await update_task(
-                    task_id, status="failed", error=error_str,
-                    error_category=error_cat,
-                    **retry_ctx.to_db_fields(),
-                )
-                await self.telegram.send_error(task_id, title, error_str)
-
-                # Workflow step failure notification
-                if isinstance(task_ctx, dict) and task_ctx.get("is_workflow_step"):
-                    try:
-                        wf_phase = task_ctx.get("workflow_phase", "?")
-                        await self.telegram.send_notification(
-                            f"Workflow step failed: #{task_id}\n"
-                            f"_{task.get('title', '')[:60]}_\n"
-                            f"Phase: {wf_phase}"
-                        )
-                    except Exception:
-                        pass
-
-                # Episodic memory
-                try:
-                    from ..memory.episodic import store_task_result
-                    await store_task_result(
-                        task=task, result=error_str, model="unknown",
-                        cost=0.0, duration=0.0, success=False,
-                    )
-                except Exception:
-                    pass
-
-                # DLQ fallback
-                try:
-                    from ..infra.dead_letter import quarantine_task
-                    await quarantine_task(
-                        task_id=task_id,
-                        mission_id=task.get("mission_id"),
-                        error=error_str,
-                        original_agent=task.get("agent_type", "executor"),
+                        error=f"Timeout after {retry_ctx.worker_attempts} worker attempts: {timeout_err}",
+                        error_category="timeout",
+                        original_agent=agent_type,
                         attempts_snapshot=retry_ctx.worker_attempts,
                     )
-                except Exception as dlq_err:
-                    logger.error("dlq quarantine failed", task_id=task_id, error=str(dlq_err))
-
-                # Model health
-                try:
-                    from ..infra.db import update_model_stats
-                    agent_type = task.get("agent_type", "executor")
-                    model = result.get("model", "unknown") if isinstance(result, dict) else "unknown"
-                    await update_model_stats(
-                        model=model, agent_type=agent_type,
-                        success=False, cost=0,
-                    )
                 except Exception:
                     pass
+                await self.telegram.send_notification(
+                    f"❌ Task #{task_id} timeout → DLQ\n"
+                    f"**{title[:60]}**\n"
+                    f"Failed {retry_ctx.worker_attempts} worker attempts"
+                )
             else:
                 next_retry = None
                 if decision.action == "delayed":
@@ -1589,15 +896,233 @@ class Orchestrator:
                         utc_now() + timedelta(seconds=decision.delay_seconds)
                     )
                 retry_ctx.next_retry_at = next_retry
-                if isinstance(task_ctx, dict):
-                    task_ctx.update(retry_ctx.to_context_patch())
+                task_ctx.update(retry_ctx.to_context_patch())
                 await update_task(
                     task_id, status="pending",
-                    error=error_str,
+                    error=timeout_err,
+                    context=json.dumps(task_ctx),
                     **retry_ctx.to_db_fields(),
                 )
-                logger.info("task will retry", task_id=task_id,
-                            attempts=retry_ctx.worker_attempts, max_attempts=retry_ctx.max_worker_attempts)
+                await self.telegram.send_error(task_id, title,
+                    f"{timeout_err} (worker-retry {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts})")
+            return None  # timeout fully handled; caller must stop
+
+    async def process_task(self, task: dict):
+        """Process a single task: prepare → dispatch → record, with outer
+        exception handling for availability and unexpected failures."""
+        task_id = task["id"]
+        title = task["title"]
+        agent_type = task.get("agent_type", "executor")
+        logger.info("task received", task_id=task_id, title=title, agent_type=agent_type)
+
+        task_ctx = {}
+        result = None
+        try:
+            prepared = await self._prepare(task)
+            if prepared is None:
+                return
+            task, agent_type, timeout_seconds = prepared
+
+            result = await self._dispatch(task, agent_type, timeout_seconds)
+            if result is None:
+                return
+            task_ctx = parse_context(task)
+
+            await self._record(task, task_ctx, result, agent_type)
+
+        except ModelCallFailed as mcf:
+            await self._handle_availability_failure(task, task_ctx, mcf)
+        except Exception as e:
+            await self._handle_unexpected_failure(task, task_ctx, result, e)
+
+    async def _record(self, task: dict, task_ctx: dict, result: dict, agent_type: str):
+        """Route the agent's result through router + guards + handlers.
+
+        `ungraded` and `pending` still handled inline (not router Actions).
+        Everything else goes through `route_result` → `_run_guards_for`
+        → `_dispatch_action`.
+        """
+        task_id = task["id"]
+        status = result.get("status", "completed")
+        logger.info("result received", task_id=task_id, status=status)
+
+        if status == "ungraded":
+            from src.core.result_guards import guard_ungraded_post_hook
+            guard_out = await guard_ungraded_post_hook(self, task, task_ctx, result)
+            if guard_out is not None:
+                return
+            result_text = result.get("result", "No result")
+            cost = result.get("cost", 0)
+            await update_task(
+                task_id, status="ungraded", result=result_text, cost=cost,
+            )
+            logger.info("task ungraded (deferred grading)", task_id=task_id,
+                        model=result.get("model", "unknown"))
+        elif status == "pending":
+            db_task = await get_task(task_id)
+            actual = db_task["status"] if db_task else "unknown"
+            if actual == "failed":
+                logger.info("task grade-failed terminal (DLQ)", task_id=task_id)
+            else:
+                logger.info("task grade-failed, retrying", task_id=task_id)
+        else:
+            from src.core.result_router import route_result
+            actions = route_result(task, result)
+            for action in actions:
+                if await self._run_guards_for(action, task, task_ctx, result, agent_type):
+                    return
+                await self._dispatch_action(action, task)
+
+        # Release file locks held by this task (Phase 6)
+        try:
+            await release_task_locks(task_id)
+        except Exception:
+            pass
+
+    async def _handle_availability_failure(self, task: dict, task_ctx: dict, mcf):
+        """Outer handler for ModelCallFailed (all models exhausted)."""
+        task_id = task["id"]
+        try:
+            await release_task_locks(task_id)
+        except Exception:
+            pass
+
+        _avail_ctx = task_ctx if isinstance(task_ctx, dict) else {}
+        last_delay = _avail_ctx.get("last_avail_delay", 0)
+
+        from src.core.retry import compute_retry_timing
+        decision = compute_retry_timing("availability", last_avail_delay=last_delay)
+
+        if decision.action == "terminal":
+            await update_task(
+                task_id, status="failed",
+                error=str(mcf)[:500],
+                failed_in_phase="worker",
+                retry_reason="availability",
+            )
+            try:
+                from src.infra.dead_letter import quarantine_task
+                await quarantine_task(
+                    task_id=task_id,
+                    mission_id=task.get("mission_id"),
+                    error=str(mcf)[:500],
+                    error_category="availability",
+                    original_agent=task.get("agent_type", "executor"),
+                )
+            except Exception:
+                pass
+            logger.warning(
+                "availability DLQ",
+                task_id=task_id,
+                error=str(mcf)[:200],
+            )
+        else:
+            _avail_ctx["last_avail_delay"] = decision.delay_seconds
+            next_retry = to_db(
+                utc_now() + timedelta(seconds=decision.delay_seconds)
+            )
+            await update_task(
+                task_id, status="pending",
+                error=str(mcf)[:500],
+                next_retry_at=next_retry,
+                retry_reason="availability",
+                context=json.dumps(_avail_ctx),
+            )
+            logger.warning(
+                "availability backoff",
+                task_id=task_id,
+                delay=decision.delay_seconds,
+            )
+
+    async def _handle_unexpected_failure(self, task: dict, task_ctx, result, e: Exception):
+        """Outer handler for unexpected exceptions during task processing."""
+        task_id = task["id"]
+        title = task["title"]
+        logger.exception("task failed", task_id=task_id, error_type=type(e).__name__, error=str(e))
+        try:
+            await release_task_locks(task_id)
+        except Exception:
+            pass
+        error_str = f"{type(e).__name__}: {str(e)[:500]}"
+        failed_model = result.get("model", "unknown") if isinstance(result, dict) else "unknown"
+
+        from src.core.retry import RetryContext
+        retry_ctx = RetryContext.from_task(task)
+        decision = retry_ctx.record_failure("quality", model=failed_model)
+
+        if decision.action == "terminal":
+            try:
+                from ..infra.dead_letter import _classify_error
+                error_cat = _classify_error(error_str, "unknown")
+            except Exception:
+                error_cat = "unknown"
+            if isinstance(task_ctx, dict):
+                task_ctx.update(retry_ctx.to_context_patch())
+            await update_task(
+                task_id, status="failed", error=error_str,
+                error_category=error_cat,
+                **retry_ctx.to_db_fields(),
+            )
+            await self.telegram.send_error(task_id, title, error_str)
+
+            if isinstance(task_ctx, dict) and task_ctx.get("is_workflow_step"):
+                try:
+                    wf_phase = task_ctx.get("workflow_phase", "?")
+                    await self.telegram.send_notification(
+                        f"Workflow step failed: #{task_id}\n"
+                        f"_{task.get('title', '')[:60]}_\n"
+                        f"Phase: {wf_phase}"
+                    )
+                except Exception:
+                    pass
+
+            try:
+                from ..memory.episodic import store_task_result
+                await store_task_result(
+                    task=task, result=error_str, model="unknown",
+                    cost=0.0, duration=0.0, success=False,
+                )
+            except Exception:
+                pass
+
+            try:
+                from ..infra.dead_letter import quarantine_task
+                await quarantine_task(
+                    task_id=task_id,
+                    mission_id=task.get("mission_id"),
+                    error=error_str,
+                    original_agent=task.get("agent_type", "executor"),
+                    attempts_snapshot=retry_ctx.worker_attempts,
+                )
+            except Exception as dlq_err:
+                logger.error("dlq quarantine failed", task_id=task_id, error=str(dlq_err))
+
+            try:
+                from ..infra.db import update_model_stats
+                agent_type = task.get("agent_type", "executor")
+                model = result.get("model", "unknown") if isinstance(result, dict) else "unknown"
+                await update_model_stats(
+                    model=model, agent_type=agent_type,
+                    success=False, cost=0,
+                )
+            except Exception:
+                pass
+        else:
+            next_retry = None
+            if decision.action == "delayed":
+                next_retry = to_db(
+                    utc_now() + timedelta(seconds=decision.delay_seconds)
+                )
+            retry_ctx.next_retry_at = next_retry
+            if isinstance(task_ctx, dict):
+                task_ctx.update(retry_ctx.to_context_patch())
+            await update_task(
+                task_id, status="pending",
+                error=error_str,
+                **retry_ctx.to_db_fields(),
+            )
+            logger.info("task will retry", task_id=task_id,
+                        attempts=retry_ctx.worker_attempts, max_attempts=retry_ctx.max_worker_attempts)
 
     # ─── Result Handlers ─────────────────────────────────────────────────
 
@@ -2026,6 +1551,229 @@ class Orchestrator:
             logger.info(f"[Task #{task_id}] Sent to reviewer (Task #{review_task_id})")
         else:
             logger.info(f"[Task #{task_id}] Review task deduped, skipping")
+
+    async def _handle_exhausted(self, task, result):
+        """Verbatim move from process_task: iteration-exhaustion handling."""
+        task_id = task["id"]
+        title = task["title"]
+        task_ctx = parse_context(task)
+
+        exhaustion_reason = result.get("exhaustion_reason", "budget")
+        exhaustion_guard_burns = result.get("guard_burns", 0)
+        useful_iters = result.get("useful_iterations", 0)
+
+        logger.warning(
+            "exhausted",
+            task_id=task_id,
+            reason=exhaustion_reason,
+            guards=exhaustion_guard_burns,
+            useful=useful_iters,
+        )
+
+        from src.core.retry import RetryContext
+        retry_ctx = RetryContext.from_task(task)
+
+        # Reason-aware retry
+        if exhaustion_reason == "budget" and retry_ctx.worker_attempts < 2:
+            # First budget exhaustion — retry with more iterations
+            task_ctx["iteration_budget_boost"] = 1.5
+            retry_ctx.worker_attempts += 1
+            if result.get("model"):
+                if result["model"] not in retry_ctx.failed_models:
+                    retry_ctx.failed_models.append(result["model"])
+            task_ctx.update(retry_ctx.to_context_patch())
+            await update_task(
+                task_id, status="pending",
+                context=json.dumps(task_ctx),
+                **retry_ctx.to_db_fields(),
+            )
+            logger.info(
+                "exhaustion budget retry",
+                task_id=task_id,
+                boost="1.5x",
+            )
+
+        elif exhaustion_reason == "guards":
+            # Guards ate budget — suppress on retry
+            task_ctx["suppress_guards"] = True
+            retry_ctx.worker_attempts += 1
+            task_ctx.update(retry_ctx.to_context_patch())
+            await update_task(
+                task_id, status="pending",
+                context=json.dumps(task_ctx),
+                **retry_ctx.to_db_fields(),
+            )
+            logger.info(
+                "exhaustion guards retry",
+                task_id=task_id,
+                suppress_guards=True,
+            )
+
+        else:
+            # tool_failures or repeated budget — standard quality retry
+            decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
+            if decision.action == "terminal":
+                await update_task(
+                    task_id, status="failed",
+                    error=f"Exhausted after {retry_ctx.worker_attempts} attempts (reason={exhaustion_reason})",
+                    **retry_ctx.to_db_fields(),
+                )
+                try:
+                    from src.infra.dead_letter import quarantine_task
+                    await quarantine_task(
+                        task_id=task_id,
+                        mission_id=task.get("mission_id"),
+                        error=f"Iteration exhaustion ({exhaustion_reason})",
+                        error_category="quality",
+                        original_agent=task.get("agent_type", "executor"),
+                        attempts_snapshot=retry_ctx.worker_attempts,
+                    )
+                except Exception:
+                    pass
+                await self.telegram.send_notification(
+                    f"❌ Task #{task_id} exhaustion → DLQ\n"
+                    f"**{title[:60]}**\n"
+                    f"Reason: {exhaustion_reason}"
+                )
+            else:
+                next_retry = None
+                if decision.action == "delayed":
+                    next_retry = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
+                retry_ctx.next_retry_at = next_retry
+                retry_ctx.retry_reason = "quality"
+                task_ctx.update(retry_ctx.to_context_patch())
+                await update_task(
+                    task_id, status="pending",
+                    context=json.dumps(task_ctx),
+                    **retry_ctx.to_db_fields(),
+                )
+
+    async def _handle_failed(self, task, result):
+        """Verbatim move from process_task: agent-reported failure handling."""
+        task_id = task["id"]
+        title = task["title"]
+        task_ctx = parse_context(task)
+
+        error_str = result.get("error", result.get("result", "Unknown error"))
+        from src.core.retry import RetryContext
+        retry_ctx = RetryContext.from_task(task)
+        decision = retry_ctx.record_failure("quality", model=result.get("model", ""))
+
+        if decision.action == "terminal":
+            task_ctx.update(retry_ctx.to_context_patch())
+            await update_task(
+                task_id, status="failed",
+                error=error_str[:500],
+                context=json.dumps(task_ctx),
+                **retry_ctx.to_db_fields(),
+            )
+            logger.error("agent failure terminal", task_id=task_id,
+                         error=error_str[:200])
+            await self.telegram.send_error(task_id, title, error_str)
+            try:
+                from src.infra.dead_letter import quarantine_task
+                await quarantine_task(
+                    task_id=task_id,
+                    mission_id=task.get("mission_id"),
+                    error=error_str[:500],
+                    error_category="quality",
+                    original_agent=task.get("agent_type", "executor"),
+                    attempts_snapshot=retry_ctx.worker_attempts,
+                )
+            except Exception:
+                pass
+            try:
+                await self.telegram.send_notification(
+                    f"🪦 Task #{task_id} → DLQ\n"
+                    f"_{title[:60]}_\n"
+                    f"Attempts: {retry_ctx.worker_attempts} | "
+                    f"Reason: {error_str[:100]}"
+                )
+            except Exception:
+                pass
+        else:
+            next_retry = None
+            if decision.action == "delayed":
+                next_retry = to_db(
+                    utc_now() + timedelta(seconds=decision.delay_seconds)
+                )
+            retry_ctx.next_retry_at = next_retry
+            task_ctx.update(retry_ctx.to_context_patch())
+            await update_task(
+                task_id, status="pending",
+                error=error_str[:500],
+                context=json.dumps(task_ctx),
+                **retry_ctx.to_db_fields(),
+            )
+            logger.warning(f"agent failed, worker-retry {retry_ctx.worker_attempts}/{retry_ctx.max_worker_attempts}",
+                           task_id=task_id, error=error_str[:200])
+
+    # ─── Router action dispatch + guard coordination ─────────────────────
+
+    async def _dispatch_action(self, action, task):
+        """Dispatch a router Action to the matching _handle_* method.
+        Uses `action.raw` so handlers keep their original (task, result) signature.
+        """
+        from src.core.result_router import (
+            Complete, SpawnSubtasks, RequestClarification,
+            RequestReview, Exhausted, Failed as FailedAction,
+        )
+        if isinstance(action, Complete):
+            await self._handle_complete(task, action.raw)
+        elif isinstance(action, SpawnSubtasks):
+            await self._handle_subtasks(task, action.raw)
+        elif isinstance(action, RequestClarification):
+            await self._handle_clarification(task, action.raw)
+        elif isinstance(action, RequestReview):
+            await self._handle_review(task, action.raw)
+        elif isinstance(action, Exhausted):
+            await self._handle_exhausted(task, action.raw)
+        elif isinstance(action, FailedAction):
+            await self._handle_failed(task, action.raw)
+        else:
+            logger.warning("unknown action type", action=type(action).__name__)
+            await self._handle_complete(task, action.raw)
+
+    async def _run_guards_for(self, action, task, task_ctx, result, agent_type):
+        """Run the guards that apply to `action`.  Returns True if a guard
+        fully handled the task (caller must stop processing).
+        """
+        from src.core.result_router import (
+            Complete, SpawnSubtasks, RequestClarification,
+        )
+        from src.core.result_guards import (
+            guard_pipeline_artifacts,
+            guard_workflow_step_post_hook,
+            guard_subtasks_blocked_for_workflow,
+            guard_clarification_suppression,
+        )
+
+        if isinstance(action, Complete):
+            # Pipeline artifact extraction (no terminal outcome)
+            await guard_pipeline_artifacts(self, task, task_ctx, result, agent_type)
+            # Workflow step post-hook may flip status and consume the task
+            out = await guard_workflow_step_post_hook(self, task, task_ctx, result)
+            if out is not None:
+                return True
+            return False
+
+        if isinstance(action, SpawnSubtasks):
+            out = await guard_subtasks_blocked_for_workflow(self, task, task_ctx, result)
+            if out is not None:
+                return True
+            return False
+
+        if isinstance(action, RequestClarification):
+            # Re-parse context to match pre-refactor semantics (it was re-parsed
+            # inside the old `elif status == 'needs_clarification':` branch).
+            task_ctx.clear()
+            task_ctx.update(parse_context(task))
+            out = await guard_clarification_suppression(self, task, task_ctx, result)
+            if out is not None:
+                return True
+            return False
+
+        return False
 
     # ─── Mission Completion ───────────────────────────────────────────────
 

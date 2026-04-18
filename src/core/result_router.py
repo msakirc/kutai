@@ -15,12 +15,14 @@ class Complete:
     result: str
     iterations: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
+    raw: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class SpawnSubtasks:
     parent_task_id: int
     subtasks: list[dict]
+    raw: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -28,24 +30,28 @@ class RequestClarification:
     task_id: int
     question: str
     chat_id: int | None = None
+    raw: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class RequestReview:
     task_id: int
     summary: str
+    raw: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class Exhausted:
     task_id: int
     error: str
+    raw: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class Failed:
     task_id: int
     error: str
+    raw: dict = field(default_factory=dict)
 
 
 Action = Union[Complete, SpawnSubtasks, RequestClarification, RequestReview, Exhausted, Failed]
@@ -56,8 +62,9 @@ def route_result(task: dict, agent_result: dict | None) -> list[Action]:
     task_id = task["id"]
 
     if agent_result is None:
-        return [Failed(task_id=task_id, error="no_result_returned")]
+        return [Failed(task_id=task_id, error="no_result_returned", raw={})]
 
+    raw = agent_result or {}
     status = agent_result.get("status")
 
     if status == "completed":
@@ -66,32 +73,37 @@ def route_result(task: dict, agent_result: dict | None) -> list[Action]:
             result=agent_result.get("result", ""),
             iterations=agent_result.get("iterations", 0),
             metadata=agent_result.get("metadata", {}),
+            raw=raw,
         )]
 
     if status == "needs_subtasks":
         subtasks = agent_result.get("subtasks", [])
-        return [SpawnSubtasks(parent_task_id=task_id, subtasks=subtasks)]
+        return [SpawnSubtasks(parent_task_id=task_id, subtasks=subtasks, raw=raw)]
 
     if status == "needs_clarification":
         return [RequestClarification(
             task_id=task_id,
             question=agent_result.get("question", ""),
             chat_id=task.get("chat_id"),
+            raw=raw,
         )]
 
     if status == "needs_review":
         return [RequestReview(
             task_id=task_id,
             summary=agent_result.get("summary", ""),
+            raw=raw,
         )]
 
     if status == "exhausted":
         return [Exhausted(
             task_id=task_id,
             error=agent_result.get("error", "max_iterations_reached"),
+            raw=raw,
         )]
 
     return [Failed(
         task_id=task_id,
         error=agent_result.get("error", f"unknown_status:{status}"),
+        raw=raw,
     )]

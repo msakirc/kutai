@@ -244,3 +244,45 @@ Orchestrator untangled in-tree without package extraction. New in-tree modules:
 - `mechanical/` extraction to `packages/mechanical_dispatcher/` (Phase 2a)
 - Gates / context / watchdog extraction to `packages/gorev_ustasi/` (Phase 2b)
 - `_handle_*` → Decision emissions (inverts Telegram coupling fully)
+
+---
+
+## Phase 2 — Plan A (2026-04-18): in-tree untangle of `process_task`
+
+Finished the two items Phase 1 deferred: `result_router` wire-up (D1) and
+the `process_task` split (D2).  Plan stayed in-tree; no new packages.
+
+**Line-count impact:**
+- `process_task`: 945 → 27 lines (target was < 50)
+- `src/core/orchestrator.py`: 2,800 → 2,548
+- `src/core/result_router.py`: 97 → 109 (`raw: dict` added to every Action
+  so handlers keep their `(task, result)` signatures — Option 1)
+- `src/core/result_guards.py`: **new** (353 lines)
+
+**What shipped (Tasks 1–7 of `docs/superpowers/plans/2026-04-18-orchestrator-plan-a-in-tree.md`):**
+- `_handle_exhausted` / `_handle_failed` extracted verbatim from the inline
+  `if/elif` status chain
+- Every `result_router.Action` type gained a `raw: dict` field so the router
+  can be wired through without touching any existing `_handle_*` signatures
+- New `src/core/result_guards.py` module: typed `GuardHandled` + async
+  guards for workflow post-hook, clarification suppression, subtask blocking,
+  pipeline artifacts, ungraded post-hook (the pre-handler logic that used
+  to sit inline inside `process_task`)
+- New `Orchestrator._dispatch_action` isinstance-dispatches router Actions
+  to their matching `_handle_*` method
+- New `Orchestrator._run_guards_for` runs the guards that apply to each
+  Action type; returns True when a guard fully consumed the task
+- `_dispatch` owns agent/pipeline invocation + timeout wrapper + partial
+  result recovery; returns `None` if the timeout handler consumed the task
+- `_record` owns status routing: `ungraded`/`pending` inline + everything
+  else via `route_result` → `_run_guards_for` → `_dispatch_action`
+- Outer exception handlers moved to `_handle_availability_failure` and
+  `_handle_unexpected_failure`
+- `process_task` is now a 27-line orchestrator chaining
+  `_prepare` → `_dispatch` → `_record`
+
+**Still deferred to Phase 2b:**
+- Moving `_handle_*` out of `Orchestrator` into a package
+- Moving `result_guards` into a package
+- Replacing the `ungraded` inline branch with a router Action type
+- Inverting the `self.telegram.*` coupling inside the guards

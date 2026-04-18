@@ -4563,11 +4563,11 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         product = " ".join(context.args)
         chat_id = update.effective_chat.id
         mission_id = await self._create_shopping_mission(
-            product, chat_id, sub_intent="deep_research"
+            product, chat_id, sub_intent="product_research"
         )
         await self._reply(
             update,
-            f"🔬 Deep research started for *{product}* (mission #{mission_id})",
+            f"🔬 Ürün araştırması başladı: *{product}* (mission #{mission_id})",
             parse_mode="Markdown",
         )
 

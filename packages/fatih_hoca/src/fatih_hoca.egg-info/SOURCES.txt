@@ -6,6 +6,7 @@ src/fatih_hoca/ranking.py
 src/fatih_hoca/registry.py
 src/fatih_hoca/requirements.py
 src/fatih_hoca/selector.py
+src/fatih_hoca/simulate_i2p.py
 src/fatih_hoca/types.py
 src/fatih_hoca.egg-info/PKG-INFO
 src/fatih_hoca.egg-info/SOURCES.txt
@@ -19,4 +20,5 @@ tests/test_ranking.py
 tests/test_registry.py
 tests/test_requirements.py
 tests/test_selector.py
+tests/test_simulate_i2p.py
 tests/test_types.py

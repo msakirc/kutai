@@ -102,6 +102,7 @@ yazbunu @ git+https://github.com/msakirc/yazbunu.git
 -e ./packages/hallederiz_kadir
 -e ./packages/fatih_hoca
 -e ./packages/salako
+-e ./packages/general_beckman
 
 # Test dependencies
 pytest-aiohttp>=1.0.0

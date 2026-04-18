@@ -287,3 +287,52 @@ the `process_task` split (D2).  Plan stayed in-tree; no new packages.
 - Moving `result_guards` into a package
 - Replacing the `ungraded` inline branch with a router Action type
 - Inverting the `self.telegram.*` coupling inside the guards
+
+
+---
+
+## Phase 2b — General Beckman (Task Master Extraction)
+
+**Shipped:** `packages/general_beckman/` — task queue, lifecycle drain, look-ahead against cloud quota.
+
+**Public API:**
+- `general_beckman.next_task() -> Task | None` — claims one eligible task, consulting the nerd_herd capacity snapshot + quota look-ahead.
+- `general_beckman.on_task_finished(task_id, result)` — routes agent results through `result_router`, guards, and per-action lifecycle handlers.
+- `general_beckman.tick()` — periodic maintenance: watchdog + scheduled-job ticks.
+- `general_beckman.set_orchestrator(instance)` — registers the orchestrator singleton so legacy `_handle_*` handlers stay reachable during the Phase 2b transition.
+
+**Moved into the package (shims remain for backward compatibility):**
+- `src/core/task_context.py` → `general_beckman.task_context`
+- `src/core/result_router.py` → `general_beckman.result_router`
+- `src/core/result_guards.py` → `general_beckman.result_guards`
+- `src/core/watchdog.py` → `general_beckman.watchdog`
+- `src/app/scheduled_jobs.py` → `general_beckman.scheduled_jobs`
+
+Shims use the `sys.modules[__name__] = _pkg` aliasing pattern so `patch("src.core.result_guards.X")` propagates to the actual package symbol, keeping existing test suites green without edits.
+
+**New modules in the package:**
+- `general_beckman/queue.py` — eligibility filter + lane classification (mechanical / cloud_llm / local_llm).
+- `general_beckman/lookahead.py` — holds back cloud-heavy tasks when projected demand exceeds quota remaining (reinstates the look-ahead lost during the earlier `quota_planner` extraction).
+- `general_beckman/lifecycle.py` — `on_task_finished` drain + `handle_clarification` rewritten to emit a mechanical salako `clarify` task instead of calling Telegram directly.
+
+**Salako gained two new mechanical executors (Tasks 1 + 2):**
+- `clarify` — sends a clarification prompt via Telegram and marks the task `waiting_human`.
+- `notify_user` — plain-status Telegram send for meaningful notifications.
+
+Both executors depend on the new `src.app.telegram_bot.get_telegram() / set_telegram()` module-level singleton accessor.
+
+**Deleted dead code (Task 3):**
+- `src/security/risk_assessor.py` — runtime risk gate that never triggered in practice.
+- `src/core/task_gates.py` — only remaining logic was the dead approval + risk gates.
+- `tests/test_human_gates.py`, `tests/test_resilience_approvals.py` — covered dead paths.
+- `Telegram.request_approval` method + `Telegram.cmd_autonomy` handler + the `run_gates` call-site in `process_task`.
+
+**Transitional state of `src/core/orchestrator.py`:**
+
+Task 13 of the Phase 2b plan called for a wholesale rewrite of the main loop to `while (task := await beckman.next_task()): asyncio.create_task(dispatch(task))` with the `_handle_*` methods deleted. That rewrite was **not** completed in the initial landing because the existing `run_loop` is ~370 lines of scheduling logic (age-based priority boost, swap-aware deferral, model affinity reordering, quota-planner forward scan) that is not safely replaceable without runtime verification. `orchestrator.py` therefore still holds the old main loop + `_handle_*` handlers; beckman's lifecycle module currently **delegates** back to them via `get_orchestrator()._handle_*`. The new APIs are wired, tested, and ready to be adopted. Finishing the main-loop rewrite is a follow-up.
+
+**Follow-ups (out of scope for Phase 2b):**
+- Main-loop rewrite against `beckman.next_task()` / `beckman.tick()` (orchestrator ≤ 300 lines target).
+- Full deletion of `_handle_*` orchestrator methods.
+- kdv cloud rate-limit state persistence.
+- Progress chatter standardization (ephemeral Telegram sends still scattered).

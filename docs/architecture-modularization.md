@@ -148,6 +148,16 @@ DaLLaMa's `swap.py` is designed for future migration — swap strategy changes f
 
 **Turkish Shopping Scrapers → own package.** 8,500 LOC, 19 scrapers. Largest blast radius. Now connected to workflows, increasing confusion risk.
 
+## Runtime Invariants
+
+### Budget and checkpoint are orthogonal
+
+Iteration budget is a **per-attempt** concept — how many LLM steps this attempt is allowed. Checkpoint is **conversational state continuity** — messages, tool results, model requirements preserved so a new attempt picks up where the old one left off.
+
+They must never be coupled. Specifically, the agent loop iterates `range(effective_max_iterations)` (fresh counter per attempt); it does **not** iterate `range(checkpoint_iteration, max_iterations)`. Conflating the two wedges the budget-exhaustion retry path: when a checkpoint saves `iteration=N` and the next attempt's boosted budget resolves to the same N, the loop range is empty and the agent re-exhausts instantly with `useful=0` every retry until DLQ.
+
+Seen in the wild on task #1174 (deal_analyst, budget=4, boost→6, checkpoint=6 → range(6,6) empty). Fixed in `41cf1be`. Any future change to retry/checkpoint/budget must preserve this invariant: **checkpoint restores context, not control flow**.
+
 ## Model Metadata Standards
 
 No single industry standard. Three complementary sources:

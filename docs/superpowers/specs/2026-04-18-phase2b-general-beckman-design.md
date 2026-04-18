@@ -186,6 +186,7 @@ Flag but don't fix in Plan C:
 ## 14. Key Risks
 
 - **Hidden couplings in orchestrator**: `process_task` has been reshaped twice now; a third pass may surface edge cases. Mitigation: each extraction task commits separately with verification, per Plan A/B pattern.
-- **Parallelism regression**: today's effective concurrency is 1 (serial `process_task`). Enabling true concurrent `asyncio.create_task` dispatch could surface races in shared DB writes, workspace operations, or LLM server state. Mitigation: keep initial parallelism cap at 1 per lane behind a config flag; unlock in a follow-up after soak-testing.
 - **Watchdog + scheduled-jobs timing**: those currently run on their own loops. Collapsing them into a shared `tick()` may shift timing enough to expose bugs. Mitigation: preserve their internal cadence (they track their own last-run timestamps) — `tick()` is just the invocation point.
 - **Look-ahead reinstatement**: the original quota_planner look-ahead was lost; reimplementing without tests is risk. Mitigation: write tests first for the new `lookahead.py` against synthetic snapshots.
+
+**Parallelism is not a risk item.** Capacity sources (llama-server's 1-slot, kdv's rate limits, beckman's quota look-ahead) bound dispatch naturally. Beckman returns `None` from `next_task()` when the authoritative capacity math says stop. No artificial cap is needed, now or later.

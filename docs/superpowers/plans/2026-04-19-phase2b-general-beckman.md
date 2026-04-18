@@ -47,7 +47,6 @@ _dispatch(task):
 - `packages/general_beckman/src/general_beckman/__init__.py` — public API: `next_task`, `on_task_finished`, `tick`
 - `packages/general_beckman/src/general_beckman/types.py` — `Task`, `AgentResult` aliases, `Lane` enum
 - `packages/general_beckman/src/general_beckman/queue.py` — eligibility filters + task selection
-- `packages/general_beckman/src/general_beckman/parallelism.py` — "how many to release" per lane
 - `packages/general_beckman/src/general_beckman/lookahead.py` — quota look-ahead (reinstated)
 - `packages/general_beckman/src/general_beckman/lifecycle.py` — `on_task_finished` + all `_handle_*` methods
 - `packages/general_beckman/src/general_beckman/result_router.py` — moved from `src/core/`
@@ -57,7 +56,6 @@ _dispatch(task):
 - `packages/general_beckman/src/general_beckman/scheduled_jobs.py` — moved from `src/app/`
 - `packages/general_beckman/tests/test_init.py`
 - `packages/general_beckman/tests/test_queue.py`
-- `packages/general_beckman/tests/test_parallelism.py`
 - `packages/general_beckman/tests/test_lookahead.py`
 - `packages/general_beckman/tests/test_lifecycle.py`
 - `packages/salako/src/salako/clarify.py`
@@ -333,7 +331,7 @@ _dispatch(task):
   [project]
   name = "general_beckman"
   version = "0.1.0"
-  description = "Task master — task queue, parallelism, lifecycle, look-ahead"
+  description = "Task master — task queue, lifecycle, look-ahead against cloud quota"
   requires-python = ">=3.10"
   dependencies = ["nerd_herd", "salako"]
 
@@ -708,93 +706,43 @@ _dispatch(task):
 
 ---
 
-## Task 10: Build `beckman.next_task()` + Parallelism + Queue
+## Task 10: Build `beckman.next_task()` — Eligibility + Priority + Look-Ahead
 
-**Goal:** Implement the eligibility-filter + priority + parallelism-cap + look-ahead pipeline that selects one task to release per call. Caller loops to saturation.
+**Goal:** Implement the eligibility-filter + priority + look-ahead pipeline that selects one task to release per call. "How many in flight" is answered by reading the capacity snapshot directly — llama-server exposes 1 slot, kdv rate limits, and beckman's quota look-ahead. No artificial cap exists. `next_task()` returns `None` when the authoritative capacity math says stop.
 
 **Files:**
 
 - Create `packages/general_beckman/src/general_beckman/queue.py`
-- Create `packages/general_beckman/src/general_beckman/parallelism.py`
 - Create `packages/general_beckman/tests/test_queue.py`
-- Create `packages/general_beckman/tests/test_parallelism.py`
 - Modify `packages/general_beckman/src/general_beckman/__init__.py` — replace `next_task` stub
 
 **Steps:**
 
 - [ ] **Step 1: Survey current task-fetch path.** `grep -n 'get_ready_tasks\|claim_task' src/core/orchestrator.py` to locate existing eligibility logic. Read the block that selects the next task (~main loop) to understand priority ordering (TASK_PRIORITY constant from `src/app/config.py`).
 
-- [ ] **Step 2: Write failing tests first** in `packages/general_beckman/tests/test_parallelism.py`:
-  ```python
-  import pytest
-
-  def _fake_snapshot(vram=5000, local=None, cloud=None):
-      from nerd_herd.types import SystemSnapshot
-      return SystemSnapshot(vram_available_mb=vram, local=local, cloud=cloud or {})
-
-  @pytest.mark.asyncio
-  async def test_parallelism_cap_local_llm_default_1():
-      from general_beckman.parallelism import can_release
-      snap = _fake_snapshot()
-      in_flight = {"local_llm": 1, "cloud_llm": 0, "mechanical": 0}
-      assert can_release(lane="local_llm", in_flight=in_flight, snapshot=snap) is False
-
-  @pytest.mark.asyncio
-  async def test_parallelism_cap_respects_config_flag(monkeypatch):
-      monkeypatch.setenv("BECKMAN_LOCAL_PARALLELISM", "3")
-      from general_beckman.parallelism import can_release
-      snap = _fake_snapshot()
-      in_flight = {"local_llm": 2, "cloud_llm": 0, "mechanical": 0}
-      assert can_release(lane="local_llm", in_flight=in_flight, snapshot=snap) is True
-  ```
-
-- [ ] **Step 3: Implement `parallelism.py`.**
-  ```python
-  """Parallelism policy: 'how many tasks to release per lane'."""
-  from __future__ import annotations
-  import os
-  from nerd_herd.types import SystemSnapshot
-
-  def _cap(lane: str) -> int:
-      env_map = {
-          "local_llm": "BECKMAN_LOCAL_PARALLELISM",
-          "cloud_llm": "BECKMAN_CLOUD_PARALLELISM",
-          "mechanical": "BECKMAN_MECHANICAL_PARALLELISM",
-      }
-      default = 1  # conservative; unlock in follow-up
-      return int(os.environ.get(env_map.get(lane, ""), default))
-
-  def can_release(lane: str, in_flight: dict[str, int], snapshot: SystemSnapshot) -> bool:
-      cap = _cap(lane)
-      if in_flight.get(lane, 0) >= cap:
-          return False
-      # Lane-specific capacity probes
-      if lane == "local_llm" and snapshot.vram_available_mb < 500:
-          return False
-      return True
-  ```
-
-- [ ] **Step 4: Write failing tests for `queue.py`** in `packages/general_beckman/tests/test_queue.py`. Cover:
+- [ ] **Step 2: Write failing tests for `queue.py`** in `packages/general_beckman/tests/test_queue.py`. Cover:
   - Eligibility filter skips `paused`, `waiting_human`, `cancelled` rows.
   - Priority order: workflow steps > direct user tasks > background missions.
   - Returns `None` when no eligible task.
+  - Lanes at capacity saturation (as reported by snapshot) are excluded.
+  - Mechanical tasks are never held back by LLM capacity constraints.
 
-- [ ] **Step 5: Implement `queue.py`.**
+- [ ] **Step 3: Implement `queue.py`.**
   ```python
   """Task queue: eligibility filter + priority."""
   from __future__ import annotations
   from src.infra.db import get_ready_tasks, claim_task
 
-  async def pick_ready_task(exclude_lanes: set[str]) -> dict | None:
+  async def pick_ready_task(saturated_lanes: set[str]) -> dict | None:
       """Return one ready task eligible for dispatch, or None.
 
-      exclude_lanes contains lanes that are currently at parallelism cap.
+      saturated_lanes contains lanes where the capacity snapshot says no room.
       Tasks bound to those lanes are skipped.
       """
       rows = await get_ready_tasks()
       for row in rows:
           lane = _classify_lane(row)
-          if lane in exclude_lanes:
+          if lane in saturated_lanes:
               continue
           claimed = await claim_task(row["id"])
           if claimed:
@@ -809,20 +757,24 @@ _dispatch(task):
       return "local_llm"
   ```
 
-- [ ] **Step 6: Wire into `__init__.py`.**
+- [ ] **Step 4: Wire into `__init__.py`.**
   ```python
   from nerd_herd import snapshot as _snapshot
-  from general_beckman.queue import pick_ready_task
-  from general_beckman.parallelism import can_release
+  from general_beckman.queue import pick_ready_task, _classify_lane
 
   _IN_FLIGHT: dict[str, int] = {"local_llm": 0, "cloud_llm": 0, "mechanical": 0}
 
   async def next_task() -> Task | None:
       snap = _snapshot()
-      excluded = {lane for lane in _IN_FLIGHT if not can_release(lane, _IN_FLIGHT, snap)}
-      if len(excluded) == 3:
+      # Determine lanes at capacity saturation from the snapshot:
+      # local_llm is saturated when llama-server has no free slot (VRAM headroom < 500 MB)
+      # cloud_llm saturation is handled by look-ahead in Task 11
+      saturated: set[str] = set()
+      if snap.local is not None and snap.vram_available_mb < 500:
+          saturated.add("local_llm")
+      if len(saturated) == 3:
           return None
-      task = await pick_ready_task(excluded)
+      task = await pick_ready_task(saturated)
       if task is not None:
           _IN_FLIGHT[_classify_lane(task)] += 1
       return task
@@ -833,15 +785,15 @@ _dispatch(task):
   ```
   `_release_slot` is called from `on_task_finished` (add to lifecycle.py).
 
-- [ ] **Step 7: Verify.**
+- [ ] **Step 5: Verify.**
   ```
-  timeout 30 pytest packages/general_beckman/tests/test_queue.py packages/general_beckman/tests/test_parallelism.py -v
+  timeout 30 pytest packages/general_beckman/tests/test_queue.py -v
   ```
 
-- [ ] **Step 8: Commit.**
+- [ ] **Step 6: Commit.**
   ```
   git add packages/general_beckman/
-  git commit -m "feat(general_beckman): implement next_task + parallelism cap (initial cap=1 per lane)"
+  git commit -m "feat(general_beckman): implement next_task with eligibility + look-ahead"
   ```
 
 ---
@@ -909,16 +861,19 @@ _dispatch(task):
       return total_remaining < required
   ```
 
-- [ ] **Step 3: Wire into `next_task()`.** In `__init__.py`:
+- [ ] **Step 3: Wire into `next_task()`.** Extend the `next_task()` implementation from Task 10 in `__init__.py` to add the look-ahead check after claiming a task:
   ```python
   from general_beckman.lookahead import should_hold_back
 
   async def next_task() -> Task | None:
       snap = _snapshot()
-      excluded = {lane for lane in _IN_FLIGHT if not can_release(lane, _IN_FLIGHT, snap)}
-      if len(excluded) == 3:
+      # Lanes at capacity saturation per snapshot
+      saturated: set[str] = set()
+      if snap.local is not None and snap.vram_available_mb < 500:
+          saturated.add("local_llm")
+      if len(saturated) == 3:
           return None
-      task = await pick_ready_task(excluded)
+      task = await pick_ready_task(saturated)
       if task is None:
           return None
       queue_depth = await _count_pending_cloud_tasks()
@@ -1117,18 +1072,18 @@ _dispatch(task):
 
 - [ ] **Step 2: Update `CLAUDE.md`.** In the Architecture section (top of file), add a line after the Salako bullet:
   ```
-  - **Task master**: `packages/general_beckman/` (General Beckman) — task queue, parallelism cap, lifecycle, look-ahead against cloud quota. Public API: `next_task()`, `on_task_finished()`, `tick()`.
+  - **Task master**: `packages/general_beckman/` (General Beckman) — task queue, lifecycle, look-ahead against cloud quota. Public API: `next_task()`, `on_task_finished()`, `tick()`.
   ```
   In the Key Files table, add:
   ```
-  | `packages/general_beckman/` | **General Beckman** — task master: queue selection, parallelism, lifecycle handlers, quota look-ahead |
+  | `packages/general_beckman/` | **General Beckman** — task master: queue selection, lifecycle handlers, quota look-ahead |
   ```
 
-- [ ] **Step 3: Update `docs/architecture-modularization.md`.** Append a "Phase 2b — General Beckman" section summarizing: (a) what moved, (b) shim list, (c) deleted dead code, (d) new public API, (e) parallelism defaults and the env-flag unlock path.
+- [ ] **Step 3: Update `docs/architecture-modularization.md`.** Append a "Phase 2b — General Beckman" section summarizing: (a) what moved, (b) shim list, (c) deleted dead code, (d) new public API.
 
 - [ ] **Step 4: Append MEMORY note.** Add to `MEMORY.md` top level:
   ```
-  - [Phase 2b General Beckman](project_phase2b_general_beckman_20260419.md) — task-queue extraction: `packages/general_beckman/` with next_task/on_task_finished/tick; risk_assessor + task_gates deleted; orchestrator.py 2569→≤300 lines; parallelism cap=1/lane behind BECKMAN_*_PARALLELISM env flags
+  - [Phase 2b General Beckman](project_phase2b_general_beckman_20260419.md) — task-queue extraction: `packages/general_beckman/` with next_task/on_task_finished/tick; risk_assessor + task_gates deleted; orchestrator.py 2569→≤300 lines; capacity bound naturally by snapshot (llama-server slot, kdv rate limits, quota look-ahead)
   ```
 
 - [ ] **Step 5: Final line-count verification.**
@@ -1180,7 +1135,6 @@ _dispatch(task):
 
 From spec §12 and §14:
 
-- **Parallelism unlock.** Initial cap is `1` per lane behind `BECKMAN_LOCAL_PARALLELISM` / `BECKMAN_CLOUD_PARALLELISM` / `BECKMAN_MECHANICAL_PARALLELISM`. Raising the caps is a separate soak-testing project once DB races and LLM-server contention are validated.
 - **kdv state persistence.** Cloud rate-limit state remains in-memory only; lost on restart. Separate fix.
 - **Full Telegram module extraction.** Outbound flows through salako `clarify` / `notify_user`, but inbound reply routing and ephemeral progress chatter still live in `src/app/telegram_bot.py`.
 - **Progress chatter standardization.** Iteration counters and scraping progress still call `self.telegram.send_message` directly. Worth tidying later, not now.
@@ -1188,7 +1142,6 @@ From spec §12 and §14:
 ## Key Risks
 
 - **Hidden couplings in the 2,569-line orchestrator.** Mitigation: each task commits separately with verification. Revert one task if it regresses.
-- **Parallelism regression.** Today's effective concurrency is 1 (serial `process_task`). True `asyncio.create_task` dispatch could surface DB write races or LLM-server state contention. Mitigation: initial cap = 1 per lane; unlock is a follow-up.
 - **Watchdog + scheduled-jobs timing.** Collapsing into shared `tick()` may shift timing. Mitigation: preserve internal cadences via `_LAST_RUN` + `_CADENCES` map (Task 12 Step 3).
 - **Look-ahead reinstatement.** Original logic was lost; reimplementing without tests is risk. Mitigation: tests-first in Task 11 against synthetic snapshots.
 - **Shim drift.** Existing suites must pass unchanged — any shim that doesn't re-export a public name will break a test. Mitigation: Tasks 5–8 each include a targeted test run before committing.

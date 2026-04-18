@@ -20,6 +20,10 @@ from typing import TYPE_CHECKING
 
 from fatih_hoca.capabilities import TaskRequirements, score_model_for_task
 from fatih_hoca.grading import grading_perf_score
+from fatih_hoca.pools import (
+    Pool, classify_pool, compute_urgency,
+    URGENCY_MAX_BONUS,
+)
 from fatih_hoca.requirements import get_quota_planner
 
 if TYPE_CHECKING:
@@ -36,6 +40,11 @@ logger = logging.getLogger("fatih_hoca.ranking")
 # blended = GRADING_WEIGHT * grading + (1 - GRADING_WEIGHT) * tps_perf
 GRADING_WEIGHT: float = 0.6
 
+# Capability gate ratio for urgency multiplier (Phase 2c).
+# Only candidates whose cap_score >= CAP_GATE_RATIO * top_cap receive
+# the urgency bonus. Prevents flooding free tokens into weak models.
+CAP_GATE_RATIO: float = 0.85
+
 
 # ─── ScoredModel ─────────────────────────────────────────────────────────────
 
@@ -46,6 +55,8 @@ class ScoredModel:
     capability_score: float = 0.0
     composite_score: float = 0.0
     reasons: list[str] = field(default_factory=list)
+    pool: str = ""       # "local" | "time_bucketed" | "per_call"
+    urgency: float = 0.0  # [0, 1]
 
     @property
     def litellm_name(self) -> str:
@@ -128,6 +139,40 @@ def _failure_penalty(
                     break
 
     return multiplier, exclude, reasons
+
+
+# ─── Urgency Layer Helper ────────────────────────────────────────────────────
+
+def _apply_urgency_layer(scored: list[ScoredModel], snapshot: SystemSnapshot) -> None:
+    """Apply pool-urgency multiplier with capability gate (Phase 2c).
+
+    Two-pass design:
+      Pass 1 (done before calling this): all candidates are scored into `scored`.
+      Pass 2 (this function): walk `scored` to apply urgency + gate.
+
+    Only candidates whose cap_score (0-100) >= CAP_GATE_RATIO * top_cap receive
+    the urgency bonus. This prevents weak models from free-riding on quota urgency.
+
+    Mutates each ScoredModel's .score, .composite_score, .pool, .urgency in-place.
+    Does NOT re-sort — caller is responsible for sorting after this call.
+    """
+    if not scored:
+        return
+    top_cap = max(sm.capability_score * 10.0 for sm in scored)
+    cap_threshold = top_cap * CAP_GATE_RATIO
+    for sm in scored:
+        cap_score_100 = sm.capability_score * 10.0
+        urgency = compute_urgency(sm.model, snapshot)
+        pool = classify_pool(sm.model)
+        sm.pool = pool.value
+        sm.urgency = urgency
+        if urgency > 0 and cap_score_100 >= cap_threshold:
+            mult = 1.0 + URGENCY_MAX_BONUS * urgency
+            sm.score *= mult
+            sm.composite_score = sm.score
+            sm.reasons.append(f"urgency={pool.value}:{urgency:.2f}×{mult:.2f}")
+        elif urgency > 0:
+            sm.reasons.append(f"urgency_gated={pool.value}:{urgency:.2f}")
 
 
 # ─── Core Ranking Function ───────────────────────────────────────────────────
@@ -522,6 +567,11 @@ def rank_candidates(
             rescued.model.name, rescued.model.tokens_per_second,
         )
 
+    scored.sort(key=lambda c: -c.score)
+
+    # ── Phase 2c: Pool-urgency layer with capability gate ──
+    _apply_urgency_layer(scored, snapshot)
+    # Re-sort after urgency adjustments (gate may shift ordering)
     scored.sort(key=lambda c: -c.score)
 
     # ── S7: Sibling Rebalancing ──

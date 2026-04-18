@@ -59,5 +59,40 @@ async def next_task() -> Task | None:
 
 
 async def tick() -> None:
-    """Stub — filled in by Task 12."""
-    return None
+    """Periodic maintenance. Called every 3s by the orchestrator main loop.
+
+    Invokes the watchdog and the registered orchestrator's scheduled-jobs
+    tick entry points. Each subroutine is guarded: an exception from one
+    must not abort the rest.
+    """
+    from src.infra.logging_config import get_logger
+    from general_beckman.watchdog import check_stuck_tasks
+    from general_beckman import lifecycle
+    log = get_logger("general_beckman.tick")
+
+    async def _safe(coro, name):
+        try:
+            await coro
+        except Exception as e:
+            log.warning("tick subroutine failed", fn=name, error=str(e))
+
+    await _safe(check_stuck_tasks(), "check_stuck_tasks")
+    try:
+        orch = lifecycle.get_orchestrator()
+    except RuntimeError:
+        orch = None
+    sj = getattr(orch, "scheduled_jobs", None) if orch is not None else None
+    if sj is None:
+        return
+    for name in (
+        "tick_todos",
+        "tick_api_discovery",
+        "tick_digest",
+        "tick_price_watches",
+        "tick_benchmark_refresh",
+        "check_scheduled_tasks",
+    ):
+        fn = getattr(sj, name, None)
+        if fn is None:
+            continue
+        await _safe(fn(), name)

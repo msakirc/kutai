@@ -21,8 +21,10 @@ import httpx
 from .base import BaseScraper, register_scraper
 from ..cache import (
     cache_product,
+    cache_reviews,
     cache_search,
     get_cached_product,
+    get_cached_reviews,
     get_cached_search,
 )
 from ..models import Product
@@ -413,8 +415,101 @@ class KoctasScraper(BaseScraper):
             fetched_at=now_iso,
         )
 
+    @staticmethod
+    def _extract_koctas_pid(url: str) -> str | None:
+        """Extract numeric product code from Koçtaş URL.
+
+        Koctas product URLs end with ``/p/<id>`` (e.g. ``/p/1000751401``).
+        Older URLs use the ``-p-<id>`` suffix; both forms supported.
+        """
+        m = re.search(r"/p/(\d+)", url)
+        if m:
+            return m.group(1)
+        m = re.search(r"-p-(\d+)$", url)
+        return m.group(1) if m else None
+
     async def get_reviews(self, url: str, *, max_pages: int = 3) -> list[dict]:
-        return []
+        """Fetch reviews / aggregate rating for a Koçtaş product.
+
+        Koctas uses Akamai bot protection on every product/comment XHR
+        endpoint -- direct scraping returns 403 from HTTP/TLS/STEALTH/BROWSER
+        tiers (verified 2026-04-18).  Bazaarvoice integration is configured
+        in the SAP Hybris template but the passkey is empty in production.
+
+        Strategy: query the public Algolia search index (no auth required)
+        for ``reviewAvgRating`` and ``reviewCommentCount`` and emit a
+        single aggregate-summary entry.  Individual review text is not
+        retrievable without authenticated access.
+        """
+        # Cache
+        try:
+            cached = await get_cached_reviews(url, "koctas")
+            if cached is not None:
+                return cached
+        except Exception:
+            pass
+
+        pid = self._extract_koctas_pid(url)
+        if not pid:
+            return []
+
+        reviews: list[dict] = []
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        # Strategy 1: public Algolia index lookup for aggregate rating
+        try:
+            algolia_url = (
+                "https://yfocsujdtk-dsn.algolia.net/1/indexes/"
+                "koctasProductIndex/query"
+            )
+            algolia_hdrs = {
+                "X-Algolia-API-Key": "231bf5ad06582a314a0ffddebea00d01",
+                "X-Algolia-Application-Id": "YFOCSUJDTK",
+                "Content-Type": "application/json",
+            }
+            payload = {"params": f"query={pid}&hitsPerPage=2"}
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.post(algolia_url, headers=algolia_hdrs, json=payload)
+            if r.status_code == 200:
+                hits = r.json().get("hits", []) or []
+                # Find the exact code match
+                hit = next(
+                    (h for h in hits if str(h.get("productGroupCode")) == pid),
+                    hits[0] if hits else None,
+                )
+                if hit:
+                    avg = hit.get("reviewAvgRating")
+                    cnt = hit.get("reviewCommentCount")
+                    if avg is not None and cnt:
+                        reviews.append({
+                            "text": (
+                                f"{int(cnt)} müşteri değerlendirmesi - "
+                                f"ortalama {float(avg):.2f}/5 yıldız "
+                                f"(Koçtaş aggregate; bireysel yorumlar Akamai "
+                                f"koruması nedeniyle erişilemiyor)."
+                            ),
+                            "source": "koctas",
+                            "rating": _safe_float(avg),
+                            "date": now_iso,
+                            "author": "Koçtaş aggregate",
+                            "helpful_count": 0,
+                        })
+        except Exception as exc:
+            logger.debug("koctas Algolia review lookup failed", error=str(exc))
+
+        # NOTE: A second strategy of fetching the product page for JSON-LD
+        # aggregateRating is intentionally omitted -- Koçtaş product pages
+        # are protected by Akamai (403 across HTTP/TLS/STEALTH/BROWSER
+        # tiers as of 2026-04-18) and the JSON-LD block is empty in the
+        # rendered HTML anyway.  Algolia is the only public source.
+
+        if reviews:
+            try:
+                await cache_reviews(url, reviews, "koctas")
+            except Exception:
+                pass
+
+        return reviews
 
     def validate_response(self, response: httpx.Response) -> bool:
         if response.status_code >= 400:
@@ -706,6 +801,14 @@ class IKEAScraper(BaseScraper):
         )
 
     async def get_reviews(self, url: str, *, max_pages: int = 3) -> list[dict]:
+        # IKEA Türkiye (Magic Click platform) does NOT host user reviews
+        # or ratings on product detail pages.  Verified 2026-04-18 by
+        # snapshotting two product pages (songesand sifonyer, vagstranda
+        # yatak): all "yorum"/"review" matches were unrelated consent-form
+        # boilerplate ("kabul ediyorum", "izin veriyorum") -- no review
+        # widget, no aggregateRating JSON-LD, no review API endpoint.
+        # Global ikea.com has reviews via a separate JS bundle, but that
+        # platform is not deployed on the Turkish site.
         return []
 
     def validate_response(self, response: httpx.Response) -> bool:

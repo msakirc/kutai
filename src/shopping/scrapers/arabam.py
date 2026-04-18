@@ -102,7 +102,16 @@ class ArabamScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     async def get_reviews(self, url: str, *, max_pages: int = 3) -> list[dict]:
-        """arabam.com does not have user reviews. Returns empty list."""
+        """arabam.com is a classified-ad marketplace and does not host
+        per-model user reviews.
+
+        Verified 2026-04-18 against /ikinci-el/otomobil-volkswagen-golf,
+        /yeni/<brand>/<model> (404), and /inceleme (404).  The only
+        editorial content lives at /blog/category/otomobil-inceleme/ —
+        these are long-form articles, not user-generated reviews, and
+        are out of scope for get_reviews.
+        """
+        logger.debug("get_reviews called on arabam (no reviews)", url=url)
         return []
 
     # ------------------------------------------------------------------

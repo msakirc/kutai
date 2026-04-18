@@ -99,8 +99,162 @@ class DrComTrScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     async def get_reviews(self, url: str, *, max_pages: int = 3) -> list[dict]:
-        """D&R does not expose structured reviews. Returns empty list."""
+        """Fetch reviews via D&R's NewDrProductReviewsAsync JSON endpoint.
+
+        Strategy:
+          1. Cache check (``shopping.cache.get_cached_reviews``).
+          2. Resolve the internal numeric ``prdId`` (different from the SKU /
+             ``urunno``). Fetch the product page and grep ``prdId: <int>`` from
+             the page-level ``var page = { ... }`` block.
+          3. POST ``/Product/NewDrProductReviewsAsync?productid=<prdId>`` —
+             returns ``{success: true, result: [...]}`` with the full review list.
+          4. Map fields: ``ReviewText -> text``, ``Rating`` (0–10 → 0–5),
+             ``WrittenOn`` (".NET Date" /Date(ms)/) → ISO date, etc.
+
+        The ebook variant of the endpoint (``...AsyncEbook``) is tried as a
+        fallback when the standard endpoint returns ``{success:false}``.
+        """
+        from ..cache import get_cached_reviews, cache_reviews
+
+        if not _BS4:
+            return []
+
+        cached = await get_cached_reviews(url, "dr")
+        if cached is not None:
+            return cached
+
+        try:
+            prd_id = await self._resolve_prd_id(url)
+            if not prd_id:
+                logger.debug("dr.com.tr reviews: no prd_id", url=url)
+                return []
+
+            raw_reviews = await self._fetch_dr_reviews_api(prd_id, referer=url)
+            reviews: list[dict] = []
+            for r in raw_reviews:
+                parsed = self._parse_dr_review(r)
+                if parsed and parsed.get("text"):
+                    reviews.append(parsed)
+
+            await cache_reviews(url, reviews, "dr")
+            logger.info(
+                "dr.com.tr reviews fetched",
+                url=url,
+                prd_id=prd_id,
+                count=len(reviews),
+            )
+            return reviews
+        except Exception as exc:
+            logger.debug("dr.com.tr get_reviews failed", url=url, error=str(exc))
+            return []
+
+    async def _resolve_prd_id(self, url: str) -> str | None:
+        """Find the internal numeric prdId by fetching the product page."""
+        try:
+            resp = await self._fetch(url)
+            if not resp or not resp.text:
+                return None
+            html = resp.text
+            # var page = { prdId: 1048558, ... } (or "prdId": 1048558)
+            m = re.search(r"prdId\s*[:=]\s*['\"]?(\d+)", html)
+            if m:
+                return m.group(1)
+            # Fallback: data-id attribute on <main> or wrapper
+            m = re.search(r'data-id=["\'](\d+)["\']', html)
+            if m:
+                return m.group(1)
+        except Exception:
+            return None
+        return None
+
+    async def _fetch_dr_reviews_api(self, prd_id: str, referer: str) -> list[dict]:
+        """Hit DR's review JSON endpoint directly via httpx (POST)."""
+        import httpx as _httpx
+
+        endpoints = [
+            f"{self._BASE_URL}/Product/NewDrProductReviewsAsync?productid={prd_id}",
+            f"{self._BASE_URL}/Product/NewDrProductReviewsAsyncEbook?productid={prd_id}",
+        ]
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Referer": referer or self._BASE_URL,
+        }
+        async with _httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            for ep in endpoints:
+                try:
+                    r = await client.post(ep, headers=headers)
+                    if r.status_code != 200:
+                        continue
+                    j = r.json()
+                    if not isinstance(j, dict):
+                        continue
+                    if not j.get("success"):
+                        continue
+                    result = j.get("result")
+                    if isinstance(result, list) and result:
+                        return result
+                except Exception:
+                    continue
         return []
+
+    def _parse_dr_review(self, r: dict) -> dict | None:
+        text = (r.get("ReviewText") or "").strip()
+        if not text:
+            return None
+
+        # Author from CustomerName + CustomerLastName
+        author_parts = [
+            (r.get("CustomerName") or "").strip(),
+            (r.get("CustomerLastName") or "").strip(),
+        ]
+        author = " ".join(p for p in author_parts if p) or None
+
+        # Rating: D&R reviews use 0–10 scale; many reviews carry Rating=0 even
+        # when the review is positive (legacy data). Normalise to 0–5.
+        rating: float | None = None
+        raw_r = r.get("Rating")
+        if isinstance(raw_r, (int, float)) and raw_r > 0:
+            rating = round(float(raw_r) / 2.0, 1)
+
+        # Date: ".NET Date" /Date(1618081071433)/ — milliseconds since epoch
+        date_iso: str | None = None
+        wo = r.get("WrittenOn") or ""
+        m = re.search(r"/Date\((\d+)", wo)
+        if m:
+            try:
+                ts_ms = int(m.group(1))
+                from datetime import datetime as _dt, timezone as _tz
+                date_iso = _dt.fromtimestamp(ts_ms / 1000, tz=_tz.utc).date().isoformat()
+            except Exception:
+                date_iso = None
+        if not date_iso and r.get("WrittenOnStr"):
+            date_iso = str(r.get("WrittenOnStr"))
+
+        helpful = 0
+        h = r.get("Helpfulness") or {}
+        if isinstance(h, dict):
+            try:
+                helpful = int(h.get("HelpfulYesTotal") or 0)
+            except (ValueError, TypeError):
+                helpful = 0
+
+        title = (r.get("Title") or "").strip()
+        # Prepend title if it adds info beyond the body
+        if title and title.lower() not in text.lower():
+            text = f"{title}. {text}"
+
+        return {
+            "text": text,
+            "source": "dr",
+            "rating": rating,
+            "date": date_iso,
+            "author": author,
+            "verified_purchase": False,
+            "helpful_count": helpful,
+        }
 
     # ------------------------------------------------------------------
     # validate_response

@@ -43,6 +43,14 @@ _SEARCH_API = (
 # Primary HTML search endpoint (requires TLS tier, returns 403 on plain HTTP)
 _SEARCH_HTML_URL = "https://www.trendyol.com/sr"
 _REVIEW_API = "https://public-mdc.trendyol.com/discovery-web-socialgw-service/api"
+# Newer apigw review endpoint (used by trendyol's review-detail bundle as of 2026-04).
+# page is 0-indexed and pageSize defaults to 30. Returns ``result.reviews[]`` with
+# fields: ``id``, ``contentId``, ``userFullName``, ``rate``, ``comment``,
+# ``likesCount``, ``createdAt``, ``lastModifiedAt``, ``seller``, ``mediaFiles``.
+_REVIEW_API_V2 = (
+    "https://apigw.trendyol.com/discovery-storefront-trproductgw-service"
+    "/api/review-read/product-reviews/detailed"
+)
 # Fallback review source: product's /yorumlar HTML page (STEALTH tier required)
 _REVIEW_HTML_BASE = "https://www.trendyol.com"
 _PRODUCT_BASE = "https://www.trendyol.com"
@@ -686,18 +694,20 @@ class TrendyolScraper(BaseScraper):
 
         all_reviews: list[dict] = []
         api_failed = False
+        import asyncio as _asyncio
 
-        # --- Strategy 1: JSON API ---
-        for page in range(1, max_pages + 1):
+        # --- Strategy 1: NEW apigw review API (2026-04+) ---
+        # page is 0-indexed on this endpoint
+        for page in range(0, max_pages):
             try:
-                reviews_url = (
-                    f"{_REVIEW_API}/reviews/{content_id}"
-                    f"?page={page}&culture=tr-TR&order=MOST_RECENT"
+                v2_url = (
+                    f"{_REVIEW_API_V2}?contentId={content_id}"
+                    f"&page={page}&order=MOST_RECENT&culture=tr-TR"
                 )
-                response = await self._fetch(reviews_url)
+                response = await self._fetch(v2_url)
             except Exception as exc:
                 logger.warning(
-                    "review API fetch failed, will fall back to HTML",
+                    "review APIv2 fetch failed",
                     url=url, page=page, error=str(exc),
                 )
                 api_failed = True
@@ -705,21 +715,48 @@ class TrendyolScraper(BaseScraper):
 
             if response.status_code != 200:
                 logger.warning(
-                    "review API non-200, will fall back to HTML",
+                    "review APIv2 non-200",
                     url=url, page=page, status=response.status_code,
                 )
                 api_failed = True
                 break
 
-            page_reviews = self._parse_review_response(response)
+            page_reviews = self._parse_review_response_v2(response)
             if not page_reviews:
                 break  # No more reviews
 
             all_reviews.extend(page_reviews)
-            import asyncio as _asyncio
             await _asyncio.sleep(2.0)
 
-        # --- Strategy 2: HTML /yorumlar fallback ---
+        # --- Strategy 2: legacy public-mdc API (DNS dead since 2026-03 but cheap to try) ---
+        if not all_reviews:
+            for page in range(1, max_pages + 1):
+                try:
+                    reviews_url = (
+                        f"{_REVIEW_API}/reviews/{content_id}"
+                        f"?page={page}&culture=tr-TR&order=MOST_RECENT"
+                    )
+                    response = await self._fetch(reviews_url)
+                except Exception as exc:
+                    logger.debug(
+                        "legacy review API fetch failed",
+                        url=url, page=page, error=str(exc),
+                    )
+                    api_failed = True
+                    break
+
+                if response.status_code != 200:
+                    api_failed = True
+                    break
+
+                page_reviews = self._parse_review_response(response)
+                if not page_reviews:
+                    break
+
+                all_reviews.extend(page_reviews)
+                await _asyncio.sleep(2.0)
+
+        # --- Strategy 3: HTML /yorumlar fallback ---
         if api_failed or not all_reviews:
             logger.info("falling back to /yorumlar HTML scraping", url=url)
             html_reviews = await self._get_reviews_from_html(
@@ -863,6 +900,64 @@ class TrendyolScraper(BaseScraper):
         if m:
             return m.group(1)
         return None
+
+    def _parse_review_response_v2(self, response: httpx.Response) -> list[dict]:
+        """Parse the new apigw review API response.
+
+        Schema: ``{isSuccess, statusCode, result: {summary: {...}, reviews: [...]}}``.
+        Each review has ``id``, ``contentId``, ``userFullName``, ``rate``,
+        ``comment``, ``likesCount``, ``createdAt``, ``lastModifiedAt``,
+        ``seller`` (dict), ``mediaFiles``, ``trusted``, ``culture``.
+        """
+        reviews: list[dict] = []
+        try:
+            data = response.json()
+        except Exception as exc:
+            logger.debug("APIv2 review JSON decode failed", error=str(exc))
+            return []
+
+        result = data.get("result", data)
+        items = result.get("reviews", []) or []
+        for item in items:
+            try:
+                comment = item.get("comment", "")
+                if not comment:
+                    continue
+                rating = _safe_float(item.get("rate"))
+                created = item.get("createdAt") or item.get("lastModifiedAt")
+                date_str: str | None = None
+                if isinstance(created, (int, float)):
+                    try:
+                        date_str = datetime.fromtimestamp(
+                            created / 1000, tz=timezone.utc
+                        ).isoformat()
+                    except Exception:
+                        pass
+                elif isinstance(created, str):
+                    date_str = created
+
+                seller = item.get("seller")
+                seller_name: str | None = None
+                if isinstance(seller, dict):
+                    seller_name = seller.get("name")
+                elif isinstance(seller, str):
+                    seller_name = seller
+
+                review: dict[str, Any] = {
+                    "text": comment,
+                    "source": "trendyol",
+                    "rating": rating,
+                    "date": date_str,
+                    "author": item.get("userFullName") or item.get("nickName"),
+                    "helpful_count": _safe_int(item.get("likesCount")) or 0,
+                }
+                if seller_name:
+                    review["seller_name"] = seller_name
+                reviews.append(review)
+            except Exception as exc:
+                logger.debug("APIv2 review item parse error", error=str(exc))
+                continue
+        return reviews
 
     def _parse_review_response(self, response: httpx.Response) -> list[dict]:
         """Parse a single page of reviews from the Trendyol review API."""

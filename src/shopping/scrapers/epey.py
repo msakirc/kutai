@@ -21,6 +21,7 @@ from typing import Any
 import httpx
 
 from .base import BaseScraper, register_scraper
+from ..cache import cache_reviews, get_cached_reviews
 from ..models import Product
 from ..text_utils import parse_turkish_price, normalize_product_name
 from src.infra.logging_config import get_logger
@@ -271,13 +272,177 @@ class EpeyScraper(BaseScraper):
             return None
 
     # ------------------------------------------------------------------
-    # get_reviews  (not hosted on Epey)
+    # get_reviews
     # ------------------------------------------------------------------
 
     async def get_reviews(self, url: str, *, max_pages: int = 3) -> list[dict]:
-        """Epey does not host user reviews. Returns empty list."""
-        logger.debug("get_reviews called on Epey (no reviews)", url=url)
-        return []
+        """Extract user comments embedded in an Epey product page.
+
+        Reviews live inside ``<div id="yorumlar">`` on the product detail
+        page itself (no separate ``/yorumlar/`` subpage exists).  Each
+        top-level review is a ``<div class="yorum row ...">`` and replies
+        are ``<div class="yanit row ...">``.  Pagination, when present,
+        follows ``?p=N`` on the product URL.
+        """
+        if not _BS4:
+            return []
+
+        # Cache check
+        try:
+            cached = await get_cached_reviews(url, "epey")
+            if cached is not None:
+                logger.debug("epey reviews cache hit", url=url, count=len(cached))
+                return cached
+        except Exception:
+            pass
+
+        all_reviews: list[dict] = []
+        seen_ids: set[str] = set()
+
+        for page in range(1, max_pages + 1):
+            page_url = url if page == 1 else (
+                f"{url}?p={page}" if "?" not in url else f"{url}&p={page}"
+            )
+            try:
+                resp = await self._fetch(page_url)
+            except Exception as exc:
+                logger.debug("epey reviews fetch failed", url=page_url, error=str(exc))
+                break
+            if resp.status_code != 200:
+                break
+            page_reviews = self._parse_reviews_html(resp.text)
+            new_count = 0
+            for r in page_reviews:
+                rid = r.get("entry_id") or f"{r.get('author','')}|{r.get('text','')[:60]}"
+                if rid in seen_ids:
+                    continue
+                seen_ids.add(rid)
+                all_reviews.append(r)
+                new_count += 1
+            if new_count == 0:
+                break
+
+        # Sort by helpful_count descending so top reviews come first
+        all_reviews.sort(key=lambda r: r.get("helpful_count", 0), reverse=True)
+
+        if all_reviews:
+            try:
+                await cache_reviews(url, all_reviews, "epey")
+            except Exception:
+                pass
+
+        logger.info("epey reviews fetched", url=url, count=len(all_reviews))
+        return all_reviews
+
+    def _parse_reviews_html(self, html: str) -> list[dict]:
+        """Parse top-level reviews and replies from a product page HTML."""
+        reviews: list[dict] = []
+        try:
+            soup = BeautifulSoup(html, "lxml")
+        except Exception:
+            return []
+
+        yorumlar = soup.select_one("#yorumlar") or soup
+        # Top-level reviews + replies. Multi-strategy fallback for resilience.
+        review_els = (
+            yorumlar.select("div.yorum.row, div.yanit.row")
+            or yorumlar.select("div[class~='yorum'][class~='row']")
+            or yorumlar.select("div[id^='4']")
+        )
+
+        for el in review_els:
+            try:
+                classes = el.get("class", []) or []
+                # Skip the empty "yorumyaz" template card
+                if "yorumyaz" in classes:
+                    continue
+
+                # Author — multi-strategy
+                author_el = (
+                    el.select_one("span.adi")
+                    or el.select_one(".cell .adi")
+                    or el.select_one("b")
+                )
+                author = author_el.get_text(strip=True) if author_el else None
+
+                # Text
+                text_el = (
+                    el.select_one("span.metin")
+                    or el.select_one(".cell.c86a45 span.metin")
+                    or el.select_one("div.cell span:not(.adi)")
+                )
+                if text_el is None:
+                    continue
+                text = re.sub(r"\s+", " ", text_el.get_text(separator=" ", strip=True)).strip()
+                if not text or len(text) < 3:
+                    continue
+
+                # Helpful count — number inside .dugme.faydali > span
+                helpful = 0
+                fav_el = (
+                    el.select_one("span.dugme.faydali span")
+                    or el.select_one(".faydali span")
+                )
+                if fav_el:
+                    try:
+                        helpful = int(re.sub(r"[^\d]", "", fav_el.get_text(strip=True)) or 0)
+                    except (ValueError, TypeError):
+                        pass
+
+                # Unhelpful (dislikes)
+                unhelpful = 0
+                unfav_el = (
+                    el.select_one("span.dugme.faydasiz span")
+                    or el.select_one(".faydasiz span")
+                )
+                if unfav_el:
+                    try:
+                        unhelpful = int(re.sub(r"[^\d]", "", unfav_el.get_text(strip=True)) or 0)
+                    except (ValueError, TypeError):
+                        pass
+
+                # Date — relative phrase like "5 gün önce" inside .secenek
+                date_str: str | None = None
+                for sp in el.select(
+                    "div.secenek span, div.secyorum span, div.secyanit span"
+                ):
+                    txt = sp.get_text(strip=True)
+                    if re.search(r"(önce|dakika|saat|gün|hafta|ay|yıl)", txt, re.I):
+                        date_str = txt.lstrip("- ").strip()
+                        break
+
+                # Variant info (e.g., " - 1 TB") — bold span at end
+                variant: str | None = None
+                bold_spans = el.select("div.secenek span[style*='bold']") or []
+                if bold_spans:
+                    raw = bold_spans[-1].get_text(strip=True).lstrip("- ").strip()
+                    if raw:
+                        variant = raw
+
+                entry_id = el.get("id")
+                is_reply = "yanit" in classes
+
+                review: dict[str, Any] = {
+                    "text": text,
+                    "source": "epey",
+                    "author": author,
+                    "date": date_str,
+                    "rating": None,
+                    "helpful_count": helpful,
+                    "unhelpful_count": unhelpful,
+                    "is_reply": is_reply,
+                }
+                if entry_id:
+                    review["entry_id"] = entry_id
+                if variant:
+                    review["variant"] = variant
+
+                reviews.append(review)
+            except Exception as exc:
+                logger.debug("epey review parse error", error=str(exc))
+                continue
+
+        return reviews
 
     # ------------------------------------------------------------------
     # validate_response

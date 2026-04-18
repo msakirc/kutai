@@ -97,8 +97,157 @@ class KitapyurduScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     async def get_reviews(self, url: str, *, max_pages: int = 3) -> list[dict]:
-        """Kitapyurdu does not expose user reviews in structured form."""
-        return []
+        """Fetch reviews for a Kitapyurdu product.
+
+        Strategy:
+          1. Cache check (``shopping.cache.get_cached_reviews``).
+          2. Resolve the numeric ``product_id`` from the URL slug (``/.../<id>.html``)
+             or by fetching the product page and pulling ``preU.prId``.
+          3. Hit ``/index.php?route=product/product/reviewAll&product_id=<id>`` —
+             a server-rendered page returning all reviews in a single HTML payload.
+          4. Parse ``.ky-review`` items using schema.org microdata
+             (``itemprop=author/reviewBody/ratingValue/datePublished``) with
+             CSS-selector fallbacks for class renames.
+        """
+        from ..cache import get_cached_reviews, cache_reviews
+
+        if not _BS4:
+            return []
+
+        cached = await get_cached_reviews(url, "kitapyurdu")
+        if cached is not None:
+            return cached
+
+        try:
+            product_id = await self._resolve_product_id(url)
+            if not product_id:
+                logger.debug("kitapyurdu reviews: no product_id", url=url)
+                return []
+
+            review_url = (
+                f"{self._BASE_URL}/index.php?route=product/product/reviewAll"
+                f"&product_id={product_id}"
+            )
+            resp = await self._fetch(review_url)
+            if not resp or resp.status_code >= 400 or not resp.text:
+                return []
+
+            reviews = self._parse_reviews_html(resp.text)
+            await cache_reviews(url, reviews, "kitapyurdu")
+            logger.info(
+                "kitapyurdu reviews fetched",
+                url=url,
+                product_id=product_id,
+                count=len(reviews),
+            )
+            return reviews
+        except Exception as exc:
+            logger.debug("kitapyurdu get_reviews failed", url=url, error=str(exc))
+            return []
+
+    async def _resolve_product_id(self, url: str) -> str | None:
+        """Extract numeric product_id either from URL slug or from page HTML."""
+        # URLs look like .../kitap/<slug>/<id>.html
+        m = re.search(r"/(\d+)\.html(?:$|[?#])", url)
+        if m:
+            return m.group(1)
+        # Or .../product_id=<id>
+        m = re.search(r"[?&]product_id=(\d+)", url)
+        if m:
+            return m.group(1)
+        # Fall back to fetching the product page and scraping preU.prId
+        try:
+            resp = await self._fetch(url)
+            if not resp or not resp.text:
+                return None
+            m = re.search(r"preU\.prId\s*=\s*['\"]?(\d+)", resp.text)
+            if m:
+                return m.group(1)
+        except Exception:
+            return None
+        return None
+
+    def _parse_reviews_html(self, html: str) -> list[dict]:
+        soup = BeautifulSoup(html, "lxml")
+        # Primary: .ky-review (current). Fallbacks for past/future renames.
+        items = soup.select(
+            ".ky-review, .pr__review-item, [itemtype='https://schema.org/Review']"
+        )
+        out: list[dict] = []
+        for el in items:
+            try:
+                review = self._parse_one_ky_review(el)
+                if review and review.get("text"):
+                    out.append(review)
+            except Exception as exc:
+                logger.debug("kitapyurdu review parse error", error=str(exc))
+        return out
+
+    def _parse_one_ky_review(self, el: Any) -> dict | None:
+        # --- text ---
+        text_el = el.select_one(
+            "[itemprop='reviewBody'], .ky-review__content, .pr__review-text"
+        )
+        text = text_el.get_text(" ", strip=True) if text_el else ""
+        if not text:
+            return None
+
+        # --- author ---
+        author = None
+        a_el = el.select_one(
+            "[itemprop='author'] [itemprop='name'], "
+            "[itemprop='author'], .ky-review__author, .pr__review-author"
+        )
+        if a_el:
+            author = a_el.get_text(strip=True) or None
+
+        # --- rating (microdata first, then count selected stars) ---
+        rating: float | None = None
+        meta_r = el.select_one("meta[itemprop='ratingValue']")
+        if meta_r and meta_r.get("content"):
+            try:
+                rating = float(meta_r["content"])
+            except ValueError:
+                rating = None
+        if rating is None:
+            # Fallback: count yellow stars
+            yellow = el.select(
+                ".ky-icon__star.text-yellow, .ky-product-rating-star--selected"
+            )
+            if yellow:
+                rating = float(len(yellow))
+
+        # --- date ---
+        date = None
+        meta_d = el.select_one("meta[itemprop='datePublished']")
+        if meta_d and meta_d.get("content"):
+            date = meta_d["content"]
+        if not date:
+            d_el = el.select_one(".ky-review__date, time")
+            if d_el:
+                date = d_el.get("datetime") or d_el.get_text(strip=True)
+
+        # --- helpful count ('agree' button counter) ---
+        helpful = 0
+        h_btn = el.select_one("[data-action='agree-review'] span:last-child")
+        if h_btn:
+            try:
+                helpful = int(re.search(r"\d+", h_btn.get_text()).group(0))
+            except (AttributeError, ValueError):
+                helpful = 0
+
+        # --- verified purchase ---
+        verified = bool(el.select_one(".ky-review--purchased, .ky-review__badge--purchased"))
+
+        return {
+            "text": text,
+            "source": "kitapyurdu",
+            "rating": rating,
+            "date": date,
+            "author": author,
+            "verified_purchase": verified,
+            "helpful_count": helpful,
+        }
 
     # ------------------------------------------------------------------
     # validate_response

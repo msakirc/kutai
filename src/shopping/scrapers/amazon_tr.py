@@ -517,6 +517,7 @@ class AmazonTrScraper(BaseScraper):
         asin = asin_match.group(1)
         all_reviews: list[dict] = []
 
+        # --- Strategy 1: dedicated /product-reviews pages ---
         for page in range(1, max_pages + 1):
             review_url = (
                 f"{_BASE_URL}/product-reviews/{asin}"
@@ -534,11 +535,52 @@ class AmazonTrScraper(BaseScraper):
             if response.status_code != 200:
                 break
 
-            page_reviews = self._parse_review_page(response.text)
+            # Sign-in wall / captcha detection: skip to fallback
+            html = response.text
+            if (
+                "Sign-In" in html[:5000]
+                or "ap_signin" in html[:5000]
+                or "opfcaptcha" in html[:5000]
+            ):
+                logger.warning(
+                    "amazon /product-reviews behind sign-in wall, falling back to dp page",
+                    asin=asin,
+                )
+                break
+
+            page_reviews = self._parse_review_page(html)
             if not page_reviews:
                 break
 
             all_reviews.extend(page_reviews)
+
+        # --- Strategy 2: parse top reviews embedded in /dp/ASIN page ---
+        # Use STEALTH tier directly because TLS tier hits Amazon's
+        # opfcaptcha bot wall on most product pages.
+        if not all_reviews:
+            try:
+                from src.tools.scraper import scrape_url, ScrapeTier
+                dp_url = f"{_BASE_URL}/dp/{asin}"
+                for tier in (ScrapeTier.STEALTH, ScrapeTier.BROWSER):
+                    try:
+                        result = await scrape_url(dp_url, max_tier=tier, timeout=30.0)
+                    except Exception as exc:
+                        logger.debug("dp-page tier fetch failed", tier=str(tier), error=str(exc))
+                        continue
+                    if not result.html or "opfcaptcha" in result.html[:5000]:
+                        logger.debug("dp-page captcha at tier", tier=str(tier))
+                        continue
+                    page_reviews = self._parse_review_page(result.html)
+                    if page_reviews:
+                        all_reviews.extend(page_reviews)
+                        logger.info(
+                            "amazon reviews via dp-page fallback",
+                            count=len(page_reviews),
+                            tier=str(tier),
+                        )
+                        break
+            except Exception as exc:
+                logger.debug("dp-page review fallback failed", error=str(exc))
 
         # Cache
         if all_reviews:
@@ -551,7 +593,13 @@ class AmazonTrScraper(BaseScraper):
         return all_reviews
 
     def _parse_review_page(self, html: str) -> list[dict]:
-        """Parse a single page of Amazon reviews."""
+        """Parse a single page of Amazon reviews.
+
+        Amazon's review elements have shifted from ``<div data-hook="review">``
+        to ``<li class="review" data-hook="review">``.  We use a tagless
+        attribute selector and try several candidate paths for body, rating,
+        and helpful-vote text.
+        """
         reviews: list[dict] = []
 
         try:
@@ -559,23 +607,42 @@ class AmazonTrScraper(BaseScraper):
         except Exception:
             return []
 
-        review_divs = soup.select("div[data-hook='review']")
+        # Tagless selector matches both <div> and <li> review wrappers.
+        review_els = (
+            soup.select("[data-hook='review']")
+            or soup.select("div.review")
+            or soup.find_all(attrs={"data-hook": "review"})
+        )
 
-        for div in review_divs:
+        for div in review_els:
             try:
-                # Text
-                body_el = div.select_one("span[data-hook='review-body'] span")
-                if not body_el:
-                    continue
-                text = body_el.get_text(strip=True)
+                # Text -- try multiple body selectors (translated, original, plain)
+                text = ""
+                for sel in (
+                    "span[data-hook='review-body'] span.cr-original-review-content",
+                    "span[data-hook='review-body'] span.review-text-content span",
+                    "span[data-hook='review-body'] span",
+                    "span[data-hook='review-body']",
+                    "div[data-hook='review-collapsed']",
+                ):
+                    body_el = div.select_one(sel)
+                    if body_el:
+                        text = body_el.get_text(" ", strip=True)
+                        if text:
+                            break
                 if not text:
                     continue
 
-                # Rating
+                # Rating -- multiple data-hook variants used across regions
                 rating: float | None = None
-                star_el = div.select_one("i[data-hook='review-star-rating'] span")
+                star_el = (
+                    div.select_one("i[data-hook='review-star-rating'] span")
+                    or div.select_one("i[data-hook='cmps-review-star-rating'] span")
+                    or div.select_one("[data-hook$='review-star-rating'] span.a-icon-alt")
+                    or div.select_one("span.a-icon-alt")
+                )
                 if star_el:
-                    m = re.search(r"([\d,]+)", star_el.get_text())
+                    m = re.search(r"([\d]+[,.]?[\d]*)", star_el.get_text())
                     if m:
                         try:
                             rating = float(m.group(1).replace(",", "."))
@@ -597,7 +664,10 @@ class AmazonTrScraper(BaseScraper):
 
                 # Helpful count
                 helpful = 0
-                helpful_el = div.select_one("span[data-hook='helpful-vote-statement']")
+                helpful_el = (
+                    div.select_one("span[data-hook='helpful-vote-statement']")
+                    or div.select_one("[data-hook='helpful-vote-statement']")
+                )
                 if helpful_el:
                     m = re.search(r"(\d+)", helpful_el.get_text())
                     if m:

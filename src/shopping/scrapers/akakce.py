@@ -20,8 +20,10 @@ import httpx
 from .base import BaseScraper, register_scraper
 from ..cache import (
     cache_product,
+    cache_reviews,
     cache_search,
     get_cached_product,
+    get_cached_reviews,
     get_cached_search,
 )
 from ..models import Product
@@ -411,9 +413,162 @@ class AkakceScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     async def get_reviews(self, url: str, *, max_pages: int = 3) -> list[dict]:
-        """Akakce does not host detailed reviews.  Returns an empty list."""
-        logger.debug("get_reviews called on Akakce (no reviews available)", url=url)
-        return []
+        """Extract user comments from Akakce.
+
+        Each Akakce product page links to a reviews page at
+        ``/yorum/?p=PRODUCT_ID``.  If *url* is already a reviews page
+        (``/yorum/?p=...``) we fetch directly, otherwise we extract the
+        product ID from the product URL (``...,PRODUCT_ID.html``) and
+        build the reviews URL.
+
+        Pagination is *not* exposed as numbered pages on Akakce — the
+        reviews list is rendered inline.  Sites with very many comments
+        load more via a JS endpoint we do not call; max_pages is left in
+        the signature for API parity but only the first page is fetched.
+        """
+        if not _BS4_AVAILABLE:
+            return []
+
+        # Cache check
+        try:
+            cached = await get_cached_reviews(url, "akakce")
+            if cached is not None:
+                logger.debug("akakce reviews cache hit", url=url, count=len(cached))
+                return cached
+        except Exception:
+            pass
+
+        review_url = self._build_review_url(url)
+        if not review_url:
+            logger.debug("akakce: could not derive review URL", url=url)
+            return []
+
+        try:
+            resp = await self._fetch(review_url)
+        except Exception as exc:
+            logger.debug("akakce reviews fetch failed", url=review_url, error=str(exc))
+            return []
+        if resp.status_code != 200:
+            return []
+
+        reviews = self._parse_reviews_html(resp.text)
+
+        # Sort by helpful_count descending
+        reviews.sort(key=lambda r: r.get("helpful_count", 0), reverse=True)
+
+        if reviews:
+            try:
+                await cache_reviews(url, reviews, "akakce")
+            except Exception:
+                pass
+
+        logger.info("akakce reviews fetched", url=url, count=len(reviews))
+        return reviews
+
+    @staticmethod
+    def _build_review_url(url: str) -> str | None:
+        """Derive ``/yorum/?p=ID`` from any Akakce URL."""
+        if "/yorum/" in url and "p=" in url:
+            return url
+        # Product URL pattern: .../en-ucuz-name-fiyati,PRODUCTID.html
+        m = re.search(r",(\d+)\.html", url)
+        if m:
+            return f"https://www.akakce.com/yorum/?p={m.group(1)}"
+        return None
+
+    def _parse_reviews_html(self, html: str) -> list[dict]:
+        """Parse review entries from /yorum/?p=ID page.
+
+        Each review is ``<li data-c="ID" data-d="DISLIKES" data-l="LIKES">``
+        with author in ``.h b a``, date in ``.h .d[title]``, optional rating
+        in ``.sc_v9[data-sc]`` (0-20 scale, mapped to 0-5 stars), and the
+        comment text in ``.cm``.
+        """
+        reviews: list[dict] = []
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+        except Exception:
+            return []
+
+        review_lis = (
+            soup.select("li[data-c]")
+            or soup.select("ul.cms li")
+            or soup.select("article.review")
+        )
+
+        for li in review_lis:
+            try:
+                cm_el = li.select_one(".cm") or li.select_one("div.review-text")
+                if cm_el is None:
+                    continue
+                text = cm_el.get_text(separator=" ", strip=True)
+                if not text or len(text) < 3:
+                    continue
+
+                # Author
+                author_el = (
+                    li.select_one(".h b a")
+                    or li.select_one(".h b")
+                    or li.select_one("a.upr")
+                )
+                author = author_el.get_text(strip=True) if author_el else None
+
+                # Date — title attribute holds full timestamp
+                date_str: str | None = None
+                d_el = li.select_one(".h .d") or li.select_one("span.d")
+                if d_el:
+                    date_str = d_el.get("title") or d_el.get_text(strip=True)
+                    # Strip "Eklenme tarihi: " prefix if present
+                    if date_str:
+                        date_str = re.sub(r"^Eklenme tarihi:\s*", "", date_str).strip()
+
+                # Rating: 0-20 scale -> 0-5 stars
+                rating: float | None = None
+                sc_el = li.select_one(".sc_v9") or li.select_one("[data-sc]")
+                if sc_el:
+                    raw = sc_el.get("data-sc")
+                    try:
+                        if raw is not None:
+                            rating = round(float(raw) / 4.0, 1)
+                    except (ValueError, TypeError):
+                        pass
+
+                # Likes / dislikes from data attributes
+                likes = 0
+                dislikes = 0
+                try:
+                    likes = int(li.get("data-l", 0) or 0)
+                    dislikes = int(li.get("data-d", 0) or 0)
+                except (ValueError, TypeError):
+                    pass
+
+                # City — italics inside .h
+                city: str | None = None
+                city_el = li.select_one(".h i")
+                if city_el:
+                    city = city_el.get_text(strip=True) or None
+
+                review: dict[str, Any] = {
+                    "text": text,
+                    "source": "akakce",
+                    "author": author,
+                    "date": date_str,
+                    "rating": rating,
+                    "helpful_count": likes,
+                    "unhelpful_count": dislikes,
+                }
+                comment_id = li.get("data-c")
+                if comment_id:
+                    review["entry_id"] = comment_id
+                if city:
+                    review["city"] = city
+
+                reviews.append(review)
+            except Exception as exc:
+                logger.debug("akakce review parse error", error=str(exc))
+                continue
+
+        return reviews
 
     # ------------------------------------------------------------------
     # validate_response

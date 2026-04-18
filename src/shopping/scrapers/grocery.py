@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 
 from .base import BaseScraper, register_scraper
-from ..cache import cache_search, get_cached_search
+from ..cache import cache_search, get_cached_search, cache_reviews, get_cached_reviews
 from ..models import Product
 from ..text_utils import parse_turkish_price, normalize_product_name
 from src.infra.logging_config import get_logger
@@ -421,6 +421,10 @@ class GetirScraper(BaseScraper):
         return None
 
     async def get_reviews(self, url: str, *, max_pages: int = 3) -> list[dict]:
+        # Getir is a quick-commerce app — product detail pages do not host
+        # user reviews/ratings.  The web SPA is also gated (403/404 across
+        # all known endpoints; ``is_available = False``).  No reviews to
+        # scrape.  Verified 2026-04-18 via snapshot of getir.com URLs.
         return []
 
     def validate_response(self, response: httpx.Response) -> bool:
@@ -621,8 +625,118 @@ class MigrosScraper(BaseScraper):
     async def get_product(self, url: str) -> Product | None:
         return None
 
+    @staticmethod
+    def _extract_migros_pid(url: str) -> str | None:
+        """Extract the short product id from a Migros sanalmarket URL.
+
+        URL pattern: ``/<slug>-p-<id>`` where id is a hex hash (e.g. ``d2c30b``).
+        """
+        m = re.search(r"-p-([a-f0-9]+)", url, re.IGNORECASE)
+        return m.group(1) if m else None
+
     async def get_reviews(self, url: str, *, max_pages: int = 3) -> list[dict]:
-        return []
+        """Fetch product comments/ratings from Migros sanalmarket.
+
+        Migros is an Angular SPA and reviews live behind store-session
+        gated REST endpoints.  We probe the documented review paths; any
+        ``200 + application/json`` response is parsed.  When all paths
+        return SPA-shell HTML or 404 (the common case without a store
+        cookie) we return [].
+
+        Verified 2026-04-18: without a store session every endpoint either
+        404s or returns the 5KB Angular shell.  Comment text is therefore
+        not retrievable in the current configuration.
+        """
+        # Cache
+        try:
+            cached = await get_cached_reviews(url, "migros")
+            if cached is not None:
+                return cached
+        except Exception:
+            pass
+
+        pid = self._extract_migros_pid(url)
+        if not pid:
+            return []
+
+        # Strategy 1: probe documented REST review endpoints.  Migros has
+        # rotated these several times; we try the known set in order.
+        candidate_paths = [
+            f"/rest/products/{pid}/comments",
+            f"/rest/comment-rate/product-comments/{pid}",
+            f"/rest/comment/list?productId={pid}",
+            f"/sm/api/comment-rate/product-comments/{pid}",
+            f"/sm/api/products/{pid}/comments",
+        ]
+
+        all_reviews: list[dict] = []
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        for path in candidate_paths:
+            try:
+                response = await self._fetch(self._BASE_URL + path)
+            except Exception as exc:
+                logger.debug("migros review probe failed", path=path, error=str(exc))
+                continue
+            if response.status_code != 200:
+                continue
+            ct = response.headers.get("content-type", "").lower()
+            if "application/json" not in ct:
+                continue
+            try:
+                data = response.json()
+            except Exception:
+                continue
+            items = (
+                (data.get("data") or {}).get("comments")
+                or data.get("comments")
+                or data.get("productComments")
+                or data.get("reviews")
+                or []
+            )
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                text = (
+                    item.get("comment")
+                    or item.get("commentText")
+                    or item.get("text")
+                    or ""
+                )
+                if not text:
+                    continue
+                rating = _safe_float(item.get("rate") or item.get("rating") or item.get("star"))
+                author = item.get("userName") or item.get("nickName") or item.get("author")
+                date = item.get("commentDate") or item.get("createdDate") or item.get("date")
+                helpful = item.get("helpfulCount") or item.get("likeCount") or 0
+                all_reviews.append({
+                    "text": text,
+                    "source": "migros",
+                    "rating": rating,
+                    "date": str(date) if date else None,
+                    "author": author,
+                    "helpful_count": int(helpful) if isinstance(helpful, (int, float)) else 0,
+                })
+            if all_reviews:
+                break  # First working endpoint wins
+
+        if all_reviews:
+            try:
+                await cache_reviews(url, all_reviews, "migros")
+            except Exception:
+                pass
+        else:
+            logger.debug(
+                "migros reviews unavailable (SPA shell / store-session gated)",
+                url=url, pid=pid,
+            )
+
+        # NOTE: a JSON-LD/aggregateRating fallback on the product page was
+        # tested but the Angular SPA renders an empty 84KB shell -- no
+        # structured data hydrated server-side.  Skipped to keep the call
+        # path fast.
+
+        return all_reviews
 
     def validate_response(self, response: httpx.Response) -> bool:
         if response.status_code >= 400:
@@ -637,8 +751,6 @@ class MigrosScraper(BaseScraper):
         return bool(text) and len(text) > 200
 
 
-# ---------------------------------------------------------------------------
-# Helpers
 # ---------------------------------------------------------------------------
 
 

@@ -323,6 +323,19 @@ class SikayetvarScraper(BaseScraper):
 
             return complaints
 
+        # If we are on a brand page (e.g. /turkcell), the brand isn't
+        # repeated in each card — capture it once from the page header.
+        page_brand: str | None = None
+        brand_header = (
+            soup.select_one("h1.brand-name")
+            or soup.select_one("a.brand-link")
+            or soup.select_one("h1")
+        )
+        if brand_header:
+            cand = brand_header.get_text(strip=True)
+            if cand and len(cand) < 60:
+                page_brand = cand
+
         # Listing page with multiple complaints
         cards = (
             soup.select("article.card-v2")
@@ -358,6 +371,8 @@ class SikayetvarScraper(BaseScraper):
                 if not brand:
                     brand_el = card.select_one("a.complaint-brand") or card.select_one("span.brand-name")
                     brand = brand_el.get_text(strip=True) if brand_el else None
+                if not brand and page_brand:
+                    brand = page_brand
 
                 date_el = card.select_one("time") or card.select_one("span.date")
                 date_str: str | None = (

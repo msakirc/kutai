@@ -477,6 +477,13 @@ class HepsiburadaScraper(BaseScraper):
 
         all_reviews: list[dict] = []
 
+        # --- Strategy 1: review API ---
+        # Try the URL-derived SKU first, then alternative param names if no rows.
+        sku_candidates = [sku]
+        # Some Hepsiburada products have SKU and merchantSku; try both with/without prefix.
+        if sku.startswith("HBV") or sku.startswith("HBC"):
+            sku_candidates.append(sku)  # already canonical
+
         for page in range(1, max_pages + 1):
             try:
                 # Note: working param is 'sku=' (not 'skuId=' which returns 400)
@@ -506,6 +513,18 @@ class HepsiburadaScraper(BaseScraper):
             if page < max_pages:
                 import asyncio as _asyncio
                 await _asyncio.sleep(2.0)
+
+        # --- Strategy 2: product-page JSON fallback ---
+        # If the API returned nothing (blocked, sku mismatch, etc.), parse
+        # embedded reviews from the product page itself.
+        if not all_reviews:
+            try:
+                page_reviews = await self._reviews_from_product_page(url)
+                if page_reviews:
+                    all_reviews.extend(page_reviews)
+                    logger.info("hb reviews via product-page fallback", count=len(page_reviews))
+            except Exception as exc:
+                logger.debug("hb product-page review fallback failed", error=str(exc))
 
         # Cache
         if all_reviews:
@@ -613,6 +632,105 @@ class HepsiburadaScraper(BaseScraper):
             except Exception as exc:
                 logger.debug("review item parse error", error=str(exc))
                 continue
+
+        return reviews
+
+    async def _reviews_from_product_page(self, url: str) -> list[dict]:
+        """Fallback: parse reviews embedded in the product page HTML.
+
+        Hepsiburada product pages embed a Redux store under
+        ``<script id="reduxStore">`` with reviews inside
+        ``ProductReviews`` / ``approvedUserContents`` keys, plus a
+        JSON-LD ``Product`` block with ``review[]``.
+        """
+        try:
+            response = await self._fetch(url)
+        except Exception:
+            return []
+        if response.status_code != 200:
+            return []
+        html = response.text
+
+        reviews: list[dict] = []
+
+        # Try JSON-LD Product.review first (cheap regex)
+        try:
+            for m in re.finditer(
+                r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+                html,
+                re.DOTALL | re.IGNORECASE,
+            ):
+                try:
+                    blob = json.loads(m.group(1))
+                except Exception:
+                    continue
+                blocks = blob if isinstance(blob, list) else [blob]
+                for b in blocks:
+                    if not isinstance(b, dict):
+                        continue
+                    rs = b.get("review") or b.get("reviews") or []
+                    if isinstance(rs, dict):
+                        rs = [rs]
+                    for r in rs:
+                        if not isinstance(r, dict):
+                            continue
+                        body = r.get("reviewBody") or r.get("description") or ""
+                        if not body:
+                            continue
+                        rating_obj = r.get("reviewRating") or {}
+                        rating = None
+                        if isinstance(rating_obj, dict):
+                            rating = _safe_float(rating_obj.get("ratingValue"))
+                        author_obj = r.get("author") or {}
+                        author = author_obj.get("name") if isinstance(author_obj, dict) else author_obj
+                        reviews.append({
+                            "text": body,
+                            "source": "hepsiburada",
+                            "rating": rating,
+                            "date": r.get("datePublished"),
+                            "author": author,
+                            "helpful_count": 0,
+                            "verified_purchase": False,
+                        })
+        except Exception as exc:
+            logger.debug("hb JSON-LD review parse error", error=str(exc))
+
+        if reviews:
+            return reviews
+
+        # Try embedded approvedUserContents in inline scripts
+        try:
+            for m in re.finditer(
+                r'"approvedUserContentList"\s*:\s*(\[.*?\])\s*,',
+                html,
+                re.DOTALL,
+            ):
+                try:
+                    arr = json.loads(m.group(1))
+                except Exception:
+                    continue
+                for item in arr:
+                    if not isinstance(item, dict):
+                        continue
+                    rev_obj = item.get("review", {})
+                    text = rev_obj.get("content") if isinstance(rev_obj, dict) else None
+                    if not text:
+                        continue
+                    customer = item.get("customer", {})
+                    author = customer.get("displayName") if isinstance(customer, dict) else None
+                    reviews.append({
+                        "text": text,
+                        "source": "hepsiburada",
+                        "rating": _safe_float(item.get("star")),
+                        "date": item.get("createdAt"),
+                        "author": author,
+                        "helpful_count": 0,
+                        "verified_purchase": bool(item.get("isPurchaseVerified")),
+                    })
+                if reviews:
+                    break
+        except Exception as exc:
+            logger.debug("hb inline-script review parse error", error=str(exc))
 
         return reviews
 

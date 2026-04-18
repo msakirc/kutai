@@ -124,8 +124,165 @@ class DecathlonTrScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     async def get_reviews(self, url: str, *, max_pages: int = 3) -> list[dict]:
-        """Decathlon does not expose structured reviews on listing pages."""
-        return []
+        """Fetch reviews from the dedicated Decathlon reviews page.
+
+        Strategy:
+          1. Cache check (``shopping.cache.get_cached_reviews``).
+          2. Derive the review URL by rewriting ``/p/<slug>/_/R-p-<id>`` to
+             ``/r/<slug>/_/R-p-<id>``. Decathlon TR mirrors the product slug
+             on its review subpage and renders the first ~10 reviews
+             server-side (Svelte SSR).
+          3. Parse ``article.review-item`` blocks for body, rating, date,
+             author. Reviews live in ``.review-item__body`` (primary) with
+             fallbacks to ``.review-content`` / ``[itemprop=reviewBody]`` for
+             selector renames.
+
+        ``max_pages`` is currently advisory — Decathlon's review pagination is
+        client-side ``?from=N`` appended to the same URL; the first SSR page
+        already returns ~10 reviews which is enough for sentiment.
+        """
+        from ..cache import get_cached_reviews, cache_reviews
+
+        if not _BS4:
+            return []
+
+        cached = await get_cached_reviews(url, "decathlon")
+        if cached is not None:
+            return cached
+
+        try:
+            review_url = self._derive_review_url(url)
+            if not review_url:
+                logger.debug("decathlon reviews: no review_url", url=url)
+                return []
+
+            html = await self._fetch_html_stealth(review_url)
+            if not html:
+                return []
+
+            reviews = self._parse_reviews_html(html)
+            await cache_reviews(url, reviews, "decathlon")
+            logger.info(
+                "decathlon reviews fetched",
+                url=url,
+                review_url=review_url,
+                count=len(reviews),
+            )
+            return reviews
+        except Exception as exc:
+            logger.debug("decathlon get_reviews failed", url=url, error=str(exc))
+            return []
+
+    async def _fetch_html_stealth(self, url: str) -> str | None:
+        """Fetch HTML with STEALTH tier — Decathlon TR returns 403 at TLS tier
+        for review subpages, so we bypass BaseScraper._fetch (which caps at TLS).
+        """
+        try:
+            from src.tools.scraper import scrape_url, ScrapeTier
+            result = await scrape_url(url, max_tier=ScrapeTier.STEALTH, timeout=30.0)
+            if result.status >= 400 or not result.html:
+                return None
+            return result.html
+        except Exception as exc:
+            logger.debug("decathlon stealth fetch failed", url=url, error=str(exc))
+            return None
+
+    def _derive_review_url(self, product_url: str) -> str | None:
+        """Convert /p/<slug>/_/R-p-<id> → /r/<slug>/_/R-p-<id> (drop query)."""
+        # Strip query string
+        base = product_url.split("?", 1)[0]
+        # Match /p/.../_/R-p-<id>
+        m = re.match(r"(https?://[^/]+)/p/([^?]+?)/_/R-p-(\d+)/?$", base)
+        if m:
+            host, slug, pid = m.group(1), m.group(2), m.group(3)
+            return f"{host}/r/{slug}/_/R-p-{pid}"
+        # Already a review URL?
+        if "/r/" in base and "/R-p-" in base:
+            return base
+        # Fallback: try just appending /reviews
+        return None
+
+    def _parse_reviews_html(self, html: str) -> list[dict]:
+        soup = BeautifulSoup(html, "lxml")
+        items = soup.select(
+            "article.review-item, .review-item, [itemtype*='Review']"
+        )
+        out: list[dict] = []
+        for el in items:
+            try:
+                review = self._parse_one_review(el)
+                if review and review.get("text"):
+                    out.append(review)
+            except Exception as exc:
+                logger.debug("decathlon review parse error", error=str(exc))
+        return out
+
+    def _parse_one_review(self, el: Any) -> dict | None:
+        # --- text/body ---
+        body_el = el.select_one(
+            ".review-item__body, .review-content, [itemprop='reviewBody'], p.review-text"
+        )
+        text = body_el.get_text(" ", strip=True) if body_el else ""
+        if not text:
+            return None
+
+        # --- title (prepend if distinct) ---
+        title_el = el.select_one(".review-title, .review-item__title, h3")
+        title = title_el.get_text(strip=True) if title_el else ""
+        if title and title.lower() not in text.lower():
+            text = f"{title}. {text}"
+
+        # --- author ---
+        # The author block is the first .vtmn-text-content-secondary > span
+        author = None
+        author_el = el.select_one(
+            ".vtmn-text-content-secondary span, [itemprop='author'], .review-author, .reviewer-name"
+        )
+        if author_el:
+            txt = author_el.get_text(strip=True)
+            # Skip pipe-separated country tokens
+            if txt and "|" not in txt and len(txt) < 60:
+                author = txt
+
+        # --- rating: parse "5/5" text or count star icons ---
+        rating: float | None = None
+        rcomment = el.select_one(".vtmn-rating_comment--primary, .rating-value")
+        if rcomment:
+            m = re.search(r"(\d+(?:[.,]\d+)?)\s*/\s*5", rcomment.get_text())
+            if m:
+                try:
+                    rating = float(m.group(1).replace(",", "."))
+                except ValueError:
+                    rating = None
+        if rating is None:
+            stars = el.select(".vtmx-star-fill")
+            # The author block also has stars; cap at 5
+            if stars:
+                rating = float(min(5, len(stars)))
+
+        # --- date ---
+        date_iso: str | None = None
+        time_el = el.select_one("time[datetime]")
+        if time_el:
+            date_iso = time_el.get("datetime") or time_el.get_text(strip=True)
+        elif el.select_one("time"):
+            date_iso = el.select_one("time").get_text(strip=True)
+
+        # --- verified purchase ---
+        verified = bool(
+            el.select_one(".vtmx-checkbox-circle-line")
+            or "Doğrulanmış" in el.get_text()
+        )
+
+        return {
+            "text": text,
+            "source": "decathlon",
+            "rating": rating,
+            "date": date_iso,
+            "author": author,
+            "verified_purchase": verified,
+            "helpful_count": 0,
+        }
 
     # ------------------------------------------------------------------
     # validate_response

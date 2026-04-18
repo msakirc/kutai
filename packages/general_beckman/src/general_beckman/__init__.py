@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from general_beckman.types import Task, AgentResult, Lane
 from general_beckman.lifecycle import on_task_finished, set_orchestrator
-from general_beckman.queue import pick_ready_task, classify_lane
+from general_beckman.queue import pick_ready_task, classify_lane, count_pending_cloud_tasks, unclaim
+from general_beckman.lookahead import should_hold_back
 
 __all__ = [
     "next_task", "on_task_finished", "tick", "set_orchestrator",
@@ -45,6 +46,15 @@ async def next_task() -> Task | None:
     snap = _capacity_snapshot()
     saturated = _saturated_lanes(snap)
     task = await pick_ready_task(saturated)
+    if task is None:
+        return None
+    try:
+        queue_depth = await count_pending_cloud_tasks()
+    except Exception:
+        queue_depth = 0
+    if should_hold_back(task, snap, queue_depth):
+        await unclaim(task)
+        return None
     return task
 
 

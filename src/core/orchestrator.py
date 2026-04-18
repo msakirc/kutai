@@ -271,6 +271,10 @@ class Orchestrator:
         from src.app.scheduled_jobs import ScheduledJobs
         self.scheduled_jobs = ScheduledJobs(telegram=self.telegram)
 
+        # Register with general_beckman so on_task_finished can reach legacy handlers.
+        import general_beckman as _beckman
+        _beckman.set_orchestrator(self)
+
 
     # ─── NEW: Context Chaining ───────────────────────────────────────────
 

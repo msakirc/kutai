@@ -1819,7 +1819,6 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("improve", self.cmd_improve))
         self.app.add_handler(CommandHandler("remember", self.cmd_remember))
         self.app.add_handler(CommandHandler("recall", self.cmd_recall))
-        self.app.add_handler(CommandHandler("autonomy", self.cmd_autonomy))
         self.app.add_handler(CommandHandler("todo", self.cmd_todo))
         self.app.add_handler(CommandHandler("todos", self.cmd_todos))
         self.app.add_handler(CommandHandler("cleartodos", self.cmd_cleartodos))
@@ -2873,44 +2872,6 @@ class TelegramInterface:
             await self._reply(update,msg, parse_mode="Markdown")
         except (ValueError, IndexError):
             await self._reply(update,"Usage: /feedback <task_id> <good|bad|partial> [reason]")
-        except Exception as e:
-            await self._reply(update,f"❌ {_friendly_error(str(e))}")
-
-    async def cmd_autonomy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Set or view risk autonomy threshold. /autonomy [low|medium|high|paranoid]"""
-        args = context.args
-        try:
-            from src.security.risk_assessor import set_autonomy_threshold, get_autonomy_threshold
-            levels = {
-                "paranoid": 2,
-                "low": 4,
-                "medium": 6,
-                "high": 8,
-            }
-            if not args:
-                current = get_autonomy_threshold()
-                level_name = next((k for k, v in levels.items() if v == current), f"custom ({current})")
-                await self._reply(update,
-                    f"🛡️ *Autonomy Level*\n\nCurrent threshold: *{level_name}* (score ≥{current} requires approval)",
-                    parse_mode="Markdown",
-                )
-                return
-            level = args[0].lower()
-            if level not in levels:
-                await self._reply(update,f"Unknown level. Choose: {', '.join(levels.keys())}")
-                return
-            threshold = levels[level]
-            set_autonomy_threshold(threshold)
-            desc = {
-                "paranoid": "require approval for almost everything",
-                "low": "require approval for medium+ risk tasks",
-                "medium": "require approval for high-risk tasks only",
-                "high": "require approval only for very dangerous tasks",
-            }[level]
-            await self._reply(update,
-                f"🛡️ Autonomy set to *{level}* — will {desc}.",
-                parse_mode="Markdown",
-            )
         except Exception as e:
             await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
@@ -5760,37 +5721,6 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         except Exception as e:
             logger.debug("Failed to persist clarification state",
                          task_id=task_id, error=str(e))
-
-    async def request_approval(self, task_id, title, plan, tier,
-                               mission_id=None):
-        # Persist approval request to DB
-        details = f"Tier: {tier}\n\n{plan[:500]}"
-        await insert_approval_request(task_id, mission_id, title, details)
-
-        keyboard = [[
-            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{task_id}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{task_id}"),
-        ]]
-        event = asyncio.Event()
-        self._approval_events[task_id] = {"event": event, "result": None}
-
-        await self.app.bot.send_message(
-            chat_id=TELEGRAM_ADMIN_CHAT_ID,
-            text=f" *Approval Required — Task #{task_id}*\n\n"
-                 f"**{title}**\nTier: {tier}\n\n{plan[:500]}",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
-        )
-
-        try:
-            await asyncio.wait_for(event.wait(), timeout=1800)
-            return self._approval_events[task_id]["result"] == "approved"
-        except asyncio.TimeoutError:
-            await update_approval_status(task_id, "timeout")
-            await self.send_notification(f"⏰ Approval for #{task_id} timed out. Skipped.")
-            return False
-        finally:
-            self._approval_events.pop(task_id, None)
 
     async def _handle_todo_edit(self, update, context, pending):
         """Handle the user's reply with a new todo title."""

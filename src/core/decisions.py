@@ -25,7 +25,7 @@ class NotifyUser:
     text: str
 
 
-# Gate decisions — used by task_gates module (a later Task 4).
+# Gate decisions — reserved for future gate implementations.
 @dataclass(frozen=True)
 class Allow:
     """Gate passed; task may proceed."""

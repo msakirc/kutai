@@ -22,9 +22,7 @@ from ..infra.db import (
 from src.infra.logging_config import get_logger
 from .router import ModelCallFailed, get_kdv
 from .task_context import parse_context, set_context
-from .task_gates import run_gates
 import salako
-from .decisions import Cancel as GateCancel
 from .result_router import (
     route_result, Complete, SpawnSubtasks, RequestClarification,
     RequestReview, Exhausted, Failed as FailedAction,
@@ -611,17 +609,6 @@ class Orchestrator:
                 logger.info("task enriched with API data", task_id=task_id)
         except Exception as exc:
             logger.debug("context enrichment failed (non-critical): %s", exc)
-
-        # ── Human approval + risk gates ──
-        gate_decision = await run_gates(
-            task=task,
-            task_ctx=task_ctx,
-            approval_fn=self.telegram.request_approval,
-        )
-        if isinstance(gate_decision, GateCancel):
-            logger.info("gate rejected", task_id=task_id, reason=gate_decision.reason)
-            await update_task(task_id, status="cancelled")
-            return None
 
         # ── Phase 6: Snapshot workspace before coder/pipeline tasks ──
         mission_id = task.get("mission_id")

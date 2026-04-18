@@ -908,224 +908,221 @@ class Orchestrator:
             return None  # timeout fully handled; caller must stop
 
     async def process_task(self, task: dict):
-        """Process a single task through the appropriate agent with context injection."""
+        """Process a single task: prepare → dispatch → record, with outer
+        exception handling for availability and unexpected failures."""
         task_id = task["id"]
         title = task["title"]
         agent_type = task.get("agent_type", "executor")
-
         logger.info("task received", task_id=task_id, title=title, agent_type=agent_type)
 
-        task_ctx = {}  # initialized here so except handler can safely access it
-        result = None  # initialized here so except handler can safely access it
+        task_ctx = {}
+        result = None
         try:
             prepared = await self._prepare(task)
             if prepared is None:
                 return
             task, agent_type, timeout_seconds = prepared
-            title = task["title"]
 
             result = await self._dispatch(task, agent_type, timeout_seconds)
             if result is None:
-                return  # timeout handler in _dispatch fully consumed the task
+                return
             task_ctx = parse_context(task)
 
-            status = result.get("status", "completed")
-
-            logger.info("result received", task_id=task_id, status=status)
-
-            # PHASE 1 DISCONNECTED: auto-commit moved to src/core/mechanical/git_commit.py.
-            # Next i2p workflow refactor will re-wire this as an explicit workflow step
-            # or agent tool. Do not delete — code preserved in the mechanical module.
-            # if status == "completed" and agent_type == "coder":
-            #     await self._auto_commit(task, result)
-
-            # ── ungraded + pending are still handled inline (not router Actions) ──
-            if status == "ungraded":
-                # Task deferred to grading phase — store result, don't notify.
-                # Still run workflow post-hook so artifacts are stored.
-                from src.core.result_guards import guard_ungraded_post_hook
-                guard_out = await guard_ungraded_post_hook(self, task, task_ctx, result)
-                if guard_out is not None:
-                    return
-
-                result_text = result.get("result", "No result")
-                cost = result.get("cost", 0)
-                await update_task(
-                    task_id, status="ungraded", result=result_text, cost=cost,
-                )
-                logger.info("task ungraded (deferred grading)", task_id=task_id,
-                            model=result.get("model", "unknown"))
-            elif status == "pending":
-                # Grade FAIL may have triggered retry or terminal DLQ.
-                db_task = await get_task(task_id)
-                actual = db_task["status"] if db_task else "unknown"
-                if actual == "failed":
-                    logger.info("task grade-failed terminal (DLQ)", task_id=task_id)
-                else:
-                    logger.info("task grade-failed, retrying", task_id=task_id)
-            else:
-                # Route everything else through result_router + guards + handlers.
-                from src.core.result_router import route_result
-                actions = route_result(task, result)
-                for action in actions:
-                    if await self._run_guards_for(action, task, task_ctx, result, agent_type):
-                        return
-                    await self._dispatch_action(action, task)
-
-            # ── Phase 6: Release file locks held by this task ──
-            try:
-                await release_task_locks(task_id)
-            except Exception:
-                pass
+            await self._record(task, task_ctx, result, agent_type)
 
         except ModelCallFailed as mcf:
-            # ── Availability failure: all models exhausted ──
-            # Use unified retry with backoff. Signal wakes (model_swap,
-            # gpu_available, rate_limit_reset) can accelerate the retry.
+            await self._handle_availability_failure(task, task_ctx, mcf)
+        except Exception as e:
+            await self._handle_unexpected_failure(task, task_ctx, result, e)
+
+    async def _record(self, task: dict, task_ctx: dict, result: dict, agent_type: str):
+        """Route the agent's result through router + guards + handlers.
+
+        `ungraded` and `pending` still handled inline (not router Actions).
+        Everything else goes through `route_result` → `_run_guards_for`
+        → `_dispatch_action`.
+        """
+        task_id = task["id"]
+        status = result.get("status", "completed")
+        logger.info("result received", task_id=task_id, status=status)
+
+        if status == "ungraded":
+            from src.core.result_guards import guard_ungraded_post_hook
+            guard_out = await guard_ungraded_post_hook(self, task, task_ctx, result)
+            if guard_out is not None:
+                return
+            result_text = result.get("result", "No result")
+            cost = result.get("cost", 0)
+            await update_task(
+                task_id, status="ungraded", result=result_text, cost=cost,
+            )
+            logger.info("task ungraded (deferred grading)", task_id=task_id,
+                        model=result.get("model", "unknown"))
+        elif status == "pending":
+            db_task = await get_task(task_id)
+            actual = db_task["status"] if db_task else "unknown"
+            if actual == "failed":
+                logger.info("task grade-failed terminal (DLQ)", task_id=task_id)
+            else:
+                logger.info("task grade-failed, retrying", task_id=task_id)
+        else:
+            from src.core.result_router import route_result
+            actions = route_result(task, result)
+            for action in actions:
+                if await self._run_guards_for(action, task, task_ctx, result, agent_type):
+                    return
+                await self._dispatch_action(action, task)
+
+        # Release file locks held by this task (Phase 6)
+        try:
+            await release_task_locks(task_id)
+        except Exception:
+            pass
+
+    async def _handle_availability_failure(self, task: dict, task_ctx: dict, mcf):
+        """Outer handler for ModelCallFailed (all models exhausted)."""
+        task_id = task["id"]
+        try:
+            await release_task_locks(task_id)
+        except Exception:
+            pass
+
+        _avail_ctx = task_ctx if isinstance(task_ctx, dict) else {}
+        last_delay = _avail_ctx.get("last_avail_delay", 0)
+
+        from src.core.retry import compute_retry_timing
+        decision = compute_retry_timing("availability", last_avail_delay=last_delay)
+
+        if decision.action == "terminal":
+            await update_task(
+                task_id, status="failed",
+                error=str(mcf)[:500],
+                failed_in_phase="worker",
+                retry_reason="availability",
+            )
             try:
-                await release_task_locks(task_id)
+                from src.infra.dead_letter import quarantine_task
+                await quarantine_task(
+                    task_id=task_id,
+                    mission_id=task.get("mission_id"),
+                    error=str(mcf)[:500],
+                    error_category="availability",
+                    original_agent=task.get("agent_type", "executor"),
+                )
             except Exception:
                 pass
+            logger.warning(
+                "availability DLQ",
+                task_id=task_id,
+                error=str(mcf)[:200],
+            )
+        else:
+            _avail_ctx["last_avail_delay"] = decision.delay_seconds
+            next_retry = to_db(
+                utc_now() + timedelta(seconds=decision.delay_seconds)
+            )
+            await update_task(
+                task_id, status="pending",
+                error=str(mcf)[:500],
+                next_retry_at=next_retry,
+                retry_reason="availability",
+                context=json.dumps(_avail_ctx),
+            )
+            logger.warning(
+                "availability backoff",
+                task_id=task_id,
+                delay=decision.delay_seconds,
+            )
 
-            # Read last_avail_delay from context for backoff progression
-            _avail_ctx = task_ctx if isinstance(task_ctx, dict) else {}
-            last_delay = _avail_ctx.get("last_avail_delay", 0)
+    async def _handle_unexpected_failure(self, task: dict, task_ctx, result, e: Exception):
+        """Outer handler for unexpected exceptions during task processing."""
+        task_id = task["id"]
+        title = task["title"]
+        logger.exception("task failed", task_id=task_id, error_type=type(e).__name__, error=str(e))
+        try:
+            await release_task_locks(task_id)
+        except Exception:
+            pass
+        error_str = f"{type(e).__name__}: {str(e)[:500]}"
+        failed_model = result.get("model", "unknown") if isinstance(result, dict) else "unknown"
 
-            from src.core.retry import compute_retry_timing
-            decision = compute_retry_timing("availability", last_avail_delay=last_delay)
+        from src.core.retry import RetryContext
+        retry_ctx = RetryContext.from_task(task)
+        decision = retry_ctx.record_failure("quality", model=failed_model)
 
-            if decision.action == "terminal":
-                await update_task(
-                    task_id, status="failed",
-                    error=str(mcf)[:500],
-                    failed_in_phase="worker",
-                    retry_reason="availability",
-                )
+        if decision.action == "terminal":
+            try:
+                from ..infra.dead_letter import _classify_error
+                error_cat = _classify_error(error_str, "unknown")
+            except Exception:
+                error_cat = "unknown"
+            if isinstance(task_ctx, dict):
+                task_ctx.update(retry_ctx.to_context_patch())
+            await update_task(
+                task_id, status="failed", error=error_str,
+                error_category=error_cat,
+                **retry_ctx.to_db_fields(),
+            )
+            await self.telegram.send_error(task_id, title, error_str)
+
+            if isinstance(task_ctx, dict) and task_ctx.get("is_workflow_step"):
                 try:
-                    from src.infra.dead_letter import quarantine_task
-                    await quarantine_task(
-                        task_id=task_id,
-                        mission_id=task.get("mission_id"),
-                        error=str(mcf)[:500],
-                        error_category="availability",
-                        original_agent=task.get("agent_type", "executor"),
+                    wf_phase = task_ctx.get("workflow_phase", "?")
+                    await self.telegram.send_notification(
+                        f"Workflow step failed: #{task_id}\n"
+                        f"_{task.get('title', '')[:60]}_\n"
+                        f"Phase: {wf_phase}"
                     )
                 except Exception:
                     pass
-                logger.warning(
-                    "availability DLQ",
-                    task_id=task_id,
-                    error=str(mcf)[:200],
+
+            try:
+                from ..memory.episodic import store_task_result
+                await store_task_result(
+                    task=task, result=error_str, model="unknown",
+                    cost=0.0, duration=0.0, success=False,
                 )
-            else:
-                _avail_ctx["last_avail_delay"] = decision.delay_seconds
+            except Exception:
+                pass
+
+            try:
+                from ..infra.dead_letter import quarantine_task
+                await quarantine_task(
+                    task_id=task_id,
+                    mission_id=task.get("mission_id"),
+                    error=error_str,
+                    original_agent=task.get("agent_type", "executor"),
+                    attempts_snapshot=retry_ctx.worker_attempts,
+                )
+            except Exception as dlq_err:
+                logger.error("dlq quarantine failed", task_id=task_id, error=str(dlq_err))
+
+            try:
+                from ..infra.db import update_model_stats
+                agent_type = task.get("agent_type", "executor")
+                model = result.get("model", "unknown") if isinstance(result, dict) else "unknown"
+                await update_model_stats(
+                    model=model, agent_type=agent_type,
+                    success=False, cost=0,
+                )
+            except Exception:
+                pass
+        else:
+            next_retry = None
+            if decision.action == "delayed":
                 next_retry = to_db(
                     utc_now() + timedelta(seconds=decision.delay_seconds)
                 )
-                await update_task(
-                    task_id, status="pending",
-                    error=str(mcf)[:500],
-                    next_retry_at=next_retry,
-                    retry_reason="availability",
-                    context=json.dumps(_avail_ctx),
-                )
-                logger.warning(
-                    "availability backoff",
-                    task_id=task_id,
-                    delay=decision.delay_seconds,
-                )
-
-        except Exception as e:
-            logger.exception("task failed", task_id=task_id, error_type=type(e).__name__, error=str(e))
-            # Release locks on failure too
-            try:
-                await release_task_locks(task_id)
-            except Exception:
-                pass
-            error_str = f"{type(e).__name__}: {str(e)[:500]}"
-            failed_model = result.get("model", "unknown") if isinstance(result, dict) else "unknown"
-
-            from src.core.retry import RetryContext
-            retry_ctx = RetryContext.from_task(task)
-            decision = retry_ctx.record_failure("quality", model=failed_model)
-
-            if decision.action == "terminal":
-                try:
-                    from ..infra.dead_letter import _classify_error
-                    error_cat = _classify_error(error_str, "unknown")
-                except Exception:
-                    error_cat = "unknown"
-                if isinstance(task_ctx, dict):
-                    task_ctx.update(retry_ctx.to_context_patch())
-                await update_task(
-                    task_id, status="failed", error=error_str,
-                    error_category=error_cat,
-                    **retry_ctx.to_db_fields(),
-                )
-                await self.telegram.send_error(task_id, title, error_str)
-
-                # Workflow step failure notification
-                if isinstance(task_ctx, dict) and task_ctx.get("is_workflow_step"):
-                    try:
-                        wf_phase = task_ctx.get("workflow_phase", "?")
-                        await self.telegram.send_notification(
-                            f"Workflow step failed: #{task_id}\n"
-                            f"_{task.get('title', '')[:60]}_\n"
-                            f"Phase: {wf_phase}"
-                        )
-                    except Exception:
-                        pass
-
-                # Episodic memory
-                try:
-                    from ..memory.episodic import store_task_result
-                    await store_task_result(
-                        task=task, result=error_str, model="unknown",
-                        cost=0.0, duration=0.0, success=False,
-                    )
-                except Exception:
-                    pass
-
-                # DLQ fallback
-                try:
-                    from ..infra.dead_letter import quarantine_task
-                    await quarantine_task(
-                        task_id=task_id,
-                        mission_id=task.get("mission_id"),
-                        error=error_str,
-                        original_agent=task.get("agent_type", "executor"),
-                        attempts_snapshot=retry_ctx.worker_attempts,
-                    )
-                except Exception as dlq_err:
-                    logger.error("dlq quarantine failed", task_id=task_id, error=str(dlq_err))
-
-                # Model health
-                try:
-                    from ..infra.db import update_model_stats
-                    agent_type = task.get("agent_type", "executor")
-                    model = result.get("model", "unknown") if isinstance(result, dict) else "unknown"
-                    await update_model_stats(
-                        model=model, agent_type=agent_type,
-                        success=False, cost=0,
-                    )
-                except Exception:
-                    pass
-            else:
-                next_retry = None
-                if decision.action == "delayed":
-                    next_retry = to_db(
-                        utc_now() + timedelta(seconds=decision.delay_seconds)
-                    )
-                retry_ctx.next_retry_at = next_retry
-                if isinstance(task_ctx, dict):
-                    task_ctx.update(retry_ctx.to_context_patch())
-                await update_task(
-                    task_id, status="pending",
-                    error=error_str,
-                    **retry_ctx.to_db_fields(),
-                )
-                logger.info("task will retry", task_id=task_id,
-                            attempts=retry_ctx.worker_attempts, max_attempts=retry_ctx.max_worker_attempts)
+            retry_ctx.next_retry_at = next_retry
+            if isinstance(task_ctx, dict):
+                task_ctx.update(retry_ctx.to_context_patch())
+            await update_task(
+                task_id, status="pending",
+                error=error_str,
+                **retry_ctx.to_db_fields(),
+            )
+            logger.info("task will retry", task_id=task_id,
+                        attempts=retry_ctx.worker_attempts, max_attempts=retry_ctx.max_worker_attempts)
 
     # ─── Result Handlers ─────────────────────────────────────────────────
 

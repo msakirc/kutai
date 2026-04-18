@@ -156,33 +156,33 @@ class TestHandleCompleteJsonSafety(unittest.TestCase):
 
 
 class TestProcessTaskErrorHandling(unittest.TestCase):
-    """process_task exception handler must reset tasks properly."""
+    """process_task exception handler must reset tasks properly.
+
+    After the Plan A refactor, the exception handling body lives in
+    Orchestrator._handle_unexpected_failure; process_task only delegates.
+    Check the text in that method's source.
+    """
+
+    def _unexpected_source(self):
+        from src.core.orchestrator import Orchestrator
+        return inspect.getsource(Orchestrator._handle_unexpected_failure)
 
     def test_exception_handler_resets_to_pending(self):
         """On exception, task should be reset to pending if retries remain."""
-        from src.core.orchestrator import Orchestrator
-        source = inspect.getsource(Orchestrator.process_task)
-
-        # Must reset to pending on retry
-        self.assertIn("status=\"pending\"", source,
-                       "process_task must reset to pending on retryable error")
+        self.assertIn("status=\"pending\"", self._unexpected_source(),
+                       "unexpected-failure handler must reset to pending on retryable error")
 
     def test_exception_handler_marks_failed_on_exhaustion(self):
         """On exception with no retries left, task should be marked failed."""
-        from src.core.orchestrator import Orchestrator
-        source = inspect.getsource(Orchestrator.process_task)
-
-        # Must mark failed when retries exhausted
-        self.assertIn("status=\"failed\"", source,
-                       "process_task must mark failed when retries exhausted")
+        self.assertIn("status=\"failed\"", self._unexpected_source(),
+                       "unexpected-failure handler must mark failed when retries exhausted")
 
     def test_exception_handler_checks_retry_count(self):
-        """Exception handler must compare retry_count vs max_retries."""
-        from src.core.orchestrator import Orchestrator
-        source = inspect.getsource(Orchestrator.process_task)
-
-        self.assertIn("retry_count", source)
-        self.assertIn("max_retries", source)
+        """Exception handler must use retry bookkeeping (RetryContext)."""
+        source = self._unexpected_source()
+        # RetryContext encapsulates retry_count + max_retries comparison.
+        self.assertIn("RetryContext", source)
+        self.assertIn("record_failure", source)
 
 
 if __name__ == "__main__":

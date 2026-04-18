@@ -7,9 +7,12 @@ a JSON usage example.  The full catalogue can be injected into agent
 prompts via ``get_tool_descriptions()``.
 """
 
+import asyncio
 import inspect
 import os
 from typing import Any, Optional
+
+_pending_reindex_tasks: set[asyncio.Task] = set()
 
 from ..parsing.code_embeddings import reindex_file
 from ..infra.logging_config import get_logger
@@ -1348,7 +1351,10 @@ def _trigger_reindex(filepath: str | None) -> None:
 
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            loop.create_task(reindex_file(filepath))
+            # Best-effort reindex — intentional fire-and-forget; strong ref prevents GC reap.
+            task = loop.create_task(reindex_file(filepath))
+            _pending_reindex_tasks.add(task)
+            task.add_done_callback(_pending_reindex_tasks.discard)
         else:
             loop.run_until_complete(reindex_file(filepath))
     except Exception:

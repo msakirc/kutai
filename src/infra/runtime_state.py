@@ -6,7 +6,10 @@ Import and read flags as before:
     if runtime_state["telegram_available"]:
         ...
 """
+import asyncio
 from datetime import datetime, timezone
+
+_pending_degraded_tasks: set[asyncio.Task] = set()
 
 runtime_state: dict = {
     "sandbox_available":     False,
@@ -25,10 +28,11 @@ def mark_degraded(capability: str) -> None:
         from src.app.run import get_nerd_herd
         nh = get_nerd_herd()
         if nh is not None:
-            import asyncio
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(nh.mark_degraded(capability))
+                task = loop.create_task(nh.mark_degraded(capability))
+                _pending_degraded_tasks.add(task)
+                task.add_done_callback(_pending_degraded_tasks.discard)
             except RuntimeError:
                 pass
     except Exception:

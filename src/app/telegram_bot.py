@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from src.infra.logging_config import get_logger
 from ..infra.times import utc_now, to_turkey, to_db, TZ_TR, tr_hour_to_utc
-from .config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, TASK_PRIORITY
+from .config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, TASK_PRIORITY, DB_PATH
 
 logger = get_logger("app.telegram_bot")
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, ReplyKeyboardMarkup, KeyboardButton
@@ -1815,6 +1815,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("smartsearch", self.cmd_smartsearch))
         self.app.add_handler(CommandHandler("trace", self.cmd_trace))
         self.app.add_handler(CommandHandler("logs", self.cmd_logs))
+        self.app.add_handler(CommandHandler("bench_picks", self.cmd_bench_picks))
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(filters.LOCATION, self.handle_location))
         self.app.add_handler(MessageHandler(
@@ -2031,6 +2032,50 @@ class TelegramInterface:
             f"❌ Failed: {stats['failed']}\n"
             f" Cost today: ${stats['today_cost']:.4f}",
             parse_mode="Markdown"
+        )
+
+    async def cmd_bench_picks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show 7-day model pick distribution from model_pick_log."""
+        import aiosqlite
+        query = """
+            SELECT task_name, picked_model, COUNT(*) AS n,
+                   ROUND(AVG(picked_score), 2) AS avg_score
+            FROM model_pick_log
+            WHERE timestamp > datetime('now', '-7 days')
+            GROUP BY task_name, picked_model
+            ORDER BY task_name, n DESC
+        """
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                cursor = await db.execute(query)
+                rows = await cursor.fetchall()
+        except Exception as exc:
+            await self._reply(update, f"❌ bench_picks query failed: {exc}")
+            return
+
+        if not rows:
+            await self._reply(update, "📊 No pick log entries in last 7 days.")
+            return
+
+        MAX_ROWS = 40
+        truncated = len(rows) > MAX_ROWS
+        rows = rows[:MAX_ROWS]
+
+        lines = [
+            f"{'task':<20} {'model':<28} {'n':>4} {'avg':>5}",
+            "─" * 60,
+        ]
+        for task, model, n, avg in rows:
+            lines.append(
+                f"{(task or '?')[:20]:<20} {(model or '?')[:28]:<28} "
+                f"{n:>4} {(avg or 0.0):>5.2f}"
+            )
+        body = "\n".join(lines)
+        footer = "\n\n… (truncated)" if truncated else ""
+        await self._reply(
+            update,
+            f"📊 *Model picks — last 7 days*\n```\n{body}\n```{footer}",
+            parse_mode="Markdown",
         )
 
     async def cmd_digest(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

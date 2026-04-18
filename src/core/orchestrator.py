@@ -1991,6 +1991,12 @@ class Orchestrator:
                     await self.scheduled_jobs.check_scheduled_tasks()
                     self.last_scheduler_check = utc_now()
 
+                # ── Benchmark cache refresh (fires each cycle, cheap mtime check) ──
+                try:
+                    await self.scheduled_jobs.tick_benchmark_refresh()
+                except Exception as exc:
+                    logger.debug("benchmark refresh tick failed: %s", exc)
+
                 # Get a generous batch, then compute how many to actually run
                 candidate_tasks = await get_ready_tasks(limit=8)
 

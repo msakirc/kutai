@@ -28,6 +28,7 @@ class DaLLaMa:
         self._last_tps: float = 0.0
         self._watchdog_task: asyncio.Task | None = None
         self._idle_task: asyncio.Task | None = None
+        self._pending_tps_tasks: set[asyncio.Task] = set()
 
     async def start(self):
         # Cancel stale tasks from a previous start() (defensive)
@@ -75,7 +76,9 @@ class DaLLaMa:
         finally:
             self._swap.mark_inference_end(gen)
             self._idle_unloader.reset_timer()
-            asyncio.ensure_future(self._refresh_tps())
+            _task = asyncio.get_running_loop().create_task(self._refresh_tps())
+            self._pending_tps_tasks.add(_task)
+            _task.add_done_callback(self._pending_tps_tasks.discard)
 
     def keep_alive(self):
         self._idle_unloader.reset_timer()

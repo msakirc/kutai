@@ -10,7 +10,9 @@ loop like anything else.
 
 import asyncio
 import re
+import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from src.infra.logging_config import get_logger
 from src.infra.times import utc_now, db_now, to_db, from_db
@@ -22,6 +24,39 @@ from src.infra.db import (
 logger = get_logger("app.scheduled_jobs")
 
 _VALID_SUGGESTION_AGENTS = {"researcher", "shopping_advisor", "assistant", "coder"}
+
+_BENCHMARK_FRESHNESS_HOURS = 24
+_benchmark_refresh_in_flight = False
+
+
+def _benchmark_cache_dir() -> Path:
+    """Return the benchmark cache dir. Monkeypatched in tests."""
+    return Path(".benchmark_cache")
+
+
+def _benchmark_refresh_impl() -> tuple[int, int]:
+    """Sync refresh via BenchmarkFetcher. Returns (before_count, after_count).
+    Monkeypatched in tests.
+    """
+    from src.models.benchmark.benchmark_fetcher import BenchmarkFetcher
+
+    fetcher = BenchmarkFetcher()
+    before = len(fetcher.fetch_all_bulk())
+    fetcher.refresh_cache()
+    after = len(fetcher.fetch_all_bulk())
+    return before, after
+
+
+def _benchmark_cache_is_fresh() -> bool:
+    cache_dir = _benchmark_cache_dir()
+    if not cache_dir.exists():
+        return False
+    bulks = list(cache_dir.glob("_bulk_*.json"))
+    if not bulks:
+        return False
+    newest = max(b.stat().st_mtime for b in bulks)
+    age_hours = (time.time() - newest) / 3600
+    return age_hours < _BENCHMARK_FRESHNESS_HOURS
 
 
 def _parse_todo_suggestions(raw: str, todo_count: int) -> list[dict]:
@@ -112,6 +147,31 @@ class ScheduledJobs:
         from src.app.price_watch_checker import check_price_watches
         summary = await check_price_watches(self.telegram)
         logger.info(f"[Scheduler] Price watch check complete: {summary}")
+
+    async def tick_benchmark_refresh(self):
+        """Refresh benchmark cache when older than 24h. Fires on heartbeat."""
+        global _benchmark_refresh_in_flight
+
+        if _benchmark_refresh_in_flight:
+            logger.debug("benchmark refresh already in flight — noop")
+            return
+
+        if _benchmark_cache_is_fresh():
+            logger.debug("benchmark cache fresh — skip refresh")
+            return
+
+        _benchmark_refresh_in_flight = True
+        try:
+            before, after = await asyncio.to_thread(_benchmark_refresh_impl)
+            delta = after - before
+            logger.info(
+                "benchmark refresh: matched %d→%d (%+d)",
+                before, after, delta,
+            )
+        except Exception as exc:
+            logger.warning("benchmark refresh failed: %s", exc, exc_info=True)
+        finally:
+            _benchmark_refresh_in_flight = False
 
     # ─── check_scheduled_tasks (full port from Orchestrator) ──────────────
 

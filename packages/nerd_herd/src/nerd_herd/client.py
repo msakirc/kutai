@@ -199,6 +199,7 @@ class NerdHerdClient:
         context_length: int = 0,
         is_swapping: bool = False,
         kv_cache_ratio: float = 0.0,
+        idle_seconds: float = 0.0,
     ) -> None:
         """Push current local model state to the NerdHerd sidecar."""
         await self._post_json("/api/local_state", {
@@ -209,6 +210,7 @@ class NerdHerdClient:
             "context_length": context_length,
             "is_swapping": is_swapping,
             "kv_cache_ratio": kv_cache_ratio,
+            "idle_seconds": idle_seconds,
         })
 
     # ------------------------------------------------------------------
@@ -263,6 +265,7 @@ class NerdHerdClient:
             context_length=int(local_data.get("context_length", 0)),
             is_swapping=bool(local_data.get("is_swapping", False)),
             kv_cache_ratio=float(local_data.get("kv_cache_ratio", 0.0)),
+            idle_seconds=float(local_data.get("idle_seconds", 0.0)),
         )
 
         cloud: dict[str, CloudProviderState] = {}

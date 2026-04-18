@@ -107,6 +107,7 @@ class LocalModelState:
     context_length: int = 0
     is_swapping: bool = False
     kv_cache_ratio: float = 0.0
+    idle_seconds: float = 0.0   # seconds since last completed local inference; 0 while a call is in-flight or before first inference
 
 
 @dataclass

@@ -130,8 +130,7 @@ async def start_claude_remote(
         proc = _sp.Popen(
             [claude_cmd, "remote-control",
              "--name", name,
-             "--permission-mode", "bypassPermissions",
-             "--no-create-session-in-dir"],
+             "--permission-mode", "bypassPermissions"],
             cwd=cwd,
             **kwargs,
         )

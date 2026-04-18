@@ -10,6 +10,7 @@ The Selector class is the main entry point for model selection:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fatih_hoca.ranking import rank_candidates
@@ -30,6 +31,10 @@ logger = logging.getLogger("fatih_hoca.selector")
 # Now: production explicitly calls enable_telemetry(db_path) during startup.
 # Default is None → _persist_pick_telemetry silently skips the write.
 _telemetry_db_path: str | None = None
+
+# Holds strong references to fire-and-forget telemetry tasks so GC can't
+# reap them mid-flight. Tasks remove themselves via done-callback.
+_pending_telemetry_tasks: set[asyncio.Task] = set()
 
 
 def enable_telemetry(db_path: str) -> None:
@@ -236,7 +241,6 @@ class Selector:
         snapshot,
     ) -> None:
         """Fire-and-forget write to model_pick_log. Never raises; never blocks selection."""
-        import asyncio
         import json
 
         candidates_payload = [
@@ -310,12 +314,14 @@ class Selector:
                 pass  # telemetry must never break selection
 
         try:
-            asyncio.get_running_loop()
-            asyncio.create_task(_write())
+            loop = asyncio.get_running_loop()
         except RuntimeError:
             # No running loop — sync caller. Telemetry is best-effort; only
             # meaningful inside an asyncio context. Skip silently.
-            pass
+            return
+        task = loop.create_task(_write())
+        _pending_telemetry_tasks.add(task)
+        task.add_done_callback(_pending_telemetry_tasks.discard)
 
     # ─── Eligibility Check (Layer 1) ─────────────────────────────────────────
 

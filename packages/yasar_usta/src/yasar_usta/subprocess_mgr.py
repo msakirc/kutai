@@ -71,6 +71,8 @@ class SubprocessManager:
         self.stderr_tail: deque[str] = deque(maxlen=200)
         self._stop_requested: bool = False
         self._output_log: logging.Logger | None = None
+        # Strong references to pipe-output tasks so GC can't reap them.
+        self._pipe_tasks: set[asyncio.Task] = set()
 
     def _ensure_output_log(self) -> logging.Logger:
         """Lazy-init rotating JSONL sink for subprocess stdout/stderr."""
@@ -142,8 +144,13 @@ class SubprocessManager:
             except Exception:
                 pass
 
-        asyncio.create_task(self._pipe_output(self.process.stdout, "stdout"))
-        asyncio.create_task(self._pipe_output(self.process.stderr, "stderr"))
+        for _stream, _name in (
+            (self.process.stdout, "stdout"),
+            (self.process.stderr, "stderr"),
+        ):
+            _task = asyncio.create_task(self._pipe_output(_stream, _name))
+            self._pipe_tasks.add(_task)
+            _task.add_done_callback(self._pipe_tasks.discard)
 
     async def stop(self, timeout: int | None = None) -> None:
         """Send graceful shutdown signal and wait."""

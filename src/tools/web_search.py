@@ -23,6 +23,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Holds strong references to fire-and-forget fetch-quality tasks so GC can't
+# reap them mid-flight. Tasks remove themselves via done-callback.
+_pending_fetch_quality_tasks: set[asyncio.Task] = set()
+
 # Injectable shell executor — lazy import from src.tools by default
 _shell_fn = None
 
@@ -254,7 +258,13 @@ def _record_fetch_quality_fire_and_forget(
                 # We don't know if it was blocked or just failed — record as fail
                 await record_source_quality(domain, success=False)
 
-    asyncio.ensure_future(_do_record())
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(_do_record())
+    _pending_fetch_quality_tasks.add(task)
+    task.add_done_callback(_pending_fetch_quality_tasks.discard)
 
 
 # ---------------------------------------------------------------------------

@@ -65,9 +65,8 @@ def get_kdv() -> KuledenDonenVar:
 
             if evt.event_type in ("capacity_restored", "circuit_breaker_reset"):
                 try:
-                    import asyncio
-                    from src.infra.db import accelerate_retries
-                    asyncio.ensure_future(accelerate_retries("capacity_restored"))
+                    from src.infra.db import schedule_accelerate_retries
+                    schedule_accelerate_retries("capacity_restored")
                 except Exception:
                     pass
 

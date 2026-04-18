@@ -10,6 +10,7 @@ Logging handlers for the Python logging system:
   TelegramAlertHandler  — immediate push to admin chat (ERROR+)
 """
 
+import asyncio
 import json
 import logging
 import logging.handlers
@@ -18,6 +19,8 @@ import shutil
 import threading
 import time
 from datetime import datetime, timezone
+
+_pending_notification_tasks: set[asyncio.Task] = set()
 
 from .times import db_now
 
@@ -172,10 +175,11 @@ def notify(
     cfg = _cfg()
     if cfg.TELEGRAM_ADMIN_CHAT_ID:
         try:
-            import asyncio
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(notify_telegram(title, message, priority))
+                task = loop.create_task(notify_telegram(title, message, priority))
+                _pending_notification_tasks.add(task)
+                task.add_done_callback(_pending_notification_tasks.discard)
             except RuntimeError:
                 asyncio.run(notify_telegram(title, message, priority))
             return "telegram"

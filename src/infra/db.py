@@ -1,4 +1,5 @@
 # db.py
+import asyncio
 import aiosqlite
 import hashlib
 import json
@@ -1232,6 +1233,27 @@ async def accelerate_retries(reason: str) -> int:
         await db.commit()
         logger.info(f"Accelerated {len(rows)} task(s) | reason={reason}")
     return len(rows)
+
+
+# Strong-reference set so fire-and-forget accelerate_retries tasks are not GC'd.
+_pending_accelerate_retry_tasks: set[asyncio.Task] = set()
+
+
+# Co-located with accelerate_retries() to avoid a circular import
+# between a dedicated asyncio-utils module and this DB module.
+def schedule_accelerate_retries(reason: str) -> None:
+    """Fire-and-forget accelerate_retries with strong-ref retention.
+
+    Safe to call from any sync context that has a running event loop.
+    No-ops silently when no loop is running.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(accelerate_retries(reason))
+    _pending_accelerate_retry_tasks.add(task)
+    task.add_done_callback(_pending_accelerate_retry_tasks.discard)
 
 
 # ─── Task Locking (atomic claim) ────────────────────────────────────────────

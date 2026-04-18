@@ -12,6 +12,10 @@ import platform
 import signal
 import sys
 
+# Holds strong references to fire-and-forget mode-persistence tasks so GC
+# can't reap them mid-flight. Tasks remove themselves via done-callback.
+_pending_mode_tasks: set[asyncio.Task] = set()
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -122,7 +126,13 @@ async def _main() -> None:
 
         def _on_mode_change(prev: str, mode: str, source: str) -> None:  # noqa: ARG001
             auto_managed = source != "user"
-            asyncio.create_task(_persist_mode(db_path, mode, auto_managed))
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            task = loop.create_task(_persist_mode(db_path, mode, auto_managed))
+            _pending_mode_tasks.add(task)
+            task.add_done_callback(_pending_mode_tasks.discard)
 
         nh.on_mode_change(_on_mode_change)
 

@@ -19,6 +19,10 @@ from typing import Optional
 
 logger = logging.getLogger("models.local_model_manager")
 
+# Strong-reference sets so fire-and-forget tasks are not GC'd.
+_pending_swap_notification_tasks: set[asyncio.Task] = set()
+_pending_push_tasks: set[asyncio.Task] = set()
+
 
 # ── Preserved dataclasses ────────────────────────────────────────────────────
 
@@ -140,7 +144,9 @@ class LocalModelManager:
 
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(nh.push_local_state(**kwargs))
+            _t = loop.create_task(nh.push_local_state(**kwargs))
+            _pending_push_tasks.add(_t)
+            _t.add_done_callback(_pending_push_tasks.discard)
         except RuntimeError:
             pass
         except Exception:
@@ -158,9 +164,8 @@ class LocalModelManager:
             return
         if model_name is not None:
             try:
-                from src.infra.db import accelerate_retries
-                loop = asyncio.get_running_loop()
-                loop.create_task(accelerate_retries(f"model_loaded:{model_name}"))
+                from src.infra.db import schedule_accelerate_retries
+                schedule_accelerate_retries(f"model_loaded:{model_name}")
             except Exception:
                 pass
 
@@ -346,9 +351,11 @@ class LocalModelManager:
                     old_litellm = old_info.litellm_name if old_info else None
                 new_info = registry.get(model_name)
                 new_litellm = new_info.litellm_name if new_info else None
-                asyncio.ensure_future(
+                _swap_task = asyncio.ensure_future(
                     get_dispatcher().on_model_swap(old_litellm, new_litellm)
                 )
+                _pending_swap_notification_tasks.add(_swap_task)
+                _swap_task.add_done_callback(_pending_swap_notification_tasks.discard)
             except Exception as _e:
                 logger.debug("Dispatcher swap notification failed: %s", _e)
 

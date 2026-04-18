@@ -23,6 +23,8 @@ async def test_model_pick_log_table_exists(tmp_path, monkeypatch):
         "candidates_json", "failures_json", "snapshot_summary",
     }
     assert expected.issubset(cols), f"missing columns: {expected - cols}"
+    assert "pool" in cols, f"missing 'pool' column: {cols}"
+    assert "urgency" in cols, f"missing 'urgency' column: {cols}"
 
 
 @pytest.mark.asyncio

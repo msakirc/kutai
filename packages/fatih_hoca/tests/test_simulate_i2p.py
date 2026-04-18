@@ -26,6 +26,34 @@ def test_fake_nerd_herd_snapshot_is_stable():
     assert s1.vram_available_mb == 7000
 
 
+def test_fake_nerd_herd_idle_seconds_default():
+    """Default idle_seconds=300 so local urgency = 0.5 in simulations."""
+    nh = _FakeNerdHerd()
+    snap = nh.snapshot()
+    assert snap.local.idle_seconds == 300.0
+
+
+def test_fake_nerd_herd_idle_seconds_override():
+    """idle_seconds can be overridden for explicit zero-urgency tests."""
+    nh = _FakeNerdHerd(idle_seconds=0.0)
+    snap = nh.snapshot()
+    assert snap.local.idle_seconds == 0.0
+
+
+def test_simulate_with_loaded_model(tmp_path):
+    """loaded_model kwarg is accepted without error."""
+    workflow = {
+        "steps": [
+            {"id": "1.1", "name": "s1", "agent": "coder", "difficulty": "easy"},
+        ]
+    }
+    workflow_path = tmp_path / "wf.json"
+    workflow_path.write_text(json.dumps(workflow))
+    # loaded_model not in registry for this minimal workflow → should warn, not crash
+    records = simulate(workflow_path, loaded_model="nonexistent-model")
+    assert len(records) == 1
+
+
 def test_simulate_returns_one_record_per_step(tmp_path):
     """Given a minimal workflow of 3 steps, simulator produces 3 records."""
     workflow = {

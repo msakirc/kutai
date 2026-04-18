@@ -4499,39 +4499,11 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         """General shopping assistant. /shop <query>"""
         if not context.args:
             chat_id = update.effective_chat.id
-            buttons = [[
-                InlineKeyboardButton("🎯 Belirli ürün", callback_data="shop:specific"),
-                InlineKeyboardButton("🏷 Kategori", callback_data="shop:category"),
-            ]]
-            await update.message.reply_text(
-                "🛒 Ne arıyorsunuz?",
-                reply_markup=InlineKeyboardMarkup(buttons),
-            )
+            self._pending_action[chat_id] = {"command": "shop"}
+            await self._reply(update, "🛒 What are you looking for?")
             return
         query = " ".join(context.args)
         chat_id = update.effective_chat.id
-
-        sub = self._pending_shop_subintent.pop(chat_id, None)
-        if sub == "specific":
-            mission_id = await self._create_shopping_mission(
-                query, chat_id, sub_intent="product_research"
-            )
-            await self._reply(
-                update,
-                f"🔬 Ürün araştırması başladı: *{query}* (mission #{mission_id})",
-                parse_mode="Markdown",
-            )
-            return
-        if sub == "category":
-            mission_id = await self._create_shopping_mission(
-                query, chat_id, sub_intent="deep_research"
-            )
-            await self._reply(
-                update,
-                f"🏷 Kategori araştırması başladı: *{query}* (mission #{mission_id})",
-                parse_mode="Markdown",
-            )
-            return
 
         # Two-tier routing: complex queries get a full research mission
         if self._is_complex_shopping_query(query):
@@ -4554,14 +4526,39 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             )
 
     async def cmd_research_product(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Deep product research. /research_product <product>"""
+        """Deep research. /research_product <query>
+
+        First message (no args) shows an intent fork: specific product vs
+        category. The callback stores the sub_intent; the follow-up query
+        message re-enters this handler with args and routes accordingly.
+        """
         if not context.args:
             chat_id = update.effective_chat.id
-            self._pending_action[chat_id] = {"command": "research_product"}
-            await self._reply(update, "🔍 Which product to research in depth?")
+            buttons = [[
+                InlineKeyboardButton("🎯 Belirli ürün", callback_data="shop:specific"),
+                InlineKeyboardButton("🏷 Kategori", callback_data="shop:category"),
+            ]]
+            await update.message.reply_text(
+                "🔬 Ne araştıralım?",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
             return
         product = " ".join(context.args)
         chat_id = update.effective_chat.id
+
+        sub = self._pending_shop_subintent.pop(chat_id, None)
+        if sub == "category":
+            mission_id = await self._create_shopping_mission(
+                product, chat_id, sub_intent="deep_research"
+            )
+            await self._reply(
+                update,
+                f"🏷 Kategori araştırması başladı: *{product}* (mission #{mission_id})",
+                parse_mode="Markdown",
+            )
+            return
+
+        # Default (including sub == "specific"): route to product_research
         mission_id = await self._create_shopping_mission(
             product, chat_id, sub_intent="product_research"
         )
@@ -4854,13 +4851,13 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         await query.answer()
         data = query.data
 
-        # ── Shopping Intent Fork ──────────────────────────────────
+        # ── Deep Research Intent Fork ─────────────────────────────
         if data.startswith("shop:"):
             sub = data.split(":", 1)[1]
             chat_id = update.effective_chat.id
             import time as _time
             self._pending_action[chat_id] = {
-                "command": "shop",
+                "command": "research_product",
                 "ts": _time.time(),
             }
             self._pending_shop_subintent[chat_id] = sub

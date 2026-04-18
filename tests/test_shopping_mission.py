@@ -225,7 +225,7 @@ class TestShopIntentFork(unittest.TestCase):
         iface._kb_state = {}
         return iface
 
-    def test_cmd_shop_no_args_sends_inline_buttons(self):
+    def test_cmd_research_product_no_args_sends_inline_buttons(self):
         from unittest.mock import AsyncMock, MagicMock
         iface = self._fresh_interface()
         update = MagicMock()
@@ -236,7 +236,7 @@ class TestShopIntentFork(unittest.TestCase):
         context = MagicMock()
         context.args = []
 
-        run_async(iface.cmd_shop(update, context))
+        run_async(iface.cmd_research_product(update, context))
 
         _args, kwargs = msg.reply_text.call_args
         self.assertIn("reply_markup", kwargs)
@@ -264,7 +264,7 @@ class TestShopIntentFork(unittest.TestCase):
         run_async(iface.handle_callback(update, context))
 
         self.assertIn(42, iface._pending_action)
-        self.assertEqual(iface._pending_action[42]["command"], "shop")
+        self.assertEqual(iface._pending_action[42]["command"], "research_product")
         self.assertEqual(iface._pending_shop_subintent.get(42), "specific")
 
     def test_callback_shop_category_sets_pending_subintent(self):

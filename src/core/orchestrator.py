@@ -23,7 +23,7 @@ from src.infra.logging_config import get_logger
 from .router import ModelCallFailed, get_kdv
 from .task_context import parse_context, set_context
 from .task_gates import run_gates
-from .mechanical.workspace_snapshot import snapshot_workspace
+import salako
 from .decisions import Cancel as GateCancel
 from .result_router import (
     route_result, Complete, SpawnSubtasks, RequestClarification,
@@ -628,12 +628,15 @@ class Orchestrator:
         if mission_id and agent_type in ("coder", "pipeline", "implementer", "fixer"):
             ws_path = get_mission_workspace(mission_id)
             repo_path = get_mission_workspace_relative(mission_id)
-            await snapshot_workspace(
-                mission_id=mission_id,
-                task_id=task_id,
-                workspace_path=ws_path,
-                repo_path=repo_path,
-            )
+            await salako.run({
+                "id": task_id,
+                "mission_id": mission_id,
+                "payload": {
+                    "action": "workspace_snapshot",
+                    "workspace_path": ws_path,
+                    "repo_path": repo_path,
+                },
+            })
 
         # ── Internet connectivity pre-check for web-dependent tasks ──
         classification = task_ctx.get("classification", {})
@@ -922,6 +925,24 @@ class Orchestrator:
             if prepared is None:
                 return
             task, agent_type, timeout_seconds = prepared
+
+            # Mechanical executor short-circuit — non-LLM tasks skip _dispatch
+            # entirely (no model selection, no swap budget, no timeout machinery).
+            # Triggers: task["executor"] == "mechanical" or agent_type == "mechanical"
+            # (the latter survives the DB round-trip via workflow engine).
+            _ctx = parse_context(task)
+            if task.get("executor") == "mechanical" or _ctx.get("executor") == "mechanical" or agent_type == "mechanical":
+                if "payload" not in task and "payload" in _ctx:
+                    task = dict(task)
+                    task["payload"] = _ctx["payload"]
+                mech_action = await salako.run(task)
+                if mech_action.status == "completed":
+                    await update_task(task_id, status="completed",
+                                      result=json.dumps(mech_action.result))
+                else:
+                    await update_task(task_id, status="failed",
+                                      error=mech_action.error or "mechanical action failed")
+                return
 
             result = await self._dispatch(task, agent_type, timeout_seconds)
             if result is None:

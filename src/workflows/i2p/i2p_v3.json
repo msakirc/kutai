@@ -3958,6 +3958,23 @@
       }
     },
     {
+      "id": "7.3.git_commit",
+      "phase": "phase_7",
+      "name": "backend_scaffold_git_commit",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "7.3"
+      ],
+      "payload": {
+        "action": "git_commit"
+      },
+      "instruction": "Mechanical auto-commit after 7.3.",
+      "done_when": "Workspace committed if there are changes."
+    },
+    {
       "id": "7.4",
       "phase": "phase_7",
       "name": "database_setup",
@@ -4044,6 +4061,23 @@
           ]
         }
       }
+    },
+    {
+      "id": "7.5.git_commit",
+      "phase": "phase_7",
+      "name": "frontend_scaffold_git_commit",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "7.5"
+      ],
+      "payload": {
+        "action": "git_commit"
+      },
+      "instruction": "Mechanical auto-commit after 7.5.",
+      "done_when": "Workspace committed if there are changes."
     },
     {
       "id": "7.6",
@@ -4604,6 +4638,23 @@
           ]
         }
       }
+    },
+    {
+      "id": "8.spike.git_commit",
+      "phase": "phase_8",
+      "name": "feasibility_spike_git_commit",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "8.spike"
+      ],
+      "payload": {
+        "action": "git_commit"
+      },
+      "instruction": "Mechanical auto-commit after 8.spike.",
+      "done_when": "Workspace committed if there are changes."
     },
     {
       "id": "8.sprint_ritual",

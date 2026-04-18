@@ -147,10 +147,18 @@ def expand_steps_to_tasks(
         if step.get("triggers_clarification"):
             context["triggers_clarification"] = True
 
+        # Mechanical-executor steps (salako): propagate executor tag + payload
+        # into context so the orchestrator can route them without an LLM call.
+        agent_name = step.get("agent", "executor")
+        if step.get("executor") == "mechanical" or agent_name == "mechanical":
+            context["executor"] = "mechanical"
+            if "payload" in step:
+                context["payload"] = step["payload"]
+
         task = {
             "title": f"[{step_id}] {step['name']}",
             "description": step.get("instruction", ""),
-            "agent_type": map_agent_type(step.get("agent", "executor")),
+            "agent_type": map_agent_type(agent_name),
             "mission_id": mission_id,
             "depends_on_steps": list(step.get("depends_on", [])),
             "context": context,

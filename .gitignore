@@ -4,6 +4,7 @@ node_modules/
 __pycache__/
 *.pyc
 .worktrees/
+.claude/scheduled_tasks.lock
 
 # Runtime + caches
 logs/

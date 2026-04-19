@@ -1,27 +1,10 @@
-"""Task queue: eligibility filter + priority boost + paused-pattern filter.
-
-Lane classification stays for Task 3; Task 4 deletes it.
-"""
+"""Task queue: eligibility + priority boost + paused-pattern filter."""
 from __future__ import annotations
 
 from src.infra.db import get_ready_tasks, claim_task, update_task
 from src.infra.times import from_db, utc_now
 
 from general_beckman.paused_patterns import is_paused
-
-
-def classify_lane(task: dict) -> str:  # DELETED in Task 4
-    """Return the dispatch lane for a task row.
-
-    - ``mechanical`` — ``agent_type == "mechanical"``
-    - ``cloud_llm``  — cloud-preferred agent types (researcher/planner/architect)
-    - ``local_llm``  — everything else
-    """
-    if task.get("agent_type") == "mechanical":
-        return "mechanical"
-    if task.get("agent_type") in {"researcher", "planner", "architect"}:
-        return "cloud_llm"
-    return "local_llm"
 
 
 def _effective_priority(task: dict) -> float:
@@ -41,12 +24,12 @@ def _effective_priority(task: dict) -> float:
     return base + min(age_h * 0.1, 1.0)
 
 
-async def pick_ready_task(saturated_lanes: set[str]) -> dict | None:
+async def pick_ready_task(system_busy: bool) -> dict | None:
     """Return one ready task eligible for dispatch, or None.
 
-    ``saturated_lanes`` contains lanes where capacity snapshot says no room.
-    Tasks bound to those lanes are skipped. Applies age-boost sort and
-    paused-pattern filter internally (replaces orchestrator inline blocks).
+    When ``system_busy`` is True (VRAM low), only mechanical tasks are
+    eligible — they never touch the LLM. All other tasks are skipped until
+    the system is no longer busy.
     """
     rows = await get_ready_tasks(limit=8)
     # Age-boost sort (stable: preserves DB tie-break for equal boosts)
@@ -54,22 +37,12 @@ async def pick_ready_task(saturated_lanes: set[str]) -> dict | None:
     for row in rows:
         if is_paused(row):
             continue
-        lane = classify_lane(row)
-        if lane in saturated_lanes:
+        if system_busy and row.get("agent_type") != "mechanical":
             continue
         claimed = await claim_task(row["id"])
         if claimed:
             return row
     return None
-
-
-async def count_pending_cloud_tasks() -> int:  # DELETED in Task 4
-    """Return the number of ready tasks classified as cloud_llm lane.
-
-    Used by the look-ahead module to estimate quota pressure.
-    """
-    rows = await get_ready_tasks(limit=30)
-    return sum(1 for r in rows if classify_lane(r) == "cloud_llm")
 
 
 async def unclaim(task: dict) -> None:

@@ -11,7 +11,7 @@ from ..app.config import DB_PATH, MAX_CONTEXT_CHAIN_LENGTH, TASK_PRIORITY
 from datetime import datetime, timedelta, timezone
 from ..infra.times import utc_now, db_now, to_db, from_db, DB_FMT
 from ..infra.db import (
-    init_db, get_db, close_db, get_ready_tasks, update_task, add_task,
+    init_db, get_db, close_db, update_task, add_task,
     claim_task, add_subtasks_atomically, log_conversation,
     get_active_missions, get_tasks_for_mission, update_mission, get_daily_stats,
     store_memory, compute_task_hash,
@@ -87,151 +87,6 @@ async def _check_internet() -> bool:
         return False
 
 
-# Maximum number of independent tasks to run concurrently.
-MAX_CONCURRENT_TASKS: int = int(os.getenv("MAX_CONCURRENT_TASKS", "3"))
-
-
-def _compute_max_concurrent(tasks: list[dict]) -> int:
-    """Compute how many tasks to run concurrently based on task characteristics.
-
-    - Base = MAX_CONCURRENT_TASKS (default 3)
-    - Multiple independent missions: +2 per additional mission (up to 8 total)
-    - Same mission, phase_8 feature implementations: allow up to 5
-    - Hard cap at 8 to avoid overwhelming API rate limits
-    """
-    if not tasks:
-        return MAX_CONCURRENT_TASKS
-
-    # Gather mission_ids from tasks
-    mission_ids: set[int] = set()
-    for t in tasks:
-        ctx = t.get("context", {})
-        if isinstance(ctx, str):
-            try:
-                ctx = json.loads(ctx)
-                # Handle double-encoded JSON strings
-                if isinstance(ctx, str):
-                    ctx = json.loads(ctx)
-            except (json.JSONDecodeError, TypeError):
-                ctx = {}
-        if not isinstance(ctx, dict):
-            ctx = {}
-        mid = ctx.get("mission_id") or t.get("mission_id")
-        if mid is not None:
-            mission_ids.add(mid)
-
-    base = MAX_CONCURRENT_TASKS
-    num_missions = len(mission_ids)
-
-    if num_missions > 1:
-        # Allow +2 per additional mission beyond the first
-        limit = base + 2 * (num_missions - 1)
-        return min(limit, 8)
-
-    # Single mission (or no mission info) — check for phase_8 feature implementations
-    for t in tasks:
-        ctx = t.get("context", {})
-        if isinstance(ctx, str):
-            try:
-                ctx = json.loads(ctx)
-            except (json.JSONDecodeError, TypeError):
-                ctx = {}
-        wp = ctx.get("workflow_phase", "")
-        step_id = ctx.get("template_step_id", "")
-        if wp == "phase_8" or (isinstance(step_id, str) and step_id.startswith("feat.")):
-            return min(5, 8)
-
-    return min(base, 8)
-
-
-def _reorder_by_model_affinity(tasks: list[dict]) -> list[dict]:
-    """Reorder tasks to prefer those matching the currently loaded local model.
-
-    Boost is per-model (what's loaded), reducing swaps by batching compatible
-    work. Max boost is +0.9, so a 2+ priority gap is NEVER overridden.
-
-    Returns a new sorted list (does not mutate input).
-    """
-    if not tasks or len(tasks) <= 1:
-        return tasks
-
-    try:
-        from src.models.local_model_manager import get_local_manager
-        from src.models.model_registry import get_registry
-        from src.models.capabilities import (
-            score_model_for_task, TASK_PROFILES,
-            TaskRequirements as CapTaskReqs,
-        )
-        from src.core.router import CAPABILITY_TO_TASK, AGENT_REQUIREMENTS
-
-        manager = get_local_manager()
-        if not manager.current_model:
-            return tasks  # nothing loaded, can't optimize
-
-        registry = get_registry()
-        model_info = registry.get(manager.current_model)
-        if not model_info:
-            return tasks
-
-        # Vision batching: when vision is loaded (expensive — 876MB mmproj),
-        # boost all vision tasks so they run together before the model
-        # unloads and frees VRAM. Avoids repeated vision swap toggles.
-        vision_loaded = manager._vision_enabled
-
-        def _sort_key(task: dict):
-            priority = task.get("_effective_priority", task.get("priority", 5))
-            ctx = parse_context(task)
-            cls = ctx.get("classification", {})
-            agent_type = task.get("agent_type", cls.get("agent_type", "executor"))
-            difficulty = max(1, min(10, int(cls.get("difficulty", 5))))
-
-            # Resolve task key
-            task_key = agent_type
-            if task_key in CAPABILITY_TO_TASK:
-                task_key = CAPABILITY_TO_TASK[task_key]
-            template = AGENT_REQUIREMENTS.get(agent_type)
-            if template:
-                task_key = template.task or task_key
-
-            # Quick capability check: can loaded model handle this task?
-            fit = 0.0
-            if task_key in TASK_PROFILES:
-                cap_reqs = CapTaskReqs(
-                    task_name=task_key,
-                    needs_function_calling=cls.get("needs_tools", False),
-                    needs_vision=cls.get("needs_vision", False),
-                )
-                min_score = max(0.0, (difficulty - 1) * 0.47)
-                cap_score = score_model_for_task(
-                    model_info.capabilities,
-                    model_info.operational_dict(),
-                    cap_reqs,
-                )
-                if cap_score >= min_score and cap_score > 0:
-                    # Normalize fit to 0.0-1.0 range (cap_score is 0-10)
-                    fit = min(1.0, cap_score / 10.0)
-
-            # Zero affinity for tasks that would reject the loaded model
-            if _should_defer_for_loaded_model(task, manager.current_model or ""):
-                fit = 0.0
-
-            # Boost by fit * 0.9, so max boost < 1 priority level
-            effective_priority = priority + (fit * 0.9)
-
-            # Vision batching: boost vision tasks when mmproj is loaded
-            task_needs_vision = cls.get("needs_vision", False)
-            if vision_loaded and task_needs_vision:
-                effective_priority += 0.8  # strong boost to batch with other vision tasks
-            # Sort descending by effective priority, then FIFO by created_at
-            return (-effective_priority, task.get("created_at", ""))
-
-        return sorted(tasks, key=_sort_key)
-
-    except Exception as e:
-        logger.debug(f"Model affinity reorder failed: {e}")
-        return tasks
-
-
 def _parse_task_difficulty(task: dict) -> int:
     """Extract difficulty from a task's classification context.
 
@@ -240,15 +95,6 @@ def _parse_task_difficulty(task: dict) -> int:
     ctx = parse_context(task)
     cls = ctx.get("classification", {})
     return max(1, min(10, int(cls.get("difficulty", 5))))
-
-
-def _should_defer_for_loaded_model(task: dict, loaded_model: str) -> bool:
-    """Check if this task would reject the currently loaded model."""
-    worker_attempts = task.get("worker_attempts", task.get("attempts", 0)) or 0
-    if worker_attempts < 3:
-        return False
-    ctx = parse_context(task)
-    return loaded_model in ctx.get("failed_models", [])
 
 
 class Orchestrator:
@@ -1974,188 +1820,56 @@ class Orchestrator:
                 if self.cycle_count % 10 == 0:
                     await self.watchdog()
 
-                # Get a generous batch, then compute how many to actually run
-                # (age-boost, paused-pattern filter, and cron firing now handled
-                # inside beckman.next_task() → queue.pick_ready_task / cron.fire_due)
-                candidate_tasks = await get_ready_tasks(limit=8)
+                # Beckman drives cron + queue selection.
+                # Swap budget + affinity are Hoca per-call concerns — Task 4.
+                import general_beckman as beckman
+                task = await beckman.next_task()
+                if task is None:
+                    await asyncio.sleep(3)
+                    continue
+                # Dispatch path unchanged for now — Task 8 shrinks it further.
 
-                # ── Swap-aware: defer tasks that will reject the loaded model ──
-                loaded_model = ""
+                logger.info(
+                    f"[Cycle {self.cycle_count}] "
+                    f"Processing task #{task['id']}({task.get('agent_type','?')})"
+                )
+
+                # Helper: wait for futures but break out if shutdown requested
+                shutdown_fut = asyncio.ensure_future(self.shutdown_event.wait())
+
                 try:
-                    from src.models.local_model_manager import get_local_manager
-                    _mgr = get_local_manager()
-                    loaded_model = getattr(_mgr, 'current_model', '') or ''
-                except Exception:
-                    pass
-
-                if loaded_model and len(candidate_tasks) > 1:
-                    runnable = [t for t in candidate_tasks if not _should_defer_for_loaded_model(t, loaded_model)]
-                    deferred = [t for t in candidate_tasks if _should_defer_for_loaded_model(t, loaded_model)]
-                    candidate_tasks = runnable or deferred  # fallback: run deferred if nothing else
-
-                # ── Model-aware task reordering ──
-                # Boost tasks that match the currently loaded model to reduce swaps.
-                # Max boost is +0.9 priority, so a 2+ priority gap is never overridden.
-                candidate_tasks = _reorder_by_model_affinity(candidate_tasks)
-
-                max_concurrent = _compute_max_concurrent(candidate_tasks)
-                tasks = candidate_tasks[:max_concurrent]
-
-                # ── Quota planner: forward-looking queue scan ──
-                # Build a full QueueProfile from upcoming tasks so the planner
-                # can reserve cloud quota for tasks that genuinely need it
-                # (vision, thinking, hard difficulty).
-                try:
-                    from src.models.quota_planner import get_quota_planner, QueueProfile
-                    _qp = get_quota_planner()
-                    # Use the full candidate batch (up to 8) for the scan.
-                    # For deeper lookahead, fetch more if we have tasks.
-                    _lookahead = candidate_tasks
-                    if len(candidate_tasks) >= 6:
-                        # Queue is busy — peek further ahead
-                        _lookahead = await get_ready_tasks(limit=30)
-                    if _lookahead:
-                        _profile = QueueProfile()
-                        _profile.total_tasks = len(_lookahead)
-                        for _t in _lookahead:
-                            _d = _parse_task_difficulty(_t)
-                            _profile.max_difficulty = max(_profile.max_difficulty, _d)
-                            if _d >= 7:
-                                _profile.hard_tasks_count += 1
-                            # Extract capability needs from classification context
-                            _ctx = _t.get("context", {})
-                            if isinstance(_ctx, str):
-                                try:
-                                    import json as _json
-                                    _ctx = _json.loads(_ctx)
-                                except Exception:
-                                    _ctx = {}
-                            _cls = _ctx.get("classification", {})
-                            if _cls.get("needs_vision", False):
-                                _profile.needs_vision_count += 1
-                                _profile.cloud_only_count += 1  # vision = cloud only
-                            if _cls.get("needs_tools", False):
-                                _profile.needs_tools_count += 1
-                            if _cls.get("needs_thinking", False):
-                                _profile.needs_thinking_count += 1
-                        _qp.set_queue_profile(_profile)
-                        _qp.recalculate()
-                except Exception as _qp_err:
-                    logger.debug(f"Quota planner scan failed: {_qp_err}")
-
-                # Update queue depth metric for Prometheus/Grafana
-                try:
-                    from src.infra.metrics import record_queue_depth
-                    record_queue_depth(len(candidate_tasks))
-                except Exception:
-                    pass
-
-
-                if tasks:
-                    task_names = [
-                        f"#{t['id']}({t.get('agent_type','?')})"
-                        for t in tasks
-                    ]
-                    logger.info(
-                        f"[Cycle {self.cycle_count}] "
-                        f"Processing {len(tasks)} task(s): {task_names}"
+                    self._current_task_future = asyncio.ensure_future(
+                        self.process_task(task)
+                    )
+                    self._running_futures = [self._current_task_future]
+                    done, _ = await asyncio.wait(
+                        [self._current_task_future, shutdown_fut],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if self._current_task_future in done:
+                        # Propagate any exception
+                        self._current_task_future.result()
+                    self._current_task_future = None
+                    self._running_futures = []
+                except Exception as e:
+                    self._current_task_future = None
+                    self._running_futures = []
+                    logger.error(
+                        f"Task #{task['id']} error: {e}",
+                        exc_info=True,
                     )
 
-                    # Partition tasks: only tasks that are guaranteed to NOT
-                    # need llama-server can run in parallel.  Since the router
-                    # decides local vs cloud at call time, we conservatively
-                    # treat any task that *might* use the local model as local.
-                    # Only agent_types that never touch the LLM are "safe".
-                    _CLOUD_SAFE_AGENTS = {
-                        "assistant",  # casual replies (quick LLM but low priority)
-                    }
-                    if len(tasks) > 1:
-                        local_tasks = []
-                        cloud_tasks = []
-                        for t in tasks:
-                            if t.get("agent_type") in _CLOUD_SAFE_AGENTS:
-                                cloud_tasks.append(t)
-                            else:
-                                local_tasks.append(t)
+                # Cancel the shutdown waiter if it didn't fire
+                if not shutdown_fut.done():
+                    shutdown_fut.cancel()
 
-                        # Run at most 1 local-model task; cloud-safe tasks can
-                        # run alongside it without causing model swap storms.
-                        batch = cloud_tasks + local_tasks[:1]
-                        deferred = local_tasks[1:]
-                    else:
-                        batch = tasks
-                        deferred = []
+                # Break immediately if shutdown was requested
+                if self.shutdown_event.is_set():
+                    break
 
-                    # Helper: wait for futures but break out if shutdown requested
-                    shutdown_fut = asyncio.ensure_future(self.shutdown_event.wait())
+                await asyncio.sleep(2)
 
-                    if len(batch) == 1:
-                        # Single task — run directly
-                        t = batch[0]
-                        try:
-                            self._current_task_future = asyncio.ensure_future(
-                                self.process_task(t)
-                            )
-                            self._running_futures = [self._current_task_future]
-                            done, _ = await asyncio.wait(
-                                [self._current_task_future, shutdown_fut],
-                                return_when=asyncio.FIRST_COMPLETED,
-                            )
-                            if self._current_task_future in done:
-                                # Propagate any exception
-                                self._current_task_future.result()
-                            self._current_task_future = None
-                            self._running_futures = []
-                        except Exception as e:
-                            self._current_task_future = None
-                            self._running_futures = []
-                            logger.error(
-                                f"Task #{t['id']} error: {e}",
-                                exc_info=True,
-                            )
-                    else:
-                        # Multiple tasks — run concurrently
-                        futures = [
-                            asyncio.ensure_future(self.process_task(t))
-                            for t in batch
-                        ]
-                        self._running_futures = list(futures)
-                        await asyncio.wait(
-                            futures + [shutdown_fut],
-                            return_when=asyncio.FIRST_COMPLETED,
-                        )
-                        # Collect results from completed futures
-                        for t_item, f in zip(batch, futures):
-                            if f.done() and f.exception():
-                                logger.error(
-                                    f"Task #{t_item['id']} error: {f.exception()}",
-                                    exc_info=True,
-                                )
-                        self._running_futures = []
-
-                    # Cancel the shutdown waiter if it didn't fire
-                    if not shutdown_fut.done():
-                        shutdown_fut.cancel()
-
-                    # Break immediately if shutdown was requested
-                    if self.shutdown_event.is_set():
-                        break
-
-                    # Run deferred local tasks sequentially
-                    for t in deferred:
-                        if self.shutdown_event.is_set():
-                            break
-                        try:
-                            await self.process_task(t)
-                        except Exception as e:
-                            logger.error(
-                                f"Task #{t['id']} error: {e}",
-                                exc_info=True,
-                            )
-
-                    await asyncio.sleep(2)
-
-                # Drain overhead work — runs after every batch AND during
+                # Drain overhead work — runs after every task AND during
                 # idle.  Without this, ungraded tasks and pending summaries
                 # pile up while the queue has main work.
                 try:
@@ -2169,19 +1883,6 @@ class Orchestrator:
                     await drain_pending_summaries()
                 except Exception as _sum_err:
                     logger.debug(f"Summary drain failed: {_sum_err}")
-
-                if not tasks:
-                    if self.cycle_count % 20 == 0:
-                        logger.info(f"[Cycle {self.cycle_count}] Idle")
-
-                    # Use shutdown-aware sleep instead of plain asyncio.sleep
-                    try:
-                        await asyncio.wait_for(
-                            self.shutdown_event.wait(), timeout=3
-                        )
-                        break  # shutdown requested during idle
-                    except asyncio.TimeoutError:
-                        pass  # normal idle cycle
 
                 # Phase 14.1: Time-based morning briefing (default 9:00 Turkey local)
                 from ..infra.times import turkey_now as _turkey_now

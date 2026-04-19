@@ -24,18 +24,16 @@ def _capacity_snapshot():
         return None
 
 
-def _saturated_lanes(snap) -> set[str]:
-    """Transitional: kept until Task 4 deletes lanes entirely."""
-    saturated: set[str] = set()
+def _system_busy(snap) -> bool:
+    """Return True when VRAM is too low to start a new LLM task."""
     if snap is None:
-        return saturated
+        return False
     try:
-        if int(getattr(snap, "vram_available_mb", 0)) < 500 and \
-           getattr(snap, "local", None) is not None:
-            saturated.add("local_llm")
+        if int(getattr(snap, "vram_available_mb", 0)) < 500:
+            return True
     except Exception:
         pass
-    return saturated
+    return False
 
 
 async def next_task():
@@ -50,8 +48,7 @@ async def next_task():
     await fire_due()
 
     snap = _capacity_snapshot()
-    saturated = _saturated_lanes(snap)
-    return await pick_ready_task(saturated)
+    return await pick_ready_task(_system_busy(snap))
 
 
 async def on_task_finished(task_id: int, result: dict) -> None:

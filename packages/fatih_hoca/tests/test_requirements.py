@@ -73,3 +73,21 @@ def test_quota_planner_recalculate_high_util():
     qp.update_paid_utilization("anthropic", 90.0, reset_in=300)
     threshold = qp.recalculate()
     assert threshold >= 7
+
+
+def test_queue_profile_property_returns_default_on_init():
+    from fatih_hoca.requirements import QuotaPlanner, QueueProfile
+    planner = QuotaPlanner()
+    profile = planner.queue_profile
+    assert isinstance(profile, QueueProfile)
+    assert profile.total_tasks == 0
+    assert profile.hard_tasks_count == 0
+
+
+def test_queue_profile_property_reflects_set_value():
+    from fatih_hoca.requirements import QuotaPlanner, QueueProfile
+    planner = QuotaPlanner()
+    profile = QueueProfile(total_tasks=182, hard_tasks_count=18, max_difficulty=9)
+    planner.set_queue_profile(profile)
+    assert planner.queue_profile.total_tasks == 182
+    assert planner.queue_profile.hard_tasks_count == 18

@@ -52,9 +52,32 @@ async def next_task():
 
 
 async def on_task_finished(task_id: int, result: dict) -> None:
-    # Kept as-is for now — Task 6 rewrites this to use rewrite+apply.
-    from general_beckman.lifecycle import on_task_finished as _legacy
-    await _legacy(task_id, result)
+    """Mark terminal + create any follow-up tasks the result implies.
+
+    Pipeline: route_result -> rewrite_actions -> apply_actions.
+    No delegation to Orchestrator. Mission-task completions produce a
+    MissionAdvance action which spawns a salako workflow_advance task.
+    """
+    from general_beckman.result_router import route_result
+    from general_beckman.rewrite import rewrite_actions
+    from general_beckman.apply import apply_actions
+    from general_beckman.task_context import parse_context
+    from src.infra.db import get_task
+    from src.infra.logging_config import get_logger
+
+    log = get_logger("beckman.on_task_finished")
+    task = await get_task(task_id)
+    if task is None:
+        log.warning("on_task_finished: missing task", task_id=task_id)
+        return
+    task_ctx = parse_context(task)
+    actions = route_result(task, result)
+    if actions is None:
+        return
+    if not isinstance(actions, (list, tuple)):
+        actions = [actions]
+    actions = rewrite_actions(task, task_ctx, actions)
+    await apply_actions(task, actions)
 
 
 async def enqueue(spec: dict) -> int:

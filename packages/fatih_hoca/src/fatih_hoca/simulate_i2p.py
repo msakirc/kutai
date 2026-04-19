@@ -34,11 +34,32 @@ class _FakeNerdHerd:
     """Returns a pinned snapshot so simulation is reproducible.
 
     Uses the real nerd_herd.types.SystemSnapshot to match what Selector expects.
-    MVP: VRAM free = 7000 MB, no loaded local model, inference metrics empty.
+
+    Default fixture represents the realistic mid-workflow production state:
+    - vram_mb=7000: GPU has ~7 GB free (typical for 8 GB card with model loaded)
+    - idle_seconds=300: GPU has been idle 300 s since last inference
+      → local urgency = min(1, 300/600) = 0.50 → +12.5% urgency bonus for locals
+    - loaded=None: no model marked loaded; pass a model name to trigger
+      swap-stickiness (1.40×) in the ranker, which reflects the mid-workflow
+      state where a model is already in VRAM between consecutive calls.
+
+    idle_seconds > 0 only makes sense when a model is actually loaded; the
+    counter ticks between calls once a model is resident. Combining
+    idle_seconds=300 with a loaded model name reproduces the typical production
+    scenario where local urgency has maximum observable effect.
     """
 
-    def __init__(self, vram_mb: int = 7000, loaded: str | None = None):
-        local = LocalModelState(model_name=loaded)
+    def __init__(
+        self,
+        vram_mb: int = 7000,
+        loaded: str | None = None,
+        idle_seconds: float = 300.0,
+    ):
+        # idle_seconds=300 → urgency=0.5 (halfway to LOCAL_IDLE_SATURATION_SECS=600)
+        # This produces a realistic +12.5% urgency bonus for local models so the
+        # urgency layer has an observable effect in simulation.  Production sees
+        # idle values in the 0-600s range whenever the GPU is between calls.
+        local = LocalModelState(model_name=loaded, idle_seconds=idle_seconds)
         self._snapshot = SystemSnapshot(
             vram_available_mb=vram_mb,
             local=local,
@@ -76,8 +97,28 @@ def _find_models_yaml(workflow_path: Path) -> Path | None:
     return None
 
 
-def simulate(workflow_path: Path | str, model_dir: Path | str | None = None) -> list[dict]:
-    """Run each step through Selector.select() and return per-step records."""
+def simulate(
+    workflow_path: Path | str,
+    model_dir: Path | str | None = None,
+    loaded_model: str | None = None,
+) -> list[dict]:
+    """Run each step through Selector.select() and return per-step records.
+
+    Parameters
+    ----------
+    workflow_path : Path | str
+        Path to the workflow JSON (default: i2p_v3.json).
+    model_dir : Path | str | None
+        Directory of GGUF files to register as local models.
+    loaded_model : str | None
+        Registry name of the model to simulate as already loaded in VRAM.
+        When set, the fake snapshot reports this model as the current
+        ``local.model_name`` AND the registry entry is marked ``is_loaded=True``
+        (triggering the 1.40× swap-stickiness bonus in the ranker).
+        Represents the realistic mid-workflow state where a local model is
+        already resident between consecutive i2p calls.
+        Example: ``"Qwen3.5-35B-A3B-UD-Q4_K_XL-thinking"``
+    """
     workflow_path = Path(workflow_path)
     steps = _load_steps(workflow_path)
 
@@ -103,6 +144,24 @@ def simulate(workflow_path: Path | str, model_dir: Path | str | None = None) -> 
         except Exception as exc:
             print(f"WARNING: failed to load GGUF dir {model_dir}: {exc}", file=sys.stderr)
 
+    # Mark a model as loaded so the ranker sees swap-stickiness (1.40×) for it.
+    # This reproduces the mid-workflow scenario where a model is already in VRAM.
+    if loaded_model:
+        m = registry.get(loaded_model)
+        if m is not None:
+            registry.mark_loaded(loaded_model, api_base="http://localhost:8080")
+            print(
+                f"NOTE: simulating with loaded_model={loaded_model!r} "
+                f"(swap-stickiness 1.40× active for this model)",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"WARNING: --loaded-model {loaded_model!r} not found in registry; "
+                f"ignoring (no stickiness will apply)",
+                file=sys.stderr,
+            )
+
     total = len(list(registry.all_models()))
     local_count = sum(1 for m in registry.all_models() if getattr(m, "is_local", False))
     cloud_count = total - local_count
@@ -122,7 +181,10 @@ def simulate(workflow_path: Path | str, model_dir: Path | str | None = None) -> 
             file=sys.stderr,
         )
 
-    selector = Selector(registry=registry, nerd_herd=_FakeNerdHerd())
+    selector = Selector(
+        registry=registry,
+        nerd_herd=_FakeNerdHerd(loaded=loaded_model),
+    )
 
     records: list[dict] = []
     for step in steps:
@@ -228,9 +290,19 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Directory of GGUF files to register as local models (default: none)",
     )
+    parser.add_argument(
+        "--loaded-model",
+        dest="loaded_model",
+        default=None,
+        help=(
+            "Registry name of a local model to simulate as already loaded in VRAM. "
+            "Triggers swap-stickiness (1.40x) and idle_seconds urgency. "
+            "Example: 'Qwen3.5-35B-A3B-UD-Q4_K_XL-thinking'"
+        ),
+    )
     args = parser.parse_args(argv)
 
-    records = simulate(args.workflow, model_dir=args.model_dir)
+    records = simulate(args.workflow, model_dir=args.model_dir, loaded_model=args.loaded_model)
     report = build_report(records)
     print(_format_report(report))
 

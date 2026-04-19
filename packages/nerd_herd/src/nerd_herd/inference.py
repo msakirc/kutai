@@ -43,6 +43,10 @@ class InferenceCollector:
         self._requests_processing: int = 0
         self._requests_pending: int = 0
 
+        # Idle tracking: timestamp when requests_processing last dropped to 0.
+        # 0.0 means never seen (no inference yet or currently in-flight).
+        self._idle_since_ts: float = 0.0
+
     async def start(self) -> None:
         self._poll_task = asyncio.create_task(self._poll_loop())
 
@@ -102,19 +106,38 @@ class InferenceCollector:
             elif raw == "llamacpp_prompt_tokens_total":
                 self._prompt_tokens_buf.append(ts, val)
             elif raw == "llamacpp_requests_processing":
+                prev = self._requests_processing
                 self._requests_processing = int(val)
+                # Track idle start: when processing drops to 0 (or was already 0 on
+                # first observation), record the timestamp. When it rises above 0,
+                # clear the idle timestamp so collect() returns 0.
+                if self._requests_processing == 0:
+                    if prev != 0 or self._idle_since_ts == 0.0:
+                        # Transition into idle, or first ever idle observation
+                        self._idle_since_ts = ts
+                else:
+                    # In-flight — clear idle marker
+                    self._idle_since_ts = 0.0
             elif raw == "llamacpp_requests_pending":
                 self._requests_pending = int(val)
             elif raw == "llamacpp_kv_cache_usage_ratio":
                 self._kv_cache = round(val, 4)
 
     def collect(self) -> dict[str, float | int]:
+        # Compute idle_seconds at read time so it grows continuously without
+        # requiring another poll. 0.0 when in-flight or no inference seen yet.
+        if self._idle_since_ts > 0.0 and self._requests_processing == 0:
+            idle_seconds = max(0.0, time.time() - self._idle_since_ts)
+        else:
+            idle_seconds = 0.0
+
         return {
             "inference_tokens_per_sec": round(self._gen_tokens_buf.rate(60), 1),
             "inference_prompt_tokens_per_sec": round(self._prompt_tokens_buf.rate(60), 1),
             "kv_cache_ratio": self._kv_cache,
             "requests_processing": self._requests_processing,
             "requests_pending": self._requests_pending,
+            "idle_seconds": round(idle_seconds, 3),
         }
 
     def prometheus_metrics(self) -> list:

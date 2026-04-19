@@ -483,9 +483,19 @@ async def init_db():
             picked_reasons TEXT,
             candidates_json TEXT NOT NULL,
             failures_json TEXT,
-            snapshot_summary TEXT
+            snapshot_summary TEXT,
+            pool TEXT,
+            urgency REAL
         )
     """)
+    # Idempotent column add for pre-Phase-2c databases.
+    for col_name, col_type in (("pool", "TEXT"), ("urgency", "REAL")):
+        try:
+            await db.execute(f"ALTER TABLE model_pick_log ADD COLUMN {col_name} {col_type}")
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+            # column already exists — expected on re-init
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_pick_log_task ON model_pick_log(task_name, timestamp DESC)"
     )

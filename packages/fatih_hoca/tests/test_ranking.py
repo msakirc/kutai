@@ -422,3 +422,58 @@ def test_scored_model_cloud_litellm_name():
     m = _make_model("claude-3", location="cloud", provider="anthropic")
     sm = ScoredModel(model=m, score=80.0)
     assert sm.litellm_name == "anthropic/claude-3"
+
+
+# ─── Grading perf_score Integration ──────────────────────────────────────────
+
+def test_cloud_model_with_stats_gets_grading_perf_score(monkeypatch):
+    """Grading blend: cloud model with stats gets non-flat perf_score.
+
+    grading=80, tps_perf=50 (cloud fallback) → blended = 0.6*80 + 0.4*50 = 68
+    """
+    from fatih_hoca import ranking
+
+    def fake_grading(name):
+        if name == "groq-llama-70b":
+            return 80.0
+        return None
+
+    monkeypatch.setattr(ranking, "grading_perf_score", fake_grading)
+
+    model = _make_model(
+        "groq-llama-70b",
+        location="cloud",
+        provider="groq",
+    )
+    snap = SystemSnapshot()
+    reqs = ModelRequirements(task="coder", difficulty=5)
+    ranked = rank_candidates([model], reqs, snap, failures=[])
+    assert len(ranked) == 1
+
+    # Find the perf= reason and parse the value
+    perf_reasons = [r for r in ranked[0].reasons if r.startswith("perf=")]
+    assert len(perf_reasons) == 1, f"expected one perf= reason, got {ranked[0].reasons}"
+    perf_val = float(perf_reasons[0].split("=")[1].split("(")[0])
+    assert abs(perf_val - 68.0) <= 1.0, f"expected ~68.0 (blend), got {perf_val}"
+
+
+def test_local_without_stats_falls_back_to_tps_derived(monkeypatch):
+    """Local model with no grading stats keeps tps-derived perf_score (~65)."""
+    from fatih_hoca import ranking
+
+    monkeypatch.setattr(ranking, "grading_perf_score", lambda _: None)
+
+    # tps=20 → perf_score = min(90, 45 + (20-10)*1.2) = min(90, 57) = 57
+    # But if is_loaded + snapshot measured_tps=20:
+    #   perf_score = min(95, 50 + (20-10)*1.5) = min(95, 65) = 65
+    model = _make_model("local-qwen", tps=20.0, is_loaded=False)
+    snap = SystemSnapshot()
+    reqs = ModelRequirements(task="coder", difficulty=5)
+    ranked = rank_candidates([model], reqs, snap, failures=[])
+    assert len(ranked) == 1
+
+    perf_reasons = [r for r in ranked[0].reasons if r.startswith("perf=")]
+    assert len(perf_reasons) == 1, f"expected one perf= reason, got {ranked[0].reasons}"
+    perf_val = float(perf_reasons[0].split("=")[1].split("(")[0])
+    # tps=20 (not loaded), formula: min(90, 45 + (20-10)*1.2) = 57
+    assert abs(perf_val - 57.0) <= 1.0, f"expected ~57.0 (tps-derived), got {perf_val}"

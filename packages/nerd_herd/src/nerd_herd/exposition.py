@@ -147,6 +147,7 @@ class MetricsServer:
             context_length=int(body.get("context_length", 0)),
             is_swapping=bool(body.get("is_swapping", False)),
             kv_cache_ratio=float(body.get("kv_cache_ratio", 0.0)),
+            idle_seconds=float(body.get("idle_seconds", 0.0)),
         )
         self._nh.push_local_state(state)
         return web.json_response({"ok": True})

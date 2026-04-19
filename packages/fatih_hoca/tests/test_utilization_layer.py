@@ -44,7 +44,7 @@ def test_zero_scarcity_leaves_score_unchanged():
 def test_positive_scarcity_under_qualified_model_gets_full_boost():
     # local, loaded, saturated idle → +0.5 scarcity
     # cap_score_100=50, d=5 → cap_needed=45, fit_excess=0.05; (1-0.05)=0.95
-    # composite *= 1 + 0.25 * 0.5 * 0.95 = 1.11875
+    # composite *= 1 + 0.5 * 0.5 * 0.95 = 1.2375 (K=0.5 after Phase 2d tuning)
     sm = _sm("loaded-local", cap_score_1_to_10=5.0, score=100.0, is_local=True, is_loaded=True)
     snap = SimpleNamespace(
         local=SimpleNamespace(
@@ -54,13 +54,13 @@ def test_positive_scarcity_under_qualified_model_gets_full_boost():
         cloud={},
     )
     _apply_utilization_layer([sm], snap, task_difficulty=5, queue_state=None)
-    assert 110 < sm.score < 113
+    assert 123 < sm.score < 125
 
 
 def test_over_qualified_model_ignores_positive_scarcity():
     # cap_score_100=95, d=3 → cap_needed=30, fit_excess=0.65
     # (1 - 0.65) = 0.35 → adjustment only 35% of K*scarcity
-    # with scarcity +0.5: composite *= 1 + 0.25 * 0.5 * 0.35 = 1.04375
+    # with scarcity +0.5: composite *= 1 + 0.5 * 0.5 * 0.35 = 1.0875 (K=0.5)
     sm = _sm("overq-local", cap_score_1_to_10=9.5, score=100.0, is_local=True, is_loaded=True)
     snap = SimpleNamespace(
         local=SimpleNamespace(
@@ -70,12 +70,14 @@ def test_over_qualified_model_ignores_positive_scarcity():
         cloud={},
     )
     _apply_utilization_layer([sm], snap, task_difficulty=3, queue_state=None)
-    assert 103 < sm.score < 105
+    assert 108 < sm.score < 110
 
 
 def test_under_qualified_model_feels_full_scarcity_magnitude():
     # cap_score_100=25, d=5 → cap_needed=45, fit_excess=-0.2 → clamped to 0
-    # (1 - 0) = 1.0; with scarcity +0.5: composite *= 1 + 0.25 * 0.5 * 1.0 = 1.125
+    # (1 - 0) = 1.0; with scarcity +0.5: composite *= 1 + 0.5 * 0.5 * 1.0 = 1.25 (K=0.5)
+    # NOTE: task_difficulty=5 is below the Phase 2d local-conservation
+    # threshold (d>=6) so the capability gate does not override scarcity.
     sm = _sm("weak-local", cap_score_1_to_10=2.5, score=100.0, is_local=True, is_loaded=True)
     snap = SimpleNamespace(
         local=SimpleNamespace(
@@ -85,7 +87,7 @@ def test_under_qualified_model_feels_full_scarcity_magnitude():
         cloud={},
     )
     _apply_utilization_layer([sm], snap, task_difficulty=5, queue_state=None)
-    assert 112 < sm.score < 113
+    assert 124 < sm.score < 126
 
 
 def test_pool_and_urgency_fields_populated():

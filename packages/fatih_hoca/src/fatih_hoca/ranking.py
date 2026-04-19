@@ -164,6 +164,13 @@ def _apply_utilization_layer(
         fit_excess = (cap_score_100 - cap_needed) / 100.0
         scarcity = pool_scarcity(sm.model, snapshot, queue_state, task_difficulty)
         pool = classify_pool(sm.model)
+        # Capability conservation on hard tasks: when any candidate is
+        # under-qualified for the current task, force a negative scarcity
+        # so the equation demotes it. Lets us avoid "best-of-the-worst"
+        # picks when a qualified candidate exists.
+        from fatih_hoca.scarcity import LOCAL_HARD_TASK_PENALTY
+        if fit_excess < 0 and task_difficulty >= 6:
+            scarcity = LOCAL_HARD_TASK_PENALTY
         sm.pool = pool.value
         # Reuse `urgency` column for scarcity scalar — telemetry schema continuity
         sm.urgency = scarcity

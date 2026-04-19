@@ -108,12 +108,14 @@ def test_time_bucketed_reset_far_low_remaining_returns_negative():
     assert -0.5 <= s <= -0.2
 
 
-def test_time_bucketed_balanced_returns_near_zero():
+def test_time_bucketed_balanced_encourages_burn():
+    # Phase 2d tuning: daily buckets that would otherwise reset unused
+    # get a soft "burn" scarcity proportional to remaining fraction.
+    # At 4h to reset with 50% remaining we expect a mild positive signal.
     model = _free_cloud_model()
-    # 4h to reset, 50% remaining → neutral
     snap = _snapshot_with_cloud("groq", "groq/llama-70b", remaining=500, limit=1000, reset_in_secs=14400)
     s = pool_scarcity(model, snap, queue_state=None)
-    assert -0.2 <= s <= 0.2
+    assert 0.2 <= s <= 0.5
 
 
 def test_time_bucketed_exhausted_returns_zero():

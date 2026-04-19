@@ -25,6 +25,12 @@ from fatih_hoca.pools import (
 LOCAL_IDLE_SCARCITY_MAX: float = 0.5
 # Penalty when a loaded local is actively processing another request
 LOCAL_BUSY_PENALTY: float = -0.10
+# Conservation: loaded local on a task above this difficulty gets a
+# negative scarcity so the equation demotes it in favor of cloud
+# candidates that clear the capability bar. Gated by cap curve
+# comparison: we only demote when the local is actually below
+# `cap_needed_for_difficulty`.
+LOCAL_HARD_TASK_PENALTY: float = -1.0
 
 # Time-bucketed pool tunables
 RESET_IMMINENT_SECS: float = 3600.0       # "imminent" threshold (1h)
@@ -112,7 +118,10 @@ def _time_bucketed_scarcity(model: Any, snapshot: Any) -> float:
         if remaining_frac < 0.3:
             depletion = (0.3 - remaining_frac) / 0.3  # 0..1
             return _clamp(TIME_BUCKETED_CONSERVE_MAX * depletion)
-        return 0.0
+        # Daily quota that'll otherwise reset unused — encourage burn
+        # proportional to remaining fraction. A full bucket gets the full
+        # soft boost; as we draw it down, scarcity decays toward neutral.
+        return _clamp(TIME_BUCKETED_BOOST_MAX * remaining_frac * 0.75)
 
     # Between imminent and far: neutral
     return 0.0

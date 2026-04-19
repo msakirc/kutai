@@ -59,7 +59,13 @@ def _standard_i2p_task_mix(count: int = 182, seed: int = 42) -> list[SimTask]:
 
 def _build_snapshot_factory(scenario_providers: dict[str, Any]):
     """Builds a closure that turns SimState -> SystemSnapshot-like object."""
+    import time as _time
     from types import SimpleNamespace
+
+    # Pin a wall-clock anchor so virtual-clock -> wall-clock mapping is stable
+    # within a sim run. scarcity.py uses time.time() directly; we project
+    # `counter.reset_at` (virtual seconds) onto the same clock.
+    wall_anchor = _time.time()
 
     def factory(state: SimState) -> Any:
         if state.locals:
@@ -93,10 +99,13 @@ def _build_snapshot_factory(scenario_providers: dict[str, Any]):
                         limits=None, utilization_pct=0.0, daily_exhausted=True,
                     )
                     continue
+                # Project virtual-clock reset_at onto wall-clock so scarcity.py
+                # (which calls time.time()) computes the correct reset_in.
+                reset_in_secs = max(0.0, counter.reset_at - state.virtual_clock)
                 rpd = SimpleNamespace(
                     remaining=counter.remaining,
                     limit=counter.limit,
-                    reset_at=counter.reset_at,
+                    reset_at=wall_anchor + reset_in_secs,
                 )
                 util = 100.0 * (1.0 - counter.remaining / max(1, counter.limit))
                 models[model_id] = SimpleNamespace(
@@ -217,14 +226,18 @@ def diverse_pool() -> Scenario:
     providers = {
         "groq": {"is_free": True, "models": {"groq/llama-3.1-70b": {"cap_score_100": 72}}},
         "gemini": {"is_free": True, "models": {"gemini/gemini-1.5-flash": {"cap_score_100": 68}}},
-        "openrouter": {"is_free": True, "models": {"openrouter/free-mistral": {"cap_score_100": 55}}},
+        "openrouter": {"is_free": True, "models": {"openrouter/free-mistral": {"cap_score_100": 70}}},
         "anthropic": {"is_free": False, "models": {"anthropic/claude-sonnet": {"cap_score_100": 93}}},
     }
+    # Scenario intent: one workflow (~182 tasks) should consume a meaningful
+    # fraction of each free pool's daily budget. Realistic per-workflow limits
+    # (~100-150) scale the 70% utilization target to what's reachable in 182
+    # tasks. Per-day limits (1000+) assume many workflows/day — not modeled here.
     state = SimState()
     state.locals["loaded-local"] = SimLocalModel(is_loaded=True, idle_seconds=300.0)
-    state.time_bucketed["groq/llama-3.1-70b"] = SimPoolCounter(remaining=1000, limit=1000, reset_at=86400.0)
-    state.time_bucketed["gemini/gemini-1.5-flash"] = SimPoolCounter(remaining=1500, limit=1500, reset_at=86400.0)
-    state.time_bucketed["openrouter/free-mistral"] = SimPoolCounter(remaining=500, limit=500, reset_at=86400.0)
+    state.time_bucketed["groq/llama-3.1-70b"] = SimPoolCounter(remaining=15, limit=15, reset_at=86400.0)
+    state.time_bucketed["gemini/gemini-1.5-flash"] = SimPoolCounter(remaining=10, limit=10, reset_at=86400.0)
+    state.time_bucketed["openrouter/free-mistral"] = SimPoolCounter(remaining=8, limit=8, reset_at=86400.0)
     state.per_call["anthropic/claude-sonnet"] = SimPoolCounter(remaining=1000, limit=1000, reset_at=86400.0)
     return Scenario(
         name="diverse_pool",

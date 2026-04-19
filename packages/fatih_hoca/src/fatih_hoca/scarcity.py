@@ -32,6 +32,10 @@ RESET_FAR_SECS: float = 14400.0            # "far" threshold (4h)
 TIME_BUCKETED_BOOST_MAX: float = 1.0       # max positive when burning
 TIME_BUCKETED_CONSERVE_MAX: float = -0.5   # max negative when saving
 
+# Per-call pool tunables
+PER_CALL_RESERVE_MAX: float = -1.0   # strongest conservation signal
+PER_CALL_HARD_QUEUE_RATIO: float = 0.1  # 10% hard tasks in queue → strong pressure
+
 
 def _clamp(x: float, lo: float = -1.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, x))
@@ -114,12 +118,50 @@ def _time_bucketed_scarcity(model: Any, snapshot: Any) -> float:
     return 0.0
 
 
-def pool_scarcity(model: Any, snapshot: Any, queue_state: Any = None) -> float:
-    """Compute signed scarcity in [-1, +1] for (model, snapshot, queue_state)."""
+def _per_call_scarcity(queue_state: Any, task_difficulty: int) -> float:
+    if queue_state is None:
+        return 0.0
+    total = int(getattr(queue_state, "total_tasks", 0) or 0)
+    hard = int(getattr(queue_state, "hard_tasks_count", 0) or 0)
+    if total <= 0 or hard <= 0:
+        return 0.0
+
+    # If the CURRENT task is itself hard, no reason for it to be rationed
+    if task_difficulty >= 7:
+        return 0.0
+
+    hard_ratio = hard / total
+    # Saturate pressure at PER_CALL_HARD_QUEUE_RATIO
+    pressure = min(1.0, hard_ratio / PER_CALL_HARD_QUEUE_RATIO)
+    # Scale by how far below "hard" the current task is (d=1 → full, d=7 → 0)
+    easiness = max(0.0, (7 - task_difficulty)) / 6.0  # d=1→1.0, d=7→0
+    return _clamp(PER_CALL_RESERVE_MAX * pressure * easiness)
+
+
+def pool_scarcity(
+    model: Any,
+    snapshot: Any,
+    queue_state: Any = None,
+    task_difficulty: int = 0,
+) -> float:
+    """Compute signed scarcity in [-1, +1].
+
+    Parameters
+    ----------
+    model : ModelInfo-like
+        Must expose `is_local`, `is_free`, `provider`, `name`.
+    snapshot : SystemSnapshot-like
+        Has `.local` and `.cloud` attrs.
+    queue_state : QueueProfile or None
+        Optional; used by per_call branch.
+    task_difficulty : int
+        Current task difficulty (1-10); used by per_call branch.
+    """
     pool = classify_pool(model)
     if pool is Pool.LOCAL:
         return _local_scarcity(model, snapshot)
     if pool is Pool.TIME_BUCKETED:
         return _time_bucketed_scarcity(model, snapshot)
-    # per_call added in Task 5
+    if pool is Pool.PER_CALL:
+        return _per_call_scarcity(queue_state, task_difficulty)
     return 0.0

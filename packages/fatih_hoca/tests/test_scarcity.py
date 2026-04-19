@@ -128,3 +128,70 @@ def test_time_bucketed_missing_provider_returns_zero():
     snap = SimpleNamespace(local=None, cloud={})
     s = pool_scarcity(model, snap, queue_state=None)
     assert s == 0.0
+
+
+# ── Per-call pool ───────────────────────────────────────────────────────
+
+
+def _paid_cloud_model(provider="anthropic", model_id="anthropic/claude-sonnet"):
+    return SimpleNamespace(
+        name=model_id,
+        litellm_name=model_id,
+        is_local=False,
+        is_free=False,
+        is_loaded=False,
+        provider=provider,
+    )
+
+
+def _queue_profile(total=0, hard=0, max_d=0):
+    return SimpleNamespace(
+        total_tasks=total,
+        hard_tasks_count=hard,
+        max_difficulty=max_d,
+        needs_vision_count=0,
+        needs_tools_count=0,
+        needs_thinking_count=0,
+        cloud_only_count=0,
+    )
+
+
+def test_per_call_easy_task_with_hard_queue_returns_strong_negative():
+    model = _paid_cloud_model()
+    snap = SimpleNamespace(local=None, cloud={})
+    qp = _queue_profile(total=20, hard=5, max_d=8)
+    s = pool_scarcity(model, snap, queue_state=qp, task_difficulty=3)
+    assert -1.0 <= s <= -0.6
+
+
+def test_per_call_hard_task_with_hard_queue_returns_near_zero():
+    # Current task is itself hard → no reason to conserve from it
+    model = _paid_cloud_model()
+    snap = SimpleNamespace(local=None, cloud={})
+    qp = _queue_profile(total=20, hard=5, max_d=8)
+    s = pool_scarcity(model, snap, queue_state=qp, task_difficulty=8)
+    assert -0.2 <= s <= 0.0
+
+
+def test_per_call_no_queue_pressure_returns_zero():
+    model = _paid_cloud_model()
+    snap = SimpleNamespace(local=None, cloud={})
+    qp = _queue_profile(total=10, hard=0, max_d=4)
+    s = pool_scarcity(model, snap, queue_state=qp, task_difficulty=3)
+    assert s == 0.0
+
+
+def test_per_call_no_queue_state_returns_zero():
+    model = _paid_cloud_model()
+    snap = SimpleNamespace(local=None, cloud={})
+    s = pool_scarcity(model, snap, queue_state=None, task_difficulty=3)
+    assert s == 0.0
+
+
+def test_per_call_never_positive():
+    model = _paid_cloud_model()
+    snap = SimpleNamespace(local=None, cloud={})
+    for qp in [_queue_profile(), _queue_profile(total=50, hard=20, max_d=10)]:
+        for d in range(1, 11):
+            s = pool_scarcity(model, snap, queue_state=qp, task_difficulty=d)
+            assert s <= 0.0, f"per_call positive for d={d} qp.hard={qp.hard_tasks_count}"

@@ -64,14 +64,21 @@ async def seed_internal_cadences() -> None:
     Safe to call multiple times — skips rows that already exist by
     (title, kind='internal').  Sets the module-level ``_seeded`` flag only
     after a successful pass so a crash mid-seed allows retry.
+
+    Newly inserted rows have next_run set to now + interval_seconds so they
+    don't fire immediately on first tick (avoids spurious task insertion in
+    tests and on fresh deployments).
     """
     global _seeded
     if _seeded:
         return
 
+    from datetime import timedelta
     from src.infra.db import get_db  # lazy to avoid circular import at module load
+    from src.infra.times import utc_now, to_db
 
     db = await get_db()
+    now = utc_now()
     for cadence in INTERNAL_CADENCES:
         cursor = await db.execute(
             "SELECT id FROM scheduled_tasks WHERE title = ? AND kind = 'internal'",
@@ -82,15 +89,17 @@ async def seed_internal_cadences() -> None:
             logger.debug("cron_seed: skipping existing row", title=cadence["title"])
             continue
 
+        first_run = to_db(now + timedelta(seconds=cadence["interval_seconds"]))
         await db.execute(
             """INSERT INTO scheduled_tasks
-               (title, description, interval_seconds, kind, context, enabled)
-               VALUES (?, ?, ?, 'internal', ?, 1)""",
+               (title, description, interval_seconds, kind, context, enabled, next_run)
+               VALUES (?, ?, ?, 'internal', ?, 1, ?)""",
             (
                 cadence["title"],
                 cadence["description"],
                 cadence["interval_seconds"],
                 json.dumps(cadence["payload"]),
+                first_run,
             ),
         )
         logger.info("cron_seed: inserted internal cadence", title=cadence["title"])

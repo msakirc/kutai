@@ -1,15 +1,15 @@
-"""General Beckman — the task master."""
+"""General Beckman — the task master.
+
+Public API (everything else is internal):
+  - next_task() -> Task | None
+  - on_task_finished(task_id, result) -> None
+  - enqueue(spec) -> int
+"""
 from __future__ import annotations
 
-from general_beckman.types import Task, AgentResult, Lane
-from general_beckman.lifecycle import on_task_finished, set_orchestrator
-from general_beckman.queue import pick_ready_task, classify_lane, count_pending_cloud_tasks, unclaim
-from general_beckman.lookahead import should_hold_back
+from general_beckman.types import Task, AgentResult
 
-__all__ = [
-    "next_task", "on_task_finished", "tick", "set_orchestrator",
-    "Task", "AgentResult", "Lane",
-]
+__all__ = ["next_task", "on_task_finished", "enqueue", "Task", "AgentResult"]
 
 
 def _capacity_snapshot():
@@ -25,74 +25,45 @@ def _capacity_snapshot():
 
 
 def _saturated_lanes(snap) -> set[str]:
+    """Transitional: kept until Task 4 deletes lanes entirely."""
     saturated: set[str] = set()
     if snap is None:
         return saturated
-    # Local LLM is saturated when VRAM headroom drops below a safe floor.
     try:
-        if int(getattr(snap, "vram_available_mb", 0)) < 500 and getattr(snap, "local", None) is not None:
+        if int(getattr(snap, "vram_available_mb", 0)) < 500 and \
+           getattr(snap, "local", None) is not None:
             saturated.add("local_llm")
     except Exception:
         pass
     return saturated
 
 
-async def next_task() -> Task | None:
-    """Return one task ready to dispatch, or None if nothing should be released.
+async def next_task():
+    """Cycle: sweep (throttled) + fire due crons + pick one.
 
-    Consults :func:`nerd_herd.snapshot` (if wired) for lane saturation, then
-    claims the first eligible task via :mod:`general_beckman.queue`.
+    Called by orchestrator on its ~3s cycle.
     """
+    from general_beckman.cron import fire_due
+    from general_beckman.queue import pick_ready_task
+
+    # Cron processor internally seeds and throttles sweep.
+    await fire_due()
+
     snap = _capacity_snapshot()
     saturated = _saturated_lanes(snap)
-    task = await pick_ready_task(saturated)
-    if task is None:
-        return None
-    try:
-        queue_depth = await count_pending_cloud_tasks()
-    except Exception:
-        queue_depth = 0
-    if should_hold_back(task, snap, queue_depth):
-        await unclaim(task)
-        return None
-    return task
+    return await pick_ready_task(saturated)
 
 
-async def tick() -> None:
-    """Periodic maintenance. Called every 3s by the orchestrator main loop.
+async def on_task_finished(task_id: int, result: dict) -> None:
+    # Kept as-is for now — Task 6 rewrites this to use rewrite+apply.
+    from general_beckman.lifecycle import on_task_finished as _legacy
+    await _legacy(task_id, result)
 
-    Invokes the watchdog and the registered orchestrator's scheduled-jobs
-    tick entry points. Each subroutine is guarded: an exception from one
-    must not abort the rest.
-    """
-    from src.infra.logging_config import get_logger
-    from general_beckman.watchdog import check_stuck_tasks
-    from general_beckman import lifecycle
-    log = get_logger("general_beckman.tick")
 
-    async def _safe(coro, name):
-        try:
-            await coro
-        except Exception as e:
-            log.warning("tick subroutine failed", fn=name, error=str(e))
+async def enqueue(spec: dict) -> int:
+    """Single external write path for user-/bot-initiated tasks."""
+    from src.infra.db import add_task
+    return await add_task(**spec)
 
-    await _safe(check_stuck_tasks(), "check_stuck_tasks")
-    try:
-        orch = lifecycle.get_orchestrator()
-    except RuntimeError:
-        orch = None
-    sj = getattr(orch, "scheduled_jobs", None) if orch is not None else None
-    if sj is None:
-        return
-    for name in (
-        "tick_todos",
-        "tick_api_discovery",
-        "tick_digest",
-        "tick_price_watches",
-        "tick_benchmark_refresh",
-        "check_scheduled_tasks",
-    ):
-        fn = getattr(sj, name, None)
-        if fn is None:
-            continue
-        await _safe(fn(), name)
+
+from general_beckman.lifecycle import set_orchestrator  # noqa: F401, transitional

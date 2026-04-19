@@ -1974,50 +1974,10 @@ class Orchestrator:
                 if self.cycle_count % 10 == 0:
                     await self.watchdog()
 
-                # ── Cron scheduler check (every 60s) ──
-                sched_elapsed = (
-                    utc_now() - self.last_scheduler_check
-                ).total_seconds()
-                if sched_elapsed >= 60:
-                    await self.scheduled_jobs.check_scheduled_tasks()
-                    self.last_scheduler_check = utc_now()
-
-                # ── Benchmark cache refresh (fires each cycle, cheap mtime check) ──
-                try:
-                    await self.scheduled_jobs.tick_benchmark_refresh()
-                except Exception as exc:
-                    logger.debug("benchmark refresh tick failed: %s", exc)
-
                 # Get a generous batch, then compute how many to actually run
+                # (age-boost, paused-pattern filter, and cron firing now handled
+                # inside beckman.next_task() → queue.pick_ready_task / cron.fire_due)
                 candidate_tasks = await get_ready_tasks(limit=8)
-
-                # ── Age-based priority boost (starvation prevention) ──
-                # +0.1 per hour waiting, max +1.0, so old tasks don't starve
-                for _t in candidate_tasks:
-                    _created = _t.get("created_at", "")
-                    if _created:
-                        try:
-                            _age_h = (utc_now() - from_db(
-                                _created
-                            )).total_seconds() / 3600
-                            _age_boost = min(_age_h * 0.1, 1.0)
-                            _t["_effective_priority"] = _t.get("priority", 5) + _age_boost
-                        except Exception:
-                            _t["_effective_priority"] = _t.get("priority", 5)
-                    else:
-                        _t["_effective_priority"] = _t.get("priority", 5)
-
-                # ── Skip tasks matching paused DLQ patterns ──
-                if self.paused_patterns:
-                    filtered = []
-                    for _t in candidate_tasks:
-                        if _t.get("error_category"):
-                            pattern_key = f"category:{_t['error_category']}"
-                            if pattern_key in self.paused_patterns:
-                                logger.debug(f"[Task #{_t['id']}] Skipped — pattern {pattern_key} paused")
-                                continue
-                        filtered.append(_t)
-                    candidate_tasks = filtered
 
                 # ── Swap-aware: defer tasks that will reject the loaded model ──
                 loaded_model = ""

@@ -4,7 +4,7 @@ Three pools: LOCAL (sunk-cost GPU), TIME_BUCKETED (free-tier or prepaid cloud
 with reset timer), PER_CALL (paid cloud, no bucket).
 
 Urgency in [0, 1]. Applied at Layer 3 in ranking.py as:
-    composite *= (1 + URGENCY_MAX_BONUS * urgency)
+    composite *= (1 + UTILIZATION_K * urgency)
 when capability gate allows.
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ from enum import Enum
 from typing import Any
 
 # ── Tunables ───────────────────────────────────────────────────────────
-URGENCY_MAX_BONUS: float = 0.25
+UTILIZATION_K: float = 0.25
 LOCAL_IDLE_SATURATION_SECS: float = 600.0
 RESET_HORIZON_SECS: float = 3600.0
 

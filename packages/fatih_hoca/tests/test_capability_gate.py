@@ -14,7 +14,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from fatih_hoca.ranking import ScoredModel, _apply_urgency_layer, CAP_GATE_RATIO
-from fatih_hoca.pools import URGENCY_MAX_BONUS
+from fatih_hoca.pools import UTILIZATION_K
 
 
 def _make_sm(
@@ -106,7 +106,7 @@ def test_near_peer_both_boosted():
     assert any("urgency=local" in r for r in sm_other.reasons), sm_other.reasons
 
     # Since both started at same composite=100, same urgency=1.0, same mult → same score
-    expected_mult = 1.0 + URGENCY_MAX_BONUS * 1.0
+    expected_mult = 1.0 + UTILIZATION_K * 1.0
     assert abs(sm_top.score - 100.0 * expected_mult) < 0.01
     assert abs(sm_other.score - 100.0 * expected_mult) < 0.01
 
@@ -150,10 +150,10 @@ def test_zero_urgency_does_not_change_relative_order():
 
 
 def test_top_cap_candidate_gets_full_bonus_at_urgency_1():
-    """Top-cap candidate with urgency=1.0 gets exactly URGENCY_MAX_BONUS applied."""
+    """Top-cap candidate with urgency=1.0 gets exactly UTILIZATION_K applied."""
     sm = _make_sm(cap_score_raw=9.0, composite=100.0, pool="local", urgency_return=1.0)
     _run_urgency([sm])
-    expected = 100.0 * (1.0 + URGENCY_MAX_BONUS * 1.0)
+    expected = 100.0 * (1.0 + UTILIZATION_K * 1.0)
     assert abs(sm.score - expected) < 0.01, f"expected {expected:.3f}, got {sm.score:.3f}"
 
 
@@ -161,7 +161,7 @@ def test_urgency_partial_boost():
     """urgency=0.5 applies half the max bonus."""
     sm = _make_sm(cap_score_raw=9.0, composite=100.0, pool="local", urgency_return=0.5)
     _run_urgency([sm])
-    expected = 100.0 * (1.0 + URGENCY_MAX_BONUS * 0.5)
+    expected = 100.0 * (1.0 + UTILIZATION_K * 0.5)
     assert abs(sm.score - expected) < 0.01, f"expected {expected:.3f}, got {sm.score:.3f}"
 
 
@@ -191,5 +191,5 @@ def test_single_candidate_always_qualifies():
     sm = _make_sm(cap_score_raw=5.0, composite=80.0, pool="local", urgency_return=0.8)
     _run_urgency([sm])
     # top_cap = 50.0, cap_threshold = 42.5, sm.cap_score_100 = 50.0 >= 42.5 → boost
-    expected = 80.0 * (1.0 + URGENCY_MAX_BONUS * 0.8)
+    expected = 80.0 * (1.0 + UTILIZATION_K * 0.8)
     assert abs(sm.score - expected) < 0.01, f"expected {expected:.3f}, got {sm.score:.3f}"

@@ -6,7 +6,7 @@ from fatih_hoca.pools import (
     Pool,
     classify_pool,
     compute_urgency,
-    URGENCY_MAX_BONUS,
+    UTILIZATION_K,
     LOCAL_IDLE_SATURATION_SECS,
     RESET_HORIZON_SECS,
 )

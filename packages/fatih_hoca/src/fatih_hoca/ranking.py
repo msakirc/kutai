@@ -22,7 +22,7 @@ from fatih_hoca.capabilities import TaskRequirements, score_model_for_task
 from fatih_hoca.grading import grading_perf_score
 from fatih_hoca.pools import (
     Pool, classify_pool, compute_urgency,
-    URGENCY_MAX_BONUS,
+    UTILIZATION_K,
 )
 from fatih_hoca.requirements import get_quota_planner
 
@@ -167,7 +167,7 @@ def _apply_urgency_layer(scored: list[ScoredModel], snapshot: SystemSnapshot) ->
         sm.pool = pool.value
         sm.urgency = urgency
         if urgency > 0 and cap_score_100 >= cap_threshold:
-            mult = 1.0 + URGENCY_MAX_BONUS * urgency
+            mult = 1.0 + UTILIZATION_K * urgency
             sm.score *= mult
             sm.composite_score = sm.score
             sm.reasons.append(f"urgency={pool.value}:{urgency:.2f}×{mult:.2f}")

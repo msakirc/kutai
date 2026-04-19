@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from fatih_hoca.ranking import rank_candidates
 from fatih_hoca.registry import ModelInfo, ModelRegistry
@@ -462,3 +463,34 @@ class Selector:
             # server-side thinking is still active (generates think tokens).
             min_time *= 3.0 if needs_thinking else 1.5
         return min_time
+
+
+# --- Test-only helper (Phase 2d scenarios) -----------------------------------
+
+from dataclasses import dataclass
+
+
+@dataclass
+class _SimPickResult:
+    model_name: str
+    pool: str
+    cap_score_100: float
+    tokens_per_second: float
+
+
+def select_for_simulation(
+    *,
+    task_name: str,
+    difficulty: int,
+    estimated_output_tokens: int,
+    snapshot: Any,
+    providers_cfg: dict,
+) -> "_SimPickResult":
+    """Test-only adapter invoked by Phase 2d scenario simulator.
+
+    Builds a lightweight ModelInfo/ModelRequirements pair from providers_cfg
+    and calls the real ranking pipeline. Implemented in Task 12.
+    """
+    raise NotImplementedError(
+        "select_for_simulation is wired in Task 12 of the Phase 2d plan"
+    )

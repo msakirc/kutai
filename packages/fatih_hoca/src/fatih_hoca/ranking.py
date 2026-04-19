@@ -19,12 +19,14 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from fatih_hoca.capabilities import TaskRequirements, score_model_for_task
+from fatih_hoca.capability_curve import cap_needed_for_difficulty
 from fatih_hoca.grading import grading_perf_score
 from fatih_hoca.pools import (
-    Pool, classify_pool, compute_urgency,
+    Pool, classify_pool,
     UTILIZATION_K,
 )
 from fatih_hoca.requirements import get_quota_planner
+from fatih_hoca.scarcity import pool_scarcity
 
 if TYPE_CHECKING:
     pass
@@ -39,11 +41,6 @@ logger = logging.getLogger("fatih_hoca.ranking")
 # Weight for grading-derived score in the perf_score blend (Phase 2c).
 # blended = GRADING_WEIGHT * grading + (1 - GRADING_WEIGHT) * tps_perf
 GRADING_WEIGHT: float = 0.6
-
-# Capability gate ratio for urgency multiplier (Phase 2c).
-# Only candidates whose cap_score >= CAP_GATE_RATIO * top_cap receive
-# the urgency bonus. Prevents flooding free tokens into weak models.
-CAP_GATE_RATIO: float = 0.85
 
 
 # ─── ScoredModel ─────────────────────────────────────────────────────────────
@@ -141,38 +138,47 @@ def _failure_penalty(
     return multiplier, exclude, reasons
 
 
-# ─── Urgency Layer Helper ────────────────────────────────────────────────────
+# ─── Utilization Layer Helper ────────────────────────────────────────────────
 
-def _apply_urgency_layer(scored: list[ScoredModel], snapshot: SystemSnapshot) -> None:
-    """Apply pool-urgency multiplier with capability gate (Phase 2c).
+def _apply_utilization_layer(
+    scored: list[ScoredModel],
+    snapshot: SystemSnapshot,
+    task_difficulty: int,
+    queue_state,
+) -> None:
+    """Apply Phase 2d unified utilization equation.
 
-    Two-pass design:
-      Pass 1 (done before calling this): all candidates are scored into `scored`.
-      Pass 2 (this function): walk `scored` to apply urgency + gate.
+    For each ScoredModel:
+        fit_excess = (cap_score_100 - cap_needed_for_difficulty(d)) / 100
+        scarcity   = pool_scarcity(model, snapshot, queue_state, d)
+        composite *= 1 + UTILIZATION_K * scarcity * (1 - max(0, fit_excess))
 
-    Only candidates whose cap_score (0-100) >= CAP_GATE_RATIO * top_cap receive
-    the urgency bonus. This prevents weak models from free-riding on quota urgency.
-
-    Mutates each ScoredModel's .score, .composite_score, .pool, .urgency in-place.
-    Does NOT re-sort — caller is responsible for sorting after this call.
+    Mutates each .score/.composite_score/.pool/.urgency in place.
+    Does NOT re-sort — caller is responsible.
     """
     if not scored:
         return
-    top_cap = max(sm.capability_score * 10.0 for sm in scored)
-    cap_threshold = top_cap * CAP_GATE_RATIO
+    cap_needed = cap_needed_for_difficulty(task_difficulty)
     for sm in scored:
         cap_score_100 = sm.capability_score * 10.0
-        urgency = compute_urgency(sm.model, snapshot)
+        fit_excess = (cap_score_100 - cap_needed) / 100.0
+        scarcity = pool_scarcity(sm.model, snapshot, queue_state, task_difficulty)
         pool = classify_pool(sm.model)
         sm.pool = pool.value
-        sm.urgency = urgency
-        if urgency > 0 and cap_score_100 >= cap_threshold:
-            mult = 1.0 + UTILIZATION_K * urgency
-            sm.score *= mult
-            sm.composite_score = sm.score
-            sm.reasons.append(f"urgency={pool.value}:{urgency:.2f}×{mult:.2f}")
-        elif urgency > 0:
-            sm.reasons.append(f"urgency_gated={pool.value}:{urgency:.2f}")
+        # Reuse `urgency` column for scarcity scalar — telemetry schema continuity
+        sm.urgency = scarcity
+
+        if scarcity == 0.0:
+            continue
+        over_qual_dampener = 1.0 - max(0.0, fit_excess)
+        adjustment = 1.0 + UTILIZATION_K * scarcity * over_qual_dampener
+        if adjustment == 1.0:
+            continue
+        sm.score *= adjustment
+        sm.composite_score = sm.score
+        sm.reasons.append(
+            f"util={pool.value}:s={scarcity:+.2f}×({over_qual_dampener:.2f})→{adjustment:.3f}"
+        )
 
 
 # ─── Core Ranking Function ───────────────────────────────────────────────────
@@ -569,9 +575,14 @@ def rank_candidates(
 
     scored.sort(key=lambda c: -c.score)
 
-    # ── Phase 2c: Pool-urgency layer with capability gate ──
-    _apply_urgency_layer(scored, snapshot)
-    # Re-sort after urgency adjustments (gate may shift ordering)
+    # ── Phase 2d: Unified utilization layer ──
+    planner = get_quota_planner()
+    _apply_utilization_layer(
+        scored,
+        snapshot,
+        task_difficulty=reqs.difficulty,
+        queue_state=planner.queue_profile,
+    )
     scored.sort(key=lambda c: -c.score)
 
     # ── S7: Sibling Rebalancing ──

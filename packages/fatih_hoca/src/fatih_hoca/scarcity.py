@@ -12,6 +12,7 @@ Consumed by ranking._apply_utilization_layer as:
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from fatih_hoca.pools import (
@@ -24,6 +25,12 @@ from fatih_hoca.pools import (
 LOCAL_IDLE_SCARCITY_MAX: float = 0.5
 # Penalty when a loaded local is actively processing another request
 LOCAL_BUSY_PENALTY: float = -0.10
+
+# Time-bucketed pool tunables
+RESET_IMMINENT_SECS: float = 3600.0       # "imminent" threshold (1h)
+RESET_FAR_SECS: float = 14400.0            # "far" threshold (4h)
+TIME_BUCKETED_BOOST_MAX: float = 1.0       # max positive when burning
+TIME_BUCKETED_CONSERVE_MAX: float = -0.5   # max negative when saving
 
 
 def _clamp(x: float, lo: float = -1.0, hi: float = 1.0) -> float:
@@ -56,10 +63,63 @@ def _local_scarcity(model: Any, snapshot: Any) -> float:
     return 0.0
 
 
+def _time_bucketed_scarcity(model: Any, snapshot: Any) -> float:
+    provider = getattr(model, "provider", "") or ""
+    prov_state = getattr(snapshot, "cloud", {}).get(provider)
+    if prov_state is None:
+        return 0.0
+
+    model_id = getattr(model, "name", None) or getattr(model, "litellm_name", "")
+    model_state = prov_state.models.get(model_id) if hasattr(prov_state, "models") else None
+    source = model_state if model_state is not None else prov_state
+
+    limits = getattr(source, "limits", None)
+    if limits is None:
+        return 0.0
+    rpd = getattr(limits, "rpd", None)
+    if rpd is None:
+        return 0.0
+
+    remaining = getattr(rpd, "remaining", None)
+    limit = getattr(rpd, "limit", None)
+    reset_at = getattr(rpd, "reset_at", None)
+    if remaining is None or limit is None or limit <= 0 or remaining <= 0:
+        return 0.0
+
+    remaining_frac = min(1.0, remaining / limit)
+
+    if reset_at is not None and reset_at > 0:
+        reset_in = max(0.0, reset_at - time.time())
+    else:
+        return 0.0
+
+    if reset_in <= RESET_IMMINENT_SECS:
+        # Reset imminent: "use it or lose it"
+        # proximity: 0 at full hour remaining → 1 at reset moment
+        proximity = 1.0 - (reset_in / RESET_IMMINENT_SECS)  # 0..1
+        # Use max(proximity, remaining_frac) so that high remaining_frac
+        # alone (even with modest proximity) produces a strong signal.
+        # Example: reset_in=1800 (proximity=0.5), remaining_frac=0.85
+        #   → max(0.5, 0.85) = 0.85, result = 1.0 × 0.85 = 0.85 ✓ (>= 0.6)
+        return _clamp(TIME_BUCKETED_BOOST_MAX * max(proximity, remaining_frac))
+
+    if reset_in >= RESET_FAR_SECS:
+        # Reset far: conserve when remaining fraction is low (< 30%)
+        if remaining_frac < 0.3:
+            depletion = (0.3 - remaining_frac) / 0.3  # 0..1
+            return _clamp(TIME_BUCKETED_CONSERVE_MAX * depletion)
+        return 0.0
+
+    # Between imminent and far: neutral
+    return 0.0
+
+
 def pool_scarcity(model: Any, snapshot: Any, queue_state: Any = None) -> float:
     """Compute signed scarcity in [-1, +1] for (model, snapshot, queue_state)."""
     pool = classify_pool(model)
     if pool is Pool.LOCAL:
         return _local_scarcity(model, snapshot)
-    # Time-bucketed + per_call added in Tasks 4 + 5
+    if pool is Pool.TIME_BUCKETED:
+        return _time_bucketed_scarcity(model, snapshot)
+    # per_call added in Task 5
     return 0.0

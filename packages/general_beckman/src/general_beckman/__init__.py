@@ -93,6 +93,35 @@ async def on_task_finished(task_id: int, result: dict) -> None:
     actions = rewrite_actions(task, task_ctx, actions)
     await apply_actions(task, actions)
 
+    # Progress ping: terse per-step notification for workflow-step tasks so
+    # the user sees a mission moving forward rather than 2+ minutes of
+    # silence. Mechanical bookkeeping tasks (workflow_advance / notify /
+    # clarify / snapshot) are skipped — they're internal machinery.
+    try:
+        if task.get("mission_id") and task.get("agent_type") != "mechanical":
+            status = (result or {}).get("status", "completed")
+            if status in ("completed", "failed", "needs_clarification"):
+                await _send_step_progress(task, status, result)
+    except Exception as e:
+        log.debug("progress ping failed", task_id=task_id, error=str(e))
+
+
+async def _send_step_progress(task: dict, status: str, result: dict) -> None:
+    """Send a one-line Telegram progress update when a mission step finishes."""
+    from src.app.telegram_bot import get_telegram
+    from src.app.config import TELEGRAM_ADMIN_CHAT_ID
+    tg = get_telegram()
+    if not (tg and TELEGRAM_ADMIN_CHAT_ID):
+        return
+    # Title is typically "[1.1] enrich_product_results"; reuse it verbatim.
+    title = (task.get("title") or "").strip() or f"task #{task['id']}"
+    icon = {"completed": "\u2705", "failed": "\u274c", "needs_clarification": "\u2753"}.get(status, "\u2139\ufe0f")
+    msg = f"{icon} {title}"
+    if status == "failed":
+        err = (result or {}).get("error") or "error"
+        msg += f"\n  {str(err)[:140]}"
+    await tg.send_message(TELEGRAM_ADMIN_CHAT_ID, msg)
+
 
 async def enqueue(spec: dict) -> int:
     """Single external write path for user-/bot-initiated tasks."""

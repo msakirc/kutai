@@ -110,3 +110,20 @@ async def test_step_resolve_works_with_real_product_dataclass():
     assert eq6.original_price == 26000.0
     assert eq6.rating == 4.5
     assert eq6.site_rank == 1
+
+
+def test_prompt_templates_exist_and_have_required_placeholders():
+    from src.workflows.shopping import prompts_v2
+
+    # GROUPING_PROMPT must accept the candidates JSON block
+    assert "{candidates_json}" in prompts_v2.GROUPING_PROMPT
+    # It must instruct the model to flag accessories
+    assert "accessor" in prompts_v2.GROUPING_PROMPT.lower() or "part" in prompts_v2.GROUPING_PROMPT.lower()
+
+    # SYNTHESIS_PROMPT must accept the representative title and snippets
+    assert "{representative_title}" in prompts_v2.SYNTHESIS_PROMPT
+    assert "{review_snippets_json}" in prompts_v2.SYNTHESIS_PROMPT
+    # Must instruct output JSON schema
+    assert "praise" in prompts_v2.SYNTHESIS_PROMPT
+    assert "complaints" in prompts_v2.SYNTHESIS_PROMPT
+    assert "insufficient_data" in prompts_v2.SYNTHESIS_PROMPT

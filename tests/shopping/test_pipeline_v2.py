@@ -317,3 +317,25 @@ async def test_step_synthesize_failure_returns_insufficient_data():
     ):
         syn = await step_synthesize_reviews(group, cands)
     assert syn.insufficient_data is True
+
+
+def test_select_groups_drops_accessories_and_applies_50pct_rule():
+    from src.workflows.shopping.pipeline_v2 import ProductGroup, select_groups
+
+    groups = [
+        ProductGroup("Dominant",  [0, 1], False, prominence=2.0),
+        ProductGroup("Close runner", [2], False, prominence=1.2),   # 60% of top → keep
+        ProductGroup("Weak runner", [3], False, prominence=0.8),    # 40% of top → drop
+        ProductGroup("Accessory", [4], True, prominence=99.0),      # always drop
+    ]
+
+    kept_named = select_groups(groups, max_groups=2)
+    assert [g.representative_title for g in kept_named] == ["Dominant", "Close runner"]
+
+    kept_cat = select_groups(groups, max_groups=3)
+    assert [g.representative_title for g in kept_cat] == ["Dominant", "Close runner"]
+
+
+def test_select_groups_empty_input():
+    from src.workflows.shopping.pipeline_v2 import select_groups
+    assert select_groups([], max_groups=2) == []

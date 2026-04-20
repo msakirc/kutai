@@ -276,3 +276,21 @@ async def step_synthesize_reviews(
         insufficient=syn.insufficient_data,
     )
     return syn
+
+
+def select_groups(
+    groups: list[ProductGroup], max_groups: int,
+) -> list[ProductGroup]:
+    """Filter accessories, sort by prominence desc, apply the 50%-of-top rule."""
+    non_acc = [g for g in groups if not g.is_accessory_or_part]
+    if not non_acc:
+        return []
+    non_acc.sort(key=lambda g: g.prominence, reverse=True)
+    top = non_acc[0]
+    kept: list[ProductGroup] = [top]
+    for g in non_acc[1:max_groups]:
+        if g.prominence >= top.prominence * 0.5:
+            kept.append(g)
+        else:
+            break
+    return kept

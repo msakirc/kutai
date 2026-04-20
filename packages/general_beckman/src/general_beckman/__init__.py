@@ -43,6 +43,9 @@ async def next_task():
     """
     from general_beckman.cron import fire_due
     from general_beckman.queue import pick_ready_task
+    from general_beckman import posthook_migration
+
+    await posthook_migration.run()  # one-shot; no-op after first success
 
     # Cron processor internally seeds and throttles sweep.
     await fire_due()
@@ -96,10 +99,13 @@ async def on_task_finished(task_id: int, result: dict) -> None:
 
     # Progress ping: terse per-step notification for workflow-step tasks so
     # the user sees a mission moving forward rather than 2+ minutes of
-    # silence. Mechanical bookkeeping tasks (workflow_advance / notify /
-    # clarify / snapshot) are skipped — they're internal machinery.
+    # silence. Bookkeeping tasks (mechanical / grader / artifact_summarizer)
+    # are skipped — they're internal machinery, not user progress.
     try:
-        if task.get("mission_id") and task.get("agent_type") != "mechanical":
+        _bookkeeping = task.get("agent_type") in (
+            "mechanical", "grader", "artifact_summarizer",
+        )
+        if task.get("mission_id") and not _bookkeeping:
             status = (result or {}).get("status", "completed")
             if status in ("completed", "failed", "needs_clarification"):
                 await _send_step_progress(task, status, result)
@@ -109,6 +115,8 @@ async def on_task_finished(task_id: int, result: dict) -> None:
 
 async def _send_step_progress(task: dict, status: str, result: dict) -> None:
     """Send a one-line Telegram progress update when a mission step finishes."""
+    if task.get("agent_type") in ("mechanical", "grader", "artifact_summarizer"):
+        return
     from src.app.telegram_bot import get_telegram
     tg = get_telegram()
     if tg is None:

@@ -355,3 +355,39 @@ async def test_beckman_on_model_swap_calls_accelerate_retries(monkeypatch):
     monkeypatch.setattr("src.infra.db.accelerate_retries", fake_accel)
     await general_beckman.on_model_swap("old", "new")
     assert calls["tag"] == "model_swap"
+
+
+@pytest.mark.asyncio
+async def test_grader_task_does_not_emit_progress_ping(tmp_path, monkeypatch):
+    class FakeTG:
+        async def send_notification(self, text):
+            raise AssertionError("grader task should not ping")
+
+    monkeypatch.setattr(
+        "src.app.telegram_bot.get_telegram",
+        lambda: FakeTG(),
+    )
+    from general_beckman import _send_step_progress
+    task = {
+        "id": 500, "title": "Grade task #1",
+        "mission_id": 1, "agent_type": "grader",
+    }
+    await _send_step_progress(task, "completed", {"status": "completed"})
+
+
+@pytest.mark.asyncio
+async def test_artifact_summarizer_task_does_not_emit_progress_ping(tmp_path, monkeypatch):
+    class FakeTG:
+        async def send_notification(self, text):
+            raise AssertionError("summarizer task should not ping")
+
+    monkeypatch.setattr(
+        "src.app.telegram_bot.get_telegram",
+        lambda: FakeTG(),
+    )
+    from general_beckman import _send_step_progress
+    task = {
+        "id": 123, "title": "Summarize 'x' for #1",
+        "mission_id": 1, "agent_type": "artifact_summarizer",
+    }
+    await _send_step_progress(task, "completed", {"status": "completed"})

@@ -1,30 +1,46 @@
-"""Watchdog functions: periodic maintenance called from orchestrator's main loop.
+"""Queue hygiene sweep — port of watchdog.check_stuck_tasks.
 
-Previously all inside orchestrator.watchdog(). Split by concern so each is
-individually testable and extractable later.
+Renamed to sweep_queue(); telegram= parameter dropped.
+All Telegram notifications replaced with mechanical salako notify_user tasks.
 
-Two top-level concerns:
-  - check_stuck_tasks: all task-level recovery (stuck, ungraded, dep cascade,
-    waiting_subtasks, overdue retry, waiting_human escalation, workflow timeout)
-  - check_resources: resource-level recovery (llama-server, GPU, circuit
-    breakers, rate limits, credential expiry)
+Preserves all 7 numbered sections from the original:
+  1. Tasks stuck in "processing" > 5 min
+  2. Ungraded tasks stuck > 30 min (safety net)
+  3. Tasks blocked by ALL failed deps → cascade failure
+  4. Parent tasks with all children done → rollup
+  5. Pending tasks with overdue next_retry_at → clear gate
+  6. waiting_human escalation tiers (4h nudge, 24h, 48h, 72h cancel)
+  7. Workflow-level timeout check
 """
+from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
 
 from src.infra.logging_config import get_logger
-from src.infra.db import get_db, update_task, update_mission
 from src.infra.times import utc_now, db_now, to_db, from_db
 from general_beckman.task_context import parse_context
-from src.core.router import get_kdv
 
-logger = get_logger("core.watchdog")
+logger = get_logger("beckman.sweep")
 
 
-async def check_stuck_tasks(telegram=None):
+async def _notify(message: str) -> None:
+    """Insert a mechanical notify_user task instead of sending Telegram inline."""
+    from src.infra.db import add_task
+    await add_task(
+        title="Notify: stuck-task sweep",
+        description="",
+        agent_type="mechanical",
+        context={"executor": "notify_user", "message": message},
+        depends_on=[],
+    )
+
+
+async def sweep_queue() -> None:
     """Task-level recovery: stuck, ungraded, dep cascade, subtasks,
     overdue retry gates, waiting_human escalation, workflow timeouts."""
+    from src.infra.db import get_db, update_task, update_mission
+
     db = await get_db()
 
     # 1. Tasks stuck in "processing" for more than 5 minutes
@@ -38,13 +54,13 @@ async def check_stuck_tasks(telegram=None):
         infra_resets = (task.get("infra_resets") or 0) + 1
         if infra_resets >= 3:
             logger.warning(
-                f"[Watchdog] Task #{task['id']} stuck in processing "
+                f"[Sweep] Task #{task['id']} stuck in processing "
                 f"and exhausted infra resets ({infra_resets}/3), "
                 f"marking failed"
             )
             await db.execute(
                 "UPDATE tasks SET status = 'failed', "
-                "error = 'Stuck in processing — infra resets exhausted (watchdog)', "
+                "error = 'Stuck in processing — infra resets exhausted (sweep)', "
                 "failed_in_phase = 'infrastructure', "
                 "infra_resets = ? "
                 "WHERE id = ?",
@@ -52,7 +68,7 @@ async def check_stuck_tasks(telegram=None):
             )
         else:
             logger.warning(
-                f"[Watchdog] Task #{task['id']} stuck in processing, "
+                f"[Sweep] Task #{task['id']} stuck in processing, "
                 f"infra-reset {infra_resets}/3"
             )
             await db.execute(
@@ -89,7 +105,7 @@ async def check_stuck_tasks(telegram=None):
             "completed_at = ? WHERE id = ?",
             (db_now(), task["id"]),
         )
-        logger.warning(f"[Watchdog] Stuck ungraded #{task['id']} promoted to completed (safety net)")
+        logger.warning(f"[Sweep] Stuck ungraded #{task['id']} promoted to completed (safety net)")
     if stuck_ungraded:
         await db.commit()
 
@@ -152,7 +168,7 @@ async def check_stuck_tasks(telegram=None):
                 continue  # dep is in DLQ, don't cascade yet
 
             logger.warning(
-                f"[Watchdog] Task #{task['id']} all deps failed, cascading failure"
+                f"[Sweep] Task #{task['id']} all deps failed, cascading failure"
             )
             await db.execute(
                 "UPDATE tasks SET status = 'failed', "
@@ -181,14 +197,14 @@ async def check_stuck_tasks(telegram=None):
         row = await child_cursor.fetchone()
         if row and row["total"] > 0 and row["total"] == row["done"]:
             if row["completed_count"] > 0:
-                logger.info(f"[Watchdog] Task #{task['id']} all subtasks done, marking complete")
+                logger.info(f"[Sweep] Task #{task['id']} all subtasks done, marking complete")
                 await db.execute(
                     "UPDATE tasks SET status = 'completed', "
                     "completed_at = ? WHERE id = ?",
                     (db_now(), task["id"]),
                 )
             else:
-                logger.warning(f"[Watchdog] Task #{task['id']} all subtasks failed, marking failed")
+                logger.warning(f"[Sweep] Task #{task['id']} all subtasks failed, marking failed")
                 await db.execute(
                     "UPDATE tasks SET status = 'failed', "
                     "error = 'All subtasks failed', failed_in_phase = 'worker' "
@@ -212,7 +228,7 @@ async def check_stuck_tasks(telegram=None):
         )
     if overdue:
         await db.commit()
-        logger.info(f"[Watchdog] Cleared overdue next_retry_at for {len(overdue)} task(s)")
+        logger.info(f"[Sweep] Cleared overdue next_retry_at for {len(overdue)} task(s)")
 
     # 6. Escalation tiers for tasks stuck in waiting_human
     #    Uses started_at as the baseline timestamp (set when task
@@ -241,7 +257,7 @@ async def check_stuck_tasks(telegram=None):
         if not task_ctx.get("nudge_sent"):
             task_ctx["nudge_sent"] = True
             await update_task(task["id"], context=json.dumps(task_ctx))
-            await telegram.send_notification(
+            await _notify(
                 f"\U0001f4ac Gentle reminder: Task #{task['id']} needs your input.\n"
                 f"*{task['title']}*"
             )
@@ -276,10 +292,10 @@ async def check_stuck_tasks(telegram=None):
                 tid, context=json.dumps(task_ctx),
             )
             logger.info(
-                f"[Watchdog] Task #{tid} escalation tier 1 (24h)"
+                f"[Sweep] Task #{tid} escalation tier 1 (24h)"
             )
-            await telegram.send_notification(
-                f"⏰ Task #{tid} has been waiting for "
+            await _notify(
+                f"\u23f0 Task #{tid} has been waiting for "
                 f"clarification for 24h.\n*{ttitle}*"
             )
         elif escalation_count == 1 and hours_waiting >= 48:
@@ -289,10 +305,10 @@ async def check_stuck_tasks(telegram=None):
                 tid, context=json.dumps(task_ctx),
             )
             logger.info(
-                f"[Watchdog] Task #{tid} escalation tier 2 (48h)"
+                f"[Sweep] Task #{tid} escalation tier 2 (48h)"
             )
-            await telegram.send_notification(
-                f"🚨 *URGENT:* Task #{tid} needs your input!\n"
+            await _notify(
+                f"\U0001f6a8 *URGENT:* Task #{tid} needs your input!\n"
                 f"*{ttitle}*\n\n"
                 f"_This task will be cancelled in 24h if no "
                 f"response is received._"
@@ -301,7 +317,7 @@ async def check_stuck_tasks(telegram=None):
             # Tier 3: 72h cancel
             task_ctx["escalation_count"] = 3
             logger.warning(
-                f"[Watchdog] Task #{tid} escalation tier 3 "
+                f"[Sweep] Task #{tid} escalation tier 3 "
                 f"(72h), cancelling"
             )
             await update_task(
@@ -309,8 +325,8 @@ async def check_stuck_tasks(telegram=None):
                 error="No clarification received within 72h",
                 context=json.dumps(task_ctx),
             )
-            await telegram.send_notification(
-                f"❌ Task #{tid} cancelled — no clarification "
+            await _notify(
+                f"\u274c Task #{tid} cancelled — no clarification "
                 f"received after 72h.\n*{ttitle}*"
             )
 
@@ -343,182 +359,16 @@ async def check_stuck_tasks(telegram=None):
             elapsed_hours = (utc_now() - created).total_seconds() / 3600
             if elapsed_hours > timeout_hours:
                 logger.warning(
-                    "[Watchdog] Mission #%d exceeded timeout (%dh > %dh), pausing",
+                    "[Sweep] Mission #%d exceeded timeout (%dh > %dh), pausing",
                     mission["id"], int(elapsed_hours), timeout_hours,
                 )
                 await update_mission(mission["id"], status="paused")
-                await telegram.send_notification(
-                    f"⏱️ *Workflow timeout*: Mission #{mission['id']} paused after "
+                await _notify(
+                    f"\u23f1\ufe0f *Workflow timeout*: Mission #{mission['id']} paused after "
                     f"{int(elapsed_hours)}h (limit: {timeout_hours}h).\n"
                     f"*{mission['title']}*\nUse /resume to continue."
                 )
     except Exception as e:
-        logger.warning(f"[Watchdog] Workflow timeout check failed: {e}")
+        logger.warning(f"[Sweep] Workflow timeout check failed: {e}")
 
     await db.commit()
-
-
-async def check_resources(telegram=None):
-    """Resource-level recovery: llama-server health, GPU, circuit breakers,
-    rate limits, credential expiry."""
-    resource_issues: list[str] = []
-
-    # 4. Check llama-server health
-    # DaLLaMa's HealthWatchdog handles crash recovery internally.
-    # We only report status for the resource summary.
-    try:
-        from src.models.local_model_manager import get_local_manager
-
-        manager = get_local_manager()
-        if manager.current_model and not manager.is_loaded:
-            resource_issues.append(
-                f"llama-server unhealthy (model: {manager.current_model})"
-            )
-    except Exception as e:
-        logger.warning(f"[Watchdog] Local model check failed: {e}")
-
-    # 5. Check GPU health
-    try:
-        from src.models.gpu_monitor import get_gpu_monitor
-
-        gpu_state = get_gpu_monitor().get_state()
-
-        if gpu_state.gpu.available:
-            # Thermal throttling
-            if gpu_state.gpu.is_throttling:
-                resource_issues.append(
-                    f"GPU thermal throttling! "
-                    f"Temp: {gpu_state.gpu.temperature_c}°C"
-                )
-                logger.warning(
-                    f"[Watchdog] 🌡️ GPU at {gpu_state.gpu.temperature_c}°C "
-                    f"— thermal throttling detected"
-                )
-
-            # VRAM nearly full (>95%) without a model loaded
-            # This suggests a leak or external process consuming VRAM
-            from src.models.local_model_manager import get_local_manager
-            mgr = get_local_manager()
-            if (
-                gpu_state.gpu.vram_usage_pct > 95
-                and not mgr.is_loaded
-            ):
-                resource_issues.append(
-                    f"VRAM nearly full ({gpu_state.gpu.vram_usage_pct:.0f}%) "
-                    f"but no model loaded — possible leak"
-                )
-                logger.warning(
-                    f"[Watchdog] VRAM at "
-                    f"{gpu_state.gpu.vram_used_mb}/"
-                    f"{gpu_state.gpu.vram_total_mb}MB "
-                    f"with no model loaded"
-                )
-
-        # Low RAM
-        if gpu_state.ram_available_mb < 2048:
-            resource_issues.append(
-                f"Low RAM: {gpu_state.ram_available_mb}MB available"
-            )
-            logger.warning(
-                f"[Watchdog] Low RAM: "
-                f"{gpu_state.ram_available_mb}MB available"
-            )
-
-    except Exception as e:
-        logger.warning(f"[Watchdog] GPU health check failed: {e}")
-
-    # 6. Check local model status
-    try:
-        from src.models.local_model_manager import get_local_manager
-
-        mgr = get_local_manager()
-        mgr_status = mgr.get_status()
-        if not mgr_status.get("healthy", True) and mgr_status.get("loaded_model"):
-            resource_issues.append("Local model unhealthy")
-            logger.warning("[Watchdog] Local model unhealthy")
-
-    except Exception as e:
-        logger.warning(f"[Watchdog] GPU scheduler check failed: {e}")
-
-    # 7. Check circuit breakers — are ALL cloud providers down?
-    try:
-        kdv_status = get_kdv().status
-        degraded_providers = [
-            p for p, prov_status in kdv_status.items()
-            if prov_status.circuit_breaker_open
-        ]
-        if degraded_providers:
-            resource_issues.append(
-                f"Degraded providers: {', '.join(degraded_providers)}"
-            )
-            logger.warning(
-                f"[Watchdog] Circuit breakers tripped: "
-                f"{degraded_providers}"
-            )
-
-            # Check if ALL providers are degraded
-            from src.models.model_registry import get_registry
-            registry = get_registry()
-            all_cloud_providers = set(
-                m.provider for m in registry.cloud_models()
-            )
-            if all_cloud_providers and all_cloud_providers.issubset(
-                set(degraded_providers)
-            ):
-                resource_issues.append(
-                    "⚠️ ALL cloud providers are degraded! "
-                    "Only local inference available."
-                )
-
-    except Exception as e:
-        logger.warning(f"[Watchdog] Circuit breaker check failed: {e}")
-
-    # 8. Restore rate limits that were adaptively reduced
-    try:
-        get_kdv().restore_limits()
-    except Exception as e:
-        logger.warning(f"[Watchdog] Rate limit restore failed: {e}")
-
-    # 9. Check for expiring credentials (warn 24h before expiry)
-    try:
-        from src.security.credential_store import list_credentials, get_credential
-
-        services = await list_credentials()
-        for svc in services:
-            cred = await get_credential(svc)
-            if cred is None:
-                # Already expired — get_credential returns None
-                resource_issues.append(
-                    f"🔑 Credential '{svc}' has expired. Refresh with /credential add."
-                )
-                await telegram.send_notification(
-                    f"🔑 *Credential expired*: `{svc}`\n"
-                    f"Use /credential add to refresh."
-                )
-    except Exception as e:
-        logger.warning(f"[Watchdog] Credential expiry check failed: {e}")
-
-    # ── Alert on resource issues ──
-    if resource_issues:
-        issues_text = "\n".join(f"  • {i}" for i in resource_issues)
-        logger.warning(
-            f"[Watchdog] {len(resource_issues)} resource issue(s):\n"
-            f"{issues_text}"
-        )
-
-        # Only send Telegram alert for serious issues
-        serious = [
-            i for i in resource_issues
-            if any(kw in i.lower() for kw in [
-                "crashed", "failed to restart", "overloaded",
-                "all cloud", "thermal", "low ram",
-            ])
-        ]
-        if serious:
-            try:
-                await telegram.send_notification(
-                    f"🚨 *Watchdog Alert*\n\n"
-                    + "\n".join(f"• {i}" for i in serious)
-                )
-            except Exception:
-                pass

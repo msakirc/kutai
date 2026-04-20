@@ -53,4 +53,14 @@ async def run(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "workflow_advance":
+        from salako.workflow_advance import run as workflow_advance_run
+        try:
+            res = await workflow_advance_run(task)
+            if res.get("status") == "failed":
+                return Action(status="failed", error=res.get("error", ""))
+            return Action(status=res.get("status", "completed"), result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

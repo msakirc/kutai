@@ -1,15 +1,15 @@
-"""General Beckman — the task master."""
+"""General Beckman — the task master.
+
+Public API (everything else is internal):
+  - next_task() -> Task | None
+  - on_task_finished(task_id, result) -> None
+  - enqueue(spec) -> int
+"""
 from __future__ import annotations
 
-from general_beckman.types import Task, AgentResult, Lane
-from general_beckman.lifecycle import on_task_finished, set_orchestrator
-from general_beckman.queue import pick_ready_task, classify_lane, count_pending_cloud_tasks, unclaim
-from general_beckman.lookahead import should_hold_back
+from general_beckman.types import Task, AgentResult
 
-__all__ = [
-    "next_task", "on_task_finished", "tick", "set_orchestrator",
-    "Task", "AgentResult", "Lane",
-]
+__all__ = ["next_task", "on_task_finished", "enqueue", "Task", "AgentResult"]
 
 
 def _capacity_snapshot():
@@ -24,75 +24,64 @@ def _capacity_snapshot():
         return None
 
 
-def _saturated_lanes(snap) -> set[str]:
-    saturated: set[str] = set()
+def _system_busy(snap) -> bool:
+    """Return True when VRAM is too low to start a new LLM task."""
     if snap is None:
-        return saturated
-    # Local LLM is saturated when VRAM headroom drops below a safe floor.
+        return False
     try:
-        if int(getattr(snap, "vram_available_mb", 0)) < 500 and getattr(snap, "local", None) is not None:
-            saturated.add("local_llm")
+        if int(getattr(snap, "vram_available_mb", 0)) < 500:
+            return True
     except Exception:
         pass
-    return saturated
+    return False
 
 
-async def next_task() -> Task | None:
-    """Return one task ready to dispatch, or None if nothing should be released.
+async def next_task():
+    """Cycle: sweep (throttled) + fire due crons + pick one.
 
-    Consults :func:`nerd_herd.snapshot` (if wired) for lane saturation, then
-    claims the first eligible task via :mod:`general_beckman.queue`.
+    Called by orchestrator on its ~3s cycle.
     """
+    from general_beckman.cron import fire_due
+    from general_beckman.queue import pick_ready_task
+
+    # Cron processor internally seeds and throttles sweep.
+    await fire_due()
+
     snap = _capacity_snapshot()
-    saturated = _saturated_lanes(snap)
-    task = await pick_ready_task(saturated)
-    if task is None:
-        return None
-    try:
-        queue_depth = await count_pending_cloud_tasks()
-    except Exception:
-        queue_depth = 0
-    if should_hold_back(task, snap, queue_depth):
-        await unclaim(task)
-        return None
-    return task
+    return await pick_ready_task(_system_busy(snap))
 
 
-async def tick() -> None:
-    """Periodic maintenance. Called every 3s by the orchestrator main loop.
+async def on_task_finished(task_id: int, result: dict) -> None:
+    """Mark terminal + create any follow-up tasks the result implies.
 
-    Invokes the watchdog and the registered orchestrator's scheduled-jobs
-    tick entry points. Each subroutine is guarded: an exception from one
-    must not abort the rest.
+    Pipeline: route_result -> rewrite_actions -> apply_actions.
+    No delegation to Orchestrator. Mission-task completions produce a
+    MissionAdvance action which spawns a salako workflow_advance task.
     """
+    from general_beckman.result_router import route_result
+    from general_beckman.rewrite import rewrite_actions
+    from general_beckman.apply import apply_actions
+    from general_beckman.task_context import parse_context
+    from src.infra.db import get_task
     from src.infra.logging_config import get_logger
-    from general_beckman.watchdog import check_stuck_tasks
-    from general_beckman import lifecycle
-    log = get_logger("general_beckman.tick")
 
-    async def _safe(coro, name):
-        try:
-            await coro
-        except Exception as e:
-            log.warning("tick subroutine failed", fn=name, error=str(e))
-
-    await _safe(check_stuck_tasks(), "check_stuck_tasks")
-    try:
-        orch = lifecycle.get_orchestrator()
-    except RuntimeError:
-        orch = None
-    sj = getattr(orch, "scheduled_jobs", None) if orch is not None else None
-    if sj is None:
+    log = get_logger("beckman.on_task_finished")
+    task = await get_task(task_id)
+    if task is None:
+        log.warning("on_task_finished: missing task", task_id=task_id)
         return
-    for name in (
-        "tick_todos",
-        "tick_api_discovery",
-        "tick_digest",
-        "tick_price_watches",
-        "tick_benchmark_refresh",
-        "check_scheduled_tasks",
-    ):
-        fn = getattr(sj, name, None)
-        if fn is None:
-            continue
-        await _safe(fn(), name)
+    task_ctx = parse_context(task)
+    actions = route_result(task, result)
+    if actions is None:
+        return
+    if not isinstance(actions, (list, tuple)):
+        actions = [actions]
+    actions = rewrite_actions(task, task_ctx, actions)
+    await apply_actions(task, actions)
+
+
+async def enqueue(spec: dict) -> int:
+    """Single external write path for user-/bot-initiated tasks."""
+    from src.infra.db import add_task
+    return await add_task(**spec)
+

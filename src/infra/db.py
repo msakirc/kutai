@@ -202,6 +202,8 @@ async def init_db():
             title TEXT NOT NULL,
             description TEXT,
             cron_expression TEXT,
+            interval_seconds INTEGER,
+            kind TEXT DEFAULT 'user',
             agent_type TEXT DEFAULT 'executor',
             tier TEXT DEFAULT 'cheap',
             enabled BOOLEAN DEFAULT 1,
@@ -210,6 +212,15 @@ async def init_db():
             context JSON DEFAULT '{}'
         )
     """)
+
+    for col_sql in (
+        "ALTER TABLE scheduled_tasks ADD COLUMN interval_seconds INTEGER",
+        "ALTER TABLE scheduled_tasks ADD COLUMN kind TEXT DEFAULT 'user'",
+    ):
+        try:
+            await db.execute(col_sql)
+        except Exception:
+            pass  # column already exists
 
     # Blackboards (Phase 13.1)
     await db.execute("""

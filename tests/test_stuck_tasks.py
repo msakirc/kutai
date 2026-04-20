@@ -132,58 +132,5 @@ class TestDedupStuckReset(unittest.TestCase):
                        "add_task should reset stuck processing tasks")
 
 
-class TestHandleCompleteJsonSafety(unittest.TestCase):
-    """_handle_complete must handle malformed JSON context without crashing."""
-
-    def test_context_parsing_catches_json_errors(self):
-        """The notification section's json.loads must be wrapped in try/except."""
-        from src.core.orchestrator import Orchestrator
-        source = inspect.getsource(Orchestrator._handle_complete)
-
-        # Count json.loads calls — each should have error handling
-        # At minimum, the task_ctx_parsed section should catch JSONDecodeError
-        self.assertIn("JSONDecodeError", source,
-                       "_handle_complete must catch JSONDecodeError for context parsing")
-
-    def test_context_parsed_fallback_to_empty_dict(self):
-        """Malformed context should fall back to empty dict."""
-        from src.core.orchestrator import Orchestrator
-        source = inspect.getsource(Orchestrator._handle_complete)
-
-        # Should have isinstance check and fallback
-        self.assertIn("task_ctx_parsed = {}", source,
-                       "_handle_complete must fall back to {} on bad JSON")
-
-
-class TestProcessTaskErrorHandling(unittest.TestCase):
-    """process_task exception handler must reset tasks properly.
-
-    After the Plan A refactor, the exception handling body lives in
-    Orchestrator._handle_unexpected_failure; process_task only delegates.
-    Check the text in that method's source.
-    """
-
-    def _unexpected_source(self):
-        from src.core.orchestrator import Orchestrator
-        return inspect.getsource(Orchestrator._handle_unexpected_failure)
-
-    def test_exception_handler_resets_to_pending(self):
-        """On exception, task should be reset to pending if retries remain."""
-        self.assertIn("status=\"pending\"", self._unexpected_source(),
-                       "unexpected-failure handler must reset to pending on retryable error")
-
-    def test_exception_handler_marks_failed_on_exhaustion(self):
-        """On exception with no retries left, task should be marked failed."""
-        self.assertIn("status=\"failed\"", self._unexpected_source(),
-                       "unexpected-failure handler must mark failed when retries exhausted")
-
-    def test_exception_handler_checks_retry_count(self):
-        """Exception handler must use retry bookkeeping (RetryContext)."""
-        source = self._unexpected_source()
-        # RetryContext encapsulates retry_count + max_retries comparison.
-        self.assertIn("RetryContext", source)
-        self.assertIn("record_failure", source)
-
-
 if __name__ == "__main__":
     unittest.main()

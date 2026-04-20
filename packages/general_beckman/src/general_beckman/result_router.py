@@ -54,7 +54,27 @@ class Failed:
     raw: dict = field(default_factory=dict)
 
 
-Action = Union[Complete, SpawnSubtasks, RequestClarification, RequestReview, Exhausted, Failed]
+@dataclass(frozen=True)
+class MissionAdvance:
+    """Signal that a mission task completed cleanly — spawn workflow_advance."""
+    task_id: int
+    mission_id: int
+    completed_task_id: int
+    raw: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CompleteWithReusedAnswer:
+    """Complete derived from existing clarification_history (no re-ask)."""
+    task_id: int
+    result: str
+    raw: dict = field(default_factory=dict)
+
+
+Action = Union[
+    Complete, SpawnSubtasks, RequestClarification, RequestReview,
+    Exhausted, Failed, MissionAdvance, CompleteWithReusedAnswer,
+]
 
 
 def route_result(task: dict, agent_result: dict | None) -> list[Action]:

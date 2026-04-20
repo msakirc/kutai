@@ -1,0 +1,47 @@
+{
+  "plan_id": "quick_search_v2",
+  "version": "2.0",
+  "metadata": {
+    "description": "v2 quick shopping search. Trusts each site's native ordering (top-3 per site), groups cross-site results with a cheap LLM call, synthesises reviews per group, renders reviews-first Telegram cards. Escalates to shopping_v2 if no products.",
+    "agents_required": ["shopping_pipeline_v2"],
+    "performance_target": {"max_duration_seconds": 60, "escalation_trigger": "insufficient_results"},
+    "escalation_target": "shopping_v2",
+    "timeout_hours": 1
+  },
+  "phases": [
+    {"id": "phase_0", "name": "Resolve candidates", "goal": "Fetch top-N per site.", "depends_on_phases": []},
+    {"id": "phase_1", "name": "Group & synthesise", "goal": "LLM group + review synthesis.", "depends_on_phases": ["phase_0"]},
+    {"id": "phase_2", "name": "Format & deliver", "goal": "Render Telegram cards.", "depends_on_phases": ["phase_1"]}
+  ],
+  "steps": [
+    {
+      "id": "0.1", "phase": "phase_0", "name": "resolve_candidates",
+      "title": "Resolve Candidates", "agent": "shopping_pipeline_v2",
+      "difficulty": "easy", "tools_hint": [], "depends_on": [],
+      "input_artifacts": ["user_query"],
+      "output_artifacts": ["search_results"],
+      "instruction": "Step name: resolve_candidates. Calls the shopping_search fleet, keeps top-3 per site, no filtering. Stores candidates in search_results.",
+      "done_when": "search_results.candidates is populated, or escalation_needed=true.",
+      "context": {"per_site_n": 3}
+    },
+    {
+      "id": "1.1", "phase": "phase_1", "name": "group_and_synthesize",
+      "title": "Group & Synthesize Reviews", "agent": "shopping_pipeline_v2",
+      "difficulty": "medium", "tools_hint": [], "depends_on": ["0.1"],
+      "input_artifacts": ["search_results"],
+      "output_artifacts": ["grouped_synth"],
+      "instruction": "Step name: group_and_synthesize. LLM groups candidates across sites, drops accessories, synthesises reviews per kept group (max 2).",
+      "done_when": "grouped_synth.cards contains one Telegram card per kept group.",
+      "context": {"max_groups": 2}
+    },
+    {
+      "id": "2.1", "phase": "phase_2", "name": "format_response",
+      "title": "Format & Deliver Response", "agent": "shopping_pipeline_v2",
+      "difficulty": "easy", "tools_hint": [], "depends_on": ["1.1"],
+      "input_artifacts": ["grouped_synth"],
+      "output_artifacts": ["shopping_response"],
+      "instruction": "Step name: format_response. Joins grouped_synth.cards into a single Telegram message.",
+      "done_when": "shopping_response.formatted_text is ready or escalation=true."
+    }
+  ]
+}

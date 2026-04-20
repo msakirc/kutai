@@ -17,7 +17,7 @@ from typing import Iterable
 from general_beckman.result_router import (
     Action, Complete, SpawnSubtasks, RequestClarification,
     Failed, MissionAdvance, CompleteWithReusedAnswer,
-    RequestPostHook,
+    RequestPostHook, PostHookVerdict,
 )
 from general_beckman.posthooks import determine_posthooks
 
@@ -49,6 +49,28 @@ def rewrite_actions(
 
 
 def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
+    # Rule 0: post-hook task (grader/artifact_summarizer) completion
+    # → translate its posthook_verdict payload into a PostHookVerdict action.
+    # Bookkeeping tasks never fire MissionAdvance or RequestPostHook.
+    if isinstance(a, Complete) and task.get("agent_type") in (
+        "grader", "artifact_summarizer",
+    ):
+        raw = a.raw or {}
+        verdict_payload = raw.get("posthook_verdict") if isinstance(raw, dict) else None
+        if isinstance(verdict_payload, dict):
+            return [
+                a,
+                PostHookVerdict(
+                    source_task_id=verdict_payload["source_task_id"],
+                    kind=verdict_payload["kind"],
+                    passed=bool(verdict_payload.get("passed")),
+                    raw=verdict_payload.get("raw") or {},
+                ),
+            ]
+        # No posthook_verdict payload — treat as regular Complete (bookkeeping),
+        # fall through to existing logic which won't emit MissionAdvance because
+        # agent_type in the skip list.
+
     # Rule 1: mission-task clean completion → emit MissionAdvance (unless
     # bookkeeping) and RequestPostHook (unless policy says no).
     payload_action = (task_ctx.get("payload") or {}).get("action")

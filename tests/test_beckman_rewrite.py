@@ -95,3 +95,32 @@ def test_mechanical_task_complete_emits_no_posthook():
     assert "RequestPostHook" not in kinds
     # workflow_advance mechanical also skips MissionAdvance (pre-existing guard).
     assert "MissionAdvance" not in kinds
+
+
+from general_beckman.result_router import Complete, PostHookVerdict
+
+
+def test_grader_task_complete_emits_posthook_verdict():
+    task = {"id": 500, "mission_id": 1, "agent_type": "grader"}
+    ctx = {}
+    raw = {
+        "status": "completed",
+        "result": "grade json",
+        "posthook_verdict": {
+            "kind": "grade",
+            "source_task_id": 100,
+            "passed": True,
+            "raw": {"score": 0.95},
+        },
+    }
+    complete = Complete(task_id=500, result="grade json", iterations=1, metadata={}, raw=raw)
+    out = rewrite_actions(task, ctx, [complete])
+    kinds = [type(a).__name__ for a in out]
+    assert "Complete" in kinds
+    assert "PostHookVerdict" in kinds
+    # Bookkeeping → no MissionAdvance.
+    assert "MissionAdvance" not in kinds
+    verdict = next(a for a in out if isinstance(a, PostHookVerdict))
+    assert verdict.kind == "grade"
+    assert verdict.source_task_id == 100
+    assert verdict.passed is True

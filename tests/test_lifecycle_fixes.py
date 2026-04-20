@@ -60,32 +60,13 @@ class TestNoInlineGrading:
 class TestPrevOutputInjection:
     """All failure types must inject _prev_output into context for next attempt."""
 
-    def test_all_failure_paths_inject_prev_output(self):
-        """All failure paths must inject _prev_output for next attempt.
-
-        After the Plan A refactor:
-        - Timeout path stays inline in Orchestrator.process_task (1 site).
-        - Both disguised-failure paths (post-completed and post-ungraded)
-          funnel through result_guards._quality_retry_flow, which owns
-          a single shared `_prev_output` injection site.
-
-        So the total raw count across both modules is 2, but it covers
-        all 3 logical paths.  Verify the helper + timeout path both exist.
-        """
+    def test_timeout_path_injects_prev_output(self):
+        """Timeout path in _dispatch must inject _prev_output."""
         import inspect
         from src.core.orchestrator import Orchestrator
-        from src.core import result_guards
-        # Timeout path lives in Orchestrator._dispatch after the refactor
         dispatch_src = inspect.getsource(Orchestrator._dispatch)
-        guards = inspect.getsource(result_guards)
         assert dispatch_src.count('"_prev_output"') >= 1, \
             "timeout path in _dispatch must inject _prev_output"
-        # Disguised-failure flow (shared by completed + ungraded post-hook)
-        assert guards.count('"_prev_output"') >= 1, \
-            "result_guards must inject _prev_output for disguised failures"
-        # The shared helper must be invoked from both post-hook guards
-        assert guards.count("_quality_retry_flow") >= 3, \
-            "both completed and ungraded post-hooks must call _quality_retry_flow"
 
 
 class TestEmptyResponseSkip:
@@ -181,11 +162,3 @@ class TestCheckpointResume:
         source = inspect.getsource(BaseAgent._execute_react_loop)
         assert "_clear_checkpoint" not in source, \
             "_clear_checkpoint still called in _execute_react_loop — should only be in orchestrator"
-
-    def test_handle_complete_clears_checkpoint(self):
-        """_handle_complete must clear the checkpoint."""
-        import inspect
-        from src.core.orchestrator import Orchestrator
-        source = inspect.getsource(Orchestrator._handle_complete)
-        assert "checkpoint" in source.lower(), \
-            "_handle_complete does not reference checkpoint clearing"

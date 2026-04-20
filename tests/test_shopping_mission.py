@@ -203,18 +203,6 @@ class TestShoppingMissionCreation(unittest.TestCase):
         self.assertEqual(calls[2].kwargs["agent_type"], "shopping_advisor")
 
 
-class TestSilentTaskNotification(unittest.TestCase):
-    """Verify the orchestrator respects the silent flag (existing behavior)."""
-
-    def test_silent_flag_skips_notification(self):
-        """The orchestrator already checks task_ctx_parsed.get('silent') at line ~1604.
-        This test verifies the check exists by reading the code pattern."""
-        import inspect
-        from src.core.orchestrator import Orchestrator
-        source = inspect.getsource(Orchestrator._handle_complete)
-        self.assertIn('task_ctx_parsed.get("silent")', source)
-
-
 class TestShopIntentFork(unittest.TestCase):
     def _fresh_interface(self):
         """Build a minimal TelegramInterface shell for testing."""

@@ -3099,11 +3099,11 @@ class TelegramInterface:
 
         if args and args[0] == "unpause":
             try:
-                from src.core.orchestrator import get_orchestrator
-                orch = get_orchestrator()
-                if orch and hasattr(orch, "paused_patterns") and orch.paused_patterns:
-                    cleared = list(orch.paused_patterns)
-                    orch.paused_patterns.clear()
+                from general_beckman import paused_patterns as _pp
+                cleared = list(_pp.all_paused())
+                for p in cleared:
+                    _pp.unpause(p)
+                if cleared:
                     await self._reply(update, f"Unpaused {len(cleared)} patterns:\n" +
                                       "\n".join(f"- {p}" for p in cleared))
                 else:
@@ -5113,18 +5113,13 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
             elif action == "pause":
                 pattern_key = payload
-                # Store pause in orchestrator's pause set
                 try:
-                    from src.core.orchestrator import get_orchestrator
-                    orch = get_orchestrator()
-                    if orch and hasattr(orch, "paused_patterns"):
-                        orch.paused_patterns.add(pattern_key)
-                        await query.answer(f"Paused: {pattern_key}")
-                        await query.edit_message_text(
-                            query.message.text + f"\n\nPaused pattern: {pattern_key}. Use /dlq unpause to lift.",
-                        )
-                    else:
-                        await query.answer("Orchestrator not available")
+                    from general_beckman import paused_patterns as _pp
+                    _pp.pause(pattern_key)
+                    await query.answer(f"Paused: {pattern_key}")
+                    await query.edit_message_text(
+                        query.message.text + f"\n\nPaused pattern: {pattern_key}. Use /dlq unpause to lift.",
+                    )
                 except Exception as e:
                     await query.answer(f"Pause failed: {e}")
 

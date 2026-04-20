@@ -85,5 +85,3 @@ async def enqueue(spec: dict) -> int:
     from src.infra.db import add_task
     return await add_task(**spec)
 
-
-from general_beckman.lifecycle import set_orchestrator  # noqa: F401, transitional

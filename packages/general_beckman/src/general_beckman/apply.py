@@ -313,8 +313,122 @@ def _posthook_title(a: RequestPostHook, source: dict) -> str:
 
 
 async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
-    """Placeholder; implemented in Task 5."""
-    raise NotImplementedError("_apply_posthook_verdict lands in Task 5")
+    """Apply a post-hook verdict back to the source task."""
+    import json as _json
+    from src.infra.db import get_task, update_task, add_task
+    from src.workflows.engine.artifacts import ArtifactStore
+
+    source = await get_task(a.source_task_id)
+    if source is None:
+        logger.debug("posthook verdict: source missing",
+                     source_id=a.source_task_id)
+        return
+    if source.get("status") != "ungraded":
+        logger.debug(
+            "posthook verdict: source no longer ungraded, dropping",
+            source_id=a.source_task_id, status=source.get("status"),
+        )
+        return
+
+    ctx = _parse_ctx(source)
+    pending = list(ctx.get("_pending_posthooks") or [])
+
+    if a.kind == "grade" and not a.passed:
+        # Reject: retry the source with updated exclude list.
+        attempts = int(source.get("worker_attempts") or 0) + 1
+        excluded = list(ctx.get("grade_excluded_models") or [])
+        gen_model = ctx.get("generating_model") or ""
+        if gen_model and gen_model not in excluded:
+            excluded.append(gen_model)
+        ctx["grade_excluded_models"] = excluded
+        ctx["_pending_posthooks"] = []
+        await update_task(
+            a.source_task_id,
+            status="pending",
+            worker_attempts=attempts,
+            error=str(a.raw)[:500],
+            context=_json.dumps(ctx),
+        )
+        return
+
+    if a.kind == "grade" and a.passed:
+        # Remove "grade" from pending; spawn summary tasks for large artifacts.
+        pending = [k for k in pending if k != "grade"]
+        new_summary_kinds = await _summary_kinds_for_source(source, ctx)
+        for kind in new_summary_kinds:
+            pending.append(kind)
+            await add_task(
+                title=f"Summarize '{kind.split(':',1)[1]}' for #{a.source_task_id}",
+                description="",
+                agent_type="artifact_summarizer",
+                mission_id=source.get("mission_id"),
+                depends_on=[],
+                context=_json.dumps({
+                    "source_task_id": a.source_task_id,
+                    "artifact_name": kind.split(":", 1)[1],
+                }),
+            )
+        ctx["_pending_posthooks"] = pending
+        if not pending:
+            await update_task(
+                a.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+            )
+        else:
+            await update_task(
+                a.source_task_id, context=_json.dumps(ctx),
+            )
+        return
+
+    if a.kind.startswith("summary:"):
+        artifact_name = a.kind.split(":", 1)[1]
+        if a.passed:
+            summary_text = a.raw.get("summary", "") if isinstance(a.raw, dict) else ""
+            if summary_text:
+                store = ArtifactStore()
+                await store.store(
+                    source.get("mission_id"),
+                    f"{artifact_name}_summary",
+                    summary_text,
+                )
+        # On fail: structural summary already stored by post_execute; nothing to do.
+        pending = [k for k in pending if k != a.kind]
+        ctx["_pending_posthooks"] = pending
+        if not pending:
+            await update_task(
+                a.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+            )
+        else:
+            await update_task(
+                a.source_task_id, context=_json.dumps(ctx),
+            )
+        return
+
+    logger.warning("posthook verdict: unknown kind", kind=a.kind)
+
+
+async def _summary_kinds_for_source(source: dict, source_ctx: dict) -> list:
+    """Return summary:<name> kinds for large output artifacts on this source.
+
+    Reads the stored artifact values from the blackboard; enqueues one
+    summary kind per artifact whose stored text exceeds 3000 chars.
+    """
+    from src.workflows.engine.artifacts import ArtifactStore
+
+    mission_id = source.get("mission_id")
+    if mission_id is None:
+        return []
+    output_names = list(source_ctx.get("output_artifacts") or [])
+    if not output_names:
+        return []
+    store = ArtifactStore()
+    kinds: list = []
+    for name in output_names:
+        val = await store.retrieve(mission_id, name)
+        if val and isinstance(val, str) and len(val) > 3000:
+            kinds.append(f"summary:{name}")
+    return kinds
 
 
 def _parse_ctx(task: dict) -> dict:

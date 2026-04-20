@@ -107,3 +107,42 @@ async def test_apply_request_posthook_grade_enqueues_grader_and_parks_source(tmp
     grader_ctx = json.loads(rows[0]["context"])
     assert grader_ctx["source_task_id"] == source_id
     assert grader_ctx["generating_model"] == "qwen-7b"
+
+
+@pytest.mark.asyncio
+async def test_grade_verdict_pass_small_output_completes_source(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "test.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    from src.infra import db as _db_mod
+    monkeypatch.setattr(_db_mod, "DB_PATH", db_path)
+    if _db_mod._db_connection is not None:
+        await _db_mod._db_connection.close()
+        _db_mod._db_connection = None
+
+    from src.infra.db import init_db, add_task, get_task, update_task
+    await init_db()
+    source_id = await add_task(
+        title="source",
+        description="",
+        agent_type="writer",
+        mission_id=1,
+        context=json.dumps({
+            "_pending_posthooks": ["grade"],
+            "output_artifacts": ["short_out"],
+        }),
+    )
+    await update_task(source_id, status="ungraded", result="short result (<3KB)")
+
+    from general_beckman.result_router import PostHookVerdict
+    verdict = PostHookVerdict(
+        source_task_id=source_id, kind="grade", passed=True,
+        raw={"score": 0.9},
+    )
+    from general_beckman.apply import _apply_one
+    grade_task_row = {"id": 999, "mission_id": 1, "agent_type": "grader"}
+    await _apply_one(grade_task_row, verdict)
+
+    refreshed = await get_task(source_id)
+    assert refreshed["status"] == "completed"
+    ctx = json.loads(refreshed["context"])
+    assert ctx["_pending_posthooks"] == []

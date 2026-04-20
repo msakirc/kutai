@@ -523,61 +523,6 @@ class TestNeedsFunctionCalling:
         assert select_kwargs.get("needs_function_calling") is False
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 8. on_model_swap()
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestOnModelSwap:
-
-    @pytest.mark.asyncio
-    async def test_calls_accelerate_retries(self):
-        dispatcher = _fresh_dispatcher()
-
-        mock_accelerate = AsyncMock(return_value=0)
-        mock_drain = AsyncMock(return_value=0)
-
-        with patch("src.infra.db.accelerate_retries", mock_accelerate), \
-             patch("src.core.grading.drain_ungraded_tasks", mock_drain):
-            await dispatcher.on_model_swap("old-model", "new-model")
-
-        mock_accelerate.assert_called_once_with("model_swap")
-
-    @pytest.mark.asyncio
-    async def test_calls_drain_ungraded_tasks_when_new_model(self):
-        dispatcher = _fresh_dispatcher()
-
-        mock_accelerate = AsyncMock(return_value=0)
-        mock_drain = AsyncMock(return_value=3)
-
-        with patch("src.infra.db.accelerate_retries", mock_accelerate), \
-             patch("src.core.grading.drain_ungraded_tasks", mock_drain):
-            await dispatcher.on_model_swap("old-model", "new-model")
-
-        mock_drain.assert_called_once_with()
-
-    @pytest.mark.asyncio
-    async def test_calls_drain_when_no_new_model(self):
-        """drain_ungraded_tasks is always called — Fatih Hoca picks the model."""
-        dispatcher = _fresh_dispatcher()
-
-        mock_accelerate = AsyncMock(return_value=0)
-        mock_drain = AsyncMock(return_value=0)
-
-        with patch("src.infra.db.accelerate_retries", mock_accelerate), \
-             patch("src.core.grading.drain_ungraded_tasks", mock_drain):
-            await dispatcher.on_model_swap("old-model", None)
-
-        mock_drain.assert_called_once_with()
-
-    @pytest.mark.asyncio
-    async def test_survives_accelerate_retries_exception(self):
-        """If accelerate_retries raises, on_model_swap should not propagate."""
-        dispatcher = _fresh_dispatcher()
-
-        with patch("src.infra.db.accelerate_retries", side_effect=RuntimeError("db gone")):
-            # Should not raise
-            await dispatcher.on_model_swap("old", "new")
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 9. get_stats()
@@ -791,3 +736,9 @@ class TestLocalModelLoad:
             )
 
         mock_ensure.assert_not_called()
+
+
+def test_dispatcher_has_no_on_model_swap():
+    """Dispatcher is a pure pipe; swap-event handling lives in Beckman."""
+    from src.core.llm_dispatcher import LLMDispatcher
+    assert not hasattr(LLMDispatcher, "on_model_swap")

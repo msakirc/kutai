@@ -376,24 +376,6 @@ class LLMDispatcher:
             pass
         return False
 
-    async def on_model_swap(self, old_model: str | None, new_model: str | None):
-        """Called when a model swap occurs. Wakes availability-delayed tasks."""
-        try:
-            from src.infra.db import accelerate_retries
-            woken = await accelerate_retries("model_swap")
-            if woken:
-                logger.info(f"accelerated {woken} task(s) after swap")
-        except Exception as e:
-            logger.debug(f"accelerate_retries failed: {e}")
-
-        try:
-            from src.core.grading import drain_ungraded_tasks
-            graded = await drain_ungraded_tasks()
-            if graded:
-                logger.info(f"graded {graded} task(s) after swap")
-        except Exception as e:
-            logger.debug(f"drain_ungraded_tasks failed: {e}")
-
     def get_stats(self) -> dict:
         return {
             "total_calls": self._total_calls,

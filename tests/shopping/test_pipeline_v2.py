@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -409,3 +410,126 @@ def test_format_response_joins_cards():
     out = format_response(["CARD1", "CARD2"])
     assert "CARD1" in out and "CARD2" in out
     assert out.index("CARD1") < out.index("CARD2")
+
+
+@pytest.mark.asyncio
+async def test_pipeline_v2_full_run_siemens_style():
+    """End-to-end with patched scraper + patched LLMs.
+
+    Emulates the 2026-04-20 Siemens S100 bug: ensures the accessory is dropped
+    and the output contains the real machine, not the brewing unit part.
+    """
+    from types import SimpleNamespace
+    from src.workflows.shopping.pipeline_v2 import (
+        step_resolve, step_group, step_synthesize_reviews,
+        select_groups, format_group_card, format_response,
+    )
+
+    fake_products = [
+        SimpleNamespace(
+            name="Siemens EQ.6 Plus S100", source="hepsiburada",
+            url="https://h.com/1", discounted_price=24745.0, original_price=None,
+            rating=4.5, review_count=312,
+            review_snippets=["köpük iyi", "sessiz", "fiyat yüksek"],
+        ),
+        SimpleNamespace(
+            name="Siemens EQ.6 Plus S100", source="akakce",
+            url="https://a.com/2", discounted_price=25499.0, original_price=None,
+            rating=None, review_count=None, review_snippets=[],
+        ),
+        SimpleNamespace(
+            name="DL-Pro demleme ünitesi Siemens EQ.3 S100",
+            source="amazon_tr", url="https://am.tr/3", discounted_price=4800.0,
+            original_price=None, rating=5.0, review_count=3,
+            review_snippets=[],
+        ),
+    ]
+
+    grouping_resp = {
+        "content": (
+            '{"groups": ['
+            '  {"representative_title": "Siemens EQ.6 Plus S100", '
+            '   "member_indices": [0, 1], "is_accessory_or_part": false},'
+            '  {"representative_title": "Siemens EQ.3 brewing unit", '
+            '   "member_indices": [2], "is_accessory_or_part": true}'
+            ']}'
+        ),
+        "model": "m", "cost": 0.0,
+    }
+    synth_resp = {
+        "content": (
+            '{"praise":["köpük iyi","sessiz"],'
+            ' "complaints":["fiyat yüksek"],'
+            ' "red_flags":[], "insufficient_data": false}'
+        ),
+        "model": "m", "cost": 0.0,
+    }
+
+    with patch(
+        "src.workflows.shopping.pipeline_v2._fetch_products",
+        new=AsyncMock(return_value=fake_products),
+    ), patch(
+        "src.workflows.shopping.pipeline_v2._grouping_llm_call",
+        new=AsyncMock(return_value=grouping_resp),
+    ), patch(
+        "src.workflows.shopping.pipeline_v2._synthesis_llm_call",
+        new=AsyncMock(return_value=synth_resp),
+    ):
+        cands = await step_resolve("Siemens s100", per_site_n=3)
+        groups = await step_group(cands)
+        kept = select_groups(groups, max_groups=2)
+        cards: list[str] = []
+        for g in kept:
+            syn = await step_synthesize_reviews(g, cands)
+            cards.append(format_group_card(g, syn, cands, community_counts={}))
+        response = format_response(cards)
+
+    # Accessory is dropped
+    assert "demleme ünitesi" not in response
+    assert "EQ.3" not in response
+    # Real machine is present
+    assert "EQ.6" in response
+    assert "24.745" in response
+    assert "köpük" in response
+    assert "fiyat yüksek" in response
+
+
+@pytest.mark.asyncio
+async def test_shopping_pipeline_v2_unknown_step_returns_failed():
+    from src.workflows.shopping.pipeline_v2 import ShoppingPipelineV2
+    task = {
+        "id": 1,
+        "title": "[0.1] nonsense_step",
+        "context": {"step_name": "nonsense_step"},
+    }
+    result = await ShoppingPipelineV2().run(task)
+    assert result["status"] == "failed"
+    assert "nonsense_step" in result["result"].lower() or "unknown" in result["result"].lower()
+
+
+@pytest.mark.asyncio
+async def test_shopping_pipeline_v2_resolve_candidates_step():
+    from types import SimpleNamespace
+    from src.workflows.shopping.pipeline_v2 import ShoppingPipelineV2
+
+    fake = [SimpleNamespace(name="X", source="trendyol", url="u", discounted_price=100,
+                             original_price=None, rating=None, review_count=None,
+                             review_snippets=[])]
+    task = {
+        "id": 2,
+        "title": "[0.1] resolve_candidates",
+        "context": {
+            "step_name": "resolve_candidates",
+            "input_artifacts": [],
+            "per_site_n": 3,
+        },
+        "description": "X",
+    }
+    with patch(
+        "src.workflows.shopping.pipeline_v2._fetch_products",
+        new=AsyncMock(return_value=fake),
+    ):
+        result = await ShoppingPipelineV2().run(task)
+    assert result["status"] == "completed"
+    payload = json.loads(result["result"])
+    assert payload["candidates"][0]["title"] == "X"

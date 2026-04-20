@@ -379,3 +379,183 @@ def format_group_card(
 def format_response(cards: list[str]) -> str:
     """Join per-group cards with a blank-line separator."""
     return "\n".join(c.rstrip() for c in cards if c).strip() + "\n"
+
+
+# ── Workflow step handlers (task-shaped I/O) ────────────────────────────────
+
+def _parse_context(task: dict) -> dict:
+    ctx = task.get("context", {})
+    if isinstance(ctx, str):
+        try:
+            return json.loads(ctx)
+        except (json.JSONDecodeError, ValueError):
+            return {}
+    return ctx or {}
+
+
+def _candidates_to_json(cands: list[Candidate]) -> list[dict]:
+    return [
+        {
+            "title": c.title, "site": c.site, "site_rank": c.site_rank,
+            "price": c.price, "original_price": c.original_price,
+            "url": c.url, "rating": c.rating, "review_count": c.review_count,
+            "review_snippets": c.review_snippets,
+        }
+        for c in cands
+    ]
+
+
+def _candidates_from_json(items: list[dict]) -> list[Candidate]:
+    return [
+        Candidate(
+            title=i.get("title", ""), site=i.get("site", ""),
+            site_rank=int(i.get("site_rank", 1)),
+            price=i.get("price"), original_price=i.get("original_price"),
+            url=i.get("url", ""), rating=i.get("rating"),
+            review_count=i.get("review_count"),
+            review_snippets=list(i.get("review_snippets") or []),
+        )
+        for i in items
+    ]
+
+
+async def _read_artifacts(mission_id: int, keys: list[str]) -> dict:
+    """Reuse v1's artifact reader — same table, same semantics."""
+    from src.workflows.shopping.pipeline import _read_artifacts as _v1_read
+    return await _v1_read(mission_id, keys)
+
+
+async def _handler_resolve_candidates(task: dict, artifacts: dict, ctx: dict) -> dict:
+    query = ""
+    for key in ("clarified_query", "user_query"):
+        raw = artifacts.get(key, "")
+        if not raw:
+            continue
+        if isinstance(raw, str) and raw.strip().startswith("{"):
+            try:
+                parsed = json.loads(raw)
+                query = parsed.get("clarified_query") or parsed.get("query") or parsed.get("user_query", "")
+                if query:
+                    break
+            except (json.JSONDecodeError, ValueError):
+                pass
+        if isinstance(raw, str) and raw.strip():
+            query = raw.strip()
+            break
+    if not query:
+        query = task.get("description", "")
+    per_site_n = int(ctx.get("per_site_n", 3))
+    cands = await step_resolve(query, per_site_n=per_site_n)
+    return {
+        "query": query,
+        "candidates": _candidates_to_json(cands),
+        "escalation_needed": len(cands) == 0,
+    }
+
+
+async def _handler_group_and_synthesize(task: dict, artifacts: dict, ctx: dict) -> dict:
+    payload_raw = artifacts.get("search_results", "{}")
+    payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+    cands = _candidates_from_json(payload.get("candidates", []))
+    if not cands:
+        return {"cards": [], "escalation_needed": True}
+    groups = await step_group(cands)
+    max_groups = int(ctx.get("max_groups", 2))
+    kept = select_groups(groups, max_groups=max_groups)
+    community_counts = payload.get("community_counts") or {}
+    cards: list[str] = []
+    for g in kept:
+        syn = await step_synthesize_reviews(g, cands)
+        cards.append(format_group_card(g, syn, cands, community_counts=community_counts))
+    return {"cards": cards, "escalation_needed": False}
+
+
+async def _handler_format_response(task: dict, artifacts: dict, ctx: dict) -> dict:
+    raw = artifacts.get("grouped_synth", "{}")
+    payload = json.loads(raw) if isinstance(raw, str) else raw
+    cards = payload.get("cards", [])
+    if not cards:
+        return {"formatted_text": "🔍 Sonuç bulunamadı.", "escalation": True}
+    return {"formatted_text": format_response(cards), "escalation": False}
+
+
+def _alias_v1(step_name: str):
+    """Delegate to v1's clarify-related handlers. Late-bound to avoid import cycles."""
+    async def _run(task: dict, artifacts: dict, ctx: dict):
+        from src.workflows.shopping import pipeline as _v1
+        handler = _v1._STEP_HANDLERS.get(step_name)
+        if not handler:
+            raise RuntimeError(f"v1 handler not found: {step_name}")
+        return await handler(task, artifacts)
+    return _run
+
+
+_STEP_HANDLERS_V2 = {
+    "resolve_candidates": _handler_resolve_candidates,
+    "group_and_synthesize": _handler_group_and_synthesize,
+    "format_response": _handler_format_response,
+    "analyze_query": _alias_v1("analyze_query"),
+    "clarify_if_vague": _alias_v1("clarify_if_vague"),
+}
+
+
+class ShoppingPipelineV2:
+    """Dispatch class — same contract as v1 ShoppingPipeline."""
+
+    async def run(self, task: dict) -> dict:
+        ctx = _parse_context(task)
+        step_name = ctx.get("step_name", "")
+        if not step_name:
+            title = task.get("title", "")
+            if "] " in title:
+                step_name = title.split("] ", 1)[1]
+        if not step_name:
+            step_name = ctx.get("workflow_step_id", "")
+
+        logger.info("pipeline_v2 dispatch", step_name=step_name, task_id=task.get("id"))
+
+        handler = _STEP_HANDLERS_V2.get(step_name)
+        if not handler:
+            return {
+                "status": "failed",
+                "result": f"Unknown step: {step_name!r}",
+                "model": "shopping_pipeline_v2",
+                "cost": 0.0,
+                "iterations": 1,
+            }
+
+        mission_id = task.get("mission_id")
+        input_artifacts = ctx.get("input_artifacts", [])
+        artifacts = (
+            await _read_artifacts(mission_id, input_artifacts)
+            if mission_id
+            else {}
+        )
+
+        try:
+            result = await handler(task, artifacts, ctx)
+            if isinstance(result, dict) and result.get("_needs_clarification"):
+                return {
+                    "status": "needs_clarification",
+                    "clarification": result.get("clarification", "More info needed"),
+                    "result": json.dumps(result, ensure_ascii=False, default=str),
+                    "model": "shopping_pipeline_v2",
+                    "cost": 0.0,
+                    "iterations": 1,
+                }
+            return {
+                "status": "completed",
+                "result": result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str),
+                "model": "shopping_pipeline_v2",
+                "cost": 0.0,
+                "iterations": 1,
+            }
+        except Exception as exc:
+            logger.exception("pipeline_v2 step %r failed", step_name)
+            return {
+                "status": "failed",
+                "result": f"Pipeline v2 error: {exc}",
+                "model": "shopping_pipeline_v2",
+                "cost": 0.0,
+                "iterations": 1,
+            }

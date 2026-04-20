@@ -6,8 +6,8 @@ tasks are created as mechanical salako rows — salako executors do the
 actual Telegram I/O at dispatch time.
 
 NOTE: The tasks table has no 'payload' column. Mechanical task payloads are
-stored in the 'context' JSON column and the orchestrator copies them into
-task["payload"] at dispatch time (see orchestrator.py lines 926-928).
+stored in the 'context' JSON column; the orchestrator's `_dispatch` copies
+`_ctx["payload"]` onto `task["payload"]` before calling `salako.run`.
 """
 from __future__ import annotations
 

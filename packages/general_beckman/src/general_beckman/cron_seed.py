@@ -7,6 +7,7 @@ trips when the process is long-running.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 
 from src.infra.logging_config import get_logger
@@ -57,6 +58,11 @@ INTERNAL_CADENCES: list[dict] = [
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.
 _seeded: bool = False
 
+# Serialises concurrent seed attempts so two near-simultaneous next_task()
+# callers can't both pass the SELECT-before-INSERT check and create duplicate
+# rows. Harmless under the serial pump today, but cheap insurance.
+_seed_lock: asyncio.Lock = asyncio.Lock()
+
 
 async def seed_internal_cadences() -> None:
     """Upsert all INTERNAL_CADENCES rows into scheduled_tasks.
@@ -77,33 +83,39 @@ async def seed_internal_cadences() -> None:
     from src.infra.db import get_db  # lazy to avoid circular import at module load
     from src.infra.times import utc_now, to_db
 
-    db = await get_db()
-    now = utc_now()
-    for cadence in INTERNAL_CADENCES:
-        cursor = await db.execute(
-            "SELECT id FROM scheduled_tasks WHERE title = ? AND kind = 'internal'",
-            (cadence["title"],),
-        )
-        existing = await cursor.fetchone()
-        if existing:
-            logger.debug("cron_seed: skipping existing row", title=cadence["title"])
-            continue
+    async with _seed_lock:
+        # Re-check inside the lock: another coroutine may have finished seeding
+        # while we were waiting to acquire it.
+        if _seeded:
+            return
 
-        first_run = to_db(now + timedelta(seconds=cadence["interval_seconds"]))
-        await db.execute(
-            """INSERT INTO scheduled_tasks
-               (title, description, interval_seconds, kind, context, enabled, next_run)
-               VALUES (?, ?, ?, 'internal', ?, 1, ?)""",
-            (
-                cadence["title"],
-                cadence["description"],
-                cadence["interval_seconds"],
-                json.dumps(cadence["payload"]),
-                first_run,
-            ),
-        )
-        logger.info("cron_seed: inserted internal cadence", title=cadence["title"])
+        db = await get_db()
+        now = utc_now()
+        for cadence in INTERNAL_CADENCES:
+            cursor = await db.execute(
+                "SELECT id FROM scheduled_tasks WHERE title = ? AND kind = 'internal'",
+                (cadence["title"],),
+            )
+            existing = await cursor.fetchone()
+            if existing:
+                logger.debug("cron_seed: skipping existing row", title=cadence["title"])
+                continue
 
-    await db.commit()
-    _seeded = True
-    logger.info("cron_seed: all internal cadences seeded", count=len(INTERNAL_CADENCES))
+            first_run = to_db(now + timedelta(seconds=cadence["interval_seconds"]))
+            await db.execute(
+                """INSERT INTO scheduled_tasks
+                   (title, description, interval_seconds, kind, context, enabled, next_run)
+                   VALUES (?, ?, ?, 'internal', ?, 1, ?)""",
+                (
+                    cadence["title"],
+                    cadence["description"],
+                    cadence["interval_seconds"],
+                    json.dumps(cadence["payload"]),
+                    first_run,
+                ),
+            )
+            logger.info("cron_seed: inserted internal cadence", title=cadence["title"])
+
+        await db.commit()
+        _seeded = True
+        logger.info("cron_seed: all internal cadences seeded", count=len(INTERNAL_CADENCES))

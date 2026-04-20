@@ -10,11 +10,11 @@ from ..infra.db import (
 from src.infra.logging_config import get_logger
 from .router import ModelCallFailed
 from .task_context import parse_context, set_context
+from .context_injection import inject_chain_context
+from .startup_recovery import startup_recovery
 import salako
 from ..agents import get_agent
-from ..tools.workspace import (
-    get_file_tree, get_mission_workspace, get_mission_workspace_relative,
-)
+from ..tools.workspace import get_mission_workspace
 from ..tools.git_ops import ensure_git_repo, create_mission_branch
 from ..app.telegram_bot import TelegramInterface
 
@@ -42,52 +42,13 @@ class Orchestrator:
         self._current_task_future = None
         self._running_futures: list[asyncio.Task] = []
 
-    # ─── Context Chaining ────────────────────────────────────────────────
-
-    async def _inject_chain_context(self, task: dict) -> dict:
-        """Inject completed sibling results + workspace snapshot into task context."""
-        task_context = parse_context(task)
-        parent_id = task.get("parent_task_id")
-        prior_steps = []
-
-        if parent_id:
-            db = await get_db()
-            cursor = await db.execute(
-                """SELECT id, title, result, agent_type, status
-                   FROM tasks WHERE parent_task_id = ? AND status = 'completed'
-                   AND id != ? ORDER BY completed_at ASC""",
-                (parent_id, task["id"])
-            )
-            for sib in [dict(r) for r in await cursor.fetchall()]:
-                rt = sib.get("result", "")
-                prior_steps.append({
-                    "title": sib["title"], "agent_type": sib.get("agent_type", "?"),
-                    "status": sib["status"],
-                    "result": rt[:1500] + "\n... [truncated]" if len(rt) > 1500 else rt,
-                })
-
-        total = sum(len(s["result"]) for s in prior_steps)
-        while total > MAX_CONTEXT_CHAIN_LENGTH and prior_steps:
-            i = max(range(len(prior_steps)), key=lambda x: len(prior_steps[x]["result"]))
-            prior_steps[i]["result"] = prior_steps[i]["result"][:500] + "\n... [heavily truncated]"
-            total = sum(len(s["result"]) for s in prior_steps)
-        if prior_steps:
-            task_context["prior_steps"] = prior_steps
-
-        agent_type = task.get("agent_type", "executor")
-        mission_id = task.get("mission_id")
-        if agent_type in ("coder", "reviewer", "writer", "planner"):
-            try:
-                tree_path = get_mission_workspace_relative(mission_id) if mission_id else ""
-                tree = await get_file_tree(path=tree_path, max_depth=3)
-                if tree and "File not found" not in tree and len(tree.split("\n")) > 1:
-                    task_context["workspace_snapshot"] = tree
-                    if mission_id:
-                        task_context["workspace_path"] = get_mission_workspace_relative(mission_id)
-            except Exception as e:
-                logger.debug(f"workspace snapshot failed: {e}")
-
-        return set_context(task, task_context)
+    def _drop_running_future(self, f: asyncio.Task) -> None:
+        """done_callback: remove a completed dispatch task from the tracker.
+        Tolerant of the task already being absent (e.g. stop() drained it)."""
+        try:
+            self._running_futures.remove(f)
+        except ValueError:
+            pass
 
     # ─── Dispatch ────────────────────────────────────────────────────────
 
@@ -101,7 +62,7 @@ class Orchestrator:
         agent_type = task.get("agent_type", "executor")
 
         try:
-            task = await self._inject_chain_context(task)
+            task = await inject_chain_context(task)
         except Exception as e:
             logger.debug(f"context injection failed #{task_id}: {e}")
 
@@ -180,10 +141,7 @@ class Orchestrator:
                 if task is not None:
                     t = asyncio.create_task(self._dispatch(task))
                     self._running_futures.append(t)
-                    t.add_done_callback(
-                        lambda f: self._running_futures.remove(f)
-                        if f in self._running_futures else None
-                    )
+                    t.add_done_callback(self._drop_running_future)
                 await asyncio.sleep(3)
             except asyncio.CancelledError:
                 raise
@@ -220,51 +178,10 @@ class Orchestrator:
         await HeartbeatWriter(
             "logs/orchestrator.heartbeat", "logs/heartbeat", interval=15.0).run()
 
-    async def _startup_recovery(self):
-        """Post-restart: reset stuck tasks + clear retry backoffs."""
-        db = await get_db()
-        summary: list[str] = []
-
-        c = await db.execute("SELECT id, infra_resets FROM tasks WHERE status = 'processing'")
-        interrupted = [dict(r) for r in await c.fetchall()]
-        for t in interrupted:
-            ir = (t.get("infra_resets") or 0) + 1
-            await db.execute(
-                "UPDATE tasks SET status='pending', infra_resets=?, retry_reason='infrastructure' WHERE id=?",
-                (ir, t["id"]))
-        if interrupted:
-            await db.commit()
-            summary.append(f"Reset {len(interrupted)} interrupted task(s)")
-
-        try:
-            from ..infra.db import accelerate_retries
-            if w := await accelerate_retries("startup"):
-                summary.append(f"Accelerated {w} task(s)")
-        except Exception as e:
-            logger.debug(f"accelerate_retries failed: {e}")
-
-        c = await db.execute(
-            "SELECT id FROM tasks WHERE status IN ('pending','ungraded') "
-            "AND next_retry_at IS NOT NULL AND next_retry_at > datetime('now')")
-        delayed = [dict(r) for r in await c.fetchall()]
-        for t in delayed:
-            await db.execute("UPDATE tasks SET next_retry_at=NULL WHERE id=?", (t["id"],))
-        if delayed:
-            await db.commit()
-            summary.append(f"Cleared backoff for {len(delayed)} task(s)")
-
-        try:
-            await db.execute("DELETE FROM file_locks")
-            await db.commit()
-        except Exception:
-            pass
-
-        logger.info(f"[Startup Recovery] {' | '.join(summary) or 'clean start'}")
-
     async def start(self):
         await init_db()
         try:
-            await self._startup_recovery()
+            await startup_recovery()
         except Exception as e:
             logger.warning(f"Startup recovery failed: {e}")
 

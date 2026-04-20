@@ -29,6 +29,7 @@ AGENT_TIMEOUTS: dict[str, int] = {
     "assistant": 180, "executor": 300, "pipeline": 600, "workflow": 900,
     "shopping_advisor": 600, "product_researcher": 300, "deal_analyst": 240,
     "shopping_pipeline": 60, "shopping_clarifier": 120,
+    "shopping_pipeline_v2": 120,
 }
 
 
@@ -82,6 +83,9 @@ class Orchestrator:
             if agent_type == "shopping_pipeline":
                 from src.workflows.shopping.pipeline import ShoppingPipeline
                 return await ShoppingPipeline().run(task)
+            if agent_type == "shopping_pipeline_v2":
+                from src.workflows.shopping.pipeline_v2 import ShoppingPipelineV2
+                return await ShoppingPipelineV2().run(task)
             return await get_agent(agent_type).execute(task)
 
         try:

@@ -15,22 +15,24 @@
   ],
   "steps": [
     {
-      "id": "0.1", "phase": "phase_0", "name": "analyze_query",
-      "title": "Analyze Query", "agent": "shopping_pipeline_v2",
+      "id": "0.1", "phase": "phase_0", "name": "understand_query_check_clarity",
+      "title": "Understand Query", "agent": "shopping_pipeline",
       "difficulty": "easy", "tools_hint": [], "depends_on": [],
       "input_artifacts": ["user_query"],
       "output_artifacts": ["parsed_intent"],
-      "instruction": "Step name: analyze_query. Delegates to v1 clarify analyser — parses constraints and flags vagueness.",
-      "done_when": "parsed_intent artifact is populated."
+      "instruction": "Parse the user's query — intent, category, constraints, vagueness check. Sets needs_clarification flag for step 0.2.",
+      "done_when": "parsed_intent has query and needs_clarification fields.",
+      "artifact_schema": {"max_output_chars": 5000, "parsed_intent": {"type": "object", "required_fields": ["query", "needs_clarification"]}}
     },
     {
-      "id": "0.2", "phase": "phase_0", "name": "clarify_if_vague",
-      "title": "Clarify If Vague", "agent": "shopping_pipeline_v2",
+      "id": "0.2", "phase": "phase_0", "name": "ask_clarifying_questions",
+      "title": "Clarify If Vague", "agent": "shopping_clarifier",
       "difficulty": "easy", "tools_hint": [], "depends_on": ["0.1"],
       "input_artifacts": ["parsed_intent", "user_query"],
       "output_artifacts": ["clarified_query"],
-      "instruction": "Step name: clarify_if_vague. Delegates to v1 clarify — asks user a question if the query is too vague, else passes through.",
-      "done_when": "clarified_query artifact contains either the original query or a refined version."
+      "instruction": "Read parsed_intent and user_query. If needs_clarification is true and constraints are absent, ask 2-3 tight questions (budget? use case? must-have feature?). If query has enough detail, return it as clarified_query immediately.",
+      "done_when": "clarified_query is ready for search — either the original query or the user's answers incorporated.",
+      "may_need_clarification": true
     },
     {
       "id": "1.1", "phase": "phase_1", "name": "resolve_candidates",

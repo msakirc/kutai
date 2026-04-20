@@ -479,23 +479,10 @@ async def _handler_format_response(task: dict, artifacts: dict, ctx: dict) -> di
     return {"formatted_text": format_response(cards), "escalation": False}
 
 
-def _alias_v1(step_name: str):
-    """Delegate to v1's clarify-related handlers. Late-bound to avoid import cycles."""
-    async def _run(task: dict, artifacts: dict, ctx: dict):
-        from src.workflows.shopping import pipeline as _v1
-        handler = _v1._STEP_HANDLERS.get(step_name)
-        if not handler:
-            raise RuntimeError(f"v1 handler not found: {step_name}")
-        return await handler(task, artifacts)
-    return _run
-
-
 _STEP_HANDLERS_V2 = {
     "resolve_candidates": _handler_resolve_candidates,
     "group_and_synthesize": _handler_group_and_synthesize,
     "format_response": _handler_format_response,
-    "analyze_query": _alias_v1("analyze_query"),
-    "clarify_if_vague": _alias_v1("clarify_if_vague"),
 }
 
 

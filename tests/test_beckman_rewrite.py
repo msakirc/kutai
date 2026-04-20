@@ -68,3 +68,30 @@ def test_clarification_history_reused():
     assert len(out) == 1
     assert isinstance(out[0], CompleteWithReusedAnswer)
     assert "A?" in out[0].result and "B" in out[0].result
+
+
+from general_beckman.result_router import RequestPostHook
+
+
+def test_writer_task_complete_emits_request_grade_posthook():
+    task = {"id": 100, "mission_id": 5, "agent_type": "writer"}
+    ctx = {}
+    complete = Complete(task_id=100, result="out", iterations=1, metadata={}, raw={})
+    out = rewrite_actions(task, ctx, [complete])
+    # Expect: Complete, MissionAdvance, RequestPostHook(grade).
+    kinds = [type(a).__name__ for a in out]
+    assert "RequestPostHook" in kinds
+    posthook = next(a for a in out if isinstance(a, RequestPostHook))
+    assert posthook.kind == "grade"
+    assert posthook.source_task_id == 100
+
+
+def test_mechanical_task_complete_emits_no_posthook():
+    task = {"id": 200, "mission_id": 5, "agent_type": "mechanical"}
+    ctx = {"payload": {"action": "workflow_advance"}}
+    complete = Complete(task_id=200, result="out", iterations=1, metadata={}, raw={})
+    out = rewrite_actions(task, ctx, [complete])
+    kinds = [type(a).__name__ for a in out]
+    assert "RequestPostHook" not in kinds
+    # workflow_advance mechanical also skips MissionAdvance (pre-existing guard).
+    assert "MissionAdvance" not in kinds

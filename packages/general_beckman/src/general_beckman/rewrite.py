@@ -17,7 +17,9 @@ from typing import Iterable
 from general_beckman.result_router import (
     Action, Complete, SpawnSubtasks, RequestClarification,
     Failed, MissionAdvance, CompleteWithReusedAnswer,
+    RequestPostHook,
 )
+from general_beckman.posthooks import determine_posthooks
 
 
 def _is_workflow_step(task_ctx: dict) -> bool:
@@ -47,26 +49,34 @@ def rewrite_actions(
 
 
 def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
-    # Rule 1: mission-task clean completion → also emit MissionAdvance.
-    # Skip when the task IS itself a workflow_advance mechanical executor
-    # — otherwise its completion re-injects MissionAdvance and loops forever.
-    # Other mechanical tasks (git_commit, clarify, notify_user, workspace_snapshot)
-    # still advance the mission.
+    # Rule 1: mission-task clean completion → emit MissionAdvance (unless
+    # bookkeeping) and RequestPostHook (unless policy says no).
     payload_action = (task_ctx.get("payload") or {}).get("action")
-    if (
-        isinstance(a, Complete)
-        and task.get("mission_id")
-        and payload_action != "workflow_advance"
-    ):
-        return [
-            a,
+    agent_type = task.get("agent_type", "")
+    is_bookkeeping = (
+        payload_action == "workflow_advance"
+        or agent_type in {"grader", "artifact_summarizer"}
+    )
+
+    if isinstance(a, Complete) and task.get("mission_id") and not is_bookkeeping:
+        result_actions: list[Action] = [a]
+        result_actions.append(
             MissionAdvance(
                 task_id=a.task_id,
                 mission_id=task["mission_id"],
                 completed_task_id=a.task_id,
                 raw=a.raw,
-            ),
-        ]
+            )
+        )
+        for kind in determine_posthooks(task, task_ctx, a.raw):
+            result_actions.append(
+                RequestPostHook(
+                    source_task_id=a.task_id,
+                    kind=kind,
+                    source_ctx=dict(task_ctx),
+                )
+            )
+        return result_actions
     # Rule 2: workflow step tried to decompose
     if isinstance(a, SpawnSubtasks) and _is_workflow_step(task_ctx):
         return [Failed(

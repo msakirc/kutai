@@ -210,7 +210,7 @@ _BUTTON_ACTIONS: dict[str, tuple[str, str]] = {
     "🌍 Deprem": ("special", "earthquake"),
     # ── Alışveriş sub-buttons ──
     "⚡ Hızlı Ara": ("cmd_args", "shop"),
-    "🔬 Detaylı Araştır": ("cmd_args", "research_product"),
+    "🔬 Detaylı Araştır": ("cmd", "research_product"),
     # ── Listem sub-buttons ──
     "📝 Yeni Ekle": ("cmd_args", "todo"),
     "⏰ Hatırlat": ("special", "reminder"),
@@ -4501,15 +4501,15 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
         # Map sub_intents to workflow names
         wf_map = {
-            "deep_research": "shopping",
-            "research": "shopping",
+            "deep_research": "shopping_v2",
+            "research": "shopping_v2",
             "compare": "combo_research",
             "gift": "gift_recommendation",
             "deals": "exploration",
-            "quick_search": "quick_search",
-            "product_research": "product_research",
+            "quick_search": "quick_search_v2",
+            "product_research": "product_research_v2",
         }
-        workflow_name = wf_map.get(sub_intent or "shopping", "shopping")
+        workflow_name = wf_map.get(sub_intent or "shopping", "shopping_v2")
 
         runner = WorkflowRunner()
         mission_id = await runner.start(

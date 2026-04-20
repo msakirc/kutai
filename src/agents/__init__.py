@@ -19,6 +19,7 @@ from .product_researcher import ProductResearcherAgent
 from .deal_analyst import DealAnalystAgent
 from .shopping_clarifier import ShoppingClarifierAgent
 from .grader import GraderAgent
+from .artifact_summarizer import ArtifactSummarizerAgent
 
 AGENT_REGISTRY = {
     "planner": PlannerAgent(),
@@ -40,6 +41,7 @@ AGENT_REGISTRY = {
     "deal_analyst": DealAnalystAgent(),
     "shopping_clarifier": ShoppingClarifierAgent(),
     "grader": GraderAgent(),
+    "artifact_summarizer": ArtifactSummarizerAgent(),
 }
 
 

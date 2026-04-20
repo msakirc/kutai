@@ -357,10 +357,42 @@ Task 13 of the Phase 2b plan called for a wholesale rewrite of the main loop to 
 - **Clarification reuses the existing tool pipeline, not a new Decision type.** Agents already emit `{"action": "clarify", "question": "..."}` via the `clarify` tool; `result_router` already maps that to a `RequestClarification` action; `lifecycle.handle_clarification` now emits a `salako.clarify` mechanical task that does the Telegram send. No parallel `RequestApproval` type was introduced. The original `approval_fn` callback path (Telegram yes/no) was dead in production and deleted.
 - **No `Dispatch(task)` wrapper.** Beckman's output reduces to "a task to run." `agent_type == "mechanical"` routes to salako; anything else routes to `llm_dispatcher`. The wrapper would have been ceremony with no consumers.
 
-**Follow-ups (out of scope for Phase 2b):**
-- Main-loop rewrite against `beckman.next_task()` / `beckman.tick()` (orchestrator ≤ 300 lines target). See `docs/superpowers/plans/2026-04-19-phase2b-task13-handoff.md` for the fresh-session handoff.
-- Full deletion of `_handle_*` orchestrator methods (blocked on the main-loop rewrite).
+**Follow-ups (out of scope for Phase 2b initial landing, now completed in Task 13):**
+- Main-loop rewrite — completed. See Phase 2b — Task 13 below.
 - `kdv` cloud rate-limit state persistence — currently in-memory only; lost on restart.
 - Full Telegram module extraction (outbound runs through salako executors; inbound reply routing still in `telegram_bot.py`).
 - Progress-chatter standardization — many sites still call `self.telegram.send_message` directly.
-- Progress chatter standardization (ephemeral Telegram sends still scattered).
+
+---
+
+### Phase 2b — Task 13 (shipped 2026-04-20)
+
+Orchestrator.run_loop is now ~30 lines: a beckman.next_task pump wrapped in
+asyncio.create_task dispatch, with asyncio.wait_for enforcing dispatch-time
+timeouts. All `_handle_*` lifecycle methods are removed; their logic is split:
+
+- task creation & retry / DLQ decisions → `general_beckman.apply` + `retry`
+- action rewriting (workflow-step block, clarification suppression, mission
+  advance injection) → `general_beckman.rewrite`
+- queue hygiene (stuck, cascade, subtask rollup, escalations, workflow
+  timeout) → `general_beckman.sweep`, fired by the internal "sweep" cron
+  marker every ~5min
+- workflow-step post-hook + artifact capture + next-phase emission →
+  `packages/workflow_engine/` via a thin `salako.workflow_advance` executor
+- resource health (GPU, KDV, credentials) → `nerd_herd.health_summary`,
+  alerts dispatched via a `nerd_herd_health` cron marker that spawns
+  `salako.notify_user` tasks
+
+Beckman's public API is exactly 3 methods: `next_task`, `on_task_finished`,
+`enqueue`. Lanes, swap-aware batch deferral, and model-affinity reordering
+are deleted; swap budget + loaded-model affinity are per-call Hoca concerns
+inside `fatih_hoca.select()`.
+
+`push_metrics` is called at the observation point (dispatch time) so telemetry
+reflects actual dispatch latency. `result_guards.py` is dissolved — each guard
+re-homed into `general_beckman.apply` or `general_beckman.sweep` where it
+belongs semantically.
+
+**orchestrator.py final state:** 366 lines (startup + shutdown + ~30-line
+pump loop; the remaining lines are imports, health-check helpers, and
+run_once/startup hooks).

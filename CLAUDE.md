@@ -9,7 +9,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 - **Agents**: `src/agents/` — base.py (ReAct loop), specialized agents (coder, researcher, planner, etc.)
 - **Model selection**: `packages/fatih_hoca/` (Fatih Hoca) — 15-dimension scoring, task profiles, swap budget, failure adaptation
 - **Mechanical dispatcher**: `packages/salako/` (Salako) — non-LLM executors (workspace snapshot, git auto-commit, clarify, notify_user) invoked via `salako.run(task)` when `agent_type == "mechanical"`
-- **Task master**: `packages/general_beckman/` (General Beckman) — task queue, lifecycle, look-ahead against cloud quota. Public API: `next_task()`, `on_task_finished()`, `tick()`.
+- **Task master**: `packages/general_beckman/` (General Beckman) — task queue, lifecycle, look-ahead against cloud quota. Public API: `next_task()`, `on_task_finished()`, `enqueue()`.
 - **LLM dispatch**: `src/core/llm_dispatcher.py` — thin ask→load→call→retry loop, delegates selection to Fatih Hoca
 - **LLM execution**: `packages/hallederiz_kadir/` (HaLLederiz Kadir) — litellm calls, streaming, retries, response parsing, quality checks
 - **Model management**: `packages/dallama/` (DaLLaMa) — llama-server process lifecycle, swap orchestration, health polling
@@ -111,7 +111,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 | `packages/yasar_usta/` | **Yaşar Usta** — process manager, auto-restart, heartbeat watchdog, own Telegram bot when KutAI is down |
 | `packages/fatih_hoca/` | **Fatih Hoca** — model selection: scoring, task profiles, swap budget, failure adaptation |
 | `packages/salako/` | **Salako** — mechanical dispatcher: workspace snapshot + git auto-commit + clarify + notify_user (non-LLM executors) |
-| `packages/general_beckman/` | **General Beckman** — task master: queue selection, lifecycle handlers, quota look-ahead (Phase 2b extraction) |
+| `packages/general_beckman/` | **General Beckman** — task master: queue selection, lifecycle (apply/retry/sweep/rewrite), quota look-ahead (Phase 2b Task 13) |
 | `packages/dallama/` | **DaLLaMa** — llama-server process lifecycle, swap orchestration, health polling |
 | `packages/hallederiz_kadir/` | **HaLLederiz Kadir** — LLM call execution: litellm, streaming, retries, quality checks |
 | `packages/nerd_herd/` | **Nerd Herd** — system state: GPU, VRAM, inference metrics, snapshots for Fatih Hoca |
@@ -120,7 +120,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 | `packages/vecihi/` | **Vecihi** — auto-escalating web scraper (HTTP→TLS→Stealth→Browser) |
 | `src/app/run.py` | Orchestrator startup, health checks |
 | `src/app/telegram_bot.py` | All Telegram UI — commands, buttons, callbacks (~5800 lines) |
-| `src/core/orchestrator.py` | Main loop, task processing, agent dispatch |
+| `src/core/orchestrator.py` | Thin pump loop (~30 lines): beckman.next_task + asyncio.create_task dispatch (366 lines total including startup/shutdown) |
 | `src/core/llm_dispatcher.py` | Thin ask→load→call→retry loop, delegates to Fatih Hoca + HaLLederiz Kadir |
 | `src/core/router.py` | Shim — re-exports from fatih_hoca, keeps `call_model()` legacy shim |
 | `docs/architecture-modularization.md` | Architecture doc: package boundaries, data flow, troubleshooting |

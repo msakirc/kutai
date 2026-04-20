@@ -1,6 +1,0 @@
-Metadata-Version: 2.4
-Name: hallederiz_kadir
-Version: 0.1.0
-Summary: LLM call execution hub — litellm, streaming, retries, quality
-Requires-Python: >=3.10
-Requires-Dist: litellm>=1.40.0

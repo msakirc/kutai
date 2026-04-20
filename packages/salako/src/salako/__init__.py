@@ -53,6 +53,14 @@ async def run(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "todo_reminder":
+        from salako.todo_reminder import run as todo_reminder_run
+        try:
+            res = await todo_reminder_run(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "workflow_advance":
         from salako.workflow_advance import run as workflow_advance_run
         try:

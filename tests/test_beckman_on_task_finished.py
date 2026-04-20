@@ -66,9 +66,12 @@ async def test_mission_task_complete_spawns_workflow_advance(tmp_path, monkeypat
         assert child is not None, "expected workflow_advance sibling task"
         assert child["agent_type"] == "mechanical"
         ctx = json.loads(child["context"])
-        assert ctx["executor"] == "workflow_advance"
-        assert ctx["mission_id"] == 9
-        assert ctx["completed_task_id"] == tid
+        # Canonical mechanical shape: ctx["executor"] == "mechanical" and
+        # ctx["payload"]["action"] is the salako action name.
+        assert ctx["executor"] == "mechanical"
+        assert ctx["payload"]["action"] == "workflow_advance"
+        assert ctx["payload"]["mission_id"] == 9
+        assert ctx["payload"]["completed_task_id"] == tid
     finally:
         await _close_db()
 
@@ -91,8 +94,9 @@ async def test_clarify_spawns_salako_clarify_task(tmp_path, monkeypatch):
         assert child is not None
         assert child["agent_type"] == "mechanical"
         ctx = json.loads(child["context"])
-        assert ctx["action"] == "clarify"
-        assert ctx["question"] == "What?"
+        assert ctx["executor"] == "mechanical"
+        assert ctx["payload"]["action"] == "clarify"
+        assert ctx["payload"]["question"] == "What?"
     finally:
         await _close_db()
 

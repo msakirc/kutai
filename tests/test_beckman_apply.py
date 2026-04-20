@@ -79,9 +79,11 @@ async def test_clarification_spawns_salako_task(tmp_path, monkeypatch):
     child = await cursor.fetchone()
     assert child is not None
     assert child["agent_type"] == "mechanical"
-    # Payload is stored in context (tasks table has no payload column).
+    # Canonical mechanical shape: {executor: mechanical, payload: {action: ...}}
     ctx = json.loads(child["context"])
-    assert ctx["action"] == "clarify" and ctx["question"] == "Why?"
+    assert ctx["executor"] == "mechanical"
+    assert ctx["payload"]["action"] == "clarify"
+    assert ctx["payload"]["question"] == "Why?"
 
     # Teardown
     if _db_mod._db_connection is not None:
@@ -107,11 +109,12 @@ async def test_mission_advance_spawns_workflow_advance_task(tmp_path, monkeypatc
     child = await cursor.fetchone()
     assert child is not None
     assert child["agent_type"] == "mechanical"
-    # Payload is stored in context (tasks table has no payload column).
+    # Canonical mechanical shape: {executor: mechanical, payload: {action: ...}}
     ctx = json.loads(child["context"])
-    assert ctx["executor"] == "workflow_advance"
-    assert ctx["mission_id"] == 7
-    assert ctx["completed_task_id"] == parent
+    assert ctx["executor"] == "mechanical"
+    assert ctx["payload"]["action"] == "workflow_advance"
+    assert ctx["payload"]["mission_id"] == 7
+    assert ctx["payload"]["completed_task_id"] == parent
 
     # Teardown
     if _db_mod._db_connection is not None:

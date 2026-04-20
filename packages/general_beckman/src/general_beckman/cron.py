@@ -12,6 +12,7 @@ from datetime import timedelta
 from src.infra.logging_config import get_logger
 from src.infra.times import utc_now, to_db
 
+from general_beckman.apply import _mechanical_context
 from general_beckman.cron_seed import seed_internal_cadences
 from general_beckman.sweep import sweep_queue
 
@@ -66,11 +67,12 @@ async def _insert_scheduled_task(row: dict, payload: dict) -> None:
 
     executor = payload.get("_executor")
     if executor:
+        extra = {k: v for k, v in payload.items() if k != "_executor"}
         await add_task(
             title=row.get("title", "scheduled"),
             description=row.get("description", ""),
             agent_type="mechanical",
-            context={"executor": executor, **{k: v for k, v in payload.items() if k != "_executor"}},
+            context=_mechanical_context(executor, **extra),
             depends_on=[],
         )
     else:
@@ -129,10 +131,10 @@ async def _nerd_herd_health_alert() -> None:
             title="Notify: resource health",
             description="",
             agent_type="mechanical",
-            context={
-                "executor": "notify_user",
-                "message": "\n".join(f"\u2022 {a}" for a in report["alerts"]),
-            },
+            context=_mechanical_context(
+                "notify_user",
+                message="\n".join(f"\u2022 {a}" for a in report["alerts"]),
+            ),
             depends_on=[],
         )
     except Exception as e:

@@ -27,11 +27,12 @@ logger = get_logger("beckman.sweep")
 async def _notify(message: str) -> None:
     """Insert a mechanical notify_user task instead of sending Telegram inline."""
     from src.infra.db import add_task
+    from general_beckman.apply import _mechanical_context
     await add_task(
         title="Notify: stuck-task sweep",
         description="",
         agent_type="mechanical",
-        context={"executor": "notify_user", "message": message},
+        context=_mechanical_context("notify_user", message=message),
         depends_on=[],
     )
 

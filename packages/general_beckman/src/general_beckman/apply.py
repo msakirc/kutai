@@ -6,8 +6,13 @@ tasks are created as mechanical salako rows — salako executors do the
 actual Telegram I/O at dispatch time.
 
 NOTE: The tasks table has no 'payload' column. Mechanical task payloads are
-stored in the 'context' JSON column; the orchestrator's `_dispatch` copies
-`_ctx["payload"]` onto `task["payload"]` before calling `salako.run`.
+stored in the 'context' JSON column with the shape:
+
+    {"executor": "mechanical", "payload": {"action": <name>, **kwargs}}
+
+The orchestrator's `_dispatch` copies `ctx["payload"]` onto `task["payload"]`
+before calling `salako.run`, which routes on `payload["action"]`. Use
+``_mechanical_context(action, **kwargs)`` to build this consistently.
 """
 from __future__ import annotations
 
@@ -23,6 +28,18 @@ from general_beckman.result_router import (
     Exhausted, Failed, MissionAdvance, CompleteWithReusedAnswer,
 )
 from general_beckman.retry import decide_retry, DLQAction, RetryDecision
+
+
+def _mechanical_context(action: str, **payload_fields) -> dict:
+    """Build the canonical context shape for a mechanical salako task.
+
+    The workflow engine's `expand_steps_to_tasks` emits the same shape
+    (see tests/workflows/test_mechanical_step_materializes_with_executor_tag.py).
+    """
+    return {
+        "executor": "mechanical",
+        "payload": {"action": action, **payload_fields},
+    }
 
 logger = get_logger("beckman.apply")
 
@@ -86,12 +103,11 @@ async def _apply_clarify(task: dict, a: RequestClarification) -> None:
         mission_id=task.get("mission_id"),
         parent_task_id=a.task_id,
         agent_type="mechanical",
-        # Payload stored in context — orchestrator copies to task["payload"] at dispatch.
-        context={
-            "action": "clarify",
-            "question": a.question,
-            "chat_id": a.chat_id,
-        },
+        context=_mechanical_context(
+            "clarify",
+            question=a.question,
+            chat_id=a.chat_id,
+        ),
         depends_on=[],
     )
 
@@ -136,12 +152,11 @@ async def _apply_mission_advance(task: dict, a: MissionAdvance) -> None:
         agent_type="mechanical",
         mission_id=a.mission_id,
         depends_on=[],
-        # Payload stored in context — orchestrator copies to task["payload"] at dispatch.
-        context={
-            "executor": "workflow_advance",
-            "mission_id": a.mission_id,
-            "completed_task_id": a.completed_task_id,
-        },
+        context=_mechanical_context(
+            "workflow_advance",
+            mission_id=a.mission_id,
+            completed_task_id=a.completed_task_id,
+        ),
     )
 
 
@@ -215,15 +230,14 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
         description="",
         agent_type="mechanical",
         mission_id=task.get("mission_id"),
-        # Payload stored in context — orchestrator copies to task["payload"] at dispatch.
-        context={
-            "executor": "notify_user",
-            "message": (
+        context=_mechanical_context(
+            "notify_user",
+            message=(
                 f"\u274c Task #{task['id']} \u2192 DLQ\n"
                 f"**{(task.get('title') or '')[:60]}**\n"
                 f"Reason: {error[:100]}"
             ),
-        },
+        ),
         depends_on=[],
     )
 

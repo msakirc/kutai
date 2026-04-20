@@ -3,18 +3,18 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from ..app.config import MAX_CONTEXT_CHAIN_LENGTH, TASK_PRIORITY
+from ..app.config import TASK_PRIORITY
 from ..infra.db import (
     init_db, get_db, close_db, add_task, release_task_locks,
 )
 from src.infra.logging_config import get_logger
 from .router import ModelCallFailed
-from .task_context import parse_context, set_context
+from .task_context import parse_context
 from .context_injection import inject_chain_context
 from .startup_recovery import startup_recovery
 import salako
 from ..agents import get_agent
-from ..tools.workspace import get_mission_workspace
+from ..tools.workspace import get_mission_workspace, get_mission_workspace_relative
 from ..tools.git_ops import ensure_git_repo, create_mission_branch
 from ..app.telegram_bot import TelegramInterface
 

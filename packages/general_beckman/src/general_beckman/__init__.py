@@ -71,6 +71,20 @@ async def on_task_finished(task_id: int, result: dict) -> None:
         log.warning("on_task_finished: missing task", task_id=task_id)
         return
     task_ctx = parse_context(task)
+    # Workflow-step post-hook runs synchronously before routing — stores
+    # artifacts and may flip status (degenerate output, schema validation,
+    # disguised failures, human-gate clarifications). Deferring this to
+    # the workflow_advance mechanical task caused a race: dependent tasks
+    # became ready and picked up empty blackboards before the advance
+    # task ran.
+    try:
+        from src.workflows.engine.hooks import (
+            is_workflow_step, post_execute_workflow_step,
+        )
+        if is_workflow_step(task_ctx):
+            await post_execute_workflow_step(task, result)
+    except Exception as e:
+        log.warning("post_execute_workflow_step raised", task_id=task_id, error=str(e))
     actions = route_result(task, result)
     if actions is None:
         return

@@ -19,3 +19,37 @@ def test_posthook_verdict_is_action():
     )
     assert v.passed is True
     assert v.raw == {"score": 0.9}
+
+
+from general_beckman.posthooks import determine_posthooks
+
+
+def test_mechanical_task_needs_no_posthooks():
+    task = {"agent_type": "mechanical"}
+    assert determine_posthooks(task, {}, {}) == []
+
+
+def test_shopping_pipeline_task_needs_no_posthooks():
+    task = {"agent_type": "shopping_pipeline"}
+    assert determine_posthooks(task, {}, {}) == []
+
+
+def test_grader_task_needs_no_posthooks():
+    task = {"agent_type": "grader"}
+    assert determine_posthooks(task, {}, {}) == []
+
+
+def test_artifact_summarizer_task_needs_no_posthooks():
+    task = {"agent_type": "artifact_summarizer"}
+    assert determine_posthooks(task, {}, {}) == []
+
+
+def test_llm_agent_task_needs_grade_by_default():
+    task = {"agent_type": "writer"}
+    assert determine_posthooks(task, {}, {}) == ["grade"]
+
+
+def test_requires_grading_false_opts_out():
+    task = {"agent_type": "writer"}
+    ctx = {"requires_grading": False}
+    assert determine_posthooks(task, ctx, {}) == []

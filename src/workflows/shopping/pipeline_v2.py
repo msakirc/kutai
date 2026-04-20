@@ -5,6 +5,8 @@ See docs/superpowers/specs/2026-04-21-shopping-trust-sites-synthesize-reviews-de
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
@@ -91,3 +93,110 @@ async def step_resolve(query: str, per_site_n: int) -> list[Candidate]:
             )
     logger.info("step_resolve done", candidate_count=len(cands))
     return cands
+
+
+def _strip_json_fences(text: str) -> str:
+    """Remove ```json ... ``` fences some models emit."""
+    m = re.search(r"```(?:json)?\s*(.+?)\s*```", text, flags=re.DOTALL)
+    return m.group(1) if m else text
+
+
+def _per_site_top1_fallback(candidates: list[Candidate]) -> list[ProductGroup]:
+    """Grouping fallback: one group per site's rank-1 candidate."""
+    seen_sites: set[str] = set()
+    groups: list[ProductGroup] = []
+    for idx, c in enumerate(candidates):
+        if c.site_rank != 1:
+            continue
+        if c.site in seen_sites:
+            continue
+        seen_sites.add(c.site)
+        groups.append(
+            ProductGroup(
+                representative_title=c.title,
+                member_indices=[idx],
+                is_accessory_or_part=False,
+                prominence=1.0,
+            )
+        )
+    return groups
+
+
+async def _grouping_llm_call(prompt: str) -> dict:
+    """Dispatch the grouping prompt. Returns the dispatcher response dict.
+
+    Split out so tests can patch this one function instead of the dispatcher.
+    """
+    from src.core.llm_dispatcher import get_dispatcher, CallCategory
+    dispatcher = get_dispatcher()
+    return await dispatcher.request(
+        category=CallCategory.MAIN_WORK,
+        task="shopping_grouper",
+        agent_type="shopping_pipeline_v2",
+        difficulty=3,
+        messages=[
+            {"role": "system", "content": "You output valid JSON only."},
+            {"role": "user", "content": prompt},
+        ],
+    )
+
+
+async def step_group(candidates: list[Candidate]) -> list[ProductGroup]:
+    """LLM-based grouping of candidates into product groups.
+
+    Falls back to one group per site's rank-1 candidate on any LLM or parse error.
+    """
+    if not candidates:
+        return []
+
+    from src.workflows.shopping.prompts_v2 import GROUPING_PROMPT
+
+    # Compact JSON view for the LLM — titles + site + price only
+    view = [
+        {"index": i, "title": c.title, "site": c.site, "price": c.price}
+        for i, c in enumerate(candidates)
+    ]
+    prompt = GROUPING_PROMPT.format(candidates_json=json.dumps(view, ensure_ascii=False))
+
+    try:
+        resp = await _grouping_llm_call(prompt)
+    except Exception as exc:
+        logger.warning("grouping LLM failed, using per-site fallback: %s", exc)
+        return _per_site_top1_fallback(candidates)
+
+    content = _strip_json_fences(str(resp.get("content", "")).strip())
+    try:
+        parsed = json.loads(content)
+        raw_groups = parsed.get("groups", [])
+    except (json.JSONDecodeError, TypeError, AttributeError) as exc:
+        logger.warning("grouping LLM output not parseable, using fallback: %s", exc)
+        return _per_site_top1_fallback(candidates)
+
+    groups: list[ProductGroup] = []
+    n = len(candidates)
+    for g in raw_groups:
+        members = [i for i in (g.get("member_indices") or []) if isinstance(i, int) and 0 <= i < n]
+        if not members:
+            continue
+        title = str(g.get("representative_title") or candidates[members[0]].title)
+        is_acc = bool(g.get("is_accessory_or_part"))
+        prominence = sum(1.0 / candidates[i].site_rank for i in members)
+        groups.append(
+            ProductGroup(
+                representative_title=title,
+                member_indices=members,
+                is_accessory_or_part=is_acc,
+                prominence=prominence,
+            )
+        )
+
+    if not groups:
+        logger.warning("grouping returned no valid groups, using fallback")
+        return _per_site_top1_fallback(candidates)
+
+    logger.info(
+        "step_group done",
+        group_count=len(groups),
+        accessory_drop_count=sum(1 for g in groups if g.is_accessory_or_part),
+    )
+    return groups

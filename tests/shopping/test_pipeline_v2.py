@@ -127,3 +127,88 @@ def test_prompt_templates_exist_and_have_required_placeholders():
     assert "praise" in prompts_v2.SYNTHESIS_PROMPT
     assert "complaints" in prompts_v2.SYNTHESIS_PROMPT
     assert "insufficient_data" in prompts_v2.SYNTHESIS_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_step_group_parses_llm_response_and_filters_accessories():
+    """Grouping LLM output is parsed; accessory-flagged groups kept with flag set."""
+    from src.workflows.shopping.pipeline_v2 import Candidate, step_group
+
+    cands = [
+        Candidate(title="Siemens EQ.6 S100 coffee machine", site="hepsiburada",
+                  site_rank=1, price=24745.0, original_price=None,
+                  url="h1", rating=4.5, review_count=100, review_snippets=[]),
+        Candidate(title="DL-Pro demleme ünitesi Siemens EQ.3 S100",
+                  site="amazon_tr", site_rank=1, price=4800.0,
+                  original_price=None, url="a1", rating=5.0,
+                  review_count=3, review_snippets=[]),
+    ]
+    fake_llm_response = {
+        "content": (
+            '{"groups": ['
+            '  {"representative_title": "Siemens EQ.6 S100", '
+            '   "member_indices": [0], "is_accessory_or_part": false},'
+            '  {"representative_title": "Siemens EQ.3 brewing unit", '
+            '   "member_indices": [1], "is_accessory_or_part": true}'
+            ']}'
+        ),
+        "model": "fake-model",
+        "cost": 0.0,
+    }
+    with patch(
+        "src.workflows.shopping.pipeline_v2._grouping_llm_call",
+        new=AsyncMock(return_value=fake_llm_response),
+    ):
+        groups = await step_group(cands)
+
+    assert len(groups) == 2
+    assert groups[0].representative_title.startswith("Siemens EQ.6")
+    assert groups[0].is_accessory_or_part is False
+    assert groups[1].is_accessory_or_part is True
+
+
+@pytest.mark.asyncio
+async def test_step_group_fallback_on_llm_failure():
+    """LLM failure → each site's top-1 becomes its own group (trust-sites fallback)."""
+    from src.workflows.shopping.pipeline_v2 import Candidate, step_group
+
+    cands = [
+        Candidate(title="A1", site="trendyol", site_rank=1, price=100,
+                  original_price=None, url="u1", rating=None,
+                  review_count=None, review_snippets=[]),
+        Candidate(title="A2", site="trendyol", site_rank=2, price=110,
+                  original_price=None, url="u2", rating=None,
+                  review_count=None, review_snippets=[]),
+        Candidate(title="B1", site="hepsiburada", site_rank=1, price=140,
+                  original_price=None, url="u3", rating=None,
+                  review_count=None, review_snippets=[]),
+    ]
+    with patch(
+        "src.workflows.shopping.pipeline_v2._grouping_llm_call",
+        new=AsyncMock(side_effect=RuntimeError("LLM boom")),
+    ):
+        groups = await step_group(cands)
+
+    # One group per site, containing that site's rank-1 candidate only
+    assert len(groups) == 2
+    titles = {g.representative_title for g in groups}
+    assert titles == {"A1", "B1"}
+
+
+@pytest.mark.asyncio
+async def test_step_group_fallback_on_malformed_json():
+    from src.workflows.shopping.pipeline_v2 import Candidate, step_group
+
+    cands = [
+        Candidate(title="X1", site="s1", site_rank=1, price=1, original_price=None,
+                  url="u", rating=None, review_count=None, review_snippets=[]),
+    ]
+    bad = {"content": "not json at all", "model": "m", "cost": 0}
+    with patch(
+        "src.workflows.shopping.pipeline_v2._grouping_llm_call",
+        new=AsyncMock(return_value=bad),
+    ):
+        groups = await step_group(cands)
+
+    assert len(groups) == 1
+    assert groups[0].representative_title == "X1"

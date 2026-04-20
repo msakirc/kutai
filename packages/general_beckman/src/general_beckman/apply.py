@@ -146,6 +146,10 @@ async def _apply_failed(task: dict, a: Failed) -> None:
 
 async def _apply_mission_advance(task: dict, a: MissionAdvance) -> None:
     from src.infra.db import add_task
+    # Pass the completed task's result dict (a.raw) through to the
+    # workflow_advance executor — post_execute_workflow_step needs it
+    # to extract output_value and persist artifacts. Omitting it made
+    # every mission step produce an empty artifact downstream.
     await add_task(
         title=f"Workflow advance: mission #{a.mission_id}",
         description="",
@@ -156,6 +160,7 @@ async def _apply_mission_advance(task: dict, a: MissionAdvance) -> None:
             "workflow_advance",
             mission_id=a.mission_id,
             completed_task_id=a.completed_task_id,
+            previous_result=a.raw or {},
         ),
     )
 

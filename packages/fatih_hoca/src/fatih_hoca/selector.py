@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from fatih_hoca.ranking import rank_candidates
 from fatih_hoca.registry import ModelInfo, ModelRegistry
@@ -462,3 +463,135 @@ class Selector:
             # server-side thinking is still active (generates think tokens).
             min_time *= 3.0 if needs_thinking else 1.5
         return min_time
+
+
+# --- Test-only helper (Phase 2d scenarios) -----------------------------------
+
+from dataclasses import dataclass
+
+
+@dataclass
+class _SimPickResult:
+    model_name: str
+    pool: str
+    cap_score_100: float
+    tokens_per_second: float
+
+
+def select_for_simulation(
+    *,
+    task_name: str,
+    difficulty: int,
+    estimated_output_tokens: int,
+    snapshot: Any,
+    providers_cfg: dict,
+    queue_profile: Any = None,
+) -> "_SimPickResult":
+    """Test-only adapter: build ModelInfo stubs from providers_cfg, call
+    rank_candidates, return a light pick result.
+
+    Used by Phase 2d stateful simulator. Not intended for production code.
+    """
+    from types import SimpleNamespace
+    from fatih_hoca import ranking as _ranking_mod
+    from fatih_hoca.ranking import rank_candidates
+    from fatih_hoca.requirements import ModelRequirements, QueueProfile, get_quota_planner
+
+    # Install queue profile on the (module-global) QuotaPlanner so that
+    # rank_candidates' utilization layer sees live queue pressure. Reset
+    # to empty if caller didn't provide one — sequential sim ticks must
+    # not leak state from prior runs.
+    planner = get_quota_planner()
+    if queue_profile is not None:
+        planner.set_queue_profile(queue_profile)
+    else:
+        planner.set_queue_profile(QueueProfile())
+
+    candidates: list[Any] = []
+    cap_overrides: dict[str, float] = {"loaded-local": 55.0}
+
+    # Local stub — one loaded local (always present)
+    local_model = SimpleNamespace(
+        name="loaded-local",
+        litellm_name="loaded-local",
+        is_local=True,
+        is_loaded=True,
+        is_free=False,
+        provider="local",
+        capabilities=SimpleNamespace(),
+        tokens_per_second=20.0,
+        load_time_seconds=0.0,
+        total_params_b=7,
+        active_params_b=7,
+        specialty=None,
+        thinking_model=False,
+        operational_dict=lambda: {"context_window": 32000},
+        estimated_cost=lambda inp, out: 0.0,
+        location="local",
+    )
+
+    # Cloud stubs
+    for provider, cfg in providers_cfg.items():
+        is_free = cfg.get("is_free", False)
+        for model_id, model_cfg in cfg.get("models", {}).items():
+            cap_overrides[model_id] = float(model_cfg.get("cap_score_100", 50.0))
+            candidates.append(SimpleNamespace(
+                name=model_id,
+                litellm_name=model_id,
+                is_local=False,
+                is_loaded=False,
+                is_free=is_free,
+                provider=provider,
+                capabilities=SimpleNamespace(),
+                tokens_per_second=0.0,
+                load_time_seconds=0.0,
+                total_params_b=0,
+                active_params_b=0,
+                specialty=None,
+                thinking_model=False,
+                operational_dict=lambda: {"context_window": 128000},
+                estimated_cost=(lambda inp, out, _free=is_free: 0.0 if _free else 0.005),
+                location="cloud",
+            ))
+    candidates.append(local_model)
+
+    # Monkey-patch score_model_for_task to return per-model overrides
+    # (ranking.py expects a 0-10 raw score — we divide cap_100 by 10).
+    real_score = _ranking_mod.score_model_for_task
+
+    def _fake_score_0_10(model_capabilities, model_operational, requirements):
+        for c in candidates:
+            if c.capabilities is model_capabilities:
+                return cap_overrides.get(c.name, 50.0) / 10.0
+        return 5.0
+
+    _ranking_mod.score_model_for_task = _fake_score_0_10
+    try:
+        reqs = ModelRequirements(
+            task=task_name or "generic",
+            difficulty=difficulty,
+            estimated_output_tokens=estimated_output_tokens,
+        )
+        scored = rank_candidates(
+            candidates=candidates,
+            reqs=reqs,
+            snapshot=snapshot,
+            failures=[],
+            remaining_budget=300.0,
+        )
+    finally:
+        _ranking_mod.score_model_for_task = real_score
+
+    if not scored:
+        return _SimPickResult(
+            model_name="loaded-local", pool="local",
+            cap_score_100=55.0, tokens_per_second=20.0,
+        )
+
+    top = scored[0]
+    return _SimPickResult(
+        model_name=top.model.name,
+        pool=top.pool or "local",
+        cap_score_100=top.capability_score * 10.0,
+        tokens_per_second=top.model.tokens_per_second or 20.0,
+    )

@@ -1,10 +1,20 @@
-"""Counterfactual CLI sanity check: runs against a seeded sqlite and emits JSON."""
+"""Counterfactual CLI sanity check: runs against a seeded sqlite and emits JSON.
+
+Updated for Phase 2d: the CLI sweeps --k (UTILIZATION_K) instead of the old
+--urgency-bonus / --cap-gate (the gate was retired, K replaced it as the
+tunable magnitude of the utilization equation).
+"""
 from __future__ import annotations
 import json
 import os
 import sqlite3
 import subprocess
 import sys
+from pathlib import Path
+
+
+WORKTREE = Path(__file__).resolve().parents[3]
+SRC_PATH = WORKTREE / "packages" / "fatih_hoca" / "src"
 
 
 def test_cli_runs_on_empty_db(tmp_path):
@@ -26,16 +36,14 @@ def test_cli_runs_on_empty_db(tmp_path):
     conn.commit()
     conn.close()
 
-    env = {**os.environ, "DB_PATH": str(db), "PYTHONPATH": "packages/fatih_hoca/src"}
+    env = {**os.environ, "DB_PATH": str(db), "PYTHONPATH": str(SRC_PATH)}
     result = subprocess.run(
-        [sys.executable, "-m", "fatih_hoca.counterfactual",
-         "--urgency-bonus", "0.25", "--cap-gate", "0.85"],
+        [sys.executable, "-m", "fatih_hoca.counterfactual", "--k", "1.0"],
         capture_output=True, text=True, env=env,
         timeout=30,
-        cwd=r"C:\Users\sakir\Dropbox\Workspaces\kutay\.worktrees\fatih-hoca-phase2c",
+        cwd=str(WORKTREE),
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
-    # Output mentions 0 rows
     assert "rows" in result.stdout.lower()
 
 
@@ -77,12 +85,56 @@ def test_cli_reports_agreement_rate(tmp_path):
     conn.commit()
     conn.close()
 
-    env = {**os.environ, "DB_PATH": str(db), "PYTHONPATH": "packages/fatih_hoca/src"}
+    env = {**os.environ, "DB_PATH": str(db), "PYTHONPATH": str(SRC_PATH)}
     result = subprocess.run(
-        [sys.executable, "-m", "fatih_hoca.counterfactual",
-         "--urgency-bonus", "0.25", "--cap-gate", "0.85"],
+        [sys.executable, "-m", "fatih_hoca.counterfactual", "--k", "1.0"],
         capture_output=True, text=True, env=env, timeout=30,
-        cwd=r"C:\Users\sakir\Dropbox\Workspaces\kutay\.worktrees\fatih-hoca-phase2c",
+        cwd=str(WORKTREE),
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     assert "agreement" in result.stdout.lower()
+
+
+def test_rescore_utilization_over_qualified_dampens():
+    """Claude (cap=93) on d=3 (cap_needed=30, fit_excess=0.63): negative
+    scarcity conservation fully applied (dampener=1-0.63=0.37)."""
+    from fatih_hoca.counterfactual import _rescore_utilization
+    out = _rescore_utilization(
+        original_score=100.0,
+        cap_score_100=93.0,
+        task_difficulty=3,
+        scarcity=-1.0,
+        K=1.0,
+    )
+    # adj = 1 + 1.0 * -1.0 * (1 - 0.63) = 1 - 0.37 = 0.63
+    assert 62 < out < 64
+
+
+def test_rescore_utilization_positive_symmetric_dampener():
+    """Under-qualified candidate with positive scarcity: dampener uses
+    abs(fit_excess) — burning a wrong tool is wasteful."""
+    from fatih_hoca.counterfactual import _rescore_utilization
+    # cap=55, d=8 → cap_needed=75, fit_excess=-0.20
+    # adj = 1 + 1.0 * 0.5 * (1 - 0.20) = 1 + 0.4 = 1.4
+    out = _rescore_utilization(
+        original_score=100.0,
+        cap_score_100=55.0,
+        task_difficulty=8,
+        scarcity=0.5,
+        K=1.0,
+    )
+    assert 139 < out < 141
+
+
+def test_rescore_utilization_well_fit_full_boost():
+    """Well-fit candidate (fit_excess=0) gets full positive boost."""
+    from fatih_hoca.counterfactual import _rescore_utilization
+    out = _rescore_utilization(
+        original_score=100.0,
+        cap_score_100=75.0,
+        task_difficulty=8,
+        scarcity=1.0,
+        K=1.0,
+    )
+    # fit_excess=0.0 → dampener=1.0 → adj=2.0
+    assert 199 < out < 201

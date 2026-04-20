@@ -19,12 +19,14 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from fatih_hoca.capabilities import TaskRequirements, score_model_for_task
+from fatih_hoca.capability_curve import cap_needed_for_difficulty
 from fatih_hoca.grading import grading_perf_score
 from fatih_hoca.pools import (
-    Pool, classify_pool, compute_urgency,
-    URGENCY_MAX_BONUS,
+    Pool, classify_pool,
+    UTILIZATION_K,
 )
 from fatih_hoca.requirements import get_quota_planner
+from fatih_hoca.scarcity import pool_scarcity
 
 if TYPE_CHECKING:
     pass
@@ -39,11 +41,6 @@ logger = logging.getLogger("fatih_hoca.ranking")
 # Weight for grading-derived score in the perf_score blend (Phase 2c).
 # blended = GRADING_WEIGHT * grading + (1 - GRADING_WEIGHT) * tps_perf
 GRADING_WEIGHT: float = 0.6
-
-# Capability gate ratio for urgency multiplier (Phase 2c).
-# Only candidates whose cap_score >= CAP_GATE_RATIO * top_cap receive
-# the urgency bonus. Prevents flooding free tokens into weak models.
-CAP_GATE_RATIO: float = 0.85
 
 
 # ─── ScoredModel ─────────────────────────────────────────────────────────────
@@ -141,38 +138,57 @@ def _failure_penalty(
     return multiplier, exclude, reasons
 
 
-# ─── Urgency Layer Helper ────────────────────────────────────────────────────
+# ─── Utilization Layer Helper ────────────────────────────────────────────────
 
-def _apply_urgency_layer(scored: list[ScoredModel], snapshot: SystemSnapshot) -> None:
-    """Apply pool-urgency multiplier with capability gate (Phase 2c).
+def _apply_utilization_layer(
+    scored: list[ScoredModel],
+    snapshot: SystemSnapshot,
+    task_difficulty: int,
+    queue_state,
+) -> None:
+    """Apply Phase 2d unified utilization equation.
 
-    Two-pass design:
-      Pass 1 (done before calling this): all candidates are scored into `scored`.
-      Pass 2 (this function): walk `scored` to apply urgency + gate.
+    For each ScoredModel:
+        fit_excess = (cap_score_100 - cap_needed_for_difficulty(d)) / 100
+        scarcity   = pool_scarcity(model, snapshot, queue_state, d)
+        composite *= 1 + UTILIZATION_K * scarcity * (1 - max(0, fit_excess))
 
-    Only candidates whose cap_score (0-100) >= CAP_GATE_RATIO * top_cap receive
-    the urgency bonus. This prevents weak models from free-riding on quota urgency.
-
-    Mutates each ScoredModel's .score, .composite_score, .pool, .urgency in-place.
-    Does NOT re-sort — caller is responsible for sorting after this call.
+    Mutates each .score/.composite_score/.pool/.urgency in place.
+    Does NOT re-sort — caller is responsible.
     """
     if not scored:
         return
-    top_cap = max(sm.capability_score * 10.0 for sm in scored)
-    cap_threshold = top_cap * CAP_GATE_RATIO
+    cap_needed = cap_needed_for_difficulty(task_difficulty)
     for sm in scored:
         cap_score_100 = sm.capability_score * 10.0
-        urgency = compute_urgency(sm.model, snapshot)
+        fit_excess = (cap_score_100 - cap_needed) / 100.0
+        scarcity = pool_scarcity(sm.model, snapshot, queue_state, task_difficulty)
         pool = classify_pool(sm.model)
         sm.pool = pool.value
-        sm.urgency = urgency
-        if urgency > 0 and cap_score_100 >= cap_threshold:
-            mult = 1.0 + URGENCY_MAX_BONUS * urgency
-            sm.score *= mult
-            sm.composite_score = sm.score
-            sm.reasons.append(f"urgency={pool.value}:{urgency:.2f}×{mult:.2f}")
-        elif urgency > 0:
-            sm.reasons.append(f"urgency_gated={pool.value}:{urgency:.2f}")
+        # Reuse `urgency` column for scarcity scalar — telemetry schema continuity
+        sm.urgency = scarcity
+
+        if scarcity == 0.0:
+            continue
+        # Symmetric fit dampener: positive scarcity ("burn me") only makes
+        # sense when the candidate is well-fit. An over-qualified candidate
+        # shouldn't be boosted onto an easy task (Claude on d=3), and an
+        # under-qualified candidate shouldn't be boosted onto a hard one
+        # (loaded local on d=8 "because it's idle"). Conservation signals
+        # (scarcity < 0) apply at full strength — we always want to reserve
+        # expensive quota regardless of the current task's fit.
+        if scarcity > 0:
+            fit_dampener = max(0.0, 1.0 - abs(fit_excess))
+        else:
+            fit_dampener = 1.0 - max(0.0, fit_excess)
+        adjustment = 1.0 + UTILIZATION_K * scarcity * fit_dampener
+        if adjustment == 1.0:
+            continue
+        sm.score *= adjustment
+        sm.composite_score = sm.score
+        sm.reasons.append(
+            f"util={pool.value}:s={scarcity:+.2f}×({fit_dampener:.2f})→{adjustment:.3f}"
+        )
 
 
 # ─── Core Ranking Function ───────────────────────────────────────────────────
@@ -516,10 +532,25 @@ def rank_candidates(
             if effective_task in matched:
                 reasons.append(f"specialty={model.specialty}")
 
-        # Group C: Swap stickiness — prefer the already-loaded model
-        # Overhead calls (classifier, grader, reflection) get much stronger
-        # stickiness — swapping the model for a quick overhead call is
-        # wasteful on a single-slot llama-server.
+        # Group C: Swap stickiness — tiebreaker between close-cap locals,
+        # not a capability override (2026-04-20).
+        #
+        # Original 1.4× magnitude was strong enough to crush cloud options
+        # entirely, including qualified cloud on hard tasks. Stickiness's
+        # real job is narrow: when two local models have similar cap
+        # scores, prefer the loaded one to avoid a 30s+ GPU swap. It was
+        # never meant to overcome capability gaps.
+        #
+        # Scaling:
+        #   main_work: 1.10× (10% bias — enough to edge a close local peer,
+        #             not enough to beat cloud that's +20% on composite)
+        #   overhead:  1.50× (stronger — swap for a tiny classifier call is
+        #             wasteful; but still not 2.0×)
+        #
+        # Additionally fades when loaded model is under-qualified:
+        #   fit_excess >=  0.00 → full stickiness (qualified or better)
+        #   fit_excess  = -0.10 → 0.5× factor
+        #   fit_excess <= -0.20 → 0.0× factor (no stickiness, we're wrong tool)
         _is_overhead = reqs.call_category == "overhead"
         if model.is_local and model.is_loaded:
             _thinking_mismatch = (
@@ -528,14 +559,28 @@ def rank_candidates(
                 and not local_state.thinking_enabled
             )
             if _thinking_mismatch:
-                composite *= 1.10
+                composite *= 1.05
                 reasons.append("thinking_mismatch")
             else:
-                _stick = 2.0 if _is_overhead else 1.40
+                _stick_raw = 1.50 if _is_overhead else 1.10
+                _fit_excess = (cap_score - cap_needed_for_difficulty(reqs.difficulty)) / 100.0
+                if _fit_excess >= 0:
+                    _qual_factor = 1.0
+                else:
+                    _qual_factor = max(0.0, 1.0 + _fit_excess * 5.0)
+                _stick = 1.0 + (_stick_raw - 1.0) * _qual_factor
                 composite *= _stick
-                reasons.append("loaded" if not _is_overhead else "loaded_overhead")
+                if _qual_factor < 1.0:
+                    reasons.append(
+                        f"loaded_qual({_qual_factor:.2f}→{_stick:.2f})"
+                        + ("_overhead" if _is_overhead else "")
+                    )
+                else:
+                    reasons.append("loaded" if not _is_overhead else "loaded_overhead")
         elif model.is_local and not model.is_loaded:
-            _swap_penalty = 0.30 if _is_overhead else 0.75
+            # Symmetric softening on the penalty side — swap cost is real
+            # but ~30s on a typical task, not a composite-crushing factor.
+            _swap_penalty = 0.60 if _is_overhead else 0.92
             composite *= _swap_penalty
             reasons.append("needs_swap" if not _is_overhead else "needs_swap_overhead")
 
@@ -569,9 +614,14 @@ def rank_candidates(
 
     scored.sort(key=lambda c: -c.score)
 
-    # ── Phase 2c: Pool-urgency layer with capability gate ──
-    _apply_urgency_layer(scored, snapshot)
-    # Re-sort after urgency adjustments (gate may shift ordering)
+    # ── Phase 2d: Unified utilization layer ──
+    planner = get_quota_planner()
+    _apply_utilization_layer(
+        scored,
+        snapshot,
+        task_difficulty=reqs.difficulty,
+        queue_state=planner.queue_profile,
+    )
     scored.sort(key=lambda c: -c.score)
 
     # ── S7: Sibling Rebalancing ──

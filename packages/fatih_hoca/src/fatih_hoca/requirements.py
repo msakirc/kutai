@@ -224,6 +224,11 @@ class QuotaPlanner:
     def expensive_threshold(self) -> int:
         return self._expensive_threshold
 
+    @property
+    def queue_profile(self) -> QueueProfile:
+        """Current queue profile — defaults to empty until `set_queue_profile` called."""
+        return self._queue_profile
+
     def update_paid_utilization(
         self,
         provider: str,

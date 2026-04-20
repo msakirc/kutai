@@ -396,3 +396,36 @@ belongs semantically.
 **orchestrator.py final state:** 366 lines (startup + shutdown + ~30-line
 pump loop; the remaining lines are imports, health-check helpers, and
 run_once/startup hooks).
+
+## Phase 2d — Fatih Hoca Utilization Equilibrium (2026-04-20)
+
+**Shipped:** `packages/fatih_hoca/src/fatih_hoca/scarcity.py` (new) +
+`ranking.py::_apply_utilization_layer` (replaces Phase 2c's gated
+urgency layer) + `capability_curve.py` (new) + revised counterfactual
+CLI + stateful simulator harness under `packages/fatih_hoca/tests/sim/`.
+
+**Public-facing change:** selection now balances "don't waste expensive
+on easy" and "don't waste free-that-expires" as a single scalar per
+(model, task) pair, instead of as separate boost/penalty layers. No hard
+capability gate — the dampener handles capability fit naturally.
+
+**Design reasoning + full record:** `docs/architecture/fatih-hoca-phase2d-equilibrium.md`.
+
+**Package README:** `packages/fatih_hoca/README.md` — how to run the
+simulator, tuning checklist, module map.
+
+**Runnable equilibrium table:**
+```bash
+python packages/fatih_hoca/tests/sim/run_scenarios.py
+python packages/fatih_hoca/tests/sim/run_swap_storm_check.py
+```
+
+**Structural bugs surfaced + fixed during tuning:**
+- Base ranking stickiness at 1.4× was a capability override, not a
+  swap-storm damper. Dialed to 1.10×, fades when under-qualified.
+- Per_call scarcity was conservation-only — added abundance arm so
+  capability wins when budget is flush + task is hard.
+- Easy-task-waste metric counted free-pool burns (wrong); now only
+  paid over-qualified picks count.
+- Free-quota-utilization metric read final-state remaining (under-counts
+  when buckets reset mid-run); now counts picks per pool / limit.

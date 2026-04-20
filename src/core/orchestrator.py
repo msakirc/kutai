@@ -79,6 +79,9 @@ class Orchestrator:
                 return ({"status": "completed", "result": json.dumps(r.result)}
                         if r.status == "completed"
                         else {"status": "failed", "error": r.error or "mechanical failed"})
+            if agent_type == "shopping_pipeline":
+                from src.workflows.shopping.pipeline import ShoppingPipeline
+                return await ShoppingPipeline().run(task)
             return await get_agent(agent_type).execute(task)
 
         try:

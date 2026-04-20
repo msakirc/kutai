@@ -47,8 +47,17 @@ def rewrite_actions(
 
 
 def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
-    # Rule 1: mission-task clean completion → also emit MissionAdvance
-    if isinstance(a, Complete) and task.get("mission_id"):
+    # Rule 1: mission-task clean completion → also emit MissionAdvance.
+    # Skip when the task IS itself a workflow_advance mechanical executor
+    # — otherwise its completion re-injects MissionAdvance and loops forever.
+    # Other mechanical tasks (git_commit, clarify, notify_user, workspace_snapshot)
+    # still advance the mission.
+    payload_action = (task_ctx.get("payload") or {}).get("action")
+    if (
+        isinstance(a, Complete)
+        and task.get("mission_id")
+        and payload_action != "workflow_advance"
+    ):
         return [
             a,
             MissionAdvance(

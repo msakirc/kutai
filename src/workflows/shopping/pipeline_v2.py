@@ -200,3 +200,79 @@ async def step_group(candidates: list[Candidate]) -> list[ProductGroup]:
         accessory_drop_count=sum(1 for g in groups if g.is_accessory_or_part),
     )
     return groups
+
+
+async def _synthesis_llm_call(prompt: str) -> dict:
+    """Dispatch the synthesis prompt. Returns the dispatcher response dict."""
+    from src.core.llm_dispatcher import get_dispatcher, CallCategory
+    dispatcher = get_dispatcher()
+    return await dispatcher.request(
+        category=CallCategory.MAIN_WORK,
+        task="shopping_review_synthesizer",
+        agent_type="shopping_pipeline_v2",
+        difficulty=6,
+        messages=[
+            {"role": "system", "content": "You output valid JSON only."},
+            {"role": "user", "content": prompt},
+        ],
+    )
+
+
+def _insufficient() -> ReviewSynthesis:
+    return ReviewSynthesis(praise=[], complaints=[], red_flags=[], insufficient_data=True)
+
+
+async def step_synthesize_reviews(
+    group: ProductGroup, candidates: list[Candidate],
+) -> ReviewSynthesis:
+    """LLM-based review synthesis for one group. Returns insufficient_data on failure."""
+    from src.workflows.shopping.prompts_v2 import SYNTHESIS_PROMPT
+
+    # Gather snippets from all group members
+    snippets: list[str] = []
+    for idx in group.member_indices:
+        if 0 <= idx < len(candidates):
+            snippets.extend(s for s in candidates[idx].review_snippets if s and s.strip())
+
+    if not snippets:
+        logger.info(
+            "synthesize short-circuit (no snippets)",
+            representative_title=group.representative_title,
+        )
+        return _insufficient()
+
+    prompt = SYNTHESIS_PROMPT.format(
+        representative_title=group.representative_title,
+        review_snippets_json=json.dumps(snippets, ensure_ascii=False),
+    )
+
+    try:
+        resp = await _synthesis_llm_call(prompt)
+    except Exception as exc:
+        logger.warning("synthesis LLM failed: %s", exc)
+        return _insufficient()
+
+    content = _strip_json_fences(str(resp.get("content", "")).strip())
+    try:
+        parsed = json.loads(content)
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning("synthesis LLM output not parseable: %s", exc)
+        return _insufficient()
+
+    def _take_list(key: str) -> list[str]:
+        v = parsed.get(key) or []
+        return [str(x).strip() for x in v if isinstance(x, (str, int, float)) and str(x).strip()][:3]
+
+    syn = ReviewSynthesis(
+        praise=_take_list("praise"),
+        complaints=_take_list("complaints"),
+        red_flags=_take_list("red_flags"),
+        insufficient_data=bool(parsed.get("insufficient_data", False)),
+    )
+    logger.info(
+        "step_synthesize done",
+        representative_title=group.representative_title,
+        snippet_count=len(snippets),
+        insufficient=syn.insufficient_data,
+    )
+    return syn

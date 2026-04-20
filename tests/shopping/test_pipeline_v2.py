@@ -212,3 +212,108 @@ async def test_step_group_fallback_on_malformed_json():
 
     assert len(groups) == 1
     assert groups[0].representative_title == "X1"
+
+
+@pytest.mark.asyncio
+async def test_step_synthesize_parses_full_response():
+    from src.workflows.shopping.pipeline_v2 import (
+        Candidate, ProductGroup, step_synthesize_reviews,
+    )
+
+    cands = [
+        Candidate(title="T", site="s", site_rank=1, price=100, original_price=None,
+                  url="u", rating=None, review_count=None,
+                  review_snippets=["köpük harika", "sessiz"]),
+    ]
+    group = ProductGroup(
+        representative_title="T",
+        member_indices=[0],
+        is_accessory_or_part=False,
+        prominence=1.0,
+    )
+    fake_llm = {
+        "content": (
+            '{"praise": ["köpük iyi"], '
+            ' "complaints": ["pahalı"], '
+            ' "red_flags": [], '
+            ' "insufficient_data": false}'
+        ),
+        "model": "m", "cost": 0,
+    }
+    with patch(
+        "src.workflows.shopping.pipeline_v2._synthesis_llm_call",
+        new=AsyncMock(return_value=fake_llm),
+    ):
+        syn = await step_synthesize_reviews(group, cands)
+
+    assert syn.insufficient_data is False
+    assert syn.praise == ["köpük iyi"]
+    assert syn.complaints == ["pahalı"]
+    assert syn.red_flags == []
+
+
+@pytest.mark.asyncio
+async def test_step_synthesize_short_circuits_when_no_snippets():
+    """No snippets at all → return insufficient_data without calling LLM."""
+    from src.workflows.shopping.pipeline_v2 import (
+        Candidate, ProductGroup, step_synthesize_reviews,
+    )
+
+    cands = [
+        Candidate(title="T", site="s", site_rank=1, price=1, original_price=None,
+                  url="u", rating=None, review_count=None, review_snippets=[]),
+    ]
+    group = ProductGroup("T", [0], False, 1.0)
+
+    called = AsyncMock()
+    with patch("src.workflows.shopping.pipeline_v2._synthesis_llm_call", new=called):
+        syn = await step_synthesize_reviews(group, cands)
+
+    assert syn.insufficient_data is True
+    assert syn.praise == [] and syn.complaints == [] and syn.red_flags == []
+    called.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_step_synthesize_insufficient_data_flag_from_llm():
+    from src.workflows.shopping.pipeline_v2 import (
+        Candidate, ProductGroup, step_synthesize_reviews,
+    )
+
+    cands = [
+        Candidate(title="T", site="s", site_rank=1, price=1, original_price=None,
+                  url="u", rating=None, review_count=None,
+                  review_snippets=["tek yorum"]),
+    ]
+    group = ProductGroup("T", [0], False, 1.0)
+    fake_llm = {
+        "content": ('{"praise":[],"complaints":[],"red_flags":[],"insufficient_data":true}'),
+        "model": "m", "cost": 0,
+    }
+    with patch(
+        "src.workflows.shopping.pipeline_v2._synthesis_llm_call",
+        new=AsyncMock(return_value=fake_llm),
+    ):
+        syn = await step_synthesize_reviews(group, cands)
+
+    assert syn.insufficient_data is True
+
+
+@pytest.mark.asyncio
+async def test_step_synthesize_failure_returns_insufficient_data():
+    from src.workflows.shopping.pipeline_v2 import (
+        Candidate, ProductGroup, step_synthesize_reviews,
+    )
+
+    cands = [
+        Candidate(title="T", site="s", site_rank=1, price=1, original_price=None,
+                  url="u", rating=None, review_count=None,
+                  review_snippets=["x"]),
+    ]
+    group = ProductGroup("T", [0], False, 1.0)
+    with patch(
+        "src.workflows.shopping.pipeline_v2._synthesis_llm_call",
+        new=AsyncMock(side_effect=RuntimeError("LLM boom")),
+    ):
+        syn = await step_synthesize_reviews(group, cands)
+    assert syn.insufficient_data is True

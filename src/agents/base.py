@@ -2064,49 +2064,15 @@ class BaseAgent:
                         "difficulty":  reqs.difficulty,
                     }
 
-                # ── Defer grading — always set to ungraded ──
-                try:
-                    if task_id != "?":
-                        # Defer grading — set to ungraded
-                        import json as _json
-                        from src.infra.times import utc_now as _utc_now
-                        _ctx = task.get("context", "{}")
-                        if isinstance(_ctx, str):
-                            try:
-                                _ctx = _json.loads(_ctx)
-                            except (ValueError, TypeError):
-                                _ctx = {}
-                        _ctx["generating_model"] = used_model
-                        _ctx["worker_completed_at"] = _utc_now().strftime("%Y-%m-%d %H:%M:%S")
-                        _ctx["tools_used_names"] = sorted(tools_used_names)
-                        _ctx["iterations"] = iteration + 1
-
-                        from src.core.state_machine import transition_task
-                        await transition_task(
-                            task_id, "ungraded",
-                            context=_json.dumps(_ctx),
-                        )
-                        return {
-                            "status": "ungraded",
-                            "result": result,
-                            "model": used_model,
-                            "cost": total_cost,
-                            "difficulty": reqs.difficulty,
-                            "iterations": iteration + 1,
-                            "tools_used_names": sorted(tools_used_names),
-                        }
-
-                except Exception as exc:
-                    logger.warning(f"grading failed | task_id={task_id} error={exc}")
-
                 return {
-                    "status":        "completed",
-                    "result":        result,
-                    "model":         used_model,
-                    "cost":          total_cost,
-                    "difficulty":    reqs.difficulty,
-                    "iterations":    iteration + 1,
+                    "status":           "completed",
+                    "result":           result,
+                    "model":            used_model,
+                    "cost":             total_cost,
+                    "difficulty":       reqs.difficulty,
+                    "iterations":       iteration + 1,
                     "tools_used_names": sorted(tools_used_names),
+                    "generating_model": used_model,  # surfaced for post-hook scheduling
                 }
 
             # ── TOOL CALL ──

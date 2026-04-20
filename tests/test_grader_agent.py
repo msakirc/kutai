@@ -73,3 +73,15 @@ async def test_grader_missing_source_returns_failed(tmp_path, monkeypatch):
     result = await agent.execute(task)
     assert result["status"] == "failed"
     assert "missing" in result["error"].lower() or "not found" in result["error"].lower()
+
+
+def test_base_agent_does_not_self_transition_to_ungraded():
+    """BaseAgent's ReAct loop must return status='completed', never status='ungraded'."""
+    import inspect
+    from src.agents import base as _base_mod
+
+    src = inspect.getsource(_base_mod)
+    # No more transition_task(..., "ungraded", ...) call.
+    assert '"ungraded"' not in src, (
+        "base.py still references 'ungraded' — agent must not self-transition"
+    )

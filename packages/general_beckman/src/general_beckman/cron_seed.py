@@ -48,6 +48,12 @@ INTERNAL_CADENCES: list[dict] = [
         "payload": {"_executor": "api_discovery"},
     },
     {
+        "title": "price_watch_check",
+        "description": "Re-scrape watched products and notify on price drops",
+        "interval_seconds": 86400,
+        "payload": {"_executor": "price_watch_check"},
+    },
+    {
         "title": "nerd_herd_health_alert",
         "description": "Alert on Nerd Herd health anomalies",
         "interval_seconds": 600,

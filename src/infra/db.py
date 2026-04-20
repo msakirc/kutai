@@ -516,23 +516,10 @@ async def init_db():
 
     await db.commit()
 
-    # Seed todo reminder (every 2h during Turkey daytime: 9,11,13,15,17,19,21 TR = 6,8,10,12,14,16,18 UTC)
-    await db.execute("""
-        INSERT OR IGNORE INTO scheduled_tasks (id, title, description, cron_expression, agent_type, enabled, context)
-        VALUES (9999, 'Todo Reminder', 'Send pending todo items to user', '0 6,8,10,12,14,16,18 * * *', 'system', 1, '{"type": "todo_reminder"}')
-    """)
-    # Migrate existing row from Turkey-time cron to UTC cron
-    await db.execute("""
-        UPDATE scheduled_tasks SET cron_expression = '0 6,8,10,12,14,16,18 * * *'
-        WHERE id = 9999 AND cron_expression = '0 9,11,13,15,17,19,21 * * *'
-    """)
-
-    # Seed price watch checker (daily at noon UTC = 15:00 Turkey time)
-    await db.execute("""
-        INSERT OR IGNORE INTO scheduled_tasks (id, title, description, cron_expression, agent_type, enabled, context)
-        VALUES (9998, 'Price Watch Check', 'Re-scrape watched products and notify on price drops', '0 12 * * *', 'system', 1, '{"type": "price_watch_check"}')
-    """)
-
+    # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
+    # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
+    # salako mechanical executors. Clean up any stale rows from earlier runs.
+    await db.execute("DELETE FROM scheduled_tasks WHERE id IN (9998, 9999)")
     await db.commit()
 
     # Migration: fix next_run / last_run values that were stored with

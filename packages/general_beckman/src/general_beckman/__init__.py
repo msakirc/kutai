@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from general_beckman.types import Task, AgentResult
 
-__all__ = ["next_task", "on_task_finished", "enqueue", "Task", "AgentResult"]
+__all__ = ["next_task", "on_task_finished", "enqueue", "on_model_swap", "Task", "AgentResult"]
 
 
 def _capacity_snapshot():
@@ -138,4 +138,21 @@ async def enqueue(spec: dict) -> int:
     """Single external write path for user-/bot-initiated tasks."""
     from src.infra.db import add_task
     return await add_task(**spec)
+
+
+async def on_model_swap(old_model: str | None, new_model: str | None) -> None:
+    """Called by the local model manager when a model swap completes.
+
+    Wakes tasks whose retries were delayed waiting for *any* model to
+    load. Grading is no longer triggered here — it's a regular task
+    flowing through next_task().
+    """
+    try:
+        from src.infra.db import accelerate_retries
+        await accelerate_retries("model_swap")
+    except Exception as e:
+        from src.infra.logging_config import get_logger
+        get_logger("beckman.on_model_swap").debug(
+            f"accelerate_retries failed: {e}",
+        )
 

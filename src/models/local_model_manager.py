@@ -341,9 +341,9 @@ class LocalModelManager:
                 "Model %s loaded (swap #%d)", model_name, self._total_swaps
             )
 
-            # Notify dispatcher for deferred grade draining
+            # Notify Beckman so it can wake availability-delayed tasks
             try:
-                from src.core.llm_dispatcher import get_dispatcher
+                import general_beckman
                 old_litellm = None
                 new_litellm = None
                 if old_model:
@@ -352,7 +352,7 @@ class LocalModelManager:
                 new_info = registry.get(model_name)
                 new_litellm = new_info.litellm_name if new_info else None
                 _swap_task = asyncio.ensure_future(
-                    get_dispatcher().on_model_swap(old_litellm, new_litellm)
+                    general_beckman.on_model_swap(old_litellm, new_litellm)
                 )
                 _pending_swap_notification_tasks.add(_swap_task)
                 _swap_task.add_done_callback(_pending_swap_notification_tasks.discard)

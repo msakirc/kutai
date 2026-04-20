@@ -311,3 +311,15 @@ async def test_summary_fail_keeps_structural_and_completes_source(tmp_path, monk
 
     refreshed = await get_task(source_id)
     assert refreshed["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_beckman_on_model_swap_calls_accelerate_retries(monkeypatch):
+    import general_beckman
+    calls = {}
+    async def fake_accel(tag):
+        calls["tag"] = tag
+        return 3
+    monkeypatch.setattr("src.infra.db.accelerate_retries", fake_accel)
+    await general_beckman.on_model_swap("old", "new")
+    assert calls["tag"] == "model_swap"

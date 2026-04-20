@@ -339,3 +339,73 @@ def test_select_groups_drops_accessories_and_applies_50pct_rule():
 def test_select_groups_empty_input():
     from src.workflows.shopping.pipeline_v2 import select_groups
     assert select_groups([], max_groups=2) == []
+
+
+def test_format_group_card_full_output():
+    from src.workflows.shopping.pipeline_v2 import (
+        Candidate, ProductGroup, ReviewSynthesis, format_group_card,
+    )
+    cands = [
+        Candidate(title="Siemens EQ.6 Plus S100", site="hepsiburada",
+                  site_rank=1, price=24745.0, original_price=None,
+                  url="https://h.com/1", rating=4.5, review_count=312,
+                  review_snippets=[]),
+        Candidate(title="Siemens EQ.6 Plus S100", site="akakce",
+                  site_rank=1, price=25499.0, original_price=None,
+                  url="https://a.com/2", rating=None, review_count=None,
+                  review_snippets=[]),
+    ]
+    group = ProductGroup("Siemens EQ.6 Plus S100", [0, 1], False, prominence=2.0)
+    syn = ReviewSynthesis(
+        praise=["Köpük kalitesi iyi", "Sessiz çalışıyor"],
+        complaints=["Fiyat yüksek"],
+        red_flags=["Şikayetvar'da 47 şikayet"],
+        insufficient_data=False,
+    )
+    card = format_group_card(group, syn, cands, community_counts={})
+    assert "Siemens EQ.6 Plus S100" in card
+    assert "⭐ 4.5" in card and "312" in card
+    assert "👍" in card and "Köpük kalitesi iyi" in card
+    assert "👎" in card and "Fiyat yüksek" in card
+    assert "⚠️" in card and "Şikayetvar" in card
+    assert "Hepsiburada" in card.title() or "hepsiburada" in card
+    assert "24.745" in card or "24745" in card
+    assert "Yeterli inceleme verisi yok" not in card
+
+
+def test_format_group_card_insufficient_data_shows_footer():
+    from src.workflows.shopping.pipeline_v2 import (
+        Candidate, ProductGroup, ReviewSynthesis, format_group_card,
+    )
+    cands = [
+        Candidate(title="X", site="trendyol", site_rank=1, price=100.0,
+                  original_price=None, url="u", rating=None, review_count=None,
+                  review_snippets=[]),
+    ]
+    group = ProductGroup("X", [0], False, 1.0)
+    syn = ReviewSynthesis([], [], [], insufficient_data=True)
+    card = format_group_card(group, syn, cands, community_counts={})
+    assert "Yeterli inceleme verisi yok" in card
+    assert "👍" not in card
+    assert "👎" not in card
+
+
+def test_format_group_card_community_line_when_present():
+    from src.workflows.shopping.pipeline_v2 import (
+        Candidate, ProductGroup, ReviewSynthesis, format_group_card,
+    )
+    cands = [Candidate(title="X", site="t", site_rank=1, price=1,
+                       original_price=None, url="u", rating=None,
+                       review_count=None, review_snippets=[])]
+    group = ProductGroup("X", [0], False, 1.0)
+    syn = ReviewSynthesis([], [], [], insufficient_data=True)
+    card = format_group_card(group, syn, cands,
+                             community_counts={"Technopat": 12, "Ekşi": 8})
+    assert "💬" in card and "Technopat (12" in card and "Ekşi (8" in card
+
+
+def test_format_response_joins_cards():
+    from src.workflows.shopping.pipeline_v2 import format_response
+    out = format_response(["CARD1", "CARD2"])
+    assert "CARD1" in out and "CARD2" in out
+    assert out.index("CARD1") < out.index("CARD2")

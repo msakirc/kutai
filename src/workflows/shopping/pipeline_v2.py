@@ -294,3 +294,88 @@ def select_groups(
         else:
             break
     return kept
+
+
+def _fmt_price_tr(value: float | None) -> str:
+    if value is None:
+        return "—"
+    s = f"{value:,.0f}"
+    return s.replace(",", ".")
+
+
+def _site_label(site: str) -> str:
+    mapping = {
+        "trendyol": "Trendyol", "hepsiburada": "Hepsiburada",
+        "amazon_tr": "Amazon.tr", "akakce": "Akakçe", "n11": "n11",
+        "gittigidiyor": "GittiGidiyor", "epey": "Epey",
+        "teknosa": "Teknosa", "vatan": "Vatan",
+    }
+    return mapping.get(site, site.title())
+
+
+def format_group_card(
+    group: ProductGroup,
+    synthesis: ReviewSynthesis,
+    candidates: list[Candidate],
+    community_counts: dict[str, int] | None = None,
+) -> str:
+    """Reviews-first Telegram markdown for one product group."""
+    members = [candidates[i] for i in group.member_indices if 0 <= i < len(candidates)]
+
+    rating = next((m.rating for m in members if m.rating is not None), None)
+    review_count = next((m.review_count for m in members if m.review_count), None)
+
+    lines: list[str] = []
+    head = f"*{group.representative_title}*"
+    if rating is not None:
+        rc = f" ({review_count} değerlendirme)" if review_count else ""
+        head += f" ⭐ {rating:.1f}/5{rc}"
+    lines.append(head)
+    lines.append("")
+
+    if not synthesis.insufficient_data:
+        if synthesis.praise:
+            lines.append("👍 Kullanıcılar beğeniyor:")
+            lines.extend(f"• {p}" for p in synthesis.praise)
+            lines.append("")
+        if synthesis.complaints:
+            lines.append("👎 Şikayetler:")
+            lines.extend(f"• {c}" for c in synthesis.complaints)
+            lines.append("")
+        if synthesis.red_flags:
+            lines.append("⚠️ Dikkat:")
+            lines.extend(f"• {r}" for r in synthesis.red_flags)
+            lines.append("")
+
+    seen_sites: set[str] = set()
+    price_rows: list[tuple[str, float | None, str]] = []
+    for m in members:
+        if m.site in seen_sites:
+            continue
+        seen_sites.add(m.site)
+        price_rows.append((_site_label(m.site), m.price, m.url))
+    price_rows.sort(key=lambda r: (r[1] is None, r[1] or 0))
+    if price_rows:
+        lines.append("💰 *Fiyatlar:*")
+        for label, price, url in price_rows:
+            if price is None:
+                lines.append(f"• {label} — stokta yok")
+            else:
+                lines.append(f"• {label} — {_fmt_price_tr(price)} TL")
+        lines.append("")
+
+    community_counts = community_counts or {}
+    if community_counts:
+        bits = ", ".join(f"{k} ({v} konu)" for k, v in community_counts.items())
+        lines.append(f"💬 Topluluk: {bits}")
+        lines.append("")
+
+    if synthesis.insufficient_data:
+        lines.append("⚠️ Yeterli inceleme verisi yok")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def format_response(cards: list[str]) -> str:
+    """Join per-group cards with a blank-line separator."""
+    return "\n".join(c.rstrip() for c in cards if c).strip() + "\n"

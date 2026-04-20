@@ -87,7 +87,76 @@ async def advance(mission_id: int, completed_task_id: int,
     except Exception as e:
         out.status = "failed"
         out.error = f"advance_recipe: {e}"[:300]
+
+    # 4. Mission completion — if no next subtasks queued AND every other
+    # mission task is terminal, mark the mission done. Replaces
+    # _check_mission_completion that used to live in the old orchestrator's
+    # _handle_complete (deleted in Task 13).
+    if not out.next_subtasks and out.status == "completed":
+        try:
+            await _maybe_complete_mission(mission_id, completed_task_id)
+        except Exception as e:
+            # Non-fatal: mission stays open, but advance result stands.
+            import logging
+            logging.getLogger("workflow_engine.advance").warning(
+                "mission completion check failed: %s", e,
+            )
     return out
+
+
+async def _maybe_complete_mission(mission_id: int, completed_task_id: int) -> None:
+    """Mark a mission 'completed' when no non-terminal tasks remain.
+
+    Excludes the workflow_advance task currently running (caller's
+    completed_task_id points at the source task, not the advance task, so
+    we also skip any pending workflow_advance mechanical rows on the same
+    mission — they are bookkeeping, not work.)
+    """
+    from src.infra.db import get_tasks_for_mission, update_mission, get_mission
+    from src.infra.times import db_now
+    import json as _json
+
+    mission = await get_mission(mission_id)
+    if mission is None:
+        return
+    if mission.get("status") in ("completed", "cancelled", "failed"):
+        return
+
+    tasks = await get_tasks_for_mission(mission_id)
+    terminal = {"completed", "skipped", "cancelled", "failed"}
+    for t in tasks:
+        status = t.get("status")
+        if status in terminal:
+            continue
+        # Skip pending/in_progress workflow_advance rows — they are the
+        # machinery that drove us here, not pending work.
+        ctx_raw = t.get("context") or "{}"
+        try:
+            ctx = _json.loads(ctx_raw) if isinstance(ctx_raw, str) else ctx_raw
+        except Exception:
+            ctx = {}
+        payload_action = (ctx.get("payload") or {}).get("action") if isinstance(ctx, dict) else None
+        if payload_action == "workflow_advance":
+            continue
+        # Some non-terminal, non-advance task still pending — mission not done.
+        return
+
+    await update_mission(mission_id, status="completed", completed_at=db_now())
+
+    # Best-effort Telegram notification — get_telegram() and send are both
+    # optional; failing here must not break advance().
+    try:
+        from src.app.telegram_bot import get_telegram
+        tg = get_telegram()
+        title = mission.get("title") or f"mission #{mission_id}"
+        n_completed = sum(1 for t in tasks if t.get("status") == "completed")
+        n_failed = sum(1 for t in tasks if t.get("status") == "failed")
+        msg = f"\u2705 Mission #{mission_id} complete\n**{title[:80]}**\n{n_completed} done, {n_failed} failed"
+        from src.app.config import TELEGRAM_ADMIN_CHAT_ID
+        if tg and TELEGRAM_ADMIN_CHAT_ID:
+            await tg.send_message(TELEGRAM_ADMIN_CHAT_ID, msg)
+    except Exception:
+        pass
 
 
 def _parse_ctx(task: dict) -> dict:

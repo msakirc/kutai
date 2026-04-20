@@ -70,7 +70,7 @@ async def step_resolve(query: str, per_site_n: int) -> list[Candidate]:
     # Group by site preserving order of first appearance
     by_site: "OrderedDict[str, list]" = OrderedDict()
     for p in raw or []:
-        site = _attr(p, "site") or "unknown"
+        site = _attr(p, "source") or _attr(p, "site") or "unknown"
         by_site.setdefault(site, []).append(p)
 
     cands: list[Candidate] = []
@@ -81,7 +81,7 @@ async def step_resolve(query: str, per_site_n: int) -> list[Candidate]:
                     title=str(_attr(p, "name") or ""),
                     site=site,
                     site_rank=rank,
-                    price=_attr(p, "price"),
+                    price=(_attr(p, "discounted_price") or _attr(p, "original_price") or _attr(p, "price")),
                     original_price=_attr(p, "original_price"),
                     url=str(_attr(p, "url") or ""),
                     rating=_attr(p, "rating"),

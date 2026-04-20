@@ -54,7 +54,7 @@ async def test_step_resolve_preserves_site_order_and_caps_per_site_n():
         # Mimic the scraper dataclass shape (see src/shopping/models.py)
         from types import SimpleNamespace
         return SimpleNamespace(
-            name=name, site=site, url=url, price=price,
+            name=name, source=site, url=url, discounted_price=price,
             original_price=None, rating=None, review_count=None,
             review_snippets=[],
         )
@@ -81,3 +81,32 @@ async def test_step_resolve_preserves_site_order_and_caps_per_site_n():
     assert [c.site_rank for c in trendyol] == [1, 2]
     assert [c.title for c in hepsi] == ["B1", "B2"]
     assert [c.site_rank for c in hepsi] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_step_resolve_works_with_real_product_dataclass():
+    """Regression: real Product model (source/discounted_price) must flow through."""
+    from src.shopping.models import Product
+    from src.workflows.shopping.pipeline_v2 import step_resolve
+
+    products = [
+        Product(name="EQ6", url="u1", source="hepsiburada",
+                discounted_price=24745.0, original_price=26000.0,
+                rating=4.5, review_count=312),
+        Product(name="EQ3 part", url="u2", source="amazon_tr",
+                discounted_price=4800.0, original_price=None,
+                rating=5.0, review_count=3),
+    ]
+    with patch(
+        "src.workflows.shopping.pipeline_v2._fetch_products",
+        new=AsyncMock(return_value=products),
+    ):
+        cands = await step_resolve("siemens", per_site_n=3)
+
+    assert len(cands) == 2
+    assert {c.site for c in cands} == {"hepsiburada", "amazon_tr"}
+    eq6 = next(c for c in cands if c.title == "EQ6")
+    assert eq6.price == 24745.0
+    assert eq6.original_price == 26000.0
+    assert eq6.rating == 4.5
+    assert eq6.site_rank == 1

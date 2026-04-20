@@ -108,14 +108,24 @@ def test_time_bucketed_reset_far_low_remaining_returns_negative():
     assert -0.5 <= s <= -0.2
 
 
-def test_time_bucketed_balanced_encourages_burn():
-    # Phase 2d tuning: daily buckets that would otherwise reset unused
-    # get a soft "burn" scarcity proportional to remaining fraction.
-    # At 4h to reset with 50% remaining we expect a mild positive signal.
+def test_time_bucketed_balanced_gives_moderate_burn_signal():
+    # Time-bucketed scarcity is continuous across the reset horizon:
+    # wasting free-pool quota is a loss regardless of proximity to reset,
+    # though urgency decays exponentially. At 4h to reset with 50%
+    # remaining: time_weight = exp(-4h/24h) ≈ 0.846, scarcity ≈ 0.5 × 0.846 ≈ 0.42.
     model = _free_cloud_model()
     snap = _snapshot_with_cloud("groq", "groq/llama-70b", remaining=500, limit=1000, reset_in_secs=14400)
     s = pool_scarcity(model, snap, queue_state=None)
-    assert 0.2 <= s <= 0.5
+    assert 0.3 < s < 0.55
+
+
+def test_time_bucketed_full_remaining_far_reset_still_has_signal():
+    # 24h to reset, 100% remaining → weight ≈ 0.37, scarcity ≈ 0.37.
+    # Wasting daily quota is still a loss, just a weaker signal than imminent reset.
+    model = _free_cloud_model()
+    snap = _snapshot_with_cloud("groq", "groq/llama-70b", remaining=1000, limit=1000, reset_in_secs=86400)
+    s = pool_scarcity(model, snap, queue_state=None)
+    assert 0.3 < s < 0.45
 
 
 def test_time_bucketed_exhausted_returns_zero():

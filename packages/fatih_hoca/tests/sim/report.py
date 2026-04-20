@@ -27,22 +27,42 @@ def compute_metrics(run: SimRun) -> SimMetrics:
         )
         m.hard_task_satisfaction = passed / len(hard)
 
+    # Easy-task waste: over-qualified picks that actually cost something.
+    # A free-pool pick on an easy task isn't waste — it's burning quota we
+    # won't get refunded. Per-call (paid) is the only pool where
+    # over-qualification is a real opportunity cost. Locals being
+    # over-qualified on easy tasks also isn't "waste" — loaded-local is
+    # the fastest tool available, cost is already sunk.
     easy = [p for p in run.picks if p.task_difficulty <= 4]
     if easy:
         wasted = 0
         for p in easy:
+            if p.pool != "per_call":
+                continue  # free or local — no waste semantics
             fit_excess = (p.cap_score_100 - cap_needed_for_difficulty(p.task_difficulty)) / 100.0
             if fit_excess > 0.4:
                 wasted += 1
         m.easy_task_waste = wasted / len(easy)
 
+    # Free-quota utilization: count picks per time_bucketed pool across the
+    # full run and divide by the pool's limit. Using final-state `remaining`
+    # under-counts when resets fire mid-sim (the counter gets refilled, erasing
+    # the pre-reset picks from the accounting). Pick counts are reset-proof.
     tb = run.final_state.time_bucketed
     if tb:
+        picks_by_pool: dict[str, int] = {}
+        for p in run.picks:
+            if p.pool == "time_bucketed":
+                picks_by_pool[p.model_name] = picks_by_pool.get(p.model_name, 0) + 1
         ratios = []
-        for counter in tb.values():
+        for pool_name, counter in tb.items():
             if counter.limit > 0:
-                used = counter.limit - counter.remaining
-                ratios.append(max(0.0, used / counter.limit))
+                picks = picks_by_pool.get(pool_name, 0)
+                # Cap at 1.0 per pool — utilization >100% means we hit reset
+                # cycles, which is a good thing, but the metric is "did we
+                # fill each pool's budget." Clamp so one heavily-used pool
+                # doesn't mask a neglected one in the average.
+                ratios.append(min(1.0, picks / counter.limit))
         if ratios:
             m.free_quota_utilization = sum(ratios) / len(ratios)
 

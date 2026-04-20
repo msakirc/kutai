@@ -30,18 +30,69 @@ def test_hard_task_satisfaction_50pct():
 
 
 def test_easy_task_waste_rate():
-    # d=2 needs 30; cap 95 → fit_excess = 0.65 → > 0.4 → waste
-    # d=2 cap 40 → fit_excess = 0.10 → not waste
-    picks = _picks((2, "local", 95), (2, "local", 40), (2, "local", 35))
+    # Waste semantics (updated): only per_call (paid) picks count as waste
+    # when over-qualified on easy tasks. Free-pool picks aren't waste —
+    # they're "burn quota we won't be refunded on." Local picks aren't
+    # waste either — sunk cost, fastest tool available.
+    # d=2 needs 30; cap 95 → fit_excess = 0.65 > 0.4 → waste (if per_call)
+    picks = [
+        SimPick(task_idx=0, task_difficulty=2, model_name="claude",
+                pool="per_call", cap_score_100=95, elapsed_seconds=1.0),
+        SimPick(task_idx=1, task_difficulty=2, model_name="claude",
+                pool="per_call", cap_score_100=40, elapsed_seconds=1.0),
+        SimPick(task_idx=2, task_difficulty=2, model_name="local",
+                pool="local", cap_score_100=35, elapsed_seconds=1.0),
+    ]
     run = SimRun(picks=picks, final_state=SimState())
     m = compute_metrics(run)
+    # 1 wasted (per_call cap=95) out of 3 easy picks
     assert m.easy_task_waste == 1.0 / 3.0
 
 
+def test_easy_task_waste_ignores_free_pool_over_qualification():
+    # Free pool burning is not waste, even if grossly over-qualified.
+    picks = [
+        SimPick(task_idx=0, task_difficulty=2, model_name="groq",
+                pool="time_bucketed", cap_score_100=72, elapsed_seconds=1.0),
+        SimPick(task_idx=1, task_difficulty=2, model_name="local",
+                pool="local", cap_score_100=90, elapsed_seconds=1.0),
+    ]
+    run = SimRun(picks=picks, final_state=SimState())
+    m = compute_metrics(run)
+    assert m.easy_task_waste == 0.0
+
+
 def test_free_quota_utilization():
+    # Metric counts picks per time_bucketed pool (reset-proof), not final
+    # remaining (under-counts when resets fire mid-run).
     final = SimState()
     final.time_bucketed["groq"] = SimPoolCounter(remaining=200, limit=1000, reset_at=0.0)
-    run = SimRun(picks=[], final_state=final)
+    picks = [
+        SimPick(task_idx=i, task_difficulty=3, model_name="groq",
+                pool="time_bucketed", cap_score_100=72, elapsed_seconds=1.0)
+        for i in range(800)
+    ]
+    run = SimRun(picks=picks, final_state=final)
     m = compute_metrics(run)
-    # 800 used / 1000 limit = 80%
+    # 800 picks / 1000 limit = 80%
     assert m.free_quota_utilization == 0.8
+
+
+def test_free_quota_utilization_caps_at_100pct_per_pool():
+    # If we pick beyond a pool's limit (reset cycles), ratio caps at 1.0 per
+    # pool so a single hot pool doesn't skew the average.
+    final = SimState()
+    final.time_bucketed["groq"] = SimPoolCounter(remaining=0, limit=10, reset_at=0.0)
+    final.time_bucketed["gemini"] = SimPoolCounter(remaining=5, limit=10, reset_at=0.0)
+    picks = (
+        [SimPick(task_idx=i, task_difficulty=3, model_name="groq",
+                 pool="time_bucketed", cap_score_100=72, elapsed_seconds=1.0)
+         for i in range(50)]  # way over limit
+        + [SimPick(task_idx=i, task_difficulty=3, model_name="gemini",
+                   pool="time_bucketed", cap_score_100=68, elapsed_seconds=1.0)
+           for i in range(2)]
+    )
+    run = SimRun(picks=picks, final_state=final)
+    m = compute_metrics(run)
+    # groq: min(50/10, 1.0) = 1.0, gemini: 2/10 = 0.2, avg = 0.6
+    assert m.free_quota_utilization == 0.6

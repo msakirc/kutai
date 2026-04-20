@@ -485,6 +485,7 @@ def select_for_simulation(
     estimated_output_tokens: int,
     snapshot: Any,
     providers_cfg: dict,
+    queue_profile: Any = None,
 ) -> "_SimPickResult":
     """Test-only adapter: build ModelInfo stubs from providers_cfg, call
     rank_candidates, return a light pick result.
@@ -494,7 +495,17 @@ def select_for_simulation(
     from types import SimpleNamespace
     from fatih_hoca import ranking as _ranking_mod
     from fatih_hoca.ranking import rank_candidates
-    from fatih_hoca.requirements import ModelRequirements
+    from fatih_hoca.requirements import ModelRequirements, QueueProfile, get_quota_planner
+
+    # Install queue profile on the (module-global) QuotaPlanner so that
+    # rank_candidates' utilization layer sees live queue pressure. Reset
+    # to empty if caller didn't provide one — sequential sim ticks must
+    # not leak state from prior runs.
+    planner = get_quota_planner()
+    if queue_profile is not None:
+        planner.set_queue_profile(queue_profile)
+    else:
+        planner.set_queue_profile(QueueProfile())
 
     candidates: list[Any] = []
     cap_overrides: dict[str, float] = {"loaded-local": 55.0}

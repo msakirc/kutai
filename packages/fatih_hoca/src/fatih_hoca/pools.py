@@ -14,7 +14,7 @@ from enum import Enum
 from typing import Any
 
 # ── Tunables ───────────────────────────────────────────────────────────
-UTILIZATION_K: float = 0.5
+UTILIZATION_K: float = 1.0
 LOCAL_IDLE_SATURATION_SECS: float = 600.0
 RESET_HORIZON_SECS: float = 3600.0
 

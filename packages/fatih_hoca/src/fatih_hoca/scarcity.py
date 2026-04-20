@@ -25,12 +25,6 @@ from fatih_hoca.pools import (
 LOCAL_IDLE_SCARCITY_MAX: float = 0.5
 # Penalty when a loaded local is actively processing another request
 LOCAL_BUSY_PENALTY: float = -0.10
-# Conservation: loaded local on a task above this difficulty gets a
-# negative scarcity so the equation demotes it in favor of cloud
-# candidates that clear the capability bar. Gated by cap curve
-# comparison: we only demote when the local is actually below
-# `cap_needed_for_difficulty`.
-LOCAL_HARD_TASK_PENALTY: float = -1.0
 
 # Time-bucketed pool tunables
 RESET_IMMINENT_SECS: float = 3600.0       # "imminent" threshold (1h)
@@ -39,7 +33,8 @@ TIME_BUCKETED_BOOST_MAX: float = 1.0       # max positive when burning
 TIME_BUCKETED_CONSERVE_MAX: float = -0.5   # max negative when saving
 
 # Per-call pool tunables
-PER_CALL_RESERVE_MAX: float = -1.0   # strongest conservation signal
+PER_CALL_RESERVE_MAX: float = -1.0      # strongest conservation signal
+PER_CALL_ABUNDANCE_MAX: float = 1.0     # strongest "use-it" signal when budget flush + hard task
 PER_CALL_HARD_QUEUE_RATIO: float = 0.1  # 10% hard tasks in queue → strong pressure
 
 
@@ -103,48 +98,140 @@ def _time_bucketed_scarcity(model: Any, snapshot: Any) -> float:
     else:
         return 0.0
 
-    if reset_in <= RESET_IMMINENT_SECS:
-        # Reset imminent: "use it or lose it"
-        # proximity: 0 at full hour remaining → 1 at reset moment
-        proximity = 1.0 - (reset_in / RESET_IMMINENT_SECS)  # 0..1
-        # Use max(proximity, remaining_frac) so that high remaining_frac
-        # alone (even with modest proximity) produces a strong signal.
-        # Example: reset_in=1800 (proximity=0.5), remaining_frac=0.85
-        #   → max(0.5, 0.85) = 0.85, result = 1.0 × 0.85 = 0.85 ✓ (>= 0.6)
-        return _clamp(TIME_BUCKETED_BOOST_MAX * max(proximity, remaining_frac))
+    # Depletion always applies: low remaining → conserve regardless of timing.
+    if remaining_frac < 0.3:
+        depletion = (0.3 - remaining_frac) / 0.3  # 0..1
+        return _clamp(TIME_BUCKETED_CONSERVE_MAX * depletion)
 
-    if reset_in >= RESET_FAR_SECS:
-        # Reset far: conserve when remaining fraction is low (< 30%)
-        if remaining_frac < 0.3:
-            depletion = (0.3 - remaining_frac) / 0.3  # 0..1
-            return _clamp(TIME_BUCKETED_CONSERVE_MAX * depletion)
-        # Daily quota that'll otherwise reset unused — encourage burn
-        # proportional to remaining fraction. A full bucket gets the full
-        # soft boost; as we draw it down, scarcity decays toward neutral.
-        return _clamp(TIME_BUCKETED_BOOST_MAX * remaining_frac * 0.75)
+    # Burn signal is continuous across the full reset horizon. A quota
+    # sitting idle is waste — 24h to reset is a weaker signal than 1h,
+    # but stronger than 72h. Exponential decay with 24h characteristic
+    # time gives:
+    #   reset_in  =   1h → weight ≈ 0.96  (strong "use it now")
+    #   reset_in  =  12h → weight ≈ 0.61
+    #   reset_in  =  24h → weight ≈ 0.37  (meaningful; daily quota)
+    #   reset_in  =  48h → weight ≈ 0.14
+    #   reset_in  =  72h → weight ≈ 0.05  (near-zero; long-horizon)
+    # Scaled by remaining_frac so full-but-far pools still register,
+    # while low-but-near pools don't get double-counted (depletion
+    # arm already handled that above).
+    import math
+    time_weight = math.exp(-reset_in / 86400.0)  # 24h scale
+    # Use max(time_weight, remaining_frac × some factor)? No — signal
+    # stays meaningful as a product. High-remaining imminent-reset pools
+    # score ~1.0; low-remaining far pools fade naturally.
+    return _clamp(TIME_BUCKETED_BOOST_MAX * remaining_frac * time_weight)
 
-    # Between imminent and far: neutral
-    return 0.0
 
+def _per_call_scarcity(
+    model: Any,
+    snapshot: Any,
+    queue_state: Any,
+    task_difficulty: int,
+) -> float:
+    """Three arms: depletion (conservation), abundance (promotion), queue pressure.
 
-def _per_call_scarcity(queue_state: Any, task_difficulty: int) -> float:
-    if queue_state is None:
-        return 0.0
-    total = int(getattr(queue_state, "total_tasks", 0) or 0)
-    hard = int(getattr(queue_state, "hard_tasks_count", 0) or 0)
-    if total <= 0 or hard <= 0:
-        return 0.0
+    Arm 1 (depletion): as budget drops below 70% remaining, scarcity trends
+    negative. Mirror of time_bucketed's conservation signal — but driven by
+    per-call budget state, not reset timer.
 
-    # If the CURRENT task is itself hard, no reason for it to be rationed
-    if task_difficulty >= 7:
-        return 0.0
+    Arm 2 (abundance, NEW): when budget is flush (>70% remaining) AND the
+    current task is hard (d≥7), scarcity goes positive. This is the mirror
+    of time_bucketed's imminent-reset boost: both express "use-it-or-lose-
+    it" — one for perishable quota (resets unused), the other for budget
+    we won't get refunded on unspent. Together with the over-qualification
+    dampener, abundance activates only when the task actually needs the
+    expensive model — "Claude on d=8 with budget" yes, "Claude on d=3 with
+    budget" no (dampened).
 
-    hard_ratio = hard / total
-    # Saturate pressure at PER_CALL_HARD_QUEUE_RATIO
-    pressure = min(1.0, hard_ratio / PER_CALL_HARD_QUEUE_RATIO)
-    # Scale by how far below "hard" the current task is (d=1 → full, d=7 → 0)
-    easiness = max(0.0, (7 - task_difficulty)) / 6.0  # d=1→1.0, d=7→0
-    return _clamp(PER_CALL_RESERVE_MAX * pressure * easiness)
+    Arm 3 (queue pressure): if upcoming queue has hard tasks and current
+    task is easy, conserve. Overrides abundance on easy tasks because
+    reserving for known hard demand is the stronger signal.
+
+    Returns a float in [PER_CALL_RESERVE_MAX, PER_CALL_ABUNDANCE_MAX].
+    """
+    # ── Read remaining/limit from snapshot ───────────────────────────
+    remaining_frac: float | None = None
+    if model is not None and snapshot is not None:
+        provider = getattr(model, "provider", "") or ""
+        prov_state = getattr(snapshot, "cloud", {}) or {}
+        prov_state = prov_state.get(provider) if isinstance(prov_state, dict) else None
+        if prov_state is None:
+            prov_state = getattr(snapshot, "cloud", None)
+            if prov_state is not None and hasattr(prov_state, "get"):
+                prov_state = prov_state.get(provider)
+            else:
+                prov_state = None
+        model_id = getattr(model, "name", None) or getattr(model, "litellm_name", "")
+        model_state = None
+        if prov_state is not None and hasattr(prov_state, "models"):
+            try:
+                model_state = prov_state.models.get(model_id)
+            except Exception:
+                model_state = None
+        source = model_state if model_state is not None else prov_state
+        limits = getattr(source, "limits", None) if source is not None else None
+        rpd = getattr(limits, "rpd", None) if limits is not None else None
+        if rpd is not None:
+            remaining = getattr(rpd, "remaining", None)
+            limit = getattr(rpd, "limit", None)
+            if remaining is not None and limit is not None and limit > 0:
+                remaining_frac = min(1.0, max(0.0, remaining / limit))
+
+    # ── Arm 1: depletion (conservation) ──────────────────────────────
+    # Activates below 15% remaining (mutually exclusive with abundance arm
+    # which activates above). Threshold kept low — budget exists to be
+    # used. The arms form a signal across the budget range: full
+    # abundance at 100% remaining → zero at 15% → full conservation at
+    # 0%. Early depletion (30%+) was wasting hard-task coverage by
+    # reserving budget that was never needed.
+    DEPLETION_THRESHOLD = 0.15
+    depletion_scarcity = 0.0
+    if remaining_frac is not None and remaining_frac < DEPLETION_THRESHOLD:
+        intensity = (DEPLETION_THRESHOLD - remaining_frac) / DEPLETION_THRESHOLD
+        depletion_scarcity = PER_CALL_RESERVE_MAX * intensity
+
+    # ── Arm 2: abundance (promotion) — NEW ────────────────────────────
+    # Flush budget + hard task → positive signal. Capability wins when
+    # we have headroom and the task actually needs it. Fit dampener in
+    # ranking's utilization layer ensures over-qualified paid models
+    # don't get boosted onto easy tasks.
+    #
+    # Scales smoothly across the budget range: at remaining=1.0 full
+    # abundance (+1), fading to 0 at the depletion boundary (30%
+    # remaining). This closes the old >70%-only "abundance gap" that
+    # left the middle zone (30-70% remaining) with no signal —
+    # important when a pool's limit is small (30 req/day) and many
+    # hard tasks exist: all 30 should be used, not just the first 9.
+    abundance_scarcity = 0.0
+    if remaining_frac is not None and remaining_frac > DEPLETION_THRESHOLD and task_difficulty >= 7:
+        # Full abundance as long as budget has headroom (>30% remaining).
+        # User's framing: "if quota is available, capability wins." A
+        # fading curve leaves a middle zone where capability loses to
+        # base-ranking noise on razor-thin margins. Keep the push strong
+        # until the depletion arm takes over at 30% remaining.
+        abundance_scarcity = PER_CALL_ABUNDANCE_MAX
+
+    # ── Arm 3: queue pressure (conservation on easy tasks) ───────────
+    queue_scarcity = 0.0
+    if queue_state is not None and task_difficulty < 7:
+        total = int(getattr(queue_state, "total_tasks", 0) or 0)
+        hard = int(getattr(queue_state, "hard_tasks_count", 0) or 0)
+        if total > 0 and hard > 0:
+            hard_ratio = hard / total
+            pressure = min(1.0, hard_ratio / PER_CALL_HARD_QUEUE_RATIO)
+            easiness = max(0.0, (7 - task_difficulty)) / 6.0
+            queue_scarcity = PER_CALL_RESERVE_MAX * pressure * easiness
+
+    # ── Combine ────────────────────────────────────────────────────────
+    # Conservation signals (negative) stack — take the most conservative.
+    # Abundance (positive) is mutually exclusive with depletion by
+    # construction (one requires <70% remaining, the other >70%).
+    # Queue pressure activates only on easy tasks where abundance is off.
+    neg_signals = [s for s in (depletion_scarcity, queue_scarcity) if s < 0]
+    if neg_signals:
+        return _clamp(min(neg_signals))
+    return _clamp(abundance_scarcity)
 
 
 def pool_scarcity(
@@ -172,5 +259,5 @@ def pool_scarcity(
     if pool is Pool.TIME_BUCKETED:
         return _time_bucketed_scarcity(model, snapshot)
     if pool is Pool.PER_CALL:
-        return _per_call_scarcity(queue_state, task_difficulty)
+        return _per_call_scarcity(model, snapshot, queue_state, task_difficulty)
     return 0.0

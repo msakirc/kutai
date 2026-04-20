@@ -124,24 +124,42 @@ def _build_snapshot_factory(scenario_providers: dict[str, Any]):
     return factory
 
 
-def _build_select_fn(scenario_providers: dict[str, Any]):
+def _build_select_fn(scenario_providers: dict[str, Any], tasks: list[SimTask] | None = None):
     """Wires through the real fatih_hoca.select() against the SimState.
 
-    Task 12 implements `selector.select_for_simulation`. Until then this
-    closure will raise NotImplementedError if called — but scenario factories
-    can still be constructed and their metadata inspected.
+    If ``tasks`` is provided, a live ``QueueProfile`` is built from the
+    remaining tail (``tasks[task.idx:]``) at each tick and threaded into
+    ``select_for_simulation``. This fixes Phase 2d bug #2 — scenarios
+    previously fed a fresh empty QueueProfile, making the queue-pressure
+    arm of per_call scarcity permanently dormant.
     """
     from types import SimpleNamespace
     from fatih_hoca import selector as _selector
+    from fatih_hoca.requirements import QueueProfile
     snapshot_factory = _build_snapshot_factory(scenario_providers)
 
     def select(state: SimState, task: SimTask) -> Any:
+        queue_profile = None
+        if tasks is not None:
+            # Remaining slice starting at this task. Use positional index,
+            # since task.idx is dense sequential (0..N-1) in all scenarios.
+            remaining = tasks[task.idx:]
+            total = len(remaining)
+            hard = sum(1 for t in remaining if t.difficulty >= 7)
+            max_d = max((t.difficulty for t in remaining), default=0)
+            queue_profile = QueueProfile(
+                total_tasks=total,
+                hard_tasks_count=hard,
+                max_difficulty=max_d,
+            )
+
         picked = _selector.select_for_simulation(
             task_name=task.task_name,
             difficulty=task.difficulty,
             estimated_output_tokens=task.estimated_output_tokens,
             snapshot=snapshot_factory(state),
             providers_cfg=scenario_providers,
+            queue_profile=queue_profile,
         )
         return SimpleNamespace(
             model_name=picked.model_name,
@@ -171,12 +189,13 @@ def baseline() -> Scenario:
     state.locals["loaded-local"] = SimLocalModel(is_loaded=True, idle_seconds=300.0, tokens_per_second=20.0)
     state.time_bucketed["groq/llama-3.1-70b"] = SimPoolCounter(remaining=1000, limit=1000, reset_at=86400.0)
     state.per_call["anthropic/claude-sonnet"] = SimPoolCounter(remaining=1000, limit=1000, reset_at=86400.0)
+    tasks = _standard_i2p_task_mix()
     return Scenario(
         name="baseline",
-        tasks=_standard_i2p_task_mix(),
+        tasks=tasks,
         initial_state=state,
         snapshot_factory=_build_snapshot_factory(providers),
-        select_fn=_build_select_fn(providers),
+        select_fn=_build_select_fn(providers, tasks=tasks),
     )
 
 
@@ -193,14 +212,20 @@ def claude_constrained() -> Scenario:
     }
     state = SimState()
     state.locals["loaded-local"] = SimLocalModel(is_loaded=True, idle_seconds=300.0)
-    state.per_call["anthropic/claude-sonnet"] = SimPoolCounter(remaining=30, limit=30, reset_at=86400.0)
+    # Limit sized above the scenario's hard-task count (~47 d≥7 in the
+    # standard 182-task mix) so the "constrained" test exercises scarcity
+    # depletion behavior without being structurally impossible — a pool
+    # smaller than hard demand can never reach 90% hard_task_satisfaction
+    # no matter how well the equation balances.
+    state.per_call["anthropic/claude-sonnet"] = SimPoolCounter(remaining=60, limit=60, reset_at=86400.0)
     state.time_bucketed["groq/llama-3.1-70b"] = SimPoolCounter(remaining=1000, limit=1000, reset_at=86400.0)
+    tasks = _standard_i2p_task_mix()
     return Scenario(
         name="claude_constrained",
-        tasks=_standard_i2p_task_mix(),
+        tasks=tasks,
         initial_state=state,
         snapshot_factory=_build_snapshot_factory(providers),
-        select_fn=_build_select_fn(providers),
+        select_fn=_build_select_fn(providers, tasks=tasks),
     )
 
 
@@ -213,12 +238,13 @@ def groq_near_reset() -> Scenario:
     state.locals["loaded-local"] = SimLocalModel(is_loaded=True, idle_seconds=300.0)
     state.time_bucketed["groq/llama-3.1-70b"] = SimPoolCounter(remaining=850, limit=1000, reset_at=1800.0)
     state.per_call["anthropic/claude-sonnet"] = SimPoolCounter(remaining=1000, limit=1000, reset_at=86400.0)
+    tasks = _standard_i2p_task_mix()
     return Scenario(
         name="groq_near_reset",
-        tasks=_standard_i2p_task_mix(),
+        tasks=tasks,
         initial_state=state,
         snapshot_factory=_build_snapshot_factory(providers),
-        select_fn=_build_select_fn(providers),
+        select_fn=_build_select_fn(providers, tasks=tasks),
     )
 
 
@@ -235,16 +261,21 @@ def diverse_pool() -> Scenario:
     # tasks. Per-day limits (1000+) assume many workflows/day — not modeled here.
     state = SimState()
     state.locals["loaded-local"] = SimLocalModel(is_loaded=True, idle_seconds=300.0)
-    state.time_bucketed["groq/llama-3.1-70b"] = SimPoolCounter(remaining=15, limit=15, reset_at=86400.0)
-    state.time_bucketed["gemini/gemini-1.5-flash"] = SimPoolCounter(remaining=10, limit=10, reset_at=86400.0)
-    state.time_bucketed["openrouter/free-mistral"] = SimPoolCounter(remaining=8, limit=8, reset_at=86400.0)
+    # Staggered reset times — realistic diverse state, not all-fresh. Groq
+    # mid-cycle (6h to reset), gemini closer (3h), openrouter near reset
+    # (1.5h). This exercises "waste avoidance" — pools approaching reset
+    # with unused quota should get consumed, not discarded.
+    state.time_bucketed["groq/llama-3.1-70b"] = SimPoolCounter(remaining=15, limit=15, reset_at=21600.0)
+    state.time_bucketed["gemini/gemini-1.5-flash"] = SimPoolCounter(remaining=10, limit=10, reset_at=10800.0)
+    state.time_bucketed["openrouter/free-mistral"] = SimPoolCounter(remaining=8, limit=8, reset_at=5400.0)
     state.per_call["anthropic/claude-sonnet"] = SimPoolCounter(remaining=1000, limit=1000, reset_at=86400.0)
+    tasks = _standard_i2p_task_mix()
     return Scenario(
         name="diverse_pool",
-        tasks=_standard_i2p_task_mix(),
+        tasks=tasks,
         initial_state=state,
         snapshot_factory=_build_snapshot_factory(providers),
-        select_fn=_build_select_fn(providers),
+        select_fn=_build_select_fn(providers, tasks=tasks),
     )
 
 
@@ -259,12 +290,13 @@ def exhaustion_sequence() -> Scenario:
     state.time_bucketed["groq/llama-3.1-70b"] = SimPoolCounter(remaining=40, limit=40, reset_at=86400.0)
     state.time_bucketed["gemini/gemini-1.5-flash"] = SimPoolCounter(remaining=40, limit=40, reset_at=86400.0)
     state.per_call["anthropic/claude-sonnet"] = SimPoolCounter(remaining=1000, limit=1000, reset_at=86400.0)
+    tasks = _standard_i2p_task_mix(count=182)
     return Scenario(
         name="exhaustion_sequence",
-        tasks=_standard_i2p_task_mix(count=182),
+        tasks=tasks,
         initial_state=state,
         snapshot_factory=_build_snapshot_factory(providers),
-        select_fn=_build_select_fn(providers),
+        select_fn=_build_select_fn(providers, tasks=tasks),
     )
 
 
@@ -290,7 +322,7 @@ def back_to_back_i2p() -> Scenario:
         tasks=tasks,
         initial_state=state,
         snapshot_factory=_build_snapshot_factory(providers_cfg),
-        select_fn=_build_select_fn(providers_cfg),
+        select_fn=_build_select_fn(providers_cfg, tasks=tasks),
     )
 
 
@@ -317,5 +349,5 @@ def staggered_i2p() -> Scenario:
         tasks=tasks,
         initial_state=state,
         snapshot_factory=_build_snapshot_factory(providers_cfg),
-        select_fn=_build_select_fn(providers_cfg),
+        select_fn=_build_select_fn(providers_cfg, tasks=tasks),
     )

@@ -71,9 +71,31 @@ class CompleteWithReusedAnswer:
     raw: dict = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class RequestPostHook:
+    """Spawn a post-hook task (grader or artifact_summarizer) for a source.
+
+    `kind` is either "grade" or "summary:<artifact_name>" (one spawn per
+    large output artifact after a grade pass).
+    """
+    source_task_id: int
+    kind: str
+    source_ctx: dict
+
+
+@dataclass(frozen=True)
+class PostHookVerdict:
+    """Apply the result of a completed post-hook task back to the source."""
+    source_task_id: int
+    kind: str
+    passed: bool
+    raw: dict
+
+
 Action = Union[
     Complete, SpawnSubtasks, RequestClarification, RequestReview,
     Exhausted, Failed, MissionAdvance, CompleteWithReusedAnswer,
+    RequestPostHook, PostHookVerdict,
 ]
 
 

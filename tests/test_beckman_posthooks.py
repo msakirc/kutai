@@ -314,6 +314,38 @@ async def test_summary_fail_keeps_structural_and_completes_source(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_on_task_finished_routes_completed_result_through_rewrite(tmp_path, monkeypatch):
+    """Agent now returns completed; Beckman must route it fully (no short-circuit)."""
+    db_path = str(tmp_path / "test.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    from src.infra import db as _db_mod
+    monkeypatch.setattr(_db_mod, "DB_PATH", db_path)
+    if _db_mod._db_connection is not None:
+        await _db_mod._db_connection.close()
+        _db_mod._db_connection = None
+
+    from src.infra.db import init_db, add_task, get_task
+    await init_db()
+    source_id = await add_task(
+        title="s", description="", agent_type="writer", mission_id=1,
+        context=json.dumps({"generating_model": "qwen-7b"}),
+    )
+
+    import general_beckman
+    result = {
+        "status": "completed", "result": "out",
+        "model": "qwen-7b", "cost": 0.001, "iterations": 1,
+        "generating_model": "qwen-7b",
+    }
+    await general_beckman.on_task_finished(source_id, result)
+
+    source = await get_task(source_id)
+    assert source["status"] == "ungraded"
+    ctx = json.loads(source["context"])
+    assert ctx["_pending_posthooks"] == ["grade"]
+
+
+@pytest.mark.asyncio
 async def test_beckman_on_model_swap_calls_accelerate_retries(monkeypatch):
     import general_beckman
     calls = {}

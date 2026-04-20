@@ -72,17 +72,6 @@ async def on_task_finished(task_id: int, result: dict) -> None:
         return
     task_ctx = parse_context(task)
 
-    # Short-circuit: the agent finished but deferred verdict to the grader
-    # (src/core/grading.py::drain_ungraded_tasks picks these up). The agent
-    # has already transitioned the task row to status='ungraded' with
-    # result/cost stored — routing this through the Failed fallback would
-    # retry-loop a perfectly-valid task.
-    if (result or {}).get("status") == "ungraded":
-        # Grader will route its verdict through this function again once
-        # it's done; no ping here (would be one notif per task before the
-        # real verdict — noisy).
-        return
-
     # Workflow-step post-hook runs synchronously before routing — stores
     # artifacts and may flip status (degenerate output, schema validation,
     # disguised failures, human-gate clarifications). Deferring this to

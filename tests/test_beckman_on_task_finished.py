@@ -47,31 +47,43 @@ async def test_completed_result_marks_task_completed(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mission_task_complete_spawns_workflow_advance(tmp_path, monkeypatch):
+async def test_mission_task_complete_spawns_workflow_advance_and_grader(tmp_path, monkeypatch):
     await _fresh_db(tmp_path, monkeypatch)
     try:
         tid = await add_task(title="mt", description="", agent_type="coder",
                              mission_id=9)
         await on_task_finished(tid, {"status": "completed", "result": "ok"})
-        # Parent task should be completed
+        # Parent task is parked in ungraded until the grader post-hook verdict lands.
         parent = await get_task(tid)
-        assert parent["status"] == "completed"
-        # A sibling mechanical workflow_advance task should exist in the mission
+        assert parent["status"] == "ungraded"
+        ctx = json.loads(parent["context"] or "{}")
+        assert ctx.get("_pending_posthooks") == ["grade"]
+
+        # Two siblings in the mission: the workflow_advance mechanical task
+        # AND the grader post-hook task.
         conn = await get_db()
         cursor = await conn.execute(
             """SELECT agent_type, context FROM tasks
-               WHERE mission_id = 9 AND id != ?""", (tid,),
+               WHERE mission_id = 9 AND id != ? ORDER BY id""", (tid,),
         )
-        child = await cursor.fetchone()
-        assert child is not None, "expected workflow_advance sibling task"
-        assert child["agent_type"] == "mechanical"
-        ctx = json.loads(child["context"])
-        # Canonical mechanical shape: ctx["executor"] == "mechanical" and
-        # ctx["payload"]["action"] is the salako action name.
-        assert ctx["executor"] == "mechanical"
-        assert ctx["payload"]["action"] == "workflow_advance"
-        assert ctx["payload"]["mission_id"] == 9
-        assert ctx["payload"]["completed_task_id"] == tid
+        rows = list(await cursor.fetchall())
+        agent_types = {r["agent_type"] for r in rows}
+        assert agent_types == {"mechanical", "grader"}, (
+            f"expected workflow_advance + grader siblings, got {agent_types}"
+        )
+
+        # workflow_advance row keeps its canonical mechanical shape.
+        wa = next(r for r in rows if r["agent_type"] == "mechanical")
+        wa_ctx = json.loads(wa["context"])
+        assert wa_ctx["executor"] == "mechanical"
+        assert wa_ctx["payload"]["action"] == "workflow_advance"
+        assert wa_ctx["payload"]["mission_id"] == 9
+        assert wa_ctx["payload"]["completed_task_id"] == tid
+
+        # Grader row carries the source reference.
+        grader = next(r for r in rows if r["agent_type"] == "grader")
+        g_ctx = json.loads(grader["context"])
+        assert g_ctx["source_task_id"] == tid
     finally:
         await _close_db()
 

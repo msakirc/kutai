@@ -363,10 +363,10 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
                 agent_type="artifact_summarizer",
                 mission_id=source.get("mission_id"),
                 depends_on=[],
-                context=_json.dumps({
+                context={
                     "source_task_id": a.source_task_id,
                     "artifact_name": kind.split(":", 1)[1],
-                }),
+                },
             )
         ctx["_pending_posthooks"] = pending
         if not pending:

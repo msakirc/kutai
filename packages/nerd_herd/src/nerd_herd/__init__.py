@@ -20,6 +20,7 @@ from nerd_herd.load import LoadManager
 from nerd_herd.health import HealthRegistry
 from nerd_herd.inference import InferenceCollector
 from nerd_herd.ring_buffer import RingBuffer
+from nerd_herd.health_summary import health_summary  # noqa: F401
 
 __all__ = [
     "NerdHerd",
@@ -42,4 +43,5 @@ __all__ = [
     "HealthRegistry",
     "InferenceCollector",
     "RingBuffer",
+    "health_summary",
 ]

@@ -143,18 +143,50 @@ async def _maybe_complete_mission(mission_id: int, completed_task_id: int) -> No
 
     await update_mission(mission_id, status="completed", completed_at=db_now())
 
-    # Best-effort Telegram notification — get_telegram() and send are both
+    # Best-effort Telegram delivery — get_telegram() and send are both
     # optional; failing here must not break advance().
     try:
         from src.app.telegram_bot import get_telegram
+        from src.app.config import TELEGRAM_ADMIN_CHAT_ID
         tg = get_telegram()
+        if not (tg and TELEGRAM_ADMIN_CHAT_ID):
+            return
+
+        # Find the "delivery" task: the last completed non-mechanical task
+        # with a non-empty result. For shopping/product_research workflows
+        # this is [2.1] deliver_product_research / [1.1] format_and_deliver.
+        # For workflows without an explicit delivery step, falls through to
+        # the summary-only message.
+        final_result = ""
+        for t in sorted(tasks, key=lambda x: x.get("id") or 0, reverse=True):
+            if t.get("agent_type") == "mechanical":
+                continue
+            if t.get("status") != "completed":
+                continue
+            r = t.get("result") or ""
+            if len(r.strip()) < 10:
+                continue
+            final_result = r
+            break
+
         title = mission.get("title") or f"mission #{mission_id}"
         n_completed = sum(1 for t in tasks if t.get("status") == "completed")
         n_failed = sum(1 for t in tasks if t.get("status") == "failed")
-        msg = f"\u2705 Mission #{mission_id} complete\n**{title[:80]}**\n{n_completed} done, {n_failed} failed"
-        from src.app.config import TELEGRAM_ADMIN_CHAT_ID
-        if tg and TELEGRAM_ADMIN_CHAT_ID:
-            await tg.send_message(TELEGRAM_ADMIN_CHAT_ID, msg)
+
+        if final_result:
+            # Primary: deliver the workflow's final payload. Keep it terse
+            # — the completion summary goes below.
+            body = final_result
+            if len(body) > 3800:
+                body = body[:3800] + "\n...(truncated)"
+            await tg.send_message(TELEGRAM_ADMIN_CHAT_ID, body)
+
+        summary = (
+            f"\u2705 Mission #{mission_id} complete\n"
+            f"**{title[:80]}**\n"
+            f"{n_completed} done, {n_failed} failed"
+        )
+        await tg.send_message(TELEGRAM_ADMIN_CHAT_ID, summary)
     except Exception:
         pass
 

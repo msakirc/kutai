@@ -26,6 +26,7 @@ from src.infra.times import to_db, utc_now
 from general_beckman.result_router import (
     Action, Complete, SpawnSubtasks, RequestClarification, RequestReview,
     Exhausted, Failed, MissionAdvance, CompleteWithReusedAnswer,
+    RequestPostHook, PostHookVerdict,
 )
 from general_beckman.retry import decide_retry, DLQAction, RetryDecision
 
@@ -64,6 +65,10 @@ async def _apply_one(task: dict, a: Action) -> None:
         await _apply_failed(task, a)
     elif isinstance(a, MissionAdvance):
         await _apply_mission_advance(task, a)
+    elif isinstance(a, RequestPostHook):
+        await _apply_request_posthook(task, a)
+    elif isinstance(a, PostHookVerdict):
+        await _apply_posthook_verdict(task, a)
     else:
         logger.warning("unknown action type", action=type(a).__name__)
 
@@ -247,12 +252,80 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
     )
 
 
+async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
+    """Park the source in `ungraded`, enqueue a post-hook task row."""
+    import json as _json
+    from src.infra.db import add_task, get_task, update_task
+
+    source = await get_task(a.source_task_id)
+    if source is None:
+        logger.warning("posthook: source missing", source_id=a.source_task_id)
+        return
+
+    ctx = _parse_ctx(source)
+    pending = list(ctx.get("_pending_posthooks") or [])
+    if a.kind not in pending:
+        pending.append(a.kind)
+    ctx["_pending_posthooks"] = pending
+
+    await update_task(
+        a.source_task_id,
+        status="ungraded",
+        context=_json.dumps(ctx),
+    )
+
+    agent_type, payload = _posthook_agent_and_payload(a, source, ctx)
+    await add_task(
+        title=_posthook_title(a, source),
+        description="",
+        agent_type=agent_type,
+        mission_id=source.get("mission_id"),
+        depends_on=[],
+        context=payload,
+    )
+
+
+def _posthook_agent_and_payload(
+    a: RequestPostHook, source: dict, source_ctx: dict,
+) -> tuple[str, dict]:
+    if a.kind == "grade":
+        return ("grader", {
+            "source_task_id": a.source_task_id,
+            "generating_model": source_ctx.get("generating_model", ""),
+            "excluded_models": list(source_ctx.get("grade_excluded_models") or []),
+        })
+    if a.kind.startswith("summary:"):
+        artifact_name = a.kind.split(":", 1)[1]
+        return ("artifact_summarizer", {
+            "source_task_id": a.source_task_id,
+            "artifact_name": artifact_name,
+        })
+    raise ValueError(f"unknown posthook kind: {a.kind!r}")
+
+
+def _posthook_title(a: RequestPostHook, source: dict) -> str:
+    if a.kind == "grade":
+        return f"Grade task #{a.source_task_id}"
+    if a.kind.startswith("summary:"):
+        name = a.kind.split(":", 1)[1]
+        return f"Summarize '{name}' for #{a.source_task_id}"
+    return f"Posthook {a.kind} for #{a.source_task_id}"
+
+
+async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
+    """Placeholder; implemented in Task 5."""
+    raise NotImplementedError("_apply_posthook_verdict lands in Task 5")
+
+
 def _parse_ctx(task: dict) -> dict:
     raw = task.get("context") or "{}"
     if isinstance(raw, dict):
         return dict(raw)
     try:
         parsed = json.loads(raw)
+        # Handle double-encoded context (string stored as JSON string).
+        if isinstance(parsed, str):
+            parsed = json.loads(parsed)
         return parsed if isinstance(parsed, dict) else {}
     except Exception:
         return {}

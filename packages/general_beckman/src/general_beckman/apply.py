@@ -33,10 +33,8 @@ async def apply_actions(task: dict, actions: Iterable[Action]) -> None:
 
 
 async def _apply_one(task: dict, a: Action) -> None:
-    if isinstance(a, Complete):
+    if isinstance(a, (Complete, CompleteWithReusedAnswer)):
         await _apply_complete(task, a)
-    elif isinstance(a, CompleteWithReusedAnswer):
-        await _apply_complete_reused(task, a)
     elif isinstance(a, SpawnSubtasks):
         await _apply_subtasks(task, a)
     elif isinstance(a, RequestClarification):
@@ -53,16 +51,8 @@ async def _apply_one(task: dict, a: Action) -> None:
         logger.warning("unknown action type", action=type(a).__name__)
 
 
-async def _apply_complete(task: dict, a: Complete) -> None:
-    from src.infra.db import update_task
-    await update_task(
-        a.task_id, status="completed",
-        completed_at=to_db(utc_now()),
-        result=a.result,
-    )
-
-
-async def _apply_complete_reused(task: dict, a: CompleteWithReusedAnswer) -> None:
+async def _apply_complete(task: dict, a) -> None:
+    """Handles both Complete and CompleteWithReusedAnswer."""
     from src.infra.db import update_task
     await update_task(
         a.task_id, status="completed",

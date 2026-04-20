@@ -672,15 +672,18 @@ class BaseAgent:
         # ── Artifact schema → explicit output format instructions ──
         artifact_schema = task_context.get("artifact_schema")
         if artifact_schema and isinstance(artifact_schema, dict):
-            multi = len(artifact_schema) > 1
+            artifact_items = [
+                (n, r) for n, r in artifact_schema.items() if isinstance(r, dict)
+            ]
+            multi = len(artifact_items) > 1
             fmt_lines = ["## Required Output Format"]
             if multi:
                 fmt_lines.append(
                     "Your final answer MUST be a JSON object with these keys: "
-                    + ", ".join(f"`{n}`" for n in artifact_schema)
+                    + ", ".join(f"`{n}`" for n, _ in artifact_items)
                 )
             example = {}
-            for art_name, rules in artifact_schema.items():
+            for art_name, rules in artifact_items:
                 schema_type = rules.get("type", "string")
                 if schema_type == "object":
                     fields = rules.get("required_fields", [])

@@ -143,13 +143,12 @@ async def _maybe_complete_mission(mission_id: int, completed_task_id: int) -> No
 
     await update_mission(mission_id, status="completed", completed_at=db_now())
 
-    # Best-effort Telegram delivery — get_telegram() and send are both
-    # optional; failing here must not break advance().
+    # Best-effort Telegram delivery — get_telegram() may raise if the bot
+    # isn't initialised yet; failing here must not break advance().
     try:
         from src.app.telegram_bot import get_telegram
-        from src.app.config import TELEGRAM_ADMIN_CHAT_ID
         tg = get_telegram()
-        if not (tg and TELEGRAM_ADMIN_CHAT_ID):
+        if tg is None:
             return
 
         # Find the "delivery" task: the last completed non-mechanical task
@@ -179,14 +178,14 @@ async def _maybe_complete_mission(mission_id: int, completed_task_id: int) -> No
             body = final_result
             if len(body) > 3800:
                 body = body[:3800] + "\n...(truncated)"
-            await tg.send_message(TELEGRAM_ADMIN_CHAT_ID, body)
+            await tg.send_notification(body)
 
         summary = (
             f"\u2705 Mission #{mission_id} complete\n"
             f"**{title[:80]}**\n"
             f"{n_completed} done, {n_failed} failed"
         )
-        await tg.send_message(TELEGRAM_ADMIN_CHAT_ID, summary)
+        await tg.send_notification(summary)
     except Exception:
         pass
 

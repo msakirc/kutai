@@ -10,10 +10,11 @@ async def notify_user(task: dict) -> dict:
     text = payload.get("message") or payload.get("text")
     if not text:
         raise ValueError("notify_user payload requires 'message' or 'text'")
+    tg = get_telegram()
     chat_id = payload.get("chat_id")
     if chat_id is None:
-        from src.app.config import TELEGRAM_ADMIN_CHAT_ID
-        chat_id = TELEGRAM_ADMIN_CHAT_ID
-    tg = get_telegram()
-    await tg.send_message(chat_id, text)
+        # Default to admin chat via the interface's helper.
+        await tg.send_notification(text)
+    else:
+        await tg.app.bot.send_message(chat_id=chat_id, text=text)
     return {"sent": True}

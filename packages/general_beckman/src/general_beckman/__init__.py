@@ -109,9 +109,8 @@ async def on_task_finished(task_id: int, result: dict) -> None:
 async def _send_step_progress(task: dict, status: str, result: dict) -> None:
     """Send a one-line Telegram progress update when a mission step finishes."""
     from src.app.telegram_bot import get_telegram
-    from src.app.config import TELEGRAM_ADMIN_CHAT_ID
     tg = get_telegram()
-    if not (tg and TELEGRAM_ADMIN_CHAT_ID):
+    if tg is None:
         return
     # Title is typically "[1.1] enrich_product_results"; reuse it verbatim.
     title = (task.get("title") or "").strip() or f"task #{task['id']}"
@@ -120,7 +119,7 @@ async def _send_step_progress(task: dict, status: str, result: dict) -> None:
     if status == "failed":
         err = (result or {}).get("error") or "error"
         msg += f"\n  {str(err)[:140]}"
-    await tg.send_message(TELEGRAM_ADMIN_CHAT_ID, msg)
+    await tg.send_notification(msg)
 
 
 async def enqueue(spec: dict) -> int:

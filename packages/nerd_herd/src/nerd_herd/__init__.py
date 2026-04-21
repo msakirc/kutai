@@ -46,4 +46,20 @@ __all__ = [
     "RingBuffer",
     "health_summary",
     "SwapBudget",
+    "record_swap",
 ]
+
+# Module-level singleton for module-level API (dispatcher uses this).
+_singleton: NerdHerd | None = None
+
+
+def _get_singleton() -> NerdHerd:
+    global _singleton
+    if _singleton is None:
+        _singleton = NerdHerd()
+    return _singleton
+
+
+def record_swap(model_name: str = "") -> None:
+    """Record that a model swap occurred. Called by dispatcher after ensure_local_model."""
+    _get_singleton().record_swap(model_name)

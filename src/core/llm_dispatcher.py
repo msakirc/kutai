@@ -146,10 +146,13 @@ class LLMDispatcher:
         # Load local model if needed
         if model.is_local and getattr(model, "location", "") != "ollama":
             is_thinking = model.thinking_model and needs_thinking
-            ok = await self._ensure_local_model(
+            ok, swap_happened = await self._ensure_local_model(
                 model, needs_thinking=is_thinking,
                 load_timeout=pick.estimated_load_seconds or 0.0,
             )
+            if swap_happened:
+                import nerd_herd as _nerd_herd
+                _nerd_herd.record_swap(model.name)
             if not ok:
                 task_desc = task or agent_type or category.value
                 if is_overhead:
@@ -230,10 +233,12 @@ class LLMDispatcher:
         task: str = "",
         estimated_context: int = 0,
         load_timeout: float = 0.0,
-    ) -> bool:
+    ) -> tuple[bool, bool]:
         """Ensure the local model is loaded with correct vision/thinking state.
 
-        Returns True if model is ready, False if load failed.
+        Returns (ok, swap_happened):
+          ok           — True if model is ready, False if load failed.
+          swap_happened — True if a swap actually occurred (model changed).
         """
         from src.models.local_model_manager import get_local_manager
 
@@ -251,8 +256,9 @@ class LLMDispatcher:
         )
         if not needs_reload:
             manager.keep_alive()
-            return True
+            return True, False
 
+        before = manager.current_model
         reason = f"{agent_type}:{task}" if agent_type or task else "request"
         success = await manager.ensure_model(
             model.name,
@@ -262,7 +268,9 @@ class LLMDispatcher:
             min_context=estimated_context,
             load_timeout=load_timeout,
         )
-        return success
+        after = manager.current_model
+        swap_happened = success and (before != after)
+        return success, swap_happened
 
     def _prepare_messages(
         self,

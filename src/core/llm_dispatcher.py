@@ -27,6 +27,8 @@ import copy
 from enum import Enum
 from typing import Any
 
+import kuleden_donen_var
+
 from src.infra.logging_config import get_logger
 
 logger = get_logger("core.llm_dispatcher")
@@ -169,15 +171,22 @@ class LLMDispatcher:
         _messages = self._prepare_messages(messages, model)
         timeout = max(pick.min_time_seconds, self._timeout_floor(category))
 
-        result = await hallederiz_kadir.call(
-            model=model,
-            messages=_messages,
-            tools=tools,
-            timeout=timeout,
-            task=task or category.value,
-            needs_thinking=needs_thinking,
-            estimated_output_tokens=kwargs.get("estimated_output_tokens", 0),
-        )
+        _kdv_handle = None
+        if not model.is_local:
+            _kdv_handle = kuleden_donen_var.begin_call(model.provider, model.name)
+        try:
+            result = await hallederiz_kadir.call(
+                model=model,
+                messages=_messages,
+                tools=tools,
+                timeout=timeout,
+                task=task or category.value,
+                needs_thinking=needs_thinking,
+                estimated_output_tokens=kwargs.get("estimated_output_tokens", 0),
+            )
+        finally:
+            if _kdv_handle is not None:
+                kuleden_donen_var.end_call(_kdv_handle)
 
         if isinstance(result, hallederiz_kadir.CallResult):
             await self._record_pick(

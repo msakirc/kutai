@@ -112,6 +112,12 @@ async def on_task_finished(task_id: int, result: dict) -> None:
     except Exception as e:
         log.debug("progress ping failed", task_id=task_id, error=str(e))
 
+    try:
+        from general_beckman.queue_profile_push import build_and_push
+        await build_and_push()
+    except Exception as e:
+        log.debug("queue_profile push failed", task_id=task_id, error=str(e))
+
 
 async def _send_step_progress(task: dict, status: str, result: dict) -> None:
     """Send a one-line Telegram progress update when a mission step finishes."""
@@ -134,7 +140,10 @@ async def _send_step_progress(task: dict, status: str, result: dict) -> None:
 async def enqueue(spec: dict) -> int:
     """Single external write path for user-/bot-initiated tasks."""
     from src.infra.db import add_task
-    return await add_task(**spec)
+    from general_beckman.queue_profile_push import build_and_push
+    task_id = await add_task(**spec)
+    await build_and_push()
+    return task_id
 
 
 async def on_model_swap(old_model: str | None, new_model: str | None) -> None:

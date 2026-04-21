@@ -13,6 +13,7 @@ from nerd_herd.types import (
     CloudProviderState,
     LocalModelState,
     SystemSnapshot,
+    QueueProfile,
 )
 from nerd_herd.registry import CollectorRegistry, Collector
 from nerd_herd.gpu import GPUCollector
@@ -47,6 +48,8 @@ __all__ = [
     "health_summary",
     "SwapBudget",
     "record_swap",
+    "push_queue_profile",
+    "QueueProfile",
 ]
 
 # Module-level singleton for module-level API (dispatcher uses this).
@@ -63,3 +66,8 @@ def _get_singleton() -> NerdHerd:
 def record_swap(model_name: str = "") -> None:
     """Record that a model swap occurred. Called by dispatcher after ensure_local_model."""
     _get_singleton().record_swap(model_name)
+
+
+def push_queue_profile(profile: QueueProfile) -> None:
+    """Store the latest queue profile. Called by Beckman on queue-change events."""
+    _get_singleton().push_queue_profile(profile)

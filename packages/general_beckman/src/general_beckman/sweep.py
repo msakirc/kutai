@@ -385,3 +385,9 @@ async def sweep_queue() -> None:
         logger.warning(f"[Sweep] Workflow timeout check failed: {e}")
 
     await db.commit()
+
+    try:
+        from general_beckman.queue_profile_push import build_and_push
+        await build_and_push()
+    except Exception as e:
+        logger.debug(f"[Sweep] queue_profile push failed: {e}")

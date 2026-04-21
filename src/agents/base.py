@@ -1757,6 +1757,7 @@ class BaseAgent:
                         priority=reqs.priority,
                         exclude_models=reqs.exclude_models or [],
                         remaining_budget=max(0.0, _remaining),
+                        preselected_pick=task.get("preselected_pick") if iteration == 0 else None,
                     )
                 except Exception as exc:
                     # Let ModelCallFailed propagate — the orchestrator handles

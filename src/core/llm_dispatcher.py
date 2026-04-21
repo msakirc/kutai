@@ -75,6 +75,7 @@ class LLMDispatcher:
         messages: list[dict] | None = None,
         tools: list[dict] | None = None,
         failures: list | None = None,
+        preselected_pick: Any = None,
         **kwargs,
     ) -> dict:
         """Route an LLM call through the dispatcher.
@@ -119,16 +120,20 @@ class LLMDispatcher:
         if tools:
             needs_function_calling = True
 
-        pick = fatih_hoca.select(
-            task=task,
-            agent_type=agent_type,
-            difficulty=difficulty,
-            needs_thinking=needs_thinking,
-            needs_function_calling=needs_function_calling,
-            failures=failures,
-            call_category=category.value,
-            **kwargs,
-        )
+        if preselected_pick is not None and not failures:
+            # Iteration 0: reuse Beckman's admission-time Hoca query.
+            pick = preselected_pick
+        else:
+            pick = fatih_hoca.select(
+                task=task,
+                agent_type=agent_type,
+                difficulty=difficulty,
+                needs_thinking=needs_thinking,
+                needs_function_calling=needs_function_calling,
+                failures=failures,
+                call_category=category.value,
+                **kwargs,
+            )
 
         if pick is None:
             task_desc = task or agent_type or category.value
@@ -233,6 +238,7 @@ class LLMDispatcher:
             messages=messages,
             tools=tools,
             failures=failures + [new_failure],
+            preselected_pick=None,
             needs_thinking=needs_thinking,
             needs_function_calling=needs_function_calling,
             **kwargs,

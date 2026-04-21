@@ -115,10 +115,17 @@ class LocalModelState:
 
 
 @dataclass
+class QueueProfile:
+    hard_tasks_count: int = 0
+    total_ready_count: int = 0
+
+
+@dataclass
 class SystemSnapshot:
     vram_available_mb: int = 0
     local: LocalModelState = field(default_factory=LocalModelState)
     cloud: dict[str, CloudProviderState] = field(default_factory=dict)
+    queue_profile: QueueProfile | None = None
 
     def pressure_for(self, model) -> float:
         if getattr(model, "is_local", False):

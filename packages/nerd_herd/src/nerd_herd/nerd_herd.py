@@ -10,7 +10,7 @@ from nerd_herd.health import HealthRegistry
 from nerd_herd.inference import InferenceCollector
 from nerd_herd.exposition import MetricsServer, build_metrics_text
 from nerd_herd.swap_budget import SwapBudget
-from nerd_herd.types import GPUState, HealthStatus, LocalModelState, CloudProviderState, SystemSnapshot
+from nerd_herd.types import GPUState, HealthStatus, LocalModelState, CloudProviderState, QueueProfile, SystemSnapshot
 
 
 class NerdHerd:
@@ -51,6 +51,7 @@ class NerdHerd:
 
         self._local_state: LocalModelState = LocalModelState()
         self._cloud_state: dict[str, CloudProviderState] = {}
+        self._queue_profile: QueueProfile | None = None
 
         self._swap_budget = SwapBudget(max_swaps=3, window_seconds=300)
 
@@ -126,6 +127,10 @@ class NerdHerd:
         """Upsert a cloud provider state entry (called by KDV on each API response)."""
         self._cloud_state[state.provider] = state
 
+    def push_queue_profile(self, profile: QueueProfile) -> None:
+        """Store latest queue profile (pushed by Beckman on queue-change events)."""
+        self._queue_profile = profile
+
     def snapshot(self) -> SystemSnapshot:
         """Return a point-in-time snapshot of all system state."""
         gpu = self._gpu.gpu_state()
@@ -133,6 +138,7 @@ class NerdHerd:
             vram_available_mb=self.get_vram_budget_mb() if gpu.available else 0,
             local=self._local_state,
             cloud=dict(self._cloud_state),
+            queue_profile=self._queue_profile,
         )
 
     def prometheus_lines(self) -> str:

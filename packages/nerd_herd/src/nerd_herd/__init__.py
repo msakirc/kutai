@@ -21,6 +21,7 @@ from nerd_herd.health import HealthRegistry
 from nerd_herd.inference import InferenceCollector
 from nerd_herd.ring_buffer import RingBuffer
 from nerd_herd.health_summary import health_summary  # noqa: F401
+from nerd_herd.swap_budget import SwapBudget
 
 __all__ = [
     "NerdHerd",
@@ -44,4 +45,5 @@ __all__ = [
     "InferenceCollector",
     "RingBuffer",
     "health_summary",
+    "SwapBudget",
 ]

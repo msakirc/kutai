@@ -12,9 +12,17 @@ import aiosqlite
 from nerd_herd.types import QueueProfile
 
 
-# Difficulty on a task is stored in the context JSON blob, either as
-# context.classification.difficulty (the orchestrator-classified case)
-# or context.difficulty (the workflow expander case). COALESCE both.
+# Aligned with src/infra/db.py::get_ready_tasks predicate:
+#   status='pending' AND next_retry_at passed.
+# Dependency-resolution (recursive walk of depends_on) is deliberately
+# omitted: it would turn each push into an O(n) scan, and QueueProfile
+# is a coarse signal — one-push-cycle of staleness on blocked tasks is
+# acceptable. Consumers must not rely on total_ready_count being the
+# exact dispatchable count.
+#
+# Difficulty lives in the context JSON blob either as
+# context.classification.difficulty (orchestrator-classified) or
+# context.difficulty (workflow expander). COALESCE both.
 _QUERY = """
     SELECT
         SUM(
@@ -27,6 +35,7 @@ _QUERY = """
         COUNT(*) AS total
     FROM tasks
     WHERE status = ?
+      AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
 """
 
 

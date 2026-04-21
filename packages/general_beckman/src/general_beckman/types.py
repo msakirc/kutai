@@ -29,14 +29,32 @@ class Lane(str, Enum):
 
 
 def task_age_seconds(task: Task) -> float:
-    """Seconds since `created_at`. 0 if field missing or malformed."""
+    """Seconds since `created_at`. 0 if field missing or malformed.
+
+    Accepts epoch float (test fixtures) and SQLite TIMESTAMP string
+    (`YYYY-MM-DD HH:MM:SS`, produced by CURRENT_TIMESTAMP). SQLite stores
+    UTC for CURRENT_TIMESTAMP; we treat the string as UTC-naive and
+    compare against time.time() (also epoch seconds).
+    """
     created = task.get("created_at")
     if created is None:
         return 0.0
+    # Epoch float / int.
     try:
         return max(0.0, time.time() - float(created))
     except (TypeError, ValueError):
-        return 0.0
+        pass
+    # SQLite TIMESTAMP string.
+    if isinstance(created, str):
+        from datetime import datetime, timezone
+        s = created.replace("T", " ")
+        for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+            try:
+                dt = datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+                return max(0.0, time.time() - dt.timestamp())
+            except ValueError:
+                continue
+    return 0.0
 
 
 def task_unblocks_count(task: Task) -> int:

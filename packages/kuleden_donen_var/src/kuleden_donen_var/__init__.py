@@ -24,6 +24,7 @@ __all__ = [
     "begin_call",
     "end_call",
     "in_flight_count",
+    "configure_in_flight_push",
 ]
 
 _in_flight_tracker: InFlightTracker | None = None
@@ -32,11 +33,26 @@ _in_flight_tracker: InFlightTracker | None = None
 def _get_tracker() -> InFlightTracker:
     global _in_flight_tracker
     if _in_flight_tracker is None:
-        # Production wiring: nerd_herd + state_getter are None for now.
-        # A later task will wire a real state_getter once KDV exposes
-        # its internal provider state as CloudProviderState objects.
+        # Default construction: no push target. configure_in_flight_push()
+        # below rewires the singleton once an adapter converting KDV's
+        # internal ProviderStatus -> nerd_herd.CloudProviderState is ready.
         _in_flight_tracker = InFlightTracker()
     return _in_flight_tracker
+
+
+def configure_in_flight_push(nerd_herd, state_getter) -> None:
+    """Wire the in-flight tracker to nerd_herd for push-on-boundary.
+
+    Call once at app startup once an adapter exists that yields a
+    CloudProviderState from KDV's internal provider records. Until
+    configured, begin_call/end_call track handles in-process only and
+    never reach nerd_herd — meaning `pressure_for()` sees in_flight=0.
+    """
+    global _in_flight_tracker
+    _in_flight_tracker = InFlightTracker(
+        nerd_herd=nerd_herd,
+        state_getter=state_getter,
+    )
 
 
 def begin_call(provider: str, model: str, ttl_s: float | None = None) -> InFlightHandle:

@@ -145,14 +145,29 @@ class SystemSnapshot:
                     in_flight_count=prov.limits.rpd.in_flight,
                 ).value
             return 0.0
-        if m.pool_pressure is None:
-            m.pool_pressure = compute_pool_pressure(
+        # Per-snapshot memoization keyed on the fields that affect the
+        # result. Mutating m.pool_pressure unconditionally would bleed
+        # stale values into later snapshots sharing the same
+        # CloudModelState reference (NerdHerd.snapshot() does a shallow
+        # dict copy of self._cloud_state).
+        key = (
+            m.limits.rpd.remaining,
+            m.limits.rpd.limit,
+            m.limits.rpd.reset_at,
+            m.limits.rpd.in_flight,
+        )
+        cached = m.pool_pressure
+        if cached is None or getattr(cached, "_key", None) != key:
+            pp = compute_pool_pressure(
                 remaining=m.limits.rpd.remaining,
                 limit=m.limits.rpd.limit,
                 reset_at=m.limits.rpd.reset_at,
                 in_flight_count=m.limits.rpd.in_flight,
             )
-        return m.pool_pressure.value
+            object.__setattr__(pp, "_key", key)
+            m.pool_pressure = pp
+            cached = pp
+        return cached.value
 
     def _local_pressure(self) -> float:
         if self.local is None or self.local.model_name is None:

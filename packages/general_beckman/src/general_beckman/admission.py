@@ -20,7 +20,12 @@ BLOCKER_WEIGHT = 0.05
 
 
 def compute_urgency(task: Task) -> float:
-    priority = task.get("priority", 5) or 5
+    # priority==0 means "lowest urgency" — keep it at 0.0 rather than
+    # silently boosting to the default. Only fall back when the key is
+    # missing or the value is None.
+    priority = task.get("priority")
+    if priority is None:
+        priority = 5
     priority_term = float(priority) / 10.0
     age_term = min(1.0, task_age_seconds(task) / AGE_SCALE_S) * AGE_WEIGHT
     unblocks = task_unblocks_count(task)

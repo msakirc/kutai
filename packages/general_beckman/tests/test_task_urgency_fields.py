@@ -17,6 +17,21 @@ def test_task_age_seconds_missing_created_at_returns_zero():
     assert task_age_seconds({"id": 1}) == 0.0
 
 
+def test_task_age_seconds_sqlite_timestamp_string():
+    # CURRENT_TIMESTAMP format: "YYYY-MM-DD HH:MM:SS" in UTC.
+    from datetime import datetime, timedelta, timezone
+    past = (datetime.now(timezone.utc) - timedelta(seconds=120)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    t = {"id": 1, "created_at": past}
+    age = task_age_seconds(t)
+    assert 110 < age < 130
+
+
+def test_task_age_seconds_malformed_string_returns_zero():
+    assert task_age_seconds({"id": 1, "created_at": "not a timestamp"}) == 0.0
+
+
 def test_task_preselected_pick_defaults_none():
     assert task_preselected_pick({"id": 1}) is None
 

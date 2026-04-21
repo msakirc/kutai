@@ -18,17 +18,22 @@ async def test_build_and_push_sends_profile(tmp_path):
         # in context.classification.difficulty or context.difficulty).
         await conn.execute(
             "CREATE TABLE tasks ("
-            " id INTEGER PRIMARY KEY, status TEXT, context TEXT)"
+            " id INTEGER PRIMARY KEY, status TEXT, context TEXT,"
+            " next_retry_at TEXT)"
         )
+        # (status, context_json, next_retry_at)
         rows = [
-            ("pending", json.dumps({"classification": {"difficulty": 3}})),  # easy
-            ("pending", json.dumps({"classification": {"difficulty": 8}})),  # hard
-            ("pending", json.dumps({"difficulty": 9})),                       # hard
-            ("done",    json.dumps({"classification": {"difficulty": 8}})),  # not ready
-            ("pending", json.dumps({"difficulty": 1})),                       # easy
+            ("pending", json.dumps({"classification": {"difficulty": 3}}), None),
+            ("pending", json.dumps({"classification": {"difficulty": 8}}), None),
+            ("pending", json.dumps({"difficulty": 9}), None),
+            ("done",    json.dumps({"classification": {"difficulty": 8}}), None),
+            ("pending", json.dumps({"difficulty": 1}), None),
+            # Retry-gated task: not yet dispatchable, should be excluded.
+            ("pending", json.dumps({"difficulty": 8}), "2099-01-01 00:00:00"),
         ]
         await conn.executemany(
-            "INSERT INTO tasks(status, context) VALUES(?, ?)", rows,
+            "INSERT INTO tasks(status, context, next_retry_at)"
+            " VALUES(?, ?, ?)", rows,
         )
         await conn.commit()
 

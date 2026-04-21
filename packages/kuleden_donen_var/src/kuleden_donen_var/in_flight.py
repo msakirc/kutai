@@ -34,8 +34,24 @@ class InFlightHandle:
 class InFlightTracker:
     """Per-(provider, model) handle lists with lazy TTL pruning."""
 
-    def __init__(self) -> None:
+    def __init__(self, nerd_herd=None, state_getter=None) -> None:
         self._handles: dict[tuple[str, str], list[InFlightHandle]] = {}
+        self._nerd_herd = nerd_herd
+        self._state_getter = state_getter
+
+    def _push(self, provider: str) -> None:
+        if self._nerd_herd is None or self._state_getter is None:
+            return
+        state = self._state_getter(provider)
+        if state is None:
+            return
+        total = 0
+        for model_name, model_state in state.models.items():
+            n = self.count(provider, model_name)
+            model_state.limits.rpd.in_flight = n
+            total += n
+        state.limits.rpd.in_flight = total
+        self._nerd_herd.push_cloud_state(state)
 
     def _prune(self, key: tuple[str, str]) -> None:
         bucket = self._handles.get(key)
@@ -60,6 +76,7 @@ class InFlightTracker:
             token=str(uuid.uuid4()),
         )
         self._handles.setdefault(key, []).append(handle)
+        self._push(provider)
         return handle
 
     def end_call(self, handle: InFlightHandle) -> None:
@@ -67,6 +84,7 @@ class InFlightTracker:
         bucket = self._handles.get(key, [])
         # Filter by token — idempotent: second end_call on same handle is a no-op.
         self._handles[key] = [h for h in bucket if h.token != handle.token]
+        self._push(handle.provider)
 
     def count(self, provider: str, model: str) -> int:
         key = (provider, model)

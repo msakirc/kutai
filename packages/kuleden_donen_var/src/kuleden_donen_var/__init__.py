@@ -26,24 +26,29 @@ __all__ = [
     "in_flight_count",
 ]
 
-# Module-level singleton used by the dispatcher to bracket cloud calls.
-_in_flight_tracker = InFlightTracker()
+_in_flight_tracker: InFlightTracker | None = None
 
 
-def begin_call(
-    provider: str,
-    model: str,
-    ttl_s: float | None = None,
-) -> InFlightHandle:
+def _get_tracker() -> InFlightTracker:
+    global _in_flight_tracker
+    if _in_flight_tracker is None:
+        # Production wiring: nerd_herd + state_getter are None for now.
+        # A later task will wire a real state_getter once KDV exposes
+        # its internal provider state as CloudProviderState objects.
+        _in_flight_tracker = InFlightTracker()
+    return _in_flight_tracker
+
+
+def begin_call(provider: str, model: str, ttl_s: float | None = None) -> InFlightHandle:
     kwargs = {}
     if ttl_s is not None:
         kwargs["ttl_s"] = ttl_s
-    return _in_flight_tracker.begin_call(provider, model, **kwargs)
+    return _get_tracker().begin_call(provider, model, **kwargs)
 
 
 def end_call(handle: InFlightHandle) -> None:
-    _in_flight_tracker.end_call(handle)
+    _get_tracker().end_call(handle)
 
 
 def in_flight_count(provider: str, model: str) -> int:
-    return _in_flight_tracker.count(provider, model)
+    return _get_tracker().count(provider, model)

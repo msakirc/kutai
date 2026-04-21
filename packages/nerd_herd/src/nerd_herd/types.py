@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from nerd_herd.pool_pressure import PoolPressure, compute_pool_pressure
+
 
 @dataclass
 class GPUState:
@@ -87,6 +89,7 @@ class CloudModelState:
     model_id: str = ""
     utilization_pct: float = 0.0
     limits: RateLimits = field(default_factory=RateLimits)
+    pool_pressure: PoolPressure | None = None
 
 
 @dataclass
@@ -116,3 +119,40 @@ class SystemSnapshot:
     vram_available_mb: int = 0
     local: LocalModelState = field(default_factory=LocalModelState)
     cloud: dict[str, CloudProviderState] = field(default_factory=dict)
+
+    def pressure_for(self, model) -> float:
+        if getattr(model, "is_local", False):
+            return self._local_pressure()
+        provider = getattr(model, "provider", "")
+        prov = self.cloud.get(provider)
+        if prov is None:
+            return 0.0
+        model_id = getattr(model, "name", "")
+        m = prov.models.get(model_id)
+        if m is None:
+            if prov.limits.rpd.limit:
+                return compute_pool_pressure(
+                    remaining=prov.limits.rpd.remaining,
+                    limit=prov.limits.rpd.limit,
+                    reset_at=prov.limits.rpd.reset_at,
+                    in_flight_count=prov.limits.rpd.in_flight,
+                ).value
+            return 0.0
+        if m.pool_pressure is None:
+            m.pool_pressure = compute_pool_pressure(
+                remaining=m.limits.rpd.remaining,
+                limit=m.limits.rpd.limit,
+                reset_at=m.limits.rpd.reset_at,
+                in_flight_count=m.limits.rpd.in_flight,
+            )
+        return m.pool_pressure.value
+
+    def _local_pressure(self) -> float:
+        if self.local is None or self.local.model_name is None:
+            return 0.0
+        if self.local.is_swapping:
+            return -0.5
+        idle = self.local.idle_seconds or 0.0
+        if idle <= 0:
+            return -0.2
+        return min(0.3, idle / 60.0 * 0.3)

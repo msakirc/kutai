@@ -17,7 +17,7 @@ from typing import Any
 from fatih_hoca.ranking import rank_candidates
 from fatih_hoca.registry import ModelInfo, ModelRegistry
 from fatih_hoca.requirements import ModelRequirements
-from fatih_hoca.types import Failure, Pick, SwapBudget
+from fatih_hoca.types import Failure, Pick
 
 logger = logging.getLogger("fatih_hoca.selector")
 
@@ -64,7 +64,6 @@ class Selector:
     ) -> None:
         self._registry = registry
         self._nerd_herd = nerd_herd
-        self._swap_budget = SwapBudget(max_swaps=3, window_seconds=300)
         # Providers with API keys configured — cloud models without a key are filtered
         self._available_providers: set[str] | None = available_providers
 
@@ -173,7 +172,7 @@ class Selector:
         # ── Swap budget enforcement ──────────────────────────────────────────
         # If the best model requires a swap (local but not loaded), check budget.
         if best.model.is_local and not best.model.is_loaded:
-            if not self._swap_budget.can_swap(local_only=local_only, priority=priority):
+            if not self._nerd_herd.can_swap(local_only=local_only, priority=priority):
                 # Budget exhausted — try to find an already-loaded or cloud model
                 logger.info(
                     "swap budget exhausted — looking for loaded or cloud alternative: "
@@ -191,11 +190,10 @@ class Selector:
                     )
                     return None
             else:
-                # Record the swap
-                self._swap_budget.record_swap()
+                # Swap will be recorded by the dispatcher after successful execution (Task 4).
                 logger.info(
-                    "model swap recorded: model=%s budget_remaining=%d task=%s",
-                    best.model.name, self._swap_budget.remaining, task,
+                    "model swap approved: model=%s recent_swaps=%d task=%s",
+                    best.model.name, self._nerd_herd.recent_swap_count(), task,
                 )
 
         min_time = self._calc_min_time(

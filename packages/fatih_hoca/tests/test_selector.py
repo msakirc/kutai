@@ -34,6 +34,8 @@ def _make_nerd_herd(
         )
     nh = MagicMock()
     nh.snapshot.return_value = snap
+    nh.can_swap.return_value = True
+    nh.recent_swap_count.return_value = 0
     return nh
 
 

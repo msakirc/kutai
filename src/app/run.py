@@ -188,12 +188,9 @@ async def _critical_health_checks() -> bool:
             ok, detail = await _db_writable()
             _log.info("Health check passed", check="db_writable", detail=detail)
             db_ok = True
-            try:
-                from fatih_hoca.selector import enable_telemetry
-                from src.app.config import DB_PATH as _DB_PATH
-                enable_telemetry(_DB_PATH)
-            except Exception:
-                pass  # telemetry is optional
+            # Pick-log persistence now lives in src/core/llm_dispatcher.py,
+            # keyed off DB_PATH env var. No explicit enable-telemetry step
+            # needed — selector is side-effect free.
             break
         except Exception as exc:
             if attempt < 2:

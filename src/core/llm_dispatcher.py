@@ -180,6 +180,10 @@ class LLMDispatcher:
         )
 
         if isinstance(result, hallederiz_kadir.CallResult):
+            await self._record_pick(
+                pick=pick, task=task, category=category,
+                success=True, error_category="",
+            )
             return self._result_to_dict(result, model)
 
         # CallError path
@@ -188,6 +192,10 @@ class LLMDispatcher:
         logger.debug(
             f"{category.value} candidate failed | model={model.name} "
             f"category={result.category} error={result.message[:80]}"
+        )
+        await self._record_pick(
+            pick=pick, task=task, category=category,
+            success=False, error_category=last_category,
         )
 
         if not result.retryable or len(failures) >= max_recursion:
@@ -223,6 +231,39 @@ class LLMDispatcher:
 
     def _timeout_floor(self, category: CallCategory) -> float:
         return 45.0 if category == CallCategory.OVERHEAD else 60.0
+
+    async def _record_pick(
+        self,
+        *,
+        pick: Any,
+        task: str,
+        category: CallCategory,
+        success: bool,
+        error_category: str = "",
+    ) -> None:
+        """Fire-and-forget pick_log write. Never propagates errors."""
+        try:
+            import os
+            from src.infra import pick_log as _pick_log_mod
+
+            db_path = os.getenv("DB_PATH") or "kutai.db"
+            model = getattr(pick, "model", None)
+            picked_model = getattr(model, "name", "") if model is not None else ""
+            picked_score = float(getattr(pick, "composite", 0.0) or 0.0)
+            task_name = task or category.value
+            cat_value = category.value if isinstance(category, CallCategory) else str(category)
+
+            await _pick_log_mod.write_pick_log_row(
+                db_path=db_path,
+                task_name=task_name,
+                picked_model=picked_model,
+                picked_score=picked_score,
+                category=cat_value,
+                success=success,
+                error_category=error_category,
+            )
+        except Exception as e:  # noqa: BLE001 — telemetry must never break dispatch
+            logger.debug("pick_log record failed: %s", e)
 
     async def _ensure_local_model(
         self,

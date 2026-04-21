@@ -496,11 +496,18 @@ async def init_db():
             failures_json TEXT,
             snapshot_summary TEXT,
             pool TEXT,
-            urgency REAL
+            urgency REAL,
+            success INTEGER,
+            error_category TEXT
         )
     """)
-    # Idempotent column add for pre-Phase-2c databases.
-    for col_name, col_type in (("pool", "TEXT"), ("urgency", "REAL")):
+    # Idempotent column add for pre-Phase-2c / pre-Task-5 databases.
+    for col_name, col_type in (
+        ("pool", "TEXT"),
+        ("urgency", "REAL"),
+        ("success", "INTEGER"),
+        ("error_category", "TEXT"),
+    ):
         try:
             await db.execute(f"ALTER TABLE model_pick_log ADD COLUMN {col_name} {col_type}")
         except Exception as e:

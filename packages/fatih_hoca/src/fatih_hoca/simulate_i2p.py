@@ -1,7 +1,8 @@
 """Dry-run simulator: walk i2p step profiles through Selector.select().
 
-Outputs a task x model distribution report. No DB writes: telemetry is
-opt-in via enable_telemetry() and the simulator never calls it.
+Outputs a task x model distribution report. No DB writes: pick_log
+persistence lives in the dispatcher (src/infra/pick_log.py), and the
+simulator bypasses the dispatcher entirely.
 """
 from __future__ import annotations
 

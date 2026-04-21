@@ -9,6 +9,7 @@ from nerd_herd.load import LoadManager
 from nerd_herd.health import HealthRegistry
 from nerd_herd.inference import InferenceCollector
 from nerd_herd.exposition import MetricsServer, build_metrics_text
+from nerd_herd.swap_budget import SwapBudget
 from nerd_herd.types import GPUState, HealthStatus, LocalModelState, CloudProviderState, SystemSnapshot
 
 
@@ -50,6 +51,8 @@ class NerdHerd:
 
         self._local_state: LocalModelState = LocalModelState()
         self._cloud_state: dict[str, CloudProviderState] = {}
+
+        self._swap_budget = SwapBudget(max_swaps=3, window_seconds=300)
 
         self._server = MetricsServer(self.registry, port=metrics_port, nerd_herd=self)
 
@@ -102,6 +105,15 @@ class NerdHerd:
 
     def get_health_status(self) -> HealthStatus:
         return self._health.get_status()
+
+    def recent_swap_count(self) -> int:
+        return self._swap_budget.recent_count()
+
+    def can_swap(self, local_only: bool = False, priority: int = 5) -> bool:
+        return self._swap_budget.can_swap(local_only=local_only, priority=priority)
+
+    def record_swap(self, model_name: str = "") -> None:
+        self._swap_budget.record_swap()
 
     def register_collector(self, name: str, collector: Collector) -> None:
         self.registry.register(name, collector)

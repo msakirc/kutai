@@ -60,6 +60,59 @@ def _attr(obj, name: str, default=None):
     return getattr(obj, name, default)
 
 
+_REVIEW_FETCH_TIMEOUT_S = 15
+_MAX_SNIPPETS_PER_PRODUCT = 10
+
+
+async def _fetch_reviews(products: list) -> dict[str, list[str]]:
+    """For each product, fetch review snippets via its scraper. Keyed by URL.
+
+    Concurrent; individual failures/timeouts yield empty list, never raise.
+    Separate from ``_fetch_products`` so tests can mock independently.
+    """
+    if not products:
+        return {}
+    from src.shopping.scrapers import get_scraper
+
+    async def _one(p) -> tuple[str, list[str]]:
+        url = str(_attr(p, "url") or "")
+        source = str(_attr(p, "source") or _attr(p, "site") or "")
+        if not url or not source:
+            return url, []
+        scraper_cls = get_scraper(source)
+        if scraper_cls is None:
+            return url, []
+        try:
+            scraper = scraper_cls()
+            reviews = await asyncio.wait_for(
+                scraper.get_reviews(url, max_pages=1),
+                timeout=_REVIEW_FETCH_TIMEOUT_S,
+            )
+        except Exception as exc:
+            logger.debug("review fetch failed", source=source, url=url, err=str(exc))
+            return url, []
+        snippets: list[str] = []
+        for r in reviews or []:
+            if not isinstance(r, dict):
+                continue
+            text = r.get("text") or r.get("content") or r.get("comment") or ""
+            text = str(text).strip()
+            if text:
+                snippets.append(text)
+        return url, snippets[:_MAX_SNIPPETS_PER_PRODUCT]
+
+    tasks = [asyncio.create_task(_one(p)) for p in products]
+    out: dict[str, list[str]] = {}
+    for coro in asyncio.as_completed(tasks):
+        try:
+            url, snips = await coro
+        except Exception:
+            continue
+        if url and snips:
+            out[url] = snips
+    return out
+
+
 async def step_resolve(query: str, per_site_n: int) -> list[Candidate]:
     """Fetch scraper results, keep top-N per site in site order, no filtering."""
     logger.info("step_resolve start", query=query[:80], per_site_n=per_site_n)
@@ -75,23 +128,46 @@ async def step_resolve(query: str, per_site_n: int) -> list[Candidate]:
         site = _attr(p, "source") or _attr(p, "site") or "unknown"
         by_site.setdefault(site, []).append(p)
 
-    cands: list[Candidate] = []
+    # Keep only top-N per site before fetching reviews (reviews are expensive)
+    kept_products: list = []
+    site_rank_map: list[tuple[str, int]] = []  # parallel to kept_products
     for site, products in by_site.items():
         for rank, p in enumerate(products[:per_site_n], start=1):
-            cands.append(
-                Candidate(
-                    title=str(_attr(p, "name") or ""),
-                    site=site,
-                    site_rank=rank,
-                    price=(_attr(p, "discounted_price") or _attr(p, "original_price") or _attr(p, "price")),
-                    original_price=_attr(p, "original_price"),
-                    url=str(_attr(p, "url") or ""),
-                    rating=_attr(p, "rating"),
-                    review_count=_attr(p, "review_count"),
-                    review_snippets=list(_attr(p, "review_snippets") or []),
-                )
+            kept_products.append(p)
+            site_rank_map.append((site, rank))
+
+    # Fetch review snippets only for products that don't already carry them
+    # (tests inject them inline via the fixture products).
+    needs_fetch = [p for p in kept_products if not _attr(p, "review_snippets")]
+    try:
+        reviews_map = await _fetch_reviews(needs_fetch) if needs_fetch else {}
+    except Exception as exc:
+        logger.warning("review fetch stage failed, continuing without snippets: %s", exc)
+        reviews_map = {}
+
+    cands: list[Candidate] = []
+    for p, (site, rank) in zip(kept_products, site_rank_map):
+        url = str(_attr(p, "url") or "")
+        inline = list(_attr(p, "review_snippets") or [])
+        snippets = inline or reviews_map.get(url, [])
+        cands.append(
+            Candidate(
+                title=str(_attr(p, "name") or ""),
+                site=site,
+                site_rank=rank,
+                price=(_attr(p, "discounted_price") or _attr(p, "original_price") or _attr(p, "price")),
+                original_price=_attr(p, "original_price"),
+                url=url,
+                rating=_attr(p, "rating"),
+                review_count=_attr(p, "review_count"),
+                review_snippets=list(snippets),
             )
-    logger.info("step_resolve done", candidate_count=len(cands))
+        )
+    logger.info(
+        "step_resolve done",
+        candidate_count=len(cands),
+        with_snippets=sum(1 for c in cands if c.review_snippets),
+    )
     return cands
 
 

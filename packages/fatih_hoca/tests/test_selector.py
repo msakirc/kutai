@@ -272,16 +272,13 @@ def test_select_with_exhausted_swap_budget_prefers_loaded():
     )
     reg = _make_registry(loaded, unloaded)
     nh = _make_nerd_herd()
+    # Drive swap exhaustion via the nerd_herd mock — selector delegates to it
+    nh.can_swap.return_value = False
+    nh.recent_swap_count.return_value = 3
     sel = Selector(registry=reg, nerd_herd=nh)
 
-    # Exhaust swap budget
-    for _ in range(3):
-        sel._swap_budget.record_swap()
-
-    assert sel._swap_budget.exhausted
-
     result = sel.select(task="coder", difficulty=5, priority=5)
-    # Should pick the loaded model (no swap needed), not unloaded
+    # Unloaded wins on score but swap denied — selector falls back to loaded
     assert result is not None
     assert result.model.name == "loaded"
 
@@ -291,11 +288,10 @@ def test_select_swap_budget_none_when_exhausted_and_no_alternative():
     unloaded = _make_model("unloaded", is_loaded=False)
     reg = _make_registry(unloaded)
     nh = _make_nerd_herd()
+    # Drive swap exhaustion via the nerd_herd mock
+    nh.can_swap.return_value = False
+    nh.recent_swap_count.return_value = 3
     sel = Selector(registry=reg, nerd_herd=nh)
-
-    # Exhaust swap budget
-    for _ in range(3):
-        sel._swap_budget.record_swap()
 
     result = sel.select(task="coder", difficulty=5, priority=5)
     assert result is None
@@ -304,11 +300,16 @@ def test_select_swap_budget_none_when_exhausted_and_no_alternative():
 def test_select_swap_budget_exempt_for_high_priority():
     """Priority >= 9 is exempt from swap budget."""
     unloaded = _make_model("unloaded", is_loaded=False)
-    sel = _make_selector([unloaded])
-
-    # Exhaust swap budget
-    for _ in range(3):
-        sel._swap_budget.record_swap()
+    reg = _make_registry(unloaded)
+    nh = _make_nerd_herd()
+    # Budget exhausted for normal priority, but exempt for priority >= 9
+    def can_swap_side_effect(local_only=False, priority=5):
+        if local_only or priority >= 9:
+            return True
+        return False
+    nh.can_swap.side_effect = can_swap_side_effect
+    nh.recent_swap_count.return_value = 3
+    sel = Selector(registry=reg, nerd_herd=nh)
 
     # Priority 9 is exempt — should still work
     result = sel.select(task="coder", difficulty=5, priority=9)
@@ -319,10 +320,16 @@ def test_select_swap_budget_exempt_for_high_priority():
 def test_select_swap_budget_exempt_for_local_only():
     """local_only requests are exempt from swap budget."""
     unloaded = _make_model("unloaded", is_loaded=False)
-    sel = _make_selector([unloaded])
-
-    for _ in range(3):
-        sel._swap_budget.record_swap()
+    reg = _make_registry(unloaded)
+    nh = _make_nerd_herd()
+    # Budget exhausted for normal requests, but exempt for local_only
+    def can_swap_side_effect(local_only=False, priority=5):
+        if local_only or priority >= 9:
+            return True
+        return False
+    nh.can_swap.side_effect = can_swap_side_effect
+    nh.recent_swap_count.return_value = 3
+    sel = Selector(registry=reg, nerd_herd=nh)
 
     result = sel.select(task="coder", difficulty=5, local_only=True)
     assert result is not None

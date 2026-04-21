@@ -151,6 +151,8 @@ DaLLaMa's `swap.py` is designed for future migration — swap strategy changes f
 
 **Nerd Herd expansion (DONE, part of Fatih Hoca).** Added `SystemSnapshot`, `LocalModelState`, `CloudProviderState` types. `snapshot()` method on NerdHerd. Push-based state from DaLLaMa (`push_local_state`) and KDV (`push_cloud_state`).
 
+**Pool pressure shared primitive (2026-04-21 branch `feat/pool-pressure-shared`).** Nerd_herd now derives a signed pool-pressure value in `[-1, +1]` via `compute_pool_pressure(remaining, limit, reset_at, in_flight_count)` (depletion below 15% remaining, abundance scaled by `exp(-reset_in/24h)`). The helper feeds `SystemSnapshot.pressure_for(model)` with per-model lazy caching. KDV now brackets each cloud call with `begin_call`/`end_call`, tracking in-flight handles (TTL safety net at 180s) so `in_flight_count` is visible to snapshot-time computation. Beckman also pushes a `QueueProfile(hard_tasks_count, total_ready_count)` after enqueue/finish/sweep events. Beckman's `next_task()` uses `snapshot.pressure_for(pick.model)` versus a task-urgency-derived threshold (linear, intercept 0.5, slope -1.0) to gate admission; the selected `Pick` rides on the task as `preselected_pick` so dispatcher iteration 0 skips a redundant Hoca call. Selector is now side-effect-free: swap-budget writes moved to `nerd_herd.record_swap` (called by dispatcher post-swap) and `model_pick_log` writes moved to `src/infra/pick_log.py` (called by dispatcher post-iteration with actual outcome).
+
 **Turkish Shopping Scrapers → own package.** 8,500 LOC, 19 scrapers. Largest blast radius. Now connected to workflows, increasing confusion risk.
 
 ## Runtime Invariants

@@ -24,18 +24,6 @@ def _capacity_snapshot():
         return None
 
 
-def _system_busy(snap) -> bool:
-    """Return True when VRAM is too low to start a new LLM task."""
-    if snap is None:
-        return False
-    try:
-        if int(getattr(snap, "vram_available_mb", 0)) < 500:
-            return True
-    except Exception:
-        pass
-    return False
-
-
 async def _currently_dispatched_count() -> int:
     """Count tasks currently being processed (status='processing')."""
     import os

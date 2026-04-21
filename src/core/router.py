@@ -87,6 +87,18 @@ def get_kdv() -> KuledenDonenVar:
                 )
         except Exception:
             pass
+
+        # Wire the in-flight tracker so begin_call / end_call push a
+        # CloudProviderState (with overlaid in_flight) into nerd_herd.
+        # Without this, the tracker counts handles in-process but the
+        # signal never reaches pool_pressure computation.
+        try:
+            import nerd_herd
+            from kuleden_donen_var import configure_in_flight_push
+            from kuleden_donen_var.nerd_herd_adapter import make_state_getter
+            configure_in_flight_push(nerd_herd, make_state_getter(_kdv))
+        except Exception:
+            pass
     return _kdv
 
 

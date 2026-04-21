@@ -72,6 +72,7 @@ class RateLimit:
     limit: int | None = None
     remaining: int | None = None
     reset_at: int | None = None        # absolute epoch seconds
+    in_flight: int = 0                 # calls dispatched but not yet confirmed
 
 
 @dataclass

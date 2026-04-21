@@ -1,4 +1,3 @@
-import time
 import pytest
 from nerd_herd.swap_budget import SwapBudget
 
@@ -17,10 +16,12 @@ def test_can_swap_false_after_limit():
     assert sb.can_swap(local_only=False, priority=5) is False
 
 
-def test_expired_swaps_pruned():
+def test_expired_swaps_pruned(monkeypatch):
+    current = [1000.0]
+    monkeypatch.setattr("nerd_herd.swap_budget.time.monotonic", lambda: current[0])
     sb = SwapBudget(max_swaps=3, window_seconds=1)
     sb.record_swap()
-    time.sleep(1.1)
+    current[0] += 1.1
     sb.record_swap()
     assert sb.recent_count() == 1
 

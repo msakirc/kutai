@@ -26,6 +26,7 @@ class SwapBudget:
         return len(self._timestamps) < self._max
 
     def record_swap(self) -> None:
+        self._prune()
         self._timestamps.append(time.monotonic())
 
     def recent_count(self) -> int:

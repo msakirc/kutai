@@ -36,22 +36,102 @@ def _system_busy(snap) -> bool:
     return False
 
 
-async def next_task():
-    """Cycle: sweep (throttled) + fire due crons + pick one.
+async def _currently_dispatched_count() -> int:
+    """Count tasks currently being processed (status='processing')."""
+    import os
+    import aiosqlite
+    db_path = os.environ.get("DB_PATH", "kutai.db")
+    try:
+        async with aiosqlite.connect(db_path) as db:
+            cur = await db.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = 'processing'"
+            )
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0
+    except Exception:
+        return 0
 
-    Called by orchestrator on its ~3s cycle.
+
+async def _claim_task(task_id: int) -> bool:
+    """Claim a single task by id via the existing DB claim primitive."""
+    from src.infra.db import claim_task
+    return await claim_task(task_id)
+
+
+async def next_task():
+    """Admission loop: pick one ready task whose pool pressure clears its urgency threshold.
+
+    Called by orchestrator on its pump cycle. Iterates top-K ready tasks
+    by urgency; for each, asks Fatih Hoca for a Pick, then gates on
+    ``snapshot.pressure_for(pick.model) >= threshold(urgency)``. First
+    candidate to clear is claimed, tagged with ``preselected_pick``, and
+    returned. Non-admitted candidates remain in the queue untouched.
     """
+    import os
+    from general_beckman import queue as _queue
+    from general_beckman.admission import compute_urgency, threshold
     from general_beckman.cron import fire_due
-    from general_beckman.queue import pick_ready_task
     from general_beckman import posthook_migration
 
-    await posthook_migration.run()  # one-shot; no-op after first success
+    hard_cap = int(os.environ.get("BECKMAN_HARD_CAP", "4"))
+    top_k = int(os.environ.get("BECKMAN_TOP_K", "5"))
 
-    # Cron processor internally seeds and throttles sweep.
+    # Hard cap first — cheap DB read.
+    if await _currently_dispatched_count() >= hard_cap:
+        return None
+
+    await posthook_migration.run()  # one-shot; no-op after first success
     await fire_due()
 
-    snap = _capacity_snapshot()
-    return await pick_ready_task(_system_busy(snap))
+    # One snapshot per tick.
+    try:
+        import nerd_herd
+        snap = nerd_herd.snapshot()
+    except Exception:
+        snap = None
+
+    try:
+        import fatih_hoca
+    except Exception:
+        fatih_hoca = None  # type: ignore
+
+    candidates = await _queue.pick_ready_top_k(k=top_k)
+    for task in candidates:
+        agent_type = task.get("agent_type") or ""
+        difficulty = task.get("difficulty", 5)
+        pick = None
+        if fatih_hoca is not None:
+            try:
+                pick = fatih_hoca.select(
+                    task=agent_type,
+                    agent_type=agent_type,
+                    difficulty=difficulty,
+                )
+            except Exception:
+                pick = None
+        if pick is None:
+            continue
+
+        if snap is not None:
+            try:
+                pressure = snap.pressure_for(pick.model)
+            except Exception:
+                pressure = 1.0  # fail-open: admit rather than starve
+        else:
+            pressure = 1.0
+
+        urgency = compute_urgency(task)
+        if pressure < threshold(urgency):
+            continue
+
+        if not await _claim_task(task["id"]):
+            continue
+
+        task["preselected_pick"] = pick
+        task["status"] = "processing"
+        return task
+
+    return None
 
 
 async def on_task_finished(task_id: int, result: dict) -> None:

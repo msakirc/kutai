@@ -4,6 +4,7 @@ from __future__ import annotations
 from src.infra.db import get_ready_tasks, claim_task, update_task
 from src.infra.times import from_db, utc_now
 
+from general_beckman.admission import compute_urgency
 from general_beckman.paused_patterns import is_paused
 
 
@@ -43,6 +44,19 @@ async def pick_ready_task(system_busy: bool) -> dict | None:
         if claimed:
             return row
     return None
+
+
+async def pick_ready_top_k(k: int = 5) -> list[dict]:
+    """Return up to ``k`` ready tasks ordered by urgency descending.
+
+    Unlike :func:`pick_ready_task`, this helper does NOT claim any rows.
+    The admission loop inspects several candidates and claims at most one.
+    Paused tasks are filtered out.
+    """
+    rows = await get_ready_tasks(limit=max(k * 2, 8))
+    eligible = [r for r in rows if not is_paused(r)]
+    eligible.sort(key=compute_urgency, reverse=True)
+    return eligible[:k]
 
 
 async def unclaim(task: dict) -> None:

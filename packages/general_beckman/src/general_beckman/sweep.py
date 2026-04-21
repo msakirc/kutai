@@ -101,6 +101,18 @@ async def sweep_queue() -> None:
             continue
 
     for task in stuck_ungraded:
+        # Post-hook regime: an 'ungraded' row with _pending_posthooks is
+        # legitimately awaiting a grader/summarizer verdict. Promoting it
+        # silently turns an uncertain verdict into a pass. Skip it —
+        # the post-hook DLQ cascade (apply._dlq_write) handles terminal
+        # failure when a post-hook task exhausts retries.
+        ctx = parse_context(task)
+        if ctx.get("_pending_posthooks"):
+            logger.debug(
+                f"[Sweep] Stuck ungraded #{task['id']} has pending posthooks "
+                f"{ctx['_pending_posthooks']}; leaving for verdict path"
+            )
+            continue
         await db.execute(
             "UPDATE tasks SET status = 'completed', "
             "completed_at = ? WHERE id = ?",

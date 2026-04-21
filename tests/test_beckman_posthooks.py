@@ -376,6 +376,109 @@ async def test_grader_task_does_not_emit_progress_ping(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_grader_dlq_fails_source_permanently(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "test.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    from src.infra import db as _db_mod
+    monkeypatch.setattr(_db_mod, "DB_PATH", db_path)
+    if _db_mod._db_connection is not None:
+        await _db_mod._db_connection.close()
+        _db_mod._db_connection = None
+
+    from src.infra.db import init_db, add_task, get_task, update_task
+    await init_db()
+    source_id = await add_task(
+        title="source", description="", agent_type="writer", mission_id=1,
+        context=json.dumps({"_pending_posthooks": ["grade"]}),
+    )
+    await update_task(source_id, status="ungraded")
+    grader_id = await add_task(
+        title=f"Grade task #{source_id}", description="",
+        agent_type="grader", mission_id=1,
+        context={"source_task_id": source_id, "generating_model": "qwen-7b"},
+    )
+    grader_row = await get_task(grader_id)
+
+    from general_beckman.apply import _dlq_write
+    await _dlq_write(grader_row, error="no grader succeeded",
+                     category="exhausted", attempts=3)
+
+    source = await get_task(source_id)
+    assert source["status"] == "failed"
+    assert "grade DLQ" in (source["error"] or "")
+    ctx = json.loads(source["context"])
+    assert ctx["_pending_posthooks"] == []
+
+
+@pytest.mark.asyncio
+async def test_summary_dlq_completes_source_with_structural_fallback(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "test.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    from src.infra import db as _db_mod
+    monkeypatch.setattr(_db_mod, "DB_PATH", db_path)
+    if _db_mod._db_connection is not None:
+        await _db_mod._db_connection.close()
+        _db_mod._db_connection = None
+
+    from src.infra.db import init_db, add_task, get_task, update_task
+    await init_db()
+    source_id = await add_task(
+        title="source", description="", agent_type="writer", mission_id=1,
+        context=json.dumps({"_pending_posthooks": ["summary:big_out"]}),
+    )
+    await update_task(source_id, status="ungraded")
+    sum_id = await add_task(
+        title=f"Summarize 'big_out' for #{source_id}", description="",
+        agent_type="artifact_summarizer", mission_id=1,
+        context={"source_task_id": source_id, "artifact_name": "big_out"},
+    )
+    sum_row = await get_task(sum_id)
+
+    from general_beckman.apply import _dlq_write
+    await _dlq_write(sum_row, error="LLM 3x failed",
+                     category="exhausted", attempts=3)
+
+    source = await get_task(source_id)
+    assert source["status"] == "completed"
+    ctx = json.loads(source["context"])
+    assert ctx["_pending_posthooks"] == []
+
+
+@pytest.mark.asyncio
+async def test_sweep_skips_ungraded_with_pending_posthooks(tmp_path, monkeypatch):
+    """Safety net must not silently promote tasks awaiting a verdict."""
+    from datetime import timedelta
+    db_path = str(tmp_path / "test.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    from src.infra import db as _db_mod
+    monkeypatch.setattr(_db_mod, "DB_PATH", db_path)
+    if _db_mod._db_connection is not None:
+        await _db_mod._db_connection.close()
+        _db_mod._db_connection = None
+
+    from src.infra.db import init_db, add_task, get_task, update_task
+    from src.infra.times import utc_now, to_db
+    await init_db()
+
+    old_ts = to_db(utc_now() - timedelta(hours=2))
+    source_id = await add_task(
+        title="legacy", description="", agent_type="writer", mission_id=1,
+        context=json.dumps({
+            "_pending_posthooks": ["grade"],
+            "worker_completed_at": old_ts,
+        }),
+    )
+    await update_task(source_id, status="ungraded")
+
+    from general_beckman.sweep import sweep_queue
+    await sweep_queue()
+
+    # Still ungraded because a post-hook is pending.
+    source = await get_task(source_id)
+    assert source["status"] == "ungraded"
+
+
+@pytest.mark.asyncio
 async def test_artifact_summarizer_task_does_not_emit_progress_ping(tmp_path, monkeypatch):
     class FakeTG:
         async def send_notification(self, text):

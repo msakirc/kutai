@@ -234,6 +234,16 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
         )
     except Exception as exc:
         logger.warning("DLQ write failed", task_id=task["id"], error=str(exc))
+    # Post-hook DLQ cascade: a grader/summarizer task exhausting its
+    # retries means the source task can no longer advance through the
+    # verdict path. Synthesise the terminal outcome instead of leaving
+    # the source stuck in 'ungraded' forever.
+    if task.get("agent_type") in ("grader", "artifact_summarizer"):
+        try:
+            await _posthook_dlq_cascade(task, error)
+        except Exception as exc:
+            logger.warning("posthook DLQ cascade failed",
+                           task_id=task["id"], error=str(exc))
     # Telegram DLQ notification → mechanical salako task (no inline send).
     await add_task(
         title=f"Notify: DLQ task #{task['id']}",
@@ -250,6 +260,76 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
         ),
         depends_on=[],
     )
+
+
+async def _posthook_dlq_cascade(task: dict, error: str) -> None:
+    """Propagate a grader/summarizer DLQ to its source task.
+
+    - Grader DLQ → source permanently failed ("no grader succeeded").
+      Distinct from a legitimate reject verdict, which retries the source.
+    - Summary DLQ → remove that summary kind from pending_posthooks;
+      structural fallback (already stored by post_execute_workflow_step)
+      stands. If the pending list drains to empty, flip source to completed.
+    """
+    import json as _json
+    from src.infra.db import get_task, update_task
+
+    ctx_raw = task.get("context") or "{}"
+    try:
+        ctx = _json.loads(ctx_raw) if isinstance(ctx_raw, str) else ctx_raw
+        if isinstance(ctx, str):
+            try:
+                ctx = _json.loads(ctx)
+            except (_json.JSONDecodeError, TypeError):
+                ctx = {}
+    except (_json.JSONDecodeError, TypeError):
+        ctx = {}
+    if not isinstance(ctx, dict):
+        return
+
+    source_id = ctx.get("source_task_id")
+    if source_id is None:
+        return
+
+    source = await get_task(source_id)
+    if source is None or source.get("status") != "ungraded":
+        return
+
+    source_ctx = _parse_ctx(source)
+    pending = list(source_ctx.get("_pending_posthooks") or [])
+    agent_type = task.get("agent_type")
+
+    if agent_type == "grader":
+        # Permanent failure: no grader could produce a verdict.
+        source_ctx["_pending_posthooks"] = []
+        source_ctx["_grade_dlq_reason"] = error[:300]
+        await update_task(
+            source_id,
+            status="failed",
+            error=f"grade DLQ: {error[:400]}",
+            failed_in_phase="grading",
+            context=_json.dumps(source_ctx),
+        )
+        logger.warning("grader DLQ cascaded source to failed",
+                       source_id=source_id, grader_task_id=task["id"])
+        return
+
+    if agent_type == "artifact_summarizer":
+        artifact_name = ctx.get("artifact_name") or ""
+        kind = f"summary:{artifact_name}"
+        pending = [k for k in pending if k != kind]
+        source_ctx["_pending_posthooks"] = pending
+        if not pending:
+            await update_task(
+                source_id, status="completed",
+                context=_json.dumps(source_ctx),
+            )
+        else:
+            await update_task(
+                source_id, context=_json.dumps(source_ctx),
+            )
+        logger.info("summary DLQ falls back to structural",
+                    source_id=source_id, artifact=artifact_name)
 
 
 async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:

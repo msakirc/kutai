@@ -10,10 +10,15 @@ def run_async(coro):
         loop.close()
 
 class TestPostHookNoLLM:
-    """post_execute_workflow_step must NEVER make LLM calls."""
+    """post_execute_workflow_step must NEVER make LLM calls inline.
+
+    LLM summaries are now Beckman-scheduled post-hook tasks
+    (RequestPostHook('summary:<name>')), not inline calls. See
+    docs/superpowers/specs/2026-04-21-posthook-task-extraction-design.md.
+    """
 
     def test_large_artifact_no_llm_call(self):
-        """Artifacts > 3000 chars should use structural summary, not LLM."""
+        """Artifacts > 3000 chars: store structural summary, no inline LLM."""
         from src.workflows.engine.hooks import post_execute_workflow_step
 
         task = {
@@ -26,15 +31,12 @@ class TestPostHookNoLLM:
         result = {"status": "completed", "result": "x" * 5000}
 
         with patch("src.workflows.engine.hooks.get_artifact_store") as mock_store, \
-             patch("src.workflows.engine.hooks.queue_llm_summary", new_callable=AsyncMock) as mock_queue, \
              patch("src.core.llm_dispatcher.get_dispatcher") as mock_disp:
             mock_store.return_value = AsyncMock()
             mock_store.return_value.store = AsyncMock()
             run_async(post_execute_workflow_step(task, result))
-            # Post-hook must NOT make LLM calls (dispatcher untouched)
+            # Post-hook must NOT make LLM calls (dispatcher untouched).
             mock_disp.assert_not_called()
-            # Post-hook MUST queue the artifact for later LLM summarization
-            mock_queue.assert_called()
 
 
 class TestNoInlineGrading:
@@ -121,36 +123,28 @@ class TestTodoSuggestionsGraceful:
             mock_remind.assert_called_once()
 
 
-class TestSummaryQueuePersistent:
-    """LLM summary queue must survive restarts — backed by SQLite."""
+class TestSummaryViaBeckmanPostHook:
+    """LLM summary is a Beckman-scheduled post-hook task, not a drain queue.
 
-    def test_pending_summaries_table_exists(self):
-        """init_db must create the pending_llm_summaries table."""
-        import inspect
-        from src.infra import db as db_module
-        source = inspect.getsource(db_module.init_db)
-        assert "CREATE TABLE IF NOT EXISTS pending_llm_summaries" in source, \
-            "pending_llm_summaries table missing from schema"
+    Replaces the old TestSummaryQueuePersistent class — queue_llm_summary
+    and drain_pending_summaries were removed in the post-hook extraction
+    refactor (2026-04-21).
+    """
 
-    def test_queue_function_is_async_and_persists(self):
-        """queue_llm_summary must be async and write to SQLite."""
-        import inspect
-        from src.workflows.engine.hooks import queue_llm_summary
-        assert inspect.iscoroutinefunction(queue_llm_summary), \
-            "queue_llm_summary must be async (it writes to DB)"
-        source = inspect.getsource(queue_llm_summary)
-        assert "pending_llm_summaries" in source, \
-            "queue_llm_summary must write to pending_llm_summaries table"
+    def test_queue_llm_summary_removed(self):
+        from src.workflows.engine import hooks
+        assert not hasattr(hooks, "queue_llm_summary"), \
+            "queue_llm_summary should be removed (replaced by RequestPostHook)"
 
-    def test_drain_reads_from_db(self):
-        """drain_pending_summaries must query the pending_llm_summaries table."""
-        import inspect
-        from src.workflows.engine.hooks import drain_pending_summaries
-        source = inspect.getsource(drain_pending_summaries)
-        assert "pending_llm_summaries" in source, \
-            "drain_pending_summaries must read from pending_llm_summaries table"
-        assert "DELETE FROM pending_llm_summaries" in source, \
-            "drain must delete completed jobs"
+    def test_drain_pending_summaries_removed(self):
+        from src.workflows.engine import hooks
+        assert not hasattr(hooks, "drain_pending_summaries"), \
+            "drain_pending_summaries should be removed (queue-driven now)"
+
+    def test_artifact_summarizer_agent_exists(self):
+        from src.agents import AGENT_REGISTRY
+        assert "artifact_summarizer" in AGENT_REGISTRY, \
+            "ArtifactSummarizerAgent must be registered to consume RequestPostHook('summary:*')"
 
 class TestCheckpointResume:
     """Checkpoints must persist across retries and only clear on final completion."""

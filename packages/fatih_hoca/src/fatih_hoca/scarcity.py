@@ -213,10 +213,22 @@ def _per_call_scarcity(
         abundance_scarcity = PER_CALL_ABUNDANCE_MAX
 
     # ── Arm 3: queue pressure (conservation on easy tasks) ───────────
+    # Accept either the local `fatih_hoca.requirements.QueueProfile`
+    # (`total_tasks`) or `nerd_herd.types.QueueProfile` pushed by
+    # Beckman (`total_ready_count`). If `queue_state` is absent, fall
+    # back to snapshot.queue_profile — wired automatically once Beckman
+    # pushes land.
+    qp = queue_state
+    if qp is None:
+        qp = getattr(snapshot, "queue_profile", None)
     queue_scarcity = 0.0
-    if queue_state is not None and task_difficulty < 7:
-        total = int(getattr(queue_state, "total_tasks", 0) or 0)
-        hard = int(getattr(queue_state, "hard_tasks_count", 0) or 0)
+    if qp is not None and task_difficulty < 7:
+        total = int(
+            getattr(qp, "total_tasks", 0)
+            or getattr(qp, "total_ready_count", 0)
+            or 0
+        )
+        hard = int(getattr(qp, "hard_tasks_count", 0) or 0)
         if total > 0 and hard > 0:
             hard_ratio = hard / total
             pressure = min(1.0, hard_ratio / PER_CALL_HARD_QUEUE_RATIO)

@@ -414,19 +414,55 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
     pending = list(ctx.get("_pending_posthooks") or [])
 
     if a.kind == "grade" and not a.passed:
-        # Reject: retry the source with updated exclude list.
+        # Reject: retry the source with updated exclude list — but honor
+        # the retry cap. Without this, a grader that keeps failing drives
+        # the source through unbounded reruns (observed: 51 retries on
+        # shopping_pipeline_v2 before manual kill, 2026-04-22).
         attempts = int(source.get("worker_attempts") or 0) + 1
+        max_attempts = int(source.get("max_worker_attempts") or 6)
+        error_str = str(a.raw)[:500]
         excluded = list(ctx.get("grade_excluded_models") or [])
         gen_model = ctx.get("generating_model") or ""
         if gen_model and gen_model not in excluded:
             excluded.append(gen_model)
         ctx["grade_excluded_models"] = excluded
         ctx["_pending_posthooks"] = []
+
+        if attempts >= max_attempts:
+            # Bonus: mirror _retry_or_dlq — if task made progress and
+            # bonus budget remains, grant one more attempt. Otherwise DLQ.
+            from general_beckman.retry import _MAX_BONUS
+            bonus_count = int(ctx.get("_bonus_count", 0))
+            progress = _parse_progress(source)
+            can_bonus = (
+                progress is not None
+                and progress >= 0.5
+                and bonus_count < _MAX_BONUS
+            )
+            if can_bonus:
+                ctx["_bonus_count"] = bonus_count + 1
+                max_attempts += 1
+                await update_task(
+                    a.source_task_id,
+                    status="pending",
+                    worker_attempts=attempts,
+                    max_worker_attempts=max_attempts,
+                    error=error_str,
+                    context=_json.dumps(ctx),
+                )
+                return
+            # Terminal — write to DLQ, transition to failed.
+            await _dlq_write(
+                source, error=error_str or "quality gate exhausted",
+                category="quality", attempts=attempts,
+            )
+            return
+
         await update_task(
             a.source_task_id,
             status="pending",
             worker_attempts=attempts,
-            error=str(a.raw)[:500],
+            error=error_str,
             context=_json.dumps(ctx),
         )
         return
@@ -454,6 +490,12 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
                 a.source_task_id, status="completed",
                 context=_json.dumps(ctx),
             )
+            # Grader-mediated completion still needs to drive the workflow
+            # forward. Without this, the final mission step passes grading
+            # but no workflow_advance is ever spawned, so the engine never
+            # runs _maybe_complete_mission — mission stays 'active' and
+            # the shopping_response is never delivered to Telegram.
+            await _spawn_workflow_advance_if_mission(source, a.raw)
         else:
             await update_task(
                 a.source_task_id, context=_json.dumps(ctx),
@@ -479,6 +521,7 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
                 a.source_task_id, status="completed",
                 context=_json.dumps(ctx),
             )
+            await _spawn_workflow_advance_if_mission(source, a.raw)
         else:
             await update_task(
                 a.source_task_id, context=_json.dumps(ctx),
@@ -486,6 +529,46 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         return
 
     logger.warning("posthook verdict: unknown kind", kind=a.kind)
+
+
+async def _spawn_workflow_advance_if_mission(source: dict, raw: object) -> None:
+    """After a posthook-mediated source completion (grade/summary), spawn a
+    workflow_advance mechanical task so the workflow engine advances and,
+    when all steps are terminal, fires `_maybe_complete_mission` which
+    delivers the final artifact to Telegram.
+
+    Without this, the final step passes grading but the mission never
+    transitions out of 'active' — user sees step pings, never the result.
+    """
+    from src.infra.db import add_task
+
+    mission_id = source.get("mission_id")
+    if mission_id is None:
+        return
+
+    # Only workflow-driven tasks need advance. Direct /task enqueues do not.
+    ctx_raw = source.get("context") or "{}"
+    try:
+        sctx = json.loads(ctx_raw) if isinstance(ctx_raw, str) else ctx_raw
+    except Exception:
+        sctx = {}
+    if not (isinstance(sctx, dict) and sctx.get("is_workflow_step")):
+        return
+
+    previous_result = raw if isinstance(raw, dict) else {}
+    await add_task(
+        title=f"Workflow advance: mission #{mission_id}",
+        description="",
+        agent_type="mechanical",
+        mission_id=mission_id,
+        depends_on=[],
+        context=_mechanical_context(
+            "workflow_advance",
+            mission_id=mission_id,
+            completed_task_id=source.get("id"),
+            previous_result=previous_result,
+        ),
+    )
 
 
 async def _summary_kinds_for_source(source: dict, source_ctx: dict) -> list:

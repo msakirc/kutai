@@ -48,3 +48,30 @@ def test_step_filter_drops_low_confidence():
     survivors = step_filter(groups)
     assert len(survivors) == 1
     assert survivors[0].authenticity_confidence >= FILTER_AUTHENTICITY_MIN
+
+
+def test_variant_gate_zero_survivors_signals_escalation():
+    from src.workflows.shopping.variant_gate import step_variant_gate
+    out = step_variant_gate(survivors=[], all_groups=[])
+    assert out["kind"] == "escalation"
+    assert out["reason"] == "all_filtered"
+
+
+def test_variant_gate_single_variant_returns_chosen():
+    from src.workflows.shopping.variant_gate import step_variant_gate
+    g = _g("Samsung S25", base_model="Samsung Galaxy S25", variant=None, prom=3.0)
+    out = step_variant_gate(survivors=[g], all_groups=[g])
+    assert out["kind"] == "chosen"
+    assert out["group"] is g
+
+
+def test_variant_gate_multiple_variants_returns_clarify():
+    from src.workflows.shopping.variant_gate import step_variant_gate
+    vanilla = _g("Galaxy S25", base_model="Samsung Galaxy S25", variant=None, prom=2.0)
+    fe = _g("Galaxy S25 FE", base_model="Samsung Galaxy S25", variant="FE", prom=3.0)
+    ultra = _g("Galaxy S25 Ultra", base_model="Samsung Galaxy S25", variant="Ultra", prom=2.5)
+    out = step_variant_gate(survivors=[vanilla, fe, ultra], all_groups=[vanilla, fe, ultra])
+    assert out["kind"] == "clarify"
+    labels = [opt["label"] for opt in out["options"]]
+    assert labels[0] == "Galaxy S25 FE"        # highest prominence first
+    assert len(out["options"]) == 3

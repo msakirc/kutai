@@ -1,0 +1,38 @@
+{
+  "data": {
+    "products": [
+      {
+        "id": "gt001",
+        "name": "Içim Süt 1 L",
+        "shortDescription": "Içim Süt 1 L",
+        "slug": "icim-sut-1l",
+        "price": 38.90,
+        "originalPrice": 44.90,
+        "inStock": true,
+        "imageUrl": "https://cdn.getir.com/icim-sut.jpg",
+        "unitText": "1 lt"
+      },
+      {
+        "id": "gt002",
+        "name": "Eti Burçak 500 g",
+        "shortDescription": "Eti Burçak 500 g",
+        "slug": "eti-burcak-500g",
+        "price": 22.50,
+        "originalPrice": 25.00,
+        "inStock": true,
+        "imageUrl": "https://cdn.getir.com/eti-burcak.jpg",
+        "unitText": "500 g",
+        "badge": "Fırsatlar"
+      },
+      {
+        "id": "gt003",
+        "name": "Activia Yoğurt 400 g",
+        "slug": "activia-yogurt-400g",
+        "price": 45.90,
+        "inStock": false,
+        "imageUrl": "https://cdn.getir.com/activia.jpg",
+        "unitText": "400 g"
+      }
+    ]
+  }
+}

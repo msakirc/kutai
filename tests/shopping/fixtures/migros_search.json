@@ -2,6 +2,7 @@
   "data": {
     "storeProductInfos": [
       {
+        "id": "12345",
         "name": "Pınar Süt 1 Lt",
         "productName": "Pınar Süt 1 Lt",
         "prettyName": "pinar-sut-1-lt-p-12345",
@@ -17,6 +18,7 @@
         ]
       },
       {
+        "id": "12346",
         "name": "Sek Tereyağ 500 g",
         "prettyName": "sek-tereyag-500g-p-12346",
         "shownPrice": 124.90,
@@ -27,6 +29,7 @@
         "badges": []
       },
       {
+        "id": "12347",
         "name": "Ülker Çikolata 80 gr",
         "prettyName": "ulker-cikolata-80gr-p-12347",
         "shownPrice": 29.90,

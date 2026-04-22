@@ -299,11 +299,80 @@ class GetirScraper(BaseScraper):
 
         return products
 
-    async def _search_api(self, query: str, max_results: int) -> list[Product]:
-        """Try to search via Getir's internal API."""
+    def _parse_search_response(self, data: dict | list) -> list[Product]:
+        """Parse a Getir API search response into Products.
+
+        Accepts either the full JSON envelope (dict with ``data.products`` or
+        ``products`` key) or a bare list of product dicts.
+        """
+        if isinstance(data, list):
+            items = data
+        else:
+            items = data.get("data", {}).get("products", data.get("products", []))
+
         products: list[Product] = []
         now_iso = datetime.now(timezone.utc).isoformat()
 
+        for item in items:
+            try:
+                name = item.get("name") or item.get("shortDescription", "")
+                if not name:
+                    continue
+                name = normalize_product_name(name)
+
+                slug = item.get("slug") or item.get("url", "")
+                product_url = (
+                    slug if slug.startswith("http") else f"{self._BASE_URL}/{slug}"
+                )
+
+                price = _safe_float(item.get("price") or item.get("priceText"))
+                original_price = _safe_float(item.get("originalPrice"))
+
+                # SKU
+                raw_id = item.get("id") or item.get("_id") or item.get("productId")
+                sku = f"gt-{raw_id}" if raw_id is not None else None
+
+                # Stock status
+                in_stock = item.get("inStock", True)
+                availability = "in_stock" if in_stock else "out_of_stock"
+
+                # Unit price
+                specs: dict[str, Any] = {"type": "grocery"}
+                unit_text = item.get("unitText") or item.get("shortDescription") or name
+                unit_info = _calculate_unit_price(price, unit_text)
+                if unit_info:
+                    specs.update(unit_info)
+
+                # Campaign
+                campaign = item.get("campaign") or item.get("badge")
+                if campaign:
+                    if isinstance(campaign, dict):
+                        specs["campaign_badge"] = campaign.get("name", str(campaign))
+                    else:
+                        specs["campaign_badge"] = str(campaign)
+
+                products.append(
+                    Product(
+                        name=name,
+                        url=product_url,
+                        source="getir",
+                        original_price=original_price,
+                        discounted_price=price,
+                        currency="TRY",
+                        image_url=item.get("imageUrl") or item.get("image"),
+                        availability=availability,
+                        sku=sku,
+                        specs=specs,
+                        fetched_at=now_iso,
+                    )
+                )
+            except Exception:
+                continue
+
+        return products
+
+    async def _search_api(self, query: str, max_results: int) -> list[Product]:
+        """Try to search via Getir's internal API."""
         try:
             search_url = f"{self._API_URL}/search?q={urllib.parse.quote(query)}"
             response = await self._fetch(search_url)
@@ -312,63 +381,13 @@ class GetirScraper(BaseScraper):
                 return []
 
             data = response.json()
-            items = data.get("data", {}).get("products", data.get("products", []))
-
-            for item in items[:max_results]:
-                try:
-                    name = item.get("name") or item.get("shortDescription", "")
-                    if not name:
-                        continue
-                    name = normalize_product_name(name)
-
-                    slug = item.get("slug") or item.get("url", "")
-                    product_url = (
-                        slug if slug.startswith("http") else f"{self._BASE_URL}/{slug}"
-                    )
-
-                    price = _safe_float(item.get("price") or item.get("priceText"))
-                    original_price = _safe_float(item.get("originalPrice"))
-
-                    # Stock status
-                    in_stock = item.get("inStock", True)
-                    availability = "in_stock" if in_stock else "out_of_stock"
-
-                    # Unit price
-                    specs: dict[str, Any] = {"type": "grocery"}
-                    unit_text = item.get("unitText") or item.get("shortDescription") or name
-                    unit_info = _calculate_unit_price(price, unit_text)
-                    if unit_info:
-                        specs.update(unit_info)
-
-                    # Campaign
-                    campaign = item.get("campaign") or item.get("badge")
-                    if campaign:
-                        if isinstance(campaign, dict):
-                            specs["campaign_badge"] = campaign.get("name", str(campaign))
-                        else:
-                            specs["campaign_badge"] = str(campaign)
-
-                    products.append(
-                        Product(
-                            name=name,
-                            url=product_url,
-                            source="getir",
-                            original_price=original_price,
-                            discounted_price=price,
-                            currency="TRY",
-                            image_url=item.get("imageUrl") or item.get("image"),
-                            availability=availability,
-                            specs=specs,
-                            fetched_at=now_iso,
-                        )
-                    )
-                except Exception:
-                    continue
+            products = self._parse_search_response(data)
+            return products[:max_results]
 
         except Exception as exc:
             logger.debug("Getir API search failed", error=str(exc))
 
-        return products
+        return []
 
     async def _search_web(self, query: str, max_results: int) -> list[Product]:
         """Fallback: parse Getir web pages."""
@@ -491,11 +510,92 @@ class MigrosScraper(BaseScraper):
 
         return products
 
-    async def _search_api(self, query: str, max_results: int) -> list[Product]:
-        """Search via Migros REST API."""
+    def _parse_search_response(self, data: dict | list) -> list[Product]:
+        """Parse a Migros REST API search response into Products.
+
+        Accepts either the full JSON envelope (dict with ``data.storeProductInfos``
+        or ``products`` key) or a bare list of product dicts.
+        """
+        if isinstance(data, list):
+            items = data
+        else:
+            items = data.get("data", {}).get("storeProductInfos", data.get("products", []))
+
         products: list[Product] = []
         now_iso = datetime.now(timezone.utc).isoformat()
 
+        for item in items:
+            try:
+                name = item.get("name") or item.get("productName", "")
+                if not name:
+                    continue
+                name = normalize_product_name(name)
+
+                slug = item.get("prettyName") or item.get("url", "")
+                product_url = (
+                    slug if slug.startswith("http")
+                    else f"{self._BASE_URL}/{slug}"
+                )
+
+                price = _safe_float(item.get("shownPrice") or item.get("price"))
+                original_price = _safe_float(item.get("regularPrice") or item.get("strikeThroughPrice"))
+
+                # SKU
+                raw_id = item.get("id") or item.get("productId") or item.get("sku")
+                sku = f"mg-{raw_id}" if raw_id is not None else None
+
+                # Stock
+                in_stock = item.get("inStock", True)
+                availability = "in_stock" if in_stock else "out_of_stock"
+
+                # Unit price from API
+                specs: dict[str, Any] = {"type": "grocery"}
+                unit_price_text = item.get("unitPrice") or item.get("birimFiyat")
+                if unit_price_text:
+                    specs["unit_price_text"] = str(unit_price_text)
+
+                # Calculate unit price from name
+                unit_info = _calculate_unit_price(price, name)
+                if unit_info:
+                    specs.update(unit_info)
+
+                # Campaign badge
+                badges = item.get("badges") or item.get("campaignBadges", [])
+                if badges:
+                    if isinstance(badges, list):
+                        badge_texts = []
+                        for b in badges:
+                            if isinstance(b, dict):
+                                badge_texts.append(b.get("name", str(b)))
+                            else:
+                                badge_texts.append(str(b))
+                        if badge_texts:
+                            specs["campaign_badge"] = ", ".join(badge_texts)
+                    elif isinstance(badges, str):
+                        specs["campaign_badge"] = badges
+
+                products.append(
+                    Product(
+                        name=name,
+                        url=product_url,
+                        source="migros",
+                        original_price=original_price,
+                        discounted_price=price,
+                        currency="TRY",
+                        image_url=item.get("imageUrl") or item.get("image"),
+                        availability=availability,
+                        sku=sku,
+                        specs=specs,
+                        fetched_at=now_iso,
+                    )
+                )
+            except Exception:
+                continue
+
+        return products
+
+    async def _search_api(self, query: str, max_results: int) -> list[Product]:
+        """Search via Migros REST API."""
         try:
             # param name changed from "q" to "term" in new endpoint
             params = {"term": query, "sayfa": "1", "siralamaTipi": "1"}
@@ -505,75 +605,13 @@ class MigrosScraper(BaseScraper):
                 return []
 
             data = response.json()
-            items = data.get("data", {}).get("storeProductInfos", data.get("products", []))
-
-            for item in items[:max_results]:
-                try:
-                    name = item.get("name") or item.get("productName", "")
-                    if not name:
-                        continue
-                    name = normalize_product_name(name)
-
-                    slug = item.get("prettyName") or item.get("url", "")
-                    product_url = (
-                        slug if slug.startswith("http")
-                        else f"{self._BASE_URL}/{slug}"
-                    )
-
-                    price = _safe_float(item.get("shownPrice") or item.get("price"))
-                    original_price = _safe_float(item.get("regularPrice") or item.get("strikeThroughPrice"))
-
-                    # Stock
-                    in_stock = item.get("inStock", True)
-                    availability = "in_stock" if in_stock else "out_of_stock"
-
-                    # Unit price from API
-                    specs: dict[str, Any] = {"type": "grocery"}
-                    unit_price_text = item.get("unitPrice") or item.get("birimFiyat")
-                    if unit_price_text:
-                        specs["unit_price_text"] = str(unit_price_text)
-
-                    # Calculate unit price from name
-                    unit_info = _calculate_unit_price(price, name)
-                    if unit_info:
-                        specs.update(unit_info)
-
-                    # Campaign badge
-                    badges = item.get("badges") or item.get("campaignBadges", [])
-                    if badges:
-                        if isinstance(badges, list):
-                            badge_texts = []
-                            for b in badges:
-                                if isinstance(b, dict):
-                                    badge_texts.append(b.get("name", str(b)))
-                                else:
-                                    badge_texts.append(str(b))
-                            if badge_texts:
-                                specs["campaign_badge"] = ", ".join(badge_texts)
-                        elif isinstance(badges, str):
-                            specs["campaign_badge"] = badges
-
-                    products.append(
-                        Product(
-                            name=name,
-                            url=product_url,
-                            source="migros",
-                            original_price=original_price,
-                            discounted_price=price,
-                            currency="TRY",
-                            image_url=item.get("imageUrl") or item.get("image"),
-                            availability=availability,
-                            specs=specs,
-                            fetched_at=now_iso,
-                        )
-                    )
-                except Exception:
-                    continue
+            products = self._parse_search_response(data)
+            return products[:max_results]
 
         except Exception as exc:
             logger.debug("Migros API search failed", error=str(exc))
 
-        return products
+        return []
 
     async def _search_web(self, query: str, max_results: int) -> list[Product]:
         """Fallback: parse Migros web page."""

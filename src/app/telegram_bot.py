@@ -5926,10 +5926,14 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         """Write clarify_choice artifact + mark clarify_variant task completed so the
         workflow advances. Implementation uses the existing db + workflow advance helpers."""
         import json as _json
-        from src.infra.db import (
-            update_task,
-        )  # lazy import keeps module load cheap
-        # Write clarify_choice as a task context field via update_task
+        from src.infra.db import update_task  # lazy import keeps module load cheap
+        from src.workflows.engine.artifacts import ArtifactStore
+        store = ArtifactStore()
+        await store.store(
+            mission_id,
+            "clarify_choice",
+            _json.dumps(clarify_choice, ensure_ascii=False),
+        )
         await update_task(after_task_id, status="completed")
 
     async def _run_compare_all_and_reply(

@@ -64,3 +64,45 @@ async def test_variant_choice_stale_callback_noop():
     iface._resume_mission_at_step.assert_not_awaited()
     iface._run_compare_all_and_reply.assert_not_awaited()
     update.callback_query.answer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resume_mission_persists_clarify_choice(monkeypatch):
+    from src.app.telegram_bot import TelegramInterface
+    iface = TelegramInterface.__new__(TelegramInterface)
+    stores: list[dict] = []
+
+    async def fake_store(_self, mission_id, name, value):
+        stores.append({
+            "mission_id": mission_id,
+            "name": name,
+            "value": value,
+        })
+
+    async def fake_update_task(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr(
+        "src.workflows.engine.artifacts.ArtifactStore.store",
+        fake_store,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        "src.infra.db.update_task",
+        fake_update_task,
+        raising=True,
+    )
+
+    await iface._resume_mission_at_step(
+        mission_id=7,
+        after_task_id=2,
+        clarify_choice={"kind": "variant", "group_id": 3},
+    )
+
+    assert len(stores) == 1, f"expected 1 store call, got {len(stores)}"
+    call = stores[0]
+    assert call["mission_id"] == 7
+    assert call["name"] == "clarify_choice"
+    import json as _json
+    stored = _json.loads(call["value"])
+    assert stored == {"kind": "variant", "group_id": 3}

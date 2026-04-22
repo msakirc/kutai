@@ -27,6 +27,8 @@ class Candidate:
     rating: float | None
     review_count: int | None
     review_snippets: list[str] = field(default_factory=list)
+    sku: str | None = None
+    category_path: str | None = None
 
 
 @dataclass
@@ -161,6 +163,8 @@ async def step_resolve(query: str, per_site_n: int) -> list[Candidate]:
                 rating=_attr(p, "rating"),
                 review_count=_attr(p, "review_count"),
                 review_snippets=list(snippets),
+                sku=_attr(p, "sku"),
+                category_path=_attr(p, "category_path"),
             )
         )
     logger.info(
@@ -522,6 +526,7 @@ def _candidates_to_json(cands: list[Candidate]) -> list[dict]:
             "price": c.price, "original_price": c.original_price,
             "url": c.url, "rating": c.rating, "review_count": c.review_count,
             "review_snippets": c.review_snippets,
+            "sku": c.sku, "category_path": c.category_path,
         }
         for c in cands
     ]
@@ -536,6 +541,7 @@ def _candidates_from_json(items: list[dict]) -> list[Candidate]:
             url=i.get("url", ""), rating=i.get("rating"),
             review_count=i.get("review_count"),
             review_snippets=list(i.get("review_snippets") or []),
+            sku=i.get("sku"), category_path=i.get("category_path"),
         )
         for i in items
     ]

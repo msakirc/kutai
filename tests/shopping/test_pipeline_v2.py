@@ -576,3 +576,19 @@ async def test_shopping_pipeline_v2_resolve_candidates_step():
     assert result["status"] == "completed"
     payload = json.loads(result["result"])
     assert payload["candidates"][0]["title"] == "X"
+
+
+@pytest.mark.asyncio
+async def test_candidate_passes_sku_and_category_path():
+    from src.shopping.models import Product
+    from src.workflows.shopping.pipeline_v2 import step_resolve
+
+    p = Product(name="Galaxy S25", url="https://trendyol.com/p-1", source="trendyol",
+                sku="TY-123", category_path="Elektronik > Telefon")
+    with patch("src.workflows.shopping.pipeline_v2._fetch_products",
+               new=AsyncMock(return_value=[p])), \
+         patch("src.workflows.shopping.pipeline_v2._fetch_reviews",
+               new=AsyncMock(return_value={})):
+        cands = await step_resolve("s25", per_site_n=3)
+    assert cands[0].sku == "TY-123"
+    assert cands[0].category_path == "Elektronik > Telefon"

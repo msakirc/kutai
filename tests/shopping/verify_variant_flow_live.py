@@ -6,8 +6,14 @@ Run manually:
 from __future__ import annotations
 import asyncio
 import json
+import sys
 from dotenv import load_dotenv
 load_dotenv()
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 
 async def main():

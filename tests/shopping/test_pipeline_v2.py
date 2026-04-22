@@ -148,6 +148,73 @@ def test_prompt_templates_exist_and_have_required_placeholders():
 
 
 @pytest.mark.asyncio
+async def test_synth_one_handler_uses_chosen_group():
+    from src.workflows.shopping.pipeline_v2 import _handler_synth_one
+    gate = {
+        "gate": {"kind": "chosen"},
+        "chosen_group": {
+            "representative_title": "Samsung Galaxy S25",
+            "member_indices": [0], "is_accessory_or_part": False,
+            "prominence": 1.0, "product_type": "authentic_product",
+            "base_model": "Samsung Galaxy S25", "variant": None,
+            "authenticity_confidence": 0.9, "matches_user_intent": True,
+        },
+        "candidates": [{
+            "title": "Samsung Galaxy S25", "site": "trendyol", "site_rank": 1,
+            "price": 30000, "original_price": None, "url": "u",
+            "rating": 4.7, "review_count": 100,
+            "review_snippets": ["köpük iyi", "hızlı kargo"],
+        }],
+        "query": "samsung s25",
+    }
+    task = {"id": 2, "context": {}}
+    artifacts = {"gate_result": json.dumps(gate)}
+    fake = {"content": '{"praise": ["iyi"], "complaints": [], "red_flags": [], "insufficient_data": false}'}
+    with patch("src.workflows.shopping.pipeline_v2._synthesis_llm_call",
+               new=AsyncMock(return_value=fake)):
+        out = await _handler_synth_one(task, artifacts, {})
+    assert "Samsung Galaxy S25" in out["cards"][0]
+
+
+@pytest.mark.asyncio
+async def test_format_compare_handler_renders_table():
+    from src.workflows.shopping.pipeline_v2 import _handler_format_compare
+    gate = {
+        "gate": {"kind": "clarify"},
+        "clarify_options": [
+            {"label": "Galaxy S25", "group_id": 0, "prominence": 2.0},
+            {"label": "Galaxy S25 Ultra", "group_id": 1, "prominence": 1.0},
+        ],
+        "clarify_payloads": {
+            "0": {"representative_title": "Galaxy S25", "member_indices": [0],
+                  "is_accessory_or_part": False, "prominence": 2.0,
+                  "product_type": "authentic_product",
+                  "base_model": "Samsung Galaxy S25", "variant": None,
+                  "authenticity_confidence": 0.9, "matches_user_intent": True},
+            "1": {"representative_title": "Galaxy S25 Ultra", "member_indices": [1],
+                  "is_accessory_or_part": False, "prominence": 1.0,
+                  "product_type": "authentic_product",
+                  "base_model": "Samsung Galaxy S25", "variant": "Ultra",
+                  "authenticity_confidence": 0.9, "matches_user_intent": True},
+        },
+        "candidates": [
+            {"title": "Galaxy S25", "site": "trendyol", "site_rank": 1,
+             "price": 32500, "original_price": None, "url": "u1",
+             "rating": 4.7, "review_count": 100, "review_snippets": []},
+            {"title": "Galaxy S25 Ultra", "site": "trendyol", "site_rank": 1,
+             "price": 48000, "original_price": None, "url": "u2",
+             "rating": 4.9, "review_count": 200, "review_snippets": []},
+        ],
+        "base_label": "Samsung Galaxy S25",
+    }
+    task = {"id": 3, "context": {}}
+    artifacts = {"gate_result": json.dumps(gate)}
+    out = await _handler_format_compare(task, artifacts, {})
+    assert "Karşılaştırma" in out["formatted_text"]
+    assert "Ultra" in out["formatted_text"]
+
+
+@pytest.mark.asyncio
 async def test_step_group_parses_llm_response_and_filters_accessories():
     """Grouping LLM output is parsed; accessory-flagged groups kept with flag set."""
     from src.workflows.shopping.pipeline_v2 import Candidate, step_group

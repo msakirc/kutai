@@ -745,12 +745,40 @@ async def _handler_group_label_filter_gate(
     return out
 
 
+async def _handler_synth_one(task: dict, artifacts: dict, ctx: dict) -> dict:
+    raw = artifacts.get("gate_result", "{}")
+    payload = json.loads(raw) if isinstance(raw, str) else raw
+    if payload.get("gate", {}).get("kind") != "chosen":
+        return {"cards": [], "escalation_needed": True}
+    group = _group_from_dict(payload["chosen_group"])
+    cands = _candidates_from_json(payload.get("candidates", []))
+    syn = await step_synthesize_reviews(group, cands)
+    cards = [format_group_card(group, syn, cands)]
+    return {"cards": cards, "escalation_needed": False}
+
+
+async def _handler_format_compare(task: dict, artifacts: dict, ctx: dict) -> dict:
+    raw = artifacts.get("gate_result", "{}")
+    payload = json.loads(raw) if isinstance(raw, str) else raw
+    payloads = payload.get("clarify_payloads", {}) or {}
+    base_label = payload.get("base_label") or "Ürün"
+    cands = _candidates_from_json(payload.get("candidates", []))
+    groups = [_group_from_dict(v) for v in payloads.values()]
+    text = step_compare_all(groups, cands, base_label=base_label)
+    return {"formatted_text": text, "escalation": False}
+
+
 _STEP_HANDLERS_V2 = {
     "resolve_candidates": _handler_resolve_candidates,
     "group_label_filter_gate": _handler_group_label_filter_gate,
     "group_and_synthesize": _handler_group_and_synthesize,
     "format_response": _handler_format_response,
 }
+
+_STEP_HANDLERS_V2.update({
+    "synth_one": _handler_synth_one,
+    "format_compare": _handler_format_compare,
+})
 
 
 class ShoppingPipelineV2:

@@ -3887,7 +3887,7 @@ class TelegramInterface:
                 )
             self.user_last_task_id.pop(chat_id, None)
         else:
-            task_context = {}
+            task_context = {"chat_id": chat_id}
             if recent_context:
                 task_context["recent_conversation"] = recent_context
 
@@ -3897,7 +3897,7 @@ class TelegramInterface:
                 tier="auto",
                 parent_task_id=parent_id,
                 priority=TASK_PRIORITY["critical"],
-                context=task_context if task_context else None,
+                context=task_context,
             )
             if task_id is None:
                 await self._reply(update, "⏳ A similar task is already in progress.")

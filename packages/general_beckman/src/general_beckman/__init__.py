@@ -193,10 +193,13 @@ async def on_task_finished(task_id: int, result: dict) -> None:
         _bookkeeping = task.get("agent_type") in (
             "mechanical", "grader", "artifact_summarizer",
         )
-        if task.get("mission_id") and not _bookkeeping:
+        if not _bookkeeping:
             status = (result or {}).get("status", "completed")
             if status in ("completed", "failed", "needs_clarification"):
-                await _send_step_progress(task, status, result)
+                if task.get("mission_id"):
+                    await _send_step_progress(task, status, result)
+                else:
+                    await _send_standalone_completion(task, status, result)
     except Exception as e:
         log.debug("progress ping failed", task_id=task_id, error=str(e))
 
@@ -205,6 +208,48 @@ async def on_task_finished(task_id: int, result: dict) -> None:
         await build_and_push()
     except Exception as e:
         log.debug("queue_profile push failed", task_id=task_id, error=str(e))
+
+
+async def _send_standalone_completion(task: dict, status: str, result: dict) -> None:
+    """Deliver completion for a mission-less task back to the user.
+
+    Standalone tasks (created from generic messages) carry chat_id in
+    context. Without this path, the user sees 'Task #N queued' and then
+    radio silence even after the task finishes.
+    """
+    if task.get("agent_type") in ("mechanical", "grader", "artifact_summarizer"):
+        return
+    import json as _json
+    ctx_raw = task.get("context") or "{}"
+    try:
+        ctx = _json.loads(ctx_raw) if isinstance(ctx_raw, str) else dict(ctx_raw)
+    except Exception:
+        ctx = {}
+    chat_id = ctx.get("chat_id")
+    if not chat_id:
+        return
+    from src.app.telegram_bot import get_telegram
+    tg = get_telegram()
+    if tg is None:
+        return
+    title = (task.get("title") or "").strip() or f"task #{task['id']}"
+    icon = {
+        "completed": "✅",
+        "failed": "❌",
+        "needs_clarification": "❓",
+    }.get(status, "ℹ️")
+    body_parts = [f"{icon} Task #{task['id']} — {title[:80]}"]
+    if status == "completed":
+        out = (result or {}).get("result") or ""
+        if isinstance(out, str) and out.strip():
+            excerpt = out.strip()
+            if len(excerpt) > 3500:
+                excerpt = excerpt[:3500] + "\n...(truncated)"
+            body_parts.append(excerpt)
+    elif status == "failed":
+        err = (result or {}).get("error") or "error"
+        body_parts.append(f"Error: {str(err)[:500]}")
+    await tg.send_notification("\n\n".join(body_parts))
 
 
 async def _send_step_progress(task: dict, status: str, result: dict) -> None:

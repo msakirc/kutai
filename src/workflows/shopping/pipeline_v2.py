@@ -550,6 +550,35 @@ def format_response(cards: list[str]) -> str:
     return "\n".join(c.rstrip() for c in cards if c).strip() + "\n"
 
 
+def step_compare_all(
+    groups: list[ProductGroup],
+    candidates: list[Candidate],
+    base_label: str,
+) -> str:
+    """Render a compact variant-comparison markdown table."""
+    lines: list[str] = [f"*{base_label} — Karşılaştırma*", "─" * 20]
+    for g in groups:
+        members = [candidates[i] for i in g.member_indices if 0 <= i < len(candidates)]
+        prices = [m.price for m in members if m.price is not None]
+        pmin = min(prices) if prices else None
+        pmax = max(prices) if prices else None
+        rating = next((m.rating for m in members if m.rating is not None), None)
+        review_total = sum(m.review_count or 0 for m in members)
+        variant_label = g.variant or "Vanilla"
+
+        price_str = (
+            f"{_fmt_price_tr(pmin)}–{_fmt_price_tr(pmax)} TL"
+            if pmin is not None else "fiyat yok"
+        )
+        rating_str = (
+            f" ⭐ {rating:.1f} ({review_total})" if rating is not None else ""
+        )
+        lines.append(f"• *{variant_label}* — {price_str}{rating_str}")
+    lines.append("─" * 20)
+    lines.append("Seçmek için sorunuzu daraltın.")
+    return "\n".join(lines) + "\n"
+
+
 # ── Workflow step handlers (task-shaped I/O) ────────────────────────────────
 
 def _parse_context(task: dict) -> dict:

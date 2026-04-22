@@ -631,3 +631,33 @@ async def test_step_group_buckets_by_sku_across_sites():
         groups = await step_group(cands, query="samsung s25")
     sku_groups = [g for g in groups if 0 in g.member_indices and 1 in g.member_indices]
     assert len(sku_groups) == 1
+
+
+def test_compare_all_table_format():
+    from src.workflows.shopping.pipeline_v2 import step_compare_all, Candidate, ProductGroup
+    cands = [
+        Candidate(title="Galaxy S25", site="trendyol", site_rank=1,
+                  price=32500, original_price=None, url="u",
+                  rating=4.7, review_count=1200),
+        Candidate(title="Galaxy S25", site="hepsiburada", site_rank=1,
+                  price=34800, original_price=None, url="u",
+                  rating=4.7, review_count=800),
+        Candidate(title="Galaxy S25 Ultra", site="trendyol", site_rank=1,
+                  price=48000, original_price=None, url="u",
+                  rating=4.9, review_count=2100),
+    ]
+    vanilla = ProductGroup(representative_title="Galaxy S25",
+                           member_indices=[0, 1], is_accessory_or_part=False,
+                           prominence=2.0, base_model="Samsung Galaxy S25",
+                           variant=None)
+    ultra = ProductGroup(representative_title="Galaxy S25 Ultra",
+                         member_indices=[2], is_accessory_or_part=False,
+                         prominence=1.0, base_model="Samsung Galaxy S25",
+                         variant="Ultra")
+    md = step_compare_all([vanilla, ultra], cands, base_label="Samsung Galaxy S25")
+    assert "Galaxy S25" in md
+    assert "Ultra" in md
+    assert "32.500" in md
+    assert "34.800" in md
+    assert "48.000" in md
+    assert "⭐" in md

@@ -83,11 +83,15 @@ async def next_task():
     except Exception:
         fatih_hoca = None  # type: ignore
 
+    from src.infra.logging_config import get_logger
+    _log = get_logger("beckman.admission")
+
     candidates = await _queue.pick_ready_top_k(k=top_k)
     for task in candidates:
         agent_type = task.get("agent_type") or ""
         difficulty = task.get("difficulty", 5)
         pick = None
+        select_err = None
         if fatih_hoca is not None:
             try:
                 pick = fatih_hoca.select(
@@ -95,26 +99,42 @@ async def next_task():
                     agent_type=agent_type,
                     difficulty=difficulty,
                 )
-            except Exception:
+            except Exception as e:
+                select_err = repr(e)
                 pick = None
         if pick is None:
+            _log.debug(
+                f"admission: task #{task['id']} agent={agent_type} d={difficulty} "
+                f"select=None err={select_err}"
+            )
             continue
 
         if snap is not None:
             try:
                 pressure = snap.pressure_for(pick.model)
-            except Exception:
+            except Exception as e:
+                _log.debug(f"admission: task #{task['id']} pressure_for raised {e!r}; fail-open")
                 pressure = 1.0  # fail-open: admit rather than starve
         else:
             pressure = 1.0
 
         urgency = compute_urgency(task)
-        if pressure < threshold(urgency):
+        thr = threshold(urgency)
+        if pressure < thr:
+            _log.debug(
+                f"admission: task #{task['id']} REJECT model={pick.model.name} "
+                f"pressure={pressure:.3f} urgency={urgency:.3f} threshold={thr:.3f}"
+            )
             continue
 
         if not await _claim_task(task["id"]):
+            _log.debug(f"admission: task #{task['id']} claim race lost")
             continue
 
+        _log.info(
+            f"admission: task #{task['id']} ADMIT model={pick.model.name} "
+            f"pressure={pressure:.3f} urgency={urgency:.3f} threshold={thr:.3f}"
+        )
         task["preselected_pick"] = pick
         task["status"] = "processing"
         return task

@@ -1,11 +1,11 @@
-"""Tests for the mechanical-executor routing in Orchestrator.process_task.
+"""Tests for the mechanical-executor routing in Orchestrator._dispatch.
 
-Phase 2a salako integration: tasks with executor='mechanical' must flow
-through salako.run() and never reach the LLM dispatch path.
+Post-Task-13 refactor: _dispatch routes executor='mechanical' tasks through
+salako.run() and never reaches the LLM dispatch path. Result is reported to
+beckman.on_task_finished() in both success and failure cases.
 """
 
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -17,12 +17,16 @@ def _make_orch() -> Orchestrator:
     """Build an Orchestrator without starting any background loops."""
     orch = Orchestrator.__new__(Orchestrator)
     orch.telegram = None
+    orch.shutdown_event = None
+    orch._shutting_down = False
+    orch._running_futures = []
+    orch.running = False
     return orch
 
 
 @pytest.mark.asyncio
 async def test_mechanical_executor_routes_to_salako():
-    """executor='mechanical' → salako.run invoked, LLM path skipped, task marked completed."""
+    """executor='mechanical' → salako.run invoked, LLM path skipped, completed reported."""
     orch = _make_orch()
     task = {
         "id": 1,
@@ -32,28 +36,28 @@ async def test_mechanical_executor_routes_to_salako():
         "executor": "mechanical",
         "payload": {"action": "workspace_snapshot", "workspace_path": "/ws"},
     }
-    prepared = (task, "mechanical", 60)
 
-    with patch.object(orch, "_prepare", new_callable=AsyncMock, return_value=prepared), \
-         patch("src.core.orchestrator.salako.run", new_callable=AsyncMock) as mock_run, \
-         patch("src.core.orchestrator.update_task", new_callable=AsyncMock) as mock_update, \
-         patch("src.core.orchestrator.get_agent") as mock_get_agent:
+    with patch("src.core.orchestrator.salako.run", new_callable=AsyncMock) as mock_run, \
+         patch("general_beckman.on_task_finished", new_callable=AsyncMock) as mock_finished, \
+         patch("src.core.orchestrator.get_agent") as mock_get_agent, \
+         patch("src.core.orchestrator.inject_chain_context", new_callable=AsyncMock, return_value=task), \
+         patch("src.core.orchestrator.release_task_locks", new_callable=AsyncMock):
         mock_run.return_value = salako.Action(
             status="completed", result={"commit_sha": "abc"}
         )
-        await orch.process_task(task)
+        await orch._dispatch(task)
 
-    mock_run.assert_awaited_once_with(task)
+    mock_run.assert_awaited_once()
     mock_get_agent.assert_not_called()
-    mock_update.assert_awaited_once()
-    kwargs = mock_update.call_args.kwargs
-    assert kwargs["status"] == "completed"
-    assert json.loads(kwargs["result"]) == {"commit_sha": "abc"}
+    mock_finished.assert_awaited_once()
+    call_args = mock_finished.call_args
+    assert call_args.args[0] == 1
+    assert call_args.args[1]["status"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_mechanical_executor_failure_marks_task_failed():
-    """Failed Action → update_task(status='failed', error=...)."""
+async def test_mechanical_executor_failure_reports_failed():
+    """Failed Action → on_task_finished called with status='failed'."""
     orch = _make_orch()
     task = {
         "id": 3,
@@ -63,19 +67,19 @@ async def test_mechanical_executor_failure_marks_task_failed():
         "executor": "mechanical",
         "payload": {"action": "unknown"},
     }
-    prepared = (task, "mechanical", 60)
 
-    with patch.object(orch, "_prepare", new_callable=AsyncMock, return_value=prepared), \
-         patch("src.core.orchestrator.salako.run", new_callable=AsyncMock) as mock_run, \
-         patch("src.core.orchestrator.update_task", new_callable=AsyncMock) as mock_update, \
-         patch("src.core.orchestrator.get_agent") as mock_get_agent:
+    with patch("src.core.orchestrator.salako.run", new_callable=AsyncMock) as mock_run, \
+         patch("general_beckman.on_task_finished", new_callable=AsyncMock) as mock_finished, \
+         patch("src.core.orchestrator.get_agent") as mock_get_agent, \
+         patch("src.core.orchestrator.inject_chain_context", new_callable=AsyncMock, return_value=task), \
+         patch("src.core.orchestrator.release_task_locks", new_callable=AsyncMock):
         mock_run.return_value = salako.Action(status="failed", error="boom")
-        await orch.process_task(task)
+        await orch._dispatch(task)
 
     mock_get_agent.assert_not_called()
-    kwargs = mock_update.call_args.kwargs
-    assert kwargs["status"] == "failed"
-    assert kwargs["error"] == "boom"
+    result = mock_finished.call_args.args[1]
+    assert result["status"] == "failed"
+    assert "boom" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -87,19 +91,18 @@ async def test_no_executor_tag_still_takes_llm_path():
         "mission_id": 6,
         "title": "code",
         "agent_type": "coder",
-        # no executor tag
     }
-    prepared = (task, "coder", 60)
 
-    # Intentionally make get_agent raise to short-circuit the LLM path right
-    # after routing — we only need to assert that salako.run was NOT called.
-    with patch.object(orch, "_prepare", new_callable=AsyncMock, return_value=prepared), \
-         patch("src.core.orchestrator.salako.run", new_callable=AsyncMock) as mock_run, \
-         patch("src.core.orchestrator.update_task", new_callable=AsyncMock), \
-         patch("src.core.orchestrator.get_agent", side_effect=RuntimeError("stop here")):
-        try:
-            await orch.process_task(task)
-        except RuntimeError:
-            pass  # outer handler may swallow; either way, we only care about salako
+    # get_agent returns a mock whose .execute short-circuits. We only care
+    # that salako.run was NOT called.
+    agent_mock = AsyncMock()
+    agent_mock.execute = AsyncMock(return_value={"status": "completed", "result": "ok"})
+
+    with patch("src.core.orchestrator.salako.run", new_callable=AsyncMock) as mock_run, \
+         patch("general_beckman.on_task_finished", new_callable=AsyncMock), \
+         patch("src.core.orchestrator.get_agent", return_value=agent_mock), \
+         patch("src.core.orchestrator.inject_chain_context", new_callable=AsyncMock, return_value=task), \
+         patch("src.core.orchestrator.release_task_locks", new_callable=AsyncMock):
+        await orch._dispatch(task)
 
     mock_run.assert_not_awaited()

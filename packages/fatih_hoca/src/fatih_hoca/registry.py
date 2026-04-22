@@ -1179,28 +1179,25 @@ class ModelRegistry:
             if model_overrides.get("context_length"):
                 context_length = model_overrides["context_length"]
             else:
-                # Step 1: baseline GPU layers at 8K context
-                baseline_gpu = calculate_gpu_layers(
-                    file_size_mb=raw["file_size_mb"],
-                    n_layers=raw["n_layers"],
-                    available_vram_mb=available_vram,
-                    context_length=8192,
-                )
-                # Step 2: dynamic context based on what fits
-                context_length = calculate_dynamic_context(
-                    file_size_mb=raw["file_size_mb"],
-                    n_layers=raw["n_layers"],
-                    gpu_layers=baseline_gpu,
-                    available_ram_mb=32768,  # conservative 32GB
-                    available_vram_mb=available_vram,
-                    family_key=raw["family_key"],
-                )
+                # Registry holds the model's CAPABILITY ceiling (trained
+                # native context). Actual runtime allocation is computed
+                # by local_model_manager at load time against LIVE VRAM
+                # and the current prompt's required ctx. Baking the
+                # startup-time dynamic calc into the registry made the
+                # selector filter against a stale tiny value — a model
+                # that can handle 131k trained got rejected at 9k needed
+                # because startup VRAM happened to fit only 4k.
+                context_length = int(raw.get("native_ctx") or 32768)
 
+            # GPU-layer baseline at 8K context — just a scoring heuristic
+            # for ranking. Actual offload happens at load time via
+            # llama.cpp --fit. Don't feed the native_ctx here or the calc
+            # concludes almost no GPU layers fit.
             gpu_layers = model_overrides.get("gpu_layers") or calculate_gpu_layers(
                 file_size_mb=raw["file_size_mb"],
                 n_layers=raw["n_layers"],
                 available_vram_mb=available_vram,
-                context_length=context_length,
+                context_length=8192,
             )
 
             # Priority class

@@ -26,6 +26,7 @@ class Product:
     free_shipping: bool = False
     installment_info: dict | None = None
     warranty_months: int | None = None
+    sku: str | None = None
     category_path: str | None = None
     fetched_at: str | None = None  # ISO 8601 timestamp
 

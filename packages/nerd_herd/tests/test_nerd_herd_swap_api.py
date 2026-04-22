@@ -6,11 +6,10 @@ def test_nerd_herd_exposes_swap_api():
     assert nh.recent_swap_count() == 0
     nh.record_swap("model_a")
     assert nh.recent_swap_count() == 1
-    assert nh.can_swap() is True
 
 
-def test_nerd_herd_swap_budget_configurable():
+def test_nerd_herd_record_swap_is_cumulative():
     nh = NerdHerd(metrics_port=0)
-    for i in range(3):
+    for i in range(5):
         nh.record_swap(f"m{i}")
-    assert nh.can_swap() is False
+    assert nh.recent_swap_count() == 5

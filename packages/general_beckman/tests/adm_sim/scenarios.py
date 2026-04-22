@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from sim.state import SimPool, SimState, SimTask
+from adm_sim.state import SimPool, SimState, SimTask
 
 
 @dataclass

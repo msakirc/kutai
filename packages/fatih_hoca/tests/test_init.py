@@ -142,6 +142,7 @@ def test_select_after_init_with_registered_model():
 
     nerd_herd = MagicMock()
     nerd_herd.snapshot.return_value = SystemSnapshot(vram_available_mb=8192)
+    nerd_herd.recent_swap_count.return_value = 0
 
     # Use init() to set up, then register manually
     fatih_hoca.init(nerd_herd=nerd_herd)
@@ -221,6 +222,7 @@ def test_select_passes_kwargs_to_selector():
     nerd_herd = MagicMock()
     snap = SystemSnapshot(vram_available_mb=8192)
     nerd_herd.snapshot.return_value = snap
+    nerd_herd.recent_swap_count.return_value = 0
 
     fatih_hoca.init(nerd_herd=nerd_herd)
 

@@ -62,11 +62,8 @@ class NerdHerdClient:
         self._swap_budget = SwapBudget()
 
     # ------------------------------------------------------------------
-    # Swap budget (sync passthroughs — selector calls these)
+    # Swap event stream (sync passthroughs — data only, policy in hoca)
     # ------------------------------------------------------------------
-    def can_swap(self, local_only: bool = False, priority: int = 5) -> bool:
-        return self._swap_budget.can_swap(local_only=local_only, priority=priority)
-
     def recent_swap_count(self) -> int:
         return self._swap_budget.recent_count()
 

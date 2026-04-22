@@ -9,8 +9,8 @@ _TESTS_ROOT = os.path.abspath(os.path.join(_HERE, ".."))
 if _TESTS_ROOT not in sys.path:
     sys.path.insert(0, _TESTS_ROOT)
 
-from sim.runner import run_ticks  # noqa: E402
-from sim.scenarios import SCENARIOS  # noqa: E402
+from adm_sim.runner import run_ticks  # noqa: E402
+from adm_sim.scenarios import SCENARIOS  # noqa: E402
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda s: s.name)

@@ -53,7 +53,7 @@ class NerdHerd:
         self._cloud_state: dict[str, CloudProviderState] = {}
         self._queue_profile: QueueProfile | None = None
 
-        self._swap_budget = SwapBudget(max_swaps=3, window_seconds=300)
+        self._swap_budget = SwapBudget(window_seconds=300)
 
         self._server = MetricsServer(self.registry, port=metrics_port, nerd_herd=self)
 
@@ -109,9 +109,6 @@ class NerdHerd:
 
     def recent_swap_count(self) -> int:
         return self._swap_budget.recent_count()
-
-    def can_swap(self, local_only: bool = False, priority: int = 5) -> bool:
-        return self._swap_budget.can_swap(local_only=local_only, priority=priority)
 
     def record_swap(self, model_name: str = "") -> None:
         self._swap_budget.record_swap()

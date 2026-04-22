@@ -146,9 +146,11 @@ class Selector:
         best = scored[0]
 
         # ── Swap budget enforcement ──────────────────────────────────────────
-        # If the best model requires a swap (local but not loaded), check budget.
+        # Policy lives in fatih_hoca; nerd_herd just holds the event stream.
+        from fatih_hoca.swap_policy import can_swap as _can_swap
         if best.model.is_local and not best.model.is_loaded:
-            if not self._nerd_herd.can_swap(local_only=local_only, priority=priority):
+            recent = self._nerd_herd.recent_swap_count()
+            if not _can_swap(recent, local_only=local_only, priority=priority):
                 # Budget exhausted — try to find an already-loaded or cloud model
                 logger.info(
                     "swap budget exhausted — looking for loaded or cloud alternative: "

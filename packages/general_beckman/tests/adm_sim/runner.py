@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
-from sim.state import SimState, SimTask
+from adm_sim.state import SimState, SimTask
 
 
 def _build_snapshot(state: SimState) -> Any:

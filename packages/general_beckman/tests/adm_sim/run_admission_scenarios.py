@@ -30,8 +30,8 @@ def _setup_paths():
 
 _setup_paths()
 
-from sim.runner import run_ticks  # noqa: E402
-from sim.scenarios import SCENARIOS  # noqa: E402
+from adm_sim.runner import run_ticks  # noqa: E402
+from adm_sim.scenarios import SCENARIOS  # noqa: E402
 
 
 async def main():

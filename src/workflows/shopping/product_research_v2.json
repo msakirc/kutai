@@ -9,12 +9,12 @@
   },
   "phases": [
     {"id": "phase_0", "name": "Resolve candidates", "goal": "Fetch top-N per site.", "depends_on_phases": []},
-    {"id": "phase_1", "name": "Group & synthesise", "goal": "LLM group + review synthesis.", "depends_on_phases": ["phase_0"]},
+    {"id": "phase_1", "name": "Gate & branch", "goal": "Variant gate decision + parallel synth/clarify paths.", "depends_on_phases": ["phase_0"]},
     {"id": "phase_2", "name": "Format & deliver", "goal": "Render Telegram cards.", "depends_on_phases": ["phase_1"]}
   ],
   "steps": [
     {
-      "id": "0.1", "phase": "phase_0", "name": "resolve_candidates",
+      "id": "1.0", "phase": "phase_0", "name": "resolve_candidates",
       "title": "Resolve Candidates", "agent": "shopping_pipeline_v2",
       "difficulty": "easy", "tools_hint": [], "depends_on": [],
       "input_artifacts": ["user_query"],
@@ -24,23 +24,59 @@
       "context": {"per_site_n": 4, "requires_grading": false}
     },
     {
-      "id": "1.1", "phase": "phase_1", "name": "group_and_synthesize",
-      "title": "Group & Synthesize Reviews", "agent": "shopping_pipeline_v2",
-      "difficulty": "medium", "tools_hint": [], "depends_on": ["0.1"],
+      "id": "1.1", "phase": "phase_1", "name": "group_label_filter_gate",
+      "title": "Group Label Filter Gate", "agent": "shopping_pipeline_v2",
+      "difficulty": "medium", "tools_hint": [], "depends_on": ["1.0"],
       "input_artifacts": ["search_results"],
-      "output_artifacts": ["grouped_synth"],
-      "instruction": "Step name: group_and_synthesize. Keeps up to 2 non-accessory groups.",
-      "done_when": "grouped_synth.cards populated.",
-      "context": {"max_groups": 2}
+      "output_artifacts": ["gate_result"],
+      "instruction": "Step name: group_label_filter_gate.",
+      "done_when": "gate_result.gate.kind is chosen|clarify|escalation."
     },
     {
-      "id": "2.1", "phase": "phase_2", "name": "format_response",
-      "title": "Format & Deliver Response", "agent": "shopping_pipeline_v2",
+      "id": "2.0", "phase": "phase_1", "name": "synth_one",
+      "title": "Synthesise (chosen path)", "agent": "shopping_pipeline_v2",
+      "difficulty": "medium", "tools_hint": [], "depends_on": ["1.1"],
+      "input_artifacts": ["gate_result"],
+      "output_artifacts": ["synth_result"],
+      "skip_when": "gate_result.gate.kind != 'chosen'"
+    },
+    {
+      "id": "2.1", "phase": "phase_1", "name": "clarify_variant",
+      "title": "Clarify Variant Choice", "agent": "mechanical",
       "difficulty": "easy", "tools_hint": [], "depends_on": ["1.1"],
-      "input_artifacts": ["grouped_synth"],
+      "input_artifacts": ["gate_result"],
+      "output_artifacts": ["clarify_choice"],
+      "instruction": "Mechanical: clarify (variant_choice).",
+      "done_when": "clarify_choice populated by user tap.",
+      "skip_when": "gate_result.gate.kind != 'clarify'",
+      "context": {"executor": "clarify", "payload_from": "gate_result", "kind": "variant_choice", "requires_grading": false}
+    },
+    {
+      "id": "2.2", "phase": "phase_1", "name": "synth_one",
+      "title": "Synthesise After Variant Choice", "agent": "shopping_pipeline_v2",
+      "difficulty": "medium", "tools_hint": [], "depends_on": ["2.1"],
+      "input_artifacts": ["clarify_choice", "gate_result"],
+      "output_artifacts": ["synth_result"],
+      "skip_when": "clarify_choice.kind != 'variant'"
+    },
+    {
+      "id": "2.3", "phase": "phase_1", "name": "format_compare",
+      "title": "Format Compare-All", "agent": "shopping_pipeline_v2",
+      "difficulty": "easy", "tools_hint": [], "depends_on": ["2.1"],
+      "input_artifacts": ["clarify_choice", "gate_result"],
+      "output_artifacts": ["shopping_response"],
+      "skip_when": "clarify_choice.kind != 'compare_all'",
+      "context": {"requires_grading": false}
+    },
+    {
+      "id": "3.0", "phase": "phase_2", "name": "format_response",
+      "title": "Format & Deliver Response", "agent": "shopping_pipeline_v2",
+      "difficulty": "easy", "tools_hint": [], "depends_on": ["2.0", "2.2", "2.3"],
+      "input_artifacts": ["synth_result"],
       "output_artifacts": ["shopping_response"],
       "instruction": "Step name: format_response.",
       "done_when": "shopping_response.formatted_text populated.",
+      "skip_when": "synth_result.cards is empty",
       "context": {"requires_grading": false}
     }
   ]

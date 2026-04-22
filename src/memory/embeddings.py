@@ -99,7 +99,11 @@ def _get_st_embedding(
         try:
             from sentence_transformers import SentenceTransformer
 
-            _st_model = SentenceTransformer(EMBEDDING_MODEL)
+            # Pin to CPU — per CLAUDE.md embedding must not contend with
+            # llama-server for GPU. Default device='cuda' caused access
+            # violations (0xC0000005) when llama-server was holding VRAM
+            # (2026-04-22 mission 45 crash).
+            _st_model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
             logger.info(f"Loaded sentence-transformers {EMBEDDING_MODEL}")
         except Exception as e:
             logger.debug(f"sentence-transformers not available: {e}")
@@ -127,7 +131,11 @@ def _get_st_embeddings_batch(
         try:
             from sentence_transformers import SentenceTransformer
 
-            _st_model = SentenceTransformer(EMBEDDING_MODEL)
+            # Pin to CPU — per CLAUDE.md embedding must not contend with
+            # llama-server for GPU. Default device='cuda' caused access
+            # violations (0xC0000005) when llama-server was holding VRAM
+            # (2026-04-22 mission 45 crash).
+            _st_model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
             logger.info(f"Loaded sentence-transformers {EMBEDDING_MODEL}")
         except Exception as e:
             logger.debug(f"sentence-transformers not available: {e}")

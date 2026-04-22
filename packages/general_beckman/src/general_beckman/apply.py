@@ -255,11 +255,45 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
             message=(
                 f"\u274c Task #{task['id']} \u2192 DLQ\n"
                 f"**{(task.get('title') or '')[:60]}**\n"
-                f"Reason: {error[:100]}"
+                f"Reason: {_humanize_error(error)}"
             ),
         ),
         depends_on=[],
     )
+
+
+
+def _humanize_error(raw: str) -> str:
+    """Turn internal error payloads into one-line user-facing text.
+
+    Grader verdicts arrive as stringified Python dicts like
+    ``{'passed': False, 'relevant': False, 'insight': '...'}``. Showing
+    the raw dict to Telegram users leaks internals and wastes display
+    budget on field names. Prefer the grader's insight when present,
+    else strategy, else a short verbatim head.
+    """
+    import ast
+    if not raw:
+        return "unknown"
+    text = raw.strip()
+    parsed = None
+    if text.startswith("{") and text.endswith("}"):
+        try:
+            parsed = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            parsed = None
+    if isinstance(parsed, dict):
+        for key in ("insight", "strategy", "situation", "message", "error"):
+            val = parsed.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()[:140]
+        failed_axes = [
+            k for k in ("relevant", "complete", "well_formed", "coherent")
+            if parsed.get(k) is False
+        ]
+        if failed_axes:
+            return "grader rejected: " + ", ".join(failed_axes)
+    return text[:140]
 
 
 async def _posthook_dlq_cascade(task: dict, error: str) -> None:

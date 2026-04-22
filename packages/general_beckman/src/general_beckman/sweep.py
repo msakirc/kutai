@@ -343,46 +343,8 @@ async def sweep_queue() -> None:
                 f"received after 72h.\n*{ttitle}*"
             )
 
-    # 7. Workflow-level timeout check — pause workflows running too long
-    try:
-        mission_cursor = await db.execute(
-            """SELECT id, title, context, created_at FROM missions
-               WHERE status = 'active'"""
-        )
-        active_missions = [dict(row) for row in await mission_cursor.fetchall()]
-        for mission in active_missions:
-            raw_gctx = mission.get("context", "{}")
-            if isinstance(raw_gctx, str):
-                try:
-                    gctx = json.loads(raw_gctx)
-                except (json.JSONDecodeError, TypeError):
-                    gctx = {}
-            else:
-                gctx = raw_gctx or {}
-
-            timeout_hours = gctx.get("workflow_timeout_hours")
-            if not timeout_hours:
-                continue
-
-            try:
-                created = from_db(mission["created_at"])
-            except (ValueError, TypeError):
-                continue
-
-            elapsed_hours = (utc_now() - created).total_seconds() / 3600
-            if elapsed_hours > timeout_hours:
-                logger.warning(
-                    "[Sweep] Mission #%d exceeded timeout (%dh > %dh), pausing",
-                    mission["id"], int(elapsed_hours), timeout_hours,
-                )
-                await update_mission(mission["id"], status="paused")
-                await _notify(
-                    f"\u23f1\ufe0f *Workflow timeout*: Mission #{mission['id']} paused after "
-                    f"{int(elapsed_hours)}h (limit: {timeout_hours}h).\n"
-                    f"*{mission['title']}*\nUse /resume to continue."
-                )
-    except Exception as e:
-        logger.warning(f"[Sweep] Workflow timeout check failed: {e}")
+    # Workflow-level wall-clock timeout killed 2026-04-22 (queue-gated
+    # missions could be paused while simply waiting on admission).
 
     await db.commit()
 

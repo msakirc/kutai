@@ -134,6 +134,10 @@ class AkakceScraper(BaseScraper):
         logger.info("search parsed", count=len(products))
         return products
 
+    def _parse_search_html(self, html: str) -> list[Product]:
+        """Alias for testability — delegates to _parse_search_results."""
+        return self._parse_search_results(html, max_results=100)
+
     def _parse_card(self, card: Any, now_iso: str) -> Product | None:
         """Extract a single Product from a search-result card element."""
         # Product name — class changes with redesigns (pn_7 → iC, etc.)
@@ -212,6 +216,12 @@ class AkakceScraper(BaseScraper):
                 (1 - discounted_price / original_price) * 100, 1
             )
 
+        # SKU: derive from URL trailing numeric id  ,1234567890.html
+        sku: str | None = None
+        m_sku = re.search(r",(\d+)\.html", product_url)
+        if m_sku:
+            sku = f"ak-{m_sku.group(1)}"
+
         return Product(
             name=name,
             url=product_url,
@@ -222,6 +232,7 @@ class AkakceScraper(BaseScraper):
             currency="TRY",
             image_url=image_url,
             specs=specs,
+            sku=sku,
             fetched_at=now_iso,
         )
 

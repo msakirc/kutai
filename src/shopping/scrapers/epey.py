@@ -501,6 +501,10 @@ class EpeyScraper(BaseScraper):
         logger.info("epey listing parsed", count=len(products))
         return products
 
+    def _parse_search_html(self, html: str) -> list[Product]:
+        """Alias for testability — delegates to _parse_listele_html."""
+        return self._parse_listele_html(html, max_results=100)
+
     def _parse_product_row(self, row: Any, now_iso: str) -> Product | None:
         """Parse a single <ul class='metin row'> element into a Product."""
         # --- name & URL ---
@@ -573,6 +577,12 @@ class EpeyScraper(BaseScraper):
             if src and not src.startswith("data:"):
                 image_url = f"https:{src}" if src.startswith("//") else src
 
+        # SKU: derive from URL slug  /apple-iphone-15-pro.html
+        sku: str | None = None
+        m_sku = re.search(r"/([a-z0-9-]+)\.html$", url)
+        if m_sku:
+            sku = f"ep-{m_sku.group(1)}"
+
         return Product(
             name=name,
             url=url,
@@ -582,6 +592,7 @@ class EpeyScraper(BaseScraper):
             image_url=image_url,
             specs=specs,
             rating=rating,
+            sku=sku,
             fetched_at=now_iso,
         )
 

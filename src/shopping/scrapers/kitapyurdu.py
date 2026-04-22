@@ -283,6 +283,10 @@ class KitapyurduScraper(BaseScraper):
         logger.info("kitapyurdu listing parsed", count=len(products))
         return products
 
+    def _parse_search_html(self, html: str) -> list[Product]:
+        """Alias for testability — delegates to _parse_listing."""
+        return self._parse_listing(html, max_results=100)
+
     def _parse_item(self, item: Any, now_iso: str) -> Product | None:
         # --- name & URL ---
         cover_el = item.select_one("a.ky-product-cover")
@@ -336,6 +340,12 @@ class KitapyurduScraper(BaseScraper):
         if publisher:
             specs["publisher"] = publisher
 
+        # SKU: derive from URL  /kitap/<slug>/<numeric-id>.html
+        sku: str | None = None
+        m_sku = re.search(r"/(\d+)\.html$", url)
+        if m_sku:
+            sku = f"ky-{m_sku.group(1)}"
+
         return Product(
             name=name,
             url=url,
@@ -345,6 +355,7 @@ class KitapyurduScraper(BaseScraper):
             image_url=image_url,
             specs=specs,
             rating=rating,
+            sku=sku,
             fetched_at=now_iso,
         )
 

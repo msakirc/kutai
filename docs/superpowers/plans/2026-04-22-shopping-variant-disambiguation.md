@@ -1873,3 +1873,37 @@ rtk git commit -m "docs(plan): variant disambiguation live results"
 - The spec's follow-up ("quantitative review intelligence") starts only after this plan lands and the live behaviour has stabilised.
 - If scraper audit reveals that most sites gate SKU behind JS rendering (not raw HTML), escalate the scraper tier to STEALTH for SKU extraction only, or defer that scraper to a later batch. Don't block pipeline tasks on scraper completeness — SKU-less products still flow through the LLM grouping path.
 - Benchmark: time `step_label` on real queries. If P95 > 3s, split into groups-of-10 batches with parallel dispatch.
+
+---
+
+## Live results (2026-04-23)
+
+Branch `feat/shopping-variant-disambig`, 22 tasks executed via subagent-driven TDD. 25 commits from `765d6fa` (Task 1) through the UTF-8 harness fix at the end.
+
+**Regression**: `tests/shopping/` 732/732 green (excluding one pre-existing flaky timing test in `test_performance.py`).
+
+**Live smoke `python -m tests.shopping.verify_variant_flow_live`** — query `"samsung s25"`:
+
+- 20 candidates returned from live scrapers (most successful: epey, trendyol, hepsiburada, amazon_tr, akakce).
+- Gate: **clarify**. Five variant options surfaced with real product titles (S25 vanilla, S25 FE 256GB in multiple storage variants, S25 Ultra).
+- One accessory ("Samsung Galaxy S25 Ultra Ekran Koruyucu") leaked into the clarify options because the label LLM path fell back (see below). With the label LLM working, accessories would be filtered out structurally.
+
+**Known gap** (not introduced by this plan — pre-existing Fatih Hoca quirk):
+
+- `shopping_labeler`, `shopping_grouper`, `shopping_review_synthesizer` all error at the model-selection layer with `"No model candidates available"` despite having `TASK_PROFILES` entries in `packages/fatih_hoca/src/fatih_hoca/capabilities.py`. `_fallback_labels` (confidence 0.8, authentic + intent-matched) lets the pipeline proceed anyway, but accessory/knockoff filtering is lost when the fallback fires.
+- Root cause appears to lie in Fatih Hoca's eligibility filter / model catalog, not in pipeline_v2. Labeled as a follow-up investigation.
+
+**Follow-ups queued**:
+
+1. Diagnose why shopping-family task profiles can't resolve a model in Fatih Hoca. Likely a missing hook in `select()` or the eligibility filter — needs a dedicated debugging session.
+2. Quantitative review intelligence spec (originally Option B-after-A, now truly deferred).
+3. Category-search UX — spec mentions "evolve Compare all into category search later". When the bot has a sharper idea of what matches the user's intent (after quantitative reviews land), this turns into a structured comparison page rather than a flat list.
+
+Manual Telegram validation step (required before declaring done):
+
+- Restart KutAI via Telegram `/restart`.
+- `/shop Samsung s25` → expect clarify keyboard with ≥3 variant buttons + "📊 Hepsini karşılaştır".
+- Tap a variant → expect single-variant card with reviews.
+- `/shop Samsung s25 ultra 256gb` → expect single card, no clarify.
+- Tap "Hepsini karşılaştır" on an ambiguous query → expect compact comparison table.
+

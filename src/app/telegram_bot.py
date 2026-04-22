@@ -250,7 +250,7 @@ _CMD_ARG_PROMPTS: dict[str, str] = {
 }
 
 # Pending action timeout (seconds)
-_PENDING_ACTION_TIMEOUT = 300
+_PENDING_ACTION_TIMEOUT = 1800
 
 # Map command string -> actual method name (where they differ)
 _CMD_METHOD_MAP: dict[str, str] = {

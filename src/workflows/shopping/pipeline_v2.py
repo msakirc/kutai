@@ -230,19 +230,17 @@ async def _grouping_llm_call(prompt: str) -> dict:
     )
 
 
-async def step_group(candidates: list[Candidate]) -> list[ProductGroup]:
-    """LLM-based grouping of candidates into product groups.
+async def _llm_group_residuals(candidates: list[Candidate], query: str) -> list[ProductGroup]:
+    """LLM-based grouping for sku-less residual candidates.
 
     Falls back to one group per site's rank-1 candidate on any LLM or parse error.
     """
-    if not candidates:
-        return []
-
     from src.workflows.shopping.prompts_v2 import GROUPING_PROMPT
 
-    # Compact JSON view for the LLM — titles + site + price only
+    # Compact JSON view for the LLM — include sku and category_path for context
     view = [
-        {"index": i, "title": c.title, "site": c.site, "price": c.price}
+        {"index": i, "title": c.title, "site": c.site, "price": c.price,
+         "sku": c.sku, "category_path": c.category_path}
         for i, c in enumerate(candidates)
     ]
     prompt = GROUPING_PROMPT.format(candidates_json=json.dumps(view, ensure_ascii=False))
@@ -284,9 +282,49 @@ async def step_group(candidates: list[Candidate]) -> list[ProductGroup]:
         return _per_site_top1_fallback(candidates)
 
     logger.info(
-        "step_group done",
+        "_llm_group_residuals done",
         group_count=len(groups),
         accessory_drop_count=sum(1 for g in groups if g.is_accessory_or_part),
+    )
+    return groups
+
+
+async def step_group(candidates: list[Candidate], query: str = "") -> list[ProductGroup]:
+    """SKU-first deterministic bucket, then LLM-group the residuals."""
+    if not candidates:
+        return []
+
+    sku_buckets: dict[str, list[int]] = {}
+    unbucketed: list[int] = []
+    for i, c in enumerate(candidates):
+        if c.sku:
+            sku_buckets.setdefault(c.sku, []).append(i)
+        else:
+            unbucketed.append(i)
+
+    groups: list[ProductGroup] = []
+    for _sku, indices in sku_buckets.items():
+        first = candidates[indices[0]]
+        prominence = sum(1.0 / candidates[i].site_rank for i in indices)
+        groups.append(ProductGroup(
+            representative_title=first.title,
+            member_indices=indices,
+            is_accessory_or_part=False,
+            prominence=prominence,
+        ))
+
+    if unbucketed:
+        residual_cands = [candidates[i] for i in unbucketed]
+        residual_groups = await _llm_group_residuals(residual_cands, query)
+        for g in residual_groups:
+            g.member_indices = [unbucketed[j] for j in g.member_indices]
+            groups.append(g)
+
+    logger.info(
+        "step_group done",
+        group_count=len(groups),
+        sku_bucket_count=len(sku_buckets),
+        residual_count=len(unbucketed),
     )
     return groups
 

@@ -609,3 +609,25 @@ async def test_candidate_passes_sku_and_category_path():
         cands = await step_resolve("s25", per_site_n=3)
     assert cands[0].sku == "TY-123"
     assert cands[0].category_path == "Elektronik > Telefon"
+
+
+@pytest.mark.asyncio
+async def test_step_group_buckets_by_sku_across_sites():
+    from unittest.mock import AsyncMock, patch
+    from src.workflows.shopping.pipeline_v2 import Candidate, step_group
+    cands = [
+        Candidate(title="Galaxy S25", site="trendyol", site_rank=1,
+                  price=30000, original_price=None, url="u1",
+                  rating=None, review_count=None, sku="SAMSUNG-S25-128"),
+        Candidate(title="S. Galaxy S25", site="hepsiburada", site_rank=1,
+                  price=30200, original_price=None, url="u2",
+                  rating=None, review_count=None, sku="SAMSUNG-S25-128"),
+        Candidate(title="Some other phone", site="amazon_tr", site_rank=1,
+                  price=99000, original_price=None, url="u3",
+                  rating=None, review_count=None, sku=None),
+    ]
+    with patch("src.workflows.shopping.pipeline_v2._grouping_llm_call",
+               new=AsyncMock(return_value={"content": '{"groups": []}'})):
+        groups = await step_group(cands, query="samsung s25")
+    sku_groups = [g for g in groups if 0 in g.member_indices and 1 in g.member_indices]
+    assert len(sku_groups) == 1

@@ -3482,7 +3482,21 @@ class TelegramInterface:
         if pending_action:
             # Check timeout
             if _time.time() - pending_action.get("ts", 0) > _PENDING_ACTION_TIMEOUT:
-                logger.info("Pending action expired", command=pending_action.get("command"))
+                expired_cmd = pending_action.get("command", "")
+                logger.info("Pending action expired", command=expired_cmd)
+                # Surface the timeout to the user so their message doesn't
+                # silently fall through to the generic classifier (which
+                # has no way to recover the conversational context).
+                if not expired_cmd.startswith("_"):
+                    try:
+                        await self._reply(update,
+                            f"⏱ Önceki istek (`/{expired_cmd}`) zaman aşımına "
+                            "uğradı. Mesajın genel görev olarak işleniyor — "
+                            "akışı yenilemek için komutu tekrar başlat.",
+                            parse_mode="Markdown",
+                        )
+                    except Exception:
+                        pass
                 # Fall through to normal routing
             else:
                 cmd = pending_action["command"]

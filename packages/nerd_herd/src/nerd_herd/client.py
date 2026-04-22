@@ -55,6 +55,23 @@ class NerdHerdClient:
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: aiohttp.ClientSession | None = None
         self._cached_snapshot = SystemSnapshot()
+        # Local swap budget — the orchestrator process is the one
+        # triggering swaps, so tracking in-process matches the real
+        # cadence without an extra RPC hop.
+        from nerd_herd.swap_budget import SwapBudget
+        self._swap_budget = SwapBudget()
+
+    # ------------------------------------------------------------------
+    # Swap budget (sync passthroughs — selector calls these)
+    # ------------------------------------------------------------------
+    def can_swap(self, local_only: bool = False, priority: int = 5) -> bool:
+        return self._swap_budget.can_swap(local_only=local_only, priority=priority)
+
+    def recent_swap_count(self) -> int:
+        return self._swap_budget.recent_count()
+
+    def record_swap(self, model_name: str = "") -> None:
+        self._swap_budget.record_swap()
 
     # ------------------------------------------------------------------
     # Session management

@@ -248,10 +248,15 @@ class ServerProcess:
     def _estimate_load_timeout(self, config) -> float:
         """Estimate how long loading this model might take.
 
-        Formula: ``file_size_mb / 500 + ctx_factor * 15``
+        Formula: ``file_size_mb / 500 + ctx_factor * 30``
         where ctx_factor scales context length (4096 baseline → 1.0).
-        Result clamped to [30, 150].  Observed worst case is ~113s
-        for the largest models on an 8 GB GPU.
+        Result clamped to [60, 300].
+
+        Coefficients tightened 2026-04-23 after observing Qwen3.5-9B at
+        16k ctx require ~80s warmup MUL_MAT on an 8GB GPU; the old
+        70s estimate killed health-check before llama-server bound its
+        HTTP port. The 30s/ctx_factor covers warmup transient; 300s
+        ceiling handles large-context loads (32k+).
         """
         try:
             size_bytes = os.path.getsize(config.model_path)
@@ -260,5 +265,5 @@ class ServerProcess:
             size_mb = 4096.0  # assume 4 GB if file unreadable
 
         ctx_factor = max(1.0, config.context_length / 4096)
-        estimate = size_mb / 500 + ctx_factor * 15
-        return max(30.0, min(150.0, estimate))
+        estimate = size_mb / 500 + ctx_factor * 30
+        return max(60.0, min(300.0, estimate))

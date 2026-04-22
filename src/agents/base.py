@@ -319,6 +319,25 @@ class BaseAgent:
                 f"Only provide your final_answer when you're truly done."
             )
 
+        # Workflow-step constraint: input artifacts are inlined in the
+        # user message as "## Results from Previous Steps". Models that
+        # see input_artifacts names tend to call read_file for each,
+        # wasting an iteration before the intercept sends them back.
+        # Tell the model up-front.
+        try:
+            _tctx_raw = task.get("context", "{}")
+            _tctx = json.loads(_tctx_raw) if isinstance(_tctx_raw, str) else (_tctx_raw or {})
+        except (json.JSONDecodeError, TypeError):
+            _tctx = {}
+        if _tctx.get("is_workflow_step") and _tctx.get("input_artifacts"):
+            parts.append(
+                "INPUT ARTIFACTS: All input artifacts for this step are "
+                "injected in full inside the user message under the heading "
+                "'## Results from Previous Steps'. Do NOT call read_file / "
+                "read_pdf / read_docx / read_spreadsheet for them. Read the "
+                "user message instead."
+            )
+
         # Prompt injection defense (plan_v5 item #22): guard against
         # malicious task descriptions that try to override agent behaviour.
         parts.append(
@@ -730,9 +749,15 @@ class BaseAgent:
                 )
             parts.append("\n".join(fmt_lines))
 
+        # input_artifacts are excluded from the JSON dump because their
+        # full content is already injected below under "## Results from
+        # Previous Steps". Listing them as JSON field-names invited
+        # models to call read_file on each, wasting an iteration per
+        # artifact (every observed call in 2026-04-22 task_state was an
+        # already-injected input_artifact).
         _skip = {"workspace_snapshot", "tool_result", "prior_steps", "tool_depth",
                  "recent_conversation", "user_clarification", "clarification_history",
-                 "artifact_schema"}
+                 "artifact_schema", "input_artifacts"}
         extra = {k: v for k, v in task_context.items() if k not in _skip and not k.startswith("_")}
         if extra:
             parts.append(
@@ -910,9 +935,14 @@ class BaseAgent:
         if not dep_results:
             return ""
 
-        parts = ["## Results from Previous Steps"]
+        parts = [
+            "## Results from Previous Steps",
+            "These ARE your input artifacts in full. Do NOT call read_file, "
+            "read_pdf, read_docx, or any fetch tool to re-read them — there "
+            "is no other copy on disk. Use the content below directly.",
+        ]
         budget_chars = max_tokens * 4
-        used = len(parts[0])
+        used = sum(len(p) for p in parts)
         per_dep = max(500, (budget_chars - used) // max(len(dep_results), 1))
 
         for dep_id, dep in dep_results.items():

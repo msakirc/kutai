@@ -1,0 +1,31 @@
+{
+  "kind": "customsearch#search",
+  "items": [
+    {
+      "title": "Samsung Galaxy S24 Ultra 256GB Fiyat ve Özellikleri",
+      "link": "https://www.trendyol.com/samsung/galaxy-s24-ultra-p-123456789",
+      "displayLink": "www.trendyol.com",
+      "snippet": "Samsung Galaxy S24 Ultra 256GB fiyatı 45.999 TL. En iyi fiyat garantisi.",
+      "pagemap": {
+        "cse_image": [{"src": "https://cdn.trendyol.com/s24ultra.jpg"}],
+        "product": [{"name": "Samsung Galaxy S24 Ultra", "price": "45999"}]
+      }
+    },
+    {
+      "title": "Samsung Galaxy S24 Ultra - Amazon.com.tr",
+      "link": "https://www.amazon.com.tr/dp/B0CMDJZ1TX",
+      "displayLink": "www.amazon.com.tr",
+      "snippet": "Samsung Galaxy S24 Ultra 256GB Titanium Black. 47.990 TL",
+      "pagemap": {
+        "cse_image": [{"src": "https://m.media-amazon.com/s24ultra.jpg"}]
+      }
+    },
+    {
+      "title": "Samsung Galaxy S24 Ultra Yorumlar | Hepsiburada",
+      "link": "https://www.hepsiburada.com/pm-123456789/samsung-galaxy-s24-ultra",
+      "displayLink": "www.hepsiburada.com",
+      "snippet": "Samsung Galaxy S24 Ultra kullanıcı yorumları. 4.8 yıldız.",
+      "pagemap": {}
+    }
+  ]
+}

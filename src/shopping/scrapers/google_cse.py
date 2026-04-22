@@ -255,6 +255,8 @@ class GoogleCSEScraper(BaseScraper):
                     if isinstance(images, list) and images:
                         image_url = images[0].get("src")
 
+                sku = _extract_sku_from_url(link)
+
                 products.append(
                     Product(
                         name=name,
@@ -265,6 +267,7 @@ class GoogleCSEScraper(BaseScraper):
                         image_url=image_url,
                         specs=specs,
                         fetched_at=now_iso,
+                        sku=sku,
                     )
                 )
             except Exception as exc:
@@ -277,6 +280,84 @@ class GoogleCSEScraper(BaseScraper):
             count=len(products),
             quota_remaining=_quota.remaining,
         )
+        return products
+
+    def _parse_search_response(self, data: dict) -> list[Product]:
+        """Parse a Google CSE JSON response dict into Product objects.
+
+        Exposed for unit testing without network access.
+        """
+        products: list[Product] = []
+        now_iso = datetime.now(timezone.utc).isoformat()
+        items = data.get("items", [])
+
+        for item in items:
+            try:
+                title = item.get("title", "")
+                link = item.get("link", "")
+                snippet = item.get("snippet", "")
+
+                if not title or not link:
+                    continue
+
+                name = normalize_product_name(title)
+
+                source = "google_cse"
+                for site in _DEFAULT_SITE_RESTRICT:
+                    if site in link:
+                        source = site.split(".")[0]
+                        break
+
+                price: float | None = None
+                price_match = re.search(r"([\d.,]+)\s*(?:TL|₺)", snippet) if snippet else None
+                if price_match:
+                    try:
+                        price_text = price_match.group(1).replace(".", "").replace(",", ".")
+                        price = float(price_text)
+                    except (ValueError, TypeError):
+                        pass
+
+                pagemap = item.get("pagemap", {})
+                specs: dict[str, Any] = {
+                    "type": "cse_result",
+                    "snippet": snippet,
+                    "display_link": item.get("displayLink", ""),
+                }
+
+                if "product" in pagemap:
+                    product_data = pagemap["product"]
+                    if isinstance(product_data, list) and product_data:
+                        pd = product_data[0]
+                        if price is None:
+                            price = _safe_float(pd.get("price"))
+                        if pd.get("ratingvalue"):
+                            specs["rating"] = pd["ratingvalue"]
+
+                image_url: str | None = None
+                if "cse_image" in pagemap:
+                    images = pagemap["cse_image"]
+                    if isinstance(images, list) and images:
+                        image_url = images[0].get("src")
+
+                sku = _extract_sku_from_url(link)
+
+                products.append(
+                    Product(
+                        name=name,
+                        url=link,
+                        source=source,
+                        discounted_price=price,
+                        currency="TRY",
+                        image_url=image_url,
+                        specs=specs,
+                        fetched_at=now_iso,
+                        sku=sku,
+                    )
+                )
+            except Exception as exc:
+                logger.debug("CSE item parse error (response)", error=str(exc))
+                continue
+
         return products
 
     # ------------------------------------------------------------------
@@ -378,6 +459,55 @@ class GoogleCSEScraper(BaseScraper):
 # ---------------------------------------------------------------------------
 
 import re
+
+
+# ---------------------------------------------------------------------------
+# SKU extraction helper
+# ---------------------------------------------------------------------------
+
+
+def _extract_sku_from_url(url: str) -> str | None:
+    """Best-effort SKU extraction from product URLs.
+
+    Recognises common Turkish e-commerce patterns and falls back to any
+    long alphanumeric segment.  Returns a ``gc-`` prefixed string or None
+    when no useful identifier can be found.
+    """
+    if not url:
+        return None
+
+    try:
+        from urllib.parse import urlparse
+        path = urlparse(url).path
+    except Exception:
+        path = url
+
+    # Amazon ASIN: /dp/<ASIN>
+    m = re.search(r"/dp/([A-Z0-9]{10})", path)
+    if m:
+        return f"gc-{m.group(1)}"
+
+    # Trendyol: -p-<numeric_id>
+    m = re.search(r"-p-(\d{5,})", path)
+    if m:
+        return f"gc-{m.group(1)}"
+
+    # Hepsiburada: product-<slug>-<id> or /pm-<id>
+    m = re.search(r"/pm-(\d{5,})", path)
+    if m:
+        return f"gc-{m.group(1)}"
+
+    # n11: -<numeric_id> at path end
+    m = re.search(r"/(\d{6,})(?:[/?#]|$)", path)
+    if m:
+        return f"gc-{m.group(1)}"
+
+    # Fallback: any long alphanumeric segment (≥8 chars, mixed)
+    segments = [s for s in path.split("/") if len(s) >= 8 and re.search(r"[A-Za-z]", s) and re.search(r"\d", s)]
+    if segments:
+        return f"gc-{segments[-1][:64]}"
+
+    return None
 
 
 def _safe_float(value: Any) -> float | None:

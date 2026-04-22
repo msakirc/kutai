@@ -186,6 +186,8 @@ class TechnopatScraper(BaseScraper):
                         source="technopat",
                         specs=specs,
                         fetched_at=now_iso,
+                        sku=None,
+                        category_path="Forum > Technopat",
                     )
                 )
             except Exception as exc:
@@ -194,6 +196,10 @@ class TechnopatScraper(BaseScraper):
 
         logger.info("search parsed", count=len(products))
         return products
+
+    def _parse_search_html(self, html: str, max_results: int = 20) -> list[Product]:
+        """Alias for ``_parse_search`` — exposed for unit testing."""
+        return self._parse_search(html, max_results)
 
     async def get_product(self, url: str) -> Product | None:
         """Forums do not have product pages. Returns None."""
@@ -443,6 +449,8 @@ class DonanimHaberScraper(BaseScraper):
                         source="donanimhaber",
                         specs=specs,
                         fetched_at=now_iso,
+                        sku=None,
+                        category_path="Forum > Donanim Haber",
                     )
                 )
             except Exception as exc:
@@ -451,6 +459,10 @@ class DonanimHaberScraper(BaseScraper):
 
         logger.info("search parsed", count=len(products))
         return products
+
+    def _parse_search_html(self, html: str, max_results: int = 20) -> list[Product]:
+        """Alias for ``_parse_search`` — exposed for unit testing."""
+        return self._parse_search(html, max_results)
 
     async def get_product(self, url: str) -> Product | None:
         """Forums do not have product pages. Returns None."""

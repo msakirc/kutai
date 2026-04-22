@@ -175,6 +175,14 @@ class LLMDispatcher:
 
         _messages = self._prepare_messages(messages, model)
         timeout = max(pick.min_time_seconds, self._timeout_floor(category))
+        # If a prior attempt on THIS model timed out, the per-call budget
+        # was too tight. Extend geometrically (1.5x per repeat, up to 3x).
+        same_model_prior_timeouts = sum(
+            1 for f in failures
+            if f.reason == "timeout" and f.model == model.litellm_name
+        )
+        if same_model_prior_timeouts > 0:
+            timeout *= min(3.0, 1.5 ** same_model_prior_timeouts)
 
         _kdv_handle = None
         if not model.is_local:
@@ -238,12 +246,41 @@ class LLMDispatcher:
                 error_category=last_category,
             )
 
-        # Build failure record and recurse
+        # Build failure record.
         new_failure = Failure(
             model=model.litellm_name,
             reason=last_category,
             latency=None,
         )
+
+        # Timeouts mid-iteration: don't reselect on the first one. Fresh
+        # pick triggers a model swap (load + cache miss) for what was
+        # likely just a slow prompt. Retry the same pick with an extended
+        # timeout instead; only escalate to fatih reselect on repeated
+        # timeouts against the same model.
+        same_model_timeouts = sum(
+            1 for f in failures
+            if f.reason == "timeout" and f.model == model.litellm_name
+        )
+        if last_category == "timeout" and model.is_local and same_model_timeouts == 0:
+            logger.info(
+                "timeout on %s — retrying same model with extended timeout "
+                "before reselect", model.name,
+            )
+            return await self.request(
+                category=category,
+                task=task,
+                agent_type=agent_type,
+                difficulty=difficulty,
+                messages=messages,
+                tools=tools,
+                failures=failures + [new_failure],
+                preselected_pick=pick,   # keep the loaded model
+                needs_thinking=needs_thinking,
+                needs_function_calling=needs_function_calling,
+                **kwargs,
+            )
+
         return await self.request(
             category=category,
             task=task,

@@ -79,17 +79,30 @@ def _free_cloud_model(provider="groq", model_id="groq/llama-70b"):
 
 
 def _snapshot_with_cloud(provider, model_id, remaining, limit, reset_in_secs):
-    reset_at = _time.time() + reset_in_secs
-    rpd = SimpleNamespace(remaining=remaining, limit=limit, reset_at=reset_at)
-    limits = SimpleNamespace(rpd=rpd)
-    model_state = SimpleNamespace(limits=limits, utilization_pct=0.0, daily_exhausted=False)
-    prov_state = SimpleNamespace(
-        models={model_id: model_state},
-        limits=limits,
+    # Uses real nerd_herd types so SystemSnapshot.pressure_for() works.
+    from nerd_herd.types import (
+        CloudModelState,
+        CloudProviderState,
+        LocalModelState,
+        RateLimit,
+        RateLimits,
+        SystemSnapshot,
+    )
+    reset_at = int(_time.time() + reset_in_secs)
+    rpd = RateLimit(limit=limit, remaining=remaining, reset_at=reset_at)
+    model_state = CloudModelState(
+        model_id=model_id,
+        utilization_pct=0.0,
+        limits=RateLimits(rpd=rpd),
+    )
+    prov_state = CloudProviderState(
+        provider=provider,
         utilization_pct=0.0,
         consecutive_failures=0,
+        limits=RateLimits(rpd=rpd),
+        models={model_id: model_state},
     )
-    return SimpleNamespace(local=None, cloud={provider: prov_state})
+    return SystemSnapshot(local=LocalModelState(), cloud={provider: prov_state})
 
 
 def test_time_bucketed_reset_imminent_high_remaining_returns_strong_positive():

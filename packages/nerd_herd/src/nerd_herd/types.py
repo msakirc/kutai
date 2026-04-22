@@ -130,6 +130,21 @@ class SystemSnapshot:
     def pressure_for(self, model) -> float:
         if getattr(model, "is_local", False):
             return self._local_pressure()
+        # Pool profile: free-tier cloud = time_bucketed; paid cloud = per_call.
+        if getattr(model, "is_free", False) is True:
+            kwargs = dict(
+                depletion_threshold=0.30,
+                depletion_max=-0.5,
+                abundance_mode="time_decay",
+                exhausted_neutral=True,
+            )
+        else:
+            kwargs = dict(
+                depletion_threshold=0.15,
+                depletion_max=-1.0,
+                abundance_mode="flat",
+                exhausted_neutral=False,
+            )
         provider = getattr(model, "provider", "")
         prov = self.cloud.get(provider)
         if prov is None:
@@ -143,18 +158,20 @@ class SystemSnapshot:
                     limit=prov.limits.rpd.limit,
                     reset_at=prov.limits.rpd.reset_at,
                     in_flight_count=prov.limits.rpd.in_flight,
+                    **kwargs,
                 ).value
             return 0.0
-        # Per-snapshot memoization keyed on the fields that affect the
-        # result. Mutating m.pool_pressure unconditionally would bleed
-        # stale values into later snapshots sharing the same
-        # CloudModelState reference (NerdHerd.snapshot() does a shallow
-        # dict copy of self._cloud_state).
+        # Per-snapshot memoization keyed on rpd fields AND the pool-profile
+        # kwargs (value depends on both).
         key = (
             m.limits.rpd.remaining,
             m.limits.rpd.limit,
             m.limits.rpd.reset_at,
             m.limits.rpd.in_flight,
+            kwargs["depletion_threshold"],
+            kwargs["depletion_max"],
+            kwargs["abundance_mode"],
+            kwargs["exhausted_neutral"],
         )
         cached = m.pool_pressure
         if cached is None or getattr(cached, "_key", None) != key:
@@ -163,6 +180,7 @@ class SystemSnapshot:
                 limit=m.limits.rpd.limit,
                 reset_at=m.limits.rpd.reset_at,
                 in_flight_count=m.limits.rpd.in_flight,
+                **kwargs,
             )
             object.__setattr__(pp, "_key", key)
             m.pool_pressure = pp

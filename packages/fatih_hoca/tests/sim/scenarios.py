@@ -58,13 +58,25 @@ def _standard_i2p_task_mix(count: int = 182, seed: int = 42) -> list[SimTask]:
 
 
 def _build_snapshot_factory(scenario_providers: dict[str, Any]):
-    """Builds a closure that turns SimState -> SystemSnapshot-like object."""
+    """Builds a closure that turns SimState -> SystemSnapshot-like object.
+
+    Uses real nerd_herd types so `snapshot.pressure_for(model)` is available
+    to the scarcity layer (supply side relocated to nerd_herd).
+    """
     import time as _time
-    from types import SimpleNamespace
+
+    from nerd_herd.types import (
+        CloudModelState,
+        CloudProviderState,
+        LocalModelState,
+        RateLimit,
+        RateLimits,
+        SystemSnapshot,
+    )
 
     # Pin a wall-clock anchor so virtual-clock -> wall-clock mapping is stable
-    # within a sim run. scarcity.py uses time.time() directly; we project
-    # `counter.reset_at` (virtual seconds) onto the same clock.
+    # within a sim run. pool_pressure.compute_pool_pressure uses time.time();
+    # we project `counter.reset_at` (virtual seconds) onto the same clock.
     wall_anchor = _time.time()
 
     def factory(state: SimState) -> Any:
@@ -73,53 +85,53 @@ def _build_snapshot_factory(scenario_providers: dict[str, Any]):
                 (n for n, l in state.locals.items() if l.is_loaded), ""
             )
             loaded = state.locals.get(loaded_name)
-            local_snap = SimpleNamespace(
+            local_snap = LocalModelState(
                 model_name=loaded_name,
                 idle_seconds=loaded.idle_seconds if loaded else 0.0,
                 measured_tps=loaded.tokens_per_second if loaded else 0.0,
                 thinking_enabled=False,
-                requests_processing=0,
             )
         else:
-            local_snap = SimpleNamespace(
-                model_name="", idle_seconds=0.0, measured_tps=0.0,
-                thinking_enabled=False, requests_processing=0,
+            local_snap = LocalModelState(
+                model_name=None, idle_seconds=0.0, measured_tps=0.0,
+                thinking_enabled=False,
             )
 
-        cloud = {}
+        cloud: dict[str, CloudProviderState] = {}
         for provider, prov_cfg in scenario_providers.items():
-            models = {}
-            for model_id, model_cfg in prov_cfg.get("models", {}).items():
+            models: dict[str, CloudModelState] = {}
+            for model_id, _model_cfg in prov_cfg.get("models", {}).items():
                 if prov_cfg.get("is_free"):
                     counter = state.time_bucketed.get(model_id)
                 else:
                     counter = state.per_call.get(model_id)
                 if counter is None:
-                    models[model_id] = SimpleNamespace(
-                        limits=None, utilization_pct=0.0, daily_exhausted=True,
+                    models[model_id] = CloudModelState(
+                        model_id=model_id,
+                        utilization_pct=0.0,
+                        limits=RateLimits(),
                     )
                     continue
-                # Project virtual-clock reset_at onto wall-clock so scarcity.py
-                # (which calls time.time()) computes the correct reset_in.
                 reset_in_secs = max(0.0, counter.reset_at - state.virtual_clock)
-                rpd = SimpleNamespace(
-                    remaining=counter.remaining,
+                rpd = RateLimit(
                     limit=counter.limit,
-                    reset_at=wall_anchor + reset_in_secs,
+                    remaining=counter.remaining,
+                    reset_at=int(wall_anchor + reset_in_secs),
                 )
                 util = 100.0 * (1.0 - counter.remaining / max(1, counter.limit))
-                models[model_id] = SimpleNamespace(
-                    limits=SimpleNamespace(rpd=rpd),
+                models[model_id] = CloudModelState(
+                    model_id=model_id,
                     utilization_pct=util,
-                    daily_exhausted=(counter.remaining <= 0),
+                    limits=RateLimits(rpd=rpd),
                 )
-            cloud[provider] = SimpleNamespace(
-                models=models,
-                limits=None,
+            cloud[provider] = CloudProviderState(
+                provider=provider,
                 utilization_pct=0.0,
                 consecutive_failures=0,
+                limits=RateLimits(),
+                models=models,
             )
-        return SimpleNamespace(local=local_snap, cloud=cloud)
+        return SystemSnapshot(local=local_snap, cloud=cloud)
 
     return factory
 

@@ -1480,11 +1480,29 @@ class BaseAgent:
         # Prevents wasting iterations re-reading data that's in the prompt.
         _FILE_TOOLS = {"read_file", "file_tree", "project_info"}
         _WEB_TOOLS = {"web_search", "smart_search", "extract_url"}
+        # Tools that write content to disk. For steps whose output is
+        # expected in the `result` field (artifact_schema = object /
+        # array / string / markdown), exposing these invites small
+        # models to call write_file with the output stuffed into a
+        # JSON-stringified "content" arg — the resulting escape-hell
+        # fails the parser (observed 2026-04-23 task 2865 DLQ'd after
+        # 5 such attempts). Workflow engine already persists the
+        # `result` to workspace files itself, so write tools are
+        # redundant for structured-output steps.
+        _WRITE_TOOLS = {"write_file", "apply_diff", "edit_file", "patch_file"}
         _strip_set = set()
         if _task_ctx.get("_strip_file_tools"):
             _strip_set |= _FILE_TOOLS
         if _task_ctx.get("_strip_web_tools"):
             _strip_set |= _WEB_TOOLS
+        # Auto-strip write tools when the step has a structured-output
+        # schema. Explicit opt-out via "_allow_write_tools" for the rare
+        # step that legitimately needs both schema'd result AND file
+        # side-effects.
+        _schema = _task_ctx.get("artifact_schema")
+        if (_schema and isinstance(_schema, dict)
+                and not _task_ctx.get("_allow_write_tools")):
+            _strip_set |= _WRITE_TOOLS
         if _strip_set:
             if self.allowed_tools is not None:
                 if not hasattr(self, '_original_allowed_tools'):

@@ -63,7 +63,14 @@ async def execute_with_retry(
 
     for attempt in range(max_retries):
         try:
-            result = await asyncio.wait_for(call_fn(), timeout=timeout)
+            # timeout==0 → no outer wall-clock cap. Used for local models
+            # where the stream-inactivity watchdog inside the call_fn is
+            # the sole hung-detection mechanism. Cloud calls keep the
+            # outer cap as cost-runaway protection.
+            if timeout and timeout > 0:
+                result = await asyncio.wait_for(call_fn(), timeout=timeout)
+            else:
+                result = await call_fn()
             return result
 
         except asyncio.TimeoutError:

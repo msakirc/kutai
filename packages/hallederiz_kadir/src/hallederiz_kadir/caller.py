@@ -114,13 +114,26 @@ def _check_quality(content):
 async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
     """Call litellm with streaming, accumulate content for partial recovery.
 
-    Uses dogru_mu_samet's streaming callback to monitor for degenerate
-    repetition during generation and abort early.
+    Two abort triggers:
+      1. Degenerate repetition (dogru_mu_samet streaming callback).
+      2. Stream-inactivity watchdog: no chunk in N seconds = hung.
+
+    Replaces the old wall-clock per-call timeout. Healthy slow generation
+    keeps producing chunks (or thinking-content deltas) — the watchdog
+    only fires on real silence.
     """
+    import asyncio as _asyncio
     from dogru_mu_samet.streaming import make_stream_callback
     # Size capping is llama-server's job (ctx-size); we only watch for
     # repetition / low-entropy degeneration during streaming.
     _should_abort = make_stream_callback(max_size=200_000, check_interval=2000)
+
+    # First-chunk wait covers prefill (10k-token prompts on 9B ≈ 50s).
+    # Inter-chunk wait covers between-token silence (real stream that's
+    # alive emits something — content or reasoning_content — every few
+    # hundred ms; sustained 20s silence means the server is wedged).
+    INITIAL_CHUNK_TIMEOUT = 180.0
+    INTER_CHUNK_TIMEOUT = 20.0
 
     completion_kwargs["stream"] = True
     chunks = []
@@ -131,7 +144,40 @@ async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
     # Tool call accumulation: {index: {"id": ..., "name": ..., "arguments": ...}}
     tool_call_parts: dict[int, dict] = {}
 
-    async for chunk in await litellm.acompletion(**completion_kwargs):
+    stream = await litellm.acompletion(**completion_kwargs)
+    stream_iter = stream.__aiter__()
+    chunk_timeout = INITIAL_CHUNK_TIMEOUT
+    # Heartbeat throttling — bumping a contextvar-backed dict on every
+    # token delta is wasteful. Bump at most every 5 seconds.
+    HB_INTERVAL = 5.0
+    import time as _time
+    _last_hb = _time.monotonic()
+    while True:
+        try:
+            chunk = await _asyncio.wait_for(stream_iter.__anext__(), timeout=chunk_timeout)
+        except StopAsyncIteration:
+            break
+        except _asyncio.TimeoutError:
+            _get_logger().warning(
+                f"stream-inactivity watchdog: no chunk in {chunk_timeout:.0f}s — "
+                f"aborting (accumulated {len(accumulated)} chars)"
+            )
+            raise _asyncio.TimeoutError(
+                f"Stream silent for {chunk_timeout:.0f}s"
+            )
+        # After the first chunk, switch to the tighter inter-chunk window.
+        chunk_timeout = INTER_CHUNK_TIMEOUT
+        # Heartbeat the orchestrator's no-progress watchdog. Throttled
+        # so we don't churn the dict on every token delta — chunks at
+        # 50+ tok/s is fine; one bump every 5s is enough.
+        _now = _time.monotonic()
+        if _now - _last_hb >= HB_INTERVAL:
+            _last_hb = _now
+            try:
+                from src.core import heartbeat as _hb
+                _hb.bump()
+            except Exception:
+                pass
         delta = chunk.choices[0].delta if chunk.choices else None
         if delta:
             if delta.content:

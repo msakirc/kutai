@@ -176,36 +176,33 @@ class TestShutdownDBCleanup:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.integration
-class TestAgentTimeouts:
-    """AGENT_TIMEOUTS constants have reasonable values."""
+class TestProgressWatchdog:
+    """Per-agent wall-clock timeouts removed 2026-04-22 in favor of a
+    progress-heartbeat watchdog. These tests validate the new contract."""
 
-    def test_all_known_agent_types_have_timeouts(self):
-        """All standard agent types are present in AGENT_TIMEOUTS."""
-        from src.core.orchestrator import AGENT_TIMEOUTS
+    def test_progress_timeout_is_reasonable(self):
+        """Watchdog limit is generous but bounded — few minutes max."""
+        from src.core.heartbeat import PROGRESS_TIMEOUT_SECONDS
+        assert 120.0 <= PROGRESS_TIMEOUT_SECONDS <= 1800.0
 
-        expected_agents = [
-            "coder", "planner", "architect", "fixer", "reviewer",
-            "researcher", "writer", "executor", "assistant",
-            "shopping_advisor", "workflow",
-        ]
-        for agent in expected_agents:
-            assert agent in AGENT_TIMEOUTS, (
-                f"Agent '{agent}' missing from AGENT_TIMEOUTS"
-            )
+    def test_bump_resets_stale(self):
+        from src.core import heartbeat as hb
+        hb.clear(99999)
+        hb.bump(99999)
+        assert hb.stale_seconds(99999) < 1.0
+        hb.clear(99999)
 
-    def test_shopping_timeout_is_generous(self):
-        """Shopping advisor gets a long timeout (web searches take time)."""
-        from src.core.orchestrator import AGENT_TIMEOUTS
-        assert AGENT_TIMEOUTS.get("shopping_advisor", 0) >= 300, (
-            "Shopping advisor needs at least 300s for web searches"
-        )
+    def test_unbumped_task_is_not_stale(self):
+        """No heartbeat yet → 0.0 (just-started, give it a chance)."""
+        from src.core import heartbeat as hb
+        hb.clear(88888)
+        assert hb.stale_seconds(88888) == 0.0
 
-    def test_workflow_timeout_is_longest(self):
-        """Workflow agent has the longest timeout."""
-        from src.core.orchestrator import AGENT_TIMEOUTS
-        workflow_timeout = AGENT_TIMEOUTS.get("workflow", 0)
-        other_timeouts = [v for k, v in AGENT_TIMEOUTS.items() if k != "workflow"]
-        if other_timeouts:
-            assert workflow_timeout >= max(other_timeouts), (
-                "Workflow agent should have the longest timeout"
-            )
+    def test_contextvar_carries_task_id(self):
+        from src.core import heartbeat as hb
+        hb.clear(77777)
+        hb.current_task_id.set(77777)
+        hb.bump()  # no arg — uses contextvar
+        assert hb.stale_seconds(77777) < 1.0
+        hb.clear(77777)
+        hb.current_task_id.set(None)

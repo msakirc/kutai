@@ -1659,6 +1659,14 @@ class BaseAgent:
                 f"[Task #{task_id}] Agent '{self.name}' iteration "
                 f"{iteration + 1}/{effective_max_iterations}"
             )
+            # Per-task progress signal — orchestrator's no-progress
+            # watchdog (src/core/heartbeat.py) keys off these bumps to
+            # decide whether the dispatch is wedged.
+            try:
+                from src.core import heartbeat as _hb
+                _hb.bump(task_id)
+            except Exception:
+                pass
 
             # ── Phase 4.6: Progress streaming ──
             _now = time.time()

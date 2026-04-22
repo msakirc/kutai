@@ -20,17 +20,12 @@ from ..app.telegram_bot import TelegramInterface
 
 logger = get_logger("core.orchestrator")
 
-# Default timeouts per agent type (seconds).
-# Override via tasks.timeout_seconds column for per-task control.
-AGENT_TIMEOUTS: dict[str, int] = {
-    "planner": 420, "architect": 420, "coder": 420, "implementer": 420,
-    "fixer": 420, "test_generator": 300, "reviewer": 300, "visual_reviewer": 180,
-    "researcher": 420, "analyst": 420, "writer": 420, "summarizer": 180,
-    "assistant": 180, "executor": 300, "pipeline": 600, "workflow": 900,
-    "shopping_advisor": 600, "product_researcher": 300, "deal_analyst": 240,
-    "shopping_pipeline": 60, "shopping_clarifier": 120,
-    "shopping_pipeline_v2": 120,
-}
+# Per-agent wall-clock dispatch timeouts deleted 2026-04-22. Replaced
+# with a progress-heartbeat watchdog (src/core/heartbeat.py): agents
+# bump() at each iteration boundary; the watchdog kills only when no
+# progress arrives within heartbeat.PROGRESS_TIMEOUT_SECONDS. A slow but
+# advancing task is no longer killed; a wedged task no longer hides
+# behind a still-running budget.
 
 
 class Orchestrator:
@@ -52,9 +47,6 @@ class Orchestrator:
             pass
 
     # ─── Dispatch ────────────────────────────────────────────────────────
-
-    def _timeout_for(self, task: dict) -> int:
-        return task.get("timeout_seconds") or AGENT_TIMEOUTS.get(task.get("agent_type", "executor"), 240)
 
     async def _dispatch(self, task: dict) -> None:
         """Inject context → run agent/salako → on_task_finished → push_metrics."""
@@ -89,10 +81,32 @@ class Orchestrator:
             return await get_agent(agent_type).execute(task)
 
         try:
-            result: dict = await asyncio.wait_for(_run(), timeout=self._timeout_for(task))
-        except asyncio.TimeoutError:
-            result = {"status": "failed", "error": f"dispatch timeout after {self._timeout_for(task)}s"}
-            logger.error("timeout task #%s (%ss)", task_id, self._timeout_for(task))
+            from src.core import heartbeat as _hb
+            _hb.current_task_id.set(int(task_id) if task_id else None)
+            _hb.bump(task_id)  # initial heartbeat — task is alive
+            runner_task = asyncio.create_task(_run())
+
+            async def _watchdog() -> None:
+                """Wake periodically; abort runner if heartbeat goes stale."""
+                while not runner_task.done():
+                    await asyncio.sleep(15)
+                    if _hb.stale_seconds(task_id) > _hb.PROGRESS_TIMEOUT_SECONDS:
+                        runner_task.cancel()
+                        return
+
+            watchdog_task = asyncio.create_task(_watchdog())
+            try:
+                result = await runner_task
+            except asyncio.CancelledError:
+                limit = _hb.PROGRESS_TIMEOUT_SECONDS
+                result = {
+                    "status": "failed",
+                    "error": f"no progress for {limit:.0f}s — task wedged",
+                }
+                logger.error("no-progress watchdog killed task #%s", task_id)
+            finally:
+                watchdog_task.cancel()
+                _hb.clear(task_id)
         except ModelCallFailed as mcf:
             result = {"status": "failed", "error": str(mcf)[:500], "error_category": "availability"}
             logger.warning("ModelCallFailed task #%s: %s", task_id, mcf)

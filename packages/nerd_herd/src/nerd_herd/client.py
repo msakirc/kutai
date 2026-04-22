@@ -200,6 +200,7 @@ class NerdHerdClient:
         is_swapping: bool = False,
         kv_cache_ratio: float = 0.0,
         idle_seconds: float = 0.0,
+        requests_processing: int = 0,
     ) -> None:
         """Push current local model state to the NerdHerd sidecar."""
         await self._post_json("/api/local_state", {
@@ -211,6 +212,7 @@ class NerdHerdClient:
             "is_swapping": is_swapping,
             "kv_cache_ratio": kv_cache_ratio,
             "idle_seconds": idle_seconds,
+            "requests_processing": requests_processing,
         })
 
     # ------------------------------------------------------------------

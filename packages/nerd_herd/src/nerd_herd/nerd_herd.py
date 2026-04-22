@@ -132,11 +132,27 @@ class NerdHerd:
         self._queue_profile = profile
 
     def snapshot(self) -> SystemSnapshot:
-        """Return a point-in-time snapshot of all system state."""
+        """Return a point-in-time snapshot of all system state.
+
+        Overlays live inference metrics (requests_processing, idle_seconds,
+        kv_cache_ratio) onto the pushed _local_state so callers always see
+        the freshest values without DaLLaMa having to push every tick.
+        """
         gpu = self._gpu.gpu_state()
+        local = self._local_state
+        if self._inference is not None and local.model_name:
+            live = self._inference.collect()
+            # Shallow copy with live overlay — don't mutate _local_state in place.
+            from dataclasses import replace
+            local = replace(
+                local,
+                requests_processing=int(live.get("requests_processing", local.requests_processing)),
+                idle_seconds=float(live.get("idle_seconds", local.idle_seconds)),
+                kv_cache_ratio=float(live.get("kv_cache_ratio", local.kv_cache_ratio)),
+            )
         return SystemSnapshot(
             vram_available_mb=self.get_vram_budget_mb() if gpu.available else 0,
-            local=self._local_state,
+            local=local,
             cloud=dict(self._cloud_state),
             queue_profile=self._queue_profile,
         )

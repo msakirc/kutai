@@ -112,6 +112,7 @@ class LocalModelState:
     is_swapping: bool = False
     kv_cache_ratio: float = 0.0
     idle_seconds: float = 0.0   # seconds since last completed local inference; 0 while a call is in-flight or before first inference
+    requests_processing: int = 0  # live in-flight call count from llama-server /metrics
 
 
 @dataclass
@@ -192,7 +193,14 @@ class SystemSnapshot:
             return 0.0
         if self.local.is_swapping:
             return -0.5
+        # requests_processing > 0 means a call is actually in-flight —
+        # mild conservation so the admission loop doesn't pile tasks on
+        # a busy local. When idle_seconds == 0 AND requests_processing
+        # == 0, the local is freshly loaded and hasn't run yet — return
+        # neutral so admission isn't chicken-and-egged.
+        if self.local.requests_processing > 0:
+            return -0.1
         idle = self.local.idle_seconds or 0.0
         if idle <= 0:
-            return -0.2
+            return 0.0
         return min(0.3, idle / 60.0 * 0.3)

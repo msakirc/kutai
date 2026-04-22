@@ -680,8 +680,74 @@ async def _handler_format_response(task: dict, artifacts: dict, ctx: dict) -> di
     return {"formatted_text": format_response(cards), "escalation": False}
 
 
+def _group_to_dict(g: ProductGroup) -> dict:
+    return {
+        "representative_title": g.representative_title,
+        "member_indices": g.member_indices,
+        "is_accessory_or_part": g.is_accessory_or_part,
+        "prominence": g.prominence,
+        "product_type": g.product_type,
+        "base_model": g.base_model,
+        "variant": g.variant,
+        "authenticity_confidence": g.authenticity_confidence,
+        "matches_user_intent": g.matches_user_intent,
+    }
+
+
+def _group_from_dict(d: dict) -> ProductGroup:
+    return ProductGroup(
+        representative_title=d["representative_title"],
+        member_indices=list(d["member_indices"]),
+        is_accessory_or_part=bool(d.get("is_accessory_or_part", False)),
+        prominence=float(d.get("prominence", 0.0)),
+        product_type=str(d.get("product_type", "unknown")),
+        base_model=str(d.get("base_model", "")),
+        variant=d.get("variant"),
+        authenticity_confidence=float(d.get("authenticity_confidence", 0.5)),
+        matches_user_intent=bool(d.get("matches_user_intent", True)),
+    )
+
+
+async def _handler_group_label_filter_gate(
+    task: dict, artifacts: dict, ctx: dict,
+) -> dict:
+    from src.workflows.shopping.labels import step_label
+    from src.workflows.shopping.variant_gate import step_filter, step_variant_gate
+
+    raw = artifacts.get("search_results", "{}")
+    payload = json.loads(raw) if isinstance(raw, str) else raw
+    cands = _candidates_from_json(payload.get("candidates", []))
+    query = payload.get("query", "")
+    if not cands:
+        return {"gate": {"kind": "escalation", "reason": "no_candidates"},
+                "candidates": [], "query": query}
+
+    groups = await step_group(cands, query=query)
+    groups = await step_label(groups, cands, query=query)
+    survivors = step_filter(groups)
+    gate = step_variant_gate(survivors, groups)
+
+    out: dict = {
+        "gate": {"kind": gate["kind"]},
+        "candidates": _candidates_to_json(cands),
+        "query": query,
+    }
+    if gate["kind"] == "chosen":
+        out["chosen_group"] = _group_to_dict(gate["group"])
+    elif gate["kind"] == "clarify":
+        out["clarify_options"] = gate["options"]
+        out["clarify_payloads"] = {
+            str(gid): _group_to_dict(g) for gid, g in gate["payloads"].items()
+        }
+        out["base_label"] = survivors[0].base_model if survivors else ""
+    elif gate["kind"] == "escalation":
+        out["gate"]["reason"] = gate.get("reason", "unknown")
+    return out
+
+
 _STEP_HANDLERS_V2 = {
     "resolve_candidates": _handler_resolve_candidates,
+    "group_label_filter_gate": _handler_group_label_filter_gate,
     "group_and_synthesize": _handler_group_and_synthesize,
     "format_response": _handler_format_response,
 }

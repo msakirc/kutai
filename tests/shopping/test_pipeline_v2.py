@@ -387,6 +387,32 @@ def test_select_groups_query_match_no_penalty_when_fe_in_query():
     assert kept[0].representative_title == "Samsung Galaxy S25 FE"
 
 
+@pytest.mark.asyncio
+async def test_group_label_filter_gate_single_variant_path():
+    from src.workflows.shopping.pipeline_v2 import _handler_group_label_filter_gate
+    cands_payload = [{
+        "title": "Samsung Galaxy S25", "site": "trendyol", "site_rank": 1,
+        "price": 30000, "original_price": None, "url": "u1",
+        "rating": 4.7, "review_count": 100,
+        "review_snippets": [], "sku": "S25-128",
+        "category_path": "Telefon",
+    }]
+    task = {"id": 1, "context": {}}
+    artifacts = {"search_results": json.dumps({
+        "candidates": cands_payload, "query": "samsung s25",
+    })}
+    label_resp = {"content": json.dumps({"groups": [
+        {"group_id": 0, "product_type": "authentic_product",
+         "base_model": "Samsung Galaxy S25", "variant": None,
+         "authenticity_confidence": 0.95, "matches_user_intent": True},
+    ]})}
+    with patch("src.workflows.shopping.labels._label_llm_call",
+               new=AsyncMock(return_value=label_resp)):
+        result = await _handler_group_label_filter_gate(task, artifacts, {})
+    assert result["gate"]["kind"] == "chosen"
+    assert result["chosen_group"]["representative_title"] == "Samsung Galaxy S25"
+
+
 def test_query_match_score_variant_penalty():
     """_query_match_score penalises unsolicited FE/Plus/Ultra etc."""
     from src.workflows.shopping.pipeline_v2 import _query_match_score

@@ -36,7 +36,7 @@ def _fallback_labels(groups: list[ProductGroup]) -> list[ProductGroup]:
         g.product_type = "authentic_product"
         g.base_model = g.representative_title
         g.variant = None
-        g.authenticity_confidence = 0.5
+        g.authenticity_confidence = 0.8   # above 0.7 filter threshold
         g.matches_user_intent = True
     return groups
 
@@ -89,7 +89,7 @@ async def step_label(
         if not e:
             g.product_type = "authentic_product"
             g.matches_user_intent = True
-            g.authenticity_confidence = 0.5
+            g.authenticity_confidence = 0.8   # above 0.7 filter threshold
             g.base_model = g.representative_title
             continue
         pt = str(e.get("product_type", "unknown"))

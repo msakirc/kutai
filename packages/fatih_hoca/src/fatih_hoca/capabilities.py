@@ -352,6 +352,63 @@ TASK_PROFILES: dict[str, dict[str, float]] = {
         Cap.CONVERSATION:          0.5,
         Cap.TURKISH:               0.9,
     },
+    # ── Shopping pipeline internal tasks ──────────────────────────────────────
+    # Flat grouping of candidates by product similarity — structured JSON output,
+    # analysis-heavy, low prose requirement, Turkish product titles common.
+    "shopping_grouper": {
+        Cap.REASONING:             0.6,
+        Cap.PLANNING:              0.2,
+        Cap.ANALYSIS:              0.9,
+        Cap.CODE_GENERATION:       0.0,
+        Cap.CODE_REASONING:        0.0,
+        Cap.SYSTEM_DESIGN:         0.0,
+        Cap.PROSE_QUALITY:         0.2,
+        Cap.INSTRUCTION_ADHERENCE: 0.9,
+        Cap.DOMAIN_KNOWLEDGE:      0.7,
+        Cap.CONTEXT_UTILIZATION:   0.8,
+        Cap.STRUCTURED_OUTPUT:     1.0,
+        Cap.TOOL_USE:              0.0,
+        Cap.VISION:                0.0,
+        Cap.CONVERSATION:          0.0,
+        Cap.TURKISH:               0.5,
+    },
+    # Taxonomy labelling of product groups — similar to grouper but needs
+    # slightly more reasoning to distinguish product types / authenticity.
+    "shopping_labeler": {
+        Cap.REASONING:             0.7,
+        Cap.PLANNING:              0.2,
+        Cap.ANALYSIS:              0.9,
+        Cap.CODE_GENERATION:       0.0,
+        Cap.CODE_REASONING:        0.0,
+        Cap.SYSTEM_DESIGN:         0.0,
+        Cap.PROSE_QUALITY:         0.2,
+        Cap.INSTRUCTION_ADHERENCE: 0.9,
+        Cap.DOMAIN_KNOWLEDGE:      0.8,
+        Cap.CONTEXT_UTILIZATION:   0.7,
+        Cap.STRUCTURED_OUTPUT:     1.0,
+        Cap.TOOL_USE:              0.0,
+        Cap.VISION:                0.0,
+        Cap.CONVERSATION:          0.0,
+        Cap.TURKISH:               0.5,
+    },
+    # Review synthesis — prose-heavy, analysis-driven, Turkish output likely.
+    "shopping_review_synthesizer": {
+        Cap.REASONING:             0.6,
+        Cap.PLANNING:              0.3,
+        Cap.ANALYSIS:              0.9,
+        Cap.CODE_GENERATION:       0.0,
+        Cap.CODE_REASONING:        0.0,
+        Cap.SYSTEM_DESIGN:         0.0,
+        Cap.PROSE_QUALITY:         0.9,
+        Cap.INSTRUCTION_ADHERENCE: 0.8,
+        Cap.DOMAIN_KNOWLEDGE:      0.7,
+        Cap.CONTEXT_UTILIZATION:   0.9,
+        Cap.STRUCTURED_OUTPUT:     0.6,
+        Cap.TOOL_USE:              0.0,
+        Cap.VISION:                0.0,
+        Cap.CONVERSATION:          0.2,
+        Cap.TURKISH:               0.7,
+    },
 }
 
 

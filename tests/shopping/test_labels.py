@@ -48,4 +48,4 @@ async def test_step_label_falls_back_on_llm_error():
         labelled = await step_label(groups, cands, query="x")
     assert labelled[0].product_type == "authentic_product"
     assert labelled[0].matches_user_intent is True
-    assert labelled[0].authenticity_confidence == 0.5
+    assert labelled[0].authenticity_confidence == 0.8

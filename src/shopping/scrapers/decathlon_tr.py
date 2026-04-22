@@ -301,6 +301,10 @@ class DecathlonTrScraper(BaseScraper):
     # HTML parsers
     # ------------------------------------------------------------------
 
+    def _parse_search_html(self, html: str, max_results: int = 20) -> list[Product]:
+        """Public alias for testability."""
+        return self._parse_listing(html, max_results)
+
     def _parse_listing(self, html: str, max_results: int) -> list[Product]:
         soup = BeautifulSoup(html, "lxml")
         items = soup.select("[data-supermodelid]")
@@ -390,6 +394,16 @@ class DecathlonTrScraper(BaseScraper):
         if product_id:
             specs["model_id"] = product_id
 
+        # --- SKU: data-supermodelid is the canonical Decathlon model id ---
+        sku: str | None = None
+        if product_id:
+            sku = f"dc-{product_id}"
+        else:
+            # Fall back to numeric id in URL: /p/<slug>/_/R-p-<id>
+            m_sku = re.search(r"/R-p-(\d+)", url)
+            if m_sku:
+                sku = f"dc-{m_sku.group(1)}"
+
         return Product(
             name=name,
             url=url,
@@ -400,6 +414,7 @@ class DecathlonTrScraper(BaseScraper):
             specs=specs,
             review_count=review_count,
             fetched_at=now_iso,
+            sku=sku,
         )
 
     def _parse_product_page(self, url: str, html: str) -> Product | None:

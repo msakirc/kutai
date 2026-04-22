@@ -273,6 +273,10 @@ class DrComTrScraper(BaseScraper):
     # HTML parsers
     # ------------------------------------------------------------------
 
+    def _parse_search_html(self, html: str, max_results: int = 20) -> list[Product]:
+        """Public alias for testability."""
+        return self._parse_listing(html, max_results)
+
     def _parse_listing(self, html: str, max_results: int) -> list[Product]:
         soup = BeautifulSoup(html, "lxml")
         items = soup.select(".product-card")
@@ -369,6 +373,18 @@ class DrComTrScraper(BaseScraper):
         if gtm.get("item_id"):
             specs["item_id"] = gtm["item_id"]
 
+        # --- SKU: prefer GTM item_id, fall back to URL urunno param ---
+        sku: str | None = None
+        gtm_item_id = gtm.get("item_id", "")
+        if gtm_item_id:
+            sku = f"dr-{gtm_item_id}"
+        else:
+            m_sku = re.search(r"[?&]urunno=(\d+)", url)
+            if not m_sku:
+                m_sku = re.search(r"/urun/[^/]+-(\d+)(?:/|$)", url)
+            if m_sku:
+                sku = f"dr-{m_sku.group(1)}"
+
         return Product(
             name=name,
             url=url,
@@ -383,6 +399,7 @@ class DrComTrScraper(BaseScraper):
             review_count=review_count,
             availability=availability,
             fetched_at=now_iso,
+            sku=sku,
         )
 
     def _parse_product_page(self, url: str, html: str) -> Product | None:

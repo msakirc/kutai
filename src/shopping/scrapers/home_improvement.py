@@ -210,6 +210,9 @@ class KoctasScraper(BaseScraper):
                 if original_price and discounted_price and original_price > discounted_price:
                     discount_pct = round((1 - discounted_price / original_price) * 100, 1)
 
+                kc_pid = self._extract_koctas_pid(product_url)
+                kc_sku = f"kc-{kc_pid}" if kc_pid else None
+
                 products.append(
                     Product(
                         name=name,
@@ -223,6 +226,7 @@ class KoctasScraper(BaseScraper):
                         rating=rating,
                         specs=specs,
                         fetched_at=now_iso,
+                        sku=kc_sku,
                     )
                 )
             except Exception as exc:
@@ -231,6 +235,10 @@ class KoctasScraper(BaseScraper):
 
         logger.info("search parsed", count=len(products))
         return products
+
+    def _parse_search_html(self, html: str, max_results: int = 20) -> list[Product]:
+        """Public alias for testability."""
+        return self._parse_search(html, max_results)
 
     def _parse_datalayer(
         self,
@@ -298,6 +306,8 @@ class KoctasScraper(BaseScraper):
                     if i < len(categories) and categories[i]:
                         specs["category"] = categories[i]
 
+                    sku = f"kc-{product_id}" if product_id else None
+
                     products.append(
                         Product(
                             name=name,
@@ -307,6 +317,7 @@ class KoctasScraper(BaseScraper):
                             currency="TRY",
                             specs=specs,
                             fetched_at=now_iso,
+                            sku=sku,
                         )
                     )
                 except Exception as exc:
@@ -652,6 +663,13 @@ class IKEAScraper(BaseScraper):
                 if img_el:
                     image_url = img_el.get("data-src") or img_el.get("src")
 
+                # --- SKU: IKEA article number at end of URL path ---
+                # URL forms: /p/<name>/<digits>/ or /p/<name>-<digits>/
+                ikea_sku: str | None = None
+                m_ikea = re.search(r"/(\d{3,9})/?(?:\?.*)?$", product_url)
+                if m_ikea:
+                    ikea_sku = f"ik-{m_ikea.group(1)}"
+
                 products.append(
                     Product(
                         name=name,
@@ -662,6 +680,7 @@ class IKEAScraper(BaseScraper):
                         image_url=image_url,
                         specs=specs,
                         fetched_at=now_iso,
+                        sku=ikea_sku,
                     )
                 )
             except Exception as exc:
@@ -670,6 +689,10 @@ class IKEAScraper(BaseScraper):
 
         logger.info("search parsed", count=len(products))
         return products
+
+    def _parse_search_html(self, html: str, max_results: int = 20) -> list[Product]:
+        """Public alias for testability."""
+        return self._parse_search(html, max_results)
 
     async def get_product(self, url: str) -> Product | None:
         """Fetch an IKEA product page with Schema.org data extraction."""

@@ -412,19 +412,42 @@ def calculate_dynamic_context(
     vram_used_by_weights = gpu_layers * weight_per_layer_mb
     ram_used_by_weights = (n_layers - gpu_layers) * weight_per_layer_mb
 
-    # Available memory after weights (with safety margin)
-    free_vram = max(0, available_vram_mb - vram_used_by_weights - 500) * 0.85
+    # Available memory after weights. Reserve covers:
+    #   ~500 MB CUDA baseline (driver, output buffer)
+    #   ~500 MB compute buffer (depends on batch size; 493 MB observed at b=512)
+    #   ~300 MB warmup MUL_MAT transient peak
+    # Total: 1300 MB. The old 500 MB margin caused OOM at warmup
+    # (Qwen3.5-9B observed 2026-04-22: 5974/6206 MiB committed pre-warmup,
+    # warmup pushed it over).
+    VRAM_RESERVE_MB = 1300
+    free_vram = max(0, available_vram_mb - vram_used_by_weights - VRAM_RESERVE_MB) * 0.85
     free_ram = max(0, available_ram_mb - ram_used_by_weights - 2000) * 0.70
 
-    # KV cache cost: ~0.5 MB per 1K context per layer (rough estimate)
-    # Split across GPU layers (fast) and CPU layers
-    kv_per_1k_ctx = n_layers * 0.5  # MB per 1K tokens of context
-    if kv_per_1k_ctx <= 0:
+    # KV cache cost. Old 0.5 MB/layer/1k underestimates grouped-query
+    # attention models (Qwen3.5-9B: actual 32 MB/1k vs old estimate 18).
+    # Use 1.0 MB/layer/1k as the default — covers GQA without over-
+    # reserving for non-GQA architectures. Conservative since underestimate
+    # → 32k picked → load OOM, while overestimate just shrinks context.
+    KV_PER_LAYER_PER_1K_MB = 1.0
+    if n_layers <= 0:
         return max_ctx
 
-    # Total available for KV cache
-    total_free = free_vram + free_ram
-    max_ctx_from_memory = int((total_free / kv_per_1k_ctx) * 1024)
+    # KV is partitioned by tier: GPU layers' KV consumes VRAM; CPU layers'
+    # KV consumes RAM. Old code summed free_vram+free_ram, which let RAM
+    # headroom mask insufficient VRAM and picked a 32k context that
+    # OOMed at warmup. Bound by the tightest tier.
+    kv_per_1k_gpu_mb = gpu_layers * KV_PER_LAYER_PER_1K_MB
+    kv_per_1k_cpu_mb = max(0, n_layers - gpu_layers) * KV_PER_LAYER_PER_1K_MB
+
+    if kv_per_1k_gpu_mb > 0:
+        max_ctx_from_vram = int((free_vram / kv_per_1k_gpu_mb) * 1024)
+    else:
+        max_ctx_from_vram = 10**9
+    if kv_per_1k_cpu_mb > 0:
+        max_ctx_from_ram = int((free_ram / kv_per_1k_cpu_mb) * 1024)
+    else:
+        max_ctx_from_ram = 10**9
+    max_ctx_from_memory = min(max_ctx_from_vram, max_ctx_from_ram)
 
     # Hard cap: 32K for all local models unless overridden in models.yaml.
     # llama-server pre-allocates KV cache for the full context window —

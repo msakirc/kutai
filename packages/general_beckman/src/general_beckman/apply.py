@@ -533,6 +533,17 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
                 context=_json.dumps(ctx),
             )
             await _spawn_workflow_advance_if_mission(source, a.raw)
+            # Step is genuinely done now — grader passed and all summary
+            # posthooks resolved. Notify. Grader branch above notifies
+            # early when there are no summary posthooks; this branch
+            # covers the common path where a summary is required.
+            try:
+                from general_beckman import _send_step_progress
+                fresh = await get_task(a.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", a.raw or {})
+            except Exception:
+                pass
         else:
             await update_task(
                 a.source_task_id, context=_json.dumps(ctx),

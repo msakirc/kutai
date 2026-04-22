@@ -119,3 +119,38 @@ async def test_dispatcher_writes_pick_log_on_failure():
     assert writes[0]["success"] is False
     assert writes[0]["picked_model"] == "claude-sonnet-4-6"
     assert writes[0]["error_category"] == "auth"
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_writes_pick_log_on_raw_exception():
+    """hallederiz_kadir raising raw exception must still produce a pick_log row."""
+    from src.core.llm_dispatcher import CallCategory, LLMDispatcher
+
+    model = _fake_model("claude-sonnet-4-6")
+    pick = _fake_pick(model, composite=0.65)
+
+    writes: list[dict] = []
+
+    async def fake_write(**kw):
+        writes.append(kw)
+
+    async def raise_boom(**_kw):
+        raise RuntimeError("boom")
+
+    with patch("fatih_hoca.select", return_value=pick), \
+         patch.object(hallederiz_kadir, "call", new=raise_boom), \
+         patch("src.infra.pick_log.write_pick_log_row", new=fake_write):
+        d = LLMDispatcher()
+        with pytest.raises(RuntimeError, match="boom"):
+            await d.request(
+                category=CallCategory.MAIN_WORK,
+                task="coder",
+                difficulty=7,
+                messages=[{"role": "user", "content": "hi"}],
+                tools=None,
+            )
+
+    assert len(writes) == 1
+    assert writes[0]["success"] is False
+    assert writes[0]["error_category"] == "raw_exception"
+    assert writes[0]["picked_model"] == "claude-sonnet-4-6"

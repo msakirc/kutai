@@ -180,15 +180,29 @@ class LLMDispatcher:
         if not model.is_local:
             _kdv_handle = kuleden_donen_var.begin_call(model.provider, model.name)
         try:
-            result = await hallederiz_kadir.call(
-                model=model,
-                messages=_messages,
-                tools=tools,
-                timeout=timeout,
-                task=task or category.value,
-                needs_thinking=needs_thinking,
-                estimated_output_tokens=kwargs.get("estimated_output_tokens", 0),
-            )
+            try:
+                result = await hallederiz_kadir.call(
+                    model=model,
+                    messages=_messages,
+                    tools=tools,
+                    timeout=timeout,
+                    task=task or category.value,
+                    needs_thinking=needs_thinking,
+                    estimated_output_tokens=kwargs.get("estimated_output_tokens", 0),
+                )
+            except Exception as exc:
+                # hallederiz_kadir wraps known failures as CallError. A raw
+                # exception here is a bug in hallederiz — but we still want
+                # the pick recorded so telemetry reflects the failure.
+                logger.exception(
+                    "hallederiz_kadir.call raised raw exception | "
+                    f"model={model.name} task={task or category.value}"
+                )
+                await self._record_pick(
+                    pick=pick, task=task, category=category,
+                    success=False, error_category="raw_exception",
+                )
+                raise
         finally:
             if _kdv_handle is not None:
                 kuleden_donen_var.end_call(_kdv_handle)

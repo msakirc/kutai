@@ -158,8 +158,11 @@ class LLMDispatcher:
         # the model can't physically fit that ctx, the load OOMs and the
         # dispatcher's retry path picks a different model.
         prompt_tokens = self._estimate_prompt_tokens(messages)
-        ctx_headroom = max(1024, kwargs.get("estimated_output_tokens", 0) or 1024)
-        required_ctx = prompt_tokens + ctx_headroom
+        # Headroom: generation buffer + 20% slack on the estimate itself
+        # (char/3 tokenization heuristic still misses by a few percent on
+        # code/JSON-heavy content).
+        ctx_headroom = max(2048, kwargs.get("estimated_output_tokens", 0) or 2048)
+        required_ctx = int(prompt_tokens * 1.2) + ctx_headroom
 
         # Load local model if needed
         if model.is_local and getattr(model, "location", "") != "ollama":
@@ -305,7 +308,10 @@ class LLMDispatcher:
                         text = part.get("text", "")
                         if isinstance(text, str):
                             total_chars += len(text)
-        return max(0, total_chars // 4)
+        # 1 token ≈ 3 chars for mixed prose+JSON+code (skews high
+        # vs the classic 4 ratio — truncation is costlier than over-
+        # allocating a few hundred MB of KV).
+        return max(0, total_chars // 3)
 
     async def _record_pick(
         self,

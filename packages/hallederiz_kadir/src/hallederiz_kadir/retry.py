@@ -31,6 +31,8 @@ def classify_error(error: str) -> str:
         return "connection_error"
     if any(k in e for k in ("500", "internal server error")):
         return "server_error"
+    if "exceeds the available context size" in e or "context_length_exceeded" in e:
+        return "context_overflow"
     return "unknown"
 
 
@@ -142,6 +144,7 @@ async def execute_with_retry(
         category=category,
         message=last_error or "Unknown error",
         retryable=category in ("timeout", "rate_limited", "loading",
-                               "server_error", "gpu_busy", "connection_error"),
+                               "server_error", "gpu_busy", "connection_error",
+                               "context_overflow"),
         partial_content=partial,
     )

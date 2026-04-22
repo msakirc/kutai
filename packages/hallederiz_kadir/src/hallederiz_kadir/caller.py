@@ -245,6 +245,16 @@ async def call(
     else:
         _max_tokens = min(estimated_output_tokens * 2, model.max_tokens)
 
+    # ── Per-request reasoning override ──
+    # If a thinking-capable model is loaded with --reasoning on but this
+    # call wants thinking OFF (OVERHEAD / grader / classifier), llama-server
+    # would otherwise burn thousands of invisible reasoning tokens before
+    # emitting content. Sending reasoning_budget=0 + chat_template_kwargs
+    # tells the server to skip thinking for this request only — no swap.
+    _suppress_reasoning = (
+        is_local and model.thinking_model and not is_thinking
+    )
+
     # ── HTTP timeout ──
     http_timeout = max(10.0, float(timeout) - 5.0)
 
@@ -255,6 +265,15 @@ async def call(
     )
     if _max_tokens is not None:
         completion_kwargs["max_tokens"] = _max_tokens
+
+    if _suppress_reasoning:
+        # llama.cpp v8668+: reasoning_budget caps thinking tokens. 0 disables.
+        # chat_template_kwargs is a legacy hint — deprecated but harmless,
+        # kept for Ollama-served GGUFs that still honor it.
+        extra = dict(completion_kwargs.get("extra_body") or {})
+        extra["reasoning_budget"] = 0
+        extra.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
+        completion_kwargs["extra_body"] = extra
 
     if sampling_params:
         for k, v in sampling_params.items():
@@ -325,6 +344,17 @@ async def call(
         else:
             return await litellm.acompletion(**completion_kwargs)
 
+    # Mark this call in-flight so DaLLaMa's idle-unload watchdog does not
+    # yank the model out from under a long-running inference. Without this,
+    # calls exceeding idle_timeout_seconds got cancelled mid-generation
+    # (observed 2026-04-22: 97s writer call on Qwen3.5-35B unloaded at
+    # 90s, connection_error returned to dispatcher).
+    inflight_gen = None
+    if local_manager is not None:
+        try:
+            inflight_gen = local_manager.begin_inference()
+        except Exception:
+            inflight_gen = None
     try:
         raw_result = await execute_with_retry(
             call_fn=_do_call, max_retries=max_retries, timeout=timeout,
@@ -334,7 +364,11 @@ async def call(
             partial_content_ref=partial_content_ref,
         )
     finally:
-        pass  # no GPU semaphore to release
+        if inflight_gen is not None and local_manager is not None:
+            try:
+                local_manager.end_inference(inflight_gen)
+            except Exception:
+                pass
 
     # ── Handle retry failure ──
     if isinstance(raw_result, CallError):

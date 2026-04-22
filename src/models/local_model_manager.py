@@ -187,6 +187,24 @@ class LocalModelManager:
         """Reset idle-unload timer — call during active inference."""
         self._dallama.keep_alive()
 
+    def begin_inference(self) -> int:
+        """Mark an inference call as in-flight so the idle-unload watchdog
+        does not yank the model out from under a long-running request.
+
+        Returns a generation token that MUST be passed back to
+        ``end_inference``. A pre-swap call completing after a forced swap
+        will see a mismatched generation and silently skip the decrement.
+        """
+        return self._dallama._swap.mark_inference_start()
+
+    def end_inference(self, generation: int) -> None:
+        """Release an in-flight call. Pair with ``begin_inference``."""
+        self._dallama._swap.mark_inference_end(generation)
+        # Reset idle timer after the call too — gives the model a full
+        # idle_timeout_seconds window before unload, instead of racing
+        # against whatever was left when the call began.
+        self._dallama.keep_alive()
+
     async def ensure_model(
         self,
         model_name: str,

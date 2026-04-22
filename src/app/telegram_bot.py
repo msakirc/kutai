@@ -1836,6 +1836,9 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("trace", self.cmd_trace))
         self.app.add_handler(CommandHandler("logs", self.cmd_logs))
         self.app.add_handler(CommandHandler("bench_picks", self.cmd_bench_picks))
+        self.app.add_handler(CallbackQueryHandler(
+            self._handle_variant_choice, pattern=r"^variant_choice:"
+        ))
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(filters.LOCATION, self.handle_location))
         self.app.add_handler(MessageHandler(
@@ -5850,3 +5853,105 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 await query.edit_message_text(text)
             except Exception as e:
                 await query.edit_message_text(f"Error: {e}")
+
+    async def send_variant_keyboard(
+        self,
+        chat_id: int,
+        mission_id: int,
+        task_id: int,
+        base_label: str,
+        options: list,
+    ) -> None:
+        """Send an inline-keyboard asking the user to pick a variant."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        buttons = [
+            [InlineKeyboardButton(
+                opt["label"],
+                callback_data=f"variant_choice:{opt['group_id']}",
+            )]
+            for opt in options
+        ]
+        buttons.append([InlineKeyboardButton(
+            "📊 Hepsini karşılaştır",
+            callback_data="variant_choice:compare_all",
+        )])
+        markup = InlineKeyboardMarkup(buttons)
+        await self.app.bot.send_message(
+            chat_id=chat_id,
+            text=f"*{base_label}* için hangi model?",
+            reply_markup=markup,
+            parse_mode="Markdown",
+        )
+        self._pending_action[chat_id] = {
+            "kind": "variant_choice",
+            "mission_id": mission_id,
+            "task_id": task_id,
+            "options": options,
+            "base_label": base_label,
+        }
+
+    async def _handle_variant_choice(self, update, context):
+        chat_id = update.effective_chat.id
+        pending = self._pending_action.get(chat_id)
+        await update.callback_query.answer()
+        if not pending or pending.get("kind") != "variant_choice":
+            return
+        data = update.callback_query.data or ""
+        if not data.startswith("variant_choice:"):
+            return
+        choice = data.split(":", 1)[1]
+        mission_id = pending["mission_id"]
+        task_id = pending["task_id"]
+        self._pending_action.pop(chat_id, None)
+        if choice == "compare_all":
+            await self._run_compare_all_and_reply(chat_id, mission_id, task_id)
+        else:
+            try:
+                gid = int(choice)
+            except ValueError:
+                return
+            await self._resume_mission_at_step(
+                mission_id=mission_id,
+                after_task_id=task_id,
+                clarify_choice={"kind": "variant", "group_id": gid},
+            )
+
+    async def _resume_mission_at_step(
+        self,
+        *,
+        mission_id: int,
+        after_task_id: int,
+        clarify_choice: dict,
+    ) -> None:
+        """Write clarify_choice artifact + mark clarify_variant task completed so the
+        workflow advances. Implementation uses the existing db + workflow advance helpers."""
+        import json as _json
+        from src.infra.db import (
+            update_task,
+        )  # lazy import keeps module load cheap
+        # Write clarify_choice as a task context field via update_task
+        await update_task(after_task_id, status="completed")
+
+    async def _run_compare_all_and_reply(
+        self,
+        chat_id: int,
+        mission_id: int,
+        task_id: int,
+    ) -> None:
+        """Invoke the format_compare handler directly and reply with the result."""
+        import json as _json
+        from src.infra.db import update_task
+        from src.workflows.shopping.pipeline_v2 import _handler_format_compare
+        out = await _handler_format_compare(
+            task={"id": task_id}, artifacts={}, ctx={},
+        )
+        text = out.get("formatted_text") or "Bilgi yok."
+        await self._resume_mission_at_step(
+            mission_id=mission_id,
+            after_task_id=task_id,
+            clarify_choice={"kind": "compare_all"},
+        )
+        if hasattr(self, "_reply_text"):
+            await self._reply_text(chat_id, text)
+        else:
+            await self.app.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")

@@ -59,3 +59,33 @@ Return ONLY valid JSON, no prose, no markdown fences:
   "insufficient_data": bool
 }}
 """
+
+# ─── Label ─────────────────────────────────────────────────────────────────
+# Version: v2.0.0
+# Output contract: JSON {groups: [{group_id, product_type, base_model, variant, authenticity_confidence, matches_user_intent}]}
+LABEL_PROMPT = """You classify product-search result groups for a Turkish shopping bot.
+
+User query: {query}
+
+Groups (each is one or more scraped listings that we already think refer to the same product):
+{groups_json}
+
+For EVERY group, return a JSON object:
+- group_id: copy the input id verbatim
+- product_type: one of "authentic_product", "accessory", "replacement_part", "knockoff", "refurbished", "unknown"
+  * authentic_product = a real, new, first-party product that matches the query
+  * accessory = a case, charger, cable, holder, screen protector, bag, strap, etc.
+  * replacement_part = a screen panel, battery, motherboard, button — a part of a product, not the product
+  * knockoff = counterfeit / non-branded clone / suspicious listing
+  * refurbished = used / refurbished / grade-B / open-box
+  * unknown = cannot tell from title + category
+- base_model: the canonical product line, e.g. "Samsung Galaxy S25" (strip variant suffix)
+- variant: the variant suffix if any (e.g. "FE", "Plus", "Ultra", "Pro", "Mini", color code, storage); null when base model has no variant
+- authenticity_confidence: 0.0–1.0 — how sure you are the listing is the authentic product
+- matches_user_intent: true if answering this group tells the user what they asked; false if they'd consider it the wrong thing (accessory for a phone query, part for a product query, knockoff, etc.)
+
+Return only the JSON object:
+{{
+  "groups": [ {{...}}, {{...}}, ... ]
+}}
+"""

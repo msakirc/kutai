@@ -25,20 +25,17 @@ def _effective_priority(task: dict) -> float:
     return base + min(age_h * 0.1, 1.0)
 
 
-async def pick_ready_task(system_busy: bool) -> dict | None:
+async def pick_ready_task() -> dict | None:
     """Return one ready task eligible for dispatch, or None.
 
-    When ``system_busy`` is True (VRAM low), only mechanical tasks are
-    eligible — they never touch the LLM. All other tasks are skipped until
-    the system is no longer busy.
+    Admission-layer gates (pool-pressure, VRAM headroom) live in
+    ``next_task()``. This helper just claims the top-priority ready row.
     """
     rows = await get_ready_tasks(limit=8)
     # Age-boost sort (stable: preserves DB tie-break for equal boosts)
     rows.sort(key=_effective_priority, reverse=True)
     for row in rows:
         if is_paused(row):
-            continue
-        if system_busy and row.get("agent_type") != "mechanical":
             continue
         claimed = await claim_task(row["id"])
         if claimed:

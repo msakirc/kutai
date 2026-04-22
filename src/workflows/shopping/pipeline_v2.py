@@ -38,6 +38,11 @@ class ProductGroup:
     member_indices: list[int]      # indices into the Candidate list
     is_accessory_or_part: bool
     prominence: float              # sum(1 / site_rank) across members
+    product_type: str = "unknown"           # authentic_product | accessory | replacement_part | knockoff | refurbished | unknown
+    base_model: str = ""
+    variant: str | None = None
+    authenticity_confidence: float = 0.5
+    matches_user_intent: bool = True
 
 
 @dataclass

@@ -45,6 +45,23 @@ def test_dataclass_shapes():
     assert s.praise == ["Köpük güzel"]
 
 
+def test_product_group_accepts_label_fields():
+    g = ProductGroup(
+        representative_title="Samsung Galaxy S25",
+        member_indices=[0, 1],
+        is_accessory_or_part=False,
+        prominence=2.0,
+        product_type="authentic_product",
+        base_model="Samsung Galaxy S25",
+        variant=None,
+        authenticity_confidence=0.95,
+        matches_user_intent=True,
+    )
+    assert g.product_type == "authentic_product"
+    assert g.variant is None
+    assert g.authenticity_confidence == 0.95
+
+
 @pytest.mark.asyncio
 async def test_step_resolve_preserves_site_order_and_caps_per_site_n():
     """Per-site top-N only; no token-overlap filter; site_rank is 1-based."""

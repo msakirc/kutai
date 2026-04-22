@@ -253,6 +253,9 @@ class AmazonTrScraper(BaseScraper):
                         (1 - discounted_price / original_price) * 100, 1
                     )
 
+                # SKU: ASIN is the canonical Amazon product identifier (10 chars)
+                sku: str | None = asin if asin else None
+
                 products.append(
                     Product(
                         name=name,
@@ -267,6 +270,7 @@ class AmazonTrScraper(BaseScraper):
                         review_count=review_count,
                         free_shipping=free_shipping,
                         specs={"asin": asin} if asin else {},
+                        sku=sku,
                         fetched_at=now_iso,
                     )
                 )

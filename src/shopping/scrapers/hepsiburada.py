@@ -257,6 +257,12 @@ class HepsiburadaScraper(BaseScraper):
                         (1 - discounted_price / original_price) * 100, 1
                     )
 
+                # SKU: extract HB product ID from URL (-p-HBCV... or -pm-HBV...)
+                sku: str | None = None
+                sku_m = _re.search(r"-p[m]?-([A-Za-z0-9]+)", href)
+                if sku_m:
+                    sku = sku_m.group(1)
+
                 products.append(
                     Product(
                         name=name,
@@ -266,6 +272,7 @@ class HepsiburadaScraper(BaseScraper):
                         discounted_price=discounted_price,
                         discount_percentage=discount_pct,
                         currency="TRY",
+                        sku=sku,
                         fetched_at=now_iso,
                     )
                 )

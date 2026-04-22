@@ -248,6 +248,12 @@ class TrendyolScraper(BaseScraper):
                     if src and not src.startswith("data:"):
                         image_url = src
 
+                # SKU: extract content ID from URL (-p-<digits>)
+                sku: str | None = None
+                sku_m = re.search(r"-p-(\d+)", product_url)
+                if sku_m:
+                    sku = f"ty-{sku_m.group(1)}"
+
                 products.append(
                     Product(
                         name=full_name,
@@ -258,6 +264,7 @@ class TrendyolScraper(BaseScraper):
                         discount_percentage=discount_pct,
                         currency="TRY",
                         image_url=image_url,
+                        sku=sku,
                         fetched_at=now_iso,
                     )
                 )

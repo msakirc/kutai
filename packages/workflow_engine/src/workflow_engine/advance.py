@@ -157,8 +157,14 @@ async def _maybe_complete_mission(mission_id: int, completed_task_id: int) -> No
         # For workflows without an explicit delivery step, falls through to
         # the summary-only message.
         final_result = ""
+        # Bookkeeping agents run AFTER the real final step (grader scores
+        # it, summarizer condenses artifacts). Their results are JSON
+        # verdicts / structural summaries, not user-facing content —
+        # skipping them prevents the verdict JSON from leaking out as
+        # the mission's delivered message.
+        _bookkeeping = {"mechanical", "grader", "artifact_summarizer"}
         for t in sorted(tasks, key=lambda x: x.get("id") or 0, reverse=True):
-            if t.get("agent_type") == "mechanical":
+            if t.get("agent_type") in _bookkeeping:
                 continue
             if t.get("status") != "completed":
                 continue
@@ -175,7 +181,16 @@ async def _maybe_complete_mission(mission_id: int, completed_task_id: int) -> No
         if final_result:
             # Primary: deliver the workflow's final payload. Keep it terse
             # — the completion summary goes below.
+            # If the result is a JSON dict with a `formatted_text` key
+            # (shopping_pipeline_v2 format_response step), unwrap it so
+            # the user sees markdown, not raw JSON.
             body = final_result
+            try:
+                parsed = _json.loads(body)
+                if isinstance(parsed, dict) and "formatted_text" in parsed:
+                    body = parsed["formatted_text"]
+            except Exception:
+                pass
             if len(body) > 3800:
                 body = body[:3800] + "\n...(truncated)"
             await tg.send_notification(body)

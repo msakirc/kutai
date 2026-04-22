@@ -21,7 +21,7 @@
       "output_artifacts": ["search_results"],
       "instruction": "Step name: resolve_candidates. Fetches top-4 per site.",
       "done_when": "search_results.candidates populated.",
-      "context": {"per_site_n": 4}
+      "context": {"per_site_n": 4, "requires_grading": false}
     },
     {
       "id": "1.1", "phase": "phase_1", "name": "group_and_synthesize",
@@ -40,7 +40,8 @@
       "input_artifacts": ["grouped_synth"],
       "output_artifacts": ["shopping_response"],
       "instruction": "Step name: format_response.",
-      "done_when": "shopping_response.formatted_text populated."
+      "done_when": "shopping_response.formatted_text populated.",
+      "context": {"requires_grading": false}
     }
   ]
 }

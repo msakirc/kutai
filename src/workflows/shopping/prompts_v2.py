@@ -44,9 +44,9 @@ Review snippets (Turkish and/or English, from multiple sources):
 {review_snippets_json}
 
 Task:
-- Extract recurring PRAISE points (what users like). Max 3 bullets, short phrases.
-- Extract recurring COMPLAINTS (what users dislike). Max 3 bullets.
-- Extract RED FLAGS (safety, reliability, fraud concerns, complaint-site mentions). Max 3 bullets.
+- Extract recurring PRAISE points (what users like). Up to 5 bullets, short phrases.
+- Extract recurring COMPLAINTS (what users dislike). Up to 5 bullets.
+- Extract RED FLAGS (safety, reliability, fraud concerns, complaint-site mentions). Up to 5 bullets.
 - If the snippets are too few, too short, or irrelevant to judge this product, set insufficient_data=true and leave lists empty.
 - Do NOT fabricate points that aren't supported by the snippets. Better to output insufficient_data=true than to guess.
 - Output in the dominant language of the snippets (Turkish if Turkish dominates).

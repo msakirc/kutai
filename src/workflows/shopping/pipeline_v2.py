@@ -210,6 +210,10 @@ async def _grouping_llm_call(prompt: str) -> dict:
         task="shopping_grouper",
         agent_type="shopping_pipeline_v2",
         difficulty=3,
+        # Grouping is structured-JSON transformation, not a reasoning task.
+        # Thinking-on wastes thousands of invisible reasoning tokens per call
+        # and bursts past the dispatch timeout on small local models.
+        needs_thinking=False,
         messages=[
             {"role": "system", "content": "You output valid JSON only."},
             {"role": "user", "content": prompt},
@@ -287,6 +291,10 @@ async def _synthesis_llm_call(prompt: str) -> dict:
         task="shopping_review_synthesizer",
         agent_type="shopping_pipeline_v2",
         difficulty=6,
+        # Synthesis is structured JSON extraction over review snippets —
+        # no chain-of-thought needed. Suppress reasoning to stay under the
+        # dispatch timeout when a thinking model happens to be resident.
+        needs_thinking=False,
         messages=[
             {"role": "system", "content": "You output valid JSON only."},
             {"role": "user", "content": prompt},
@@ -337,7 +345,7 @@ async def step_synthesize_reviews(
 
     def _take_list(key: str) -> list[str]:
         v = parsed.get(key) or []
-        return [str(x).strip() for x in v if isinstance(x, (str, int, float)) and str(x).strip()][:3]
+        return [str(x).strip() for x in v if isinstance(x, (str, int, float)) and str(x).strip()][:5]
 
     syn = ReviewSynthesis(
         praise=_take_list("praise"),
@@ -354,18 +362,56 @@ async def step_synthesize_reviews(
     return syn
 
 
+# Variant suffixes that disqualify a result unless the user explicitly asked
+# for them. Matched case-insensitively against the representative title.
+_VARIANT_SUFFIXES = {"fe", "plus", "ultra", "pro", "mini", "lite", "edge"}
+
+
+def _query_match_score(title: str, query: str) -> float:
+    """Jaccard-based query match: how many query tokens appear in the title.
+
+    Also applies a penalty for variant tokens (FE, Plus, Ultra …) present in
+    the title but absent from the query — prevents budget/premium variants
+    from ranking above the exact requested model.
+
+    Returns a float in (0, 1].  Never 0 so pure-prominence still breaks ties.
+    """
+    def _tokens(s: str) -> set[str]:
+        return {t.lower() for t in re.split(r"[\s\-_/]+", s) if t}
+
+    q_tok = _tokens(query)
+    t_tok = _tokens(title)
+
+    if not q_tok:
+        return 1.0
+
+    # Fraction of query tokens present in the title
+    hit = len(q_tok & t_tok) / len(q_tok)
+
+    # Penalty: variant tokens in title that aren't in query → multiply down
+    unsolicited_variants = (t_tok & _VARIANT_SUFFIXES) - q_tok
+    penalty = 0.5 * len(unsolicited_variants)    # 0.5 per unsolicited suffix
+    score = max(0.05, hit - penalty)
+    return score
+
+
 def select_groups(
-    groups: list[ProductGroup], max_groups: int,
+    groups: list[ProductGroup], max_groups: int, query: str = "",
 ) -> list[ProductGroup]:
-    """Filter accessories, sort by prominence desc, apply the 50%-of-top rule."""
+    """Filter accessories, rank by prominence × query-match, apply 50%-of-top rule."""
     non_acc = [g for g in groups if not g.is_accessory_or_part]
     if not non_acc:
         return []
-    non_acc.sort(key=lambda g: g.prominence, reverse=True)
-    top = non_acc[0]
-    kept: list[ProductGroup] = [top]
+
+    def _score(g: ProductGroup) -> float:
+        qm = _query_match_score(g.representative_title, query) if query else 1.0
+        return g.prominence * qm
+
+    non_acc.sort(key=_score, reverse=True)
+    top_score = _score(non_acc[0])
+    kept: list[ProductGroup] = [non_acc[0]]
     for g in non_acc[1:max_groups]:
-        if g.prominence >= top.prominence * 0.5:
+        if _score(g) >= top_score * 0.5:
             kept.append(g)
         else:
             break
@@ -535,9 +581,10 @@ async def _handler_group_and_synthesize(task: dict, artifacts: dict, ctx: dict) 
     cands = _candidates_from_json(payload.get("candidates", []))
     if not cands:
         return {"cards": [], "escalation_needed": True}
+    query = payload.get("query", "")
     groups = await step_group(cands)
     max_groups = int(ctx.get("max_groups", 2))
-    kept = select_groups(groups, max_groups=max_groups)
+    kept = select_groups(groups, max_groups=max_groups, query=query)
     community_counts = payload.get("community_counts") or {}
     cards: list[str] = []
     for g in kept:

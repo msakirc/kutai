@@ -330,16 +330,59 @@ def test_select_groups_drops_accessories_and_applies_50pct_rule():
         ProductGroup("Accessory", [4], True, prominence=99.0),      # always drop
     ]
 
-    kept_named = select_groups(groups, max_groups=2)
+    kept_named = select_groups(groups, max_groups=2, query="")
     assert [g.representative_title for g in kept_named] == ["Dominant", "Close runner"]
 
-    kept_cat = select_groups(groups, max_groups=3)
+    kept_cat = select_groups(groups, max_groups=3, query="")
     assert [g.representative_title for g in kept_cat] == ["Dominant", "Close runner"]
 
 
 def test_select_groups_empty_input():
     from src.workflows.shopping.pipeline_v2 import select_groups
     assert select_groups([], max_groups=2) == []
+
+
+def test_select_groups_query_match_penalises_fe_variant():
+    """Samsung S25 query should rank S25 above S25 FE despite equal prominence."""
+    from src.workflows.shopping.pipeline_v2 import ProductGroup, select_groups
+
+    # S25 FE appears on more sites → higher raw prominence, but query says "s25"
+    groups = [
+        ProductGroup("Samsung Galaxy S25 FE", [0, 1, 2], False, prominence=3.0),
+        ProductGroup("Samsung Galaxy S25",    [3, 4],    False, prominence=2.0),
+    ]
+    kept = select_groups(groups, max_groups=2, query="Samsung s25")
+    # S25 (exact match) must be ranked first
+    assert kept[0].representative_title == "Samsung Galaxy S25"
+    assert kept[1].representative_title == "Samsung Galaxy S25 FE"
+
+
+def test_select_groups_query_match_no_penalty_when_fe_in_query():
+    """When the user asks for 'S25 FE', FE variant should NOT be penalised."""
+    from src.workflows.shopping.pipeline_v2 import ProductGroup, select_groups
+
+    groups = [
+        ProductGroup("Samsung Galaxy S25 FE", [0], False, prominence=2.0),
+        ProductGroup("Samsung Galaxy S25",    [1], False, prominence=3.0),
+    ]
+    kept = select_groups(groups, max_groups=2, query="Samsung S25 FE")
+    # S25 FE is an exact match to query → must win despite lower prominence
+    assert kept[0].representative_title == "Samsung Galaxy S25 FE"
+
+
+def test_query_match_score_variant_penalty():
+    """_query_match_score penalises unsolicited FE/Plus/Ultra etc."""
+    from src.workflows.shopping.pipeline_v2 import _query_match_score
+
+    # "S25 FE" vs query "s25" — FE not in query → penalty applied
+    score_fe = _query_match_score("Samsung Galaxy S25 FE", "Samsung s25")
+    # "S25" exact → no penalty
+    score_exact = _query_match_score("Samsung Galaxy S25", "Samsung s25")
+    assert score_exact > score_fe
+
+    # When FE is in query, no penalty
+    score_fe_asked = _query_match_score("Samsung Galaxy S25 FE", "Samsung s25 FE")
+    assert score_fe_asked > score_fe
 
 
 def test_format_group_card_full_output():

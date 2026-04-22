@@ -150,12 +150,24 @@ class LLMDispatcher:
 
         model = pick.model
 
+        # Estimate prompt size so the loader can size context to fit.
+        # Without this, ensure_model lets calculate_dynamic_context pick
+        # whatever the VRAM math allows (often 4k on a tight GPU), and
+        # llama-server silently truncates prompts that exceed it. With it,
+        # the loader is forced to allocate at least prompt+headroom; if
+        # the model can't physically fit that ctx, the load OOMs and the
+        # dispatcher's retry path picks a different model.
+        prompt_tokens = self._estimate_prompt_tokens(messages)
+        ctx_headroom = max(1024, kwargs.get("estimated_output_tokens", 0) or 1024)
+        required_ctx = prompt_tokens + ctx_headroom
+
         # Load local model if needed
         if model.is_local and getattr(model, "location", "") != "ollama":
             is_thinking = model.thinking_model and needs_thinking
             ok, swap_happened = await self._ensure_local_model(
                 model, needs_thinking=is_thinking,
                 load_timeout=pick.estimated_load_seconds or 0.0,
+                estimated_context=required_ctx,
             )
             if swap_happened:
                 import nerd_herd as _nerd_herd
@@ -272,6 +284,28 @@ class LLMDispatcher:
             **kwargs,
         )
 
+
+    @staticmethod
+    def _estimate_prompt_tokens(messages: list) -> int:
+        """Rough prompt-token count from message content. 1 token ≈ 4 chars.
+
+        Used to size llama-server's KV cache. Overestimating wastes a
+        little VRAM; underestimating truncates the prompt. Skews
+        slightly high — char-to-token ratio is ~3.5 for English code,
+        ~4 for prose.
+        """
+        total_chars = 0
+        for m in messages or []:
+            content = m.get("content") if isinstance(m, dict) else ""
+            if isinstance(content, str):
+                total_chars += len(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        text = part.get("text", "")
+                        if isinstance(text, str):
+                            total_chars += len(text)
+        return max(0, total_chars // 4)
 
     async def _record_pick(
         self,

@@ -253,9 +253,21 @@ async def _send_standalone_completion(task: dict, status: str, result: dict) -> 
 
 
 async def _send_step_progress(task: dict, status: str, result: dict) -> None:
-    """Send a one-line Telegram progress update when a mission step finishes."""
+    """Send a one-line Telegram progress update when a mission step finishes.
+
+    Fires from on_task_finished, which runs BEFORE the grader verdict.
+    A worker that finished is only "done" from the workflow's POV once
+    grading passes. Check the live DB status to avoid premature ticks
+    on steps that are queued for re-grade or retry.
+    """
     if task.get("agent_type") in ("mechanical", "grader", "artifact_summarizer"):
         return
+    if status == "completed":
+        from src.infra.db import get_task as _get_task
+        live = await _get_task(task["id"])
+        live_status = (live or {}).get("status", "")
+        if live_status != "completed":
+            return
     from src.app.telegram_bot import get_telegram
     tg = get_telegram()
     if tg is None:

@@ -496,6 +496,17 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
             # runs _maybe_complete_mission — mission stays 'active' and
             # the shopping_response is never delivered to Telegram.
             await _spawn_workflow_advance_if_mission(source, a.raw)
+            # Now that grader approved, surface the step completion to
+            # the user. _send_step_progress (in general_beckman.__init__)
+            # gates on live DB status, so it's safe to call with the
+            # updated source.
+            try:
+                from general_beckman import _send_step_progress
+                fresh = await get_task(a.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", a.raw or {})
+            except Exception:
+                pass
         else:
             await update_task(
                 a.source_task_id, context=_json.dumps(ctx),

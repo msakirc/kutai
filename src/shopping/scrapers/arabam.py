@@ -148,6 +148,10 @@ class ArabamScraper(BaseScraper):
         logger.info("arabam listing parsed", count=len(products))
         return products
 
+    def _parse_search_html(self, html: str) -> list[Product]:
+        """Public alias for _parse_listing used by tests and external callers."""
+        return self._parse_listing(html, max_results=100)
+
     def _parse_item(self, item: Any, now_iso: str) -> Product | None:
         tds = item.find_all("td")
         if len(tds) < 7:
@@ -213,10 +217,19 @@ class ArabamScraper(BaseScraper):
             if src and not src.startswith("data:"):
                 image_url = src
 
-        # Listing ID
+        # Listing ID → SKU
         listing_id = item.get("data-imp-id")
         if listing_id:
             specs["listing_id"] = listing_id
+
+        # SKU: prefer data-imp-id, fall back to numeric id in URL
+        sku: str | None = None
+        if listing_id:
+            sku = f"ab-{listing_id}"
+        else:
+            _m = re.search(r"/(\d{5,})(?:[/?#]|$)", url)
+            if _m:
+                sku = f"ab-{_m.group(1)}"
 
         return Product(
             name=name,
@@ -228,6 +241,7 @@ class ArabamScraper(BaseScraper):
             specs=specs,
             category_path="Otomobil",
             fetched_at=now_iso,
+            sku=sku,
         )
 
     def _parse_product_page(self, url: str, html: str) -> Product | None:

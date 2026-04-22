@@ -140,6 +140,10 @@ class DirencNetScraper(BaseScraper):
         logger.info("direnc listing parsed", count=len(products))
         return products
 
+    def _parse_search_html(self, html: str) -> list[Product]:
+        """Public alias for _parse_listing used by tests and external callers."""
+        return self._parse_listing(html, max_results=100)
+
     def _parse_item(self, item: Any, now_iso: str) -> Product | None:
         """Parse a single .productItem div into a Product."""
         # --- name & URL ---
@@ -191,6 +195,13 @@ class DirencNetScraper(BaseScraper):
             if src and not src.startswith("data:"):
                 image_url = f"https:{src}" if src.startswith("//") else src
 
+        # SKU: extract numeric product id from URL path
+        # direnc.net URLs: /urun-adi-12345 or /p/12345 or end in -12345
+        sku: str | None = None
+        _m = re.search(r"-(\d{4,})(?:[/?#]|$)", url) or re.search(r"/(\d{4,})(?:[/?#]|$)", url)
+        if _m:
+            sku = f"dn-{_m.group(1)}"
+
         return Product(
             name=name,
             url=url,
@@ -201,6 +212,7 @@ class DirencNetScraper(BaseScraper):
             image_url=image_url,
             availability=availability,
             fetched_at=now_iso,
+            sku=sku,
         )
 
     def _parse_product_page(self, url: str, html: str) -> Product | None:

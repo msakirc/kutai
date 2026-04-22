@@ -191,6 +191,13 @@ class SahibindenScraper(BaseScraper):
                     href if href.startswith("http") else f"{_BASE_URL}{href}"
                 )
 
+                # SKU — extract numeric listing id from URL path
+                # e.g. /ilan/elektronik-bilgisayar/.../123456789
+                _sku: str | None = None
+                _m = re.search(r"/(\d{6,})(?:[/?#]|$)", listing_url)
+                if _m:
+                    _sku = f"sh-{_m.group(1)}"
+
                 # Price
                 price_el = (
                     row.select_one("td.searchResultsPriceValue span")
@@ -274,6 +281,7 @@ class SahibindenScraper(BaseScraper):
                         image_url=image_url,
                         specs=specs,
                         fetched_at=now_iso,
+                        sku=_sku,
                     )
                 )
             except Exception as exc:
@@ -282,6 +290,10 @@ class SahibindenScraper(BaseScraper):
 
         logger.info("search parsed", count=len(products))
         return products
+
+    def _parse_search_html(self, html: str) -> list[Product]:
+        """Public alias for _parse_search used by tests and external callers."""
+        return self._parse_search(html, max_results=100)
 
     # ------------------------------------------------------------------
     # get_product

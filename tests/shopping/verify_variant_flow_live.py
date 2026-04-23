@@ -16,7 +16,22 @@ except Exception:
     pass
 
 
+async def _bootstrap_fatih_hoca() -> None:
+    """Match src/app/run.py init so the dispatcher can select models."""
+    import os
+    from pathlib import Path
+    import fatih_hoca
+    from src.app.config import AVAILABLE_KEYS
+
+    catalog = str(Path("src/models/models.yaml").resolve())
+    models_dir = os.getenv("MODEL_DIR") or None
+    providers = {p for p, ok in AVAILABLE_KEYS.items() if ok}
+    fatih_hoca.init(catalog_path=catalog, models_dir=models_dir,
+                    available_providers=providers)
+
+
 async def main():
+    await _bootstrap_fatih_hoca()
     from src.workflows.shopping.pipeline_v2 import (
         _handler_resolve_candidates, _handler_group_label_filter_gate,
     )

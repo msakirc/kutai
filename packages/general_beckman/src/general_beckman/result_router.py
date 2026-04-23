@@ -110,9 +110,24 @@ def route_result(task: dict, agent_result: dict | None) -> list[Action]:
     status = agent_result.get("status")
 
     if status == "completed":
+        result_text = agent_result.get("result", "")
+        # Empty "completed" is a quality failure, not a success. Small
+        # models sometimes emit status=completed with an empty result
+        # field (parse recovery gone sideways, or a tool-loop that
+        # exhausted itself). Letting it through shows the user nothing
+        # and poisons downstream steps that consume the artifact.
+        if not (
+            (isinstance(result_text, str) and result_text.strip())
+            or (isinstance(result_text, (dict, list)) and result_text)
+        ):
+            return [Failed(
+                task_id=task_id,
+                error="completed with empty result",
+                raw=raw,
+            )]
         return [Complete(
             task_id=task_id,
-            result=agent_result.get("result", ""),
+            result=result_text,
             iterations=agent_result.get("iterations", 0),
             metadata=agent_result.get("metadata", {}),
             raw=raw,
@@ -120,6 +135,14 @@ def route_result(task: dict, agent_result: dict | None) -> list[Action]:
 
     if status == "needs_subtasks":
         subtasks = agent_result.get("subtasks", [])
+        # Empty subtasks list is either a parse error or an agent that
+        # forgot to enumerate — treat as Failed so retry runs.
+        if not isinstance(subtasks, list) or not subtasks:
+            return [Failed(
+                task_id=task_id,
+                error="needs_subtasks with empty subtasks list",
+                raw=raw,
+            )]
         return [SpawnSubtasks(parent_task_id=task_id, subtasks=subtasks, raw=raw)]
 
     if status == "needs_clarification":

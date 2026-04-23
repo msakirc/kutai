@@ -52,50 +52,44 @@ async def sweep_queue() -> None:
     )
     stuck = [dict(row) for row in await cursor.fetchall()]
     from general_beckman.apply import _dlq_write
+    from src.core.retry import compute_retry_timing
     for task in stuck:
-        infra_resets = (task.get("infra_resets") or 0) + 1
-        if infra_resets >= 3:
+        # Infra-stuck and per-call availability are the same class of
+        # problem — "environment failed, wait and retry". Reuse the
+        # availability ladder (60 → 120 → ... 7200s cap, terminal at
+        # >=7200s) via compute_retry_timing. infra_resets carries the
+        # doubling state as seconds-of-last-delay (keeps column reuse;
+        # value is last delay, not a count).
+        last_delay = int(task.get("infra_resets") or 0)
+        decision = compute_retry_timing(
+            failure_type="availability",
+            last_avail_delay=last_delay,
+        )
+        if decision.action == "terminal":
             logger.warning(
-                f"[Sweep] Task #{task['id']} stuck in processing "
-                f"and exhausted infra resets ({infra_resets}/3), "
-                f"routing to DLQ"
+                f"[Sweep] Task #{task['id']} stuck in processing; "
+                f"availability ladder exhausted ({last_delay}s), routing to DLQ"
             )
-            await db.execute(
-                "UPDATE tasks SET infra_resets = ? WHERE id = ?",
-                (infra_resets, task["id"])
-            )
-            await db.commit()
-            # Route to DLQ so the user sees + can /dlq retry, and
-            # dependents get the cascade-reset when retry runs.
-            # Silent status=failed was the hole that let mission 46
-            # freeze with 2 stuck tasks hidden from /dlq.
             fresh = dict(task)
-            fresh["infra_resets"] = infra_resets
             fresh["failed_in_phase"] = "infrastructure"
             await _dlq_write(
                 fresh,
-                error="Stuck in processing — infra resets exhausted (sweep)",
-                category="infrastructure",
+                error="Stuck in processing — availability backoff exhausted (sweep)",
+                category="availability",
                 attempts=int(task.get("worker_attempts") or 0),
             )
         else:
-            # Exponential backoff, matching compute_retry_timing's
-            # availability ladder: 60s × 2^(attempt-1), cap 15min.
-            # Reset #1 = 60s, #2 = 120s, cap at 15min (sweep only
-            # allows 3 resets anyway). Without backoff, sweep →
-            # immediate re-admit → re-stuck → exhausted in one 15-min
-            # sweep-cycle window with no time for driver recovery.
-            delay_s = min(15 * 60, 60 * (2 ** (infra_resets - 1)))
-            next_retry = to_db(utc_now() + timedelta(seconds=delay_s))
+            new_delay = decision.delay_seconds
+            next_retry = to_db(utc_now() + timedelta(seconds=new_delay))
             logger.warning(
                 f"[Sweep] Task #{task['id']} stuck in processing, "
-                f"infra-reset {infra_resets}/3, backoff {delay_s}s"
+                f"backoff {new_delay}s (prev {last_delay}s)"
             )
             await db.execute(
                 "UPDATE tasks SET status = 'pending', "
-                "infra_resets = ?, retry_reason = 'infrastructure', "
+                "infra_resets = ?, retry_reason = 'availability', "
                 "next_retry_at = ? WHERE id = ?",
-                (infra_resets, next_retry, task["id"])
+                (new_delay, next_retry, task["id"])
             )
     if stuck:
         await db.commit()

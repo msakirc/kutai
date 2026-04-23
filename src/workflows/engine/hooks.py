@@ -210,9 +210,20 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
                     return _re_obj.sub(r"[\u2010-\u2015\u2212\-_]", " ", s)
                 text_norm = _norm(str(output_value))
                 missing = []
+                _QUALIFIER_SUFFIXES = {
+                    "level", "rate", "count", "status", "type",
+                    "value", "score", "index", "ratio",
+                }
                 for f in required:
                     words = _norm(f).split()
-                    if not all(w in text_norm for w in words):
+                    # Qualifier-only suffixes (level, rate, etc.) are
+                    # informational; small LLMs drop them ("High
+                    # confidence" == "confidence_level: High"). Check
+                    # only the non-qualifier core words.
+                    core = [w for w in words if w not in _QUALIFIER_SUFFIXES]
+                    if not core:
+                        core = words
+                    if not all(w in text_norm for w in core):
                         missing.append(f)
                 if missing:
                     return False, f"'{artifact_name}' missing content about: {missing}"
@@ -603,7 +614,14 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
         # them explicitly helps.
         import re as _re
         missing_hint = ""
-        m = _re.search(r"missing sections?:\s*(\[[^\]]+\]|'[^']+')", schema_error)
+        # Match markdown section-list errors AND object field-list errors:
+        #   "'name' missing sections: [...]"
+        #   "'name' missing content about: [...]"
+        #   "Missing required fields in 'name': [...]"
+        m = _re.search(
+            r"missing (?:sections?|required fields|content about)[^\[\]']*(\[[^\]]+\]|'[^']+')",
+            schema_error,
+        )
         if m:
             missing_hint = (
                 f"\n\nYou specifically omitted: {m.group(1)}.\n"

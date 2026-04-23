@@ -152,8 +152,8 @@ async def _check_mission_health(mission_id: int) -> None:
 
         # Notify via Telegram
         try:
-            from src.app.telegram_bot import get_bot
-            bot = get_bot()
+            from src.app.telegram_bot import get_telegram
+            bot = get_telegram()
             if bot:
                 await bot.send_notification(
                     f"Mission #{mission_id} auto-paused: {count} tasks "
@@ -252,6 +252,46 @@ async def retry_dlq_task(task_id: int) -> bool:
     if not task:
         logger.warning(f"[DLQ] Task #{task_id} not found for retry")
         return False
+
+    # Mechanical side-effect tasks (clarify, workflow_advance, git_commit,
+    # summarize, ...) retain a broken payload from the upstream LLM step
+    # that spawned them. Retrying the MECHANICAL row just re-runs the
+    # broken executor — the fix must go to the PARENT that produced the
+    # payload. Redirect the retry to the parent, cancel this row.
+    parent_id = task.get("parent_task_id")
+    if task.get("agent_type") == "mechanical" and parent_id:
+        parent = await get_task(parent_id)
+        if parent and parent.get("status") in (
+            "waiting_human", "failed", "ungraded", "processing",
+        ):
+            logger.info(
+                "[DLQ] Redirecting mechanical retry #%d → parent #%d",
+                task_id, parent_id,
+            )
+            await update_task(
+                task_id, status="cancelled",
+                error=f"redirected to parent #{parent_id} on DLQ retry",
+            )
+            # Recurse on parent (will hit the normal retry path below).
+            return await retry_dlq_task(parent_id) if await _in_dlq(parent_id) else await _plain_retry(parent)
+    return await _plain_retry(task)
+
+
+async def _in_dlq(task_id: int) -> bool:
+    from src.infra.db import get_db
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT 1 FROM dead_letter_tasks WHERE task_id = ? AND resolved_at IS NULL",
+        (task_id,),
+    )
+    return (await cur.fetchone()) is not None
+
+
+async def _plain_retry(task: dict) -> bool:
+    """Normal pending-reset retry for a single task row."""
+    import json
+    from src.infra.db import update_task
+    task_id = task["id"]
 
     # Phase-aware status
     failed_phase = task.get("failed_in_phase")
@@ -395,8 +435,8 @@ async def _run_pattern_analysis(task_id: int, error_category: str) -> None:
 async def _send_dlq_alert(message: str, pattern_key: str, task_ids: list[int]) -> None:
     """Send a DLQ pattern alert via Telegram with inline action buttons."""
     try:
-        from src.app.telegram_bot import get_bot
-        bot = get_bot()
+        from src.app.telegram_bot import get_telegram
+        bot = get_telegram()
         if not bot:
             return
 

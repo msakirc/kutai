@@ -1888,10 +1888,12 @@ Branch `feat/shopping-variant-disambig`, 22 tasks executed via subagent-driven T
 - Gate: **clarify**. Five variant options surfaced with real product titles (S25 vanilla, S25 FE 256GB in multiple storage variants, S25 Ultra).
 - One accessory ("Samsung Galaxy S25 Ultra Ekran Koruyucu") leaked into the clarify options because the label LLM path fell back (see below). With the label LLM working, accessories would be filtered out structurally.
 
-**Known gap** (not introduced by this plan — pre-existing Fatih Hoca quirk):
+**Investigation — "label LLM failed" during smoke**:
 
-- `shopping_labeler`, `shopping_grouper`, `shopping_review_synthesizer` all error at the model-selection layer with `"No model candidates available"` despite having `TASK_PROFILES` entries in `packages/fatih_hoca/src/fatih_hoca/capabilities.py`. `_fallback_labels` (confidence 0.8, authentic + intent-matched) lets the pipeline proceed anyway, but accessory/knockoff filtering is lost when the fallback fires.
-- Root cause appears to lie in Fatih Hoca's eligibility filter / model catalog, not in pipeline_v2. Labeled as a follow-up investigation.
+- Initial finding: `shopping_labeler`, `shopping_grouper`, `shopping_review_synthesizer` all erred at the model-selection layer with `"No model candidates available"`, triggering `_fallback_labels`.
+- Root cause: the smoke harness did not call `fatih_hoca.init(catalog_path=..., models_dir=..., available_providers=...)` before invoking handlers. Without init, Fatih Hoca's registry is empty and `select()` returns None for every task.
+- Production is unaffected — `src/app/run.py` initializes Fatih Hoca at boot. `model_pick_log` in the prod DB confirms `shopping_grouper` and `shopping_review_synthesizer` successfully pick local GGUFs (gemma-4-26B, Qwen3.5-9B/35B) and complete. The newly-added `shopping_labeler` profile will select the same way.
+- Fix committed to the harness: `_bootstrap_fatih_hoca()` mirrors `src/app/run.py`'s init so the smoke runs against a real registry. Live re-run of the harness is risky while KutAI is running (fights over the shared llama-server), so final validation is via the Telegram manual steps below.
 
 **Follow-ups queued**:
 

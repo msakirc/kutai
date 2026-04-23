@@ -435,7 +435,9 @@ class TelegramInterface:
                 break  # One clarification at a time
 
         except Exception as e:
-            logger.error("Failed to restore clarification state", error=str(e))
+            logger.exception(
+                "Failed to restore clarification state: %s", e,
+            )
 
     async def _reply(self, update_or_msg, text: str, **kwargs):
         """Send a reply with the current keyboard state.
@@ -5723,7 +5725,12 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         except Exception:
             return ""
         for row in rows or []:
-            raw_ctx = row[0] if isinstance(row, (tuple, list)) else row.get("context")
+            # aiosqlite.Row supports index access but NOT .get(). Use
+            # positional indexing since the SELECT has a single column.
+            try:
+                raw_ctx = row[0]
+            except Exception:
+                raw_ctx = None
             if not raw_ctx:
                 continue
             try:

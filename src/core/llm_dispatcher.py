@@ -150,27 +150,21 @@ class LLMDispatcher:
 
         model = pick.model
 
-        # Estimate prompt size so the loader can size context to fit.
-        # Without this, ensure_model lets calculate_dynamic_context pick
-        # whatever the VRAM math allows (often 4k on a tight GPU), and
-        # llama-server silently truncates prompts that exceed it. With it,
-        # the loader is forced to allocate at least prompt+headroom; if
-        # the model can't physically fit that ctx, the load OOMs and the
-        # dispatcher's retry path picks a different model.
-        prompt_tokens = self._estimate_prompt_tokens(messages)
-        # Headroom: generation buffer + 20% slack on the estimate itself
-        # (char/3 tokenization heuristic still misses by a few percent on
-        # code/JSON-heavy content).
-        ctx_headroom = max(2048, kwargs.get("estimated_output_tokens", 0) or 2048)
-        required_ctx = int(prompt_tokens * 1.2) + ctx_headroom
-
-        # Load local model if needed
+        # Load local model if needed. Previously tried to pass a
+        # prompt-derived required_ctx here (commit adb3d7c) — on an 8 GB
+        # GPU that bumped context_length high enough to OOM the compute
+        # buffer at warmup, regressing a working setup. Revert to letting
+        # local_model_manager.ensure_model compute ctx from LIVE VRAM.
+        # Prompts that exceed the allocated ctx get truncated by
+        # llama-server — less catastrophic than every load failing. If
+        # truncation becomes a real problem, address it with smarter
+        # message-history pruning at the agent layer (drop oldest
+        # tool results) rather than forcing VRAM blowups.
         if model.is_local and getattr(model, "location", "") != "ollama":
             is_thinking = model.thinking_model and needs_thinking
             ok, swap_happened = await self._ensure_local_model(
                 model, needs_thinking=is_thinking,
                 load_timeout=pick.estimated_load_seconds or 0.0,
-                estimated_context=required_ctx,
             )
             if swap_happened:
                 import nerd_herd as _nerd_herd

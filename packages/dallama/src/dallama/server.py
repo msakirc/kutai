@@ -61,14 +61,8 @@ class ServerProcess:
             "--flash-attn", "auto",
             "--parallel", "1",
             "--metrics",
-            # ubatch-size dominates the "compute buffer" allocation. At 512
-            # it's ~493 MiB for a 9B model — combined with weights + KV on an
-            # 8 GB GPU the compute buffer OOMs during warmup (observed
-            # 2026-04-23: 501 MiB cudaMalloc failed). 256 halves the compute
-            # buffer with ~15% slower prefill — acceptable tradeoff on
-            # tight GPUs.
-            "--batch-size", "1024",
-            "--ubatch-size", "256",
+            "--batch-size", "2048",
+            "--ubatch-size", "512",
         ]
 
         # Threads

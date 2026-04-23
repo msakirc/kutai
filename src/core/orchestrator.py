@@ -130,6 +130,15 @@ class Orchestrator:
         except Exception:
             pass
 
+        # Release the dispatcher's per-task in-flight slot so admission sees
+        # the lane as free. Safe to call even for mechanical tasks that
+        # never entered dispatcher — release_task is a no-op on absent slots.
+        try:
+            from src.core.llm_dispatcher import release_task as _dispatcher_release_task
+            await _dispatcher_release_task(task_id)
+        except Exception as e:
+            logger.debug("dispatcher.release_task raised #%s: %s", task_id, e)
+
     # ─── Main Loop ───────────────────────────────────────────────────────
 
     async def run_loop(self):

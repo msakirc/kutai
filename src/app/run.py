@@ -469,6 +469,17 @@ async def main():
 
     _set_nerd_herd_default(_nerd_herd)
 
+    # Clear any stale in-flight entries from a prior orchestrator process.
+    # Sidecar outlives the main app on crash; stale task slots would block
+    # admission permanently because nobody else removes them. Fresh start
+    # means fresh list.
+    if _nerd_herd is not None:
+        try:
+            await _nerd_herd.push_in_flight([])
+            _log.info("Cleared sidecar in-flight registry")
+        except Exception as exc:
+            _log.debug("Could not clear sidecar in-flight on startup", error=str(exc))
+
     # Wire NerdHerd client into LocalModelManager so _on_ready can push state
     try:
         from src.models.local_model_manager import get_local_manager

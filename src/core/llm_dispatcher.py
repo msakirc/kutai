@@ -35,10 +35,18 @@ logger = get_logger("core.llm_dispatcher")
 
 
 # ─── In-flight registry ──────────────────────────────────────────────────────
-# Dispatcher is the sole producer of in-flight call state. Every begin/end
-# pushes the full list to nerd_herd via sync await. The sidecar's snapshot
-# is the consumer path for Beckman admission + Hoca scoring.
-_in_flight: dict[str, "_InFlightEntry"] = {}
+# Dispatcher is the sole producer of in-flight call state. Two scopes:
+#   _task_slots     — keyed by task_id. Entry persists across ReAct iteration
+#                     gaps so admission sees the task as holding a slot until
+#                     the task fully ends. Orchestrator calls release_task()
+#                     when _dispatch returns.
+#   _call_entries   — keyed by uuid call_id. For standalone calls without a
+#                     task_id (classifier, grader without task context).
+#                     Per-call add/remove, bounded by the call lifetime.
+#
+# push_in_flight posts the union of both stores to nerd_herd.
+_task_slots: dict[int, "_InFlightEntry"] = {}
+_call_entries: dict[str, "_InFlightEntry"] = {}
 
 
 class _InFlightEntry:
@@ -56,7 +64,7 @@ class _InFlightEntry:
 
 def in_flight_snapshot() -> list:
     """Return the current in-flight call list. Used by telemetry, not admission."""
-    return list(_in_flight.values())
+    return list(_task_slots.values()) + list(_call_entries.values())
 
 
 async def _push_in_flight() -> None:
@@ -74,7 +82,7 @@ async def _push_in_flight() -> None:
                 is_local=e.is_local,
                 started_at=e.started_at,
             )
-            for e in _in_flight.values()
+            for e in list(_task_slots.values()) + list(_call_entries.values())
         ]
         await nerd_herd.push_in_flight(payload)
     except Exception as e:
@@ -82,24 +90,60 @@ async def _push_in_flight() -> None:
 
 
 async def _begin_call(category: str, model_name: str, provider: str, is_local: bool, task_id: int | None) -> str:
-    """Register a new in-flight call. Returns call_id for _end_call pairing."""
-    call_id = str(uuid.uuid4())
-    _in_flight[call_id] = _InFlightEntry(
-        call_id=call_id,
-        task_id=task_id,
-        category=category,
-        model=model_name,
-        provider=provider,
-        is_local=is_local,
-        started_at=time.time(),
-    )
+    """Register an in-flight call. Returns call_id for _end_call pairing.
+
+    Task-associated calls UPSERT a per-task slot (call_id = f"task-{task_id}")
+    that persists across ReAct iteration gaps. Each call within the task
+    overwrites the same slot with the current model/provider so mid-task
+    model changes (retry, swap) are reflected accurately. Slot lifetime is
+    the task lifetime — orchestrator.release_task() clears it.
+
+    Standalone calls (task_id is None) get a fresh uuid entry paired with
+    _end_call on the call's finally clause.
+    """
+    if task_id is not None:
+        call_id = f"task-{task_id}"
+        _task_slots[task_id] = _InFlightEntry(
+            call_id=call_id,
+            task_id=task_id,
+            category=category,
+            model=model_name,
+            provider=provider,
+            is_local=is_local,
+            started_at=time.time(),
+        )
+    else:
+        call_id = str(uuid.uuid4())
+        _call_entries[call_id] = _InFlightEntry(
+            call_id=call_id,
+            task_id=None,
+            category=category,
+            model=model_name,
+            provider=provider,
+            is_local=is_local,
+            started_at=time.time(),
+        )
     await _push_in_flight()
     return call_id
 
 
 async def _end_call(call_id: str) -> None:
-    """Remove an in-flight call. Idempotent on missing keys."""
-    if _in_flight.pop(call_id, None) is not None:
+    """Remove a standalone in-flight entry. Task-scoped slots are preserved
+    for the task's lifetime — use release_task() to clear them.
+    """
+    # Task-slot call_ids are prefixed "task-" — preserve across iteration gaps.
+    if call_id.startswith("task-"):
+        return
+    if _call_entries.pop(call_id, None) is not None:
+        await _push_in_flight()
+
+
+async def release_task(task_id: int) -> None:
+    """Remove the per-task slot. Called by orchestrator when _dispatch finishes.
+
+    Safe to call multiple times — no-op when the slot is absent.
+    """
+    if _task_slots.pop(task_id, None) is not None:
         await _push_in_flight()
 
 
@@ -219,58 +263,15 @@ class LLMDispatcher:
 
         model = pick.model
 
-        # Load local model if needed. Previously tried to pass a
-        # prompt-derived required_ctx here (commit adb3d7c) — on an 8 GB
-        # GPU that bumped context_length high enough to OOM the compute
-        # buffer at warmup, regressing a working setup. Revert to letting
-        # local_model_manager.ensure_model compute ctx from LIVE VRAM.
-        # Prompts that exceed the allocated ctx get truncated by
-        # llama-server — less catastrophic than every load failing. If
-        # truncation becomes a real problem, address it with smarter
-        # message-history pruning at the agent layer (drop oldest
-        # tool results) rather than forcing VRAM blowups.
-        if model.is_local and getattr(model, "location", "") != "ollama":
-            is_thinking = model.thinking_model and needs_thinking
-            ok, swap_happened = await self._ensure_local_model(
-                model, needs_thinking=is_thinking,
-                load_timeout=pick.estimated_load_seconds or 0.0,
-            )
-            if swap_happened:
-                import nerd_herd as _nerd_herd
-                _nerd_herd.record_swap(model.name)
-            if not ok:
-                task_desc = task or agent_type or category.value
-                if is_overhead:
-                    raise RuntimeError(
-                        f"OVERHEAD call failed: local model load failed. "
-                        f"Task: {task_desc}"
-                    )
-                raise ModelCallFailed(
-                    call_id=task_desc,
-                    last_error=f"Failed to load local model {model.name}",
-                    error_category="loading",
-                )
-
-        _messages = self._prepare_messages(messages, model)
-        # Per-call hard cap: cost-runaway protection for cloud only. Local
-        # has no wall-clock cap — stream-inactivity watchdog inside
-        # hallederiz_kadir handles hung-call detection. The earlier
-        # min_time-as-timeout coupling was wrong: min_time is a scoring
-        # estimate, not a kill threshold.
-        timeout = 600.0 if not model.is_local else 0.0  # 0 = no outer cap
-
-        # Heartbeat the orchestrator's no-progress watchdog at call entry.
-        # task_id flows via contextvar, no plumbing needed.
-        try:
-            from src.core import heartbeat as _hb
-            _hb.bump()
-        except Exception:
-            pass
-
-        # Read task_id from the heartbeat contextvar (same propagation path
-        # the orchestrator already uses). Dispatcher is sole producer of
-        # in-flight state — pushes to nerd_herd so Beckman admission and
-        # Hoca scoring have a live view.
+        # Register in-flight BEFORE swap + any other awaits.
+        # Rationale: swap can take 10-30s. Without early registration, the
+        # next Beckman tick (~3s cadence) reads an empty in-flight list
+        # and admits a second local task onto a GPU that's mid-swap.
+        # Registering here also means retry recursion updates the list to
+        # whatever new model Hoca picks, so mid-task model switches stay
+        # accurate. task_id flows via the heartbeat contextvar; the
+        # finally-block at the end of the call removes the entry along
+        # every exit path (load failure, call failure, success).
         _active_task_id = None
         try:
             from src.core.heartbeat import current_task_id as _ctid
@@ -286,6 +287,54 @@ class LLMDispatcher:
             task_id=_active_task_id,
         )
         try:
+            # Load local model if needed. Previously tried to pass a
+            # prompt-derived required_ctx here (commit adb3d7c) — on an 8 GB
+            # GPU that bumped context_length high enough to OOM the compute
+            # buffer at warmup, regressing a working setup. Revert to letting
+            # local_model_manager.ensure_model compute ctx from LIVE VRAM.
+            # Prompts that exceed the allocated ctx get truncated by
+            # llama-server — less catastrophic than every load failing. If
+            # truncation becomes a real problem, address it with smarter
+            # message-history pruning at the agent layer (drop oldest
+            # tool results) rather than forcing VRAM blowups.
+            if model.is_local and getattr(model, "location", "") != "ollama":
+                is_thinking = model.thinking_model and needs_thinking
+                ok, swap_happened = await self._ensure_local_model(
+                    model, needs_thinking=is_thinking,
+                    load_timeout=pick.estimated_load_seconds or 0.0,
+                )
+                if swap_happened:
+                    import nerd_herd as _nerd_herd
+                    _nerd_herd.record_swap(model.name)
+                if not ok:
+                    task_desc = task or agent_type or category.value
+                    if is_overhead:
+                        raise RuntimeError(
+                            f"OVERHEAD call failed: local model load failed. "
+                            f"Task: {task_desc}"
+                        )
+                    raise ModelCallFailed(
+                        call_id=task_desc,
+                        last_error=f"Failed to load local model {model.name}",
+                        error_category="loading",
+                    )
+
+            _messages = self._prepare_messages(messages, model)
+            # Per-call hard cap: cost-runaway protection for cloud only. Local
+            # has no wall-clock cap — stream-inactivity watchdog inside
+            # hallederiz_kadir handles hung-call detection. The earlier
+            # min_time-as-timeout coupling was wrong: min_time is a scoring
+            # estimate, not a kill threshold.
+            timeout = 600.0 if not model.is_local else 0.0  # 0 = no outer cap
+
+            # Heartbeat the orchestrator's no-progress watchdog at call entry.
+            # task_id flows via contextvar, no plumbing needed.
+            try:
+                from src.core import heartbeat as _hb
+                _hb.bump()
+            except Exception:
+                pass
+
             try:
                 result = await hallederiz_kadir.call(
                     model=model,

@@ -215,11 +215,13 @@ class SystemSnapshot:
         # Authoritative in-flight signal from dispatcher push — llama-server
         # runs --parallel 1, so any in-flight local call blocks admission of
         # a second. Hard reject via most-negative pressure.
+        #
+        # Dispatcher's in_flight_calls is the sole source of truth for "is
+        # someone running on local". llama-server's /metrics requests_processing
+        # was consulted previously as a fallback, but it can get stuck at >0
+        # across orchestrator crashes (phantom HTTP connection on llama-server's
+        # side) and permanently block admission. Trust the in-process registry.
         if any(c.is_local for c in self.in_flight_calls):
-            return -1.0
-        # Legacy fallback: llama-server /metrics poll (5s lag). Kept for the
-        # case where dispatcher push hasn't reached the sidecar yet.
-        if self.local.requests_processing > 0:
             return -1.0
         idle = self.local.idle_seconds or 0.0
         if idle <= 0:

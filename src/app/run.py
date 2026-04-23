@@ -480,6 +480,27 @@ async def main():
         except Exception as exc:
             _log.debug("Could not clear sidecar in-flight on startup", error=str(exc))
 
+    # Pre-warm the sentence-transformers embedding model on a background
+    # thread. First-use load is ~5-10s on CPU; paying it up-front means the
+    # first agent's RAG retrieval doesn't stall the admission pipeline (the
+    # gap between Beckman admit and the dispatch coroutine's first LLM call
+    # was observed at 20s+ on cold start, giving Beckman's next tick an
+    # empty in-flight snapshot and letting a second local task slip through).
+    try:
+        import asyncio as _asyncio
+        async def _prewarm_embeddings() -> None:
+            import time as _t
+            _t0 = _t.time()
+            try:
+                from src.memory.embeddings import get_embedding
+                await get_embedding("warmup", is_query=True)
+                _log.info("Embedding model pre-warmed", seconds=f"{_t.time() - _t0:.2f}")
+            except Exception as exc:
+                _log.debug("Embedding pre-warm failed", error=str(exc))
+        _asyncio.create_task(_prewarm_embeddings(), name="embedding_prewarm")
+    except Exception as exc:
+        _log.debug("Could not schedule embedding pre-warm", error=str(exc))
+
     # Wire NerdHerd client into LocalModelManager so _on_ready can push state
     try:
         from src.models.local_model_manager import get_local_manager

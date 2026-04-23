@@ -142,6 +142,30 @@ def route_result(task: dict, agent_result: dict | None) -> list[Action]:
         )
         if not isinstance(question_text, str):
             question_text = str(question_text)
+        question_text = question_text.strip()
+        # Heuristic quality gate — the triggers_clarification path in
+        # post_execute_workflow_step already runs dogru_mu_samet; agents
+        # that self-declare needs_clarification bypassed it. Reject
+        # degenerate text (empty, low-entropy, repetitive) as a Failed
+        # so the retry path kicks in instead of shipping garbage to the
+        # user via mechanical clarify.
+        if not question_text:
+            return [Failed(
+                task_id=task_id,
+                error="needs_clarification with empty question/clarification",
+                raw=raw,
+            )]
+        try:
+            from dogru_mu_samet import assess as _cq_assess
+            _cq = _cq_assess(question_text)
+            if _cq.is_degenerate:
+                return [Failed(
+                    task_id=task_id,
+                    error=f"clarification rejected: {_cq.summary}",
+                    raw=raw,
+                )]
+        except Exception:
+            pass
         return [RequestClarification(
             task_id=task_id,
             question=question_text,

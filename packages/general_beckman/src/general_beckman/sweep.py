@@ -51,21 +51,32 @@ async def sweep_queue() -> None:
            AND started_at < datetime('now', '-5 minutes')"""
     )
     stuck = [dict(row) for row in await cursor.fetchall()]
+    from general_beckman.apply import _dlq_write
     for task in stuck:
         infra_resets = (task.get("infra_resets") or 0) + 1
         if infra_resets >= 3:
             logger.warning(
                 f"[Sweep] Task #{task['id']} stuck in processing "
                 f"and exhausted infra resets ({infra_resets}/3), "
-                f"marking failed"
+                f"routing to DLQ"
             )
             await db.execute(
-                "UPDATE tasks SET status = 'failed', "
-                "error = 'Stuck in processing — infra resets exhausted (sweep)', "
-                "failed_in_phase = 'infrastructure', "
-                "infra_resets = ? "
-                "WHERE id = ?",
+                "UPDATE tasks SET infra_resets = ? WHERE id = ?",
                 (infra_resets, task["id"])
+            )
+            await db.commit()
+            # Route to DLQ so the user sees + can /dlq retry, and
+            # dependents get the cascade-reset when retry runs.
+            # Silent status=failed was the hole that let mission 46
+            # freeze with 2 stuck tasks hidden from /dlq.
+            fresh = dict(task)
+            fresh["infra_resets"] = infra_resets
+            fresh["failed_in_phase"] = "infrastructure"
+            await _dlq_write(
+                fresh,
+                error="Stuck in processing — infra resets exhausted (sweep)",
+                category="infrastructure",
+                attempts=int(task.get("worker_attempts") or 0),
             )
         else:
             logger.warning(
@@ -181,13 +192,15 @@ async def sweep_queue() -> None:
                 continue  # dep is in DLQ, don't cascade yet
 
             logger.warning(
-                f"[Sweep] Task #{task['id']} all deps failed, cascading failure"
+                f"[Sweep] Task #{task['id']} all deps failed, routing to DLQ"
             )
-            await db.execute(
-                "UPDATE tasks SET status = 'failed', "
-                "error = 'All dependencies failed', failed_in_phase = 'worker' "
-                "WHERE id = ?",
-                (task["id"],)
+            task_for_dlq = dict(task)
+            task_for_dlq["failed_in_phase"] = "worker"
+            await _dlq_write(
+                task_for_dlq,
+                error="All dependencies failed",
+                category="dependency",
+                attempts=int(task.get("worker_attempts") or 0),
             )
     if blocked:
         await db.commit()
@@ -217,12 +230,14 @@ async def sweep_queue() -> None:
                     (db_now(), task["id"]),
                 )
             else:
-                logger.warning(f"[Sweep] Task #{task['id']} all subtasks failed, marking failed")
-                await db.execute(
-                    "UPDATE tasks SET status = 'failed', "
-                    "error = 'All subtasks failed', failed_in_phase = 'worker' "
-                    "WHERE id = ?",
-                    (task["id"],)
+                logger.warning(f"[Sweep] Task #{task['id']} all subtasks failed, routing to DLQ")
+                task_for_dlq = dict(task)
+                task_for_dlq["failed_in_phase"] = "worker"
+                await _dlq_write(
+                    task_for_dlq,
+                    error="All subtasks failed",
+                    category="subtasks",
+                    attempts=int(task.get("worker_attempts") or 0),
                 )
     if waiting:
         await db.commit()

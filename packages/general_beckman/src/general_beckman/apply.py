@@ -113,11 +113,16 @@ async def _apply_clarify(task: dict, a: RequestClarification) -> None:
             "clarify skipped: agent returned needs_clarification without a "
             "question (task_id=%s)", a.task_id,
         )
-        await update_task(
-            a.task_id, status="failed",
-            error="agent signalled needs_clarification with empty question",
-            error_category="quality",
-        )
+        # Route to DLQ instead of silent fail so user can see + /retry.
+        from src.infra.db import get_task as _get
+        src = await _get(a.task_id)
+        if src:
+            await _dlq_write(
+                dict(src, failed_in_phase="worker"),
+                error="agent signalled needs_clarification with empty question",
+                category="quality",
+                attempts=int(src.get("worker_attempts") or 0),
+            )
         return
     await update_task(a.task_id, status="waiting_human")
     await add_task(

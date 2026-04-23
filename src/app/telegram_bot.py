@@ -406,30 +406,24 @@ class TelegramInterface:
                         break  # Only one Q&A queue at a time
                 else:
                     # Single question — re-send the original question
+                    # Single-saved question OR recovered from mechanical
+                    # child. Route through request_clarification so its
+                    # numbered-question splitter (same one used on the
+                    # original send) turns a multi-Q payload back into a
+                    # sequential Q&A queue instead of dumping all five
+                    # onto one screen.
                     clarification_q = ctx.get("_clarification_question", "")
-                    # Fallback: older clarify persisted on the mechanical
-                    # child, not the source. Look there.
                     if not clarification_q:
                         clarification_q = await self._recover_question_from_child(
                             db, task_id,
                         )
-                        if clarification_q:
-                            await self._persist_clarification_state(
-                                task_id, question=clarification_q,
-                            )
                     if clarification_q:
-                        msg = await self.send_notification(
-                            f"\u2753 *Clarification pending — Task #{task_id}*\n"
-                            f"**{title}**\n\n"
-                            f"{clarification_q}\n\n"
-                            f"_Reply to this message or just type your answer._"
+                        await self.request_clarification(
+                            task_id, title, clarification_q,
                         )
-                        if msg:
-                            self._clarification_msg_ids[msg.message_id] = task_id
                         logger.info("Restored clarification state",
                                     task_id=task_id)
                     else:
-                        # No saved question text — just note it's pending
                         logger.info("Found waiting_human task without "
                                     "saved question", task_id=task_id)
                 break  # One clarification at a time

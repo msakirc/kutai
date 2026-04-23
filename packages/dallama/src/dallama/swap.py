@@ -264,8 +264,14 @@ class SwapManager:
         if not tail:
             return False
         t = tail.lower()
+        # Canonical OOM signatures + ggml internal mem-buffer assertion
+        # (triggered by the same underlying cause: allocator couldn't
+        # secure a contiguous block; sometimes surfaces as GGML_ASSERT
+        # instead of cudaMalloc depending on when the failure lands).
         return (
             "cudamalloc failed" in t
             or "out of memory" in t
             or "failed to allocate compute" in t
+            or "mem_buffer != null" in t
+            or "ggml_assert" in t and "mem_buffer" in t
         )

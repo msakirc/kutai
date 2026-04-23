@@ -596,10 +596,27 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
     schema_error = ctx.get("_schema_error")
     if schema_error:
         retry_count = task.get("worker_attempts", 0)
+        # Pull specific missing bits out of the error message so the
+        # reinforcement is concrete, not generic. Small models keep
+        # missing the LAST item in a required-sections list ("Open
+        # Risks" seen repeatedly on idea_brief_compilation) — naming
+        # them explicitly helps.
+        import re as _re
+        missing_hint = ""
+        m = _re.search(r"missing sections?:\s*(\[[^\]]+\]|'[^']+')", schema_error)
+        if m:
+            missing_hint = (
+                f"\n\nYou specifically omitted: {m.group(1)}.\n"
+                f"Add this exactly as a '## <name>' markdown heading "
+                f"with real content beneath it. Do NOT skip or rename."
+            )
         parts.append(
             f"\n\n## IMPORTANT: Previous Output Was Invalid (retry {retry_count})\n"
             f"Your previous output failed validation: **{schema_error}**\n"
-            f"Fix your output to match the required format.\n"
+            f"Fix your output to match the required format. "
+            f"Include EVERY required section — do not truncate the end "
+            f"of the list."
+            f"{missing_hint}\n"
             f"Do NOT re-read files you already wrote — they are shown below."
         )
 

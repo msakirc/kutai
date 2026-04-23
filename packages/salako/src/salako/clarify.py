@@ -53,7 +53,17 @@ async def clarify(task: dict) -> dict:
     question = payload.get("question")
     if not question:
         raise ValueError("clarify payload requires 'question'")
+    # Register the SOURCE (blocked LLM) task with Telegram, not this
+    # mechanical executor row. apply._apply_clarify set the source to
+    # waiting_human and spawned us as its child (parent_task_id=source).
+    # Using task["id"] (mechanical) caused the user's reply to miss its
+    # target: orchestrator overwrote the mechanical row back to
+    # status=completed on return, leaving no waiting_human match for
+    # the reply handler (observed 2026-04-23: user's "C" answer
+    # rerouted to the generic LLM classifier). parent_task_id falls
+    # back to task["id"] when absent — safe for test fixtures that
+    # don't model the full spawn graph.
+    source_id = task.get("parent_task_id") or task["id"]
     tg = get_telegram()
-    await tg.request_clarification(task["id"], task.get("title", ""), question)
-    await update_task(task["id"], status="waiting_human")
-    return {"sent": True, "question": question}
+    await tg.request_clarification(source_id, task.get("title", ""), question)
+    return {"sent": True, "question": question, "source_task_id": source_id}

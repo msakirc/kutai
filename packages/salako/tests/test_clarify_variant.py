@@ -92,10 +92,9 @@ async def test_clarify_non_variant_still_works():
         },
     }
     fake_tg = AsyncMock()
-    with patch("salako.clarify.get_telegram", return_value=fake_tg), \
-         patch("salako.clarify.update_task", new=AsyncMock()) as ut:
+    with patch("salako.clarify.get_telegram", return_value=fake_tg):
         from salako import run
         action = await run(task)
     assert action.status == "completed"
+    # No parent_task_id on this fixture — falls back to task["id"] (42).
     fake_tg.request_clarification.assert_awaited_once_with(42, "Book a flight", "Which city?")
-    ut.assert_awaited_once()

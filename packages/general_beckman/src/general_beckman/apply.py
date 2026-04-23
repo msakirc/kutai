@@ -101,16 +101,34 @@ async def _apply_subtasks(task: dict, a: SpawnSubtasks) -> None:
 
 async def _apply_clarify(task: dict, a: RequestClarification) -> None:
     from src.infra.db import add_task, update_task
+    # Model sometimes signals needs_clarification without a usable
+    # question (returned empty string or missing field). Spawning a
+    # clarify task with empty payload DLQs the whole step, confusing
+    # the user. Treat empty-question as a soft failure: mark the
+    # source failed with a clear reason so the retry/DLQ path can
+    # react, and do not create an orphan clarify task.
+    question = (a.question or "").strip()
+    if not question:
+        logger.warning(
+            "clarify skipped: agent returned needs_clarification without a "
+            "question (task_id=%s)", a.task_id,
+        )
+        await update_task(
+            a.task_id, status="failed",
+            error="agent signalled needs_clarification with empty question",
+            error_category="quality",
+        )
+        return
     await update_task(a.task_id, status="waiting_human")
     await add_task(
         title=f"Clarify: {task.get('title','')[:40]}",
-        description=a.question,
+        description=question,
         mission_id=task.get("mission_id"),
         parent_task_id=a.task_id,
         agent_type="mechanical",
         context=_mechanical_context(
             "clarify",
-            question=a.question,
+            question=question,
             chat_id=a.chat_id,
         ),
         depends_on=[],

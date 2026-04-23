@@ -407,6 +407,16 @@ class TelegramInterface:
                 else:
                     # Single question — re-send the original question
                     clarification_q = ctx.get("_clarification_question", "")
+                    # Fallback: older clarify persisted on the mechanical
+                    # child, not the source. Look there.
+                    if not clarification_q:
+                        clarification_q = await self._recover_question_from_child(
+                            db, task_id,
+                        )
+                        if clarification_q:
+                            await self._persist_clarification_state(
+                                task_id, question=clarification_q,
+                            )
                     if clarification_q:
                         msg = await self.send_notification(
                             f"\u2753 *Clarification pending — Task #{task_id}*\n"
@@ -5691,6 +5701,42 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         )
         if msg:
             self._clarification_msg_ids[msg.message_id] = q["task_id"]
+
+
+    async def _recover_question_from_child(self, db, source_task_id: int) -> str:
+        """Pull the clarify question from a mechanical child task's payload.
+
+        Used by the restore path when the source task's context has no
+        saved clarification text. Older clarify executors persisted the
+        question on the mechanical child rather than the source.
+        """
+        import json as _json
+        try:
+            cur = await db.execute(
+                """SELECT context FROM tasks
+                   WHERE parent_task_id = ?
+                     AND agent_type = 'mechanical'
+                   ORDER BY id DESC LIMIT 3""",
+                (source_task_id,),
+            )
+            rows = await cur.fetchall()
+        except Exception:
+            return ""
+        for row in rows or []:
+            raw_ctx = row[0] if isinstance(row, (tuple, list)) else row.get("context")
+            if not raw_ctx:
+                continue
+            try:
+                ctx = _json.loads(raw_ctx)
+            except (ValueError, TypeError):
+                continue
+            payload = (ctx or {}).get("payload") or {}
+            if payload.get("action") != "clarify":
+                continue
+            q = payload.get("question") or ""
+            if isinstance(q, str) and q.strip():
+                return q
+        return ""
 
     async def _persist_clarification_state(
         self, task_id: int, *,

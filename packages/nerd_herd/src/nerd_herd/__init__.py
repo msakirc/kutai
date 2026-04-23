@@ -7,6 +7,7 @@ from nerd_herd.types import (
     SystemState,
     ExternalGPUUsage,
     HealthStatus,
+    InFlightCall,
     RateLimit,
     RateLimits,
     CloudModelState,
@@ -32,6 +33,7 @@ __all__ = [
     "SystemState",
     "ExternalGPUUsage",
     "HealthStatus",
+    "InFlightCall",
     "RateLimit",
     "RateLimits",
     "CloudModelState",
@@ -49,6 +51,9 @@ __all__ = [
     "SwapBudget",
     "record_swap",
     "push_queue_profile",
+    "push_in_flight",
+    "snapshot",
+    "refresh_snapshot",
     "QueueProfile",
 ]
 
@@ -71,3 +76,42 @@ def record_swap(model_name: str = "") -> None:
 def push_queue_profile(profile: QueueProfile) -> None:
     """Store the latest queue profile. Called by Beckman on queue-change events."""
     _get_singleton().push_queue_profile(profile)
+
+
+def snapshot() -> SystemSnapshot:
+    """Module-level snapshot access — returns the NerdHerdClient's cached snapshot.
+
+    Used by Fatih Hoca (sync). Falls back to an empty SystemSnapshot if
+    the orchestrator hasn't wired a NerdHerdClient yet.
+    """
+    from nerd_herd.client import get_default
+    client = get_default()
+    if client is None:
+        return SystemSnapshot()
+    return client.snapshot()
+
+
+async def refresh_snapshot() -> SystemSnapshot:
+    """Fetch a fresh SystemSnapshot from the sidecar and return it.
+
+    Beckman awaits this per admission candidate so in-flight pushes from
+    just-admitted tasks are reflected before the next pressure_for() call.
+    """
+    from nerd_herd.client import get_default
+    client = get_default()
+    if client is None:
+        return SystemSnapshot()
+    return await client.refresh_snapshot()
+
+
+async def push_in_flight(calls: list[InFlightCall]) -> None:
+    """Push the current in-flight call list to the NerdHerd sidecar.
+
+    Called by the LLM dispatcher on every begin/end. Full-list replacement.
+    No-op if the orchestrator hasn't wired a NerdHerdClient yet.
+    """
+    from nerd_herd.client import get_default
+    client = get_default()
+    if client is None:
+        return
+    await client.push_in_flight(calls)

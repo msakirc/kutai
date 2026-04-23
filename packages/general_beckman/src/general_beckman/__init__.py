@@ -24,22 +24,6 @@ def _capacity_snapshot():
         return None
 
 
-async def _currently_dispatched_count() -> int:
-    """Count tasks currently being processed (status='processing')."""
-    import os
-    import aiosqlite
-    db_path = os.environ.get("DB_PATH", "kutai.db")
-    try:
-        async with aiosqlite.connect(db_path) as db:
-            cur = await db.execute(
-                "SELECT COUNT(*) FROM tasks WHERE status = 'processing'"
-            )
-            row = await cur.fetchone()
-            return int(row[0]) if row else 0
-    except Exception:
-        return 0
-
-
 async def _claim_task(task_id: int) -> bool:
     """Claim a single task by id via the existing DB claim primitive."""
     from src.infra.db import claim_task
@@ -61,20 +45,24 @@ async def next_task():
     from general_beckman.cron import fire_due
     from general_beckman import posthook_migration
 
-    hard_cap = int(os.environ.get("BECKMAN_HARD_CAP", "4"))
     top_k = int(os.environ.get("BECKMAN_TOP_K", "5"))
-
-    # Hard cap first — cheap DB read.
-    if await _currently_dispatched_count() >= hard_cap:
-        return None
 
     await posthook_migration.run()  # one-shot; no-op after first success
     await fire_due()
 
-    # One snapshot per tick.
+    # One fresh snapshot per tick. Admission gates on snapshot.pressure_for(pick.model);
+    # the in-flight list in the snapshot — pushed by the dispatcher — is the
+    # authoritative "what's running right now" signal. No artificial
+    # concurrency cap: local is naturally serial via llama-server --parallel 1
+    # (surfaced as -1.0 local_pressure), cloud is bounded by per-pool
+    # pressure thresholds.
+    #
+    # refresh_snapshot() is awaited (not cached read) because ticks fire back-
+    # to-back in the orchestrator pump and the background 2s refresh loop is
+    # too coarse to catch in-flight pushes that just landed on the sidecar.
     try:
         import nerd_herd
-        snap = nerd_herd.snapshot()
+        snap = await nerd_herd.refresh_snapshot()
     except Exception:
         snap = None
 
@@ -90,6 +78,18 @@ async def next_task():
     for task in candidates:
         agent_type = task.get("agent_type") or ""
         difficulty = task.get("difficulty", 5)
+
+        # Mechanical tasks have no LLM, no Hoca pick, no pressure gate.
+        # Per design: mechanical is unbounded — local-only backpressure
+        # applies only to LLM tasks. Claim and return directly.
+        if agent_type == "mechanical":
+            if not await _claim_task(task["id"]):
+                _log.debug(f"admission: task #{task['id']} (mechanical) claim race lost")
+                continue
+            _log.info(f"admission: task #{task['id']} ADMIT mechanical")
+            task["status"] = "processing"
+            return task
+
         pick = None
         select_err = None
         if fatih_hoca is not None:

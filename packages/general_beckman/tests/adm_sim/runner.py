@@ -105,16 +105,13 @@ async def run_ticks(state: SimState, ticks: int = 50) -> dict:
                 return True
         return False
 
-    async def fake_dispatched_count() -> int:
-        return state.claimed_unfinished()
-
     async def fake_fire_due():
         return None
 
     async def fake_posthook_run():
         return None
 
-    def fake_snapshot():
+    async def fake_snapshot():
         return _build_snapshot(state)
 
     def fake_select(**kwargs):
@@ -130,10 +127,9 @@ async def run_ticks(state: SimState, ticks: int = 50) -> dict:
     for _ in range(ticks):
         with patch("general_beckman.queue.pick_ready_top_k", new=fake_top_k), \
              patch("general_beckman._claim_task", new=fake_claim), \
-             patch("general_beckman._currently_dispatched_count", new=fake_dispatched_count), \
              patch("general_beckman.cron.fire_due", new=fake_fire_due), \
              patch("general_beckman.posthook_migration.run", new=fake_posthook_run), \
-             patch("nerd_herd.snapshot", new=fake_snapshot, create=True), \
+             patch("nerd_herd.refresh_snapshot", new=fake_snapshot, create=True), \
              patch("fatih_hoca.select", side_effect=fake_select, create=True):
             task = await gb.next_task()
         # Simulate instant completion — admission test only; don't pile up

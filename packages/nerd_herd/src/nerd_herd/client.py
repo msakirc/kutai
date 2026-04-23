@@ -13,6 +13,7 @@ import aiohttp
 from nerd_herd.exposition import API_VERSION
 from nerd_herd.types import (
     CloudProviderState,
+    InFlightCall,
     LocalModelState,
     RateLimits,
     SystemSnapshot,
@@ -229,6 +230,28 @@ class NerdHerdClient:
             "requests_processing": requests_processing,
         })
 
+    async def push_in_flight(self, calls: list[InFlightCall]) -> None:
+        """Push the current in-flight call list to the NerdHerd sidecar.
+
+        Full-list replacement. Dispatcher is sole producer; sends the
+        complete snapshot on each begin/end.
+        """
+        payload = {
+            "calls": [
+                {
+                    "call_id": c.call_id,
+                    "task_id": c.task_id,
+                    "category": c.category,
+                    "model": c.model,
+                    "provider": c.provider,
+                    "is_local": c.is_local,
+                    "started_at": c.started_at,
+                }
+                for c in calls
+            ]
+        }
+        await self._post_json("/api/in_flight", payload)
+
     # ------------------------------------------------------------------
     # Snapshot (sync cached + async refresh)
     # ------------------------------------------------------------------
@@ -282,6 +305,7 @@ class NerdHerdClient:
             is_swapping=bool(local_data.get("is_swapping", False)),
             kv_cache_ratio=float(local_data.get("kv_cache_ratio", 0.0)),
             idle_seconds=float(local_data.get("idle_seconds", 0.0)),
+            requests_processing=int(local_data.get("requests_processing", 0)),
         )
 
         cloud: dict[str, CloudProviderState] = {}
@@ -294,10 +318,28 @@ class NerdHerdClient:
                 limits=RateLimits(),
             )
 
+        in_flight_calls: list[InFlightCall] = []
+        for c in (data.get("in_flight_calls") or []):
+            if not isinstance(c, dict):
+                continue
+            try:
+                in_flight_calls.append(InFlightCall(
+                    call_id=str(c.get("call_id", "")),
+                    task_id=c.get("task_id"),
+                    category=str(c.get("category", "")),
+                    model=str(c.get("model", "")),
+                    provider=str(c.get("provider", "")),
+                    is_local=bool(c.get("is_local", False)),
+                    started_at=float(c.get("started_at", 0.0)),
+                ))
+            except Exception:
+                continue
+
         return SystemSnapshot(
             vram_available_mb=int(data.get("vram_available_mb", 0)),
             local=local,
             cloud=cloud,
+            in_flight_calls=in_flight_calls,
         )
 
     async def mark_degraded(self, capability: str) -> None:

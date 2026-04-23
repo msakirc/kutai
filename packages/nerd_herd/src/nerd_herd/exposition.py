@@ -54,6 +54,7 @@ class MetricsServer:
             app.router.add_get("/api/gpu", self._handle_gpu)
             app.router.add_post("/api/degraded", self._handle_degraded)
             app.router.add_post("/api/local_state", self._handle_local_state)
+            app.router.add_post("/api/in_flight", self._handle_in_flight)
             app.router.add_get("/api/snapshot", self._handle_snapshot)
 
         self._runner = web.AppRunner(app)
@@ -152,6 +153,36 @@ class MetricsServer:
         )
         self._nh.push_local_state(state)
         return web.json_response({"ok": True})
+
+    async def _handle_in_flight(self, request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+
+        calls_data = body.get("calls") or []
+        if not isinstance(calls_data, list):
+            return web.json_response({"error": "'calls' must be a list"}, status=400)
+
+        from nerd_herd.types import InFlightCall
+        calls = []
+        for c in calls_data:
+            if not isinstance(c, dict):
+                continue
+            try:
+                calls.append(InFlightCall(
+                    call_id=str(c.get("call_id", "")),
+                    task_id=c.get("task_id"),
+                    category=str(c.get("category", "")),
+                    model=str(c.get("model", "")),
+                    provider=str(c.get("provider", "")),
+                    is_local=bool(c.get("is_local", False)),
+                    started_at=float(c.get("started_at", 0.0)),
+                ))
+            except Exception:
+                continue
+        self._nh.push_in_flight(calls)
+        return web.json_response({"ok": True, "count": len(calls)})
 
     async def _handle_snapshot(self, request: web.Request) -> web.Response:
         snap = self._nh.snapshot()

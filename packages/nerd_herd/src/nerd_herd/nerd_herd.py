@@ -10,7 +10,7 @@ from nerd_herd.health import HealthRegistry
 from nerd_herd.inference import InferenceCollector
 from nerd_herd.exposition import MetricsServer, build_metrics_text
 from nerd_herd.swap_budget import SwapBudget
-from nerd_herd.types import GPUState, HealthStatus, LocalModelState, CloudProviderState, QueueProfile, SystemSnapshot
+from nerd_herd.types import GPUState, HealthStatus, InFlightCall, LocalModelState, CloudProviderState, QueueProfile, SystemSnapshot
 
 
 class NerdHerd:
@@ -52,6 +52,7 @@ class NerdHerd:
         self._local_state: LocalModelState = LocalModelState()
         self._cloud_state: dict[str, CloudProviderState] = {}
         self._queue_profile: QueueProfile | None = None
+        self._in_flight_calls: list[InFlightCall] = []
 
         self._swap_budget = SwapBudget(window_seconds=300)
 
@@ -128,6 +129,14 @@ class NerdHerd:
         """Store latest queue profile (pushed by Beckman on queue-change events)."""
         self._queue_profile = profile
 
+    def push_in_flight(self, calls: list[InFlightCall]) -> None:
+        """Replace in-flight call list (pushed by dispatcher on begin/end).
+
+        Full-list replacement is intentional: dispatcher is sole producer,
+        atomic swap keeps readers consistent.
+        """
+        self._in_flight_calls = list(calls)
+
     def snapshot(self) -> SystemSnapshot:
         """Return a point-in-time snapshot of all system state.
 
@@ -152,6 +161,7 @@ class NerdHerd:
             local=local,
             cloud=dict(self._cloud_state),
             queue_profile=self._queue_profile,
+            in_flight_calls=list(self._in_flight_calls),
         )
 
     def prometheus_lines(self) -> str:

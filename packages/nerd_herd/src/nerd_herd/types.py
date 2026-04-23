@@ -116,6 +116,17 @@ class LocalModelState:
 
 
 @dataclass
+class InFlightCall:
+    call_id: str
+    task_id: int | None
+    category: str   # "main_work" | "overhead"
+    model: str
+    provider: str
+    is_local: bool
+    started_at: float
+
+
+@dataclass
 class QueueProfile:
     hard_tasks_count: int = 0
     total_ready_count: int = 0
@@ -127,6 +138,7 @@ class SystemSnapshot:
     local: LocalModelState = field(default_factory=LocalModelState)
     cloud: dict[str, CloudProviderState] = field(default_factory=dict)
     queue_profile: QueueProfile | None = None
+    in_flight_calls: list[InFlightCall] = field(default_factory=list)
 
     def pressure_for(self, model) -> float:
         if getattr(model, "is_local", False):
@@ -147,10 +159,17 @@ class SystemSnapshot:
                 exhausted_neutral=False,
             )
         provider = getattr(model, "provider", "")
+        model_id = getattr(model, "name", "")
+        # Cloud in-flight count is authored by dispatcher via push_in_flight.
+        # rpd.in_flight (pushed by KDV) is no longer consulted for pressure —
+        # the InFlightCall list is the single source of truth for "running now".
+        in_flight_n = sum(
+            1 for c in self.in_flight_calls
+            if not c.is_local and c.provider == provider and c.model == model_id
+        )
         prov = self.cloud.get(provider)
         if prov is None:
             return 0.0
-        model_id = getattr(model, "name", "")
         m = prov.models.get(model_id)
         if m is None:
             if prov.limits.rpd.limit:
@@ -158,17 +177,17 @@ class SystemSnapshot:
                     remaining=prov.limits.rpd.remaining,
                     limit=prov.limits.rpd.limit,
                     reset_at=prov.limits.rpd.reset_at,
-                    in_flight_count=prov.limits.rpd.in_flight,
+                    in_flight_count=in_flight_n,
                     **kwargs,
                 ).value
             return 0.0
-        # Per-snapshot memoization keyed on rpd fields AND the pool-profile
-        # kwargs (value depends on both).
+        # Per-snapshot memoization keyed on rpd fields + in-flight count +
+        # pool-profile kwargs (value depends on all).
         key = (
             m.limits.rpd.remaining,
             m.limits.rpd.limit,
             m.limits.rpd.reset_at,
-            m.limits.rpd.in_flight,
+            in_flight_n,
             kwargs["depletion_threshold"],
             kwargs["depletion_max"],
             kwargs["abundance_mode"],
@@ -180,7 +199,7 @@ class SystemSnapshot:
                 remaining=m.limits.rpd.remaining,
                 limit=m.limits.rpd.limit,
                 reset_at=m.limits.rpd.reset_at,
-                in_flight_count=m.limits.rpd.in_flight,
+                in_flight_count=in_flight_n,
                 **kwargs,
             )
             object.__setattr__(pp, "_key", key)
@@ -193,13 +212,15 @@ class SystemSnapshot:
             return 0.0
         if self.local.is_swapping:
             return -0.5
-        # requests_processing > 0 means a call is actually in-flight —
-        # mild conservation so the admission loop doesn't pile tasks on
-        # a busy local. When idle_seconds == 0 AND requests_processing
-        # == 0, the local is freshly loaded and hasn't run yet — return
-        # neutral so admission isn't chicken-and-egged.
+        # Authoritative in-flight signal from dispatcher push — llama-server
+        # runs --parallel 1, so any in-flight local call blocks admission of
+        # a second. Hard reject via most-negative pressure.
+        if any(c.is_local for c in self.in_flight_calls):
+            return -1.0
+        # Legacy fallback: llama-server /metrics poll (5s lag). Kept for the
+        # case where dispatcher push hasn't reached the sidecar yet.
         if self.local.requests_processing > 0:
-            return -0.1
+            return -1.0
         idle = self.local.idle_seconds or 0.0
         if idle <= 0:
             return 0.0

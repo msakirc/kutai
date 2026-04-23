@@ -24,14 +24,83 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import time
+import uuid
 from enum import Enum
 from typing import Any
-
-import kuleden_donen_var
 
 from src.infra.logging_config import get_logger
 
 logger = get_logger("core.llm_dispatcher")
+
+
+# ─── In-flight registry ──────────────────────────────────────────────────────
+# Dispatcher is the sole producer of in-flight call state. Every begin/end
+# pushes the full list to nerd_herd via sync await. The sidecar's snapshot
+# is the consumer path for Beckman admission + Hoca scoring.
+_in_flight: dict[str, "_InFlightEntry"] = {}
+
+
+class _InFlightEntry:
+    __slots__ = ("call_id", "task_id", "category", "model", "provider", "is_local", "started_at")
+
+    def __init__(self, call_id, task_id, category, model, provider, is_local, started_at):
+        self.call_id = call_id
+        self.task_id = task_id
+        self.category = category
+        self.model = model
+        self.provider = provider
+        self.is_local = is_local
+        self.started_at = started_at
+
+
+def in_flight_snapshot() -> list:
+    """Return the current in-flight call list. Used by telemetry, not admission."""
+    return list(_in_flight.values())
+
+
+async def _push_in_flight() -> None:
+    """Push the full in-flight list to nerd_herd. Best-effort; swallows errors."""
+    try:
+        import nerd_herd
+        from nerd_herd.types import InFlightCall
+        payload = [
+            InFlightCall(
+                call_id=e.call_id,
+                task_id=e.task_id,
+                category=e.category,
+                model=e.model,
+                provider=e.provider,
+                is_local=e.is_local,
+                started_at=e.started_at,
+            )
+            for e in _in_flight.values()
+        ]
+        await nerd_herd.push_in_flight(payload)
+    except Exception as e:
+        logger.debug("push_in_flight failed: %s", e)
+
+
+async def _begin_call(category: str, model_name: str, provider: str, is_local: bool, task_id: int | None) -> str:
+    """Register a new in-flight call. Returns call_id for _end_call pairing."""
+    call_id = str(uuid.uuid4())
+    _in_flight[call_id] = _InFlightEntry(
+        call_id=call_id,
+        task_id=task_id,
+        category=category,
+        model=model_name,
+        provider=provider,
+        is_local=is_local,
+        started_at=time.time(),
+    )
+    await _push_in_flight()
+    return call_id
+
+
+async def _end_call(call_id: str) -> None:
+    """Remove an in-flight call. Idempotent on missing keys."""
+    if _in_flight.pop(call_id, None) is not None:
+        await _push_in_flight()
 
 
 # ─── Call Categories ─────────────────────────────────────────────────────────
@@ -198,9 +267,24 @@ class LLMDispatcher:
         except Exception:
             pass
 
-        _kdv_handle = None
-        if not model.is_local:
-            _kdv_handle = kuleden_donen_var.begin_call(model.provider, model.name)
+        # Read task_id from the heartbeat contextvar (same propagation path
+        # the orchestrator already uses). Dispatcher is sole producer of
+        # in-flight state — pushes to nerd_herd so Beckman admission and
+        # Hoca scoring have a live view.
+        _active_task_id = None
+        try:
+            from src.core.heartbeat import current_task_id as _ctid
+            _active_task_id = _ctid.get()
+        except Exception:
+            pass
+
+        _call_id = await _begin_call(
+            category=category.value,
+            model_name=model.name,
+            provider=model.provider,
+            is_local=model.is_local,
+            task_id=_active_task_id,
+        )
         try:
             try:
                 result = await hallederiz_kadir.call(
@@ -226,8 +310,7 @@ class LLMDispatcher:
                 )
                 raise
         finally:
-            if _kdv_handle is not None:
-                kuleden_donen_var.end_call(_kdv_handle)
+            await _end_call(_call_id)
 
         if isinstance(result, hallederiz_kadir.CallResult):
             await self._record_pick(

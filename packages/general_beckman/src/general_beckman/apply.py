@@ -190,7 +190,17 @@ async def _apply_mission_advance(task: dict, a: MissionAdvance) -> None:
 
 async def _retry_or_dlq(task: dict, *, category: str, error: str) -> None:
     """Shared retry/DLQ path for Failed and Exhausted."""
-    from src.infra.db import update_task
+    from src.infra.db import get_task as _get_task, update_task
+    # Refetch after post_execute_workflow_step — the hook writes
+    # _schema_error and _prev_output into the DB context so the next
+    # attempt knows what to fix. on_task_finished keeps a snapshot
+    # taken BEFORE the hook, so reading task.context here returns the
+    # stale pre-hook view, and writing it back below would erase the
+    # hook's contributions. Observed mission 46 task 2867: context
+    # reset after each retry, agent had no idea why 0.6 kept failing.
+    fresh = await _get_task(task["id"])
+    if fresh:
+        task = fresh
     attempts = int(task.get("worker_attempts") or 0) + 1
     max_attempts = int(task.get("max_worker_attempts") or 3)
     progress = _parse_progress(task)

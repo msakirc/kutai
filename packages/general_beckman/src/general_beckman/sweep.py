@@ -79,12 +79,13 @@ async def sweep_queue() -> None:
                 attempts=int(task.get("worker_attempts") or 0),
             )
         else:
-            # Exponential backoff: attempt N → N × 60s, capped 15min.
-            # Gives the driver / VRAM / llama-server a real window to
-            # recover before we hammer it again. Without this, sweep
-            # reset → immediate re-admit → re-stuck in seconds, exhaust
-            # infra_resets in one sweep cycle.
-            delay_s = min(15 * 60, infra_resets * 60)
+            # Exponential backoff, matching compute_retry_timing's
+            # availability ladder: 60s × 2^(attempt-1), cap 15min.
+            # Reset #1 = 60s, #2 = 120s, cap at 15min (sweep only
+            # allows 3 resets anyway). Without backoff, sweep →
+            # immediate re-admit → re-stuck → exhausted in one 15-min
+            # sweep-cycle window with no time for driver recovery.
+            delay_s = min(15 * 60, 60 * (2 ** (infra_resets - 1)))
             next_retry = to_db(utc_now() + timedelta(seconds=delay_s))
             logger.warning(
                 f"[Sweep] Task #{task['id']} stuck in processing, "

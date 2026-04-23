@@ -79,14 +79,22 @@ async def sweep_queue() -> None:
                 attempts=int(task.get("worker_attempts") or 0),
             )
         else:
+            # Exponential backoff: attempt N → N × 60s, capped 15min.
+            # Gives the driver / VRAM / llama-server a real window to
+            # recover before we hammer it again. Without this, sweep
+            # reset → immediate re-admit → re-stuck in seconds, exhaust
+            # infra_resets in one sweep cycle.
+            delay_s = min(15 * 60, infra_resets * 60)
+            next_retry = to_db(utc_now() + timedelta(seconds=delay_s))
             logger.warning(
                 f"[Sweep] Task #{task['id']} stuck in processing, "
-                f"infra-reset {infra_resets}/3"
+                f"infra-reset {infra_resets}/3, backoff {delay_s}s"
             )
             await db.execute(
                 "UPDATE tasks SET status = 'pending', "
-                "infra_resets = ?, retry_reason = 'infrastructure' WHERE id = ?",
-                (infra_resets, task["id"])
+                "infra_resets = ?, retry_reason = 'infrastructure', "
+                "next_retry_at = ? WHERE id = ?",
+                (infra_resets, next_retry, task["id"])
             )
     if stuck:
         await db.commit()

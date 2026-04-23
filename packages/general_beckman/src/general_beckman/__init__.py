@@ -262,11 +262,24 @@ async def _send_step_progress(task: dict, status: str, result: dict) -> None:
     """
     if task.get("agent_type") in ("mechanical", "grader", "artifact_summarizer"):
         return
-    if status == "completed":
+    # Always compare the raw agent-reported status against the live DB
+    # status before pinging. The rewrite layer can flip actions between
+    # the two (e.g. RequestClarification → CompleteWithReusedAnswer when
+    # clarification_history exists). If the rewrite resolved it, the DB
+    # row is already "completed" and the needs_clarification ping would
+    # wrongly re-alarm the user.
+    if status in ("completed", "needs_clarification", "failed"):
         from src.infra.db import get_task as _get_task
         live = await _get_task(task["id"])
         live_status = (live or {}).get("status", "")
-        if live_status != "completed":
+        # Silent when DB already shows the step done from a different
+        # path. For "completed" the prior gate rule holds (skip if not
+        # yet completed — grader still running). For
+        # "needs_clarification"/"failed" we silence when the rewrite
+        # short-circuited to completed.
+        if status == "completed" and live_status != "completed":
+            return
+        if status in ("needs_clarification", "failed") and live_status == "completed":
             return
     from src.app.telegram_bot import get_telegram
     tg = get_telegram()

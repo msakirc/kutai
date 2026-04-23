@@ -28,6 +28,11 @@ class ServerConfig:
     thinking: bool = False
     vision_projector: str = ""
     extra_flags: list[str] = field(default_factory=list)
+    # Offload count to use only as a fallback if --fit-based load fails
+    # with a CUDA OOM. First attempt uses llama.cpp's --fit (better in
+    # the benchmark case, esp. for models that don't fully fit VRAM).
+    # Set from fatih_hoca.registry.calculate_gpu_layers at load time.
+    fallback_gpu_layers: int = 0
 
 @dataclass
 class ServerStatus:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import replace
 
 from dallama.config import DaLLaMaConfig, ServerConfig
 
@@ -218,6 +219,30 @@ class SwapManager:
 
         # ── Start server with new config ───────────────────────────────────
         success = await server.start(config, load_timeout=load_timeout)
+
+        # Fallback path: --fit can underbudget compute buffer + CUDA
+        # overhead on tight GPUs (observed 2026-04-23 on 8GB GPU running
+        # 9B models, cudaMalloc 501 MiB fails at sched_reserve). If the
+        # failure signature is OOM and we have a calculated gpu_layers
+        # value, retry once forcing partial offload.
+        if (not success
+                and config.fallback_gpu_layers > 0
+                and self._stderr_shows_oom(server)):
+            logger.warning(
+                "Retrying %s with --n-gpu-layers=%d fallback (OOM signature "
+                "detected from --fit path)",
+                model_name, config.fallback_gpu_layers,
+            )
+            # Clone config with the fallback flag injected.
+            fallback_flags = list(config.extra_flags or [])
+            if "--n-gpu-layers" not in fallback_flags:
+                fallback_flags.extend(["--n-gpu-layers", str(config.fallback_gpu_layers)])
+            retry_config = replace(config, extra_flags=fallback_flags)
+            # Give the driver a moment to fully reclaim VRAM from the
+            # failed process.
+            await asyncio.sleep(3)
+            success = await server.start(retry_config, load_timeout=load_timeout)
+
         if success:
             logger.info(f"Model loaded: {model_name}")
             self._record_success()
@@ -228,3 +253,19 @@ class SwapManager:
             self._notify(None, "load_failed")
 
         return success
+
+    @staticmethod
+    def _stderr_shows_oom(server: object) -> bool:
+        """Check if the last stderr tail contains a cudaMalloc OOM signature."""
+        try:
+            tail = server.read_stderr_tail(60)
+        except Exception:
+            return False
+        if not tail:
+            return False
+        t = tail.lower()
+        return (
+            "cudamalloc failed" in t
+            or "out of memory" in t
+            or "failed to allocate compute" in t
+        )

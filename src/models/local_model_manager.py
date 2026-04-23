@@ -299,12 +299,15 @@ class LocalModelManager:
             )
             context_length = min_context
 
-        # gpu_layers override handling — local var, don't mutate registry
+        # gpu_layers: explicit models.yaml override wins and is forced
+        # on the first attempt; otherwise we let llama-server's --fit
+        # decide layer count, and use our calculated value as a fallback
+        # if --fit path fails with CUDA OOM at warmup (DaLLaMa swap
+        # catches the OOM signature and retries with -ngl set).
         gpu_layers = info.gpu_layers
-        gpu_layers_overridden = False
-        if "gpu_layers" in registry_overrides:
+        gpu_layers_overridden = "gpu_layers" in registry_overrides
+        if gpu_layers_overridden:
             gpu_layers = registry_overrides["gpu_layers"]
-            gpu_layers_overridden = True
 
         # Build ServerConfig
         from dallama import ServerConfig
@@ -312,9 +315,15 @@ class LocalModelManager:
         if hasattr(info, 'extra_server_flags') and info.extra_server_flags:
             extra = list(info.extra_server_flags)
 
-        # Only pass gpu_layers if explicitly overridden
+        # Only pass gpu_layers to the FIRST attempt if explicitly overridden.
         if gpu_layers_overridden and gpu_layers > 0:
             extra.extend(["--n-gpu-layers", str(gpu_layers)])
+
+        # Always thread the calculated value as fallback — swap uses it
+        # on OOM retry even when the first attempt used --fit.
+        fallback_gpu_layers = 0
+        if not gpu_layers_overridden and 0 < gpu_layers < info.total_layers:
+            fallback_gpu_layers = gpu_layers
 
         sc = ServerConfig(
             model_path=info.path,
@@ -323,6 +332,7 @@ class LocalModelManager:
             thinking=enable_thinking if info.thinking_model else False,
             vision_projector=(info.mmproj_path or "") if enable_vision and info.has_vision else "",
             extra_flags=extra,
+            fallback_gpu_layers=fallback_gpu_layers,
         )
 
         # Signal swap in progress

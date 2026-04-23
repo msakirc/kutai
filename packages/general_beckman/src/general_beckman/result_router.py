@@ -123,9 +123,28 @@ def route_result(task: dict, agent_result: dict | None) -> list[Action]:
         return [SpawnSubtasks(parent_task_id=task_id, subtasks=subtasks, raw=raw)]
 
     if status == "needs_clarification":
+        # Agents signal the clarification text via one of several fields
+        # depending on how they got here:
+        #   "question"      — explicit clarify action at parse time
+        #   "clarification" — post_execute_workflow_step (triggers_clarification
+        #                     steps) + base.py needs_clarification override
+        #   "result"        — some agents stuff it into result when returning
+        #                     final_answer that classifies as needs_clarification
+        # Before the Phase 2b extraction, the orchestrator's inline handler
+        # tried all three. Reading only "question" here dropped real
+        # questions into the empty string and DLQ'd the mechanical
+        # clarify task that spawned downstream.
+        question_text = (
+            agent_result.get("question")
+            or agent_result.get("clarification")
+            or agent_result.get("result")
+            or ""
+        )
+        if not isinstance(question_text, str):
+            question_text = str(question_text)
         return [RequestClarification(
             task_id=task_id,
-            question=agent_result.get("question", ""),
+            question=question_text,
             chat_id=task.get("chat_id"),
             raw=raw,
         )]

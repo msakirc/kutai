@@ -184,17 +184,9 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
 
         if schema_type == "object":
             required = rules.get("required_fields", [])
-            # Try JSON first (including JSON embedded in a ```json fence)
-            import re as _re_obj_ext
-            parse_candidate = output_value
-            if isinstance(output_value, str):
-                _fence = _re_obj_ext.search(
-                    r'```(?:json)?\s*\n([\s\S]*?)\n```', output_value,
-                )
-                if _fence:
-                    parse_candidate = _fence.group(1)
+            # Try JSON first
             try:
-                data = json.loads(parse_candidate) if isinstance(parse_candidate, str) else parse_candidate
+                data = json.loads(output_value) if isinstance(output_value, str) else output_value
                 if isinstance(data, dict):
                     # If agent wrapped output in the artifact name, unwrap
                     if artifact_name in data and isinstance(data[artifact_name], dict):
@@ -205,18 +197,6 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
                     continue  # this artifact passed
             except (json.JSONDecodeError, TypeError):
                 pass
-            # Object schema requires a JSON object. Markdown with
-            # matching heading text used to pass via the keyword
-            # fallback below, but downstream consumers couldn't
-            # extract structured data (mission 46 step 2.8 user_stories
-            # DLQ'd 2026-04-24 because mvp_scope was a markdown doc
-            # instead of JSON). Hard-reject non-JSON object outputs.
-            # The keyword fallback remains available only for
-            # non-required declarations on this same artifact path.
-            return False, (
-                f"'{artifact_name}' declared as object schema but output "
-                f"is not JSON (required_fields: {required})"
-            )
             # Fallback: accept text/markdown if required fields appear as keywords
             # Small LLMs often produce structured text, not JSON.
             # Check each word of multi-word fields independently — e.g.

@@ -209,21 +209,18 @@ class SystemSnapshot:
         return cached.value
 
     def _local_pressure(self) -> float:
+        # In-flight check FIRST — a reserved task slot must hard-reject
+        # further local admissions even when no model has been swapped in
+        # yet (admission-time reservations run before the load, so
+        # local.model_name is still None at that instant). Previously the
+        # model_name None short-circuit returned 0.0 unconditionally and
+        # masked the in-flight signal, causing phantom double-admissions.
+        if any(c.is_local for c in self.in_flight_calls):
+            return -1.0
         if self.local is None or self.local.model_name is None:
             return 0.0
         if self.local.is_swapping:
             return -0.5
-        # Authoritative in-flight signal from dispatcher push — llama-server
-        # runs --parallel 1, so any in-flight local call blocks admission of
-        # a second. Hard reject via most-negative pressure.
-        #
-        # Dispatcher's in_flight_calls is the sole source of truth for "is
-        # someone running on local". llama-server's /metrics requests_processing
-        # was consulted previously as a fallback, but it can get stuck at >0
-        # across orchestrator crashes (phantom HTTP connection on llama-server's
-        # side) and permanently block admission. Trust the in-process registry.
-        if any(c.is_local for c in self.in_flight_calls):
-            return -1.0
         idle = self.local.idle_seconds or 0.0
         if idle <= 0:
             return 0.0

@@ -131,6 +131,11 @@ class LLMDispatcher:
         if tools:
             needs_function_calling = True
 
+        # min_context is consumed by _ensure_local_model (below), not by
+        # fatih_hoca.select. Pop so it doesn't leak into the selector's
+        # unknown-kwarg rejection.
+        _min_context_kw = int(kwargs.pop("min_context", 0) or 0)
+
         if preselected_pick is not None and not failures:
             # Iteration 0: reuse Beckman's admission-time Hoca query.
             pick = preselected_pick
@@ -202,7 +207,7 @@ class LLMDispatcher:
                 # floor bumps ctx up to task need — otherwise ctx collapses to
                 # the 4096 safe-minimum on tight VRAM and litellm rejects any
                 # larger prompt with "exceeds the available context size".
-                _min_ctx = int(kwargs.get("min_context", 0) or 0)
+                _min_ctx = _min_context_kw
                 if _min_ctx <= 0:
                     # Legacy/standalone callers without a ModelRequirements
                     # object — derive the same formula reqs.effective_context_needed
@@ -324,6 +329,7 @@ class LLMDispatcher:
             preselected_pick=None,
             needs_thinking=needs_thinking,
             needs_function_calling=needs_function_calling,
+            min_context=_min_context_kw,
             **kwargs,
         )
 

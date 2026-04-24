@@ -1707,7 +1707,7 @@
       "id": "2.7",
       "phase": "phase_2",
       "name": "mvp_scope_definition",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "hard",
       "tools_hint": [],
       "depends_on": [

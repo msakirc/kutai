@@ -122,6 +122,14 @@ def _resolve_workflow_path(workflow_name: str) -> Path:
     )
 
 
+# (path, mtime_ns) -> WorkflowDefinition. Cleared automatically when the
+# underlying file changes. Without this every workflow-step dispatch
+# re-read + re-parsed ~300KB of JSON (i2p_v3 has ~190 steps), hitting
+# the event loop hard enough that Telegram callback queries aged out
+# with "Query is too old" inside a single tick burst.
+_WF_CACHE: dict[tuple[str, int], "WorkflowDefinition"] = {}
+
+
 def load_workflow(workflow_name: str) -> WorkflowDefinition:
     """Load a workflow JSON and return a :class:`WorkflowDefinition`.
 
@@ -132,11 +140,18 @@ def load_workflow(workflow_name: str) -> WorkflowDefinition:
         derived by stripping the version suffix (``i2p``).
     """
     path = _resolve_workflow_path(workflow_name)
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        mtime = 0
+    key = (str(path), mtime)
+    cached = _WF_CACHE.get(key)
+    if cached is not None:
+        return cached
+
     data = json.loads(path.read_text(encoding="utf-8"))
-
     conditional_groups = data.get("metadata", {}).get("conditional_groups", [])
-
-    return WorkflowDefinition(
+    wf = WorkflowDefinition(
         plan_id=data["plan_id"],
         version=data["version"],
         metadata=data.get("metadata", {}),
@@ -145,6 +160,12 @@ def load_workflow(workflow_name: str) -> WorkflowDefinition:
         templates=data.get("templates", []),
         conditional_groups=conditional_groups,
     )
+    # Invalidate any stale entries for this path before inserting the new one.
+    for k in list(_WF_CACHE):
+        if k[0] == str(path):
+            del _WF_CACHE[k]
+    _WF_CACHE[key] = wf
+    return wf
 
 
 VALID_DIFFICULTIES = {"easy", "medium", "hard"}

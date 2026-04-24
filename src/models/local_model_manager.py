@@ -279,6 +279,7 @@ class LocalModelManager:
                 available_ram_mb=fresh_state.ram_available_mb,
                 available_vram_mb=projected_vram_free,
                 family_key=info.family,
+                thinking=enable_thinking and bool(info.thinking_model),
             )
             if new_ctx != context_length:
                 logger.info(

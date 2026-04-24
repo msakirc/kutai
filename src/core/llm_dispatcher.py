@@ -24,8 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import time
-import uuid
 from enum import Enum
 from typing import Any
 
@@ -35,116 +33,16 @@ logger = get_logger("core.llm_dispatcher")
 
 
 # ─── In-flight registry ──────────────────────────────────────────────────────
-# Dispatcher is the sole producer of in-flight call state. Two scopes:
-#   _task_slots     — keyed by task_id. Entry persists across ReAct iteration
-#                     gaps so admission sees the task as holding a slot until
-#                     the task fully ends. Orchestrator calls release_task()
-#                     when _dispatch returns.
-#   _call_entries   — keyed by uuid call_id. For standalone calls without a
-#                     task_id (classifier, grader without task context).
-#                     Per-call add/remove, bounded by the call lifetime.
-#
-# push_in_flight posts the union of both stores to nerd_herd.
-_task_slots: dict[int, "_InFlightEntry"] = {}
-_call_entries: dict[str, "_InFlightEntry"] = {}
-
-
-class _InFlightEntry:
-    __slots__ = ("call_id", "task_id", "category", "model", "provider", "is_local", "started_at")
-
-    def __init__(self, call_id, task_id, category, model, provider, is_local, started_at):
-        self.call_id = call_id
-        self.task_id = task_id
-        self.category = category
-        self.model = model
-        self.provider = provider
-        self.is_local = is_local
-        self.started_at = started_at
-
-
-def in_flight_snapshot() -> list:
-    """Return the current in-flight call list. Used by telemetry, not admission."""
-    return list(_task_slots.values()) + list(_call_entries.values())
-
-
-async def _push_in_flight() -> None:
-    """Push the full in-flight list to nerd_herd. Best-effort; swallows errors."""
-    try:
-        import nerd_herd
-        from nerd_herd.types import InFlightCall
-        payload = [
-            InFlightCall(
-                call_id=e.call_id,
-                task_id=e.task_id,
-                category=e.category,
-                model=e.model,
-                provider=e.provider,
-                is_local=e.is_local,
-                started_at=e.started_at,
-            )
-            for e in list(_task_slots.values()) + list(_call_entries.values())
-        ]
-        await nerd_herd.push_in_flight(payload)
-    except Exception as e:
-        logger.debug("push_in_flight failed: %s", e)
-
-
-async def _begin_call(category: str, model_name: str, provider: str, is_local: bool, task_id: int | None) -> str:
-    """Register an in-flight call. Returns call_id for _end_call pairing.
-
-    Task-associated calls UPSERT a per-task slot (call_id = f"task-{task_id}")
-    that persists across ReAct iteration gaps. Each call within the task
-    overwrites the same slot with the current model/provider so mid-task
-    model changes (retry, swap) are reflected accurately. Slot lifetime is
-    the task lifetime — orchestrator.release_task() clears it.
-
-    Standalone calls (task_id is None) get a fresh uuid entry paired with
-    _end_call on the call's finally clause.
-    """
-    if task_id is not None:
-        call_id = f"task-{task_id}"
-        _task_slots[task_id] = _InFlightEntry(
-            call_id=call_id,
-            task_id=task_id,
-            category=category,
-            model=model_name,
-            provider=provider,
-            is_local=is_local,
-            started_at=time.time(),
-        )
-    else:
-        call_id = str(uuid.uuid4())
-        _call_entries[call_id] = _InFlightEntry(
-            call_id=call_id,
-            task_id=None,
-            category=category,
-            model=model_name,
-            provider=provider,
-            is_local=is_local,
-            started_at=time.time(),
-        )
-    await _push_in_flight()
-    return call_id
-
-
-async def _end_call(call_id: str) -> None:
-    """Remove a standalone in-flight entry. Task-scoped slots are preserved
-    for the task's lifetime — use release_task() to clear them.
-    """
-    # Task-slot call_ids are prefixed "task-" — preserve across iteration gaps.
-    if call_id.startswith("task-"):
-        return
-    if _call_entries.pop(call_id, None) is not None:
-        await _push_in_flight()
-
-
-async def release_task(task_id: int) -> None:
-    """Remove the per-task slot. Called by orchestrator when _dispatch finishes.
-
-    Safe to call multiple times — no-op when the slot is absent.
-    """
-    if _task_slots.pop(task_id, None) is not None:
-        await _push_in_flight()
+# The in-flight registry lives in src.core.in_flight as a peer module so
+# Beckman can call reserve_task() at admission time without importing
+# dispatcher. Dispatcher uses begin_call / end_call from there; orchestrator
+# uses release_task. All writers funnel through the peer module → nerd_herd.
+from src.core.in_flight import (
+    begin_call as _begin_call,
+    end_call as _end_call,
+    in_flight_snapshot,  # re-exported for back-compat with callers that imported here
+    release_task,  # re-exported
+)
 
 
 # ─── Call Categories ─────────────────────────────────────────────────────────

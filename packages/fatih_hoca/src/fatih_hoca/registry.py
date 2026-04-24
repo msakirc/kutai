@@ -80,7 +80,8 @@ class ModelInfo:
     _gpu_layers_from_override: bool = False  # True if set via models.yaml
     total_layers: int = 0
     file_size_mb: float = 0.0
-    tokens_per_second: float = 0.0          # measured at runtime
+    tokens_per_second: float = 0.0          # measured generation tokens/sec
+    pp_tps: float = 0.0                     # measured prompt-processing tokens/sec
     load_time_seconds: float = 30.0
     priority_class: str = "primary"
     specialty: str = ""
@@ -154,6 +155,43 @@ class ModelInfo:
     @property
     def is_free(self) -> bool:
         return self.location in ("local", "ollama") or self.tier == "free"
+
+    def effective_context_at_current_vram(
+        self,
+        available_vram_mb: int,
+        available_ram_mb: int = 65536,
+    ) -> int:
+        """Return the max context Hoca should assume for this model given
+        current VRAM (and RAM) headroom.
+
+        Cloud/ollama models: returns the trained-native `context_length`.
+        Local GGUF models: delegates to `calculate_dynamic_context` using
+        the model's file_size/n_layers/gpu_layers against live memory.
+        The returned value is capped at `context_length` (capability
+        ceiling) and rounded to the calculator's 2048-block granularity.
+
+        This is the context selector eligibility should filter on — static
+        `context_length` is the trained ceiling, but a tight-VRAM runtime
+        may only fit a smaller window; filtering on the static value lets
+        a model win and then fail at load time.
+        """
+        if not self.is_local or self.location == "ollama":
+            return self.context_length
+        if self.file_size_mb <= 0 or self.total_layers <= 0:
+            return self.context_length
+        try:
+            effective = calculate_dynamic_context(
+                file_size_mb=self.file_size_mb,
+                n_layers=self.total_layers,
+                gpu_layers=self.gpu_layers,
+                available_ram_mb=max(0, int(available_ram_mb)),
+                available_vram_mb=max(0, int(available_vram_mb)),
+                family_key=self.family or None,
+            )
+        except Exception:
+            return self.context_length
+        # Never exceed the trained-native ceiling.
+        return max(0, min(int(effective), int(self.context_length)))
 
 
 # ─── GGUF Metadata Reader ───────────────────────────────────────────────────
@@ -392,12 +430,18 @@ def calculate_dynamic_context(
     available_ram_mb: int,
     available_vram_mb: int,
     family_key: str | None = None,
+    thinking: bool = False,
 ) -> int:
     """Calculate max context length based on available memory.
 
     KV cache memory grows linearly with context length. We estimate how
     much memory is left after loading model weights and pick the largest
     context that fits (capped at the family default).
+
+    When ``thinking=True``, the reserve budget is bumped to account for the
+    larger activation / scratch footprint observed when reasoning is on
+    (Qwen3.5-9B-thinking: sched_reserve GGML_ASSERT at 24576 ctx with the
+    default 1300 MB reserve; 8GB GPU, 2026-04-23).
     """
     if n_layers <= 0 or file_size_mb <= 0:
         return 8192  # safe minimum
@@ -419,7 +463,11 @@ def calculate_dynamic_context(
     # Total: 1300 MB. The old 500 MB margin caused OOM at warmup
     # (Qwen3.5-9B observed 2026-04-22: 5974/6206 MiB committed pre-warmup,
     # warmup pushed it over).
-    VRAM_RESERVE_MB = 1300
+    #
+    # Thinking mode carries additional activation scratch (~500 MB observed
+    # for Qwen3.5-9B-thinking at b=512). Bump the reserve so the compute
+    # buffer sched_reserve doesn't abort with GGML_ASSERT(mem_buffer).
+    VRAM_RESERVE_MB = 1800 if thinking else 1300
     free_vram = max(0, available_vram_mb - vram_used_by_weights - VRAM_RESERVE_MB) * 0.85
     free_ram = max(0, available_ram_mb - ram_used_by_weights - 2000) * 0.70
 

@@ -108,6 +108,7 @@ class LocalModelState:
     thinking_enabled: bool = False
     vision_enabled: bool = False
     measured_tps: float = 0.0
+    pp_tps: float = 0.0  # prompt-processing tokens/sec (llamacpp:prompt_tokens_seconds)
     context_length: int = 0
     is_swapping: bool = False
     kv_cache_ratio: float = 0.0

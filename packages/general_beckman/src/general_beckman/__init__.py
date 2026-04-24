@@ -131,6 +131,26 @@ async def next_task():
             _log.debug(f"admission: task #{task['id']} claim race lost")
             continue
 
+        # Reserve the in-flight slot at admission. The peer registry
+        # (src.core.in_flight) represents three GPU-slot lifecycle states:
+        # (1) admitted-not-yet-calling, (2) mid-call, (3) between calls
+        # in the ReAct iteration gap. Without this reserve, state (1) has
+        # no writer — the dispatcher's begin_call only fires AFTER agent
+        # pre-work (RAG + chain-context + file-tree scan, often 10-20s),
+        # during which the next Beckman tick reads an empty in-flight list
+        # and admits a second local task onto a lane the first will
+        # re-occupy. Dispatcher's begin_call UPSERTS the same task-{id}
+        # key later, so mid-task model changes remain accurate. Release
+        # fires via orchestrator._dispatch finally → release_task.
+        #
+        # Fail-open: if the peer registry is unreachable, still admit.
+        # Nerd_herd being down shouldn't halt the system.
+        try:
+            from src.core.in_flight import reserve_task
+            await reserve_task(task["id"], pick)
+        except Exception as e:
+            _log.warning(f"admission: reserve_task failed #{task['id']}: {e}")
+
         _log.info(
             f"admission: task #{task['id']} ADMIT model={pick.model.name} "
             f"pressure={pressure:.3f} urgency={urgency:.3f} threshold={thr:.3f}"

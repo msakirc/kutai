@@ -1753,8 +1753,11 @@
       "output_artifacts": [
         "user_stories"
       ],
-      "instruction": "For every feature in mvp_scope, write formal use cases and user stories. Each use case: use_case_id, feature_id, title, primary_actor, preconditions, trigger, main_flow, alternate_flows, exception_flows, postconditions, business_rules. Then convert each use case into user stories: story_id, use_case_id, epic, title, story ('As a [persona], I want [action], so that [benefit]'), acceptance_criteria (Given/When/Then), priority, estimated_complexity. Every acceptance criterion must be testable.\n\nOUTPUT SIZE: Max 15 user stories. Each story under 100 words including acceptance criteria.",
-      "done_when": "user_stories exists with testable user stories covering all MVP features, each with Given/When/Then acceptance criteria.",
+      "context": {
+        "estimated_output_tokens": 10000
+      },
+      "instruction": "Write user stories for the MVP features. Each story object MUST have EXACTLY these fields: story_id (US-001, US-002...), epic (short group name), title (short story name), story ('As a [persona], I want [action], so that [benefit]'), acceptance_criteria (Given/When/Then text, testable), priority (High|Medium|Low).\n\nOUTPUT FORMAT: Return ONLY a JSON array starting with `[` and ending with `]`. No wrapping object, no prose, no use cases, no extra fields. 8-15 stories total, each under 80 words.\n\nDO NOT produce use cases, flows, or any fields beyond the six listed above.",
+      "done_when": "user_stories is a JSON array with 8-15 items, each carrying story_id/epic/title/story/acceptance_criteria/priority.",
       "artifact_schema": {
         "user_stories": {
           "type": "array",

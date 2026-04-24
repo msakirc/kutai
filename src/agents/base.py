@@ -1617,6 +1617,68 @@ class BaseAgent:
         # Suppress clarification if task explicitly disallows it
         self._suppress_clarification = _task_ctx.get("may_need_clarification") is False
 
+        # ── Workflow step: refresh instruction + done_when from live JSON ──
+        # tasks.description and context.done_when are frozen at expander
+        # time. Edits to workflow JSON don't propagate to existing rows,
+        # so retries keep running the stale instruction (observed on
+        # task 2890: step 2.8 instruction was reshaped from 11-field use
+        # cases → 6-field stories, but the task row still carried the
+        # old text and the grader kept citing "use cases" in DLQ
+        # reasons). This mirrors the estimated_output_tokens refresh
+        # inside _classify_requirements — same plumbing, extended to
+        # instruction + done_when.
+        if _task_ctx.get("is_workflow_step"):
+            try:
+                _step_id = _task_ctx.get("workflow_step_id")
+                _mid = task.get("mission_id")
+                if _step_id and _mid:
+                    from src.infra.db import get_db
+                    _db = await get_db()
+                    _cur = await _db.execute(
+                        "SELECT context FROM missions WHERE id = ?", (_mid,),
+                    )
+                    _row = await _cur.fetchone()
+                    await _cur.close()
+                    _mctx = {}
+                    if _row and _row[0]:
+                        try:
+                            _mctx = json.loads(_row[0])
+                            if isinstance(_mctx, str):
+                                _mctx = json.loads(_mctx)
+                        except (json.JSONDecodeError, TypeError):
+                            _mctx = {}
+                    _wf_name = (
+                        _mctx.get("workflow_name") if isinstance(_mctx, dict) else None
+                    ) or "i2p_v3"
+                    from src.workflows.engine.loader import load_workflow
+                    _wf = load_workflow(_wf_name)
+                    _step = _wf.get_step(_step_id)
+                    if _step:
+                        _live_instr = _step.get("instruction")
+                        _live_done = _step.get("done_when")
+                        _changed = False
+                        if (_live_instr
+                                and isinstance(_live_instr, str)
+                                and _live_instr != task.get("description")):
+                            task["description"] = _live_instr
+                            _changed = True
+                        if (_live_done
+                                and isinstance(_live_done, str)
+                                and _live_done != _task_ctx.get("done_when")):
+                            _task_ctx["done_when"] = _live_done
+                            task["context"] = json.dumps(_task_ctx)
+                            _changed = True
+                        if _changed:
+                            logger.info(
+                                f"[Task #{task.get('id','?')}] step-refresh: "
+                                f"description/done_when re-synced from live JSON "
+                                f"(step={_step_id}, wf={_wf_name})"
+                            )
+            except Exception as _e:
+                logger.warning(
+                    f"[Task #{task.get('id','?')}] step instruction refresh failed: {_e}"
+                )
+
         try:
             # ── Phase 5: execution pattern routing ──
             if self.execution_pattern == "single_shot":

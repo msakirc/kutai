@@ -590,6 +590,20 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         if gen_model and gen_model not in excluded:
             excluded.append(gen_model)
         ctx["grade_excluded_models"] = excluded
+        # Also add to worker-side exclusion list so the source task doesn't
+        # re-pick the same model that just produced FAIL'd output.
+        # Previously `grade_excluded_models` only fed the next grader pick;
+        # the worker kept drawing Qwen3.5-9B-thinking attempt after attempt
+        # and producing the same truncated output (2888
+        # feature_prioritization looped 6+ attempts on the same model
+        # 2026-04-24). `failed_models` is what `src.core.retry.
+        # get_model_constraints` feeds into the selector exclusion at
+        # attempts >= 3 — adding gen_model here lets the worker escalate
+        # to a larger / non-thinking / cloud model.
+        worker_failed = list(ctx.get("failed_models") or [])
+        if gen_model and gen_model not in worker_failed:
+            worker_failed.append(gen_model)
+        ctx["failed_models"] = worker_failed
         ctx["_pending_posthooks"] = []
 
         if attempts >= max_attempts:

@@ -2984,6 +2984,45 @@ class BaseAgent:
         # on "missing content about: [...]". Let the workflow step override
         # via context.estimated_output_tokens (clamped to [500, 12000]).
         _out_override = task_ctx.get("estimated_output_tokens")
+        # Workflow-step tasks may pre-date the step's context-block edit
+        # in i2p_v3 (existing DB rows captured their ctx at expansion time
+        # with no estimated_output_tokens field). Re-read the live step
+        # def from the workflow JSON so retries pick up newly-bumped
+        # budgets without requiring row regeneration.
+        if not _out_override and task_ctx.get("is_workflow_step"):
+            try:
+                step_id = task_ctx.get("workflow_step_id")
+                mission_id = task.get("mission_id")
+                if step_id and mission_id:
+                    from src.infra.db import get_db
+                    _db = await get_db()
+                    _cur = await _db.execute(
+                        "SELECT context FROM missions WHERE id = ?", (mission_id,),
+                    )
+                    _row = await _cur.fetchone()
+                    await _cur.close()
+                    _mctx = {}
+                    if _row and _row[0]:
+                        try:
+                            _mctx = json.loads(_row[0])
+                            if isinstance(_mctx, str):
+                                _mctx = json.loads(_mctx)
+                        except (json.JSONDecodeError, TypeError):
+                            _mctx = {}
+                    _wf_name = (
+                        _mctx.get("workflow_name") if isinstance(_mctx, dict) else None
+                    ) or "i2p_v3"
+                    from src.workflows.engine.loader import load_workflow
+                    _wf = load_workflow(_wf_name)
+                    _step = _wf.get_step(step_id)
+                    if _step:
+                        _step_ctx = _step.get("context") or {}
+                        if isinstance(_step_ctx, dict):
+                            _out_override = _step_ctx.get("estimated_output_tokens")
+            except Exception as _e:
+                logger.debug(
+                    f"[Task #{task.get('id','?')}] step-config refresh failed: {_e}"
+                )
         if _out_override:
             try:
                 # 16k ceiling chosen to cover feature_brainstorm's 50-200

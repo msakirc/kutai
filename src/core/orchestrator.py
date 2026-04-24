@@ -82,6 +82,59 @@ class Orchestrator:
                         _skip = {"executor", "payload"}
                         _extras = {k: v for k, v in ctx.items() if k not in _skip}
                         t["payload"] = {"action": _legacy_action, **_extras}
+                # Deeper rescue: expander also CLOBBERED ctx.executor to
+                # "mechanical" on old rows, erasing the original action
+                # name. Look the workflow step up by workflow_step_id in
+                # the current workflow JSON and pull action from its
+                # context.executor. Works for clarify_variant (action
+                # "clarify") + any similar legacy mechanical step.
+                if "payload" not in t and ctx.get("is_workflow_step"):
+                    try:
+                        _step_id = ctx.get("workflow_step_id")
+                        _mission_id = task.get("mission_id")
+                        if _step_id and _mission_id:
+                            from src.infra.db import get_db as _get_db
+                            _db = await _get_db()
+                            _cur = await _db.execute(
+                                "SELECT context FROM missions WHERE id = ?",
+                                (_mission_id,),
+                            )
+                            _row = await _cur.fetchone()
+                            await _cur.close()
+                            _mctx = {}
+                            if _row and _row[0]:
+                                try:
+                                    _mctx = json.loads(_row[0])
+                                    if isinstance(_mctx, str):
+                                        _mctx = json.loads(_mctx)
+                                except (json.JSONDecodeError, TypeError):
+                                    _mctx = {}
+                            _wf_name = (
+                                _mctx.get("workflow_name")
+                                if isinstance(_mctx, dict) else None
+                            ) or "i2p_v3"
+                            from src.workflows.engine.loader import load_workflow
+                            _wf = load_workflow(_wf_name)
+                            _step = _wf.get_step(_step_id)
+                            if _step:
+                                _step_ctx = _step.get("context") or {}
+                                _step_action = (
+                                    _step_ctx.get("executor")
+                                    if isinstance(_step_ctx, dict) else None
+                                )
+                                if _step_action and _step_action != "mechanical":
+                                    _skip = {"executor", "payload"}
+                                    _extras = {
+                                        k: v for k, v in ctx.items()
+                                        if k not in _skip
+                                    }
+                                    t["payload"] = {
+                                        "action": _step_action, **_extras,
+                                    }
+                    except Exception as _e:
+                        logger.debug(
+                            f"legacy mechanical rescue failed #{task.get('id','?')}: {_e}"
+                        )
                 r = await salako.run(t)
                 return ({"status": "completed", "result": json.dumps(r.result)}
                         if r.status == "completed"

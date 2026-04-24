@@ -1650,7 +1650,22 @@ class BaseAgent:
         # ── attempt checkpoint recovery ──
         start_iteration = 0
         checkpoint = None
-        if task_id != "?":
+        # Skip checkpoint when this is a validation/grader retry. Presence
+        # of _schema_error means a prior attempt failed and the hooks /
+        # apply layers just injected a fresh nudge into ctx. The checkpoint
+        # holds messages from that prior (bad) attempt — resuming from it
+        # uses the OLD user prompt and the model never sees the retry
+        # feedback, so it regenerates the same truncated output every
+        # iteration. Mission 46 task #2888 looped 15+ times on an
+        # identical ~26k-char truncation before DLQ (2026-04-24). Force
+        # a fresh _build_context so enriched retry prompt lands.
+        if _task_ctx.get("_schema_error"):
+            logger.info(
+                f"[Task #{task_id}] retry context detected "
+                f"(_schema_error present) — skipping checkpoint, "
+                f"rebuilding prompt with enriched nudge"
+            )
+        elif task_id != "?":
             try:
                 checkpoint = await load_task_checkpoint(task_id)
             except Exception as exc:

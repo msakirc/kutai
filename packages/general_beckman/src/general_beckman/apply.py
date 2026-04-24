@@ -304,17 +304,39 @@ def _humanize_error(raw: str) -> str:
     the raw dict to Telegram users leaks internals and wastes display
     budget on field names. Prefer the grader's insight when present,
     else strategy, else a short verbatim head.
+
+    Parser accepts the dict even when surrounded by prose or truncated
+    off a wrapper — the strict ``startswith("{") and endswith("}")``
+    check used to fail on strings like ``"grader said: {'passed': ...}
+    more stuff"``, leaking the raw repr straight to Telegram.
     """
     import ast
+    import re
     if not raw:
         return "unknown"
     text = raw.strip()
     parsed = None
-    if text.startswith("{") and text.endswith("}"):
-        try:
-            parsed = ast.literal_eval(text)
-        except (ValueError, SyntaxError):
-            parsed = None
+    # Find the largest balanced {...} substring. Works for leading/
+    # trailing prose, and for the case the outer dict itself is intact.
+    start = text.find("{")
+    if start != -1:
+        depth = 0
+        end = -1
+        for i in range(start, len(text)):
+            ch = text[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end != -1:
+            candidate = text[start:end + 1]
+            try:
+                parsed = ast.literal_eval(candidate)
+            except (ValueError, SyntaxError):
+                parsed = None
     if isinstance(parsed, dict):
         for key in ("insight", "strategy", "situation", "message", "error"):
             val = parsed.get(key)
@@ -326,6 +348,8 @@ def _humanize_error(raw: str) -> str:
         ]
         if failed_axes:
             return "grader rejected: " + ", ".join(failed_axes)
+    # Strip obvious prefixes like "Reason: " or "Grader verdict: "
+    text = re.sub(r"^\s*(?:reason|grader[^:]*|error)\s*:\s*", "", text, flags=re.IGNORECASE)
     return text[:140]
 
 

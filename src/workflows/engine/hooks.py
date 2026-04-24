@@ -619,15 +619,37 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
         #   "'name' missing content about: [...]"
         #   "Missing required fields in 'name': [...]"
         m = _re.search(
-            r"missing (?:sections?|required fields|content about)[^\[\]']*(\[[^\]]+\]|'[^']+')",
+            r"missing (sections?|required fields|content about)[^\[\]']*(\[[^\]]+\]|'[^']+')",
             schema_error,
         )
         if m:
-            missing_hint = (
-                f"\n\nYou specifically omitted: {m.group(1)}.\n"
-                f"Add this exactly as a '## <name>' markdown heading "
-                f"with real content beneath it. Do NOT skip or rename."
-            )
+            kind = m.group(1).lower()
+            missing = m.group(2)
+            # Distinguish the schema shape so the advice matches the fix:
+            # - "sections"        → markdown headings
+            # - "required fields" → JSON object keys
+            # - "content about"   → keyword-check fallback (object schema;
+            #                        content must mention these names)
+            if "section" in kind:
+                missing_hint = (
+                    f"\n\nYou specifically omitted: {missing}.\n"
+                    f"Add this exactly as a '## <name>' markdown heading "
+                    f"with real content beneath it. Do NOT skip or rename."
+                )
+            elif "required fields" in kind:
+                missing_hint = (
+                    f"\n\nYou specifically omitted: {missing}.\n"
+                    f"Add this as a top-level JSON object key with a real "
+                    f"value. Do NOT skip, rename, or nest it."
+                )
+            else:  # "content about" — object keyword fallback
+                missing_hint = (
+                    f"\n\nYou specifically omitted: {missing}.\n"
+                    f"Your output must mention each of these by name with "
+                    f"substantive content. If the schema expects a JSON "
+                    f"object, these become top-level keys; if markdown, "
+                    f"make each a '## <name>' section."
+                )
         parts.append(
             f"\n\n## IMPORTANT: Previous Output Was Invalid (retry {retry_count})\n"
             f"Your previous output failed validation: **{schema_error}**\n"

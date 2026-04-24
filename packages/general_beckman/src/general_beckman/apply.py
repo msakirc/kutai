@@ -296,14 +296,34 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
 
 
 
+_NULLISH_STRINGS = {"", "none", "null", "nil", "n/a", "na", "-"}
+
+
+def _is_meaningful_text(val) -> bool:
+    """Return True if ``val`` is a non-empty string carrying real content.
+
+    Grader LLMs sometimes populate optional fields with the literal text
+    ``"None"`` / ``"NONE"`` / ``"n/a"`` — Python-truthy strings but
+    semantically missing. Callers that key off these fields must reject
+    them to avoid leaking the sentinel back to the user.
+    """
+    if not isinstance(val, str):
+        return False
+    stripped = val.strip()
+    if not stripped:
+        return False
+    return stripped.lower() not in _NULLISH_STRINGS
+
+
 def _grader_verdict_text(raw) -> str:
     """Extract the most useful human sentence from a grader verdict payload.
 
     ``raw`` may be a dict (common), a stringified dict (legacy), or free text.
     Prefers ``insight`` → ``strategy`` → ``situation`` → ``message``/``error``;
-    falls back to a failed-axes summary, or the first 140 chars of whatever
-    was passed. Callers use this as the error column upstream so downstream
-    consumers (Telegram DLQ notice, logs) never see raw dict reprs.
+    falls back to a failed-axes summary, or a final "verdict unavailable"
+    string when every candidate field is missing / nullish. Callers use this
+    as the error column upstream so downstream consumers (Telegram DLQ
+    notice, logs) never see raw dict reprs or "None" sentinels.
     """
     import ast
     candidate = raw
@@ -331,7 +351,7 @@ def _grader_verdict_text(raw) -> str:
     if isinstance(candidate, dict):
         for key in ("insight", "strategy", "situation", "message", "error"):
             val = candidate.get(key)
-            if isinstance(val, str) and val.strip():
+            if _is_meaningful_text(val):
                 return val.strip()
         failed_axes = [
             k for k in ("relevant", "complete", "well_formed", "coherent")
@@ -339,6 +359,9 @@ def _grader_verdict_text(raw) -> str:
         ]
         if failed_axes:
             return "grader rejected: " + ", ".join(failed_axes)
+        return "grader verdict unavailable"
+    if raw is None or (isinstance(raw, str) and raw.strip().lower() in _NULLISH_STRINGS):
+        return "grader verdict unavailable"
     return str(raw)[:140]
 
 

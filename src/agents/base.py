@@ -3019,8 +3019,14 @@ class BaseAgent:
                         _step_ctx = _step.get("context") or {}
                         if isinstance(_step_ctx, dict):
                             _out_override = _step_ctx.get("estimated_output_tokens")
+                            if _out_override:
+                                logger.info(
+                                    f"[Task #{task.get('id','?')}] step-refresh: "
+                                    f"estimated_output_tokens={_out_override} "
+                                    f"(step={step_id}, wf={_wf_name})"
+                                )
             except Exception as _e:
-                logger.debug(
+                logger.warning(
                     f"[Task #{task.get('id','?')}] step-config refresh failed: {_e}"
                 )
         if _out_override:

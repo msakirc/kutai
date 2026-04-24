@@ -136,6 +136,62 @@ async def sweep_queue() -> None:
     if stuck_ungraded:
         await db.commit()
 
+    # 2b. Auto-rescue failed workflow-step tasks whose skip_when expression
+    # now matches (e.g. after a later code fix made the expression evaluable,
+    # or an upstream artifact flipped to a state that shouldn't have run
+    # the step). Mark them skipped + resolve their DLQ entry so downstream
+    # deps stop cascading as failures. Without this, any pre-fix DLQ on a
+    # skip-eligible step permanently blocks its dependents until a human
+    # retries or the mission is cancelled (2026-04-24: task 3122 synth_one
+    # stuck on a clarify gate it should have skipped, cascade-failed 3126).
+    try:
+        from src.workflows.engine.hooks import should_skip_workflow_step
+        import json as _json
+        resc_cursor = await db.execute(
+            """SELECT id, context, mission_id FROM tasks
+               WHERE status = 'failed'
+               AND context LIKE '%"is_workflow_step": true%'
+               LIMIT 50"""
+        )
+        for row in await resc_cursor.fetchall():
+            tid, ctx_raw, mid = row["id"], row["context"], row["mission_id"]
+            try:
+                should_skip, reason = await should_skip_workflow_step(
+                    {"id": tid, "mission_id": mid, "context": ctx_raw}
+                )
+            except Exception:
+                continue
+            if not should_skip:
+                continue
+            logger.info(
+                f"[Sweep] Auto-rescue: failed task #{tid} now matches "
+                f"skip_when ({reason}) — marking skipped"
+            )
+            try:
+                ctx = _json.loads(ctx_raw or "{}")
+                if isinstance(ctx, str):
+                    ctx = _json.loads(ctx)
+                if not isinstance(ctx, dict):
+                    ctx = {}
+                ctx["requires_grading"] = False
+                await db.execute(
+                    "UPDATE tasks SET status='skipped', error=? , context=? WHERE id=?",
+                    (f"retro-skipped: {reason}", _json.dumps(ctx), tid),
+                )
+                await db.execute(
+                    """UPDATE dead_letter_tasks
+                       SET resolved_at=CURRENT_TIMESTAMP,
+                           resolution='retro-skipped'
+                       WHERE task_id=? AND resolved_at IS NULL""",
+                    (tid,),
+                )
+            except Exception as _e:
+                logger.debug(f"auto-rescue db update failed for #{tid}: {_e}")
+                continue
+        await db.commit()
+    except Exception as exc:
+        logger.debug(f"auto-rescue sweep skipped: {exc}")
+
     # 3. Tasks blocked by ANY terminally-failed dep → cascade failure.
     #
     # Historically this required ALL deps to be failed, which left mission

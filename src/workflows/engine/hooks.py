@@ -1125,11 +1125,28 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
                             )
                         break
             if file_parts:
-                # Use the richest single source — don't concatenate.
-                # Concatenation caused 6K result + 50K garbage file = 56K
-                # stored as the artifact, poisoning downstream tasks.
+                # Prefer the agent's current result over stale workspace
+                # files from earlier failed attempts. Previously the code
+                # picked whichever was LONGER, which let a 26k-char
+                # wrapped-and-truncated file from a prior DLQ'd attempt
+                # overwrite the current attempt's clean 6k JSON (observed
+                # on mission 46 task 2888 2026-04-24: retry produced
+                # valid MoSCoW but the artifact file was the prior
+                # truncated wrapper, poisoning downstream 2889).
+                # Rule: only adopt the workspace file when the current
+                # result is empty OR fails to json-parse AND the file
+                # DOES parse cleanly.
                 best_file = max(file_parts, key=len)
-                if len(best_file) > len(output_value):
+
+                def _parses_ok(s: str) -> bool:
+                    try:
+                        json.loads(s)
+                        return True
+                    except (json.JSONDecodeError, TypeError):
+                        return False
+
+                current_ok = bool(output_value) and _parses_ok(output_value)
+                if not current_ok and _parses_ok(best_file):
                     output_value = best_file
         except Exception as e:
             logger.debug(f"[Workflow Hook] Workspace artifact recovery failed: {e}")

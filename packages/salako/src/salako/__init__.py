@@ -41,6 +41,17 @@ async def run(task: dict) -> Action:
         from salako.clarify import clarify
         try:
             res = await clarify(task)
+            # variant_choice that successfully sent a keyboard is waiting
+            # on a user tap — must return needs_clarification so beckman's
+            # result router leaves the row as waiting_human instead of
+            # flipping it back to completed (which caused the mission to
+            # advance past the clarify step and produce "no results" for
+            # every clarify-gated shopping mission). Plain question-clarify
+            # stays completed as before.
+            if (isinstance(res, dict)
+                    and res.get("status") == "needs_clarification"
+                    and res.get("keyboard_sent")):
+                return Action(status="needs_clarification", result=res)
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

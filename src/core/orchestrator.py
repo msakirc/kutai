@@ -171,9 +171,20 @@ class Orchestrator:
                             f"legacy mechanical rescue failed #{task.get('id','?')}: {_e}"
                         )
                 r = await salako.run(t)
-                return ({"status": "completed", "result": json.dumps(r.result)}
-                        if r.status == "completed"
-                        else {"status": "failed", "error": r.error or "mechanical failed"})
+                if r.status == "completed":
+                    return {"status": "completed", "result": json.dumps(r.result)}
+                if r.status == "needs_clarification":
+                    # Mechanical executor asked the user something
+                    # (variant_choice keyboard) and set the task to
+                    # waiting_human. Return the same status upstream so
+                    # beckman's router leaves the row where salako put
+                    # it — no "completed" flip that would advance the
+                    # mission past a user-gated step.
+                    return {
+                        "status": "needs_clarification",
+                        "result": json.dumps(r.result),
+                    }
+                return {"status": "failed", "error": r.error or "mechanical failed"}
             if agent_type == "shopping_pipeline":
                 from src.workflows.shopping.pipeline import ShoppingPipeline
                 return await ShoppingPipeline().run(task)
@@ -216,10 +227,26 @@ class Orchestrator:
             result = {"status": "failed", "error": f"{type(e).__name__}: {str(e)[:300]}"}
             logger.exception("dispatch failed task #%s: %s", task_id, e)
 
-        try:
-            await general_beckman.on_task_finished(task_id, result)
-        except Exception as e:
-            logger.exception("on_task_finished raised #%s: %s", task_id, e)
+        # Mechanical clarify (variant_choice keyboard) self-manages state:
+        # salako.clarify already called update_task(status="waiting_human")
+        # after successfully sending the keyboard, and the user's tap writes
+        # clarify_choice + flips the task to completed via
+        # _resume_mission_at_step. Running on_task_finished here would route
+        # the needs_clarification result through result_router, which would
+        # spawn another RequestClarification → infinite clarify tasks. Skip.
+        if isinstance(result, dict) and result.get("status") == "needs_clarification" \
+                and (task.get("executor") == "mechanical"
+                     or (parse_context(task) or {}).get("executor") == "mechanical"
+                     or agent_type == "mechanical"):
+            logger.info(
+                "[Task #%s] mechanical clarify sent keyboard; leaving as waiting_human",
+                task_id,
+            )
+        else:
+            try:
+                await general_beckman.on_task_finished(task_id, result)
+            except Exception as e:
+                logger.exception("on_task_finished raised #%s: %s", task_id, e)
 
         try:
             from src.core.metrics_push import push_metrics

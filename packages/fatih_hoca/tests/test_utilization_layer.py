@@ -37,7 +37,7 @@ def test_zero_scarcity_leaves_score_unchanged():
     sm = _sm("x", cap_score_1_to_10=6.0, score=100.0, is_local=True)
     # local with no idle and not-loaded → scarcity 0
     snap = _blank_snapshot()
-    _apply_utilization_layer([sm], snap, task_difficulty=5, queue_state=None)
+    _apply_utilization_layer([sm], snap, task_difficulty=5)
     assert sm.score == 100.0
 
 
@@ -53,7 +53,7 @@ def test_positive_scarcity_under_qualified_model_gets_full_boost():
         ),
         cloud={},
     )
-    _apply_utilization_layer([sm], snap, task_difficulty=5, queue_state=None)
+    _apply_utilization_layer([sm], snap, task_difficulty=5)
     assert 146 < sm.score < 149
 
 
@@ -69,7 +69,7 @@ def test_over_qualified_model_ignores_positive_scarcity():
         ),
         cloud={},
     )
-    _apply_utilization_layer([sm], snap, task_difficulty=3, queue_state=None)
+    _apply_utilization_layer([sm], snap, task_difficulty=3)
     assert 117 < sm.score < 118
 
 
@@ -88,7 +88,7 @@ def test_under_qualified_model_positive_scarcity_dampened_symmetrically():
         ),
         cloud={},
     )
-    _apply_utilization_layer([sm], snap, task_difficulty=5, queue_state=None)
+    _apply_utilization_layer([sm], snap, task_difficulty=5)
     assert 139 < sm.score < 141
 
 
@@ -101,11 +101,11 @@ def test_pool_and_urgency_fields_populated():
         ),
         cloud={},
     )
-    _apply_utilization_layer([sm], snap, task_difficulty=5, queue_state=None)
+    _apply_utilization_layer([sm], snap, task_difficulty=5)
     assert sm.pool == "local"
     # urgency field is repurposed to store the scalar scarcity for telemetry continuity
     assert 0.4 <= sm.urgency <= 0.5
 
 
 def test_empty_list_is_no_op():
-    _apply_utilization_layer([], _blank_snapshot(), task_difficulty=5, queue_state=None)
+    _apply_utilization_layer([], _blank_snapshot(), task_difficulty=5)

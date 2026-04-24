@@ -33,6 +33,14 @@ class ServerConfig:
     # the benchmark case, esp. for models that don't fully fit VRAM).
     # Set from fatih_hoca.registry.calculate_gpu_layers at load time.
     fallback_gpu_layers: int = 0
+    # Estimated VRAM (MB) required to honour an explicit --n-gpu-layers
+    # override (weights for the offloaded layers + KV cache + compute
+    # buffer headroom).  Only consulted at swap-time when extra_flags
+    # contains --n-gpu-layers.  If live free VRAM is below this value
+    # the override is stripped and llama-server falls back to --fit.
+    # Zero (default) disables the recheck — bare --fit loads are
+    # unaffected since --fit already auto-sizes from live VRAM.
+    required_vram_mb: int = 0
 
 @dataclass
 class ServerStatus:

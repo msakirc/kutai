@@ -112,6 +112,54 @@ class SwapManager:
                 f"refusing loads for {self._config.circuit_breaker_cooldown_seconds:.0f}s"
             )
 
+    # ── GPU-layer override recheck ──────────────────────────────────────────
+
+    def _recheck_gpu_override(self, config: ServerConfig) -> ServerConfig:
+        """Strip --n-gpu-layers when live VRAM can no longer honour the pin.
+
+        Only engages when:
+          * extra_flags contains ``--n-gpu-layers`` (i.e. models.yaml override)
+          * config.required_vram_mb > 0
+          * a VRAM probe is configured (DaLLaMaConfig.get_vram_free_mb)
+
+        If live free VRAM is below ``required_vram_mb`` we log a warning and
+        return a new ServerConfig with the --n-gpu-layers flag pair removed.
+        llama-server's --fit default then picks a size that actually fits.
+        Never raises; falls back silently on any unexpected condition.
+        """
+        flags = list(config.extra_flags or [])
+        if "--n-gpu-layers" not in flags:
+            return config
+        if config.required_vram_mb <= 0:
+            return config
+        get_vram = self._config.get_vram_free_mb
+        if get_vram is None:
+            return config
+        try:
+            free_mb = int(get_vram())
+        except Exception:
+            logger.debug("get_vram_free_mb raised — skipping override recheck", exc_info=True)
+            return config
+        if free_mb >= config.required_vram_mb:
+            logger.debug(
+                "GPU-layer override fits: %dMB free >= %dMB required for %s",
+                free_mb, config.required_vram_mb, config.model_name,
+            )
+            return config
+        # Doesn't fit — drop the flag pair and let --fit decide.
+        try:
+            idx = flags.index("--n-gpu-layers")
+            removed = flags[idx:idx + 2]
+            del flags[idx:idx + 2]
+        except (ValueError, IndexError):
+            return config
+        logger.warning(
+            "Dropping %s for %s: %dMB free < %dMB required — "
+            "falling back to --fit",
+            " ".join(removed), config.model_name, free_mb, config.required_vram_mb,
+        )
+        return replace(config, extra_flags=flags)
+
     def _record_success(self) -> None:
         """Record a successful load. Resets all circuit breaker state."""
         self._fail_count = 0
@@ -216,6 +264,16 @@ class SwapManager:
                     f"{free_mb}MB free, want {self._config.min_free_vram_mb}MB "
                     f"— attempting load anyway"
                 )
+
+        # ── Override-fit recheck ───────────────────────────────────────────
+        # When models.yaml pinned an explicit --n-gpu-layers override, the
+        # override was sized at registry-build time against VRAM that may
+        # have been more generous than what is free right now (thinking-mode
+        # activation buffer, fragmentation, another process grabbing VRAM).
+        # --fit is the safe path: it sizes from *live* VRAM. So when the
+        # pinned value no longer fits, strip the override and let --fit
+        # decide. Leaves bare --fit loads (required_vram_mb == 0) alone.
+        config = self._recheck_gpu_override(config)
 
         # ── Start server with new config ───────────────────────────────────
         success = await server.start(config, load_timeout=load_timeout)

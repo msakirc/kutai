@@ -33,6 +33,14 @@ def _suppress_browser_errors(loop, context):
             return  # swallow
         if "TargetClosedError" in type(exc).__name__:
             return  # swallow
+        # asyncio.InvalidStateError from patchright futures cancelled
+        # mid-cleanup on shutdown. Narrowed to futures whose source module
+        # is patchright/playwright — never suppressed globally.
+        if isinstance(exc, asyncio.InvalidStateError):
+            fut = context.get("future") or context.get("task")
+            src = repr(fut) if fut is not None else ""
+            if "patchright" in src or "playwright" in src:
+                return  # swallow
     loop.default_exception_handler(context)
 
 

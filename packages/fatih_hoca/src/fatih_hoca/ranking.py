@@ -144,15 +144,15 @@ def _apply_utilization_layer(
     scored: list[ScoredModel],
     snapshot: SystemSnapshot,
     task_difficulty: int,
-    queue_state,
 ) -> None:
     """Apply Phase 2d unified utilization equation.
 
     For each ScoredModel:
         fit_excess = (cap_score_100 - cap_needed_for_difficulty(d)) / 100
-        scarcity   = pool_scarcity(model, snapshot, queue_state, d)
+        scarcity   = pool_scarcity(model, snapshot, d)
         composite *= 1 + UTILIZATION_K * scarcity * (1 - max(0, fit_excess))
 
+    Queue state is read from snapshot.queue_profile (pushed by Beckman).
     Mutates each .score/.composite_score/.pool/.urgency in place.
     Does NOT re-sort — caller is responsible.
     """
@@ -162,7 +162,7 @@ def _apply_utilization_layer(
     for sm in scored:
         cap_score_100 = sm.capability_score * 10.0
         fit_excess = (cap_score_100 - cap_needed) / 100.0
-        scarcity = pool_scarcity(sm.model, snapshot, queue_state, task_difficulty)
+        scarcity = pool_scarcity(sm.model, snapshot, task_difficulty)
         pool = classify_pool(sm.model)
         sm.pool = pool.value
         # Reuse `urgency` column for scarcity scalar — telemetry schema continuity
@@ -615,12 +615,19 @@ def rank_candidates(
     scored.sort(key=lambda c: -c.score)
 
     # ── Phase 2d: Unified utilization layer ──
+    # snapshot.queue_profile is the sole source of queue state (pushed by
+    # Beckman). When tests/sims set profiles on QuotaPlanner but not on
+    # snapshot, mirror planner.queue_profile onto snapshot.
     planner = get_quota_planner()
+    if getattr(snapshot, "queue_profile", None) is None and planner.queue_profile is not None:
+        try:
+            snapshot.queue_profile = planner.queue_profile
+        except Exception:
+            pass
     _apply_utilization_layer(
         scored,
         snapshot,
         task_difficulty=reqs.difficulty,
-        queue_state=planner.queue_profile,
     )
     scored.sort(key=lambda c: -c.score)
 

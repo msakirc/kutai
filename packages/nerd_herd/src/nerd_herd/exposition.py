@@ -145,6 +145,7 @@ class MetricsServer:
             thinking_enabled=bool(body.get("thinking_enabled", False)),
             vision_enabled=bool(body.get("vision_enabled", False)),
             measured_tps=float(body.get("measured_tps", 0.0)),
+            pp_tps=float(body.get("pp_tps", 0.0)),
             context_length=int(body.get("context_length", 0)),
             is_swapping=bool(body.get("is_swapping", False)),
             kv_cache_ratio=float(body.get("kv_cache_ratio", 0.0)),

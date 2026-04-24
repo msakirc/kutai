@@ -118,6 +118,56 @@ async def test_swap_proceeds_without_vram_callback(swap, server, server_config):
     result = await swap.swap(server, server_config)
     assert result is True
 
+# -- GPU-layer override recheck --
+@pytest.mark.asyncio
+async def test_override_recheck_strips_flag_when_vram_insufficient(server):
+    """Explicit --n-gpu-layers is dropped when live VRAM falls below required."""
+    cfg = DaLLaMaConfig(get_vram_free_mb=lambda: 3000)
+    swap = SwapManager(cfg)
+    sc = ServerConfig(
+        model_path="/m/test.gguf",
+        model_name="test-model",
+        context_length=4096,
+        extra_flags=["--n-gpu-layers", "40"],
+        required_vram_mb=6000,
+    )
+    result = await swap.swap(server, sc)
+    assert result is True
+    called_cfg = server.start.call_args.args[0]
+    assert "--n-gpu-layers" not in called_cfg.extra_flags
+
+@pytest.mark.asyncio
+async def test_override_recheck_keeps_flag_when_vram_ok(server):
+    """Explicit --n-gpu-layers is preserved when live VRAM meets required."""
+    cfg = DaLLaMaConfig(get_vram_free_mb=lambda: 8000)
+    swap = SwapManager(cfg)
+    sc = ServerConfig(
+        model_path="/m/test.gguf",
+        model_name="test-model",
+        context_length=4096,
+        extra_flags=["--n-gpu-layers", "40"],
+        required_vram_mb=6000,
+    )
+    result = await swap.swap(server, sc)
+    assert result is True
+    called_cfg = server.start.call_args.args[0]
+    assert "--n-gpu-layers" in called_cfg.extra_flags
+
+@pytest.mark.asyncio
+async def test_override_recheck_skipped_for_fit_default(server):
+    """Bare --fit loads (no --n-gpu-layers, required_vram_mb=0) pass through unchanged."""
+    cfg = DaLLaMaConfig(get_vram_free_mb=lambda: 100)  # pathologically low
+    swap = SwapManager(cfg)
+    sc = ServerConfig(
+        model_path="/m/test.gguf",
+        model_name="test-model",
+        context_length=4096,
+    )
+    result = await swap.swap(server, sc)
+    assert result is True
+    called_cfg = server.start.call_args.args[0]
+    assert called_cfg.extra_flags == []
+
 # -- on_ready callback --
 @pytest.mark.asyncio
 async def test_swap_calls_on_ready(server, server_config):

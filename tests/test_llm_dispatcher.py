@@ -651,23 +651,6 @@ class TestGetDispatcherSingleton:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 11. _timeout_floor()
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestTimeoutFloor:
-
-    def test_overhead_floor(self):
-        from src.core.llm_dispatcher import CallCategory
-        dispatcher = _fresh_dispatcher()
-        assert dispatcher._timeout_floor(CallCategory.OVERHEAD) == 45.0
-
-    def test_main_work_floor(self):
-        from src.core.llm_dispatcher import CallCategory
-        dispatcher = _fresh_dispatcher()
-        assert dispatcher._timeout_floor(CallCategory.MAIN_WORK) == 60.0
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # 12. local model load path
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -687,7 +670,7 @@ class TestLocalModelLoad:
         pick = _make_mock_pick(model=model)
 
         with _patch_select(pick), \
-             patch.object(dispatcher, "_ensure_local_model", AsyncMock(return_value=False)):
+             patch.object(dispatcher, "_ensure_local_model", AsyncMock(return_value=(False, False))):
             with pytest.raises(ModelCallFailed):
                 await dispatcher.request(
                     category=CallCategory.MAIN_WORK,
@@ -696,7 +679,7 @@ class TestLocalModelLoad:
 
     @pytest.mark.asyncio
     async def test_local_model_load_failure_overhead_raises_runtime_error(self):
-        """If _ensure_local_model returns False for OVERHEAD, RuntimeError."""
+        """If _ensure_local_model returns (False, _) for OVERHEAD, RuntimeError."""
         from src.core.llm_dispatcher import CallCategory
 
         dispatcher = _fresh_dispatcher()
@@ -706,7 +689,7 @@ class TestLocalModelLoad:
         pick = _make_mock_pick(model=model)
 
         with _patch_select(pick), \
-             patch.object(dispatcher, "_ensure_local_model", AsyncMock(return_value=False)):
+             patch.object(dispatcher, "_ensure_local_model", AsyncMock(return_value=(False, False))):
             with pytest.raises(RuntimeError, match="OVERHEAD call failed"):
                 await dispatcher.request(
                     category=CallCategory.OVERHEAD,
@@ -724,7 +707,7 @@ class TestLocalModelLoad:
         pick = _make_mock_pick(model=model)
         result_obj = FakeCallResult()
 
-        mock_ensure = AsyncMock(return_value=True)
+        mock_ensure = AsyncMock(return_value=(True, False))
 
         with _patch_select(pick), \
              _patch_call(result_obj), \
@@ -742,3 +725,193 @@ def test_dispatcher_has_no_on_model_swap():
     """Dispatcher is a pure pipe; swap-event handling lives in Beckman."""
     from src.core.llm_dispatcher import LLMDispatcher
     assert not hasattr(LLMDispatcher, "on_model_swap")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONTRACT TESTS — module-boundary invariants
+#
+# Purpose: catch regressions at seams where past bugs have slipped through
+# (clarify-field dispatch, call_model legacy shim, ensure_model return-type
+# drift). These pin the contracts at router ↔ dispatcher ↔ local_model_manager.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestCallModelLegacyShim:
+    """src.core.router.call_model → dispatcher.request forwarding contract."""
+
+    @pytest.mark.asyncio
+    async def test_call_model_forwards_to_dispatcher_request(self):
+        """call_model must forward kwargs into dispatcher.request with MAIN_WORK."""
+        from src.core.router import call_model
+        from src.core.llm_dispatcher import CallCategory
+        from fatih_hoca.requirements import ModelRequirements
+
+        reqs = ModelRequirements(
+            task="coder",
+            agent_type="coder",
+            difficulty=7,
+            needs_thinking=True,
+            needs_function_calling=True,
+            local_only=False,
+            prefer_speed=False,
+            prefer_quality=True,
+            prefer_local=False,
+            estimated_input_tokens=100,
+            estimated_output_tokens=200,
+        )
+
+        captured = {}
+        async def fake_request(self_, **kwargs):
+            captured.update(kwargs)
+            return {"content": "ok"}
+
+        with patch("src.core.llm_dispatcher.LLMDispatcher.request",
+                   new=fake_request):
+            out = await call_model(reqs, messages=[{"role": "user", "content": "hi"}],
+                                    tools=[{"name": "x"}])
+
+        assert out == {"content": "ok"}
+        assert captured["category"] == CallCategory.MAIN_WORK
+        assert captured["task"] == "coder"
+        assert captured["agent_type"] == "coder"
+        assert captured["difficulty"] == 7
+        assert captured["needs_thinking"] is True
+        assert captured["needs_function_calling"] is True
+        assert captured["estimated_input_tokens"] == 100
+        assert captured["estimated_output_tokens"] == 200
+        assert captured["messages"] == [{"role": "user", "content": "hi"}]
+        assert captured["tools"] == [{"name": "x"}]
+
+    @pytest.mark.asyncio
+    async def test_call_model_propagates_local_only(self):
+        """local_only must propagate into dispatcher.request."""
+        from src.core.router import call_model
+        from fatih_hoca.requirements import ModelRequirements
+
+        reqs = ModelRequirements(task="router", local_only=True)
+
+        captured = {}
+        async def fake_request(self_, **kwargs):
+            captured.update(kwargs)
+            return {}
+
+        with patch("src.core.llm_dispatcher.LLMDispatcher.request",
+                   new=fake_request):
+            await call_model(reqs, messages=[])
+        assert captured["local_only"] is True
+
+
+class TestEnsureLocalModelContract:
+    """Contract: _ensure_local_model returns (ok: bool, swap_happened: bool).
+
+    Past failure: tests mocked this with return_value=True/False (bool),
+    which broke `ok, swap_happened = await self._ensure_local_model(...)`
+    tuple-unpacking at the call site. This test pins the tuple contract
+    so drift is caught at the seam.
+    """
+
+    @pytest.mark.asyncio
+    async def test_returns_tuple_when_already_loaded(self):
+        """Already-loaded model path returns (True, False) — no swap."""
+        from src.core.llm_dispatcher import LLMDispatcher
+
+        dispatcher = LLMDispatcher()
+        model = _make_mock_model(is_local=True, is_loaded=True)
+        model.thinking_model = False
+        model.has_vision = False
+
+        fake_manager = MagicMock()
+        fake_manager._thinking_enabled = False
+        fake_manager._vision_enabled = False
+
+        with patch("src.models.local_model_manager.get_local_manager",
+                   return_value=fake_manager):
+            result = await dispatcher._ensure_local_model(model)
+        assert isinstance(result, tuple) and len(result) == 2
+        assert result == (True, False)
+
+    @pytest.mark.asyncio
+    async def test_returns_tuple_when_swap_happens(self):
+        """Swap path returns (True, True) when before != after."""
+        from src.core.llm_dispatcher import LLMDispatcher
+
+        dispatcher = LLMDispatcher()
+        model = _make_mock_model(name="new-model", is_local=True, is_loaded=False)
+        model.thinking_model = False
+        model.has_vision = False
+
+        fake_manager = MagicMock()
+        fake_manager._thinking_enabled = False
+        fake_manager._vision_enabled = False
+        fake_manager.current_model = "old-model"
+
+        async def _fake_ensure_model(name, **kw):
+            fake_manager.current_model = name
+            return True
+        fake_manager.ensure_model = _fake_ensure_model
+
+        with patch("src.models.local_model_manager.get_local_manager",
+                   return_value=fake_manager):
+            result = await dispatcher._ensure_local_model(model)
+        assert isinstance(result, tuple) and len(result) == 2
+        assert result == (True, True)
+
+    @pytest.mark.asyncio
+    async def test_returns_tuple_when_load_fails(self):
+        """Load failure returns (False, False)."""
+        from src.core.llm_dispatcher import LLMDispatcher
+
+        dispatcher = LLMDispatcher()
+        model = _make_mock_model(name="doomed", is_local=True, is_loaded=False)
+        model.thinking_model = False
+        model.has_vision = False
+
+        fake_manager = MagicMock()
+        fake_manager._thinking_enabled = False
+        fake_manager._vision_enabled = False
+        fake_manager.current_model = "doomed"
+
+        async def _fake_ensure_model(name, **kw):
+            return False
+        fake_manager.ensure_model = _fake_ensure_model
+
+        with patch("src.models.local_model_manager.get_local_manager",
+                   return_value=fake_manager):
+            result = await dispatcher._ensure_local_model(model)
+        assert isinstance(result, tuple) and len(result) == 2
+        assert result == (False, False)
+
+
+class TestRequestNoneFromHocaContract:
+    """Contract: when fatih_hoca.select returns None, request() must raise.
+
+    Confirms the coverage requested by the brief — dedicated seam test
+    between dispatcher and Hoca selection.
+    """
+
+    @pytest.mark.asyncio
+    async def test_main_work_none_pick_raises_model_call_failed(self):
+        from src.core.llm_dispatcher import CallCategory
+        from src.core.router import ModelCallFailed
+
+        dispatcher = _fresh_dispatcher()
+        with _patch_select(None):
+            with pytest.raises(ModelCallFailed):
+                await dispatcher.request(
+                    category=CallCategory.MAIN_WORK,
+                    task="coder",
+                    messages=[],
+                )
+
+    @pytest.mark.asyncio
+    async def test_overhead_none_pick_raises_runtime_error(self):
+        from src.core.llm_dispatcher import CallCategory
+
+        dispatcher = _fresh_dispatcher()
+        with _patch_select(None):
+            with pytest.raises(RuntimeError, match="OVERHEAD call failed"):
+                await dispatcher.request(
+                    category=CallCategory.OVERHEAD,
+                    task="router",
+                    messages=[],
+                )

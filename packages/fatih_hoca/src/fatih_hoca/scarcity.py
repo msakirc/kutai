@@ -79,7 +79,6 @@ def _time_bucketed_scarcity(model: Any, snapshot: Any) -> float:
 def _per_call_scarcity(
     model: Any,
     snapshot: Any,
-    queue_state: Any,
     task_difficulty: int,
 ) -> float:
     """Three arms: depletion (conservation), abundance (promotion), queue pressure.
@@ -122,14 +121,12 @@ def _per_call_scarcity(
     abundance_scarcity = max(0.0, supply)
 
     # ── Arm 3: queue pressure (conservation on easy tasks) ───────────
+    # Queue profile is pushed by Beckman (via queue_profile_push) and
+    # lives on snapshot.queue_profile — the sole source of queue state.
     # Accept either the local `fatih_hoca.requirements.QueueProfile`
-    # (`total_tasks`) or `nerd_herd.types.QueueProfile` pushed by
-    # Beckman (`total_ready_count`). If `queue_state` is absent, fall
-    # back to snapshot.queue_profile — wired automatically once Beckman
-    # pushes land.
-    qp = queue_state
-    if qp is None:
-        qp = getattr(snapshot, "queue_profile", None)
+    # (`total_tasks`) or `nerd_herd.types.QueueProfile`
+    # (`total_ready_count`) for flexibility.
+    qp = getattr(snapshot, "queue_profile", None)
     queue_scarcity = 0.0
     if qp is not None and task_difficulty < 7:
         total = int(
@@ -158,7 +155,6 @@ def _per_call_scarcity(
 def pool_scarcity(
     model: Any,
     snapshot: Any,
-    queue_state: Any = None,
     task_difficulty: int = 0,
 ) -> float:
     """Compute signed scarcity in [-1, +1].
@@ -168,9 +164,9 @@ def pool_scarcity(
     model : ModelInfo-like
         Must expose `is_local`, `is_free`, `provider`, `name`.
     snapshot : SystemSnapshot-like
-        Has `.local` and `.cloud` attrs.
-    queue_state : QueueProfile or None
-        Optional; used by per_call branch.
+        Has `.local`, `.cloud`, and `.queue_profile` attrs. The queue
+        profile (pushed by Beckman) is the sole source of queue state
+        for the per_call branch.
     task_difficulty : int
         Current task difficulty (1-10); used by per_call branch.
     """
@@ -180,5 +176,5 @@ def pool_scarcity(
     if pool is Pool.TIME_BUCKETED:
         return _time_bucketed_scarcity(model, snapshot)
     if pool is Pool.PER_CALL:
-        return _per_call_scarcity(model, snapshot, queue_state, task_difficulty)
+        return _per_call_scarcity(model, snapshot, task_difficulty)
     return 0.0

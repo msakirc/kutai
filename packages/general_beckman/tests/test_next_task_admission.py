@@ -26,7 +26,6 @@ async def test_admits_when_pool_abundant():
     with patch("general_beckman.queue.pick_ready_top_k", new=AsyncMock(return_value=[_task(1, priority=7)])), \
          patch("general_beckman._claim_task", new=AsyncMock(return_value=True)), \
          patch("general_beckman.cron.fire_due", new=AsyncMock(return_value=None)), \
-         patch("general_beckman.posthook_migration.run", new=AsyncMock(return_value=None)), \
          patch("fatih_hoca.select", return_value=_mock_pick()), \
          patch("nerd_herd.refresh_snapshot", new=AsyncMock(return_value=snap), create=True):
         out = await general_beckman.next_task()
@@ -44,7 +43,6 @@ async def test_holds_when_depleted_and_low_priority():
     with patch("general_beckman.queue.pick_ready_top_k", new=AsyncMock(return_value=[_task(1, priority=3)])), \
          patch("general_beckman._claim_task", new=AsyncMock(return_value=True)), \
          patch("general_beckman.cron.fire_due", new=AsyncMock(return_value=None)), \
-         patch("general_beckman.posthook_migration.run", new=AsyncMock(return_value=None)), \
          patch("fatih_hoca.select", return_value=_mock_pick()), \
          patch("nerd_herd.refresh_snapshot", new=AsyncMock(return_value=snap), create=True):
         out = await general_beckman.next_task()
@@ -62,7 +60,6 @@ async def test_skips_candidate_when_hoca_none():
     with patch("general_beckman.queue.pick_ready_top_k", new=AsyncMock(return_value=tasks)), \
          patch("general_beckman._claim_task", new=AsyncMock(return_value=True)), \
          patch("general_beckman.cron.fire_due", new=AsyncMock(return_value=None)), \
-         patch("general_beckman.posthook_migration.run", new=AsyncMock(return_value=None)), \
          patch("fatih_hoca.select", side_effect=lambda *a, **k: next(picks)), \
          patch("nerd_herd.refresh_snapshot", new=AsyncMock(return_value=snap), create=True):
         out = await general_beckman.next_task()

@@ -128,7 +128,6 @@ async def run_ticks(state: SimState, ticks: int = 50) -> dict:
         with patch("general_beckman.queue.pick_ready_top_k", new=fake_top_k), \
              patch("general_beckman._claim_task", new=fake_claim), \
              patch("general_beckman.cron.fire_due", new=fake_fire_due), \
-             patch("general_beckman.posthook_migration.run", new=fake_posthook_run), \
              patch("nerd_herd.refresh_snapshot", new=fake_snapshot, create=True), \
              patch("fatih_hoca.select", side_effect=fake_select, create=True):
             task = await gb.next_task()

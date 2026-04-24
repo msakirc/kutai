@@ -53,7 +53,6 @@ async def test_local_pick_rejected_when_local_already_in_flight():
                new=AsyncMock(return_value=[_task(1, priority=5, agent_type="researcher")])), \
          patch("general_beckman._claim_task", new=AsyncMock(return_value=True)), \
          patch("general_beckman.cron.fire_due", new=AsyncMock(return_value=None)), \
-         patch("general_beckman.posthook_migration.run", new=AsyncMock(return_value=None)), \
          patch("fatih_hoca.select", return_value=_mock_local_pick()), \
          patch("nerd_herd.refresh_snapshot", new=AsyncMock(return_value=snap), create=True):
         out = await general_beckman.next_task()
@@ -71,7 +70,6 @@ async def test_local_pick_rejected_even_at_max_urgency():
                new=AsyncMock(return_value=[_task(1, priority=10, agent_type="researcher")])), \
          patch("general_beckman._claim_task", new=AsyncMock(return_value=True)), \
          patch("general_beckman.cron.fire_due", new=AsyncMock(return_value=None)), \
-         patch("general_beckman.posthook_migration.run", new=AsyncMock(return_value=None)), \
          patch("fatih_hoca.select", return_value=_mock_local_pick()), \
          patch("nerd_herd.refresh_snapshot", new=AsyncMock(return_value=snap), create=True):
         out = await general_beckman.next_task()
@@ -116,7 +114,6 @@ async def test_sequential_local_admits_then_rejects_after_begin_call():
                new=AsyncMock(return_value=[_task(1, priority=5)])), \
          patch("general_beckman._claim_task", new=AsyncMock(return_value=True)), \
          patch("general_beckman.cron.fire_due", new=AsyncMock(return_value=None)), \
-         patch("general_beckman.posthook_migration.run", new=AsyncMock(return_value=None)), \
          patch("fatih_hoca.select", return_value=_mock_local_pick()), \
          patch("nerd_herd.refresh_snapshot", new=AsyncMock(return_value=snap), create=True):
         first = await general_beckman.next_task()
@@ -136,7 +133,6 @@ async def test_sequential_local_admits_then_rejects_after_begin_call():
                new=AsyncMock(return_value=[_task(2, priority=5)])), \
          patch("general_beckman._claim_task", new=AsyncMock(return_value=True)), \
          patch("general_beckman.cron.fire_due", new=AsyncMock(return_value=None)), \
-         patch("general_beckman.posthook_migration.run", new=AsyncMock(return_value=None)), \
          patch("fatih_hoca.select", return_value=_mock_local_pick()), \
          patch("nerd_herd.refresh_snapshot", new=AsyncMock(return_value=snap), create=True):
         second = await general_beckman.next_task()

@@ -147,10 +147,36 @@ def expand_steps_to_tasks(
         if step.get("triggers_clarification"):
             context["triggers_clarification"] = True
 
+        # Propagate any step-level `context` dict from the workflow JSON.
+        # Without this, fields like `per_site_n`, `max_groups`, or
+        # `requires_grading` declared on a step are silently dropped.
+        # Merge last so step JSON overrides computed defaults.
+        step_ctx = step.get("context")
+        if isinstance(step_ctx, dict):
+            for k, v in step_ctx.items():
+                context[k] = v
+
         # Mechanical-executor steps (salako): propagate executor tag + payload
         # into context so the orchestrator can route them without an LLM call.
         agent_name = step.get("agent", "executor")
         if step.get("executor") == "mechanical" or agent_name == "mechanical":
+            # Fallback: when the step's context used the legacy shape
+            # `{"executor": "<action>", ...}` (e.g. clarify_variant's
+            # `{"executor": "clarify", "kind": "variant_choice", ...}`),
+            # translate it into the canonical _mechanical_context shape
+            # BEFORE we overwrite context["executor"] below. Otherwise
+            # salako.run receives no `action` and fails with
+            # `unknown mechanical action: None`.
+            if (
+                "payload" not in step
+                and "payload" not in context
+                and isinstance(step_ctx, dict)
+            ):
+                _legacy_action = step_ctx.get("executor")
+                if _legacy_action and _legacy_action != "mechanical":
+                    _skip = {"executor", "payload"}
+                    extras = {k: v for k, v in step_ctx.items() if k not in _skip}
+                    context["payload"] = {"action": _legacy_action, **extras}
             context["executor"] = "mechanical"
             if "payload" in step:
                 context["payload"] = step["payload"]

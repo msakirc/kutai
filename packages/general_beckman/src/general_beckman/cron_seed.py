@@ -35,18 +35,11 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 7200,
         "payload": {"_executor": "todo_reminder"},
     },
-    {
-        "title": "daily_digest",
-        "description": "Daily summary digest",
-        "interval_seconds": 86400,
-        "payload": {"_executor": "daily_digest"},
-    },
-    {
-        "title": "api_discovery",
-        "description": "Discover new free APIs",
-        "interval_seconds": 86400,
-        "payload": {"_executor": "api_discovery"},
-    },
+    # daily_digest + api_discovery cadences intentionally omitted —
+    # their salako handlers were dropped in the Phase 2b Beckman refactor
+    # and never re-implemented. Re-add here once salako gains matching
+    # action handlers; until then, seeding them just fills DLQ with
+    # `unknown mechanical action` rows every day.
     {
         "title": "price_watch_check",
         "description": "Re-scrape watched products and notify on price drops",

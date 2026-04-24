@@ -43,11 +43,9 @@ async def next_task():
     from general_beckman import queue as _queue
     from general_beckman.admission import compute_urgency, threshold
     from general_beckman.cron import fire_due
-    from general_beckman import posthook_migration
 
     top_k = int(os.environ.get("BECKMAN_TOP_K", "5"))
 
-    await posthook_migration.run()  # one-shot; no-op after first success
     await fire_due()
 
     # One fresh snapshot per tick. Admission gates on snapshot.pressure_for(pick.model);

@@ -73,42 +73,87 @@ async def clarify(task: dict) -> dict:
         mission_id = task.get("mission_id")
         source: dict = {}
         if mission_id is not None:
+            # Primary: ArtifactStore (cache-first, blackboard fallback).
             try:
                 from src.workflows.engine.artifacts import get_artifact_store
                 import json as _json
                 store = get_artifact_store()
                 raw = await store.retrieve(mission_id, payload_from)
-                if isinstance(raw, str):
+                if isinstance(raw, str) and raw.strip():
                     source = _json.loads(raw)
                 elif isinstance(raw, dict):
                     source = raw
             except Exception as exc:
                 logger.warning(
-                    "clarify variant_choice: artifact lookup failed for %r: %s",
+                    "clarify variant_choice: artifact-store lookup failed for %r: %s",
                     payload_from, exc,
                 )
+            # Fallback: read the blackboard directly. ArtifactStore can
+            # miss under certain timing (cache not yet populated + store
+            # instance divergence across coroutines). Mission 49 proved
+            # this path silently returned empty source → empty
+            # base_label → the keyboard prompt was the generic "Hangi
+            # model?" instead of "Xiaomi 15T ... için hangi model?".
+            if not source:
+                try:
+                    from src.collaboration.blackboard import read_blackboard
+                    artifacts = await read_blackboard(int(mission_id), "artifacts")
+                    if isinstance(artifacts, dict):
+                        raw2 = artifacts.get(payload_from)
+                        if isinstance(raw2, str) and raw2.strip():
+                            import json as _json
+                            source = _json.loads(raw2)
+                        elif isinstance(raw2, dict):
+                            source = raw2
+                except Exception as exc:
+                    logger.warning(
+                        "clarify variant_choice: blackboard fallback failed for %r: %s",
+                        payload_from, exc,
+                    )
+        if not source:
+            logger.warning(
+                "clarify variant_choice: no source artifact found for mission=%s key=%r",
+                mission_id, payload_from,
+            )
         base_label = source.get("base_label", "")
         options = source.get("clarify_options") or []
-        # Chat id travels through the mission context (set by the
-        # originating Telegram command when the shopping mission was
-        # created). Pull it lazily.
+        # chat_id lives in the blackboard's artifact bag (set by the
+        # Telegram handler that spawned the shopping mission), NOT in
+        # missions.context. Mission 49 proved this: keyboard_sent=false
+        # because my earlier code only looked at missions.context and
+        # got None. Fall back to task.chat_id if blackboard isn't
+        # reachable for any reason.
         chat_id = None
-        try:
-            from src.infra.db import get_db as _get_db
-            _db = await _get_db()
-            _cur = await _db.execute(
-                "SELECT context FROM missions WHERE id = ?", (mission_id,),
-            )
-            _row = await _cur.fetchone()
-            await _cur.close()
-            if _row and _row[0]:
-                import json as _json2
-                _mctx = _json2.loads(_row[0])
-                if isinstance(_mctx, str):
-                    _mctx = _json2.loads(_mctx)
-                chat_id = (_mctx or {}).get("chat_id")
-        except Exception as exc:
-            logger.debug("clarify chat_id lookup failed: %s", exc)
+        if mission_id is not None:
+            try:
+                from src.collaboration.blackboard import read_blackboard
+                artifacts = await read_blackboard(mission_id, "artifacts")
+                if isinstance(artifacts, dict):
+                    chat_id = artifacts.get("chat_id")
+            except Exception as exc:
+                logger.debug("clarify chat_id (blackboard) lookup failed: %s", exc)
+        if chat_id is None:
+            # Secondary: task row may carry chat_id (orchestrator
+            # injects it on standalone /task flows).
+            chat_id = task.get("chat_id")
+        if chat_id is None:
+            # Tertiary: some seed paths still use missions.context.
+            try:
+                from src.infra.db import get_db as _get_db
+                _db = await _get_db()
+                _cur = await _db.execute(
+                    "SELECT context FROM missions WHERE id = ?", (mission_id,),
+                )
+                _row = await _cur.fetchone()
+                await _cur.close()
+                if _row and _row[0]:
+                    import json as _json2
+                    _mctx = _json2.loads(_row[0])
+                    if isinstance(_mctx, str):
+                        _mctx = _json2.loads(_mctx)
+                    chat_id = (_mctx or {}).get("chat_id")
+            except Exception as exc:
+                logger.debug("clarify chat_id (missions) lookup failed: %s", exc)
 
         sent = await send_variant_keyboard(
             mission_id,

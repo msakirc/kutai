@@ -606,6 +606,12 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
             if can_bonus:
                 ctx["_bonus_count"] = bonus_count + 1
                 max_attempts += 1
+                # Same feedback injection as the ordinary retry branch —
+                # see the detailed comment further down.
+                ctx["_schema_error"] = f"Grader rejected output: {error_str}"
+                prev_output = source.get("result") or ""
+                if isinstance(prev_output, str) and prev_output.strip():
+                    ctx["_prev_output"] = prev_output[:6000]
                 await update_task(
                     a.source_task_id,
                     status="pending",
@@ -622,6 +628,17 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
             )
             return
 
+        # Feed the grader's rejection text + previous output back into the
+        # task context so the agent's retry prompt sees it via the same
+        # mechanism that post_execute_workflow_step uses for schema
+        # validation failures. Without this, grader-FAIL retries went into
+        # the next attempt blind — model produced the same truncated/
+        # misclassified output over and over until the attempt cap hit DLQ
+        # (2888 feature_prioritization observed 2026-04-24 at 5/6 attempts).
+        ctx["_schema_error"] = f"Grader rejected output: {error_str}"
+        prev_output = source.get("result") or ""
+        if isinstance(prev_output, str) and prev_output.strip():
+            ctx["_prev_output"] = prev_output[:6000]
         await update_task(
             a.source_task_id,
             status="pending",

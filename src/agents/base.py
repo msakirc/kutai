@@ -2986,7 +2986,10 @@ class BaseAgent:
         _out_override = task_ctx.get("estimated_output_tokens")
         if _out_override:
             try:
-                reqs.estimated_output_tokens = max(500, min(12000, int(_out_override)))
+                # 16k ceiling chosen to cover feature_brainstorm's 50-200
+                # item list worst-case; still well under any local model's
+                # trained ctx. Bump if a new step needs more.
+                reqs.estimated_output_tokens = max(500, min(16000, int(_out_override)))
             except (TypeError, ValueError):
                 pass
 

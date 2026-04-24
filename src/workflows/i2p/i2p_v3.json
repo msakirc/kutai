@@ -449,6 +449,9 @@
             "ci_cd_detected"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 5000
       }
     },
     {
@@ -485,6 +488,9 @@
             "patterns_to_preserve"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 4000
       }
     },
     {
@@ -871,6 +877,9 @@
             "Open Risks"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 5000
       }
     },
     {
@@ -1202,7 +1211,10 @@
       },
       "api_hints": [
         "market_data"
-      ]
+      ],
+      "context": {
+        "estimated_output_tokens": 5000
+      }
     },
     {
       "id": "1.9",
@@ -1459,6 +1471,9 @@
             "recommendation"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 4000
       }
     },
     {
@@ -1646,6 +1661,9 @@
             "category"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 12000
       }
     },
     {
@@ -3585,6 +3603,9 @@
             "Accessibility Guide"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 5000
       }
     },
     {
@@ -5664,6 +5685,9 @@
             "entries"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 8000
       }
     },
     {
@@ -7546,6 +7570,9 @@
             "verified"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 4000
       }
     },
     {

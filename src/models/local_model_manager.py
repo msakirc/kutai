@@ -223,11 +223,23 @@ class LocalModelManager:
         """
         await self._ensure_started()
 
-        # Check if already loaded with same config
+        # Check if already loaded with same config. Also verify the loaded
+        # context covers the task's min_context floor — a prior task may
+        # have loaded this model at a smaller ctx, and the short-circuit
+        # here used to skip the reload, causing llama-server to silently
+        # truncate prompts or outputs beyond its loaded ctx. If min_context
+        # exceeds what's loaded, fall through to the full reload path so
+        # calculate_dynamic_context can re-size the window.
         status = self._dallama.status
         if status.model_name == model_name and status.healthy:
-            self._dallama.keep_alive()
-            return True
+            loaded_ctx = int(getattr(status, "context_length", 0) or 0)
+            if min_context <= 0 or loaded_ctx >= min_context:
+                self._dallama.keep_alive()
+                return True
+            logger.info(
+                "Reloading %s to expand context %d -> >= %d for task",
+                model_name, loaded_ctx, min_context,
+            )
 
         # Look up ModelInfo from registry
         from .model_registry import get_registry

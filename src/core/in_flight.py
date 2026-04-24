@@ -111,7 +111,28 @@ async def reserve_task(task_id: int, pick) -> None:
         is_local=bool(getattr(model, "is_local", False)),
         started_at=time.time(),
     )
+    logger.info(
+        "reserve_task task=%s model=%s local=%s total=%d",
+        task_id, getattr(model, "name", ""),
+        bool(getattr(model, "is_local", False)),
+        len(_task_slots) + len(_call_entries),
+    )
     await _push()
+
+
+async def release_task(task_id: int) -> None:
+    """Clear the per-task slot when the task fully terminates.
+
+    Called by orchestrator's ``_dispatch`` finally block. Safe to call
+    multiple times — no-op when the slot is already absent (e.g. mechanical
+    tasks that never reached dispatcher).
+    """
+    if _task_slots.pop(task_id, None) is not None:
+        logger.info(
+            "release_task task=%s remaining=%d",
+            task_id, len(_task_slots) + len(_call_entries),
+        )
+        await _push()
 
 
 async def begin_call(
@@ -165,15 +186,4 @@ async def end_call(call_id: str) -> None:
     if call_id.startswith("task-"):
         return
     if _call_entries.pop(call_id, None) is not None:
-        await _push()
-
-
-async def release_task(task_id: int) -> None:
-    """Clear the per-task slot when the task fully terminates.
-
-    Called by orchestrator's ``_dispatch`` finally block. Safe to call
-    multiple times — no-op when the slot is already absent (e.g. mechanical
-    tasks that never reached dispatcher).
-    """
-    if _task_slots.pop(task_id, None) is not None:
         await _push()

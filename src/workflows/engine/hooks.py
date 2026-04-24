@@ -192,24 +192,6 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
                     if artifact_name in data and isinstance(data[artifact_name], dict):
                         data = data[artifact_name]
                     missing = [f for f in required if f not in data]
-                    # Auto-fill safety net: when the first key(s) came through
-                    # but the LLM stopped before filling trailing keys (model
-                    # ran out of budget mid-JSON / judged its answer done),
-                    # fill the missing ones with empty arrays so downstream
-                    # consumers can still proceed. Only triggers when at
-                    # least one required key WAS provided — if every key is
-                    # missing, the artifact is a genuine failure and we
-                    # surface the error normally.
-                    if missing and len(missing) < len(required):
-                        logger.warning(
-                            f"[Workflow Hook] '{artifact_name}' missing "
-                            f"trailing required fields {missing} — auto-"
-                            f"filling with empty arrays so downstream can "
-                            f"proceed. Upstream prompt should be tightened."
-                        )
-                        for f in missing:
-                            data[f] = []
-                        missing = []
                     if missing:
                         return False, f"Missing required fields in '{artifact_name}': {missing}"
                     continue  # this artifact passed
@@ -243,22 +225,6 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
                         core = words
                     if not all(w in text_norm for w in core):
                         missing.append(f)
-                # Partial-output rescue: when the output MENTIONS some
-                # required fields but not others (typical truncation
-                # pattern — model emitted `{"must_have": [...]}` and ran
-                # out of context/budget before filling should_have /
-                # could_have / wont_have), degrade the hard reject to a
-                # warning so downstream steps can still run. Only applies
-                # when at least one required field WAS present; wholly
-                # empty output still fails.
-                if missing and len(missing) < len(required):
-                    logger.warning(
-                        f"[Workflow Hook] '{artifact_name}' missing "
-                        f"trailing fields {missing} in text output — "
-                        f"accepting partial artifact. Upstream prompt "
-                        f"should be tightened to demand complete output."
-                    )
-                    missing = []
                 if missing:
                     return False, f"'{artifact_name}' missing content about: {missing}"
 

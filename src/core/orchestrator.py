@@ -61,6 +61,41 @@ class Orchestrator:
 
         async def _run() -> dict:
             ctx = parse_context(task)
+            # Skip-when gate: evaluate the workflow step's skip_when
+            # expression against loaded artifacts BEFORE dispatching. If
+            # the condition is met, short-circuit with an empty
+            # completion and requires_grading=false so the post-hook
+            # grader doesn't mark the empty output as a quality failure.
+            # Fixes shopping_v2's synth_one steps that previously ran
+            # against a non-"chosen" gate and produced grader-failing
+            # empty cards on every mission.
+            try:
+                from src.workflows.engine.hooks import should_skip_workflow_step
+                _skip, _reason = await should_skip_workflow_step(task)
+            except Exception as _e:
+                logger.debug(f"should_skip check failed #{task_id}: {_e}")
+                _skip, _reason = False, ""
+            if _skip:
+                logger.info(
+                    f"[Task #{task_id}] skipped via skip_when: {_reason}"
+                )
+                # Inject requires_grading=false into ctx so the post-hook
+                # layer doesn't spawn a grader.
+                try:
+                    ctx["requires_grading"] = False
+                    from src.infra.db import update_task
+                    await update_task(task_id, context=json.dumps(ctx))
+                except Exception:
+                    pass
+                return {
+                    "status": "completed",
+                    "result": json.dumps({"skipped": True, "reason": _reason}),
+                    "model": "workflow_engine",
+                    "cost": 0.0,
+                    "iterations": 0,
+                    "_skipped": True,
+                }
+
             is_mech = (task.get("executor") == "mechanical"
                        or ctx.get("executor") == "mechanical"
                        or agent_type == "mechanical")

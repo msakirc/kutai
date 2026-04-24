@@ -526,6 +526,116 @@ def get_artifact_store() -> ArtifactStore:
 # ── Helper functions ───────────────────────────────────────────────────────
 
 
+async def should_skip_workflow_step(task: dict) -> tuple[bool, str]:
+    """Evaluate the step's ``skip_when_expr`` against loaded artifacts.
+
+    Returns ``(True, reason)`` when the step should short-circuit as
+    skipped, else ``(False, "")``. Safe default is to NOT skip on any
+    parse or lookup error — misconfigured expressions should not silently
+    suppress work. Current supported expression shape:
+
+        <artifact_name>.<dot.path> != '<literal>'
+        <artifact_name>.<dot.path> == '<literal>'
+
+    Runtime-loaded — the artifact store is consulted each time the task
+    is dispatched so skip conditions reflect post-completion state of
+    dependencies, not whatever was in flight when the task was expanded.
+    """
+    ctx = _parse_context(task)
+    mission_id = ctx.get("mission_id") or task.get("mission_id")
+    if mission_id is None:
+        return False, ""
+
+    expr = ctx.get("skip_when_expr")
+    # Legacy rescue: tasks expanded before the skip_when_expr context
+    # field was added won't have it. Look the step's skip_when up in
+    # the live workflow JSON. Works for the shopping_v2 synth_one /
+    # clarify_variant steps that have DB rows pre-dating the fix.
+    if (not expr or not isinstance(expr, str)) and ctx.get("is_workflow_step"):
+        try:
+            step_id = ctx.get("workflow_step_id")
+            if step_id:
+                from src.infra.db import get_db as _get_db
+                _db = await _get_db()
+                _cur = await _db.execute(
+                    "SELECT context FROM missions WHERE id = ?", (mission_id,),
+                )
+                _row = await _cur.fetchone()
+                await _cur.close()
+                _mctx = {}
+                if _row and _row[0]:
+                    try:
+                        _mctx = json.loads(_row[0])
+                        if isinstance(_mctx, str):
+                            _mctx = json.loads(_mctx)
+                    except (json.JSONDecodeError, TypeError):
+                        _mctx = {}
+                _wf_name = (
+                    _mctx.get("workflow_name")
+                    if isinstance(_mctx, dict) else None
+                ) or "i2p_v3"
+                from src.workflows.engine.loader import load_workflow
+                _wf = load_workflow(_wf_name)
+                _step = _wf.get_step(step_id)
+                if _step:
+                    _sw = _step.get("skip_when")
+                    if isinstance(_sw, str):
+                        expr = _sw
+        except Exception as _e:
+            logger.debug(
+                f"[Workflow Hook] skip_when step lookup failed: {_e}"
+            )
+    if not expr or not isinstance(expr, str):
+        return False, ""
+
+    import re as _re
+    m = _re.match(
+        r"\s*([A-Za-z_][\w]*)((?:\.[A-Za-z_][\w]*)+)\s*(==|!=)\s*'([^']*)'\s*$",
+        expr,
+    )
+    if not m:
+        logger.warning(
+            f"[Workflow Hook] skip_when_expr {expr!r} unparseable — not skipping"
+        )
+        return False, ""
+
+    artifact_name = m.group(1)
+    path = m.group(2).lstrip(".").split(".")
+    op = m.group(3)
+    literal = m.group(4)
+
+    try:
+        store = get_artifact_store()
+        raw_artifact = await store.retrieve(mission_id, artifact_name)
+    except Exception as exc:
+        logger.debug(
+            f"[Workflow Hook] skip_when lookup failed for {artifact_name}: {exc}"
+        )
+        return False, ""
+
+    if raw_artifact is None:
+        # Artifact not produced yet — can't evaluate; let step run.
+        return False, ""
+
+    try:
+        data = json.loads(raw_artifact) if isinstance(raw_artifact, str) else raw_artifact
+    except (json.JSONDecodeError, TypeError):
+        return False, ""
+
+    current = data
+    for segment in path:
+        if isinstance(current, dict):
+            current = current.get(segment)
+        else:
+            current = None
+            break
+
+    matched = (op == "==" and current == literal) or (op == "!=" and current != literal)
+    if matched:
+        return True, f"{artifact_name}.{'.'.join(path)} {op} {literal!r}"
+    return False, ""
+
+
 def is_workflow_step(context: dict) -> bool:
     """Check whether the task context marks this as a workflow step."""
     return bool(context.get("is_workflow_step"))

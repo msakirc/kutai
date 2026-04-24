@@ -141,8 +141,18 @@ def expand_steps_to_tasks(
             context["artifact_schema"] = artifact_schema
 
         skip_when = step.get("skip_when")
-        if skip_when and isinstance(skip_when, list):
-            context["skip_when"] = skip_when
+        if skip_when:
+            if isinstance(skip_when, list):
+                context["skip_when"] = skip_when
+            elif isinstance(skip_when, str):
+                # String expression form: evaluated at dispatch time against
+                # loaded artifacts. Shopping workflows use this shape
+                # (e.g. "gate_result.gate.kind != 'chosen'") — previously
+                # silently dropped here because the branch above only
+                # accepted lists, and the step then ran regardless of the
+                # gate outcome, producing empty output that downstream
+                # grading rejected as quality failures.
+                context["skip_when_expr"] = skip_when
 
         if step.get("triggers_clarification"):
             context["triggers_clarification"] = True

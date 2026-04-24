@@ -197,21 +197,25 @@ class LLMDispatcher:
             # tool results) rather than forcing VRAM blowups.
             if model.is_local and getattr(model, "location", "") != "ollama":
                 is_thinking = model.thinking_model and needs_thinking
-                # Lift the load-time context floor to the task's estimated
-                # need so calculate_dynamic_context doesn't collapse to the
-                # 4096 safe-minimum on tight VRAM windows. Without this,
-                # llama-server loads ctx=4096 and litellm rejects a 4680-
-                # token prompt up front ("exceeds the available context").
-                _est_in = kwargs.get("estimated_input_tokens", 0) or 0
-                _est_out = kwargs.get("estimated_output_tokens", 0) or 0
-                _est_ctx = (
-                    int((_est_in + _est_out) * 1.3) + 512
-                    if (_est_in or _est_out) else 0
-                )
+                # Caller (agent) passes min_context=reqs.effective_context_needed.
+                # Plumbed to ensure_local_model so calculate_dynamic_context's
+                # floor bumps ctx up to task need — otherwise ctx collapses to
+                # the 4096 safe-minimum on tight VRAM and litellm rejects any
+                # larger prompt with "exceeds the available context size".
+                _min_ctx = int(kwargs.get("min_context", 0) or 0)
+                if _min_ctx <= 0:
+                    # Legacy/standalone callers without a ModelRequirements
+                    # object — derive the same formula reqs.effective_context_needed
+                    # uses, so behaviour matches whether caller plumbs min_context
+                    # explicitly or not.
+                    _in = int(kwargs.get("estimated_input_tokens", 0) or 0)
+                    _out = int(kwargs.get("estimated_output_tokens", 0) or 0)
+                    if _in or _out:
+                        _min_ctx = int((_in + _out) * 1.3) + 512
                 ok, swap_happened = await self._ensure_local_model(
                     model, needs_thinking=is_thinking,
                     load_timeout=pick.estimated_load_seconds or 0.0,
-                    estimated_context=_est_ctx,
+                    estimated_context=_min_ctx,
                 )
                 if swap_happened:
                     import nerd_herd as _nerd_herd

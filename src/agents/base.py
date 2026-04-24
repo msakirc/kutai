@@ -338,6 +338,16 @@ class BaseAgent:
                 "user message instead."
             )
 
+        # Tool hygiene: agents repeatedly re-read the same files / prior
+        # artifacts within one task, burning iterations. Blackboard already
+        # carries those results forward — make the policy explicit.
+        parts.append(
+            "TOOL USE: Do NOT re-read files you already read this iteration "
+            "(or in a prior iteration of this task). Check the blackboard / "
+            "prior tool results in the conversation first — the content is "
+            "already there. Reading the same file twice wastes iterations."
+        )
+
         # Prompt injection defense (plan_v5 item #22): guard against
         # malicious task descriptions that try to override agent behaviour.
         parts.append(
@@ -1328,11 +1338,98 @@ class BaseAgent:
 
         return result
 
+    def _prune_tool_results_to_fit(
+        self,
+        messages: list[dict],
+        ctx_window: int,
+        estimated_output_tokens: int,
+        task_id: int | str = "?",
+    ) -> list[dict]:
+        """
+        Cheap char/3 prompt-size guard that runs BEFORE the heavier
+        :meth:`_trim_messages_if_needed` compression.  If the current prompt
+        estimate exceeds ``ctx_window - estimated_output_tokens``, drop the
+        oldest *tool-result* exchanges (assistant+user pair where the user
+        message is a tool result) until we fit.  System prompt (index 0),
+        initial user context (index 1), and the most recent exchange
+        (last 2 messages) are always preserved.
+
+        Logs ``[Task #X] Pruned N oldest tool results to fit context`` once
+        per call when pruning happened.
+        """
+        if len(messages) <= 4:
+            return messages
+
+        budget = ctx_window - max(0, estimated_output_tokens)
+        if budget <= 0:
+            return messages
+
+        def _estimate(msgs: list[dict]) -> int:
+            total = 0
+            for m in msgs:
+                c = m.get("content")
+                if isinstance(c, str):
+                    total += len(c)
+                elif c is not None:
+                    total += len(str(c))
+            return total // 3
+
+        if _estimate(messages) <= budget:
+            return messages
+
+        # Identify tool-result user messages: role=user at index >= 2 whose
+        # preceding message is role=assistant.  We drop them paired with
+        # that preceding assistant turn (oldest first).  Preserve the last
+        # two messages (most recent exchange).
+        preserve_tail_from = len(messages) - 2
+
+        pruned = list(messages)
+        dropped = 0
+        # Walk from oldest to newest, skipping head (0,1) and tail.
+        i = 2
+        while _estimate(pruned) > budget and i < len(pruned) - 2:
+            prev = pruned[i - 1]
+            cur = pruned[i]
+            if (
+                cur.get("role") == "user"
+                and prev.get("role") == "assistant"
+                and (i - 1) >= 2                       # don't touch head
+                and i < preserve_tail_from              # don't touch tail
+            ):
+                # Drop the assistant+tool-result pair
+                del pruned[i - 1:i + 1]
+                preserve_tail_from -= 2
+                dropped += 1
+                # i now points to what was i+1; re-check from same spot
+                i = max(2, i - 1)
+                continue
+            i += 1
+
+        if dropped:
+            logger.warning(
+                f"[Task #{task_id}] Pruned {dropped} oldest tool result"
+                f"{'s' if dropped != 1 else ''} to fit context "
+                f"(budget {budget} tokens, estimate before="
+                f"{_estimate(messages)}, after={_estimate(pruned)})"
+            )
+        return pruned
+
     # ------------------------------------------------------------------ #
     #  Function calling support                                            #
     # ------------------------------------------------------------------ #
-    def _build_litellm_tools(self) -> list[dict] | None:
-        """Build filtered tool schemas for LiteLLM function calling."""
+    def _build_litellm_tools(
+        self, exclude: set[str] | None = None,
+    ) -> list[dict] | None:
+        """Build filtered tool schemas for LiteLLM function calling.
+
+        exclude: tool names to strip from the schema list (e.g. ``read_file``
+        once the agent has already read a file this task — discourages the
+        LLM from re-reading content already present in the blackboard).
+        """
+        exclude = exclude or set()
+        # final_answer / clarify are pseudo-tools — never excludable.
+        exclude = {t for t in exclude if t not in ("final_answer", "clarify")}
+
         if self.allowed_tools is not None and not self.allowed_tools:
             return None  # explicitly no tools
 
@@ -1341,8 +1438,12 @@ class BaseAgent:
             return [
                 s for s in TOOL_SCHEMAS
                 if s["function"]["name"] in allowed
+                and s["function"]["name"] not in exclude
             ]
-        return list(TOOL_SCHEMAS)
+        return [
+            s for s in TOOL_SCHEMAS
+            if s["function"]["name"] not in exclude
+        ]
 
     @staticmethod
     def _parse_function_call_response(tool_calls: list[dict]) -> dict | None:
@@ -1658,6 +1759,12 @@ class BaseAgent:
         useful_iterations = 0
         empty_response_count = 0
 
+        # Per-task cumulative tool-call tracker (reset per outer iteration
+        # via ``_iter_tool_calls_seen``).  Used to dynamically strip tools
+        # like read_file once the agent has already invoked them — prevents
+        # re-reading artifacts already present in the blackboard/history.
+        self._iter_tool_calls_seen: set[str] = set()
+
         try:
           # Budget is fresh per attempt. Checkpoint preserves messages/tool ops
           # for LLM context; it does not consume the new attempt's budget.
@@ -1747,6 +1854,22 @@ class BaseAgent:
                     reqs.estimated_output_tokens, 4096,
                 )
 
+                # ── Prune oldest tool-result pairs if estimate exceeds
+                # context budget (cheap char/3 guard before the heavier
+                # compression below).  llama-server silently truncates long
+                # prompts otherwise — we prefer to drop oldest tool output
+                # visibly and log it.
+                try:
+                    _ctx_win = self._get_context_window(estimation_model, reqs)
+                    messages = self._prune_tool_results_to_fit(
+                        messages,
+                        ctx_window=_ctx_win,
+                        estimated_output_tokens=reqs.estimated_output_tokens,
+                        task_id=task_id,
+                    )
+                except Exception as _prune_exc:
+                    logger.debug(f"[Task #{task_id}] prune skipped: {_prune_exc}")
+
                 # ── Trim context ── (now accepts reqs directly)
                 messages = self._trim_messages_if_needed(
                     messages, estimation_model, reqs,
@@ -1786,7 +1909,17 @@ class BaseAgent:
                             ),
                         })
                 else:
-                    litellm_tools = self._build_litellm_tools()
+                    # Dynamic tool strip: if the agent already read a file
+                    # earlier this task, drop ``read_file`` from the schema
+                    # so the LLM reuses the blackboard/prior tool results
+                    # instead of re-reading.  The cumulative set lives on
+                    # ``self._iter_tool_calls_seen`` (reset per-task).
+                    _exclude: set[str] = set()
+                    if "read_file" in getattr(
+                        self, "_iter_tool_calls_seen", set()
+                    ):
+                        _exclude.add("read_file")
+                    litellm_tools = self._build_litellm_tools(exclude=_exclude)
                 if litellm_tools:
                     reqs.needs_function_calling = True
 
@@ -1810,6 +1943,7 @@ class BaseAgent:
                         prefer_local=reqs.prefer_local,
                         estimated_input_tokens=reqs.estimated_input_tokens,
                         estimated_output_tokens=reqs.estimated_output_tokens,
+                        min_context=reqs.effective_context_needed,
                         priority=reqs.priority,
                         exclude_models=reqs.exclude_models or [],
                         remaining_budget=max(0.0, _remaining),
@@ -2137,6 +2271,10 @@ class BaseAgent:
                 tools_used = True
                 tool_name = parsed.get("tool", "")
                 tools_used_names.add(tool_name)
+                try:
+                    self._iter_tool_calls_seen.add(tool_name)
+                except AttributeError:
+                    self._iter_tool_calls_seen = {tool_name}
                 tool_args = parsed.get("args", {})
                 if not isinstance(tool_args, dict):
                     tool_args = {}
@@ -2406,6 +2544,10 @@ class BaseAgent:
                     if not isinstance(t_args, dict):
                         t_args = {}
                     tools_used_names.add(t_name)
+                    try:
+                        self._iter_tool_calls_seen.add(t_name)
+                    except AttributeError:
+                        self._iter_tool_calls_seen = {t_name}
 
                     if self.allowed_tools is not None and t_name not in self.allowed_tools:
                         validated.append((t_name, t_args, f"❌ Tool '{t_name}' not available."))
@@ -2910,6 +3052,7 @@ class BaseAgent:
                 prefer_local=reqs.prefer_local,
                 estimated_input_tokens=reqs.estimated_input_tokens,
                 estimated_output_tokens=reqs.estimated_output_tokens,
+                min_context=reqs.effective_context_needed,
                 priority=reqs.priority,
                 exclude_models=reqs.exclude_models or [],
             )
@@ -3007,6 +3150,7 @@ class BaseAgent:
                 messages=messages,
                 estimated_input_tokens=reflect_reqs.estimated_input_tokens,
                 estimated_output_tokens=reflect_reqs.estimated_output_tokens,
+                min_context=reflect_reqs.effective_context_needed,
                 prefer_speed=reflect_reqs.prefer_speed,
             )
             raw = response.get("content", "").strip()

@@ -136,7 +136,15 @@ async def sweep_queue() -> None:
     if stuck_ungraded:
         await db.commit()
 
-    # 3. Tasks blocked by ALL failed deps → cascade failure
+    # 3. Tasks blocked by ANY terminally-failed dep → cascade failure.
+    #
+    # Historically this required ALL deps to be failed, which left mission
+    # 47 deadlocked: [3.0] format_response depends on [3122(failed),
+    # 3124(completed), 3125(completed)] — 1 of 3 failed, so the gate
+    # (failed_count == total_non_skipped) never fired and the step sat
+    # pending indefinitely. Downstream steps that need ANY failed artifact
+    # cannot produce their own output, so one failed dep is enough to
+    # propagate.
     cursor2 = await db.execute(
         "SELECT id, title, depends_on FROM tasks "
         "WHERE status = 'pending' AND depends_on != '[]'"
@@ -151,60 +159,54 @@ async def sweep_queue() -> None:
             continue
 
         placeholders = ",".join("?" * len(deps))
-        # Count non-skipped deps that are failed
+        # Find failed deps, if any.
         fail_cursor = await db.execute(
-            f"SELECT COUNT(*) FROM tasks WHERE id IN ({placeholders}) AND status = 'failed'",
-            deps
+            f"SELECT id FROM tasks WHERE id IN ({placeholders}) AND status = 'failed'",
+            deps,
         )
-        failed_count = (await fail_cursor.fetchone())[0]
-
-        if failed_count == 0:
+        failed_dep_ids = [r[0] for r in await fail_cursor.fetchall()]
+        if not failed_dep_ids:
             continue
 
-        # Count deps still in progress (not terminal)
+        # Wait for any still-running deps to settle before cascading —
+        # prevents premature fail when a parallel sibling may still pass.
         pending_cursor = await db.execute(
-            f"SELECT COUNT(*) FROM tasks WHERE id IN ({placeholders}) AND status NOT IN ('completed', 'failed', 'cancelled', 'skipped')",
-            deps
+            f"SELECT COUNT(*) FROM tasks WHERE id IN ({placeholders}) "
+            f"AND status NOT IN ('completed', 'failed', 'cancelled', 'skipped')",
+            deps,
         )
         still_pending = (await pending_cursor.fetchone())[0]
-
         if still_pending > 0:
             continue  # some deps still running, don't cascade yet
 
-        # All deps are terminal. Count non-skipped ones.
-        total_cursor = await db.execute(
-            f"SELECT COUNT(*) FROM tasks WHERE id IN ({placeholders}) AND status NOT IN ('skipped')",
-            deps
+        # At least one dep is failed AND all deps are terminal. Check whether
+        # any failed dep is recoverable via unresolved DLQ (human may /retry).
+        failed_ph = ",".join("?" * len(failed_dep_ids))
+        try:
+            dlq_cursor = await db.execute(
+                f"""SELECT COUNT(*) FROM dead_letter_tasks
+                    WHERE task_id IN ({failed_ph})
+                    AND resolved_at IS NULL""",
+                failed_dep_ids,
+            )
+            dlq_count = (await dlq_cursor.fetchone())[0]
+        except Exception:
+            dlq_count = 0
+        if dlq_count > 0:
+            continue  # failed dep is in DLQ pending human decision; wait
+
+        logger.warning(
+            f"[Sweep] Task #{task['id']} has failed dep(s) {failed_dep_ids} — "
+            f"routing to DLQ (no unresolved DLQ entries blocking)"
         )
-        total_non_skipped = (await total_cursor.fetchone())[0]
-
-        if failed_count == total_non_skipped and total_non_skipped > 0:
-            # Don't cascade if any failed dep is in DLQ (recoverable).
-            # The human may retry it via /dlq retry.
-            try:
-                dlq_cursor = await db.execute(
-                    f"""SELECT COUNT(*) FROM dead_letter_tasks
-                        WHERE task_id IN ({placeholders})
-                        AND resolved_at IS NULL""",
-                    deps
-                )
-                dlq_count = (await dlq_cursor.fetchone())[0]
-            except Exception:
-                dlq_count = 0
-            if dlq_count > 0:
-                continue  # dep is in DLQ, don't cascade yet
-
-            logger.warning(
-                f"[Sweep] Task #{task['id']} all deps failed, routing to DLQ"
-            )
-            task_for_dlq = dict(task)
-            task_for_dlq["failed_in_phase"] = "worker"
-            await _dlq_write(
-                task_for_dlq,
-                error="All dependencies failed",
-                category="dependency",
-                attempts=int(task.get("worker_attempts") or 0),
-            )
+        task_for_dlq = dict(task)
+        task_for_dlq["failed_in_phase"] = "worker"
+        await _dlq_write(
+            task_for_dlq,
+            error=f"Dependency failed (no recovery): {failed_dep_ids}",
+            category="dependency",
+            attempts=int(task.get("worker_attempts") or 0),
+        )
     if blocked:
         await db.commit()
 

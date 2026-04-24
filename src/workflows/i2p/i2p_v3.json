@@ -1670,6 +1670,9 @@
       ],
       "instruction": "Categorize every feature using MoSCoW: Must-have, Should-have, Could-have, Won't-have. Justify each. Must-haves should include: core auth, minimum features to deliver primary value proposition, regulatory requirements. Aim for 15-25 Must-haves, 10-20 Should-haves.",
       "done_when": "feature_prioritization exists with every feature categorized and justified.",
+      "context": {
+        "estimated_output_tokens": 8000
+      },
       "artifact_schema": {
         "feature_prioritization": {
           "type": "object",

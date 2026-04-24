@@ -2975,8 +2975,20 @@ class BaseAgent:
 
         estimated_input = (desc_len + ctx_len) // 4  # rough char-to-token
         reqs.estimated_input_tokens = max(estimated_input, 1000)
-        # Keep template's estimated_output_tokens — it's set per agent type
-        # (e.g. coder=4000, planner=2000) for accurate speed scoring.
+        # Template's estimated_output_tokens is a per-agent default (e.g.
+        # analyst=3000, coder=4000). List-heavy workflow steps like
+        # feature_prioritization need far more — a 15-25-item MoSCoW
+        # breakdown with justifications runs 5-8k tokens and the default
+        # caps the LLM mid-list, leaving trailing keys like 'could_have'
+        # and 'wont_have' empty and the artifact failing schema validation
+        # on "missing content about: [...]". Let the workflow step override
+        # via context.estimated_output_tokens (clamped to [500, 12000]).
+        _out_override = task_ctx.get("estimated_output_tokens")
+        if _out_override:
+            try:
+                reqs.estimated_output_tokens = max(500, min(12000, int(_out_override)))
+            except (TypeError, ValueError):
+                pass
 
         # ── Tools needed? (agent-level override) ──
         # Only upgrade to function_calling, don't force it if the

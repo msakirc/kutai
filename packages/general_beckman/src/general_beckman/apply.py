@@ -296,6 +296,52 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
 
 
 
+def _grader_verdict_text(raw) -> str:
+    """Extract the most useful human sentence from a grader verdict payload.
+
+    ``raw`` may be a dict (common), a stringified dict (legacy), or free text.
+    Prefers ``insight`` → ``strategy`` → ``situation`` → ``message``/``error``;
+    falls back to a failed-axes summary, or the first 140 chars of whatever
+    was passed. Callers use this as the error column upstream so downstream
+    consumers (Telegram DLQ notice, logs) never see raw dict reprs.
+    """
+    import ast
+    candidate = raw
+    if isinstance(raw, str):
+        text = raw.strip()
+        start = text.find("{")
+        if start != -1:
+            depth, end = 0, -1
+            for i in range(start, len(text)):
+                ch = text[i]
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i
+                        break
+            if end != -1:
+                try:
+                    candidate = ast.literal_eval(text[start:end + 1])
+                except (ValueError, SyntaxError):
+                    candidate = raw
+            else:
+                candidate = raw
+    if isinstance(candidate, dict):
+        for key in ("insight", "strategy", "situation", "message", "error"):
+            val = candidate.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        failed_axes = [
+            k for k in ("relevant", "complete", "well_formed", "coherent")
+            if candidate.get(k) is False
+        ]
+        if failed_axes:
+            return "grader rejected: " + ", ".join(failed_axes)
+    return str(raw)[:140]
+
+
 def _humanize_error(raw: str) -> str:
     """Turn internal error payloads into one-line user-facing text.
 
@@ -511,7 +557,11 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         # shopping_pipeline_v2 before manual kill, 2026-04-22).
         attempts = int(source.get("worker_attempts") or 0) + 1
         max_attempts = int(source.get("max_worker_attempts") or 6)
-        error_str = str(a.raw)[:500]
+        # Extract the grader's human-readable text up front so the error
+        # column is never a truncated dict repr. str(a.raw)[:500] used to
+        # leave unterminated braces that _humanize_error couldn't parse,
+        # leaking `{'passed': False, ...}` head to Telegram DLQ notices.
+        error_str = _grader_verdict_text(a.raw)[:500]
         excluded = list(ctx.get("grade_excluded_models") or [])
         gen_model = ctx.get("generating_model") or ""
         if gen_model and gen_model not in excluded:

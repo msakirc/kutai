@@ -68,6 +68,20 @@ class Orchestrator:
                 t = dict(task)
                 if "payload" not in t and "payload" in ctx:
                     t["payload"] = ctx["payload"]
+                # Legacy-shape rescue: older workflow expansions (pre-
+                # 2026-04-24 expander fix) stored context as
+                # {"executor": "<action>", ...} instead of
+                # {"executor": "mechanical", "payload": {"action": ...}}.
+                # Existing DB rows with the old shape dispatch here with
+                # no payload and salako returns `unknown mechanical
+                # action: None`. Promote ctx.executor to payload.action
+                # at runtime so we don't have to migrate rows.
+                if "payload" not in t:
+                    _legacy_action = ctx.get("executor")
+                    if _legacy_action and _legacy_action != "mechanical":
+                        _skip = {"executor", "payload"}
+                        _extras = {k: v for k, v in ctx.items() if k not in _skip}
+                        t["payload"] = {"action": _legacy_action, **_extras}
                 r = await salako.run(t)
                 return ({"status": "completed", "result": json.dumps(r.result)}
                         if r.status == "completed"

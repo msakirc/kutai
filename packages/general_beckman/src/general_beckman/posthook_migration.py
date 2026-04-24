@@ -78,9 +78,18 @@ async def run() -> None:
             )
             migrated_count += 1
 
-        # Step 2: drop orphaned llm_summary table.
-        await db.execute("DROP TABLE IF EXISTS pending_llm_summaries")
-        await db.commit()
+        # Step 2: drop orphaned llm_summary table. Swallow lock errors
+        # so the migration flag still flips — the table is defunct, so
+        # leaving it around is harmless, and retrying every tick only
+        # thrashes on the same lock contention while re-migrating step 1.
+        try:
+            await db.execute("DROP TABLE IF EXISTS pending_llm_summaries")
+            await db.commit()
+        except Exception as exc:
+            logger.warning(
+                "posthook_migration: DROP pending_llm_summaries skipped",
+                error=str(exc),
+            )
 
         _migrated = True
         logger.info(

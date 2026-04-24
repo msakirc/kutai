@@ -1739,7 +1739,7 @@
       "id": "2.8",
       "phase": "phase_2",
       "name": "user_stories",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [

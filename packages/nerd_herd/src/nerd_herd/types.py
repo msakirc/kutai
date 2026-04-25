@@ -211,36 +211,38 @@ class SystemSnapshot:
     def _local_pressure(self) -> float:
         # Signed scarcity in [-1, +1]: positive = abundant capacity,
         # negative = depleted. The admission gate is `pressure >=
-        # threshold(urgency)` where threshold = 0.5 - urgency, so a
-        # priority-4 task with no age bump has threshold=0.05 and
-        # required pressure >= +0.05 to admit.
+        # threshold(urgency)` where threshold = 0.5 - urgency.
         #
-        # In-flight check FIRST — a reserved task slot must hard-reject
-        # further local admissions even when no model has been swapped in
-        # yet (admission-time reservations run before the load, so
-        # local.model_name is still None at that instant). Previously the
-        # model_name None short-circuit returned 0.0 unconditionally and
-        # masked the in-flight signal, causing phantom double-admissions.
+        # Ordering by descending abundance:
+        #   loaded + warm-idle  →  +0.5 .. +1.0   (best: ready, no swap cost)
+        #   cold (no model)     →  +0.5           (good: capacity but pays load cost)
+        #   loaded, busy now    →   0.0           (just received a request, no headroom yet)
+        #   swapping            →  -0.5           (transient depletion)
+        #   in-flight reserved  →  -1.0           (saturated; --parallel 1)
+        #
+        # Both cold and the lowest warm-idle tier sit at +0.5, which
+        # clears the maximum possible threshold (0.5 - 0.0 = 0.5) for
+        # any task. That fixes the cold-start deadlock that froze
+        # mission 46 task 2939 (priority=4, threshold=0.05) when cold
+        # used to return 0.0. Loaded+warm-idle still ranks ABOVE cold
+        # at peak idle (+1.0 vs +0.5), so Fatih Hoca's selection
+        # weights still correctly prefer no-swap continuation.
         if any(c.is_local for c in self.in_flight_calls):
             return -1.0
 
-        # Cold local (no model loaded, nothing in flight) is the IDEAL
-        # state for admitting work — full capacity, zero contention.
-        # Returning 0.0 here was a cold-start deadlock: any task with
-        # threshold > 0 (priority < 5 + low age) couldn't admit, no
-        # admit meant no model load, no model load meant pressure
-        # stayed 0 forever. Mission 46 task 2939 [6.1] sat pending
-        # 5+ hours behind this with priority=4 / threshold=0.05 /
-        # pressure=0.0 (2026-04-25). Treat cold = peak abundance: any
-        # admittable task should clear the threshold from a fresh
-        # local. Subsequent admits hit the in-flight check above and
-        # serialize correctly.
         if self.local is None or self.local.model_name is None:
-            return 1.0
+            # Cold local: full slot, zero contention, but a swap cost
+            # ahead. Above any positive threshold, below warm-idle.
+            return 0.5
 
         if self.local.is_swapping:
             return -0.5
+
         idle = self.local.idle_seconds or 0.0
         if idle <= 0:
+            # Loaded but received a request just now — no headroom.
             return 0.0
-        return min(0.3, idle / 60.0 * 0.3)
+        # Linear scale from cold-equivalent (0.5) up to peak abundance
+        # (1.0) over 60 seconds of idle. Loaded model with 0+ idle
+        # already beats cold because no swap cost is incurred.
+        return min(1.0, 0.5 + (idle / 60.0) * 0.5)

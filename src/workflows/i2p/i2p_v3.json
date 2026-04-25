@@ -3725,8 +3725,11 @@
         "epics",
         "work_breakdown"
       ],
-      "instruction": "Group user stories into epics with: epic_id, name, description, user_stories, dependencies, estimated_total_effort, priority_order. Order by dependency, value, risk. Then break every user story into implementation tasks following the feature template pattern: db_migration, backend, frontend, tests, e2e, code_review. Each with task_id, story_id, epic_id, agent, dependencies, estimated_effort.",
-      "done_when": "epics and work_breakdown exist with all stories grouped and decomposed.",
+      "context": {
+        "estimated_output_tokens": 12000
+      },
+      "instruction": "Produce two artifacts (epics + work_breakdown) in a single JSON object. Group user stories into epics, then break every story into implementation tasks following the feature template pattern (db_migration, backend, frontend, tests, e2e, code_review).\n\nOUTPUT FORMAT: Return ONLY a JSON object directly in `result` (no JSON-string wrapping, no `final_answer` envelope, no Markdown). Object MUST have these top-level keys:\n\n{\n  \"epics\": [\n    {\"epic_id\": \"E-01\", \"name\": \"...\", \"description\": \"...\", \"user_stories\": [\"US-001\", ...], \"dependencies\": [\"E-...\"], \"estimated_total_effort\": \"S|M|L|XL\", \"priority_order\": 1}\n  ],\n  \"work_breakdown\": {\n    \"tasks\": [\n      {\"task_id\": \"T-001\", \"story_id\": \"US-001\", \"epic_id\": \"E-01\", \"agent\": \"coder|tester|reviewer\", \"dependencies\": [\"T-...\"], \"estimated_effort\": \"S|M|L\"}\n    ]\n  }\n}\n\nCap epics at 8, tasks at 60. Order epics by dependency / value / risk.",
+      "done_when": "JSON object with `epics` array (>=1 with epic_id/name/user_stories/dependencies/priority_order) and `work_breakdown.tasks` array.",
       "artifact_schema": {
         "epics": {
           "type": "array",

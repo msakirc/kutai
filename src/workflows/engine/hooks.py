@@ -826,33 +826,93 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
             r"missing (sections?|required fields|content about)[^\[\]']*(\[[^\]]+\]|'[^']+')",
             schema_error,
         )
+        present_list: list[str] = []
+        missing_list: list[str] = []
+        kind = ""
         if m:
             kind = m.group(1).lower()
-            missing = m.group(2)
+            missing_raw = m.group(2)
+
+            # Parse missing items out of the bracketed/quoted error chunk.
+            # "['Foo', 'Bar']" → ["Foo", "Bar"]; "'Foo'" → ["Foo"].
+            missing_list = _re.findall(r"'([^']+)'", missing_raw)
+
+            # ── Compute the FULL required list from artifact_schema, then
+            # split into present_list (from _prev) vs missing_list. Without
+            # this, the retry hint only said "missing X, Y" and the model
+            # would rebuild from scratch focusing on those two while
+            # dropping the sections it previously had — different missing
+            # set on every retry, whack-a-mole. Now we inject a checklist
+            # so the model knows what to KEEP plus what to ADD.
+            required_all: list[str] = []
+            try:
+                _schema = ctx.get("artifact_schema") or {}
+                if isinstance(_schema, dict):
+                    for _aname, _rules in _schema.items():
+                        if not isinstance(_rules, dict):
+                            continue
+                        if "section" in kind:
+                            for _r in _rules.get("required_sections", []) or []:
+                                if _r not in required_all:
+                                    required_all.append(_r)
+                        elif "required fields" in kind:
+                            for _r in _rules.get("required_fields", []) or []:
+                                if _r not in required_all:
+                                    required_all.append(_r)
+                        else:  # "content about"
+                            for _r in _rules.get("required_fields", []) or []:
+                                if _r not in required_all:
+                                    required_all.append(_r)
+            except Exception:
+                required_all = []
+
+            if required_all:
+                missing_set = set(missing_list)
+                present_list = [r for r in required_all if r not in missing_set]
+            # else: required_all unknown, fall through to the legacy
+            # "specifically omitted" hint without the present list.
+
             # Distinguish the schema shape so the advice matches the fix:
             # - "sections"        → markdown headings
             # - "required fields" → JSON object keys
             # - "content about"   → keyword-check fallback (object schema;
             #                        content must mention these names)
             if "section" in kind:
-                missing_hint = (
-                    f"\n\nYou specifically omitted: {missing}.\n"
-                    f"Add this exactly as a '## <name>' markdown heading "
-                    f"with real content beneath it. Do NOT skip or rename."
+                shape_hint = (
+                    "Add each missing item exactly as a '## <name>' markdown "
+                    "heading with real content beneath it. Do NOT skip or "
+                    "rename."
                 )
             elif "required fields" in kind:
-                missing_hint = (
-                    f"\n\nYou specifically omitted: {missing}.\n"
-                    f"Add this as a top-level JSON object key with a real "
-                    f"value. Do NOT skip, rename, or nest it."
+                shape_hint = (
+                    "Add each missing item as a top-level JSON object key "
+                    "with a real value. Do NOT skip, rename, or nest it."
                 )
-            else:  # "content about" — object keyword fallback
+            else:
+                shape_hint = (
+                    "Your output must mention each missing item by name with "
+                    "substantive content. If the schema expects a JSON "
+                    "object, these become top-level keys; if markdown, make "
+                    "each a '## <name>' section."
+                )
+
+            if present_list and missing_list:
+                # Full checklist form. Tells the model what to keep AND
+                # what to add. The most important line: "KEEP the items
+                # marked ✓".
+                _ck_present = "\n".join(f"  - [x] {n}" for n in present_list)
+                _ck_missing = "\n".join(f"  - [ ] {n}" for n in missing_list)
                 missing_hint = (
-                    f"\n\nYou specifically omitted: {missing}.\n"
-                    f"Your output must mention each of these by name with "
-                    f"substantive content. If the schema expects a JSON "
-                    f"object, these become top-level keys; if markdown, "
-                    f"make each a '## <name>' section."
+                    f"\n\nRequired-item checklist (your previous attempt):\n"
+                    f"{_ck_present}\n{_ck_missing}\n\n"
+                    f"KEEP every checked item from your previous output AND "
+                    f"add the unchecked ones. Do not drop checked items "
+                    f"while adding missing ones — that is the most common "
+                    f"failure mode on retries.\n{shape_hint}"
+                )
+            elif missing_list:
+                missing_hint = (
+                    f"\n\nMissing items: {missing_list}\n{shape_hint}"
                 )
         parts.append(
             f"\n\n## IMPORTANT: Previous Output Was Invalid (retry {retry_count})\n"

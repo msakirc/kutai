@@ -139,7 +139,31 @@ async def analyze_and_propose() -> list[dict]:
     except Exception:
         pass
 
-    # ── 5. Underutilized skills ──
+    # ── 5. Prompt version candidates ready for promotion ──
+    try:
+        cursor = await db.execute("""
+            SELECT agent_type, version, task_count, avg_quality
+            FROM prompt_versions
+            WHERE is_active = 0 AND task_count >= 10 AND avg_quality > 7.0
+        """)
+        rows = await cursor.fetchall()
+        for row in rows:
+            agent, version, count, quality = row
+            proposals.append({
+                "category": "prompt_version",
+                "title": f"Prompt v{version} for '{agent}' ready for promotion",
+                "detail": (
+                    f"Candidate prompt v{version} for agent '{agent}' has "
+                    f"{count} tasks with avg quality {quality:.1f}. "
+                    f"Consider promoting to active."
+                ),
+                "priority": 3,
+                "action": f"promote_prompt:{agent}:{version}",
+            })
+    except Exception:
+        pass
+
+    # ── 6. Underutilized skills ──
     try:
         cursor = await db.execute("""
             SELECT name, injection_success, injection_count

@@ -727,6 +727,11 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         ctx["_schema_error"] = f"Grader rejected output: {error_str}"
         prev_output = source.get("result") or ""
         if isinstance(prev_output, str) and prev_output.strip():
+            try:
+                from src.workflows.engine.hooks import canonicalize_for_retry
+                prev_output = canonicalize_for_retry(prev_output)
+            except Exception:
+                pass
             ctx["_prev_output"] = prev_output[:6000]
         _stamp_retry_feedback(ctx, attempts)
         await update_task(

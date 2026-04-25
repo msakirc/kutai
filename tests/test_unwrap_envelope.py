@@ -20,7 +20,63 @@ from src.workflows.engine.hooks import (
     _unwrap_envelope,
     _extract_json_string_field,
     _unescape_json_string,
+    canonicalize_for_retry,
 )
+
+
+class TestCanonicalizeForRetry:
+    """Structural fix for Qwen JSON over-escape (deferred item 5).
+
+    When ``_prev_output`` is fed back into a retry prompt, models
+    re-wrap and re-escape inner quotes — every retry adds a layer.
+    Canonicalization collapses N escape layers down to clean JSON
+    so the next retry sees a parseable array/object.
+    """
+
+    def test_bare_array_stays_clean(self):
+        arr = '[{"id":"x","name":"y"}]'
+        assert json.loads(canonicalize_for_retry(arr)) == [
+            {"id": "x", "name": "y"}
+        ]
+
+    def test_one_escape_layer_peeled(self):
+        # The agent emitted a JSON-encoded string holding a JSON array.
+        encoded = json.dumps('[{"id":"x"}]')
+        out = canonicalize_for_retry(encoded)
+        assert json.loads(out) == [{"id": "x"}]
+
+    def test_two_escape_layers_peeled(self):
+        # After two retries that compounded escapes.
+        encoded = json.dumps(json.dumps('[{"id":"x"}]'))
+        out = canonicalize_for_retry(encoded)
+        assert json.loads(out) == [{"id": "x"}]
+
+    def test_object_preserved(self):
+        obj = json.dumps({"a": 1, "b": [1, 2, 3]})
+        out = canonicalize_for_retry(obj)
+        assert json.loads(out) == {"a": 1, "b": [1, 2, 3]}
+
+    def test_plain_text_passthrough(self):
+        assert canonicalize_for_retry("plain markdown text") == (
+            "plain markdown text"
+        )
+
+    def test_broken_json_passthrough(self):
+        assert canonicalize_for_retry("{partial broken") == "{partial broken"
+
+    def test_empty_string(self):
+        assert canonicalize_for_retry("") == ""
+
+    def test_non_string_returned_as_is(self):
+        assert canonicalize_for_retry(None) is None
+
+    def test_max_depth_terminates(self):
+        # Wrap a string that points back to itself in escape form. Should
+        # not loop forever — bounded by max_depth.
+        s = '"' + ('\\' * 30) + '"'
+        out = canonicalize_for_retry(s, max_depth=3)
+        # Either returns a leaf string or the original — never crashes.
+        assert isinstance(out, str)
 
 
 class TestExtractJsonStringField:

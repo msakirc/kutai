@@ -120,6 +120,51 @@ def _unescape_json_string(s: str) -> str:
         )
 
 
+def canonicalize_for_retry(text: str, max_depth: int = 4) -> str:
+    """Collapse multi-layer JSON escape compounding to canonical form.
+
+    When ``_prev_output`` is fed back into a retry prompt, models like
+    Qwen3.5-9B re-wrap it in their own ``final_answer`` envelope and
+    re-escape inner quotes — every retry adds another escape layer, so
+    by attempt 3-4 the output is unparseable triple-backslashed soup.
+
+    Strategy: repeatedly try to parse ``text`` as JSON. If it parses to
+    a list/dict, re-dump with ``ensure_ascii=False``. If it parses to a
+    string (i.e. the input was a JSON-string holding more JSON), recurse
+    on that string. Bounded by ``max_depth`` to keep pathological inputs
+    from looping. Non-JSON text is returned unchanged.
+
+    This is the structural counterpart to ``_unwrap_envelope``: unwrap
+    strips the outer envelope, canonicalize collapses inner escape
+    compounding so the next retry prompt sees clean JSON.
+    """
+    if not isinstance(text, str):
+        return text
+    current = text.strip()
+    for _ in range(max_depth):
+        if not current:
+            return current
+        first = current.lstrip()[:1]
+        # Only attempt JSON parse if it actually looks like JSON. Plain
+        # markdown / prose passes through untouched.
+        if first not in ("[", "{", '"'):
+            return current
+        try:
+            parsed = json.loads(current)
+        except (json.JSONDecodeError, ValueError):
+            return current
+        if isinstance(parsed, str):
+            # One escape layer peeled. If the inner string is itself JSON,
+            # the loop continues; otherwise we hit the ``first not in``
+            # guard next iteration.
+            current = parsed.strip()
+            continue
+        if isinstance(parsed, (list, dict)):
+            return json.dumps(parsed, ensure_ascii=False)
+        return current
+    return current
+
+
 def _unwrap_envelope(text: str) -> str:
     """Strip JSON envelopes, model tokens, and degenerate repetition.
 
@@ -1285,7 +1330,13 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
                 from ...infra.db import update_task
                 new_ctx = dict(ctx)
                 new_ctx["_schema_error"] = error_msg
-                new_ctx["_prev_output"] = output_value[:6000]
+                # Canonicalize before storing — collapses any escape
+                # layers Qwen / Mistral / etc. emit so the NEXT retry's
+                # prompt shows clean JSON, not soup that the model will
+                # re-escape into deeper compounding.
+                new_ctx["_prev_output"] = canonicalize_for_retry(
+                    output_value
+                )[:6000]
                 # Stamp for the NEXT attempt — _retry_or_dlq increments
                 # worker_attempts before re-queuing. The reader gates on
                 # match against the live worker_attempts.

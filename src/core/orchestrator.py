@@ -352,12 +352,13 @@ class Orchestrator:
             asyncio.create_task(self._heartbeat_loop()),
         ]
 
-        try:
-            from ..memory.prompt_versions import seed_from_agents
-            if n := await seed_from_agents():
-                logger.info(f"Seeded {n} prompt versions")
-        except Exception as e:
-            logger.debug(f"Prompt seeding skipped: {e}")
+        # Auto-seed at boot was removed 2026-04-25. The DB row IS the source
+        # of truth for agent prompts; the hardcoded `get_system_prompt` in
+        # each agent class is a frozen reference, not a continuously synced
+        # mirror. Auto-seed silently re-derived the DB from possibly-stale
+        # code — the exact drift this kill fixes. To bring a new agent
+        # online or refresh an existing one, use `/prompt seed <agent>`
+        # (manual, audited) rather than triggering it on every restart.
 
         try:
             from ..shopping.cache import init_cache_db

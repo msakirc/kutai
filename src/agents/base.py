@@ -190,10 +190,39 @@ class BaseAgent:
 
     # ------------------------------------------------------------------ #
     #  System prompt — override in subclasses                             #
+    #                                                                     #
+    #  ╔════════════════════════════════════════════════════════════════╗ #
+    #  ║ READ BEFORE EDITING:                                           ║ #
+    #  ║                                                                ║ #
+    #  ║ The runtime SOURCE OF TRUTH for agent prompts is the           ║ #
+    #  ║ `prompt_versions` DB table, not this file. Editing the         ║ #
+    #  ║ get_system_prompt strings below ONLY changes a frozen          ║ #
+    #  ║ reference — the running system loads from DB via               ║ #
+    #  ║ get_active_prompt() and ignores this code at execute() time.   ║ #
+    #  ║                                                                ║ #
+    #  ║ To change a live prompt:                                       ║ #
+    #  ║   1. Use `/prompt save <agent>` (or save_prompt_version()) to  ║ #
+    #  ║      insert a new row, activate=True. The system picks it up   ║ #
+    #  ║      on next dispatch — no restart needed.                     ║ #
+    #  ║   2. Phase 13.1 auto-promotion (record_prompt_quality +        ║ #
+    #  ║      _maybe_promote_candidate) will A/B and promote winners.   ║ #
+    #  ║                                                                ║ #
+    #  ║ Why this design:                                               ║ #
+    #  ║   - Runtime evolution without git+restart                       ║ #
+    #  ║   - Quality telemetry per prompt version                        ║ #
+    #  ║   - A/B comparisons + auto-promotion of winning variants        ║ #
+    #  ║                                                                ║ #
+    #  ║ Boot-time auto-seed was removed 2026-04-25 because it silently ║ #
+    #  ║ re-derived DB from possibly-stale code. Code edits to these    ║ #
+    #  ║ strings are now isolated by design.                            ║ #
+    #  ╚════════════════════════════════════════════════════════════════╝ #
     # ------------------------------------------------------------------ #
     def get_system_prompt(self, task: dict) -> str:
         """
         Return the base system prompt.  Override in every concrete agent.
+
+        NOTE: This is a frozen reference, not the live prompt. See the
+        block comment above. Use `/prompt save` to change the live prompt.
         """
         return (
             f"You are a helpful AI assistant named '{self.name}'.\n"

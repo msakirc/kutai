@@ -3848,8 +3848,11 @@
         "sprint_0_plan",
         "sprint_plans"
       ],
-      "instruction": "Plan Sprint 0: repository setup, CI/CD, Docker, backend/frontend scaffolding, design system, database setup, test framework, staging provisioning, developer docs. Then plan all feature sprints: each delivering a demonstrable increment, balanced frontend/backend, 80% capacity for buffer, including review and testing tasks.",
-      "done_when": "sprint_0_plan and sprint_plans exist.",
+      "context": {
+        "estimated_output_tokens": 12000
+      },
+      "instruction": "Plan Sprint 0 (foundation work) plus all feature sprints. Each feature sprint delivers a demonstrable increment, balanced frontend/backend, 80% capacity for buffer, includes review + testing.\n\nOUTPUT FORMAT: Return ONLY a JSON object directly in `result` (no JSON-string wrapping, no `final_answer` envelope, no Markdown). Object MUST have these top-level keys:\n\n{\n  \"sprint_0_plan\": {\n    \"tasks\": [\n      {\"task_id\": \"S0-T-01\", \"name\": \"...\", \"category\": \"repo|ci|docker|scaffold|design|db|tests|staging|docs\", \"agent\": \"coder|tester|reviewer|writer\", \"estimated_effort\": \"S|M|L\"}\n    ],\n    \"order\": [\"S0-T-01\", \"S0-T-02\", \"...\"]\n  },\n  \"sprint_plans\": [\n    {\n      \"sprint_id\": \"S1\",\n      \"name\": \"...\",\n      \"goal\": \"...\",\n      \"tasks\": [\n        {\"task_id\": \"T-001\", \"story_id\": \"US-001\", \"agent\": \"coder|tester|reviewer\", \"estimated_effort\": \"S|M|L\"}\n      ],\n      \"deliverable\": \"<demonstrable increment>\"\n    }\n  ]\n}\n\nCap sprint_0_plan.tasks at 15. Cap sprint_plans at 6 sprints, each with up to 12 tasks.",
+      "done_when": "JSON object with `sprint_0_plan` (containing `tasks` and `order`) and `sprint_plans` array (>=1 sprint with sprint_id/tasks/deliverable).",
       "artifact_schema": {
         "sprint_0_plan": {
           "type": "object",

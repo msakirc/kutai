@@ -57,21 +57,40 @@ async def advance(mission_id: int, completed_task_id: int,
         pass
 
     # 2. Post-hook: may flip status.
+    # The mechanical workflow_advance task carries `previous_result` as a
+    # condensed payload (often `{"summary": "..."}` from the artifact
+    # summarizer post-hook chain) rather than the LLM task's full
+    # `{"result": "<markdown>", ...}` shape. The post-hook reads
+    # `result.get("result", "")` and an empty value tripped the schema-
+    # validation gate (commit 2d6d82c) on producer steps — DLQ'ing
+    # mission 46 tasks 3797/3804 with "schema requires X" even though
+    # the original LLM siblings (2923, 2924) had completed cleanly with
+    # multi-thousand-char artifacts in tasks.result. Inject the full
+    # result string from the DB row when the carried payload doesn't
+    # already carry one, so the hook validates real content.
+    hook_result = dict(previous_result) if isinstance(previous_result, dict) else {}
+    if not hook_result.get("result"):
+        _full_result = task.get("result") or ""
+        if _full_result:
+            hook_result["result"] = _full_result
+    if "status" not in hook_result:
+        hook_result["status"] = task.get("status") or "completed"
+
     try:
-        await post_execute_workflow_step(task, previous_result)
+        await post_execute_workflow_step(task, hook_result)
     except Exception as e:
         out.status = "failed"
         out.error = str(e)[:300]
         return out
 
-    flipped = previous_result.get("status")
+    flipped = hook_result.get("status")
     if flipped == "needs_clarification":
         out.status = "needs_clarification"
-        out.error = previous_result.get("question", "")
+        out.error = hook_result.get("question", "")
         return out
     if flipped == "failed":
         out.status = "failed"
-        out.error = previous_result.get("error", "Post-hook failed")
+        out.error = hook_result.get("error", "Post-hook failed")
         return out
 
     # 3. Next-phase subtasks (if engine emits them).

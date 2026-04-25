@@ -1919,7 +1919,7 @@
       "id": "3.1",
       "phase": "phase_3",
       "name": "functional_requirements_extraction",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -1932,8 +1932,11 @@
       "output_artifacts": [
         "functional_requirements"
       ],
-      "instruction": "Extract every functional requirement from prd_final. For each: req_id (FR-001...), title, description, source_story_ids, priority, category (auth, data, ui, api, integration, notification, search, admin, billing). Every user story must map to at least one FR and vice versa.\n\nOUTPUT SIZE: Max 20 functional requirements. Each under 100 words.",
-      "done_when": "functional_requirements exists as a numbered list where every requirement traces to user stories.",
+      "context": {
+        "estimated_output_tokens": 8000
+      },
+      "instruction": "Extract functional requirements from prd_final. Each requirement object MUST have EXACTLY these fields: req_id (FR-001, FR-002...), title (short name), description (one-paragraph spec, under 80 words), source_story_ids (array of story id strings), priority (High|Medium|Low), category (auth|data|ui|api|integration|notification|search|admin|billing).\n\nOUTPUT FORMAT: Return ONLY a JSON array starting with `[` and ending with `]`. No wrapping object, no prose, no extra fields. 8-20 requirements total. Every user story must map to at least one requirement.",
+      "done_when": "functional_requirements is a JSON array with 8-20 items, each carrying req_id/title/description/source_story_ids/priority/category.",
       "artifact_schema": {
         "functional_requirements": {
           "type": "array",
@@ -3535,7 +3538,7 @@
       "id": "5.11a",
       "phase": "phase_5",
       "name": "design_system_handoff",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
@@ -3553,8 +3556,11 @@
       "output_artifacts": [
         "design_system_compilation"
       ],
-      "instruction": "Compile design system for handoff: Design Tokens (colors, typography, spacing), Primitive Components (Button, Input, etc.), Composite Components (Card, Modal, etc.), and review notes.",
-      "done_when": "design_system_compilation exists covering tokens, primitives, and composites.",
+      "context": {
+        "estimated_output_tokens": 12000
+      },
+      "instruction": "Compile the design system handoff as a single Markdown document.\n\nOUTPUT FORMAT: Return ONLY the Markdown content directly in `result` (no JSON wrapping, no `final_answer` envelope, no `Wrote ...` summary). The Markdown MUST contain these three top-level sections in order, each as a `##` heading:\n\n## Design Tokens\nColors, typography, spacing, borders, shadows, transitions, z-index. List token names with values.\n\n## Primitive Components\nButton, Input, Textarea, Select, Checkbox, Radio, Toggle, Label, Badge, Avatar, Icon, Divider, Spinner, Skeleton, Link, Tag. For each: variants, states, props, accessibility notes.\n\n## Composite Components\nCard, Modal, Toast, Alert, Dropdown, Tooltip, Popover, Tabs, Accordion, Table, Pagination, Breadcrumb, EmptyState, Sidebar, Navbar, Footer. For each: composition, behavior, accessibility notes.\n\nThen a short `## Review Notes` section pulling key findings from design_review_result.",
+      "done_when": "design_system_compilation is a Markdown document with `## Design Tokens`, `## Primitive Components`, `## Composite Components` headings present.",
       "artifact_schema": {
         "design_system_compilation": {
           "type": "markdown",

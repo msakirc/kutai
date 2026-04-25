@@ -539,7 +539,7 @@
       "id": "-1.4",
       "phase": "phase_-1",
       "name": "project_state_mapping",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "hard",
       "tools_hint": [
         "read_file"
@@ -572,7 +572,7 @@
       "id": "-1.5",
       "phase": "phase_-1",
       "name": "onboarding_strategy",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "hard",
       "tools_hint": [
         "read_file",
@@ -645,7 +645,7 @@
       "id": "-1.7",
       "phase": "phase_-1",
       "name": "human_strategic_input",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [
         "read_file"
@@ -706,6 +706,9 @@
             "Mentioned Goals"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -813,7 +816,7 @@
       "id": "0.5",
       "phase": "phase_0",
       "name": "human_clarification_request",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "easy",
       "tools_hint": [],
       "triggers_clarification": true,
@@ -1368,7 +1371,10 @@
       },
       "api_hints": [
         "market_data"
-      ]
+      ],
+      "context": {
+        "estimated_output_tokens": 10000
+      }
     },
     {
       "id": "1.12b",
@@ -1409,7 +1415,10 @@
       },
       "api_hints": [
         "market_data"
-      ]
+      ],
+      "context": {
+        "estimated_output_tokens": 10000
+      }
     },
     {
       "id": "1.13",
@@ -1480,7 +1489,7 @@
       "id": "2.1",
       "phase": "phase_2",
       "name": "product_vision_and_positioning",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -1584,7 +1593,7 @@
       "id": "2.4",
       "phase": "phase_2",
       "name": "user_personas_and_journeys",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -1628,7 +1637,7 @@
       "id": "2.5",
       "phase": "phase_2",
       "name": "feature_brainstorm",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -1670,7 +1679,7 @@
       "id": "2.6",
       "phase": "phase_2",
       "name": "feature_prioritization",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -1872,6 +1881,9 @@
             "Monetization"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -1913,6 +1925,9 @@
             "Success Metrics"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -1956,7 +1971,7 @@
       "id": "3.2",
       "phase": "phase_3",
       "name": "nfr_performance_and_scalability",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -1997,7 +2012,7 @@
       "id": "3.3",
       "phase": "phase_3",
       "name": "nfr_availability_and_security",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -2107,7 +2122,7 @@
       "id": "3.6",
       "phase": "phase_3",
       "name": "platform_and_accessibility_requirements",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "easy",
       "tools_hint": [
         "smart_search",
@@ -2231,7 +2246,7 @@
       "id": "3.9a",
       "phase": "phase_3",
       "name": "requirements_traceability",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -2266,7 +2281,7 @@
       "id": "3.9b",
       "phase": "phase_3",
       "name": "requirements_conflict_check",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -2335,6 +2350,9 @@
             "Data Requirements"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -2932,7 +2950,7 @@
       "id": "4.14",
       "phase": "phase_4",
       "name": "architecture_decisions",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -3006,6 +3024,9 @@
             "Auth"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -3047,6 +3068,9 @@
             "File Storage"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -3088,6 +3112,9 @@
             "Scalability"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -3126,7 +3153,7 @@
       "id": "5.1",
       "phase": "phase_5",
       "name": "information_architecture",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -3157,7 +3184,7 @@
       "id": "5.2",
       "phase": "phase_5",
       "name": "navigation_design",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -3187,7 +3214,7 @@
       "id": "5.3",
       "phase": "phase_5",
       "name": "user_flows",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -3242,7 +3269,7 @@
       "id": "5.4a",
       "phase": "phase_5",
       "name": "layout_and_wireframes",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -3282,7 +3309,7 @@
       "id": "5.4b",
       "phase": "phase_5",
       "name": "forms_and_states",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
@@ -3353,7 +3380,7 @@
       "id": "5.6",
       "phase": "phase_5",
       "name": "brand_and_design_tokens",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -3398,7 +3425,7 @@
       "id": "5.7",
       "phase": "phase_5",
       "name": "component_specs",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -3433,7 +3460,7 @@
       "id": "5.8",
       "phase": "phase_5",
       "name": "screen_specifications",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -3465,7 +3492,7 @@
       "id": "5.9",
       "phase": "phase_5",
       "name": "interaction_responsive_accessibility_specs",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -3611,7 +3638,7 @@
         "design_handoff"
       ],
       "context": {
-        "estimated_output_tokens": 14000
+        "estimated_output_tokens": 5000
       },
       "instruction": "Merge design_system_compilation with screen specs, interaction patterns, responsive rules, and accessibility requirements into the final Design Handoff Document.\n\nOUTPUT FORMAT: Return ONLY the Markdown content directly in `result` (no JSON wrapping, no `final_answer` envelope, no `Wrote ...` summary). The Markdown MUST contain these top-level sections in order, each as a `##` heading:\n\n## Design Tokens\nKey tokens from design_system_compilation.\n\n## Component Library\nPrimitive + composite component summaries from design_system_compilation.\n\n## Screen Specifications\nKey screens from screen_specifications.\n\n## Interaction Guide\nMicro-interaction + animation rules from interaction_spec.\n\n## Responsive Guide\nBreakpoint behavior from responsive_spec.\n\n## Accessibility Guide\nWCAG-aligned guidelines from accessibility_spec.",
       "done_when": "design_handoff is a Markdown document with `## Design Tokens`, `## Component Library`, `## Screen Specifications`, `## Interaction Guide`, `## Responsive Guide`, `## Accessibility Guide` headings present.",
@@ -3627,16 +3654,13 @@
             "Accessibility Guide"
           ]
         }
-      },
-      "context": {
-        "estimated_output_tokens": 5000
       }
     },
     {
       "id": "6.1",
       "phase": "phase_6",
       "name": "epic_definition_and_work_breakdown",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -3680,7 +3704,7 @@
       "id": "6.2",
       "phase": "phase_6",
       "name": "dependency_graph_and_estimation",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -3755,7 +3779,7 @@
       "id": "6.4",
       "phase": "phase_6",
       "name": "sprint_planning",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -3799,7 +3823,7 @@
       "id": "6.5",
       "phase": "phase_6",
       "name": "milestones_and_dod",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
@@ -4529,6 +4553,9 @@
             "Deployment"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -4609,7 +4636,7 @@
       "id": "8.0",
       "phase": "phase_8",
       "name": "implementation_backlog_initialization",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "hard",
       "tools_hint": [
         "read_file",
@@ -4708,7 +4735,7 @@
       "id": "8.sprint_ritual",
       "phase": "phase_8",
       "name": "sprint_boundary_check",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [
         "read_file",
@@ -5577,7 +5604,7 @@
       "id": "10.9",
       "phase": "phase_10",
       "name": "security_retest_and_report",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [
         "shell",
@@ -5621,7 +5648,7 @@
       "id": "11.1",
       "phase": "phase_11",
       "name": "api_and_developer_docs",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -5718,7 +5745,7 @@
       "id": "11.3",
       "phase": "phase_11",
       "name": "in_app_copy",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
@@ -5816,6 +5843,9 @@
             "Unreleased"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -5907,6 +5937,9 @@
             "Management"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -6728,7 +6761,7 @@
       "id": "14.1",
       "phase": "phase_14",
       "name": "launch_planning",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -6913,7 +6946,7 @@
       "id": "14.6",
       "phase": "phase_14",
       "name": "launch_announcements",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
@@ -6951,7 +6984,7 @@
       "id": "14.7",
       "phase": "phase_14",
       "name": "launch_email",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
@@ -7356,7 +7389,7 @@
       "id": "15.8",
       "phase": "phase_15",
       "name": "feature_request_prioritization",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
@@ -7543,7 +7576,7 @@
       "id": "15.12",
       "phase": "phase_15",
       "name": "release_cycle",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "medium",
       "tools_hint": [
         "shell",
@@ -7603,7 +7636,7 @@
       "id": "15.13",
       "phase": "phase_15",
       "name": "technical_debt_tracking",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "easy",
       "tools_hint": [
         "shell",
@@ -7644,7 +7677,7 @@
       "id": "15.14",
       "phase": "phase_15",
       "name": "roadmap_update",
-      "agent": "planner",
+      "agent": "analyst",
       "difficulty": "hard",
       "tools_hint": [],
       "depends_on": [

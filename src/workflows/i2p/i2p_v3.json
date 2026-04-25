@@ -2516,8 +2516,11 @@
       "output_artifacts": [
         "system_architecture"
       ],
-      "instruction": "Design high-level system architecture: components, databases, external_services, communication_patterns, data_flow, network_topology, environments.\n\nOUTPUT SIZE: Keep system architecture under 2000 words. Focus on components and interactions.",
-      "done_when": "system_architecture exists with complete system design.",
+      "context": {
+        "estimated_output_tokens": 12000
+      },
+      "instruction": "Design the high-level system architecture.\n\nOUTPUT FORMAT: Return ONLY a JSON object directly in `result` (no JSON-string wrapping, no `final_answer` envelope, no Markdown). Object MUST have these top-level keys (emit in this order):\n\n{\n  \"components\": [ {\"name\": \"...\", \"role\": \"...\", \"tech\": \"...\", \"interfaces\": [\"...\"]} ],\n  \"databases\": [ {\"name\": \"...\", \"engine\": \"...\", \"purpose\": \"...\"} ],\n  \"external_services\": [ {\"name\": \"...\", \"purpose\": \"...\"} ],\n  \"communication_patterns\": [ {\"from\": \"...\", \"to\": \"...\", \"protocol\": \"REST|gRPC|WS|Queue|Webhook\", \"sync_or_async\": \"sync|async\"} ],\n  \"data_flow\": [ {\"flow_id\": \"...\", \"description\": \"...\"} ],\n  \"network_topology\": \"<short paragraph>\",\n  \"environments\": [ {\"name\": \"dev|staging|prod\", \"notes\": \"...\"} ]\n}\n\nDo NOT emit prose code-style file lists. Cap each array at 12 entries. Total output under 8000 tokens.",
+      "done_when": "system_architecture is a JSON object with `components`, `databases`, `communication_patterns`, `environments` keys populated.",
       "artifact_schema": {
         "system_architecture": {
           "type": "object",
@@ -2552,8 +2555,11 @@
       "output_artifacts": [
         "database_schema"
       ],
-      "instruction": "Design complete database schema: tables, columns, types, constraints, indexes, foreign_keys, enums. Normalized to 3NF minimum. Then self-review for: normalization, missing indexes, N+1 risks, missing constraints, scalability, naming consistency, audit columns, soft delete, business rule enforcement at DB level.\n\nOUTPUT SIZE: Keep database schema under 1500 words. List tables, key columns, relationships.",
-      "done_when": "database_schema exists with comprehensive, self-reviewed schema design.",
+      "context": {
+        "estimated_output_tokens": 12000
+      },
+      "instruction": "Design the complete database schema (3NF minimum).\n\nOUTPUT FORMAT: Return ONLY a JSON object directly in `result` (no JSON-string wrapping, no `final_answer` envelope, no Markdown). Object MUST have these top-level keys (emit in this order):\n\n{\n  \"tables\": [\n    {\n      \"name\": \"...\",\n      \"columns\": [{\"name\": \"...\", \"type\": \"...\", \"constraints\": \"PK|NOT NULL|UNIQUE|...\"}],\n      \"audit_columns\": true,\n      \"soft_delete\": false,\n      \"notes\": \"...\"\n    }\n  ],\n  \"relationships\": [\n    {\"from_table\": \"...\", \"from_column\": \"...\", \"to_table\": \"...\", \"to_column\": \"...\", \"on_delete\": \"CASCADE|RESTRICT|SET NULL\"}\n  ],\n  \"indexes\": [\n    {\"table\": \"...\", \"columns\": [\"...\"], \"unique\": false, \"purpose\": \"...\"}\n  ],\n  \"enums\": [\n    {\"name\": \"...\", \"values\": [\"...\"]}\n  ],\n  \"self_review_notes\": \"<short paragraph on normalization, N+1 risks, missing indexes, naming, business rules>\"\n}\n\nCap tables at 20, relationships at 30, indexes at 25. Each table covers core attributes only — no exhaustive column lists.",
+      "done_when": "database_schema is a JSON object with populated `tables`, `relationships`, `indexes` keys.",
       "artifact_schema": {
         "database_schema": {
           "type": "object",

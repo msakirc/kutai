@@ -2590,11 +2590,11 @@
       }
     },
     {
-      "id": "4.5",
+      "id": "4.5a",
       "phase": "phase_4",
-      "name": "api_design",
-      "agent": "architect",
-      "difficulty": "hard",
+      "name": "api_resource_model",
+      "agent": "analyst",
+      "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
         "4.3",
@@ -2604,14 +2604,57 @@
       "input_artifacts": [
         "system_architecture",
         "database_schema",
-        "functional_requirements",
-        "user_stories_refined"
+        "functional_requirements"
+      ],
+      "output_artifacts": [
+        "api_resource_model"
+      ],
+      "context": {
+        "estimated_output_tokens": 8000
+      },
+      "instruction": "Define API-wide conventions before any endpoints are designed. These conventions apply to every endpoint in step 4.5b openapi_spec.\n\nOUTPUT FORMAT: Return ONLY the Markdown content directly in `result` (no JSON wrapping, no `final_answer` envelope, no `Wrote ...` summary). The Markdown MUST contain these top-level sections in order, each as a `##` heading:\n\n## Resources\nList top-level resources, sub-resources, key relationships. Include base URL.\n\n## Versioning Strategy\nURI prefix, header, or both. Deprecation policy.\n\n## Pagination Strategy\nCursor vs offset, page size limits, response shape.\n\n## Response Envelope\nSuccess + error envelope shapes. Top-level keys, error code conventions.\n\n## Filtering, Sorting, Searching\nQuery parameter conventions for each.\n\n## Identifiers\nUUID v4, ULID, snowflake — pick one. Format and visibility rules.\n\n## Error Codes\nStandard HTTP status mapping + application-level error code namespace.\n\n## Rate Limits\nDefault limits per identity tier. Headers returned.",
+      "done_when": "api_resource_model is a Markdown document with `## Resources`, `## Versioning Strategy`, `## Pagination Strategy`, `## Response Envelope`, `## Filtering, Sorting, Searching`, `## Identifiers`, `## Error Codes`, `## Rate Limits` headings present.",
+      "artifact_schema": {
+        "api_resource_model": {
+          "type": "markdown",
+          "required_sections": [
+            "Resources",
+            "Versioning Strategy",
+            "Pagination Strategy",
+            "Response Envelope",
+            "Filtering, Sorting, Searching",
+            "Identifiers",
+            "Error Codes",
+            "Rate Limits"
+          ]
+        }
+      }
+    },
+    {
+      "id": "4.5b",
+      "phase": "phase_4",
+      "name": "openapi_spec",
+      "agent": "architect",
+      "difficulty": "hard",
+      "tools_hint": [],
+      "depends_on": [
+        "4.5a"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "api_resource_model",
+        "system_architecture",
+        "database_schema",
+        "functional_requirements"
       ],
       "output_artifacts": [
         "openapi_spec"
       ],
-      "instruction": "Define API resource model: resources, base URLs, sub-resources, relationships, filterable/sortable/searchable fields, versioning strategy, pagination strategy, response envelope format, id format. Then design every API endpoint with: method, path, auth, roles, parameters, request/response schemas, error responses, rate limits, side effects. Convert into formal OpenAPI 3.1 specification with paths, schemas, security schemes, tags, and examples.\n\nOUTPUT SIZE: Keep API design under 2000 words. List endpoints with method, path, description.",
-      "done_when": "openapi_spec exists as a complete OpenAPI 3.1 specification.",
+      "context": {
+        "estimated_output_tokens": 14000
+      },
+      "instruction": "Produce a formal OpenAPI 3.1 specification consistent with api_resource_model conventions.\n\nOUTPUT FORMAT: Return ONLY a JSON object directly in `result` (no JSON-string wrapping, no `final_answer` envelope, no Markdown, no prose). Object MUST have these top-level keys: `openapi` (string \"3.1.0\"), `info` (title/version/description), `paths` (every endpoint, grouped by resource), `components` (schemas, parameters, responses, securitySchemes).\n\nEvery path MUST include: method(s), summary, security, parameters, requestBody when applicable, responses (success + error envelope shapes from api_resource_model), tags. Cap at 25 paths total — group related endpoints rather than expanding every variant.\n\nReuse the response envelope shape, error codes, pagination, and identifiers exactly as defined in api_resource_model. Do NOT redefine conventions inside the spec.",
+      "done_when": "openapi_spec is a JSON object with populated `openapi`, `info`, `paths`, `components` keys; every path follows api_resource_model conventions.",
       "artifact_schema": {
         "openapi_spec": {
           "type": "object",
@@ -2674,11 +2717,12 @@
       "tools_hint": [],
       "depends_on": [
         "4.2",
-        "4.5"
+        "4.5b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
         "tech_stack_decision",
+        "api_resource_model",
         "openapi_spec",
         "requirements_spec"
       ],
@@ -2748,11 +2792,12 @@
       "tools_hint": [],
       "depends_on": [
         "4.3",
-        "4.5"
+        "4.5b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
         "system_architecture",
+        "api_resource_model",
         "openapi_spec",
         "nfr_performance",
         "functional_requirements"
@@ -2930,6 +2975,7 @@
       "input_artifacts": [
         "system_architecture",
         "auth_design",
+        "api_resource_model",
         "openapi_spec"
       ],
       "output_artifacts": [
@@ -2999,13 +3045,14 @@
       "depends_on": [
         "4.3",
         "4.4",
-        "4.5",
+        "4.5b",
         "4.6"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
         "system_architecture",
         "database_schema",
+        "api_resource_model",
         "openapi_spec",
         "auth_design"
       ],
@@ -5656,6 +5703,7 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
+        "api_resource_model",
         "openapi_spec",
         "developer_workflow_doc",
         "technical_design_document_summary"
@@ -6453,6 +6501,7 @@
       "may_need_clarification": false,
       "input_artifacts": [
         "scalability_plan",
+        "api_resource_model",
         "openapi_spec",
         "stress_test_results"
       ],

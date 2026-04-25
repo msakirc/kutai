@@ -209,6 +209,12 @@ class SystemSnapshot:
         return cached.value
 
     def _local_pressure(self) -> float:
+        # Signed scarcity in [-1, +1]: positive = abundant capacity,
+        # negative = depleted. The admission gate is `pressure >=
+        # threshold(urgency)` where threshold = 0.5 - urgency, so a
+        # priority-4 task with no age bump has threshold=0.05 and
+        # required pressure >= +0.05 to admit.
+        #
         # In-flight check FIRST — a reserved task slot must hard-reject
         # further local admissions even when no model has been swapped in
         # yet (admission-time reservations run before the load, so
@@ -217,8 +223,21 @@ class SystemSnapshot:
         # masked the in-flight signal, causing phantom double-admissions.
         if any(c.is_local for c in self.in_flight_calls):
             return -1.0
+
+        # Cold local (no model loaded, nothing in flight) is the IDEAL
+        # state for admitting work — full capacity, zero contention.
+        # Returning 0.0 here was a cold-start deadlock: any task with
+        # threshold > 0 (priority < 5 + low age) couldn't admit, no
+        # admit meant no model load, no model load meant pressure
+        # stayed 0 forever. Mission 46 task 2939 [6.1] sat pending
+        # 5+ hours behind this with priority=4 / threshold=0.05 /
+        # pressure=0.0 (2026-04-25). Treat cold = peak abundance: any
+        # admittable task should clear the threshold from a fresh
+        # local. Subsequent admits hit the in-flight check above and
+        # serialize correctly.
         if self.local is None or self.local.model_name is None:
-            return 0.0
+            return 1.0
+
         if self.local.is_swapping:
             return -0.5
         idle = self.local.idle_seconds or 0.0

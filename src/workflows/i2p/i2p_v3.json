@@ -2397,8 +2397,11 @@
       "output_artifacts": [
         "requirements_review_result"
       ],
-      "instruction": "Review requirements_spec against prd_final for completeness, consistency, testability, and feasibility. Check that every user story has traceable requirements, no orphaned requirements exist, NFR targets are realistic, and security requirements cover all sensitive areas. Output status and issues list.",
-      "done_when": "requirements_review_result exists with comprehensive assessment.",
+      "context": {
+        "estimated_output_tokens": 6000
+      },
+      "instruction": "Review requirements_spec against prd_final for completeness, consistency, testability, and feasibility. Check that every user story has traceable requirements, no orphaned requirements exist, NFR targets are realistic, and security requirements cover all sensitive areas.\n\nOUTPUT FORMAT: Return ONLY a JSON object with EXACTLY two top-level fields:\n{\n  \"status\": \"pass\" | \"fail\" | \"needs_revision\",\n  \"issues\": [ { \"severity\": \"...\", \"file\": \"...\", \"line\": <int|null>, \"description\": \"...\", \"suggested_fix\": \"...\" }, ... ]\n}\n\nIMPORTANT: emit `status` FIRST so it lands even when output is truncated. Cap issues at 12 entries — group similar findings into one issue rather than listing each occurrence.",
+      "done_when": "requirements_review_result is a JSON object with `status` (pass|fail|needs_revision) and `issues` array.",
       "artifact_schema": {
         "requirements_review_result": {
           "type": "object",

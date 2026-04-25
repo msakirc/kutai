@@ -1135,12 +1135,50 @@ async def pre_execute_workflow_step(task: dict) -> dict:
 _review_tracker = ReviewTracker()
 
 
+_POST_EXECUTE_SLOW_MS = 250
+
+
 async def post_execute_workflow_step(task: dict, result: dict) -> None:
     """Post-hook: store output artifacts, evaluate conditional groups,
     trigger template expansion, and track review cycles.
 
     If the task is not a workflow step, returns immediately.
+
+    Instrumented with a wall-clock timer that logs a WARNING whenever
+    a single invocation exceeds ``_POST_EXECUTE_SLOW_MS``. Pump-tick
+    starvation (Telegram "Query is too old" bursts on 2026-04-24) was
+    traced to synchronous CPU-heavy work inside this hook — schema
+    validation regex on 20-30k-char outputs, ``dogru_mu_samet.assess``,
+    JSON round-trips, ``_unwrap_envelope`` on malformed long strings.
+    The warning surfaces hot invocations without speculatively moving
+    things into ``run_in_executor``; once profile data confirms a
+    specific offender, it can be migrated.
     """
+    import time as _time
+    _t0 = _time.perf_counter()
+    try:
+        return await _post_execute_workflow_step_impl(task, result)
+    finally:
+        _elapsed_ms = (_time.perf_counter() - _t0) * 1000
+        if _elapsed_ms > _POST_EXECUTE_SLOW_MS:
+            ctx_for_log = _parse_context(task)
+            output_len = 0
+            try:
+                ov = result.get("result") if isinstance(result, dict) else None
+                if isinstance(ov, str):
+                    output_len = len(ov)
+            except Exception:
+                pass
+            logger.warning(
+                f"[Workflow Hook] post_execute slow: "
+                f"{_elapsed_ms:.0f}ms "
+                f"task_id={task.get('id','?')} "
+                f"step={ctx_for_log.get('workflow_step_id','?')} "
+                f"output_chars={output_len}"
+            )
+
+
+async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
     ctx = _parse_context(task)
     if not is_workflow_step(ctx):
         return

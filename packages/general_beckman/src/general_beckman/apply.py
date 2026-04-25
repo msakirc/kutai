@@ -236,6 +236,14 @@ async def _retry_or_dlq(task: dict, *, category: str, error: str) -> None:
     if decision.action == "delayed":
         next_retry_at = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))
 
+    # Drop carry-over retry feedback that wasn't refreshed for this attempt.
+    # Hooks.py writes _schema_error+_prev_output during post_execute when a
+    # schema validation fails — and stamps _schema_error_for_attempt = attempts.
+    # If this retry was triggered by a non-schema path (availability, exhausted),
+    # the stamp won't match and we drop the stale feedback so the next prompt
+    # doesn't replay an unrelated failure as "your last output failed".
+    _drop_stale_retry_feedback(ctx, attempts)
+
     await update_task(
         task["id"],
         status="pending",
@@ -299,6 +307,39 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
 _NULLISH_STRINGS = {"", "none", "null", "nil", "n/a", "na", "-"}
 
 
+def _stamp_retry_feedback(ctx: dict, next_attempt: int) -> None:
+    """Tag freshly-written ``_schema_error``/``_prev_output`` with the attempt
+    number they were written FOR. Readers gate on this so stale feedback from
+    earlier failure modes (e.g. schema reject 2 attempts ago, then availability
+    bounce that re-queues without rewriting) doesn't leak into the next prompt
+    as ``"your last output failed: <unrelated>"``.
+    """
+    if "_schema_error" in ctx or "_prev_output" in ctx:
+        ctx["_schema_error_for_attempt"] = int(next_attempt)
+
+
+def _drop_stale_retry_feedback(ctx: dict, current_attempts: int) -> None:
+    """Pop ``_schema_error``/``_prev_output`` if not stamped for this attempt.
+
+    ``current_attempts`` is the value of ``worker_attempts`` for the row about
+    to execute. A fresh feedback write tags `_schema_error_for_attempt` to that
+    same number; anything else is left over from an earlier lifecycle stage
+    and must not be replayed.
+    """
+    stamp = ctx.get("_schema_error_for_attempt")
+    if stamp is None:
+        # Untagged + present means it was written before the staleness scheme
+        # existed. Conservative: drop, since we can't prove it's fresh.
+        if "_schema_error" in ctx or "_prev_output" in ctx:
+            ctx.pop("_schema_error", None)
+            ctx.pop("_prev_output", None)
+        return
+    if int(stamp) != int(current_attempts):
+        ctx.pop("_schema_error", None)
+        ctx.pop("_prev_output", None)
+        ctx.pop("_schema_error_for_attempt", None)
+
+
 def _is_meaningful_text(val) -> bool:
     """Return True if ``val`` is a non-empty string carrying real content.
 
@@ -315,7 +356,34 @@ def _is_meaningful_text(val) -> bool:
     return stripped.lower() not in _NULLISH_STRINGS
 
 
-def _grader_verdict_text(raw) -> str:
+def _is_title_echo(val: str, source_title: str) -> bool:
+    """True if a grader free-text field is just the source task title echoed back.
+
+    Thinking-model graders sometimes skip evaluation and re-emit the prompt's
+    ``Task: <title>`` content as their SITUATION/INSIGHT. Surfacing that as the
+    "reason" leaks the title into the error column and DLQ notification (e.g.
+    a generic "MVP scope definition task" reason on task 2889). Callers must
+    treat such echoes as nullish so the cascade falls through to the next
+    candidate field or "grader verdict unavailable".
+    """
+    if not source_title or not isinstance(val, str):
+        return False
+    a = val.strip().lower()
+    b = source_title.strip().lower()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    # Substantial overlap: candidate is a substring of title (or vice versa)
+    # and short enough that it's clearly an echo, not analysis. Cap at 80
+    # chars so longer free-form text that happens to mention the title isn't
+    # discarded.
+    if len(a) <= 80 and (a in b or b in a):
+        return True
+    return False
+
+
+def _grader_verdict_text(raw, *, source_title: str = "") -> str:
     """Extract the most useful human sentence from a grader verdict payload.
 
     ``raw`` may be a dict (common), a stringified dict (legacy), or free text.
@@ -324,6 +392,10 @@ def _grader_verdict_text(raw) -> str:
     string when every candidate field is missing / nullish. Callers use this
     as the error column upstream so downstream consumers (Telegram DLQ
     notice, logs) never see raw dict reprs or "None" sentinels.
+
+    ``source_title`` enables title-echo rejection: when a grader echoes the
+    input task title in a free-text field instead of evaluating, we treat it
+    as nullish and continue the cascade.
     """
     import ast
     candidate = raw
@@ -351,7 +423,7 @@ def _grader_verdict_text(raw) -> str:
     if isinstance(candidate, dict):
         for key in ("insight", "strategy", "situation", "message", "error"):
             val = candidate.get(key)
-            if _is_meaningful_text(val):
+            if _is_meaningful_text(val) and not _is_title_echo(val, source_title):
                 return val.strip()
         failed_axes = [
             k for k in ("relevant", "complete", "well_formed", "coherent")
@@ -584,7 +656,9 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         # column is never a truncated dict repr. str(a.raw)[:500] used to
         # leave unterminated braces that _humanize_error couldn't parse,
         # leaking `{'passed': False, ...}` head to Telegram DLQ notices.
-        error_str = _grader_verdict_text(a.raw)[:500]
+        error_str = _grader_verdict_text(
+            a.raw, source_title=source.get("title", "") or "",
+        )[:500]
         excluded = list(ctx.get("grade_excluded_models") or [])
         gen_model = ctx.get("generating_model") or ""
         if gen_model and gen_model not in excluded:
@@ -626,6 +700,7 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
                 prev_output = source.get("result") or ""
                 if isinstance(prev_output, str) and prev_output.strip():
                     ctx["_prev_output"] = prev_output[:6000]
+                _stamp_retry_feedback(ctx, attempts)
                 await update_task(
                     a.source_task_id,
                     status="pending",
@@ -653,6 +728,7 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         prev_output = source.get("result") or ""
         if isinstance(prev_output, str) and prev_output.strip():
             ctx["_prev_output"] = prev_output[:6000]
+        _stamp_retry_feedback(ctx, attempts)
         await update_task(
             a.source_task_id,
             status="pending",

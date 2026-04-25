@@ -1237,6 +1237,10 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
                 new_ctx = dict(ctx)
                 new_ctx["_schema_error"] = error_msg
                 new_ctx["_prev_output"] = output_value[:6000]
+                # Stamp for the NEXT attempt — _retry_or_dlq increments
+                # worker_attempts before re-queuing. The reader gates on
+                # match against the live worker_attempts.
+                new_ctx["_schema_error_for_attempt"] = int(attempts) + 1
                 await update_task(
                     task.get("id"),
                     context=json.dumps(new_ctx),

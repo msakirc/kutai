@@ -308,6 +308,12 @@ async def _plain_retry(task: dict) -> bool:
     ctx["failed_models"] = []
     ctx["excluded_models"] = []
     ctx["grade_excluded_models"] = []
+    # Drop retry feedback from the prior lifecycle — DLQ retry is a fresh
+    # start. Without this, the agent's first post-DLQ prompt replayed
+    # "your last output failed: <stale schema error from N attempts ago>".
+    ctx.pop("_schema_error", None)
+    ctx.pop("_prev_output", None)
+    ctx.pop("_schema_error_for_attempt", None)
     # Keep generating_model (prevents self-grading)
 
     # Reset checkpoint iteration counter so the agent doesn't immediately

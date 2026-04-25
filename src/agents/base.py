@@ -1617,16 +1617,25 @@ class BaseAgent:
         # Suppress clarification if task explicitly disallows it
         self._suppress_clarification = _task_ctx.get("may_need_clarification") is False
 
-        # ── Workflow step: refresh instruction + done_when from live JSON ──
-        # tasks.description and context.done_when are frozen at expander
-        # time. Edits to workflow JSON don't propagate to existing rows,
-        # so retries keep running the stale instruction (observed on
-        # task 2890: step 2.8 instruction was reshaped from 11-field use
-        # cases → 6-field stories, but the task row still carried the
-        # old text and the grader kept citing "use cases" in DLQ
-        # reasons). This mirrors the estimated_output_tokens refresh
-        # inside _classify_requirements — same plumbing, extended to
-        # instruction + done_when.
+        # ── Workflow step: refresh live JSON-driven fields ──
+        # tasks.description and context.* are frozen at expander time.
+        # Edits to workflow JSON don't propagate to existing rows, so
+        # retries kept running stale config (observed task 2890: step
+        # 2.8 instruction reshaped from 11-field use cases → 6-field
+        # stories, but task row still carried old text and grader kept
+        # citing "use cases" in DLQ reasons).
+        #
+        # Refreshed scope (every field whose stale value would mislead
+        # live execution):
+        #   - description (was: instruction)
+        #   - done_when, input_artifacts, output_artifacts,
+        #     artifact_schema, tools_hint, difficulty,
+        #     estimated_output_tokens, may_need_clarification,
+        #     triggers_clarification (in _task_ctx)
+        #   - any keys defined in the step's "context" sub-dict
+        # NOT refreshed (would change task identity mid-flight or are
+        # already evaluated at expansion time):
+        #   - agent_type, skip_when, depends_on
         if _task_ctx.get("is_workflow_step"):
             try:
                 _step_id = _task_ctx.get("workflow_step_id")
@@ -1654,29 +1663,55 @@ class BaseAgent:
                     _wf = load_workflow(_wf_name)
                     _step = _wf.get_step(_step_id)
                     if _step:
+                        _changed_fields: list[str] = []
+
                         _live_instr = _step.get("instruction")
-                        _live_done = _step.get("done_when")
-                        _changed = False
                         if (_live_instr
                                 and isinstance(_live_instr, str)
                                 and _live_instr != task.get("description")):
                             task["description"] = _live_instr
-                            _changed = True
-                        if (_live_done
-                                and isinstance(_live_done, str)
-                                and _live_done != _task_ctx.get("done_when")):
-                            _task_ctx["done_when"] = _live_done
+                            _changed_fields.append("description")
+
+                        # Top-level step fields that the engine plumbs
+                        # through expander.py into task context — refresh
+                        # the same set so retries see live config.
+                        _CTX_FIELDS = (
+                            "done_when",
+                            "input_artifacts",
+                            "output_artifacts",
+                            "artifact_schema",
+                            "tools_hint",
+                            "difficulty",
+                        )
+                        for _f in _CTX_FIELDS:
+                            _live_val = _step.get(_f)
+                            if _live_val is None:
+                                continue
+                            if _task_ctx.get(_f) != _live_val:
+                                _task_ctx[_f] = _live_val
+                                _changed_fields.append(_f)
+
+                        # The step may declare a free-form "context" dict
+                        # (estimated_output_tokens, may_need_clarification,
+                        # triggers_clarification, custom keys). Merge it
+                        # so additions / edits flow into live tasks.
+                        _step_inner_ctx = _step.get("context") or {}
+                        if isinstance(_step_inner_ctx, dict):
+                            for _k, _v in _step_inner_ctx.items():
+                                if _task_ctx.get(_k) != _v:
+                                    _task_ctx[_k] = _v
+                                    _changed_fields.append(f"context.{_k}")
+
+                        if _changed_fields:
                             task["context"] = json.dumps(_task_ctx)
-                            _changed = True
-                        if _changed:
                             logger.info(
                                 f"[Task #{task.get('id','?')}] step-refresh: "
-                                f"description/done_when re-synced from live JSON "
-                                f"(step={_step_id}, wf={_wf_name})"
+                                f"{', '.join(_changed_fields)} re-synced from "
+                                f"live JSON (step={_step_id}, wf={_wf_name})"
                             )
             except Exception as _e:
                 logger.warning(
-                    f"[Task #{task.get('id','?')}] step instruction refresh failed: {_e}"
+                    f"[Task #{task.get('id','?')}] step config refresh failed: {_e}"
                 )
 
         try:

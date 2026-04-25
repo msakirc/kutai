@@ -1411,9 +1411,34 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
             logger.debug(f"[Workflow Hook] Could not write artifact to disk: {e}")
 
     # ── Validate artifact schema ──
+    # Gate is on `artifact_schema` alone, NOT (artifact_schema AND output_value).
+    # The previous gate let an EMPTY output_value silently bypass schema
+    # validation, which combined with retry-of-failed-step caused this:
+    #
+    #   1. attempt 1 produced summary-blurb output, schema fail recorded
+    #   2. retry attempt 2 produced 0-char output (model gave up / bug)
+    #   3. empty output skipped validation → result.status stayed
+    #      "completed" → empty artifact published → tasks.error column
+    #      kept the attempt-1 failure message but tasks.status flipped
+    #      to completed
+    #   4. downstream consumers got an empty `architecture_decisions`
+    #      artifact (mission 46 task 2921, 2026-04-25 08:43)
+    #
+    # Validator already treats empty/whitespace as failing every shape.
+    # The earlier gate was over-zealous, presumably because no output
+    # means "the worker silently produced nothing" — but for a step with
+    # a declared schema that IS the failure, not a reason to skip
+    # checking.
     artifact_schema = ctx.get("artifact_schema")
-    if artifact_schema and output_value:
-        is_valid, error_msg = validate_artifact_schema(output_value, artifact_schema)
+    if artifact_schema:
+        if not output_value or not str(output_value).strip():
+            is_valid = False
+            error_msg = (
+                "empty output — the agent returned no artifact content for "
+                f"a step that requires schema {list(artifact_schema.keys())}"
+            )
+        else:
+            is_valid, error_msg = validate_artifact_schema(output_value, artifact_schema)
         if not is_valid:
             attempts = task.get("worker_attempts", 0)
             logger.warning(

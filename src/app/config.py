@@ -6,6 +6,27 @@ Model pool logic has moved to model_registry.py.
 
 import os
 
+# Load .env at module import. Any process that imports anything from
+# src.app.config (which is essentially everything in this repo) gets the
+# .env file resolved BEFORE DB_PATH or any other os.getenv is read. This
+# is the safety net for standalone scripts (one-off CLIs, reseed scripts,
+# tests run outside the wrapper). Previously a script invoked via
+# `python -c "from src.infra.db import get_db"` saw os.getenv("DB_PATH")
+# return None and silently forked to the data/kutai.db default — while
+# the wrapper-launched KutAI loaded .env and used the prod path. Result:
+# the script wrote to one DB, prod read from another, edits ghosted.
+# (Caught 2026-04-25 during a prompt_versions reseed that hit the wrong
+# DB and left prod DB untouched.) load_dotenv is a no-op when env vars
+# are already set, so the wrapper's existing load is unaffected.
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _ENV_PATH = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", ".env")
+    )
+    _load_dotenv(_ENV_PATH, override=False)
+except ImportError:  # python-dotenv not installed in this venv
+    pass
+
 from src.infra.logging_config import get_logger
 from src.models.model_registry import get_registry
 
@@ -20,7 +41,9 @@ TELEGRAM_ADMIN_CHAT_ID = os.getenv("TELEGRAM_ADMIN_CHAT_ID")
 
 # DB_PATH must be absolute so that any process — tests, CLIs, subprocesses that
 # don't load .env — all resolve to the same database. A relative default would
-# silently fork the DB into the caller's cwd.
+# silently fork the DB into the caller's cwd. The load_dotenv() call at the
+# top of this module is what makes the .env override actually fire here for
+# standalone scripts; without it the default below kicked in instead.
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DB_PATH = os.getenv("DB_PATH") or os.path.join(_PROJECT_ROOT, "data", "kutai.db")
 if not os.path.isabs(DB_PATH):

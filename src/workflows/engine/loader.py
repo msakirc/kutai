@@ -165,6 +165,24 @@ def load_workflow(workflow_name: str) -> WorkflowDefinition:
         if k[0] == str(path):
             del _WF_CACHE[k]
     _WF_CACHE[key] = wf
+
+    # Surface agent/schema mismatches at load time so a future edit doesn't
+    # have to wait for a mission DLQ to discover the regression. Logged once
+    # per (path, mtime) since the cache key dedupes future load_workflow
+    # calls for the same JSON.
+    try:
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+        _warnings = audit_agent_schema_mismatch(wf.steps)
+        if _warnings:
+            _log.warning(
+                "[%s] %d agent/schema mismatch(es) detected:", workflow_name, len(_warnings)
+            )
+            for _w in _warnings:
+                _log.warning("  %s", _w)
+    except Exception:
+        pass
+
     return wf
 
 
@@ -194,6 +212,71 @@ def validate_v3_fields(steps: list[dict]) -> list[str]:
             errors.append(f"Step '{sid}': skip_when must be a list")
 
     return errors
+
+
+# Agents whose default flow is incompatible with structured artifact schema.
+# planner emits subtask plans (action="final_answer" with subtasks list),
+# never a direct array/object artifact. writer emits "Wrote X.md" + summary,
+# putting the actual content in a file but the result field carries only
+# the summary blurb — for markdown schema steps that path produces a file
+# whose body is the summary sentence (observed on tasks 2937, 2938, 2906).
+_INCOMPATIBLE_AGENT_SCHEMA: dict[str, set[str]] = {
+    "planner": {"array", "object"},
+    "writer":  {"array", "object"},
+}
+
+
+def audit_agent_schema_mismatch(steps: list[dict]) -> list[str]:
+    """Return human-readable warnings for agent/schema mismatches.
+
+    Not raised as hard errors so existing workflows keep loading, but the
+    list is logged so a new mismatch is visible the moment the JSON is
+    edited rather than after the next mission DLQ's a step. writer→markdown
+    is intentionally NOT in the deny list — empirically writer can produce
+    markdown when given a high enough output budget and an explicit
+    "return content directly" instruction (e.g. step 2.11b prd_final
+    works fine). It IS flagged as a soft warning when context.estimated_
+    output_tokens is unset, since that's the failure mode (too little
+    budget → summary blurb only).
+    """
+    warnings: list[str] = []
+    for step in steps:
+        sid = step.get("id", "?")
+        agent = step.get("agent")
+        if not agent:
+            continue
+        sch = step.get("artifact_schema") or {}
+        primary_type = None
+        for v in sch.values():
+            if isinstance(v, dict) and "type" in v:
+                primary_type = v["type"]
+                break
+        if primary_type is None:
+            continue
+
+        bad_types = _INCOMPATIBLE_AGENT_SCHEMA.get(agent, set())
+        if primary_type in bad_types:
+            warnings.append(
+                f"Step '{sid}': agent='{agent}' is incompatible with "
+                f"artifact_schema.type='{primary_type}'. Switch to 'analyst' "
+                f"and have the instruction explicitly demand the structured "
+                f"output in `result`."
+            )
+
+        # Soft warning: writer + markdown without explicit token budget
+        # almost always summary-blurb-fails on long handoff/spec docs.
+        if (agent == "writer"
+                and primary_type == "markdown"
+                and not (step.get("context") or {}).get("estimated_output_tokens")):
+            warnings.append(
+                f"Step '{sid}': agent='writer' + type='markdown' without "
+                f"context.estimated_output_tokens — writer likely emits a "
+                f"'Wrote X.md. Summary: ...' blurb that fails required-section "
+                f"validation. Set estimated_output_tokens to >=10000 OR "
+                f"switch to 'analyst' with explicit markdown instructions."
+            )
+
+    return warnings
 
 
 def validate_dependencies(wf: WorkflowDefinition) -> list[str]:

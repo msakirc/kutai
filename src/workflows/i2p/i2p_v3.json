@@ -2341,7 +2341,7 @@
       "id": "3.10b",
       "phase": "phase_3",
       "name": "requirements_spec_nonfunctional",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
@@ -2361,8 +2361,11 @@
       "output_artifacts": [
         "requirements_spec"
       ],
-      "instruction": "Merge requirements_spec_part1 with non-functional requirements (performance, availability, security) and traceability matrix into the final Requirements Specification Document.",
-      "done_when": "requirements_spec exists as a comprehensive versioned document incorporating all requirement categories.",
+      "context": {
+        "estimated_output_tokens": 12000
+      },
+      "instruction": "Merge requirements_spec_part1 with non-functional requirements (performance, availability, security) and the traceability matrix into the final Requirements Specification Document.\n\nOUTPUT FORMAT: Return ONLY the Markdown content directly in `result` (no JSON wrapping, no `final_answer` envelope, no `Wrote ...` summary). The Markdown MUST contain these top-level sections in order, each as a `##` heading:\n\n## Functional Requirements\nCarry forward functional requirement summaries from requirements_spec_part1.\n\n## Non-Functional Requirements\nPerformance + availability + scalability bullets from nfr_performance and nfr_availability.\n\n## Security Requirements\nSecurity controls from security_requirements.\n\n## User Stories\nList user-story IDs covered by these requirements.\n\n## Traceability Matrix\nTable mapping each requirement id to user-story ids and back.",
+      "done_when": "requirements_spec is a Markdown document with `## Functional Requirements`, `## Non-Functional Requirements`, `## Security Requirements`, `## User Stories`, `## Traceability Matrix` headings present.",
       "artifact_schema": {
         "requirements_spec": {
           "type": "markdown",
@@ -3576,7 +3579,7 @@
       "id": "5.11b",
       "phase": "phase_5",
       "name": "design_handoff_document",
-      "agent": "writer",
+      "agent": "analyst",
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
@@ -3598,8 +3601,11 @@
       "output_artifacts": [
         "design_handoff"
       ],
-      "instruction": "Merge design_system_compilation with screen specs, interaction patterns, responsive rules, and accessibility requirements into the final Design Handoff Document.",
-      "done_when": "design_handoff exists as a comprehensive document.",
+      "context": {
+        "estimated_output_tokens": 14000
+      },
+      "instruction": "Merge design_system_compilation with screen specs, interaction patterns, responsive rules, and accessibility requirements into the final Design Handoff Document.\n\nOUTPUT FORMAT: Return ONLY the Markdown content directly in `result` (no JSON wrapping, no `final_answer` envelope, no `Wrote ...` summary). The Markdown MUST contain these top-level sections in order, each as a `##` heading:\n\n## Design Tokens\nKey tokens from design_system_compilation.\n\n## Component Library\nPrimitive + composite component summaries from design_system_compilation.\n\n## Screen Specifications\nKey screens from screen_specifications.\n\n## Interaction Guide\nMicro-interaction + animation rules from interaction_spec.\n\n## Responsive Guide\nBreakpoint behavior from responsive_spec.\n\n## Accessibility Guide\nWCAG-aligned guidelines from accessibility_spec.",
+      "done_when": "design_handoff is a Markdown document with `## Design Tokens`, `## Component Library`, `## Screen Specifications`, `## Interaction Guide`, `## Responsive Guide`, `## Accessibility Guide` headings present.",
       "artifact_schema": {
         "design_handoff": {
           "type": "markdown",

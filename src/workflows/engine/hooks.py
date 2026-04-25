@@ -62,6 +62,64 @@ async def _llm_summarize(text: str, artifact_name: str) -> str | None:
     return None
 
 
+def _extract_json_string_field(text: str, key: str) -> str | None:
+    """Recover a string field's value from possibly-truncated JSON.
+
+    Walks char-by-char from the first ``"key": "`` match, honoring JSON
+    escape rules. Returns the raw escaped-string body up to the first
+    unescaped closing ``"`` — or, if the input is truncated mid-string,
+    everything captured so far. Returns ``None`` only when the key isn't
+    found at all.
+
+    Why this exists: the older regex fallback required a downstream
+    sentinel (``"memories"``, ``"subtasks"``, or a closing ``}``) and
+    failed silently on LLM outputs that ran out of budget mid-string,
+    leaving the raw broken envelope as the artifact (observed task 2890
+    user_stories, 4132-char truncated triple-escaped output).
+    """
+    import re as _re
+    m = _re.search(rf'"{key}"\s*:\s*"', text)
+    if not m:
+        return None
+    i = m.end()
+    out: list[str] = []
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\":
+            # Capture the escape pair verbatim — unescape happens after.
+            if i + 1 < len(text):
+                out.append(ch + text[i + 1])
+                i += 2
+                continue
+            out.append(ch)
+            break
+        if ch == '"':
+            return "".join(out)
+        out.append(ch)
+        i += 1
+    # Truncated mid-string — return everything captured. The downstream
+    # quality check / schema validator will reject if it's unsalvageable;
+    # surfacing the partial body is strictly better than emitting the
+    # raw `{"action":"final_answer","result":"...` envelope.
+    return "".join(out)
+
+
+def _unescape_json_string(s: str) -> str:
+    """Reverse JSON string escapes. Tolerant of the triple-backslash mess
+    Qwen3.5-9B produces on long nested arrays — falls back to manual
+    pairwise replacement when strict json decoding fails."""
+    try:
+        return json.loads(f'"{s}"')
+    except (json.JSONDecodeError, ValueError):
+        return (
+            s.replace("\\\\", "\\")
+            .replace('\\"', '"')
+            .replace("\\n", "\n")
+            .replace("\\t", "\t")
+            .replace("\\r", "\r")
+        )
+
+
 def _unwrap_envelope(text: str) -> str:
     """Strip JSON envelopes, model tokens, and degenerate repetition.
 
@@ -104,29 +162,20 @@ def _unwrap_envelope(text: str) -> str:
     except (json.JSONDecodeError, TypeError):
         pass
 
-    # ── Regex fallback for broken JSON ──
+    # ── Fallback for broken / truncated JSON ──
+    # The structural extractor walks the string char-by-char respecting
+    # JSON escape rules and returns the partial body when truncated.
+    # Replaces the older regex pair which silently failed on outputs
+    # without a closing-marker sentinel.
     if '"result"' in stripped and '"final_answer"' in stripped:
-        m = _re.search(
-            r'"result"\s*:\s*"(.*)",?\s*(?:"memories"|"subtasks"|\})',
-            stripped,
-            _re.DOTALL,
-        )
-        if m:
-            raw = m.group(1)
-            stripped = raw.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+        body = _extract_json_string_field(stripped, "result")
+        if body is not None:
+            stripped = _unescape_json_string(body)
 
-    # Fallback: extract content from write_file in broken/truncated JSON
     if '"write_file"' in stripped and '"content"' in stripped:
-        m = _re.search(
-            r'"content"\s*:\s*"(.*)',
-            stripped,
-            _re.DOTALL,
-        )
-        if m:
-            raw = m.group(1)
-            # Trim trailing JSON closure if present
-            raw = _re.sub(r'"\s*\}\s*\}\s*$', '', raw)
-            stripped = raw.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+        body = _extract_json_string_field(stripped, "content")
+        if body is not None:
+            stripped = _unescape_json_string(body)
 
     return stripped
 

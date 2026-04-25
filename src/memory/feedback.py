@@ -79,15 +79,6 @@ async def record_feedback(
         except Exception:
             pass
 
-    # Feed into prompt quality
-    if agent_type and score != 0:
-        try:
-            from .prompt_versions import record_prompt_quality
-            quality = 5.0 + score * 2.5  # maps -1→2.5, 0→5.0, +1→7.5
-            await record_prompt_quality(agent_type, quality)
-        except Exception:
-            pass
-
 
 async def get_task_feedback(task_id: int) -> list[dict]:
     """Get all feedback for a task."""

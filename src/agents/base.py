@@ -302,11 +302,15 @@ class BaseAgent:
     #  Full system prompt assembly                                        #
     # ------------------------------------------------------------------ #
     def _build_full_system_prompt(self, task: dict) -> str:
-        # Phase 13.1: Use DB-versioned prompt if available, else hardcoded
-        if self._prompt_version_override:
-            parts = [self._prompt_version_override]
-        else:
-            parts = [self.get_system_prompt(task)]
+        # Code is the single source of truth for agent prompts. The old
+        # Phase 13.1 prompt_versions DB override path was removed in
+        # 2026-04-25 — auto-seeded rows from 2026-04-08 had been silently
+        # shadowing every prompt edit shipped since (e.g. writer's
+        # schema-aware markdown emit didn't fire because the DB held the
+        # pre-edit hardcoded copy). To re-introduce A/B testing later,
+        # build it as a per-task selector layered ON TOP of
+        # `get_system_prompt`, not as a wholesale replacement.
+        parts = [self.get_system_prompt(task)]
 
         tools_block = self._get_available_tools_prompt()
         if tools_block:
@@ -1543,25 +1547,12 @@ class BaseAgent:
     # ── Phase 4.6: Progress streaming callback ──
     progress_callback: Callable | None = None
 
-    # Phase 13.1: Cached prompt override from DB (set per-execution)
-    _prompt_version_override: str | None = None
-
     async def execute(self, task: dict, progress_callback: Callable | None = None) -> dict:
         """
         Route to appropriate execution pattern, then run.
         progress_callback: async fn(task_id, iteration, max_iter, summary)
         """
         self.progress_callback = progress_callback
-
-        # Phase 13.1: Load active prompt version from DB (if available)
-        self._prompt_version_override = None
-        try:
-            from ..memory.prompt_versions import get_active_prompt
-            db_prompt = await get_active_prompt(self.name)
-            if db_prompt:
-                self._prompt_version_override = db_prompt
-        except Exception:
-            pass
 
         # ── Override allowed_tools from workflow tools_hint ──
         _task_ctx = task.get("context")

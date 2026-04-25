@@ -353,13 +353,6 @@ class Orchestrator:
         ]
 
         try:
-            from ..memory.prompt_versions import seed_from_agents
-            if n := await seed_from_agents():
-                logger.info(f"Seeded {n} prompt versions")
-        except Exception as e:
-            logger.debug(f"Prompt seeding skipped: {e}")
-
-        try:
             from ..shopping.cache import init_cache_db
             from ..shopping.request_tracker import init_request_db
             from ..shopping.memory import init_memory_db

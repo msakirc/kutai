@@ -1411,26 +1411,30 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
             logger.debug(f"[Workflow Hook] Could not write artifact to disk: {e}")
 
     # ── Validate artifact schema ──
-    # Gate is on `artifact_schema` alone, NOT (artifact_schema AND output_value).
-    # The previous gate let an EMPTY output_value silently bypass schema
-    # validation, which combined with retry-of-failed-step caused this:
+    # Gate is on `artifact_schema` AND "this task is the LLM-driven worker
+    # that's supposed to produce the artifact". Mechanical sibling tasks
+    # (workflow_advance, git_commit, clarify, etc.) inherit artifact_schema
+    # from their parent step's ctx but DON'T produce artifact content —
+    # they do bookkeeping. The pre-existing gate `if artifact_schema and
+    # output_value` skipped them by accident (empty output → false). My
+    # earlier "empty output must fail" tightening (commit 2d6d82c) broke
+    # them by removing that incidental skip; mission 46 tasks 3797 + 3804
+    # DLQ'd as mechanical workflow_advance with "schema requires
+    # backend_design_compilation / technical_design_document" even though
+    # their LLM siblings (2923, 2924) had already produced the artifacts.
     #
-    #   1. attempt 1 produced summary-blurb output, schema fail recorded
-    #   2. retry attempt 2 produced 0-char output (model gave up / bug)
-    #   3. empty output skipped validation → result.status stayed
-    #      "completed" → empty artifact published → tasks.error column
-    #      kept the attempt-1 failure message but tasks.status flipped
-    #      to completed
-    #   4. downstream consumers got an empty `architecture_decisions`
-    #      artifact (mission 46 task 2921, 2026-04-25 08:43)
-    #
-    # Validator already treats empty/whitespace as failing every shape.
-    # The earlier gate was over-zealous, presumably because no output
-    # means "the worker silently produced nothing" — but for a step with
-    # a declared schema that IS the failure, not a reason to skip
-    # checking.
+    # Right gate: validate only when this task IS the artifact producer
+    # (no executor, agent isn't mechanical/grader/artifact_summarizer).
+    # For producer tasks, an empty output is still a real failure (not
+    # the silent bypass that let task 2921 ghost-complete on attempt 2).
     artifact_schema = ctx.get("artifact_schema")
-    if artifact_schema:
+    _agent_type = (task.get("agent_type") or ctx.get("agent_type") or "")
+    _executor = (task.get("executor") or ctx.get("executor") or "")
+    _is_producer = (
+        _executor != "mechanical"
+        and _agent_type not in ("mechanical", "grader", "artifact_summarizer")
+    )
+    if artifact_schema and _is_producer:
         if not output_value or not str(output_value).strip():
             is_valid = False
             error_msg = (

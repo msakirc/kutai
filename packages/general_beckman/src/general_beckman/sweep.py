@@ -45,12 +45,36 @@ async def sweep_queue() -> None:
     db = await get_db()
 
     # 1. Tasks stuck in "processing" for more than 5 minutes
+    #
+    # Gate against the dispatcher's in_flight registry: if the dispatcher
+    # still owns this task_id the row is NOT actually stuck — it's in a
+    # legitimate long iteration (planner with multi-tool_call, slow agent
+    # like architect/researcher, model swap mid-call). Flipping such a
+    # row to 'pending' corrupts /queue UI (live work disappears from "In
+    # Progress") AND burns a retry budget the dispatcher will redo. The
+    # 5-minute threshold predates the in_flight registry; it's a fallback
+    # for crashes / hung loops that bypass dispatcher cleanup, not a
+    # ceiling on legitimate long calls. (Handoff item N — observed
+    # mission 46 task 4040 got flipped mid-iteration 2026-04-26.)
     cursor = await db.execute(
         """SELECT id, title, worker_attempts, infra_resets, max_worker_attempts FROM tasks
            WHERE status = 'processing'
            AND started_at < datetime('now', '-5 minutes')"""
     )
-    stuck = [dict(row) for row in await cursor.fetchall()]
+    stuck_candidates = [dict(row) for row in await cursor.fetchall()]
+    try:
+        from src.core.in_flight import is_task_in_flight
+    except Exception:
+        is_task_in_flight = lambda _tid: False  # noqa: E731
+    stuck = []
+    for task in stuck_candidates:
+        if is_task_in_flight(task["id"]):
+            logger.debug(
+                f"[Sweep] Task #{task['id']} >5min processing but still "
+                f"in_flight — skipping flip"
+            )
+            continue
+        stuck.append(task)
     from general_beckman.apply import _dlq_write
     from src.core.retry import compute_retry_timing
     for task in stuck:
@@ -201,8 +225,12 @@ async def sweep_queue() -> None:
     #    decisions that belong to the human operator. Prevention is
     #    handled upstream by skip_when + grader feedback + auto-rescue
     #    of skip-eligible failures (see 2b).
-    if blocked:
-        await db.commit()
+    #
+    # The earlier ``if blocked: await db.commit()`` here referenced a
+    # variable that section 3 used to populate; the section was deleted
+    # by design but the orphan commit remained. Removed to stop the
+    # ``name 'blocked' is not defined`` cron-fire-failed warning from
+    # firing on every sweep tick (handoff item R).
 
     # 4. Parent tasks with all children done
     cursor3 = await db.execute(
@@ -356,6 +384,43 @@ async def sweep_queue() -> None:
                 f"\u274c Task #{tid} cancelled — no clarification "
                 f"received after 72h.\n*{ttitle}*"
             )
+
+    # 8. Pending tasks past their max_worker_attempts ceiling.
+    #
+    # Mission 46 had two rows (2939, 2942) sit pending for hours with
+    # ``worker_attempts > max_worker_attempts``. Root cause was the
+    # cold-start admission deadlock (now fixed in _local_pressure) but
+    # without a defensive guard such rows can still appear from any
+    # future bug that updates worker_attempts without flipping status
+    # to failed. Force them to DLQ so the human sees the failure and
+    # can /retry — silent stuck-pending corrupts queue accounting.
+    # (Handoff item A.)
+    cursor_overcap = await db.execute(
+        """SELECT id, title, worker_attempts, max_worker_attempts,
+                  error_category, mission_id
+           FROM tasks
+           WHERE status = 'pending'
+             AND worker_attempts >= COALESCE(max_worker_attempts, 6)"""
+    )
+    overcap = [dict(row) for row in await cursor_overcap.fetchall()]
+    for task in overcap:
+        attempts = int(task.get("worker_attempts") or 0)
+        max_att = int(task.get("max_worker_attempts") or 6)
+        category = task.get("error_category") or "worker"
+        logger.warning(
+            f"[Sweep] Task #{task['id']} pending past cap "
+            f"({attempts}/{max_att}) — forcing DLQ (category={category})"
+        )
+        fresh = dict(task)
+        fresh["failed_in_phase"] = "worker"
+        await _dlq_write(
+            fresh,
+            error=f"Worker attempts exceeded: {attempts}/{max_att}",
+            category=category,
+            attempts=attempts,
+        )
+    if overcap:
+        await db.commit()
 
     # Workflow-level wall-clock timeout killed 2026-04-22 (queue-gated
     # missions could be paused while simply waiting on admission).

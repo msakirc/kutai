@@ -74,6 +74,38 @@ async def next_task():
 
     candidates = await _queue.pick_ready_top_k(k=top_k)
     for task in candidates:
+        # Defensive guard: a pending row past worker_attempts cap should
+        # never have reached this point (sweep section 8 is supposed to
+        # catch them) but if a fast retry bumped it between sweep ticks,
+        # force DLQ here instead of admitting + immediately failing again.
+        # Mechanical tasks have no attempt cap — skip the check for them.
+        # (Handoff item A.)
+        attempts = int(task.get("worker_attempts") or 0)
+        max_att = int(task.get("max_worker_attempts") or 6)
+        if (
+            task.get("agent_type") != "mechanical"
+            and max_att > 0
+            and attempts >= max_att
+        ):
+            try:
+                from general_beckman.apply import _dlq_write
+                fresh = dict(task)
+                fresh["failed_in_phase"] = "worker"
+                await _dlq_write(
+                    fresh,
+                    error=f"Worker attempts exceeded at admission: "
+                    f"{attempts}/{max_att}",
+                    category=task.get("error_category") or "worker",
+                    attempts=attempts,
+                )
+                _log.warning(
+                    f"admission: task #{task['id']} REJECT past cap "
+                    f"({attempts}/{max_att}) — forced to DLQ"
+                )
+            except Exception as e:
+                _log.warning(f"admission: cap-guard DLQ write failed #{task['id']}: {e}")
+            continue
+
         agent_type = task.get("agent_type") or ""
         difficulty = task.get("difficulty", 5)
 

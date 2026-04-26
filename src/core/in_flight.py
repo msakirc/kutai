@@ -67,6 +67,19 @@ def in_flight_snapshot() -> list:
     return list(_task_slots.values()) + list(_call_entries.values())
 
 
+def is_task_in_flight(task_id: int) -> bool:
+    """Return True if the dispatcher is currently running this task.
+
+    Used by the sweep gate to avoid flipping ``processing -> pending``
+    on tasks the dispatcher still owns (which corrupts ``/queue`` UI
+    and burns a retry budget for no reason — see handoff item N).
+    Reads the local task-slot dict directly; no ``await`` needed.
+    """
+    if task_id is None:
+        return False
+    return int(task_id) in _task_slots
+
+
 # ─── Mutations ────────────────────────────────────────────────────────────
 async def _push() -> None:
     """Push full merged list to nerd_herd. Best-effort; swallows errors."""

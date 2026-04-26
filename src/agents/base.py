@@ -803,6 +803,131 @@ class BaseAgent:
                 f"## Additional Context\n{json.dumps(extra, indent=2)}"
             )
 
+        # ── Schema-validation retry hint ──
+        # The full hook pipeline (workflows/engine/hooks.py::
+        # pre_execute_workflow_step → enrich_task_description) became
+        # dead code during the Task 13 orchestrator trim — no current
+        # caller. The retry-hint logic that should land here was
+        # therefore never reaching the prompt. Mission 46 task 2949 burned
+        # 5 retries because the model never saw a "you missed
+        # connection_verified" nudge.
+        # Port the per-artifact checklist directly into the live context
+        # builder so it fires on every retry that has _schema_error in
+        # task_context. Mirrors validator semantics (schema vs parsed
+        # _prev_output) so [x] = present, [ ] = missing exactly as the
+        # validator would judge.
+        schema_error = task_context.get("_schema_error")
+        if schema_error:
+            retry_count = task.get("worker_attempts", 0)
+            _prev = task_context.get("_prev_output") or ""
+            if isinstance(_prev, dict):
+                _prev = json.dumps(_prev, ensure_ascii=False)
+            elif not isinstance(_prev, str):
+                _prev = str(_prev)
+            _prev_obj = None
+            try:
+                _prev_obj = json.loads(_prev)
+            except (json.JSONDecodeError, TypeError):
+                _prev_obj = None
+
+            per_artifact_blocks: list[str] = []
+            if artifact_schema and isinstance(artifact_schema, dict):
+                for art_name, rules in artifact_schema.items():
+                    if not isinstance(rules, dict):
+                        continue
+                    schema_type = rules.get("type", "string")
+
+                    if schema_type == "object":
+                        required = rules.get("required_fields", []) or []
+                        data = None
+                        if isinstance(_prev_obj, dict):
+                            if art_name in _prev_obj and isinstance(_prev_obj[art_name], dict):
+                                data = _prev_obj[art_name]
+                            elif all(f in _prev_obj for f in required[:1]):
+                                data = _prev_obj
+                        lines = []
+                        if data is not None:
+                            for f in required:
+                                mark = "x" if f in data else " "
+                                lines.append(f"    - [{mark}] {f}")
+                        else:
+                            for f in required:
+                                lines.append(f"    - [ ] {f}")
+                        per_artifact_blocks.append(
+                            f"  {art_name} (object):\n" + "\n".join(lines)
+                        )
+
+                    elif schema_type == "markdown":
+                        required = rules.get("required_sections", []) or []
+                        text = ""
+                        if isinstance(_prev_obj, str):
+                            text = _prev_obj
+                        elif _prev:
+                            text = _prev
+                        lines = []
+                        for sec in required:
+                            present = (
+                                f"## {sec}" in text
+                                or f"# {sec}" in text
+                                or f"### {sec}" in text
+                            )
+                            mark = "x" if present else " "
+                            lines.append(f"    - [{mark}] ## {sec}")
+                        per_artifact_blocks.append(
+                            f"  {art_name} (markdown):\n" + "\n".join(lines)
+                        )
+
+                    elif schema_type == "array":
+                        min_items = int(rules.get("min_items", 0) or 0)
+                        item_fields = rules.get("item_fields", []) or []
+                        arr = None
+                        if isinstance(_prev_obj, list):
+                            arr = _prev_obj
+                        elif (isinstance(_prev_obj, dict)
+                                and isinstance(_prev_obj.get(art_name), list)):
+                            arr = _prev_obj[art_name]
+                        have = len(arr) if isinstance(arr, list) else 0
+                        cnt_mark = "x" if have >= min_items else " "
+                        block = [
+                            f"  {art_name} (array, need >= {min_items}, have {have}):",
+                            f"    - [{cnt_mark}] minimum item count",
+                        ]
+                        if item_fields and have:
+                            first = arr[0] if isinstance(arr[0], dict) else {}
+                            for f in item_fields:
+                                mark = "x" if f in first else " "
+                                block.append(f"    - [{mark}] item.{f} (checked on item[0])")
+                        elif item_fields:
+                            for f in item_fields:
+                                block.append(f"    - [ ] item.{f}")
+                        per_artifact_blocks.append("\n".join(block))
+
+            shape_hint = (
+                "Keep every [x] item exactly as it was. Add each [ ] item "
+                "with real content. Don't drop checked items while adding "
+                "missing ones — that is the #1 retry failure mode."
+            )
+
+            retry_section = [
+                f"## IMPORTANT: Previous Output Was Invalid (retry {retry_count})",
+                f"Your previous output failed validation: **{schema_error}**",
+                "Fix your output to match the required format below. Include "
+                "EVERY required field/section — do not truncate the end.",
+            ]
+            if per_artifact_blocks:
+                retry_section.append(
+                    "\nPer-artifact checklist (computed from your previous "
+                    "output vs the live schema):"
+                )
+                retry_section.extend(per_artifact_blocks)
+            retry_section.append(f"\n{shape_hint}")
+            if _prev:
+                retry_section.append(
+                    "\n## Your Previous Output (fix this, don't start over)"
+                )
+                retry_section.append(f"```\n{_prev[:4000]}\n```")
+            parts.append("\n".join(retry_section))
+
         # ── Determine active layers and budgets ──
         agent_type = task.get("agent_type") or self.name
         policy = get_context_policy(agent_type)

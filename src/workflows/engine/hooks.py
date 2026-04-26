@@ -559,9 +559,15 @@ _FALSE_POSITIVE_PHRASES = [
     "empty states",     # UX design for empty states
 ]
 
-# Hard failure indicators — these override false positives
+# Hard failure indicators — these override false positives. Each must
+# be specific enough that a positive sentence form ("the shell tool is
+# working fine") doesn't trip detection. Bare ``"shell tool"`` was
+# removed 2026-04-27 because it was matching legit references to the
+# tool in design docs and post-mortems.
 _HARD_FAILURE_PHRASES = [
-    "shell tool",
+    "shell tool is blocked",
+    "shell tool is disabled",
+    "shell tool was blocked",
     "tool is blocked",
     "tool is disabled",
     "cannot proceed until",
@@ -569,6 +575,51 @@ _HARD_FAILURE_PHRASES = [
     "_ctx is not defined",
     "not in allowlist",
 ]
+
+
+_NEGATION_PRECEDERS = (
+    "not ", "no ", "n't ", "non-", "without ", "never ",
+    "isn't ", "wasn't ", "aren't ", "weren't ",
+)
+
+
+_SENTENCE_BOUNDARY_CHARS = ".!?\n;"
+
+
+def _phrase_matches_unnegated(text_lower: str, phrase: str) -> bool:
+    """Return True iff ``phrase`` appears in ``text_lower`` AT LEAST ONCE
+    without a negation token earlier in the SAME sentence.
+
+    Mission 57 task 4373 surfaced the false positive: a problem-statement
+    artifact contained ``"is not a critical blocker"`` and the substring
+    ``"critical blocker"`` (in ``_FAILURE_PHRASES``) tripped detection
+    five retries in a row. The output was structurally fine — the
+    negated phrase was descriptive content, not a failure report.
+
+    Heuristic: for each occurrence, walk back to the nearest sentence
+    boundary (``. ! ? \\n ;``) or 80 chars, whichever is closer. Check
+    that window for a negation token. If ALL occurrences are negated,
+    treat as no match. Otherwise at least one positive use exists ->
+    match. Sentence-bounded so a negation in an EARLIER sentence
+    doesn't mask a positive use later in the text.
+    """
+    if phrase not in text_lower:
+        return False
+    start = 0
+    while True:
+        idx = text_lower.find(phrase, start)
+        if idx == -1:
+            return False  # all checked occurrences were negated
+        # Find the start of the current sentence.
+        win_start = max(0, idx - 80)
+        for j in range(idx - 1, win_start - 1, -1):
+            if text_lower[j] in _SENTENCE_BOUNDARY_CHARS:
+                win_start = j + 1
+                break
+        window = text_lower[win_start:idx]
+        if not any(neg in window for neg in _NEGATION_PRECEDERS):
+            return True
+        start = idx + 1
 
 
 def _is_disguised_failure(output: str) -> bool:
@@ -585,15 +636,20 @@ def _is_disguised_failure(output: str) -> bool:
 
     lower = output.lower()
 
-    # Hard failure indicators — always a failure regardless of context
-    if any(phrase in lower for phrase in _HARD_FAILURE_PHRASES):
+    # Hard failure indicators — always a failure regardless of context.
+    # Still negation-aware: ``"the shell tool was working"`` shouldn't
+    # be flagged just because ``"shell tool"`` is hard-list.
+    if any(_phrase_matches_unnegated(lower, p) for p in _HARD_FAILURE_PHRASES):
         return True
 
     # Check for false positives — legitimate analysis about failures
     has_false_positive = any(fp in lower for fp in _FALSE_POSITIVE_PHRASES)
 
-    # Count failure indicators
-    hits = sum(1 for phrase in _FAILURE_PHRASES if phrase in lower)
+    # Count failure indicators (negation-aware).
+    hits = sum(
+        1 for phrase in _FAILURE_PHRASES
+        if _phrase_matches_unnegated(lower, phrase)
+    )
 
     # 2+ failure phrases = almost certainly a disguised failure
     if hits >= 2:

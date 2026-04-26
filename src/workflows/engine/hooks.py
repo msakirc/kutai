@@ -811,109 +811,138 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
     schema_error = ctx.get("_schema_error")
     if schema_error:
         retry_count = task.get("worker_attempts", 0)
-        # Pull specific missing bits out of the error message so the
-        # reinforcement is concrete, not generic. Small models keep
-        # missing the LAST item in a required-sections list ("Open
-        # Risks" seen repeatedly on idea_brief_compilation) — naming
-        # them explicitly helps.
+        # Build a per-artifact checklist by walking the schema and the
+        # parsed _prev_output JSON. Mirrors validator semantics directly,
+        # so a [x] mark really means "validator saw this field" and a
+        # [ ] mark really means "validator did not". The earlier flat-
+        # union approach merged required_fields across artifacts and lost
+        # the artifact-name context; mission 46 task 2949 sat with
+        # "Missing 'connection_verified' from 'db_client'" for 5+ retries
+        # because the model couldn't tell which artifact was missing it
+        # — `client_path` showed [x] but it was unclear which artifact's.
         import re as _re
+        import json as _json
         missing_hint = ""
-        # Match markdown section-list errors AND object field-list errors:
-        #   "'name' missing sections: [...]"
-        #   "'name' missing content about: [...]"
-        #   "Missing required fields in 'name': [...]"
-        m = _re.search(
-            r"missing (sections?|required fields|content about)[^\[\]']*(\[[^\]]+\]|'[^']+')",
-            schema_error,
-        )
-        present_list: list[str] = []
-        missing_list: list[str] = []
-        kind = ""
-        if m:
-            kind = m.group(1).lower()
-            missing_raw = m.group(2)
+        missing_hint_lines: list[str] = []
 
-            # Parse missing items out of the bracketed/quoted error chunk.
-            # "['Foo', 'Bar']" → ["Foo", "Bar"]; "'Foo'" → ["Foo"].
-            missing_list = _re.findall(r"'([^']+)'", missing_raw)
-
-            # ── Compute the FULL required list from artifact_schema, then
-            # split into present_list (from _prev) vs missing_list. Without
-            # this, the retry hint only said "missing X, Y" and the model
-            # would rebuild from scratch focusing on those two while
-            # dropping the sections it previously had — different missing
-            # set on every retry, whack-a-mole. Now we inject a checklist
-            # so the model knows what to KEEP plus what to ADD.
-            required_all: list[str] = []
+        _schema = ctx.get("artifact_schema") or {}
+        if isinstance(_schema, str):
             try:
-                _schema = ctx.get("artifact_schema") or {}
-                if isinstance(_schema, dict):
-                    for _aname, _rules in _schema.items():
-                        if not isinstance(_rules, dict):
-                            continue
-                        if "section" in kind:
-                            for _r in _rules.get("required_sections", []) or []:
-                                if _r not in required_all:
-                                    required_all.append(_r)
-                        elif "required fields" in kind:
-                            for _r in _rules.get("required_fields", []) or []:
-                                if _r not in required_all:
-                                    required_all.append(_r)
-                        else:  # "content about"
-                            for _r in _rules.get("required_fields", []) or []:
-                                if _r not in required_all:
-                                    required_all.append(_r)
-            except Exception:
-                required_all = []
+                _schema = _json.loads(_schema)
+            except (_json.JSONDecodeError, TypeError):
+                _schema = {}
 
-            if required_all:
-                missing_set = set(missing_list)
-                present_list = [r for r in required_all if r not in missing_set]
-            # else: required_all unknown, fall through to the legacy
-            # "specifically omitted" hint without the present list.
+        # Parse _prev as JSON if possible. Per-artifact present/missing
+        # only meaningful when we can introspect actual structure.
+        _prev_obj = None
+        if _prev:
+            try:
+                _prev_obj = _json.loads(_prev)
+            except (_json.JSONDecodeError, TypeError):
+                _prev_obj = None
 
-            # Distinguish the schema shape so the advice matches the fix:
-            # - "sections"        → markdown headings
-            # - "required fields" → JSON object keys
-            # - "content about"   → keyword-check fallback (object schema;
-            #                        content must mention these names)
-            if "section" in kind:
-                shape_hint = (
-                    "Add each missing item exactly as a '## <name>' markdown "
-                    "heading with real content beneath it. Do NOT skip or "
-                    "rename."
-                )
-            elif "required fields" in kind:
-                shape_hint = (
-                    "Add each missing item as a top-level JSON object key "
-                    "with a real value. Do NOT skip, rename, or nest it."
-                )
-            else:
-                shape_hint = (
-                    "Your output must mention each missing item by name with "
-                    "substantive content. If the schema expects a JSON "
-                    "object, these become top-level keys; if markdown, make "
-                    "each a '## <name>' section."
-                )
+        # Walk schema artifact-by-artifact. For object/markdown shapes
+        # check each required field/section against _prev_obj or text.
+        # For array shapes report item count vs min_items.
+        per_artifact_blocks: list[str] = []
+        if isinstance(_schema, dict) and _schema:
+            for art_name, rules in _schema.items():
+                if not isinstance(rules, dict):
+                    continue
+                schema_type = rules.get("type", "string")
 
-            if present_list and missing_list:
-                # Full checklist form. Tells the model what to keep AND
-                # what to add. The most important line: "KEEP the items
-                # marked ✓".
-                _ck_present = "\n".join(f"  - [x] {n}" for n in present_list)
-                _ck_missing = "\n".join(f"  - [ ] {n}" for n in missing_list)
-                missing_hint = (
-                    f"\n\nRequired-item checklist (your previous attempt):\n"
-                    f"{_ck_present}\n{_ck_missing}\n\n"
-                    f"KEEP every checked item from your previous output AND "
-                    f"add the unchecked ones. Do not drop checked items "
-                    f"while adding missing ones — that is the most common "
-                    f"failure mode on retries.\n{shape_hint}"
-                )
-            elif missing_list:
-                missing_hint = (
-                    f"\n\nMissing items: {missing_list}\n{shape_hint}"
-                )
+                if schema_type == "object":
+                    required = rules.get("required_fields", []) or []
+                    # Locate the artifact's data inside _prev_obj. Validator
+                    # accepts either: top-level keys are required fields
+                    # directly, OR top-level wrapped under art_name with
+                    # required fields inside. Mirror both cases.
+                    data = None
+                    if isinstance(_prev_obj, dict):
+                        if art_name in _prev_obj and isinstance(_prev_obj[art_name], dict):
+                            data = _prev_obj[art_name]
+                        elif all(f in _prev_obj for f in required[:1]):
+                            data = _prev_obj
+                    lines = []
+                    if data is not None:
+                        for f in required:
+                            mark = "x" if f in data else " "
+                            lines.append(f"    - [{mark}] {f}")
+                    else:
+                        for f in required:
+                            lines.append(f"    - [ ] {f}")
+                    per_artifact_blocks.append(
+                        f"  {art_name} (object):\n" + "\n".join(lines)
+                    )
+
+                elif schema_type == "markdown":
+                    required = rules.get("required_sections", []) or []
+                    text = ""
+                    if isinstance(_prev_obj, str):
+                        text = _prev_obj
+                    elif _prev:
+                        text = _prev
+                    lines = []
+                    for sec in required:
+                        # Validator looks for "## <Section>" heading anchor
+                        present = (
+                            f"## {sec}" in text
+                            or f"# {sec}" in text
+                            or f"### {sec}" in text
+                        )
+                        mark = "x" if present else " "
+                        lines.append(f"    - [{mark}] ## {sec}")
+                    per_artifact_blocks.append(
+                        f"  {art_name} (markdown):\n" + "\n".join(lines)
+                    )
+
+                elif schema_type == "array":
+                    min_items = int(rules.get("min_items", 0) or 0)
+                    item_fields = rules.get("item_fields", []) or []
+                    arr = None
+                    if isinstance(_prev_obj, list):
+                        arr = _prev_obj
+                    elif isinstance(_prev_obj, dict) and isinstance(_prev_obj.get(art_name), list):
+                        arr = _prev_obj[art_name]
+                    have = len(arr) if isinstance(arr, list) else 0
+                    cnt_mark = "x" if have >= min_items else " "
+                    block = [
+                        f"  {art_name} (array, need >= {min_items}, have {have}):",
+                        f"    - [{cnt_mark}] minimum item count",
+                    ]
+                    if item_fields and have:
+                        first = arr[0] if isinstance(arr[0], dict) else {}
+                        for f in item_fields:
+                            mark = "x" if f in first else " "
+                            block.append(f"    - [{mark}] item.{f} (checked on item[0])")
+                    elif item_fields:
+                        for f in item_fields:
+                            block.append(f"    - [ ] item.{f}")
+                    per_artifact_blocks.append("\n".join(block))
+
+        # Schema-shape advice — what kind of fix the model needs to apply.
+        shape_hint = (
+            "Keep every [x] item exactly as it was. Add each [ ] item with "
+            "real content. Don't drop checked items while adding missing "
+            "ones — that is the #1 retry failure mode. JSON-object schemas: "
+            "missing items become top-level keys (or nested keys under the "
+            "artifact_name). Markdown schemas: missing items become "
+            "`## <Section>` headings. Array schemas: produce a list with "
+            "the minimum item count, each item carrying every required "
+            "field."
+        )
+
+        if per_artifact_blocks:
+            missing_hint = (
+                "\n\nPer-artifact checklist (computed from your previous "
+                "output vs the live schema):\n"
+                + "\n".join(per_artifact_blocks)
+                + f"\n\n{shape_hint}"
+            )
+        else:
+            # Fallback when schema isn't introspectable — surface the raw
+            # error so at least the model knows SOMETHING failed.
+            missing_hint = f"\n\n{shape_hint}"
         parts.append(
             f"\n\n## IMPORTANT: Previous Output Was Invalid (retry {retry_count})\n"
             f"Your previous output failed validation: **{schema_error}**\n"

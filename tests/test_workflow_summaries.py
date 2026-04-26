@@ -103,37 +103,6 @@ class TestGeneratePhaseSummary(unittest.TestCase):
         self.assertLess(len(summary), 500)
 
 
-class TestPhaseSummaryInjection(unittest.TestCase):
-
-    def setUp(self):
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
-
-    def tearDown(self):
-        self.loop.close()
-
-    def _run(self, coro):
-        return self.loop.run_until_complete(coro)
-
-    def test_injects_phase_summaries(self):
-        from src.workflows.engine.hooks import pre_execute_workflow_step, get_artifact_store
-        store = get_artifact_store()
-        mission_id = 200
-        self._run(store.store(mission_id, "phase_0_summary", "Phase 0 decisions: use React"))
-        task = {"description": "Build the frontend",
-            "context": json.dumps({"is_workflow_step": True, "mission_id": mission_id,
-                "workflow_phase": "phase_1", "input_artifacts": []})}
-        result = self._run(pre_execute_workflow_step(task))
-        self.assertIn("Phase 0 decisions", result["description"])
-
-    def test_no_injection_when_no_summaries(self):
-        from src.workflows.engine.hooks import pre_execute_workflow_step
-        task = {"description": "Initial step",
-            "context": json.dumps({"is_workflow_step": True, "mission_id": 201,
-                "workflow_phase": "phase_0", "input_artifacts": []})}
-        result = self._run(pre_execute_workflow_step(task))
-        self.assertIn("Initial step", result["description"])
-
 
 if __name__ == "__main__":
     unittest.main()

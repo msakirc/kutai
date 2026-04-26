@@ -733,8 +733,9 @@ class BaseAgent:
         # skipped or DLQ'd, that store entry is missing. Without an
         # explicit NOTE the agent goes searching (read_file, file_tree)
         # for ghost names and burns iterations on tools that find nothing.
-        # The dead-code ``hooks.pre_execute_workflow_step`` used to emit
-        # this NOTE; ported here as part of handoff item D.
+        # The old ``hooks.pre_execute_workflow_step`` used to emit this
+        # NOTE before it was deleted 2026-04-27; logic now lives here as
+        # the sole producer (handoff item D).
         if (task_context.get("is_workflow_step")
                 and task_context.get("input_artifacts")):
             try:
@@ -868,13 +869,14 @@ class BaseAgent:
             )
 
         # ── Schema-validation retry hint ──
-        # The full hook pipeline (workflows/engine/hooks.py::
-        # pre_execute_workflow_step → enrich_task_description) became
-        # dead code during the Task 13 orchestrator trim — no current
-        # caller. The retry-hint logic that should land here was
-        # therefore never reaching the prompt. Mission 46 task 2949 burned
-        # 5 retries because the model never saw a "you missed
-        # connection_verified" nudge.
+        # Lives here as the sole producer. The old hook pipeline
+        # (``workflows/engine/hooks.py::pre_execute_workflow_step →
+        # enrich_task_description``) became dead code during the Task
+        # 13 orchestrator trim and was deleted 2026-04-27. The retry-
+        # hint logic was ported into this builder so it fires on every
+        # retry that has ``_schema_error`` in task_context. Mission 46
+        # task 2949 burned 5 retries because the model never saw a
+        # "you missed connection_verified" nudge prior to this port.
         # Port the per-artifact checklist directly into the live context
         # builder so it fires on every retry that has _schema_error in
         # task_context. Mirrors validator semantics (schema vs parsed

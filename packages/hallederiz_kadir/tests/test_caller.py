@@ -176,3 +176,124 @@ def test_call_json_mode_fallback(mock_litellm):
     kwargs = stream_mock.call_args[0][0]
     assert "tools" not in kwargs
     assert kwargs["response_format"] == {"type": "json_object"}
+
+
+# ── response_format (constrained decoding) ─────────────────────────────
+
+
+_RF_JSON_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "test_artifact",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["a", "b"],
+            "properties": {"a": {}, "b": {}},
+        },
+    },
+}
+
+
+def _make_model_info_with_jschema(**kwargs):
+    js = kwargs.pop("supports_json_schema", False)
+    m = _make_model_info(**kwargs)
+    m.supports_json_schema = js
+    return m
+
+
+@patch("hallederiz_kadir.caller.litellm")
+def test_response_format_passthrough_when_supported(mock_litellm):
+    """Capable model + caller-provided json_schema -> kwargs include it as-is."""
+    resp, p_dallama, p_stream = _local_patches()
+    stream_mock = p_stream.kwargs["new"] if "new" in p_stream.kwargs else AsyncMock(return_value=resp)
+    with p_dallama, patch(
+        "hallederiz_kadir.caller._stream_with_accumulator",
+        new_callable=AsyncMock, return_value=resp,
+    ) as sm:
+        model = _make_model_info_with_jschema(
+            is_local=True, supports_function_calling=False,
+            supports_json_mode=True, supports_json_schema=True,
+        )
+        run_async(call(
+            model=model, messages=[{"role": "user", "content": "hi"}],
+            tools=None, timeout=60.0, task="executor",
+            needs_thinking=False, estimated_output_tokens=500,
+            response_format=_RF_JSON_SCHEMA,
+        ))
+    kwargs = sm.call_args[0][0]
+    assert kwargs["response_format"] == _RF_JSON_SCHEMA
+
+
+@patch("hallederiz_kadir.caller.litellm")
+def test_response_format_degrades_to_json_object_when_no_schema(mock_litellm):
+    """json_schema requested but model only supports json_mode -> json_object fallback."""
+    resp = _make_litellm_response()
+    with patch("hallederiz_kadir.caller._get_dallama", return_value=None), \
+         patch(
+            "hallederiz_kadir.caller._stream_with_accumulator",
+            new_callable=AsyncMock, return_value=resp,
+         ) as sm:
+        model = _make_model_info_with_jschema(
+            is_local=True, supports_function_calling=False,
+            supports_json_mode=True, supports_json_schema=False,
+        )
+        run_async(call(
+            model=model, messages=[{"role": "user", "content": "hi"}],
+            tools=None, timeout=60.0, task="executor",
+            needs_thinking=False, estimated_output_tokens=500,
+            response_format=_RF_JSON_SCHEMA,
+        ))
+    kwargs = sm.call_args[0][0]
+    assert kwargs["response_format"] == {"type": "json_object"}
+
+
+@patch("hallederiz_kadir.caller.litellm")
+def test_response_format_dropped_when_no_json_at_all(mock_litellm):
+    """Model lacks both json_schema AND json_mode -> response_format dropped entirely."""
+    resp = _make_litellm_response()
+    mock_litellm.acompletion = AsyncMock(return_value=resp)
+    with patch(
+        "hallederiz_kadir.caller._kdv_pre_call",
+        return_value=(True, 0.0, False),
+    ):
+        model = _make_model_info_with_jschema(
+            is_local=False, location="cloud", provider="anthropic",
+            supports_function_calling=True,
+            supports_json_mode=False, supports_json_schema=False,
+        )
+        run_async(call(
+            model=model, messages=[{"role": "user", "content": "hi"}],
+            tools=None, timeout=60.0, task="executor",
+            needs_thinking=False, estimated_output_tokens=500,
+            response_format=_RF_JSON_SCHEMA,
+        ))
+    kwargs = mock_litellm.acompletion.call_args.kwargs
+    assert "response_format" not in kwargs
+
+
+@patch("hallederiz_kadir.caller.litellm")
+def test_response_format_ignored_with_function_calling_tools(mock_litellm):
+    """When tools+FC active, response_format is suppressed (mutually exclusive)."""
+    resp = _make_litellm_response()
+    with patch("hallederiz_kadir.caller._get_dallama", return_value=None), \
+         patch(
+            "hallederiz_kadir.caller._stream_with_accumulator",
+            new_callable=AsyncMock, return_value=resp,
+         ) as sm:
+        model = _make_model_info_with_jschema(
+            is_local=True, supports_function_calling=True,
+            supports_json_mode=True, supports_json_schema=True,
+        )
+        tools = [{"type": "function", "function": {"name": "search"}}]
+        run_async(call(
+            model=model, messages=[{"role": "user", "content": "hi"}],
+            tools=tools, timeout=60.0, task="executor",
+            needs_thinking=False, estimated_output_tokens=500,
+            response_format=_RF_JSON_SCHEMA,
+        ))
+    kwargs = sm.call_args[0][0]
+    # tools branch wins; json_schema not propagated (would conflict with tool_choice)
+    assert kwargs.get("tools") == tools
+    assert kwargs.get("response_format") != _RF_JSON_SCHEMA

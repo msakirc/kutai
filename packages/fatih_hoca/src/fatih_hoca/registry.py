@@ -59,6 +59,13 @@ class ModelInfo:
     max_tokens: int = 4096
     supports_function_calling: bool = False
     supports_json_mode: bool = False
+    # Strict ``response_format: json_schema`` (token-level constrained
+    # decoding). Strict superset of ``supports_json_mode``: every model
+    # with json_schema also supports json_object, but not vice versa.
+    # Local llama.cpp / Ollama / OpenAI gpt-4o / Gemini 1.5+ are TRUE;
+    # Claude / Groq / Cerebras / Sambanova are FALSE (some have it on
+    # specific newer models — verify per-model before enabling).
+    supports_json_schema: bool = False
     thinking_model: bool = False
     has_vision: bool = False
     mmproj_path: Optional[str] = None  # path to vision projector GGUF
@@ -134,6 +141,7 @@ class ModelInfo:
             "max_tokens": self.max_tokens,
             "supports_function_calling": self.supports_function_calling,
             "supports_json_mode": self.supports_json_mode,
+            "supports_json_schema": self.supports_json_schema,
             "thinking_model": self.thinking_model,
             "has_vision": self.has_vision,
             "cost_per_1k_input": self.cost_per_1k_input,
@@ -797,6 +805,27 @@ _FREE_TIER_DEFAULTS: dict[str, dict] = {
     "anthropic": {"rpm": 50, "tpm": 80000, "tier": "paid"},
 }
 
+# Providers whose API supports strict ``response_format: json_schema``
+# (token-level constrained decoding). Verified as of 2026-04 — refresh
+# when adding new providers or when a provider rolls out the feature.
+#
+#   openai     — Structured Outputs GA Aug 2024; gpt-4o-2024-08-06+.
+#   gemini     — responseSchema (Gemini 1.5+); litellm maps json_schema.
+#   llama_cpp  — OpenAI-compat endpoint; also grammar+json_schema body.
+#   ollama     — format=<schema> since 0.5.0 (Dec 2024); same engine.
+#
+# Excluded (json_object only or no support):
+#   anthropic  — no response_format; structured outputs via tool-use.
+#   groq       — json_object yes, json_schema partial per-model.
+#   cerebras   — json_object yes, json_schema in rollout.
+#   sambanova  — json_object only as of late 2025.
+_PROVIDERS_WITH_JSON_SCHEMA: set[str] = {
+    "openai",
+    "gemini",
+    "llama_cpp",
+    "ollama",
+}
+
 KNOWN_PROVIDERS = {
     "openai",
     "anthropic",
@@ -890,6 +919,13 @@ def detect_cloud_model(litellm_name: str, provider: str) -> dict:
     info.setdefault("max_tokens", 4096)
     info.setdefault("supports_function_calling", True)
     info.setdefault("supports_json_mode", True)
+    # Constrained decoding (strict response_format: json_schema). Defaults
+    # to provider-known capability — see _PROVIDERS_WITH_JSON_SCHEMA. Per-
+    # model overrides via models.yaml ``supports_json_schema: bool``.
+    info.setdefault(
+        "supports_json_schema",
+        provider in _PROVIDERS_WITH_JSON_SCHEMA,
+    )
 
     # Match against cloud profiles
     name_lower = litellm_name.lower()
@@ -1163,6 +1199,7 @@ class ModelRegistry:
                 max_tokens=detected["max_tokens"],
                 supports_function_calling=detected.get("supports_function_calling", True),
                 supports_json_mode=detected.get("supports_json_mode", True),
+                supports_json_schema=detected.get("supports_json_schema", False),
                 thinking_model=detected.get("thinking_model", False),
                 has_vision=detected.get("has_vision", False),
                 tier=detected.get("tier", "paid"),
@@ -1293,6 +1330,12 @@ class ModelRegistry:
                 max_tokens=max_tokens,
                 supports_function_calling=fc_supported,
                 supports_json_mode=True,
+                # Local llama.cpp supports strict json_schema constrained
+                # decoding via the OpenAI-compat endpoint. Always-on for
+                # the local pool — the base flag is true regardless of
+                # --no-jinja since json_schema lives on the response_format
+                # path, not the chat-template-tools path.
+                supports_json_schema=True,
                 thinking_model=raw["thinking"],
                 has_vision=raw["has_vision"],
                 mmproj_path=raw.get("mmproj_path"),

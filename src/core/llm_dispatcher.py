@@ -136,6 +136,11 @@ class LLMDispatcher:
         # unknown-kwarg rejection.
         _min_context_kw = int(kwargs.pop("min_context", 0) or 0)
 
+        # response_format is forwarded to hallederiz_kadir.call below; pop
+        # here so it doesn't leak into the selector's kwarg rejection.
+        # Re-injected into the call kwargs at the dispatch site.
+        _response_format_kw = kwargs.pop("response_format", None)
+
         if preselected_pick is not None and not failures:
             # Iteration 0: reuse Beckman's admission-time Hoca query.
             pick = preselected_pick
@@ -263,6 +268,7 @@ class LLMDispatcher:
                     task=task or category.value,
                     needs_thinking=needs_thinking,
                     estimated_output_tokens=kwargs.get("estimated_output_tokens", 0),
+                    response_format=_response_format_kw,
                 )
             except Exception as exc:
                 # hallederiz_kadir wraps known failures as CallError. A raw

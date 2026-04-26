@@ -255,6 +255,7 @@ async def call(
     task: str,
     needs_thinking: bool,
     estimated_output_tokens: int = 1000,
+    response_format: dict | None = None,
 ) -> CallResult | CallError:
     """Execute an LLM call against a single model.
 
@@ -269,6 +270,12 @@ async def call(
         task: task label for sampling profile and logging
         needs_thinking: whether to enable thinking for this call
         estimated_output_tokens: for max_tokens calculation
+        response_format: optional ``{"type": "json_schema", ...}`` payload
+            for token-level constrained decoding. When the model lacks
+            json_schema support, gracefully degrades to ``json_object`` if
+            json_mode is available, else dropped (no response_format sent).
+            Caller is responsible for ensuring the schema is suitable for
+            the step (single-shot final-answer flow, no tool iteration).
     """
     logger = _get_logger()
     is_thinking = model.thinking_model and needs_thinking
@@ -341,6 +348,28 @@ async def call(
         completion_kwargs["tool_choice"] = "auto"
     elif tools and not model.supports_function_calling and model.supports_json_mode:
         completion_kwargs["response_format"] = {"type": "json_object"}
+
+    # ── Response format (constrained decoding) ──
+    # Caller-provided response_format wins over the auto-set json_object
+    # branch above. Strict json_schema requires the per-model capability
+    # flag; otherwise gracefully degrade to json_object when available.
+    # Tools + json_schema are mutually exclusive — the response_format
+    # forces a single non-tool emission, conflicting with tool_choice.
+    if response_format:
+        if use_tools is not None:
+            logger.debug(
+                f"response_format ignored on tool-call path (model={model.name})"
+            )
+        elif (
+            response_format.get("type") == "json_schema"
+            and getattr(model, "supports_json_schema", False)
+        ):
+            completion_kwargs["response_format"] = response_format
+        elif model.supports_json_mode:
+            # Capability gap — drop schema, keep json_object so the model
+            # at least emits valid JSON. Validation hook still runs.
+            completion_kwargs["response_format"] = {"type": "json_object"}
+        # Else: leave whatever was set above (tools branch) or unset.
 
     # ── Rate limiting (cloud only) ──
     if not is_local:

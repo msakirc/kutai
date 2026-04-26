@@ -1843,7 +1843,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("logs", self.cmd_logs))
         self.app.add_handler(CommandHandler("bench_picks", self.cmd_bench_picks))
         self.app.add_handler(CallbackQueryHandler(
-            self._handle_variant_choice, pattern=r"^variant_choice:"
+            self._handle_variant_choice, pattern=r"^(vc|variant_choice):"
         ))
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(filters.LOCATION, self.handle_location))
@@ -2022,11 +2022,30 @@ class TelegramInterface:
         processing = [dict(row) for row in await cursor.fetchall()]
         # Fetch ready (pending with deps met)
         ready = await get_ready_tasks(limit=15)
+        # Fetch retry-pending: pending tasks with future next_retry_at.
+        # These were getting lost in "blocked" before — user couldn't tell
+        # whether a phase was deadlocked vs just waiting on backoff timer.
+        cursor_retry = await db.execute(
+            """SELECT id, title, agent_type, tier, worker_attempts,
+                      max_worker_attempts, next_retry_at, error_category, error
+                 FROM tasks
+                WHERE status = 'pending'
+                  AND next_retry_at IS NOT NULL
+                  AND next_retry_at > datetime('now')
+                ORDER BY next_retry_at ASC
+                LIMIT 10"""
+        )
+        retry_pending = [dict(row) for row in await cursor_retry.fetchall()]
         # Fetch blocked task summary
         blocked_summary = await get_blocked_task_summary()
         blocked_count = blocked_summary["blocked_count"]
+        # Don't double-count retry-pending against blocked count — they're
+        # already in their own section.
+        retry_ids = {t["id"] for t in retry_pending}
+        blocked_count = max(0, blocked_count - len(retry_ids))
 
-        if not processing and not ready and blocked_count == 0:
+        if (not processing and not ready and not retry_pending
+                and blocked_count == 0):
             await self._reply(update, "No pending tasks. System is idle.")
             return
 
@@ -2042,6 +2061,34 @@ class TelegramInterface:
             for t in ready:
                 agent = t.get('agent_type', '?')
                 msg += f"  #{t['id']} [{agent}|{t['tier']}] {t['title'][:50]}\n"
+            msg += "\n"
+        if retry_pending:
+            msg += "🔁 Retry pending:\n"
+            from datetime import datetime
+            from src.infra.times import from_db, utc_now
+            now = utc_now()
+            for t in retry_pending:
+                agent = t.get('agent_type', '?')
+                att = t.get('worker_attempts') or 0
+                mx = t.get('max_worker_attempts') or 0
+                cat = t.get('error_category') or "?"
+                # ETA in seconds. from_db tolerates either ISO or
+                # "YYYY-MM-DD HH:MM:SS" (sqlite default).
+                try:
+                    eta_dt = from_db(str(t['next_retry_at']))
+                    eta_s = max(0, int((eta_dt - now).total_seconds()))
+                    if eta_s < 60:
+                        eta_str = f"{eta_s}s"
+                    elif eta_s < 3600:
+                        eta_str = f"{eta_s // 60}m{eta_s % 60:02d}s"
+                    else:
+                        eta_str = f"{eta_s // 3600}h{(eta_s % 3600) // 60:02d}m"
+                except Exception:
+                    eta_str = "?"
+                msg += (
+                    f"  #{t['id']} [{agent}] {t['title'][:42]} "
+                    f"att={att}/{mx} cat={cat} eta={eta_str}\n"
+                )
             msg += "\n"
         if blocked_count > 0:
             msg += f"🚫 {blocked_count} tasks blocked (waiting on dependencies)\n"
@@ -5909,18 +5956,23 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         base_label: str,
         options: list,
     ) -> None:
-        """Send an inline-keyboard asking the user to pick a variant."""
+        """Send an inline-keyboard asking the user to pick a variant.
+
+        callback_data encodes mission_id + task_id so taps survive bot restart
+        (in-memory _pending_action is lost on restart and would otherwise leave
+        buttons silently non-responsive).
+        """
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         buttons = [
             [InlineKeyboardButton(
                 opt["label"],
-                callback_data=f"variant_choice:{opt['group_id']}",
+                callback_data=f"vc:{mission_id}:{task_id}:{opt['group_id']}",
             )]
             for opt in options
         ]
         buttons.append([InlineKeyboardButton(
             "📊 Hepsini karşılaştır",
-            callback_data="variant_choice:compare_all",
+            callback_data=f"vc:{mission_id}:{task_id}:all",
         )])
         markup = InlineKeyboardMarkup(buttons)
         await self.app.bot.send_message(
@@ -5929,6 +5981,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             reply_markup=markup,
             parse_mode="Markdown",
         )
+        # In-memory cache (fast path / contains options for compare-all UX);
+        # callback handler also reconstructs from DB when missing.
         self._pending_action[chat_id] = {
             "kind": "variant_choice",
             "mission_id": mission_id,
@@ -5938,30 +5992,87 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         }
 
     async def _handle_variant_choice(self, update, context):
+        """Parse callback_data directly — survives bot restart."""
         chat_id = update.effective_chat.id
-        pending = self._pending_action.get(chat_id)
-        await update.callback_query.answer()
-        if not pending or pending.get("kind") != "variant_choice":
-            return
-        data = update.callback_query.data or ""
-        if not data.startswith("variant_choice:"):
-            return
-        choice = data.split(":", 1)[1]
-        mission_id = pending["mission_id"]
-        task_id = pending["task_id"]
-        self._pending_action.pop(chat_id, None)
-        if choice == "compare_all":
-            await self._run_compare_all_and_reply(chat_id, mission_id, task_id)
-        else:
-            try:
-                gid = int(choice)
-            except ValueError:
+        data = (update.callback_query.data or "")
+
+        mission_id: int | None = None
+        task_id: int | None = None
+        choice: str = ""
+        # New format: "vc:{mission_id}:{task_id}:{choice}"
+        if data.startswith("vc:"):
+            parts = data.split(":")
+            if len(parts) != 4:
+                await update.callback_query.answer()
                 return
-            await self._resume_mission_at_step(
-                mission_id=mission_id,
-                after_task_id=task_id,
-                clarify_choice={"kind": "variant", "group_id": gid},
-            )
+            try:
+                mission_id = int(parts[1])
+                task_id = int(parts[2])
+            except ValueError:
+                await update.callback_query.answer()
+                return
+            choice = parts[3]
+            await update.callback_query.answer()
+        # Legacy format: "variant_choice:{choice}" — fall back to in-memory pending
+        elif data.startswith("variant_choice:"):
+            pending = self._pending_action.get(chat_id)
+            if not pending or pending.get("kind") != "variant_choice":
+                await update.callback_query.answer()
+                return
+            mission_id = pending["mission_id"]
+            task_id = pending["task_id"]
+            choice = data.split(":", 1)[1]
+            await update.callback_query.answer()
+        else:
+            await update.callback_query.answer()
+            return
+
+        # Refresh / hydrate in-memory pending so compare-all has options to render
+        pending = self._pending_action.get(chat_id) or {}
+        if not pending or pending.get("task_id") != task_id:
+            pending = await self._hydrate_variant_pending(chat_id, mission_id, task_id)
+            if pending:
+                self._pending_action[chat_id] = pending
+
+        if choice == "all" or choice == "compare_all":
+            await self._run_compare_all_and_reply(chat_id, mission_id, task_id, pending)
+            return
+        try:
+            gid = int(choice)
+        except ValueError:
+            return
+        self._pending_action.pop(chat_id, None)
+        await self._resume_mission_at_step(
+            mission_id=mission_id,
+            after_task_id=task_id,
+            clarify_choice={"kind": "variant", "group_id": gid},
+        )
+
+    async def _hydrate_variant_pending(
+        self, chat_id: int, mission_id: int, task_id: int,
+    ) -> dict | None:
+        """Reconstruct variant_choice pending state from DB after restart."""
+        try:
+            from src.workflows.engine.artifacts import ArtifactStore
+            store = ArtifactStore()
+            await store.warm_cache(mission_id)
+            gate_raw = await store.retrieve(mission_id, "gate_result") or "{}"
+            import json as _json
+            payload = _json.loads(gate_raw) if isinstance(gate_raw, str) else gate_raw
+            options = payload.get("clarify_options") or []
+            base_label = payload.get("base_label") or "Ürün"
+            if not options:
+                return None
+            return {
+                "kind": "variant_choice",
+                "mission_id": mission_id,
+                "task_id": task_id,
+                "options": options,
+                "base_label": base_label,
+            }
+        except Exception as exc:
+            self.logger.debug("hydrate_variant_pending failed: %s", exc) if hasattr(self, "logger") else None
+            return None
 
     async def _resume_mission_at_step(
         self,
@@ -5988,21 +6099,79 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         chat_id: int,
         mission_id: int,
         task_id: int,
+        pending: dict | None = None,
     ) -> None:
-        """Invoke the format_compare handler directly and reply with the result."""
-        import json as _json
-        from src.infra.db import update_task
+        """Render category-style comparison then re-attach line buttons for user pick."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        from telegram.constants import ChatAction
+        from src.workflows.engine.artifacts import ArtifactStore
         from src.workflows.shopping.pipeline_v2 import _handler_format_compare
+
+        # Interim feedback — N synth calls can take 10-30s
+        try:
+            await self.app.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        except Exception:
+            pass
+        progress_msg = None
+        try:
+            progress_msg = await self.app.bot.send_message(
+                chat_id=chat_id,
+                text="🔍 Tüm seçenekler için inceleme özetleri hazırlanıyor…",
+            )
+        except Exception:
+            progress_msg = None
+
+        store = ArtifactStore()
+        await store.warm_cache(mission_id)
+        gate_raw = await store.retrieve(mission_id, "gate_result") or "{}"
         out = await _handler_format_compare(
-            task={"id": task_id}, artifacts={}, ctx={},
+            task={"id": task_id},
+            artifacts={"gate_result": gate_raw},
+            ctx={"mission_id": mission_id},
         )
+
+        # Drop progress message — final cards replace it
+        if progress_msg is not None:
+            try:
+                await self.app.bot.delete_message(chat_id=chat_id, message_id=progress_msg.message_id)
+            except Exception:
+                pass
         text = out.get("formatted_text") or "Bilgi yok."
-        await self._resume_mission_at_step(
-            mission_id=mission_id,
-            after_task_id=task_id,
-            clarify_choice={"kind": "compare_all"},
-        )
-        if hasattr(self, "_reply_text"):
-            await self._reply_text(chat_id, text)
+
+        options = (pending or {}).get("options") or []
+        markup = None
+        if options:
+            buttons = [
+                [InlineKeyboardButton(
+                    opt["label"],
+                    callback_data=f"variant_choice:{opt['group_id']}",
+                )]
+                for opt in options
+            ]
+            markup = InlineKeyboardMarkup(buttons)
+
+        # Telegram caps text at 4096 chars; category compare can exceed it
+        MAX_LEN = 3800
+        if len(text) > MAX_LEN:
+            chunks: list[str] = []
+            remaining = text
+            while len(remaining) > MAX_LEN:
+                cut = remaining.rfind("\n", 0, MAX_LEN)
+                if cut <= 0:
+                    cut = MAX_LEN
+                chunks.append(remaining[:cut])
+                remaining = remaining[cut:].lstrip("\n")
+            chunks.append(remaining)
+            for chunk in chunks[:-1]:
+                await self.app.bot.send_message(
+                    chat_id=chat_id, text=chunk, parse_mode="Markdown",
+                )
+            await self.app.bot.send_message(
+                chat_id=chat_id, text=chunks[-1],
+                reply_markup=markup, parse_mode="Markdown",
+            )
         else:
-            await self.app.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+            await self.app.bot.send_message(
+                chat_id=chat_id, text=text,
+                reply_markup=markup, parse_mode="Markdown",
+            )

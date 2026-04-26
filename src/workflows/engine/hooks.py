@@ -1978,11 +1978,54 @@ async def _trigger_template_expansion(mission_id: int, backlog_text: str) -> Non
         # Track feature_id → (first_task_id, last_task_id) for cross-feature deps
         feature_task_range: dict[str, tuple[int, int]] = {}
 
+        # Idempotency check (handoff item P): mission 46 phase 8 had
+        # two waves of feat tasks (4015-4023 + 4040-onward) when
+        # workflow_advance fired twice for the parent step (or when a
+        # reset re-triggered the expansion). Each feature's expanded
+        # tasks share a ``[8.{fid}.<step>]`` title prefix, so a single
+        # SQL pre-check tells us which fids are already expanded for
+        # this mission. We skip those fids on this call.
+        already_expanded: set[str] = set()
+        try:
+            from ...infra.db import get_db
+            _db = await get_db()
+            _cur = await _db.execute(
+                """SELECT title FROM tasks
+                    WHERE mission_id = ?
+                      AND title LIKE '[8.%]%'""",
+                (mission_id,),
+            )
+            for _row in await _cur.fetchall():
+                _t = _row[0] if isinstance(_row, tuple) else _row["title"]
+                if not _t or not _t.startswith("[8."):
+                    continue
+                # Title is "[8.<fid>.<stepname>] ..." — extract fid.
+                _close_bracket = _t.find("]")
+                if _close_bracket <= 3:
+                    continue
+                _step_id = _t[1:_close_bracket]  # e.g. "8.feat1.write_code"
+                _parts = _step_id.split(".", 2)
+                if len(_parts) >= 2:
+                    already_expanded.add(_parts[1])
+            await _cur.close()
+        except Exception as _exc:
+            logger.debug(
+                f"[Workflow Hook] feature-template idempotency check "
+                f"failed: {_exc!r} — proceeding without skip"
+            )
+
         for feature in features:
             if not isinstance(feature, dict):
                 continue
             fid = feature.get("id", feature.get("feature_id", "unknown"))
             fname = feature.get("name", feature.get("feature_name", "Unnamed"))
+
+            if fid in already_expanded:
+                logger.info(
+                    f"[Workflow Hook] feature '{fid}' already expanded "
+                    f"for mission #{mission_id} — skipping (handoff P)"
+                )
+                continue
 
             expanded = expand_template(
                 template,

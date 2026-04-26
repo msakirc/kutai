@@ -1871,8 +1871,23 @@ class BaseAgent:
         try:
             # ── Phase 5: execution pattern routing ──
             if self.execution_pattern == "single_shot":
-                return await self.execute_single_shot(task)
-            return await self._execute_react_loop(task)
+                _result = await self.execute_single_shot(task)
+            else:
+                _result = await self._execute_react_loop(task)
+            # Post-emit constrained-decoding pass: if the workflow step
+            # declares a constrainable artifact_schema (object/array)
+            # and the draft result is a non-empty completion, run a
+            # single-shot fix-up call with response_format:json_schema
+            # so required fields can't be silently dropped. Skips
+            # markdown/string schemas and non-completed results.
+            try:
+                _result = await self._maybe_constrained_emit(task, _result)
+            except Exception as _emit_exc:
+                logger.warning(
+                    f"[Task #{task.get('id','?')}] constrained_emit raised: "
+                    f"{_emit_exc!r} — keeping draft result"
+                )
+            return _result
         finally:
             # Restore original allowed_tools if overridden by tools_hint
             if hasattr(self, '_original_allowed_tools'):
@@ -3337,6 +3352,170 @@ class BaseAgent:
             reqs.difficulty = max(reqs.difficulty, wf_difficulty)
 
         return reqs
+
+    async def _maybe_constrained_emit(self, task: dict, result: dict) -> dict:
+        """Post-execution structured-output guarantee for workflow steps.
+
+        Logged failure data showed models dropping the same required JSON
+        field across 5+ retries even when ``_schema_error`` injection
+        named the missing field (mission 46 step 7.4 stuck on
+        ``connection_verified`` 25 times). Post-hoc retry hints are
+        whack-a-mole — the structural fix is to constrain decoding so the
+        omission can't occur.
+
+        Behaviour:
+
+        * No-op unless this is a workflow step with a constrainable
+          ``artifact_schema`` (object / array — markdown is unconstrainable
+          and handled by the validator + writer schema-aware prompt).
+        * No-op unless the upstream result is a normal completion. We do
+          not rewrite ``needs_subtasks``, ``needs_clarification``,
+          ``needs_review``, or already-failed results.
+        * Skips when the model picked for the fix-up call doesn't support
+          json_schema — caller's degradation logic handles this, but here
+          we just don't waste a call when the registry has no capable
+          candidate.
+        * On any error, returns the original ``result`` unchanged. The
+          existing schema validation hook will still flag missing fields
+          and trigger the normal retry path — fix-up is a best-effort
+          win, never a regression.
+
+        Cost: one extra OVERHEAD call per artifact step. Acceptable when
+        the alternative is 5 worker retries × main_work cost on a hot
+        loaded model.
+        """
+        if not isinstance(result, dict):
+            return result
+        if result.get("status") not in (None, "completed"):
+            # Failures, clarifies, subtasks pass through unchanged.
+            return result
+        draft = result.get("result")
+        if not isinstance(draft, str) or not draft.strip():
+            return result
+
+        ctx = task.get("context") or {}
+        if isinstance(ctx, str):
+            try:
+                ctx = json.loads(ctx)
+                if isinstance(ctx, str):
+                    ctx = json.loads(ctx)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return result
+        if not isinstance(ctx, dict):
+            return result
+        if not ctx.get("is_workflow_step"):
+            return result
+
+        artifact_schema = ctx.get("artifact_schema")
+        if not isinstance(artifact_schema, dict):
+            return result
+
+        from src.workflows.engine.json_schema_translator import (
+            build_response_format,
+        )
+        step_id = ctx.get("workflow_step_id") or "artifact"
+        # JSON Schema 'name' must be alphanumeric+underscore; sanitize.
+        safe_name = "step_" + "".join(
+            c if c.isalnum() else "_" for c in str(step_id)
+        )
+        response_format = build_response_format(
+            artifact_schema, name=safe_name,
+        )
+        if response_format is None:
+            # Unconstrainable (markdown / string). Skip — validator and
+            # writer-schema-aware prompt cover that path.
+            return result
+
+        # Build a tight prompt that re-emits the artifact in conforming
+        # JSON. The model receives the raw JSON Schema so it can see
+        # exactly what fields are required, plus the draft to anchor on.
+        schema_text = json.dumps(
+            response_format["json_schema"]["schema"],
+            ensure_ascii=False,
+            indent=2,
+        )
+        # Cap draft to keep input token cost in line. Schema-validation
+        # check at the end runs against the FULL output, so a long draft
+        # losing tail context here is harmless — the fix-up regenerates.
+        draft_for_prompt = draft[:12000]
+        system = (
+            "You are a structured-output emitter. Re-emit the artifact "
+            "below as JSON conforming exactly to the provided schema. "
+            "Do not add commentary. Do not wrap in envelopes. Output "
+            "ONLY the JSON value.\n\n"
+            "Rules:\n"
+            "- Every required field must be present with a real value.\n"
+            "- Do not invent fields not in the schema.\n"
+            "- Preserve the draft's information; restructure into the "
+            "schema, do not summarize away content."
+        )
+        user = (
+            f"Schema:\n```json\n{schema_text}\n```\n\n"
+            f"Draft to fix:\n```\n{draft_for_prompt}\n```\n\n"
+            f"Emit the final JSON now."
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+
+        try:
+            from src.core.llm_dispatcher import get_dispatcher, CallCategory
+            resp = await get_dispatcher().request(
+                CallCategory.OVERHEAD,
+                task="structured_emit",
+                difficulty=3,
+                messages=messages,
+                estimated_input_tokens=max(1000, len(user) // 4),
+                estimated_output_tokens=min(
+                    12000,
+                    max(1000, len(draft_for_prompt) // 3),
+                ),
+                prefer_speed=True,
+                response_format=response_format,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[Task #{task.get('id','?')}] constrained_emit dispatch "
+                f"failed: {exc!r} — keeping draft"
+            )
+            return result
+
+        emitted = resp.get("content", "") if isinstance(resp, dict) else ""
+        if isinstance(emitted, list):
+            emitted = " ".join(
+                b.get("text", "") if isinstance(b, dict) else str(b)
+                for b in emitted
+            )
+        if not isinstance(emitted, str) or not emitted.strip():
+            logger.warning(
+                f"[Task #{task.get('id','?')}] constrained_emit returned "
+                f"empty — keeping draft"
+            )
+            return result
+
+        # Cheap shape check: must parse as JSON. The schema-validation
+        # hook will do the deeper required-field check.
+        try:
+            json.loads(emitted)
+        except (json.JSONDecodeError, ValueError):
+            logger.warning(
+                f"[Task #{task.get('id','?')}] constrained_emit produced "
+                f"non-JSON output (model={resp.get('model','?')}) — keeping draft"
+            )
+            return result
+
+        logger.info(
+            f"[Task #{task.get('id','?')}] constrained_emit applied "
+            f"(model={resp.get('model','?')}, "
+            f"draft={len(draft)} -> emit={len(emitted)} chars, "
+            f"step={step_id})"
+        )
+        # Replace result while preserving metadata.
+        new_result = dict(result)
+        new_result["result"] = emitted
+        new_result["constrained_emit_applied"] = True
+        return new_result
 
     async def execute_single_shot(self, task: dict) -> dict:
         """Single LLM call with no tool loop. For planning/classification."""

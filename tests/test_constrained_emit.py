@@ -1,0 +1,208 @@
+"""Tests for ``BaseAgent._maybe_constrained_emit`` post-execution pass.
+
+Phase B of constrained decoding: after the ReAct loop or single-shot
+returns, run a fix-up dispatch with response_format:json_schema so
+required fields are guaranteed. Failure modes the gate must handle:
+
+* Non-completed results pass through (failures, clarifies, subtasks).
+* Non-workflow tasks pass through (no schema to constrain).
+* Markdown / string schemas pass through (unconstrainable).
+* Dispatch error -> keep draft, never regress.
+* Empty / non-JSON emit -> keep draft, never regress.
+* Constrainable + completion -> dispatch fired with json_schema RF.
+"""
+from __future__ import annotations
+
+import json
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from src.agents.base import BaseAgent
+
+
+class _FakeAgent(BaseAgent):
+    name = "fake"
+
+
+def _wf_task(schema: dict, step_id: str = "test_step") -> dict:
+    return {
+        "id": 999,
+        "context": json.dumps({
+            "is_workflow_step": True,
+            "workflow_step_id": step_id,
+            "artifact_schema": schema,
+        }),
+    }
+
+
+_OBJECT_SCHEMA = {"db_client": {"type": "object", "required_fields": ["a", "b"]}}
+_ARRAY_SCHEMA = {"items": {"type": "array", "min_items": 1, "item_fields": ["x"]}}
+_MARKDOWN_SCHEMA = {"doc": {"type": "markdown"}}
+
+
+@pytest.mark.asyncio
+async def test_passes_through_non_completed_result():
+    agent = _FakeAgent()
+    result = {"status": "failed", "result": "boom", "error": "x"}
+    out = await agent._maybe_constrained_emit(_wf_task(_OBJECT_SCHEMA), result)
+    assert out is result
+
+
+@pytest.mark.asyncio
+async def test_passes_through_empty_draft():
+    agent = _FakeAgent()
+    result = {"status": "completed", "result": "   "}
+    out = await agent._maybe_constrained_emit(_wf_task(_OBJECT_SCHEMA), result)
+    assert out is result
+
+
+@pytest.mark.asyncio
+async def test_passes_through_non_workflow_task():
+    agent = _FakeAgent()
+    task = {"id": 1, "context": json.dumps({"artifact_schema": _OBJECT_SCHEMA})}
+    result = {"status": "completed", "result": '{"a":1,"b":2}'}
+    out = await agent._maybe_constrained_emit(task, result)
+    assert out is result
+
+
+@pytest.mark.asyncio
+async def test_passes_through_markdown_schema():
+    agent = _FakeAgent()
+    result = {"status": "completed", "result": "# title\n\nbody"}
+    out = await agent._maybe_constrained_emit(_wf_task(_MARKDOWN_SCHEMA), result)
+    assert out is result
+
+
+@pytest.mark.asyncio
+async def test_passes_through_when_no_schema():
+    agent = _FakeAgent()
+    task = {
+        "id": 1,
+        "context": json.dumps({"is_workflow_step": True}),
+    }
+    result = {"status": "completed", "result": "x"}
+    out = await agent._maybe_constrained_emit(task, result)
+    assert out is result
+
+
+@pytest.mark.asyncio
+async def test_dispatch_failure_keeps_draft():
+    agent = _FakeAgent()
+    result = {"status": "completed", "result": "draft text"}
+    fake_dispatcher = AsyncMock()
+    fake_dispatcher.request.side_effect = RuntimeError("boom")
+    with patch(
+        "src.core.llm_dispatcher.get_dispatcher",
+        return_value=fake_dispatcher,
+    ):
+        out = await agent._maybe_constrained_emit(
+            _wf_task(_OBJECT_SCHEMA), result,
+        )
+    assert out["result"] == "draft text"
+    assert "constrained_emit_applied" not in out
+
+
+@pytest.mark.asyncio
+async def test_empty_emit_keeps_draft():
+    agent = _FakeAgent()
+    result = {"status": "completed", "result": "draft text"}
+    fake_dispatcher = AsyncMock()
+    fake_dispatcher.request = AsyncMock(return_value={"content": "", "model": "m"})
+    with patch(
+        "src.core.llm_dispatcher.get_dispatcher",
+        return_value=fake_dispatcher,
+    ):
+        out = await agent._maybe_constrained_emit(
+            _wf_task(_OBJECT_SCHEMA), result,
+        )
+    assert out["result"] == "draft text"
+    assert "constrained_emit_applied" not in out
+
+
+@pytest.mark.asyncio
+async def test_non_json_emit_keeps_draft():
+    agent = _FakeAgent()
+    result = {"status": "completed", "result": "draft text"}
+    fake_dispatcher = AsyncMock()
+    fake_dispatcher.request = AsyncMock(
+        return_value={"content": "this is not json", "model": "m"},
+    )
+    with patch(
+        "src.core.llm_dispatcher.get_dispatcher",
+        return_value=fake_dispatcher,
+    ):
+        out = await agent._maybe_constrained_emit(
+            _wf_task(_OBJECT_SCHEMA), result,
+        )
+    assert out["result"] == "draft text"
+
+
+@pytest.mark.asyncio
+async def test_valid_emit_replaces_draft():
+    agent = _FakeAgent()
+    result = {"status": "completed", "result": "draft text", "model": "draft_model"}
+    valid_emit = '{"a": 1, "b": 2}'
+    fake_dispatcher = AsyncMock()
+    fake_dispatcher.request = AsyncMock(
+        return_value={"content": valid_emit, "model": "emit_model"},
+    )
+    with patch(
+        "src.core.llm_dispatcher.get_dispatcher",
+        return_value=fake_dispatcher,
+    ):
+        out = await agent._maybe_constrained_emit(
+            _wf_task(_OBJECT_SCHEMA), result,
+        )
+    assert out["result"] == valid_emit
+    assert out["constrained_emit_applied"] is True
+    # Original draft model should still be in metadata so we know who
+    # produced the actual work — not overwritten by the emit model.
+    assert out["model"] == "draft_model"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_called_with_json_schema_response_format():
+    agent = _FakeAgent()
+    result = {"status": "completed", "result": "draft"}
+    valid = '{"a":1,"b":2}'
+    fake_dispatcher = AsyncMock()
+    fake_dispatcher.request = AsyncMock(
+        return_value={"content": valid, "model": "m"},
+    )
+    with patch(
+        "src.core.llm_dispatcher.get_dispatcher",
+        return_value=fake_dispatcher,
+    ):
+        await agent._maybe_constrained_emit(_wf_task(_OBJECT_SCHEMA), result)
+
+    call_kwargs = fake_dispatcher.request.call_args.kwargs
+    rf = call_kwargs.get("response_format")
+    assert rf is not None
+    assert rf["type"] == "json_schema"
+    assert rf["json_schema"]["strict"] is True
+    assert rf["json_schema"]["schema"]["type"] == "object"
+    assert sorted(rf["json_schema"]["schema"]["required"]) == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_array_schema_translates_correctly_at_call():
+    agent = _FakeAgent()
+    result = {"status": "completed", "result": "draft"}
+    valid = '[{"x":"v"}]'
+    fake_dispatcher = AsyncMock()
+    fake_dispatcher.request = AsyncMock(
+        return_value={"content": valid, "model": "m"},
+    )
+    with patch(
+        "src.core.llm_dispatcher.get_dispatcher",
+        return_value=fake_dispatcher,
+    ):
+        await agent._maybe_constrained_emit(_wf_task(_ARRAY_SCHEMA), result)
+    rf = fake_dispatcher.request.call_args.kwargs["response_format"]
+    assert rf["json_schema"]["schema"]["type"] == "array"
+    assert rf["json_schema"]["schema"]["minItems"] == 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-v"]))

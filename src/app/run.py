@@ -559,16 +559,24 @@ async def main():
     _hb_task.cancel()
 
     orch = Orchestrator(shutdown_event=shutdown_event)
-    await orch.start()
-
-    if api_task and not api_task.done():
-        api_task.cancel()
-    if monitor_task and not monitor_task.done():
-        monitor_task.cancel()
-    if _snapshot_task and not _snapshot_task.done():
-        _snapshot_task.cancel()
-    if _nerd_herd:
-        await _nerd_herd.close()
+    try:
+        await orch.start()
+    finally:
+        # Always tear down — without try/finally a raise in orch.start()
+        # skipped these and the aiohttp sessions leaked at interpreter
+        # exit, surfacing as the cosmetic ``Unclosed client session``
+        # warning the handoff flagged (item L).
+        if api_task and not api_task.done():
+            api_task.cancel()
+        if monitor_task and not monitor_task.done():
+            monitor_task.cancel()
+        if _snapshot_task and not _snapshot_task.done():
+            _snapshot_task.cancel()
+        if _nerd_herd:
+            try:
+                await _nerd_herd.close()
+            except Exception as _exc:
+                logger.debug(f"nerd_herd close raised: {_exc!r}")
 
     # Propagate exit code to wrapper (EXIT_RESTART=42, EXIT_STOP=0).
     # Use sys.exit() so that atexit handlers (llama-server cleanup) still run.

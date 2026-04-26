@@ -782,6 +782,10 @@ class BaseAgent:
                 )
 
         # ── Artifact schema → explicit output format instructions ──
+        # ``_tail_schema_block`` collects the Required Output Format block
+        # so it can be appended LAST (recency, handoff item Q). Stays
+        # empty when the step has no artifact_schema.
+        _tail_schema_block: str = ""
         artifact_schema = task_context.get("artifact_schema")
         if artifact_schema and isinstance(artifact_schema, dict):
             artifact_items = [
@@ -840,7 +844,13 @@ class BaseAgent:
                     + json.dumps(example, indent=2)
                     + "\n```"
                 )
-            parts.append("\n".join(fmt_lines))
+            # Recency: defer to end-of-prompt instead of appending here.
+            # Small models attend more strongly to end-of-prompt content;
+            # the schema instruction was previously buried mid-prompt
+            # (after Context Artifacts, before deps/skills/etc) and got
+            # lost in the noise. Stored as ``_tail_schema_block``,
+            # appended last just before return. (Handoff item Q.)
+            _tail_schema_block = "\n".join(fmt_lines)
 
         # input_artifacts are excluded from the JSON dump because their
         # full content is already injected below under "## Results from
@@ -870,6 +880,10 @@ class BaseAgent:
         # task_context. Mirrors validator semantics (schema vs parsed
         # _prev_output) so [x] = present, [ ] = missing exactly as the
         # validator would judge.
+        # ``_tail_retry_block`` collects the per-attempt retry hint +
+        # previous-output dump so it can be appended LAST (recency).
+        # Stays empty when there's no _schema_error in context.
+        _tail_retry_block: str = ""
         schema_error = task_context.get("_schema_error")
         if schema_error:
             retry_count = task.get("worker_attempts", 0)
@@ -980,7 +994,11 @@ class BaseAgent:
                     "\n## Your Previous Output (fix this, don't start over)"
                 )
                 retry_section.append(f"```\n{_prev[:4000]}\n```")
-            parts.append("\n".join(retry_section))
+            # Recency: defer retry hint to end-of-prompt as well so the
+            # checklist + previous output sit right before the model's
+            # generation, not buried under Context/Artifacts/deps. Pairs
+            # with ``_tail_schema_block`` above. (Handoff item Q.)
+            _tail_retry_block = "\n".join(retry_section)
 
         # ── Determine active layers and budgets ──
         agent_type = task.get("agent_type") or self.name
@@ -1126,6 +1144,24 @@ class BaseAgent:
             except Exception as exc:
                 logger.debug(f"Memory recall failed: {exc}")
 
+        # ── Recency-ordered tail (handoff item Q) ──
+        # Append the schema instruction + retry hint LAST so they sit
+        # right before the model's generation. Small models attend more
+        # strongly to end-of-prompt content; previously these blocks were
+        # buried mid-prompt (between Additional Context and the gated
+        # layers) and the model often ignored the schema requirements
+        # under 8-10kB of intervening content. The retry hint goes after
+        # the schema block so the order is:
+        #   ...all prior context...
+        #   ## Required Output Format
+        #   ## IMPORTANT: Previous Output Was Invalid (when retrying)
+        #   ## Your Previous Output (when retrying)
+        # Model sees the schema, the rejection reason, and the previous
+        # output adjacent to its own generation point.
+        if _tail_schema_block:
+            parts.append(_tail_schema_block)
+        if _tail_retry_block:
+            parts.append(_tail_retry_block)
         return "\n\n".join(parts)
 
     def _truncate_to_tokens(self, text: str, max_tokens: int) -> str:

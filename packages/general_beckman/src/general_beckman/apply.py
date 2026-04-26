@@ -76,10 +76,23 @@ async def _apply_one(task: dict, a: Action) -> None:
 async def _apply_complete(task: dict, a) -> None:
     """Handles both Complete and CompleteWithReusedAnswer."""
     from src.infra.db import update_task
+    # result_router accepts dict/list as a non-empty result (some agents
+    # return structured payloads e.g. {"formatted_text": "..."}). The
+    # tasks.result column is TEXT — sqlite InterfaceError fires when a
+    # dict is passed as bind parameter (mission 46 task 2949 hit this
+    # 2026-04-26: shopping format_response shape leaked through). JSON-
+    # stringify non-str payloads before writing so the column always
+    # holds a parseable text body.
+    result_value = a.result
+    if not isinstance(result_value, (str, bytes, type(None))):
+        try:
+            result_value = json.dumps(result_value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            result_value = str(result_value)
     await update_task(
         a.task_id, status="completed",
         completed_at=to_db(utc_now()),
-        result=a.result,
+        result=result_value,
     )
 
 

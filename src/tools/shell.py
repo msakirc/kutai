@@ -144,6 +144,98 @@ _SANDBOX_DOCKER_DOWN_TTL: float = 60.0
 _sandbox_docker_down_until: float = 0.0
 
 
+def _normalize_path_for_compare(p: str) -> str:
+    """Canonicalize a Windows path string for cross-source comparison.
+
+    Container's ``docker inspect`` reports Mount.Source as a Windows
+    absolute path like ``C:\\Users\\sakir\\...``. The host-side
+    ``WORKSPACE_DIR`` may have been read from .env with the same
+    backslash-encoded form OR a forward-slash form depending on
+    platform. Equality compare must be case-insensitive (NTFS),
+    separator-agnostic, and trailing-slash-agnostic.
+    """
+    if not isinstance(p, str):
+        return ""
+    # Replace backslash with forward slash, normalize, lowercase.
+    norm = os.path.normpath(p.replace("\\", "/"))
+    return norm.casefold().rstrip("/").rstrip("\\")
+
+
+async def validate_or_recreate_sandbox() -> None:
+    """Startup-time check: container's bind-mount source must match
+    current ``WORKSPACE_DIR``. If stale (e.g. WORKSPACE_DIR changed in
+    .env since the container was created), remove the container so the
+    next ``ensure_container_running`` call recreates it with the right
+    bind.
+
+    Process-startup only — caller should invoke this ONCE during
+    orchestrator init. No locking needed; orchestrator startup is
+    serial. Per-call validation was rejected as too costly (the
+    `docker inspect` adds 200-500ms; with hundreds of shell calls per
+    minute the overhead dominates).
+
+    Mount source comparison is normalized: case-insensitive,
+    separator-agnostic, trailing-slash-agnostic. False positives from
+    raw string compare on Windows would force-recreate every startup.
+
+    SANDBOX_MODE=local / SANDBOX_MODE=none short-circuit (no container
+    to validate). Likewise when docker isn't installed — the existing
+    docker-down cache (handoff item K) will trip the same way at first
+    real shell call.
+    """
+    if SANDBOX_MODE in ("local", "none"):
+        return
+
+    rc, stdout, stderr = await _run_quiet(
+        "docker", "inspect", CONTAINER_NAME,
+        "--format", "{{range .Mounts}}{{if eq .Destination \"/app/workspace\"}}{{.Source}}{{end}}{{end}}",
+    )
+    if rc != 0:
+        # Container doesn't exist OR docker isn't running. Either way,
+        # nothing to validate — let ensure_container_running handle.
+        logger.debug(
+            "sandbox validation: docker inspect non-zero (container "
+            "missing or daemon down) — skipping",
+            rc=rc,
+        )
+        return
+
+    actual_source = (stdout or "").strip()
+    expected_source = WORKSPACE_DIR
+
+    if not actual_source:
+        # Container exists but has no /app/workspace mount — definitely stale.
+        logger.warning(
+            "sandbox validation: container has no /app/workspace "
+            "mount — recreating",
+            container=CONTAINER_NAME,
+        )
+    elif _normalize_path_for_compare(actual_source) == _normalize_path_for_compare(expected_source):
+        logger.debug(
+            "sandbox validation: bind-mount matches",
+            container=CONTAINER_NAME,
+            source=actual_source,
+        )
+        return
+    else:
+        logger.warning(
+            "sandbox validation: bind-mount stale — recreating",
+            container=CONTAINER_NAME,
+            actual=actual_source,
+            expected=expected_source,
+        )
+
+    # Stale or no-mount — remove. The next shell call recreates with
+    # current WORKSPACE_DIR.
+    rc, _, stderr = await _run_quiet("docker", "rm", "-f", CONTAINER_NAME)
+    if rc != 0:
+        logger.warning(
+            "sandbox validation: docker rm -f failed — manual cleanup "
+            "may be needed",
+            error=(stderr or "").strip(),
+        )
+
+
 async def ensure_container_running() -> bool:
     """Make sure the sandbox Docker container is up, restarting or creating as needed."""
     import time as _time

@@ -36,8 +36,28 @@ class ArtifactStore:
     def _mission_key(self, mission_id: int | str) -> str:
         return str(mission_id)
 
-    async def store(self, mission_id: int | str, name: str, value: str) -> None:
-        """Store an artifact — DB first, then cache on success."""
+    async def store(self, mission_id: int | str, name: str, value: str) -> bool:
+        """Store an artifact — DB first, then cache on success.
+
+        Architectural invariant: an artifact's value MUST carry substance.
+        Empty / whitespace-only / None writes are rejected with a WARN
+        log and skipped — they break downstream consumers silently
+        (mission 46: 9 design artifacts stored as empty strings, then
+        every implementer agent in phase 8 said "specs missing"). If
+        upstream genuinely produced nothing, the producer task should
+        fail loudly, not persist an empty placeholder.
+
+        Returns True on stored, False on rejected. Callers ignoring the
+        return value remain compatible with prior None-returning shape.
+        """
+        if value is None or not isinstance(value, str) or not value.strip():
+            logger.warning(
+                "ArtifactStore.store rejected empty value",
+                mission_id=mission_id,
+                artifact=name,
+                reason="empty_or_whitespace",
+            )
+            return False
         key = self._mission_key(mission_id)
         if self._use_db:
             from src.collaboration.blackboard import update_blackboard_entry
@@ -46,6 +66,7 @@ class ArtifactStore:
         if key not in self._cache:
             self._cache[key] = {}
         self._cache[key][name] = value
+        return True
 
     async def retrieve(self, mission_id: int | str, name: str) -> Optional[str]:
         """Retrieve an artifact, cache-first with DB fallback."""

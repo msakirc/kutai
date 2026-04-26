@@ -558,6 +558,20 @@ async def main():
     # takes over once start() creates its background tasks.
     _hb_task.cancel()
 
+    # Sandbox bind-mount validation. Container's mount source can drift
+    # from WORKSPACE_DIR if .env changes between sessions; the stale
+    # container persists across runs and the bind never gets refreshed.
+    # Mission 46 hit this: container bound to ``...\src\workspace``
+    # while host workspace lived at ``...\workspace`` — implementer
+    # agents saw an empty workspace, gave up. Validate at startup once
+    # (cheap, no per-call overhead). On mismatch, ``docker rm -f`` so
+    # the next shell call recreates with the right bind.
+    try:
+        from src.tools.shell import validate_or_recreate_sandbox
+        await validate_or_recreate_sandbox()
+    except Exception as _exc:
+        logger.warning(f"sandbox validation skipped: {_exc!r}")
+
     orch = Orchestrator(shutdown_event=shutdown_event)
     try:
         await orch.start()

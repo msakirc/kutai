@@ -1020,13 +1020,24 @@ class BaseAgent:
         mission_id = task.get("mission_id")
 
         # ── Gated layers ──
+        #
+        # High-attempt prompt-noise reduction (handoff item O): on retry
+        # attempt 3+, drop the skill-library block and prior-steps
+        # narrative. By that attempt the prompt is ~10kB of context
+        # before the model even reaches the schema requirement; small
+        # models drown. Deps (input artifacts) + retry hint + schema
+        # block all stay — those are load-bearing for the actual fix.
+        # ``_high_retry`` here means "this is at least the 4th attempt"
+        # (worker_attempts is incremented when a row is re-queued, so
+        # >=3 fires on attempts 3, 4, 5, 6...).
+        _high_retry = int(task.get("worker_attempts") or 0) >= 3
 
         if "deps" in policy:
             block = await self._fetch_deps(task, max_tokens=budgets.get("deps", 2000))
             if block:
                 parts.append(block)
 
-        if "prior" in policy:
+        if "prior" in policy and not _high_retry:
             block = self._format_prior_steps(task_context, max_tokens=budgets.get("prior", 1500))
             if block:
                 parts.append(block)
@@ -1066,7 +1077,7 @@ class BaseAgent:
             except Exception as exc:
                 logger.debug(f"Blackboard failed: {exc}")
 
-        if "skills" in policy:
+        if "skills" in policy and not _high_retry:
             try:
                 from ..memory.skills import (
                     find_relevant_skills, format_skills_for_prompt,

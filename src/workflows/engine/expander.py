@@ -239,9 +239,15 @@ def expand_template(
     for tpl_step in template.get("steps", []):
         tpl_step_id = tpl_step["template_step_id"]
 
-        # Build the step ID
+        # Build the step ID. Defensive separator handling: strip a
+        # trailing dot from prefix before joining so callers passing
+        # ``"8.<fid>."`` (the pattern in hooks._trigger_template_
+        # expansion) and callers passing ``"8.<fid>"`` produce the
+        # same shape. Mission 46 phase 8 saw every task titled
+        # ``[8.<fid>..feat.X]`` (double dot) because the caller's
+        # trailing dot collided with this f-string's separator.
         if prefix:
-            step_id = f"{prefix}.{tpl_step_id}"
+            step_id = f"{prefix.rstrip('.')}.{tpl_step_id}"
         else:
             step_id = tpl_step_id
 

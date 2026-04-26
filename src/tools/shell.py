@@ -133,8 +133,28 @@ async def _run_quiet(*args: str) -> tuple[int, str, str]:
     return proc.returncode, stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
 
+# Cache: once we determine docker is unavailable, skip the (slow) docker
+# calls for SANDBOX_DOCKER_DOWN_TTL seconds. Without this every shell-tool
+# invocation pays the ``docker inspect`` + ``docker start`` + ``docker
+# run`` round-trip and emits ``failed to create sandbox container`` to
+# the ERROR log — observable noise on hosts without docker. The shell
+# tool already auto-falls-back to local execution; the cache just keeps
+# the failure quiet between probes. (Handoff item K.)
+_SANDBOX_DOCKER_DOWN_TTL: float = 60.0
+_sandbox_docker_down_until: float = 0.0
+
+
 async def ensure_container_running() -> bool:
     """Make sure the sandbox Docker container is up, restarting or creating as needed."""
+    import time as _time
+    global _sandbox_docker_down_until
+
+    # Short-circuit when we recently saw docker unavailable — caller
+    # falls back to local execution. Probe again after the TTL expires
+    # in case the user started docker mid-session.
+    if _sandbox_docker_down_until > _time.time():
+        return False
+
     # 1. Already running?
     rc, stdout, _ = await _run_quiet(
         "docker", "inspect", "-f", "{{.State.Running}}", CONTAINER_NAME,
@@ -163,7 +183,19 @@ async def ensure_container_running() -> bool:
         "sleep", "infinity",
     )
     if rc != 0:
-        logger.error("failed to create sandbox container", error=stderr.strip())
+        # Docker daemon unreachable, image missing, or permissions issue
+        # — none of which we can fix from here. Caller falls back to
+        # local execution; suppress the ERROR-log spam from repeated
+        # probes by going quiet for SANDBOX_DOCKER_DOWN_TTL seconds.
+        # First failure logs as warning + reason; subsequent probes
+        # before TTL skip the docker round-trip entirely.
+        logger.warning(
+            "sandbox container unavailable — falling back to local "
+            "shell for the next %ds",
+            int(_SANDBOX_DOCKER_DOWN_TTL),
+            error=stderr.strip(),
+        )
+        _sandbox_docker_down_until = _time.time() + _SANDBOX_DOCKER_DOWN_TTL
         return False
 
     logger.info("sandbox container created and running")

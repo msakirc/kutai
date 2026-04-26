@@ -89,10 +89,22 @@ async def _apply_complete(task: dict, a) -> None:
             result_value = json.dumps(result_value, ensure_ascii=False)
         except (TypeError, ValueError):
             result_value = str(result_value)
+    # Clear stale failure metadata that the prior failed attempt left
+    # in the row. Without this, a row that failed attempt N with error X
+    # then succeeded at N+1 still shows X in tasks.error — misleads
+    # post-mortems and /queue UI. Mission 46 task 2921 (4.14) wore a
+    # ghost error column for hours after a clean retry succeeded.
+    # error_category, next_retry_at, retry_reason, failed_in_phase are
+    # paired stale signals — clear together. (Handoff item B.)
     await update_task(
         a.task_id, status="completed",
         completed_at=to_db(utc_now()),
         result=result_value,
+        error=None,
+        error_category=None,
+        next_retry_at=None,
+        retry_reason=None,
+        failed_in_phase=None,
     )
 
 
@@ -775,9 +787,15 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
             )
         ctx["_pending_posthooks"] = pending
         if not pending:
+            # Clear stale failure metadata on grade-PASS completion (B).
             await update_task(
                 a.source_task_id, status="completed",
                 context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
             )
             # Grader-mediated completion still needs to drive the workflow
             # forward. Without this, the final mission step passes grading
@@ -817,9 +835,15 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         pending = [k for k in pending if k != a.kind]
         ctx["_pending_posthooks"] = pending
         if not pending:
+            # Clear stale failure metadata on summary-PASS completion (B).
             await update_task(
                 a.source_task_id, status="completed",
                 context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
             )
             await _spawn_workflow_advance_if_mission(source, a.raw)
             # Step is genuinely done now — grader passed and all summary

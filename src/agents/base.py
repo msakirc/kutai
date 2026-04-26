@@ -727,6 +727,60 @@ class BaseAgent:
             if len(history) > 1:
                 parts.append(f"Previous answers: {history}")
 
+        # ── Missing-input-artifact NOTE ──
+        # Workflow steps declare ``input_artifacts: [...]``; the artifact
+        # store carries the actual content. When an upstream phase was
+        # skipped or DLQ'd, that store entry is missing. Without an
+        # explicit NOTE the agent goes searching (read_file, file_tree)
+        # for ghost names and burns iterations on tools that find nothing.
+        # The dead-code ``hooks.pre_execute_workflow_step`` used to emit
+        # this NOTE; ported here as part of handoff item D.
+        if (task_context.get("is_workflow_step")
+                and task_context.get("input_artifacts")):
+            try:
+                from src.workflows.engine.hooks import get_artifact_store
+                _store = get_artifact_store()
+                _mid = task_context.get("mission_id") or task.get("mission_id")
+                _missing: list[str] = []
+                if _mid is not None:
+                    for _name in task_context["input_artifacts"]:
+                        if not isinstance(_name, str):
+                            continue
+                        _val = await _store.retrieve(_mid, _name)
+                        # Try the _summary fallback before declaring
+                        # missing — same fallback the dead pre-execute
+                        # used. Either form satisfies "the artifact
+                        # exists upstream".
+                        if _val is None and not _name.endswith("_summary"):
+                            _val = await _store.retrieve(_mid, f"{_name}_summary")
+                        if _val is None and _name.endswith("_summary"):
+                            _val = await _store.retrieve(
+                                _mid, _name[: -len("_summary")],
+                            )
+                        if _val is None:
+                            _missing.append(_name)
+                if _missing:
+                    parts.append(
+                        "## Missing Input Artifacts\n"
+                        "NOTE: The following input artifacts are unavailable "
+                        "(their upstream steps were skipped or failed): "
+                        + ", ".join(_missing)
+                        + ".\nDo NOT call read_file or file_tree to search "
+                        "for them — they do not exist on disk. Proceed "
+                        "with the artifacts that ARE available, or signal "
+                        "needs_clarification if the missing inputs are "
+                        "essential."
+                    )
+                    logger.warning(
+                        "workflow step missing input artifacts",
+                        task_id=task.get("id"),
+                        missing=_missing,
+                    )
+            except Exception as _exc:
+                logger.debug(
+                    f"missing-artifact NOTE check failed: {_exc!r}"
+                )
+
         # ── Artifact schema → explicit output format instructions ──
         artifact_schema = task_context.get("artifact_schema")
         if artifact_schema and isinstance(artifact_schema, dict):

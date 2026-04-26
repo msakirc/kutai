@@ -779,6 +779,26 @@ def _parse_context(task: dict) -> dict:
 def enrich_task_description(task: dict, artifact_contents: dict) -> str:
     """Build an enriched description with artifact context and done_when.
 
+    .. deprecated:: 2026-04-26 (handoff item D)
+
+        ZERO production callers as of Task 13 trim (~2026-04-20). The
+        live prompt-build path is :py:meth:`src.agents.base.BaseAgent.
+        _build_context` which has its own context injection, schema-
+        error retry hint, and prev_output sanitization. Tests still
+        reference this function — kept for now to preserve them. A
+        later cleanup pass should:
+
+        1. Verify phase_summaries injection in
+           :func:`pre_execute_workflow_step` is handled elsewhere (base.py
+           ``_fetch_deps`` + dependency rows, OR new wiring needed).
+        2. Delete this function and ``pre_execute_workflow_step``.
+        3. Adapt or drop the corresponding tests in
+           ``tests/test_workflow_hooks.py`` and
+           ``tests/test_workflow_summaries.py``.
+
+        Until then, do NOT call from new code. Future bug fixes for
+        prompt content should land in ``BaseAgent._build_context``.
+
     Parameters
     ----------
     task:
@@ -1114,6 +1134,17 @@ def enrich_task_description(task: dict, artifact_contents: dict) -> str:
 
 async def pre_execute_workflow_step(task: dict) -> dict:
     """Pre-hook: inject artifact context into workflow step descriptions.
+
+    .. deprecated:: 2026-04-26 (handoff item D)
+
+        ZERO production callers as of Task 13 trim (~2026-04-20). The
+        live pre-execute path is split: ``inject_chain_context`` (sibling
+        results + workspace snapshot) runs in the orchestrator's dispatch,
+        ``BaseAgent._build_context`` builds the user prompt with deps,
+        retry hints, and the missing-artifact NOTE. Phase summary
+        injection done here is NOT replicated in either of those paths
+        — verify before deletion. See :func:`enrich_task_description`
+        deprecation note for the full cleanup plan.
 
     If the task is not a workflow step, returns it unchanged.
     Otherwise fetches input artifacts from the store and enriches

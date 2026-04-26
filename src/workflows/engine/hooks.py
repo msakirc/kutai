@@ -1088,7 +1088,25 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
         _executor != "mechanical"
         and _agent_type not in ("mechanical", "grader", "artifact_summarizer")
     )
-    if artifact_schema and _is_producer:
+    # Skip schema validation when the agent emitted a clarify action on a
+    # ``triggers_clarification`` step. Such steps produce a HUMAN
+    # QUESTION, not a structured artifact — the question text lives in
+    # ``result.question`` (or ``result.clarification``), not in
+    # ``result.result`` which would normally hold the artifact body. The
+    # ``triggers_clarification`` override below at line ~1140 then routes
+    # to needs_clarification correctly. Without this skip, mission 57
+    # step 0.5 (human_clarification_request) burned 5 retries because
+    # the schema demanded ``array, min_items: 3`` but output_value was
+    # empty (clarify text in the wrong field).
+    _is_clarify_action = bool(
+        ctx.get("triggers_clarification")
+        and (
+            (isinstance(result, dict) and result.get("status") == "needs_clarification")
+            or (isinstance(result, dict) and (result.get("question") or "").strip())
+            or (isinstance(result, dict) and (result.get("clarification") or "").strip())
+        )
+    )
+    if artifact_schema and _is_producer and not _is_clarify_action:
         if not output_value or not str(output_value).strip():
             is_valid = False
             error_msg = (
@@ -1137,11 +1155,24 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
     # Steps with triggers_clarification=true bypass LLM's clarify action.
     # Only fires ONCE — if clarification_history already has answers,
     # the human already responded and the step should complete normally.
+    #
+    # The agent's clarify question may live in ``result.question``,
+    # ``result.clarification``, or ``result.result`` depending on which
+    # parser path produced it. Pick the first non-empty source so the
+    # override doesn't silently skip when the agent picked the wrong
+    # field name (mission 57 task 4376 — clarify text was in
+    # ``result.question`` while ``output_value`` was empty).
+    _clarify_text = output_value
+    if not _clarify_text and isinstance(result, dict):
+        _clarify_text = (
+            (result.get("question") or "").strip()
+            or (result.get("clarification") or "").strip()
+        )
     if (ctx.get("triggers_clarification")
-            and output_value
+            and _clarify_text
             and not ctx.get("clarification_history")):
         from dogru_mu_samet import assess as cq_assess
-        _clar_cq = cq_assess(output_value)
+        _clar_cq = cq_assess(_clarify_text)
         if _clar_cq.is_degenerate:
             result["status"] = "failed"
             result["error"] = (
@@ -1154,7 +1185,7 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
             )
             return
         result["status"] = "needs_clarification"
-        result["clarification"] = output_value
+        result["clarification"] = _clarify_text
         logger.info(
             f"[Workflow Hook] Step '{step_id}' triggers_clarification — "
             f"overriding result status to needs_clarification"

@@ -257,6 +257,34 @@ def _detect_repetition_ratio(text: str) -> float:
     return duplicated / len(norm_headers) if norm_headers else 0.0
 
 
+def _is_empty_required_value(val) -> bool:
+    """Decide if a required-field value is a placeholder rather than real
+    content. Used by validate_artifact_schema to guard against constrained-
+    decoding passes that satisfy "field present" with empty containers
+    (mission 46 task 2964: ``[{feature_id: {}, feature_name: {}, ...}]`` —
+    schema validator passed because all fields existed, but every value
+    was an empty object).
+
+    Empty placeholders considered missing:
+      * ``None``
+      * empty string / whitespace-only string
+      * empty dict ``{}``
+      * empty list ``[]``
+
+    Real content (boolean ``False``, number ``0``, non-empty string, etc.)
+    is NOT empty even though it is falsy in Python.
+    """
+    if val is None:
+        return True
+    if isinstance(val, str):
+        return not val.strip()
+    if isinstance(val, dict):
+        return len(val) == 0
+    if isinstance(val, list):
+        return len(val) == 0
+    return False
+
+
 def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str]:
     """Validate an artifact output against its schema definition.
 
@@ -288,6 +316,24 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
                     missing = [f for f in required if f not in data]
                     if missing:
                         return False, f"Missing required fields in '{artifact_name}': {missing}"
+                    # Empty-value guard: a constrained-decoding pass can
+                    # satisfy "field present" with placeholder ``{}`` /
+                    # ``""`` / ``[]`` for every required field — schema
+                    # PRESENCE check passed but downstream consumers got
+                    # nothing usable. Reject empties as if the field
+                    # were missing. Mission 46 task 2964 produced
+                    # ``[{feature_id: {}, feature_name: {}, ...}]`` —
+                    # validator accepted, downstream broke.
+                    empty_value_fields = [
+                        f for f in required
+                        if _is_empty_required_value(data.get(f))
+                    ]
+                    if empty_value_fields:
+                        return False, (
+                            f"Required fields in '{artifact_name}' have empty "
+                            f"placeholder values: {empty_value_fields}. Each "
+                            f"required field must hold real content."
+                        )
                     continue  # this artifact passed
             except (json.JSONDecodeError, TypeError):
                 pass
@@ -344,6 +390,17 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
                                 missing = [f for f in item_fields if f not in item]
                                 if missing:
                                     return False, f"Item {i} in '{artifact_name}' missing fields: {missing}"
+                                # Empty-value guard (same rationale as object).
+                                empty_fields = [
+                                    f for f in item_fields
+                                    if _is_empty_required_value(item.get(f))
+                                ]
+                                if empty_fields:
+                                    return False, (
+                                        f"Item {i} in '{artifact_name}' has empty "
+                                        f"placeholder values: {empty_fields}. Each "
+                                        f"required field must hold real content."
+                                    )
                     continue  # passed
             except (json.JSONDecodeError, TypeError):
                 # Try extracting JSON from markdown code blocks

@@ -276,6 +276,26 @@ def audit_agent_schema_mismatch(steps: list[dict]) -> list[str]:
                 f"switch to 'analyst' with explicit markdown instructions."
             )
 
+        # Soft warning: coder/implementer/fixer + array/object without
+        # explicit JSON output skeleton + token budget — these agents
+        # default to "write code, return summary" which doesn't produce
+        # the structured object/array the schema expects (observed on
+        # i2p_v3 7.3 backend_scaffold + 7.5 frontend_scaffold,
+        # 2026-04-26 — both DLQ'd with whack-a-mole on different
+        # missing fields each retry). The instruction MUST include a
+        # JSON skeleton showing the exact required keys.
+        if (agent in ("coder", "implementer", "fixer")
+                and primary_type in ("array", "object")
+                and not (step.get("context") or {}).get("estimated_output_tokens")):
+            warnings.append(
+                f"Step '{sid}': agent='{agent}' + type='{primary_type}' "
+                f"without context.estimated_output_tokens — these agents "
+                f"default to 'do work, return summary' which doesn't emit "
+                f"structured output. Add an explicit JSON skeleton + "
+                f"estimated_output_tokens to the instruction, OR switch to "
+                f"a structured-output agent (analyst, executor)."
+            )
+
     return warnings
 
 

@@ -316,6 +316,43 @@ async def query(
         return docs
 
     except Exception as e:
+        # Detect corrupt-segment errors and self-heal by dropping +
+        # recreating the collection. Without this, every RAG-enabled
+        # agent dispatch (coder, fixer, implementer, test_generator)
+        # logged "Nothing found on disk" repeatedly without recovery
+        # — the broken collection persisted indefinitely and polluted
+        # logs (mission 46, 2026-04-26: errors collection emitted
+        # ~hourly hnsw warnings).
+        msg = str(e).lower()
+        is_segment_corrupt = (
+            "nothing found on disk" in msg
+            or "hnsw segment reader" in msg
+            or "segment file" in msg
+        )
+        if is_segment_corrupt and _client is not None:
+            try:
+                logger.warning(
+                    f"Collection '{collection}' segments corrupt "
+                    f"({e!s}) — dropping and recreating empty"
+                )
+                _client.delete_collection(collection)
+                expected_dim = _get_dimension_fn()()
+                from src.memory.embeddings import EMBEDDING_MODEL
+                fresh = _client.get_or_create_collection(
+                    name=collection,
+                    metadata={
+                        "hnsw:space": "cosine",
+                        "embedding_model": EMBEDDING_MODEL,
+                        "embedding_dimension": expected_dim,
+                    },
+                )
+                _collections[collection] = fresh
+                return []
+            except Exception as repair_exc:
+                logger.error(
+                    f"Failed to repair '{collection}' after segment "
+                    f"corruption: {repair_exc}"
+                )
         logger.error(f"Query failed on '{collection}': {e}")
         return []
 

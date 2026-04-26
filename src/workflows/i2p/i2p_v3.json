@@ -4069,7 +4069,10 @@
       "output_artifacts": [
         "backend_scaffold"
       ],
-      "instruction": "Use the scaffold tool to initialize the backend project with the selected framework. Set up: project structure matching system_architecture, TypeScript/language configuration (strict mode), environment management (.env.example with all required vars), base middleware (CORS, body parsing, request logging per observability_strategy, error handling per observability_strategy), API validation library, health check endpoint. Install and verify all dependencies.",
+      "context": {
+        "estimated_output_tokens": 6000
+      },
+      "instruction": "Use the scaffold tool to initialize the backend project with the selected framework. Set up: project structure matching system_architecture, TypeScript/language configuration (strict mode), environment management (.env.example with all required vars), base middleware (CORS, body parsing, request logging per observability_strategy, error handling per observability_strategy), API validation library, health check endpoint. Install and verify all dependencies.\n\nAFTER the scaffold work is done, RETURN a JSON object directly in `result` (no envelope, no markdown, no \"Wrote ...\" summary):\n\n{\n  \"project_path\": \"<absolute or workspace-relative path of scaffolded project>\",\n  \"dependencies_installed\": true,\n  \"health_check_verified\": true,\n  \"framework\": \"<framework name + version>\",\n  \"notes\": \"<one paragraph: what was set up, anything skipped or deferred>\"\n}\n\nSet boolean fields to true ONLY when actually verified (dependency install command exited 0; curl to health endpoint returned 200). If verification couldn't run (e.g. tool unavailable), still emit the field as false with notes explaining.",
       "done_when": "backend_scaffold exists with a running backend that responds to health checks.",
       "artifact_schema": {
         "backend_scaffold": {
@@ -4174,7 +4177,10 @@
       "output_artifacts": [
         "frontend_scaffold"
       ],
-      "instruction": "Use the scaffold tool to initialize the frontend project with the selected framework. Set up: project structure matching frontend_architecture, TypeScript configuration (strict mode), routing configuration per information_architecture, state management per frontend_architecture, API client with auth token handling and error handling per observability_strategy. Install and verify all dependencies.",
+      "context": {
+        "estimated_output_tokens": 6000
+      },
+      "instruction": "Use the scaffold tool to initialize the frontend project with the selected framework. Set up: project structure matching frontend_architecture, TypeScript configuration (strict mode), routing configuration per information_architecture, state management per frontend_architecture, API client with auth token handling and error handling per observability_strategy. Install and verify all dependencies.\n\nAFTER the scaffold work is done, RETURN a JSON object directly in `result` (no envelope, no markdown, no \"Wrote ...\" summary):\n\n{\n  \"project_path\": \"<absolute or workspace-relative path of scaffolded project>\",\n  \"dependencies_installed\": true,\n  \"dev_server_verified\": true,\n  \"framework\": \"<framework name + version>\",\n  \"notes\": \"<one paragraph: what was set up, anything skipped or deferred>\"\n}\n\nSet boolean fields to true ONLY when actually verified (npm/pnpm install exited 0; dev server started and responded). If verification couldn't run (e.g. tool unavailable), still emit the field as false with notes explaining.",
       "done_when": "frontend_scaffold exists with a running frontend dev server.",
       "artifact_schema": {
         "frontend_scaffold": {

@@ -4237,8 +4237,11 @@
         "backend_test_config",
         "frontend_test_config"
       ],
-      "instruction": "Set up test infrastructure for both backend and frontend. Backend: test framework (Jest/Vitest/pytest), test database configuration, test utilities (factories, fixtures, mocking), coverage reporting. Frontend: component testing (React Testing Library/Vue Test Utils), test utilities, MSW or equivalent for API mocking, coverage reporting. Write at least one example test for each to verify the setup works.",
-      "done_when": "backend_test_config and frontend_test_config exist with passing example tests.",
+      "context": {
+        "estimated_output_tokens": 5000
+      },
+      "instruction": "Set up test infrastructure for both backend and frontend. Backend: test framework (Jest/Vitest/pytest), test database config, test utilities (factories, fixtures, mocking), coverage reporting. Frontend: component testing (React Testing Library/Vue Test Utils), MSW or equivalent for API mocking, coverage reporting. Write at least one example test for each side and run it to verify the setup works.\n\nAFTER the setup work is done, RETURN a JSON object directly in `result` (no envelope, no markdown, no \"Wrote ...\" summary):\n\n{\n  \"backend_test_config\": {\n    \"framework\": \"<pytest|jest|vitest>\",\n    \"config_file\": \"<path to test config>\",\n    \"example_test_passes\": true,\n    \"coverage_tool\": \"<coverage|pytest-cov|c8>\",\n    \"notes\": \"<one line: anything skipped or deferred>\"\n  },\n  \"frontend_test_config\": {\n    \"framework\": \"<vitest|jest|...>\",\n    \"config_file\": \"<path to test config>\",\n    \"example_test_passes\": true,\n    \"coverage_tool\": \"<c8|nyc|vitest coverage>\",\n    \"notes\": \"<one line: anything skipped or deferred>\"\n  }\n}\n\nSet `example_test_passes` to true ONLY when the example test actually ran and exited 0. If the test couldn't run (tool unavailable, install failed), emit false and explain in notes.",
+      "done_when": "JSON object with `backend_test_config` and `frontend_test_config` each carrying framework + config_file + example_test_passes.",
       "artifact_schema": {
         "backend_test_config": {
           "type": "object",

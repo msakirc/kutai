@@ -238,11 +238,21 @@ class SystemSnapshot:
         if self.local.is_swapping:
             return -0.5
 
+        # If model is loaded AND nothing is in-flight, there's NO
+        # contention — slot is available now. idle_seconds telemetry
+        # is unreliable (stays at 0.0 immediately after load even when
+        # no work is happening, observed mission 46 2026-04-26: pressure
+        # stuck at 0.0 with loaded local + empty in_flight, blocking
+        # priority-4 admission for 5+ minutes). Trust in_flight as the
+        # ground truth for "is the slot free", and use idle_seconds
+        # only as a "warmer is better" tiebreaker on top.
         idle = self.local.idle_seconds or 0.0
         if idle <= 0:
-            # Loaded but received a request just now — no headroom.
-            return 0.0
+            # Empty in_flight + zero idle telemetry. Either truly just-
+            # loaded or a stale tracker. Either way, slot is free —
+            # treat as cold-equivalent (+0.5) so admission can proceed.
+            return 0.5
         # Linear scale from cold-equivalent (0.5) up to peak abundance
-        # (1.0) over 60 seconds of idle. Loaded model with 0+ idle
-        # already beats cold because no swap cost is incurred.
+        # (1.0) over 60 seconds of measured idle. Loaded + warm beats
+        # loaded + just-loaded.
         return min(1.0, 0.5 + (idle / 60.0) * 0.5)

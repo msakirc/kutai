@@ -726,12 +726,18 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
                 if isinstance(prev_output, str) and prev_output.strip():
                     ctx["_prev_output"] = prev_output[:6000]
                 _stamp_retry_feedback(ctx, attempts)
+                # error_category=quality so the next retry decision
+                # (decide_retry) takes the immediate path, not the
+                # availability backoff ladder. Grader rejection is a
+                # quality failure by definition.
                 await update_task(
                     a.source_task_id,
                     status="pending",
                     worker_attempts=attempts,
                     max_worker_attempts=max_attempts,
                     error=error_str,
+                    error_category="quality",
+                    next_retry_at=None,
                     context=_json.dumps(ctx),
                 )
                 return
@@ -759,11 +765,19 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
                 pass
             ctx["_prev_output"] = prev_output[:6000]
         _stamp_retry_feedback(ctx, attempts)
+        # error_category=quality so decide_retry takes the immediate
+        # path, not the availability backoff ladder. Grader rejection
+        # is a quality failure by definition. Mission 46 task 4047
+        # observed 2026-04-26: grader rejected, retry path defaulted
+        # to error_category='worker' (left over from result_router),
+        # next decide_retry call applied 60s+ exponential backoff.
         await update_task(
             a.source_task_id,
             status="pending",
             worker_attempts=attempts,
             error=error_str,
+            error_category="quality",
+            next_retry_at=None,
             context=_json.dumps(ctx),
         )
         return

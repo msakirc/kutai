@@ -422,6 +422,33 @@ async def sweep_queue() -> None:
     if overcap:
         await db.commit()
 
+    # 9. Auto-resolve DLQ rows whose mechanical action is known-decommissioned.
+    #
+    # Pre-Phase-2b cron seeds and old workflow shapes left DLQ entries
+    # like ``unknown mechanical action: 'api_discovery'`` and
+    # ``unknown mechanical action: 'daily_digest'``. Both cron rows are
+    # already excluded from the seed (general_beckman/cron_seed.py
+    # comment "daily_digest + api_discovery cadences intentionally
+    # omitted") and ``unknown mechanical action: None`` rows come from
+    # legacy clarify_variant shapes the expander now translates. The
+    # surviving DLQ rows are inert clutter — resolve them so /dlq
+    # accounting reflects reality. Idempotent: WHERE resolved_at IS NULL
+    # makes re-runs no-ops. (Handoff item M.)
+    try:
+        await db.execute(
+            """UPDATE dead_letter_tasks
+                  SET resolved_at = CURRENT_TIMESTAMP,
+                      resolution = 'decommissioned-mechanical-action'
+                WHERE resolved_at IS NULL
+                  AND original_agent = 'mechanical'
+                  AND (error LIKE 'unknown mechanical action: ''api_discovery''%'
+                    OR error LIKE 'unknown mechanical action: ''daily_digest''%'
+                    OR error LIKE 'unknown mechanical action: None%')"""
+        )
+        await db.commit()
+    except Exception as exc:
+        logger.debug(f"[Sweep] decommissioned-action DLQ cleanup skipped: {exc}")
+
     # Workflow-level wall-clock timeout killed 2026-04-22 (queue-gated
     # missions could be paused while simply waiting on admission).
 

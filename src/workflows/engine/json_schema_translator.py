@@ -42,15 +42,33 @@ from __future__ import annotations
 from typing import Any, Optional
 
 
+# Permissive value type for unconstrained-by-dialect fields. Using bare
+# ``{}`` as the property schema (the obvious choice) was a trap: OpenAI
+# strict + llama.cpp interpret it as "object accepting no further
+# constraint" and the decoder emits empty ``{}`` for every property.
+# Mission 46 task 2964 (8.0 implementation_backlog_initialization)
+# observed: draft was 4549 chars of substantive plan content; constrained
+# emit returned 169 chars of ``[{feature_id: {}, feature_name: {}, ...}]``
+# — required fields PRESENT (validator passes) but every value an empty
+# object (downstream can't use them).
+#
+# Listing all permitted JSON types via ``"type": [...]`` keeps the dialect
+# permissive (any value goes) while telling the decoder this is a leaf
+# value, not another object level. The decoder then samples real
+# content from the draft instead of zero-filling a nested shape.
+_LEAF_VALUE_SCHEMA = {
+    "type": ["string", "number", "boolean", "array", "object", "null"],
+}
+
+
 def _translate_object(rules: dict) -> dict:
     """Convert ``{type:"object", required_fields:[...]}`` to JSON Schema."""
     required = list(rules.get("required_fields") or [])
     # OpenAI strict mode demands additionalProperties:false AND every field
-    # listed in required must appear in properties. Empty {} as the value
-    # type means "any JSON value acceptable" — we deliberately don't
-    # constrain field types because the dialect itself doesn't, and over-
-    # tightening breaks legitimate string/array/object content.
-    properties: dict[str, dict] = {f: {} for f in required}
+    # listed in required must appear in properties. We constrain only the
+    # SHAPE (which fields exist), not the value type within each field.
+    # See _LEAF_VALUE_SCHEMA above for why ``{}`` was wrong.
+    properties: dict[str, dict] = {f: dict(_LEAF_VALUE_SCHEMA) for f in required}
     return {
         "type": "object",
         "additionalProperties": False,
@@ -71,7 +89,7 @@ def _translate_array(rules: dict) -> dict:
             "type": "object",
             "additionalProperties": False,
             "required": item_fields,
-            "properties": {f: {} for f in item_fields},
+            "properties": {f: dict(_LEAF_VALUE_SCHEMA) for f in item_fields},
         }
     return schema
 

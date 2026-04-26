@@ -4127,7 +4127,10 @@
         "migration_system",
         "seed_script"
       ],
-      "instruction": "Set up database client/ORM with connection pooling and configuration. Set up migration system with initial migration matching database_schema. Create seed data script with development data based on user_personas and business_rules. Verify migrations run forward and backward. Verify seed script populates data correctly.",
+      "context": {
+        "estimated_output_tokens": 6000
+      },
+      "instruction": "Set up database client/ORM with connection pooling and configuration. Set up migration system with initial migration matching database_schema. Create seed data script with development data based on user_personas and business_rules. Verify migrations run forward and backward. Verify seed script populates data correctly.\n\nAFTER the setup work is done, RETURN a JSON object directly in `result` (no envelope, no markdown, no \"Wrote ...\" summary):\n\n{\n  \"db_client\": {\n    \"client_path\": \"<path to db client/ORM module>\",\n    \"connection_verified\": true,\n    \"orm\": \"<library + version>\",\n    \"pool_config\": \"<short description>\"\n  },\n  \"migration_system\": {\n    \"tool\": \"<alembic|prisma|drizzle|...>\",\n    \"initial_migration\": \"<path or id of the first migration>\",\n    \"forward_verified\": true,\n    \"backward_verified\": true\n  },\n  \"seed_script\": {\n    \"script_path\": \"<path to seed script>\",\n    \"data_summary\": \"<one line: what was seeded>\",\n    \"populates_verified\": true\n  }\n}\n\nSet boolean fields to true ONLY when actually verified. If a verification couldn't run (tool unavailable), still emit the field as false with a `notes` sibling explaining why.",
       "done_when": "db_client, migration_system, and seed_script exist and work correctly.",
       "artifact_schema": {
         "db_client": {

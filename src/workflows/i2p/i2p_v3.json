@@ -4041,6 +4041,9 @@
             "hooks"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -4297,6 +4300,9 @@
             "verified"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -4324,8 +4330,11 @@
         "cd_staging_config",
         "cd_production_config"
       ],
-      "instruction": "Set up CI pipeline (GitHub Actions/GitLab CI/etc.): lint, type check, unit tests, integration tests, build, security scan. Set up CD pipeline for staging (auto-deploy on merge to develop) and production (deploy on tag/release). Configure caching for dependencies. Configure test result and coverage reporting.",
-      "done_when": "ci_config, cd_staging_config, and cd_production_config exist.",
+      "context": {
+        "estimated_output_tokens": 5000
+      },
+      "instruction": "Set up CI pipeline (GitHub Actions / GitLab CI / etc.): lint, type check, unit tests, integration tests, build, security scan. Set up CD pipeline for staging (auto-deploy on merge to develop) and production (deploy on tag/release). Configure dependency caching + coverage reporting.\n\nAFTER the setup work is done, RETURN a JSON object directly in `result` (no envelope, no markdown, no \"Wrote ...\" summary):\n\n{\n  \"ci_config\": {\n    \"provider\": \"<github_actions|gitlab_ci|circleci|...>\",\n    \"config_file\": \"<path to workflow file>\",\n    \"stages\": [\"lint\", \"type_check\", \"unit_tests\", \"integration_tests\", \"build\", \"security_scan\"],\n    \"caching\": true,\n    \"coverage_uploaded\": true\n  },\n  \"cd_staging_config\": {\n    \"trigger\": \"merge_to_develop\",\n    \"config\": \"<path to staging deploy workflow>\",\n    \"environment\": \"staging\"\n  },\n  \"cd_production_config\": {\n    \"trigger\": \"tag_or_release\",\n    \"config\": \"<path to production deploy workflow>\",\n    \"environment\": \"production\",\n    \"approval_gate\": true\n  }\n}\n\nIf actual workflow files were written, set the boolean/path fields accordingly. If shell/write tools are unavailable in this run, still emit the object with planned values + add a `notes` sibling explaining what couldn't be executed.",
+      "done_when": "JSON object with `ci_config` (provider/config_file/stages), `cd_staging_config` (trigger/config), `cd_production_config` (trigger/config).",
       "artifact_schema": {
         "ci_config": {
           "type": "object",
@@ -4395,6 +4404,9 @@
             "verified_breakpoints"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -4432,6 +4444,9 @@
             "component_count"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -4470,6 +4485,9 @@
             "component_count"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -4506,6 +4524,9 @@
             "story_count"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -4777,6 +4798,9 @@
             "design_adjustments"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -5062,6 +5086,9 @@
             "comparison_to_nfr"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -5105,6 +5132,9 @@
             "before_after_metrics"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -5181,6 +5211,9 @@
             "verified"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -5224,6 +5257,9 @@
             "rescan_results"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -5549,6 +5585,9 @@
             "headers_configured"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -5663,6 +5702,9 @@
             "remaining_issues"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -6044,6 +6086,9 @@
             "consent_api"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -6419,6 +6464,9 @@
             "dashboards"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -6673,6 +6721,9 @@
             "pages_optimized"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -7195,6 +7246,9 @@
             "action_items"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -7233,6 +7287,9 @@
             "admin_view"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -7311,6 +7368,9 @@
             "preventive_measures"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {
@@ -7450,6 +7510,9 @@
             "tests_added"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 10000
       }
     },
     {

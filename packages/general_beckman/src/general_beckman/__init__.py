@@ -12,6 +12,43 @@ from general_beckman.types import Task, AgentResult
 __all__ = ["next_task", "on_task_finished", "enqueue", "on_model_swap", "Task", "AgentResult"]
 
 
+# Admission-fingerprint cache. When the input state (in_flight + loaded model
+# + cloud rpd + candidate ids) hasn't changed since last tick AND last tick
+# admitted nothing, this tick's result is deterministic — skip the per-
+# candidate Fatih Hoca scan. Single saturated task #4885 was rejected 601x in
+# a 42-min window before this guard, each rejection costing a full 13-model
+# filter+score pass (2026-04-27 log analysis). Reset by passing
+# ``force=True`` or by any state delta.
+_last_admission_fp: tuple | None = None
+_last_admission_admitted: bool = True
+
+
+def _admission_fingerprint(snap, candidates) -> tuple:
+    """Cheap stable hash of admission-relevant state.
+
+    Captures in_flight (auth source for local saturation), loaded model
+    name, idle bucket (10s granularity — matches pressure ladder steps),
+    cloud rpd-remaining per provider, and candidate task IDs.
+    """
+    if snap is None:
+        # No snapshot → can't trust state; bypass cache.
+        return ("nosnap", tuple(c.get("id") for c in candidates))
+    in_flight = tuple(sorted(
+        (c.task_id, c.model, c.provider, c.is_local)
+        for c in (snap.in_flight_calls or [])
+    ))
+    local = snap.local
+    loaded = local.model_name if local else None
+    idle_bucket = int((local.idle_seconds if local else 0) // 10)
+    is_swapping = bool(local.is_swapping) if local else False
+    cloud_rpd = tuple(sorted(
+        (p, st.limits.rpd.remaining if st.limits and st.limits.rpd else None)
+        for p, st in (snap.cloud or {}).items()
+    ))
+    cand_ids = tuple(sorted(c.get("id", 0) for c in candidates))
+    return (in_flight, loaded, idle_bucket, is_swapping, cloud_rpd, cand_ids)
+
+
 def _capacity_snapshot():
     """Best-effort capacity snapshot. Returns None if nerd_herd isn't wired."""
     try:
@@ -73,6 +110,21 @@ async def next_task():
     _log = get_logger("beckman.admission")
 
     candidates = await _queue.pick_ready_top_k(k=top_k)
+
+    # Skip the entire scan if state hasn't changed since last tick and last
+    # tick admitted nothing — result is deterministic. Mechanical tasks are
+    # the one exception (no Hoca call, no pressure gate); admit them even on
+    # a cache hit so blackboard writes / git commits don't stall behind LLM
+    # saturation.
+    global _last_admission_fp, _last_admission_admitted
+    fp = _admission_fingerprint(snap, candidates)
+    if (
+        not _last_admission_admitted
+        and _last_admission_fp == fp
+        and not any((c.get("agent_type") or "") == "mechanical" for c in candidates)
+    ):
+        return None
+
     for task in candidates:
         # Defensive guard: a pending row past worker_attempts cap should
         # never have reached this point (sweep section 8 is supposed to
@@ -118,6 +170,8 @@ async def next_task():
                 continue
             _log.info(f"admission: task #{task['id']} ADMIT mechanical")
             task["status"] = "processing"
+            _last_admission_fp = fp
+            _last_admission_admitted = True
             return task
 
         pick = None
@@ -187,8 +241,12 @@ async def next_task():
         )
         task["preselected_pick"] = pick
         task["status"] = "processing"
+        _last_admission_fp = fp
+        _last_admission_admitted = True
         return task
 
+    _last_admission_fp = fp
+    _last_admission_admitted = False
     return None
 
 

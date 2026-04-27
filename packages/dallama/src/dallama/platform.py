@@ -142,7 +142,11 @@ class PlatformHelper:
 
         try:
             if _IS_WINDOWS:
-                # CTRL_BREAK_EVENT gives the child a chance to flush before dying
+                # CTRL_BREAK_EVENT requires the child to have its own process
+                # group (CREATE_NEW_PROCESS_GROUP — see create_process). With
+                # the flag, llama-server gets a chance to flush before dying;
+                # without it, the signal is silently dropped and we fall
+                # through to force-kill every time.
                 import signal as _signal
                 process.send_signal(_signal.CTRL_BREAK_EVENT)
             else:

@@ -532,15 +532,30 @@ async def main():
         _keys = {p: os.getenv(_env_key_map[p], "") for p in _providers if p in _env_key_map}
         _keys = {p: k for p, k in _keys.items() if k}
 
+        # Capture main event loop reference at boot so worker-thread alerts
+        # can schedule coroutines back onto it. fatih_hoca runs discovery in
+        # a worker thread (its event loop is closed after refresh_all returns),
+        # so alerts that originate inside that thread cannot use create_task.
+        try:
+            _main_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            _main_loop = None
+
         def _cloud_alert(provider: str, status: str, error):
             """Boundary: fatih_hoca emits alert; we deliver via Telegram notification."""
             msg = f"[cloud] {provider} {status} — {error or ''}"
             try:
                 from src.app.telegram_bot import get_telegram
                 bot = get_telegram()
-                if bot is not None:
-                    import asyncio as _asyncio
-                    _asyncio.create_task(bot.send_notification(msg))
+                if bot is None:
+                    return
+                if _main_loop is not None and _main_loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        bot.send_notification(msg), _main_loop,
+                    )
+                else:
+                    # Fallback: try create_task on whatever loop is current.
+                    asyncio.create_task(bot.send_notification(msg))
             except Exception:
                 pass
 

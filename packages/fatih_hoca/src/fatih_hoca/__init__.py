@@ -291,6 +291,34 @@ def init(
     except Exception as e:
         logger.warning("capability blending failed at init: %s", e)
 
+    # ── Cloud bench match (family-aware, gated by operator approval) ──
+    try:
+        from .benchmark_cloud_match import apply_cloud_benchmarks, write_review_artifact
+
+        # Build {family: {capability: score}} lookup from per-model benchmark_scores
+        # populated by the local enricher above. Cross-provider clones share via family.
+        from .cloud.family import normalize as _family_normalize
+        aa_lookup: dict[str, dict[str, float]] = {}
+        for m in _registry.all_models():
+            if not m.benchmark_scores:
+                continue
+            family = m.family or _family_normalize(m.provider, m.litellm_name or m.name)
+            if not family:
+                continue
+            aa_lookup.setdefault(family, dict(m.benchmark_scores))
+
+        # Resolve approval + review artifact paths next to the cloud cache dir.
+        from pathlib import Path as _Path
+        cache_root = _Path(cloud_cache_dir).parent if cloud_cache_dir else _Path(".benchmark_cache")
+        approved_path = cache_root / "cloud_match_approved.json"
+        review_path = cache_root / "cloud_match_review.json"
+
+        models_list = list(_registry.all_models())
+        apply_cloud_benchmarks(models_list, aa_lookup, approved_path=approved_path)
+        write_review_artifact(models_list, aa_lookup, output_path=review_path)
+    except Exception as e:
+        logger.warning("cloud benchmark match failed at init: %s", e)
+
     # ── Compute final available_providers ────────────────────────────────────
     # Caller-provided set is the universe ("I have keys for these"). When
     # discovery ran, intersect with the auth_ok subset. When discovery did

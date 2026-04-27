@@ -77,9 +77,9 @@ async def _refresh_cloud_subsystem() -> dict[str, Any]:
 
     # Update selector's available_providers in place so picks reflect new state.
     if fatih_hoca._selector is not None:
-        fatih_hoca._selector._available_providers = {
-            p for p, r in results.items() if r.auth_ok
-        }
+        fatih_hoca._selector.set_available_providers(
+            {p for p, r in results.items() if r.auth_ok}
+        )
 
     # Cross-package bridge: tell KDV which providers are currently enabled.
     # Idempotent — first call sets the timestamp, repeats are no-ops.

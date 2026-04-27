@@ -45,6 +45,12 @@ class Selector:
 
     # ─── Public API ──────────────────────────────────────────────────────────
 
+    def set_available_providers(self, providers: set[str] | None) -> None:
+        """Update the set of providers eligible for selection. Called by the
+        boot caller / refresh handler; mutating ``_available_providers``
+        directly is private API and must not be done from outside the package."""
+        self._available_providers = providers
+
     def select(
         self,
         task: str = "",

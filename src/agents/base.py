@@ -3537,10 +3537,39 @@ class BaseAgent:
             ensure_ascii=False,
             indent=2,
         )
-        # Cap draft to keep input token cost in line. Schema-validation
-        # check at the end runs against the FULL output, so a long draft
-        # losing tail context here is harmless — the fix-up regenerates.
-        draft_for_prompt = draft[:12000]
+        # Skip the emit when the draft already parses as JSON with all
+        # required artifact keys present. Re-emitting in that case
+        # tends to COMPRESS rather than reshape — the model sees a long
+        # rich draft, gets a tight token budget, and trims content from
+        # tail fields to fit (mission 57 task 4441 5.4b: draft 30751
+        # chars with full empty_states/error_states arrays became a
+        # 12826-char emit with empty placeholder lists). The schema
+        # validator runs next and catches genuine shape gaps; the emit
+        # pass is only valuable when the draft is non-JSON or missing
+        # top-level keys.
+        try:
+            _parsed = json.loads(draft)
+            if isinstance(_parsed, dict):
+                _need = [
+                    n for n, r in artifact_schema.items()
+                    if isinstance(r, dict) and r.get("type") in ("object", "array")
+                ]
+                if _need and all(k in _parsed for k in _need):
+                    logger.info(
+                        f"[Task #{task.get('id','?')}] constrained_emit skipped "
+                        f"— draft parses with all required keys present "
+                        f"(step={step_id}, draft={len(draft)} chars)"
+                    )
+                    return result
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass  # Draft isn't JSON — emit pass will reshape.
+
+        # Cap draft to keep input token cost in line. Bumped from 12000
+        # to 30000 so big multi-artifact drafts (form_specs +
+        # empty_error_state_specs) don't lose tail content before the
+        # emit even sees it. Local OVERHEAD calls have no per-token
+        # cost; cap is purely a context-window guardrail.
+        draft_for_prompt = draft[:30000]
         system = (
             "You are a structured-output emitter. Re-emit the artifact "
             "below as JSON conforming exactly to the provided schema. "
@@ -3570,9 +3599,15 @@ class BaseAgent:
                 difficulty=3,
                 messages=messages,
                 estimated_input_tokens=max(1000, len(user) // 4),
+                # Output budget: previously min(12000, len/3) which gave
+                # 4000 tokens for a 12000-char prompt — way too tight
+                # for multi-artifact schemas (5.4b: form_specs +
+                # empty_error_state_specs). Now floors at len/3 with
+                # a higher ceiling so emits can preserve a large
+                # draft instead of compressing.
                 estimated_output_tokens=min(
-                    12000,
-                    max(1000, len(draft_for_prompt) // 3),
+                    16000,
+                    max(2000, len(draft_for_prompt) // 3),
                 ),
                 prefer_speed=True,
                 response_format=response_format,

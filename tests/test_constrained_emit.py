@@ -186,6 +186,113 @@ async def test_dispatch_called_with_json_schema_response_format():
 
 
 @pytest.mark.asyncio
+async def test_skip_emit_when_draft_already_parses_with_all_keys():
+    """Mission 57 task 4441 5.4b: draft was 30751 chars with full
+    empty_states + error_states arrays. Constrained_emit then
+    compressed to 12826 chars and lost tail content. Skip when draft
+    already parses with all required keys present."""
+    agent = _FakeAgent()
+    schema = {
+        "form_specs": {"type": "object", "required_fields": ["forms"]},
+        "empty_error_state_specs": {
+            "type": "object",
+            "required_fields": ["empty_states", "error_states"],
+        },
+    }
+    task = {
+        "id": 4441,
+        "context": json.dumps({
+            "is_workflow_step": True,
+            "workflow_step_id": "5.4b",
+            "artifact_schema": schema,
+        }),
+    }
+    draft = json.dumps({
+        "form_specs": {"forms": [{"id": "x"}]},
+        "empty_error_state_specs": {
+            "empty_states": [{"id": "e1"}],
+            "error_states": [{"id": "err1"}],
+        },
+    })
+    result = {"status": "completed", "result": draft}
+    fake_dispatcher = AsyncMock()
+    fake_dispatcher.request = AsyncMock(
+        return_value={"content": '{"replaced":"x"}', "model": "m"},
+    )
+    with patch(
+        "src.core.llm_dispatcher.get_dispatcher",
+        return_value=fake_dispatcher,
+    ):
+        out = await agent._maybe_constrained_emit(task, result)
+    # Dispatcher MUST NOT have been called — skipped because draft is clean.
+    assert fake_dispatcher.request.call_count == 0
+    assert out["result"] == draft
+    assert "constrained_emit_applied" not in out
+
+
+@pytest.mark.asyncio
+async def test_emit_still_fires_when_draft_missing_keys():
+    """If the draft is JSON but missing a required artifact key, the
+    emit pass should still fire to reshape."""
+    agent = _FakeAgent()
+    schema = {
+        "form_specs": {"type": "object", "required_fields": ["forms"]},
+        "empty_error_state_specs": {
+            "type": "object", "required_fields": ["empty_states"],
+        },
+    }
+    task = {
+        "id": 1,
+        "context": json.dumps({
+            "is_workflow_step": True,
+            "workflow_step_id": "5.4b",
+            "artifact_schema": schema,
+        }),
+    }
+    draft = json.dumps({"form_specs": {"forms": []}})  # missing empty_error_state_specs
+    result = {"status": "completed", "result": draft}
+    valid = '{"form_specs":{"forms":[]},"empty_error_state_specs":{"empty_states":[{"id":"e"}]}}'
+    fake_dispatcher = AsyncMock()
+    fake_dispatcher.request = AsyncMock(
+        return_value={"content": valid, "model": "m"},
+    )
+    with patch(
+        "src.core.llm_dispatcher.get_dispatcher",
+        return_value=fake_dispatcher,
+    ):
+        out = await agent._maybe_constrained_emit(task, result)
+    # Emit fired because key was missing.
+    assert fake_dispatcher.request.call_count == 1
+    assert out.get("constrained_emit_applied") is True
+
+
+@pytest.mark.asyncio
+async def test_emit_still_fires_when_draft_is_prose():
+    """Non-JSON draft -> emit must fire to constrain shape."""
+    agent = _FakeAgent()
+    schema = {"x": {"type": "object", "required_fields": ["a"]}}
+    task = {
+        "id": 2,
+        "context": json.dumps({
+            "is_workflow_step": True,
+            "workflow_step_id": "test",
+            "artifact_schema": schema,
+        }),
+    }
+    result = {"status": "completed", "result": "Just prose, not JSON."}
+    fake_dispatcher = AsyncMock()
+    fake_dispatcher.request = AsyncMock(
+        return_value={"content": '{"a":"ok"}', "model": "m"},
+    )
+    with patch(
+        "src.core.llm_dispatcher.get_dispatcher",
+        return_value=fake_dispatcher,
+    ):
+        await agent._maybe_constrained_emit(task, result)
+    assert fake_dispatcher.request.call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_array_schema_translates_correctly_at_call():
     agent = _FakeAgent()
     result = {"status": "completed", "result": "draft"}

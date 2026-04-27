@@ -498,15 +498,17 @@ async def init_db():
             pool TEXT,
             urgency REAL,
             success INTEGER,
-            error_category TEXT
+            error_category TEXT,
+            provider TEXT
         )
     """)
-    # Idempotent column add for pre-Phase-2c / pre-Task-5 databases.
+    # Idempotent column add for pre-Phase-2c / pre-Task-5 / pre-Task-15 databases.
     for col_name, col_type in (
         ("pool", "TEXT"),
         ("urgency", "REAL"),
         ("success", "INTEGER"),
         ("error_category", "TEXT"),
+        ("provider", "TEXT"),
     ):
         try:
             await db.execute(f"ALTER TABLE model_pick_log ADD COLUMN {col_name} {col_type}")
@@ -514,6 +516,14 @@ async def init_db():
             if "duplicate column" not in str(e).lower():
                 raise
             # column already exists — expected on re-init
+    # Backfill legacy rows: pre-cloud era was 100% local picks. Idempotent —
+    # re-running just no-ops because no NULL rows remain.
+    await db.execute(
+        "UPDATE model_pick_log SET provider='local' WHERE provider IS NULL"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pick_log_provider ON model_pick_log(provider)"
+    )
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_pick_log_task ON model_pick_log(task_name, timestamp DESC)"
     )

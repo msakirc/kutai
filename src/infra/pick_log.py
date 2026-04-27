@@ -30,6 +30,7 @@ async def write_pick_log_row(
     success: bool,
     error_category: str = "",
     snapshot_summary: str = "",
+    provider: str = "local",
 ) -> None:
     """Fire-and-forget write of a pick outcome.
 
@@ -41,8 +42,8 @@ async def write_pick_log_row(
             await db.execute(
                 "INSERT INTO model_pick_log "
                 "(task_name, picked_model, picked_score, call_category, "
-                " candidates_json, snapshot_summary, success, error_category) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " candidates_json, snapshot_summary, success, error_category, provider) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     task_name,
                     picked_model,
@@ -52,6 +53,7 @@ async def write_pick_log_row(
                     snapshot_summary,
                     1 if success else 0,
                     error_category,
+                    provider,
                 ),
             )
             await db.commit()

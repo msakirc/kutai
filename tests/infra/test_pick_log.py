@@ -26,7 +26,8 @@ CREATE TABLE model_pick_log (
     pool TEXT,
     urgency REAL,
     success INTEGER,
-    error_category TEXT
+    error_category TEXT,
+    provider TEXT
 )
 """
 

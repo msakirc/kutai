@@ -1573,8 +1573,16 @@ class ModelRegistry:
         self.demote(name, float(duration))
 
     def load(self, config_path: "Path | str | None" = None) -> None:
-        """Load the model catalog from models.yaml (legacy compat)."""
-        _REGISTRY_PATH = Path(__file__).parent.parent.parent.parent / "src" / "models" / "models.yaml"
+        """Load the model catalog from models.yaml (legacy compat).
+
+        Layout (from this file):
+            parents[0] = fatih_hoca/  (module dir)
+            parents[1] = src/         (under fatih_hoca package)
+            parents[2] = fatih_hoca/  (package root)
+            parents[3] = packages/
+            parents[4] = repo root
+        """
+        _REGISTRY_PATH = Path(__file__).resolve().parents[4] / "src" / "models" / "models.yaml"
         resolved = Path(config_path) if config_path else _REGISTRY_PATH
         if resolved.exists():
             self.load_yaml(str(resolved))

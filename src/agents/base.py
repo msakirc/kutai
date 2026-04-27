@@ -894,6 +894,24 @@ class BaseAgent:
                 _prev = json.dumps(_prev, ensure_ascii=False)
             elif not isinstance(_prev, str):
                 _prev = str(_prev)
+            # Unwrap envelope BEFORE parsing for the checklist. _prev_output
+            # gets stored as the agent's raw response in cases where Phase B
+            # constrained_emit kept the draft (e.g. emit produced non-JSON).
+            # Drafts are typically envelope-wrapped: ``{"action":"final_
+            # answer","result":"<artifact>"}``. Without unwrapping, json.loads
+            # gives ``{action, result}`` keys and the per-artifact checklist
+            # walks the WRONG dict — every required field marked [ ] (missing)
+            # even when the artifact was fully populated. Mission 57 task
+            # 4441 burned 5 retries because every checklist falsely told the
+            # worker its forms/empty_states/error_states were missing while
+            # the prev_output dump in the same prompt clearly showed them.
+            try:
+                from src.workflows.engine.hooks import _unwrap_envelope as _u
+                _prev_unwrapped = _u(_prev)
+                if isinstance(_prev_unwrapped, str) and _prev_unwrapped:
+                    _prev = _prev_unwrapped
+            except Exception:
+                pass
             _prev_obj = None
             try:
                 _prev_obj = json.loads(_prev)

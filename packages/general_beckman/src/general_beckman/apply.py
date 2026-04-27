@@ -759,7 +759,17 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         prev_output = source.get("result") or ""
         if isinstance(prev_output, str) and prev_output.strip():
             try:
-                from src.workflows.engine.hooks import canonicalize_for_retry
+                from src.workflows.engine.hooks import (
+                    canonicalize_for_retry, _unwrap_envelope,
+                )
+                # Unwrap final_answer envelope first so _prev_output
+                # carries the bare artifact JSON, not the agent's
+                # ``{"action":"final_answer","result":"..."}`` wrapper.
+                # Without this, downstream parsers (per-artifact
+                # checklist in base.py::_build_context) see the wrapper
+                # keys instead of the artifact keys and falsely mark
+                # every required field as missing.
+                prev_output = _unwrap_envelope(prev_output)
                 prev_output = canonicalize_for_retry(prev_output)
             except Exception:
                 pass

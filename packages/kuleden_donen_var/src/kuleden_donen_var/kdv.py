@@ -74,14 +74,28 @@ class KuledenDonenVar:
     def mark_provider_enabled(self, provider: str, at_unix: float | None = None) -> None:
         """Record when a provider was first enabled (boot or first auth_ok refresh).
 
-        Idempotent: re-marking the same provider does NOT update the timestamp.
-        Used to compute 'idle since enabled' for ``no_data_warnings()``.
+        Idempotent: re-marking the same provider does NOT update the timestamp
+        — the periodic 6h refresh would otherwise reset the clock and the
+        no-data warning could never fire. Trade-off: a provider that goes
+        auth_fail then recovers will appear "idle" for the original duration,
+        not just the post-recovery duration. Bridge callers that detect a
+        recovery transition and want a fresh clock should call
+        ``reset_provider_enabled`` first.
         """
         if provider in self._provider_enabled_at:
             return
         self._provider_enabled_at[provider] = (
             at_unix if at_unix is not None else time.time()
         )
+
+    def reset_provider_enabled(self, provider: str) -> None:
+        """Drop the enabled-at timestamp + observation count for a provider.
+
+        Use on auth_fail→ok recovery to restart the no-data-warning clock.
+        Caller is responsible for re-marking afterward.
+        """
+        self._provider_enabled_at.pop(provider, None)
+        self._provider_call_count.pop(provider, None)
 
     def record_call_observation(self, provider: str) -> None:
         """Bump per-provider observation count. Wired internally from post_call.

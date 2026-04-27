@@ -13,6 +13,7 @@ logs/
 .idea/
 .vscode/
 data/chroma/
+data/chroma.bak.*/
 data/*.db
 data/*.db-shm
 data/*.db-wal

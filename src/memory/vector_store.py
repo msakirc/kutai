@@ -21,6 +21,7 @@ Public API:
     await delete(ids, collection)
     await get_collection_count(collection)
 """
+import asyncio
 import logging
 import os
 import time
@@ -74,6 +75,188 @@ _collections: dict = {}
 _initialized = False
 
 
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+_CORRUPT_SEGMENT_MARKERS = (
+    "nothing found on disk",
+    "hnsw segment reader",
+    "segment file",
+    "error in compaction",
+    "failed to apply logs",
+    "metadata segment",
+)
+
+
+def _looks_like_segment_corrupt(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(m in msg for m in _CORRUPT_SEGMENT_MARKERS)
+
+
+def _recreate_collection(collection: str):
+    """Drop + recreate a collection. Returns the new collection or None on failure."""
+    if _client is None:
+        return None
+    try:
+        _client.delete_collection(collection)
+    except Exception:
+        pass
+    try:
+        expected_dim = _get_dimension_fn()()
+        from src.memory.embeddings import EMBEDDING_MODEL
+        fresh = _client.get_or_create_collection(
+            name=collection,
+            metadata={
+                "hnsw:space": "cosine",
+                "embedding_model": EMBEDDING_MODEL,
+                "embedding_dimension": expected_dim,
+            },
+        )
+        _collections[collection] = fresh
+        return fresh
+    except Exception as e:
+        logger.error(f"Failed to recreate '{collection}': {e}")
+        return None
+
+
+def _rescue_and_rebuild_sync(collection: str) -> tuple[bool, int, int]:
+    """
+    Tier 1 rescue: read all rows via col.get, drop+recreate, re-insert.
+
+    Preserves data when corruption is in HNSW segment but sqlite rows readable.
+    Returns (success, rescued_count, recreated_only_fallback).
+
+    success=True, rescued_count>0  → full rescue
+    success=True, rescued_count=0  → empty collection (nothing to rescue)
+    success=False                  → fell back to nuke (Tier 3)
+    """
+    if _client is None or collection not in _collections:
+        return (False, 0, 0)
+
+    col = _collections[collection]
+    rescued = None
+    try:
+        rescued = col.get(include=["documents", "embeddings", "metadatas"])
+    except Exception as e:
+        logger.warning(
+            f"Tier 1 rescue read failed on '{collection}' ({e!s}) — "
+            f"falling back to nuke"
+        )
+
+    fresh = _recreate_collection(collection)
+    if fresh is None:
+        return (False, 0, 0)
+
+    if not rescued:
+        return (True, 0, 1)
+
+    ids = rescued.get("ids") or []
+    docs = rescued.get("documents") or [None] * len(ids)
+    metas = rescued.get("metadatas") or [{}] * len(ids)
+    embs = rescued.get("embeddings") or [None] * len(ids)
+
+    if not ids:
+        return (True, 0, 0)
+
+    try:
+        kwargs = {"ids": ids, "documents": docs, "metadatas": metas}
+        if any(e is not None for e in embs):
+            kwargs["embeddings"] = embs
+        fresh.upsert(**kwargs)
+        logger.info(
+            f"Tier 1 rescue rebuilt '{collection}' with {len(ids)} rows preserved"
+        )
+        return (True, len(ids), 0)
+    except Exception as e:
+        logger.error(
+            f"Tier 1 rebuild upsert failed on '{collection}' ({e!s}) — "
+            f"collection now empty (Tier 3 fallback)"
+        )
+        return (True, 0, 1)
+
+
+async def _self_heal(collection: str) -> bool:
+    """Run Tier 1 rescue (with Tier 3 fallback) off the event loop."""
+    success, _rescued, _nuked = await asyncio.to_thread(
+        _rescue_and_rebuild_sync, collection
+    )
+    return success
+
+
+async def integrity_probe() -> dict[str, str]:
+    """
+    Pre-flight: cheap touch on every collection. Heals corrupt ones before
+    serving traffic. Returns per-collection status: ok | healed | failed.
+    """
+    if not _initialized:
+        return {}
+    results: dict[str, str] = {}
+    for name, col in list(_collections.items()):
+        try:
+            await asyncio.to_thread(col.count)
+            results[name] = "ok"
+            continue
+        except Exception as e:
+            if not _looks_like_segment_corrupt(e):
+                results[name] = f"unknown_error: {e!s}"
+                continue
+        logger.warning(
+            f"Pre-flight: '{name}' looks corrupt — running rescue+rebuild"
+        )
+        ok = await _self_heal(name)
+        results[name] = "healed" if ok else "failed"
+    return results
+
+
+async def wal_checkpoint(db_path: str | None = None) -> bool:
+    """Run sqlite WAL checkpoint(TRUNCATE) on chroma.sqlite3. Releases WAL bloat."""
+    import sqlite3
+    path = db_path or os.path.join(_DB_DIR, "chroma.sqlite3")
+    if not os.path.exists(path):
+        return False
+    def _run() -> bool:
+        try:
+            conn = sqlite3.connect(path, timeout=10.0)
+            try:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.commit()
+            finally:
+                conn.close()
+            return True
+        except Exception as e:
+            logger.warning(f"WAL checkpoint failed: {e}")
+            return False
+    return await asyncio.to_thread(_run)
+
+
+async def snapshot_chroma(keep: int = 3) -> str | None:
+    """
+    Copy data/chroma → data/chroma.bak.<YYYYMMDD-HHMMSS>/. Prune to last `keep`.
+    Returns destination path or None on failure.
+    """
+    import shutil
+    src = _DB_DIR
+    if not os.path.isdir(src):
+        return None
+    parent = os.path.dirname(src)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    dst = os.path.join(parent, f"chroma.bak.{stamp}")
+
+    def _copy() -> str | None:
+        try:
+            shutil.copytree(src, dst, dirs_exist_ok=False)
+            backups = sorted(
+                p for p in os.listdir(parent)
+                if p.startswith("chroma.bak.")
+            )
+            for old in backups[:-keep]:
+                shutil.rmtree(os.path.join(parent, old), ignore_errors=True)
+            return dst
+        except Exception as e:
+            logger.warning(f"Chroma snapshot failed: {e}")
+            return None
+    return await asyncio.to_thread(_copy)
+
+
 async def init_store(persist_dir: str | None = None, embed_fn=None, dimension_fn=None) -> bool:
     """
     Initialize the ChromaDB client and create collections.
@@ -99,12 +282,14 @@ async def init_store(persist_dir: str | None = None, embed_fn=None, dimension_fn
     os.makedirs(db_dir, exist_ok=True)
 
     try:
-        _client = chromadb.PersistentClient(
-            path=db_dir,
-            settings=Settings(
-                anonymized_telemetry=False,
-                allow_reset=True,
-            ),
+        _client = await asyncio.to_thread(
+            lambda: chromadb.PersistentClient(
+                path=db_dir,
+                settings=Settings(
+                    anonymized_telemetry=False,
+                    allow_reset=True,
+                ),
+            )
         )
 
         expected_dim = _get_dimension_fn()()
@@ -112,7 +297,8 @@ async def init_store(persist_dir: str | None = None, embed_fn=None, dimension_fn
 
         # Create or get collections with dimension tracking
         for name in COLLECTIONS:
-            col = _client.get_or_create_collection(
+            col = await asyncio.to_thread(
+                _client.get_or_create_collection,
                 name=name,
                 metadata={
                     "hnsw:space": "cosine",
@@ -134,7 +320,9 @@ async def init_store(persist_dir: str | None = None, embed_fn=None, dimension_fn
             _collections[name] = col
 
         _initialized = True
-        total = sum(c.count() for c in _collections.values())
+        total = await asyncio.to_thread(
+            lambda: sum(c.count() for c in _collections.values())
+        )
         logger.info(
             f"Vector store initialized: {len(_collections)} collections, "
             f"{total} total documents (dir: {db_dir})"
@@ -207,18 +395,17 @@ async def embed_and_store(
             f"{collection}:{text[:200]}:{time.time()}".encode()
         ).hexdigest()[:24]
 
+    col = _collections[collection]
+    add_kwargs = {
+        "ids": [doc_id],
+        "documents": [text],
+        "metadatas": [clean_meta],
+    }
+    if embedding is not None:
+        add_kwargs["embeddings"] = [embedding]
+
     try:
-        col = _collections[collection]
-        add_kwargs = {
-            "ids": [doc_id],
-            "documents": [text],
-            "metadatas": [clean_meta],
-        }
-        if embedding is not None:
-            add_kwargs["embeddings"] = [embedding]
-
-        col.upsert(**add_kwargs)
-
+        await asyncio.to_thread(col.upsert, **add_kwargs)
         logger.debug(
             f"Stored in '{collection}': {doc_id} "
             f"({len(text)} chars, embedding={'yes' if embedding else 'no'})"
@@ -226,6 +413,22 @@ async def embed_and_store(
         return doc_id
 
     except Exception as e:
+        if _looks_like_segment_corrupt(e):
+            logger.warning(
+                f"Collection '{collection}' segments corrupt on store "
+                f"({e!s}) — running Tier 1 rescue, retrying once"
+            )
+            healed = await _self_heal(collection)
+            if healed:
+                try:
+                    await asyncio.to_thread(
+                        _collections[collection].upsert, **add_kwargs
+                    )
+                    return doc_id
+                except Exception as retry_exc:
+                    logger.error(
+                        f"Store retry failed on '{collection}' after heal: {retry_exc}"
+                    )
         logger.error(f"Failed to store in '{collection}': {e}")
         return None
 
@@ -264,7 +467,7 @@ async def query(
 
     col = _collections[collection]
 
-    if col.count() == 0:
+    if await asyncio.to_thread(col.count) == 0:
         return []
 
     # Get embedding for query (as query, not passage)
@@ -276,14 +479,14 @@ async def query(
 
     try:
         query_kwargs = {
-            "n_results": min(top_k, col.count()),
+            "n_results": min(top_k, await asyncio.to_thread(col.count)),
             "query_embeddings": [embedding],
         }
 
         if where:
             query_kwargs["where"] = where
 
-        results = col.query(**query_kwargs)
+        results = await asyncio.to_thread(lambda: col.query(**query_kwargs))
 
         # Parse results into a clean list
         docs: list[dict] = []
@@ -306,7 +509,8 @@ async def query(
                     meta = metas[i] or {}
                     meta["access_count"] = meta.get("access_count", 0) + 1
                     meta["last_accessed"] = time.time()
-                    col.update(
+                    await asyncio.to_thread(
+                        col.update,
                         ids=[doc_id],
                         metadatas=[meta],
                     )
@@ -316,43 +520,18 @@ async def query(
         return docs
 
     except Exception as e:
-        # Detect corrupt-segment errors and self-heal by dropping +
-        # recreating the collection. Without this, every RAG-enabled
-        # agent dispatch (coder, fixer, implementer, test_generator)
-        # logged "Nothing found on disk" repeatedly without recovery
-        # — the broken collection persisted indefinitely and polluted
-        # logs (mission 46, 2026-04-26: errors collection emitted
-        # ~hourly hnsw warnings).
-        msg = str(e).lower()
-        is_segment_corrupt = (
-            "nothing found on disk" in msg
-            or "hnsw segment reader" in msg
-            or "segment file" in msg
-        )
-        if is_segment_corrupt and _client is not None:
-            try:
-                logger.warning(
-                    f"Collection '{collection}' segments corrupt "
-                    f"({e!s}) — dropping and recreating empty"
-                )
-                _client.delete_collection(collection)
-                expected_dim = _get_dimension_fn()()
-                from src.memory.embeddings import EMBEDDING_MODEL
-                fresh = _client.get_or_create_collection(
-                    name=collection,
-                    metadata={
-                        "hnsw:space": "cosine",
-                        "embedding_model": EMBEDDING_MODEL,
-                        "embedding_dimension": expected_dim,
-                    },
-                )
-                _collections[collection] = fresh
+        # Self-heal corrupt segments. Without this, every RAG-enabled
+        # agent dispatch logged "Nothing found on disk" repeatedly without
+        # recovery, and corrupt episodic compaction blocked the event loop
+        # past Yaşar Usta's 120s heartbeat (2026-04-27).
+        if _looks_like_segment_corrupt(e):
+            logger.warning(
+                f"Collection '{collection}' segments corrupt on query "
+                f"({e!s}) — running Tier 1 rescue"
+            )
+            healed = await _self_heal(collection)
+            if healed:
                 return []
-            except Exception as repair_exc:
-                logger.error(
-                    f"Failed to repair '{collection}' after segment "
-                    f"corruption: {repair_exc}"
-                )
         logger.error(f"Query failed on '{collection}': {e}")
         return []
 
@@ -379,7 +558,7 @@ async def delete(
 
     try:
         col = _collections[collection]
-        col.delete(ids=ids)
+        await asyncio.to_thread(col.delete, ids=ids)
         logger.debug(f"Deleted {len(ids)} doc(s) from '{collection}'")
         return len(ids)
     except Exception as e:
@@ -395,14 +574,16 @@ async def get_collection_count(collection: str) -> int:
         return 0
     if collection not in _collections:
         return 0
-    return _collections[collection].count()
+    return await asyncio.to_thread(_collections[collection].count)
 
 
 async def get_all_counts() -> dict[str, int]:
     """Return document counts for all collections."""
     if not _initialized:
         return {}
-    return {name: col.count() for name, col in _collections.items()}
+    def _all():
+        return {name: col.count() for name, col in _collections.items()}
+    return await asyncio.to_thread(_all)
 
 
 async def delete_by_metadata(
@@ -420,10 +601,10 @@ async def delete_by_metadata(
     try:
         col = _collections[collection]
         # ChromaDB doesn't return count on delete, so query first
-        results = col.get(where=where)
+        results = await asyncio.to_thread(col.get, where=where)
         if results and results.get("ids"):
             ids = results["ids"]
-            col.delete(ids=ids)
+            await asyncio.to_thread(col.delete, ids=ids)
             return len(ids)
         return 0
     except Exception as e:

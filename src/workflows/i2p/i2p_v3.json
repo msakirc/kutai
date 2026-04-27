@@ -533,7 +533,8 @@
           "type": "object",
           "required_fields": []
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "-1.4",
@@ -566,7 +567,8 @@
             "blocking_gaps"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "-1.5",
@@ -601,7 +603,8 @@
             "human_confirmed"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "-1.6",
@@ -639,7 +642,8 @@
             "test_patterns"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "-1.7",
@@ -672,7 +676,8 @@
             "business_model"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "0.1",
@@ -741,7 +746,8 @@
             "frequency"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "0.3",
@@ -774,7 +780,8 @@
             "validation_method"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "0.4",
@@ -810,7 +817,8 @@
             "why_it_matters"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "0.5",
@@ -838,7 +846,8 @@
           "type": "array",
           "min_items": 3
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "0.6",
@@ -921,7 +930,8 @@
       },
       "api_hints": [
         "market_data"
-      ]
+      ],
+      "context": {}
     },
     {
       "id": "1.2",
@@ -956,7 +966,8 @@
             "current_tools"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "1.3",
@@ -998,7 +1009,8 @@
       },
       "api_hints": [
         "market_data"
-      ]
+      ],
+      "context": {}
     },
     {
       "id": "1.4",
@@ -1037,7 +1049,8 @@
       },
       "api_hints": [
         "market_data"
-      ]
+      ],
+      "context": {}
     },
     {
       "id": "1.5",
@@ -1087,7 +1100,8 @@
       },
       "api_hints": [
         "market_data"
-      ]
+      ],
+      "context": {}
     },
     {
       "id": "1.6",
@@ -1124,7 +1138,8 @@
       },
       "api_hints": [
         "market_data"
-      ]
+      ],
+      "context": {}
     },
     {
       "id": "1.7",
@@ -1175,7 +1190,8 @@
       },
       "api_hints": [
         "market_data"
-      ]
+      ],
+      "context": {}
     },
     {
       "id": "1.8",
@@ -1252,7 +1268,8 @@
       },
       "api_hints": [
         "market_data"
-      ]
+      ],
+      "context": {}
     },
     {
       "id": "1.10",
@@ -1292,7 +1309,8 @@
       },
       "api_hints": [
         "github_trending"
-      ]
+      ],
+      "context": {}
     },
     {
       "id": "1.11",
@@ -1328,7 +1346,8 @@
             "compliance_effort"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "1.12a",
@@ -1447,7 +1466,8 @@
             "issues"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "1.14",
@@ -1521,7 +1541,8 @@
             "mission_statement"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "2.2",
@@ -1555,7 +1576,8 @@
             "top_fits"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "2.3",
@@ -1587,7 +1609,8 @@
             "competitor_weakness_exploited"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "2.4",
@@ -1631,7 +1654,8 @@
             "aha_moment"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "2.5",
@@ -1742,7 +1766,8 @@
             "mvp_value_statement"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "2.8",
@@ -1811,7 +1836,8 @@
             "north_star_metric"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "2.10",
@@ -1845,7 +1871,8 @@
             "revenue_projections"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "2.11a",
@@ -2006,7 +2033,8 @@
             "projections"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "3.3",
@@ -2047,7 +2075,8 @@
             "data_protection"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "3.4",
@@ -2077,7 +2106,8 @@
             "data_flows"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "3.5",
@@ -2117,6 +2147,9 @@
             "failure_mode"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 4000
       }
     },
     {
@@ -2124,7 +2157,7 @@
       "phase": "phase_3",
       "name": "platform_and_accessibility_requirements",
       "agent": "analyst",
-      "difficulty": "easy",
+      "difficulty": "medium",
       "tools_hint": [
         "smart_search",
         "read_file",
@@ -2174,6 +2207,9 @@
             "rtl_support"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 8000
       }
     },
     {
@@ -2208,7 +2244,8 @@
             "testable_assertion"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "3.8",
@@ -2245,7 +2282,8 @@
             "priority"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "3.9a",
@@ -2280,7 +2318,8 @@
             "orphans"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "3.9b",
@@ -2318,7 +2357,8 @@
             "trade_off"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "3.10a",
@@ -2471,7 +2511,8 @@
             "evaluation"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "4.2",
@@ -2518,7 +2559,8 @@
       },
       "api_hints": [
         "github_trending"
-      ]
+      ],
+      "context": {}
     },
     {
       "id": "4.3",
@@ -2711,7 +2753,8 @@
             "permissions"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "4.7",
@@ -2746,7 +2789,8 @@
             "routing"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "4.8",
@@ -2786,7 +2830,8 @@
             "lock_in_risk"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "4.9",
@@ -2839,7 +2884,8 @@
             "validation"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "4.10",
@@ -2888,7 +2934,8 @@
             "indexed_entities"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "4.11",
@@ -2920,7 +2967,8 @@
             "monitoring"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "4.12",
@@ -2963,7 +3011,8 @@
             "rpo"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "4.13",
@@ -2995,7 +3044,8 @@
             "flows"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "4.14",
@@ -3038,7 +3088,8 @@
             "consequences"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "4.15a1",
@@ -3199,7 +3250,8 @@
             "security_findings"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "5.1",
@@ -3230,7 +3282,8 @@
             "page_types"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "5.2",
@@ -3260,7 +3313,8 @@
             "mobile_nav"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "5.3",
@@ -3315,7 +3369,8 @@
             "flows"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "5.4a",
@@ -3355,14 +3410,15 @@
             "screens"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "5.4b",
       "phase": "phase_5",
       "name": "forms_and_states",
       "agent": "analyst",
-      "difficulty": "easy",
+      "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
         "5.4a"
@@ -3393,6 +3449,9 @@
             "error_states"
           ]
         }
+      },
+      "context": {
+        "estimated_output_tokens": 12000
       }
     },
     {
@@ -3426,7 +3485,8 @@
             "issues"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "5.6",
@@ -3471,7 +3531,8 @@
             "shadows"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "5.7",
@@ -3506,7 +3567,8 @@
             "components"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "5.8",
@@ -3538,7 +3600,8 @@
             "screens"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "5.9",
@@ -3587,7 +3650,8 @@
             "per_screen"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "5.10",
@@ -3623,7 +3687,8 @@
             "issues"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "5.11a",
@@ -3792,7 +3857,8 @@
             "total"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "6.3",
@@ -3828,7 +3894,8 @@
             "mitigation_strategy"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "6.4",
@@ -3918,7 +3985,8 @@
             "release"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "6.6",
@@ -3953,7 +4021,8 @@
             "issues"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "7.1",
@@ -3997,7 +4066,8 @@
             "editorconfig"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "7.2",
@@ -4108,7 +4178,8 @@
         "action": "git_commit"
       },
       "instruction": "Mechanical auto-commit after 7.3.",
-      "done_when": "Workspace committed if there are changes."
+      "done_when": "Workspace committed if there are changes.",
+      "context": {}
     },
     {
       "id": "7.4",
@@ -4219,7 +4290,8 @@
         "action": "git_commit"
       },
       "instruction": "Mechanical auto-commit after 7.5.",
-      "done_when": "Workspace committed if there are changes."
+      "done_when": "Workspace committed if there are changes.",
+      "context": {}
     },
     {
       "id": "7.6",
@@ -4576,7 +4648,8 @@
             "health_check_passed"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "7.14",
@@ -4609,7 +4682,8 @@
             "all_passed"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "7.15",
@@ -4683,7 +4757,8 @@
             "issues"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "7.17",
@@ -4721,7 +4796,8 @@
             "Testing Conventions"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "8.0",
@@ -4762,7 +4838,8 @@
             "depends_on_features"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "8.spike",
@@ -4823,7 +4900,8 @@
         "action": "git_commit"
       },
       "instruction": "Mechanical auto-commit after 8.spike.",
-      "done_when": "Workspace committed if there are changes."
+      "done_when": "Workspace committed if there are changes.",
+      "context": {}
     },
     {
       "id": "8.sprint_ritual",
@@ -4857,7 +4935,8 @@
             "velocity_ratio"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "8.arch_check",
@@ -4891,7 +4970,8 @@
             "adrs_created"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "9.1",
@@ -4925,7 +5005,8 @@
             "uncovered_critical_paths"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "9.2",
@@ -4975,7 +5056,8 @@
             "boundaries_tested"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "9.3",
@@ -5016,7 +5098,8 @@
             "constraints_tested"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "9.4",
@@ -5050,7 +5133,8 @@
             "flows_covered"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "9.5",
@@ -5181,7 +5265,8 @@
             "pass_fail"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "9.8",
@@ -5303,7 +5388,8 @@
             "pass_rate"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "9.11",
@@ -5336,7 +5422,8 @@
             "suggested_fix"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "10.1",
@@ -5370,7 +5457,8 @@
             "critical_findings"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "10.2",
@@ -5410,7 +5498,8 @@
             "vulnerabilities_found"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "10.3",
@@ -5459,7 +5548,8 @@
             "vulnerabilities_found"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "10.4",
@@ -5507,7 +5597,8 @@
             "missing_or_misconfigured"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "10.5",
@@ -5548,7 +5639,8 @@
             "findings"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "10.6",
@@ -5629,7 +5721,8 @@
             "findings"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "10.8a",
@@ -5666,7 +5759,8 @@
             "high_count"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "10.8b",
@@ -5754,7 +5848,8 @@
             "Remaining Risks"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "11.1",
@@ -5804,7 +5899,8 @@
             "Data Flow"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "11.2",
@@ -5896,7 +5992,8 @@
             "templates"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "11.4",
@@ -5994,7 +6091,8 @@
             "issues_fixed"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "12.1",
@@ -6137,7 +6235,8 @@
             "status"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "12.4",
@@ -6180,7 +6279,8 @@
             "rationale"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "12.5",
@@ -6221,7 +6321,8 @@
             "requires_legal_counsel"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "13.1",
@@ -6279,7 +6380,8 @@
             "memory_allocation"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "13.2",
@@ -6336,7 +6438,8 @@
             "ddos_protection"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "13.3",
@@ -6417,7 +6520,8 @@
             "panels"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "13.4",
@@ -6514,7 +6618,8 @@
             "rollout_config"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "13.6",
@@ -6554,7 +6659,8 @@
             "verified"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "13.7",
@@ -6598,7 +6704,8 @@
             "per_endpoint"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "13.8",
@@ -6645,7 +6752,8 @@
             "meets_sla"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "13.9",
@@ -6689,7 +6797,8 @@
             "inbox_delivery"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "13.10",
@@ -6765,7 +6874,8 @@
             "pass_fail"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "13.12",
@@ -6797,7 +6907,8 @@
             "pass_fail"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "13.13",
@@ -6839,7 +6950,8 @@
             "rollback_time"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "13.14",
@@ -6878,7 +6990,8 @@
             "launch_date"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "14.1",
@@ -6919,7 +7032,8 @@
             "confirmed"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "14.2",
@@ -6948,7 +7062,8 @@
             "issues"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "14.3",
@@ -6990,7 +7105,8 @@
             "smoke_tests_passed"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "14.4",
@@ -7031,7 +7147,8 @@
             "metrics_summary"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "14.5",
@@ -7063,7 +7180,8 @@
             "verified"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "14.6",
@@ -7101,7 +7219,8 @@
             "platforms"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "14.7",
@@ -7134,7 +7253,8 @@
             "cta"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "14.8",
@@ -7169,7 +7289,8 @@
             "materials"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "14.9",
@@ -7202,7 +7323,8 @@
             "lessons_learned"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "15.1",
@@ -7331,7 +7453,8 @@
             "active_users"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "15.4",
@@ -7424,7 +7547,8 @@
             "trending"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "15.6",
@@ -7460,7 +7584,8 @@
             "Upcoming Work"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "15.7",
@@ -7555,7 +7680,8 @@
             "recommended_sprint"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "15.9",
@@ -7601,7 +7727,8 @@
             "health_metrics"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "15.10",
@@ -7645,7 +7772,8 @@
             "patches_applied"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "15.11",
@@ -7705,7 +7833,8 @@
             "tests_added"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "15.12",
@@ -7806,7 +7935,8 @@
             "effort"
           ]
         }
-      }
+      },
+      "context": {}
     },
     {
       "id": "15.14",
@@ -7847,7 +7977,8 @@
             "approved"
           ]
         }
-      }
+      },
+      "context": {}
     }
   ],
   "templates": [

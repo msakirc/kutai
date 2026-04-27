@@ -246,3 +246,43 @@ def test_select_passes_kwargs_to_selector():
     assert result.model.supports_function_calling is True
 
 
+# ─── Cloud discovery wiring ───────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_init_disables_provider_when_discovery_auth_fails(monkeypatch, tmp_path):
+    """If groq discovery returns auth_fail, the selector's available_providers must NOT include 'groq'."""
+    from fatih_hoca.cloud.types import DiscoveredModel, ProviderResult
+    import fatih_hoca
+
+    fake_results = {
+        "groq": ProviderResult(provider="groq", status="auth_fail", auth_ok=False, error="401"),
+        "openai": ProviderResult(
+            provider="openai", status="ok", auth_ok=True,
+            models=[DiscoveredModel(litellm_name="gpt-4o", raw_id="gpt-4o", context_length=128000)],
+        ),
+    }
+
+    async def _fake_refresh(api_keys):
+        return fake_results
+
+    monkeypatch.setattr(fatih_hoca, "_run_cloud_discovery", _fake_refresh)
+
+    alerts: list = []
+    fatih_hoca.init(
+        api_keys={"groq": "g", "openai": "o"},
+        cloud_cache_dir=str(tmp_path / "cache"),
+        cloud_alert_state_path=str(tmp_path / "throttle.json"),
+        alert_fn=lambda provider, status, error: alerts.append((provider, status, error)),
+    )
+    sel = fatih_hoca._selector
+    assert sel is not None
+    # available_providers on the selector reflects discovery-confirmed providers only.
+    assert "groq" not in (sel._available_providers or set())
+    assert "openai" in (sel._available_providers or set())
+    # Discovered openai model is registered.
+    assert fatih_hoca._registry.get("gpt-4o") is not None
+    # auth_fail surfaced through the injected alert callback.
+    assert any(a[0] == "groq" and a[1] == "auth_fail" for a in alerts)
+    # discovery_results exposed for the boot caller (KDV wiring etc.).
+    assert "groq" in fatih_hoca.discovery_results
+    assert fatih_hoca.discovery_results["openai"].auth_ok is True

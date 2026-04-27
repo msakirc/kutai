@@ -13,10 +13,132 @@ __all__ = [
     "Pick", "Failure", "ModelInfo", "ModelRequirements", "ScoredModel",
     "AGENT_REQUIREMENTS", "CAPABILITY_TO_TASK",
     "Cap", "ALL_CAPABILITIES", "TASK_PROFILES",
+    "discovery_results",
 ]
 
 _selector: Selector | None = None
 _registry: ModelRegistry | None = None
+
+# Populated by init() — boot caller reads to wire KDV etc.
+discovery_results: dict = {}
+
+_ADAPTERS = None  # lazily built on first init()
+
+
+def _build_adapters() -> dict[str, object]:
+    """Lazy import so test files that monkeypatch _run_cloud_discovery don't pay HTTP-adapter import cost."""
+    from .cloud.providers.groq import GroqAdapter
+    from .cloud.providers.openai import OpenAIAdapter
+    from .cloud.providers.anthropic import AnthropicAdapter
+    from .cloud.providers.gemini import GeminiAdapter
+    from .cloud.providers.cerebras import CerebrasAdapter
+    from .cloud.providers.sambanova import SambanovaAdapter
+    from .cloud.providers.openrouter import OpenRouterAdapter
+    return {
+        "groq": GroqAdapter(),
+        "openai": OpenAIAdapter(),
+        "anthropic": AnthropicAdapter(),
+        "gemini": GeminiAdapter(),
+        "cerebras": CerebrasAdapter(),
+        "sambanova": SambanovaAdapter(),
+        "openrouter": OpenRouterAdapter(),
+    }
+
+
+async def _run_cloud_discovery(api_keys: dict[str, str]) -> dict:
+    """Module-level seam: tests monkeypatch this. Real impl below builds the
+    discovery + throttle + adapters and returns the results map."""
+    return await _run_cloud_discovery_impl(
+        api_keys=api_keys,
+        cache_dir=_default_cache_dir,
+        alert_state_path=_default_alert_state_path,
+        user_alert_fn=_default_alert_fn,
+    )
+
+
+# These three are set at the top of init() so _run_cloud_discovery (the seam)
+# can read them. Pattern keeps the seam signature small (only api_keys) so
+# tests can monkeypatch with a one-arg async function.
+_default_cache_dir: str = ".benchmark_cache/cloud_models"
+_default_alert_state_path: str = ".benchmark_cache/cloud_alert_throttle.json"
+_default_alert_fn = None  # type: ignore[assignment]
+
+
+async def _run_cloud_discovery_impl(
+    api_keys: dict[str, str],
+    cache_dir: str,
+    alert_state_path: str,
+    user_alert_fn,
+) -> dict:
+    from pathlib import Path as _Path
+    from .cloud.discovery import CloudDiscovery
+    from .cloud.alert_throttle import AlertThrottle
+
+    global _ADAPTERS
+    if _ADAPTERS is None:
+        _ADAPTERS = _build_adapters()
+
+    throttle = AlertThrottle(_Path(alert_state_path))
+
+    def _alert(provider: str, status: str, error):
+        if not throttle.should_alert(provider, current_state=status):
+            return
+        if user_alert_fn is None:
+            return
+        try:
+            user_alert_fn(provider, status, error)
+        except Exception as e:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning("user_alert_fn raised: %s", e)
+
+    discovery = CloudDiscovery(
+        adapters=_ADAPTERS,
+        cache_dir=_Path(cache_dir),
+        alert_fn=_alert,
+    )
+    return await discovery.refresh_all(api_keys=api_keys)
+
+
+def _run_async(coro):
+    """Run an async coroutine from sync context.
+
+    When an event loop is already running (e.g. pytest-asyncio, or called
+    from an async context via a sync shim), we spin up a NEW loop in a
+    dedicated thread so we don't deadlock the running loop.
+    """
+    import asyncio
+    import concurrent.futures
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is not None and loop.is_running():
+        # We're inside a running loop — run in a fresh thread with its own loop.
+        result_holder = [None]
+        exception_holder = [None]
+
+        def _thread_target():
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                result_holder[0] = new_loop.run_until_complete(coro)
+            except Exception as e:
+                exception_holder[0] = e
+            finally:
+                new_loop.close()
+
+        t = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = t.submit(_thread_target)
+        future.result()  # blocks current (non-loop) thread until done
+        t.shutdown(wait=False)
+        if exception_holder[0] is not None:
+            raise exception_holder[0]
+        return result_holder[0]
+    else:
+        # No running loop — use asyncio.run() which creates a new loop.
+        return asyncio.run(coro)
 
 
 def init(
@@ -24,9 +146,12 @@ def init(
     catalog_path: str | None = None,
     nerd_herd: object = None,
     available_providers: set[str] | None = None,
+    api_keys: dict[str, str] | None = None,
+    cloud_cache_dir: str = ".benchmark_cache/cloud_models",
+    cloud_alert_state_path: str = ".benchmark_cache/cloud_alert_throttle.json",
+    alert_fn=None,
 ) -> list[str]:
-    """
-    Initialize the Fatih Hoca model registry and selector.
+    """Initialize the Fatih Hoca model registry, selector, and run cloud discovery.
 
     Parameters
     ----------
@@ -41,13 +166,26 @@ def init(
         Set of cloud provider names that have API keys configured.
         Cloud models whose provider is not in this set are filtered out.
         If None, all cloud models are eligible (no API key check).
+    api_keys : dict[str, str], optional
+        Mapping of {provider_name: api_key}. When provided, run discovery
+        probe per provider; auth_ok=True providers join the selector's
+        available set.
+    cloud_cache_dir : str
+        Directory for cloud model discovery cache files.
+    cloud_alert_state_path : str
+        Path for the alert throttle state JSON file.
+    alert_fn : callable, optional
+        callable(provider: str, status: str, error: str | None). Called when
+        discovery confirms a provider failure (after throttle check). Fatih
+        Hoca does NOT import telegram or salako — boot caller bridges here.
 
     Returns
     -------
     list[str]
         Names of all models registered.
     """
-    global _selector, _registry
+    global _selector, _registry, discovery_results
+    global _default_cache_dir, _default_alert_state_path, _default_alert_fn
 
     if nerd_herd is None:
         from nerd_herd.types import SystemSnapshot
@@ -72,6 +210,45 @@ def init(
     # Load persisted speed measurements + demoted flags into model objects.
     # Without this, all models default to 10 tok/s → timeouts are too short.
     _registry._load_speed_cache()
+
+    # ── Cloud discovery ──────────────────────────────────────────────────────
+    discovery_results = {}
+    if api_keys:
+        # Set module-level defaults so _run_cloud_discovery seam can find them.
+        _default_cache_dir = cloud_cache_dir
+        _default_alert_state_path = cloud_alert_state_path
+        _default_alert_fn = alert_fn
+        try:
+            discovery_results = _run_async(_run_cloud_discovery(api_keys))
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("cloud discovery failed at init: %s", e)
+            discovery_results = {}
+
+        # Fire alert_fn for providers with auth_ok=False (if caller provided one).
+        if alert_fn is not None:
+            for provider, result in discovery_results.items():
+                if not result.auth_ok:
+                    try:
+                        alert_fn(provider, result.status, result.error)
+                    except Exception:
+                        pass
+
+        # Register discovered cloud models BEFORE benchmark enrichment so
+        # they participate in the AA match step.
+        from .registry import register_cloud_from_discovered
+        for provider, result in discovery_results.items():
+            if not result.auth_ok:
+                continue
+            for dm in result.models:
+                try:
+                    register_cloud_from_discovered(_registry, provider, dm)
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "register_cloud_from_discovered failed for %s/%s: %s",
+                        provider, getattr(dm, "litellm_name", "?"), e,
+                    )
 
     # ── Benchmark enrichment: populate ModelInfo.benchmark_scores from cached AA data ──
     import logging
@@ -114,10 +291,23 @@ def init(
     except Exception as e:
         logger.warning("capability blending failed at init: %s", e)
 
+    # ── Compute final available_providers ────────────────────────────────────
+    # Caller-provided set is the universe ("I have keys for these"). When
+    # discovery ran, intersect with the auth_ok subset. When discovery did
+    # not run (no api_keys passed), trust the caller-provided set as-is.
+    if discovery_results:
+        auth_ok_providers = {p for p, r in discovery_results.items() if r.auth_ok}
+        if available_providers is not None:
+            final_providers = available_providers & auth_ok_providers
+        else:
+            final_providers = auth_ok_providers
+    else:
+        final_providers = available_providers
+
     _selector = Selector(
         registry=_registry,
         nerd_herd=nerd_herd,
-        available_providers=available_providers,
+        available_providers=final_providers,
     )
     return model_names
 

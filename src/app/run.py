@@ -519,6 +519,31 @@ async def main():
         _models_dir = os.getenv("MODEL_DIR", "") or None
         _providers = {p for p, ok in AVAILABLE_KEYS.items() if ok}
 
+        # Build actual API key map for cloud discovery.
+        _env_key_map = {
+            "groq": "GROQ_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "gemini": "GEMINI_API_KEY",
+            "cerebras": "CEREBRAS_API_KEY",
+            "sambanova": "SAMBANOVA_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY",
+        }
+        _keys = {p: os.getenv(_env_key_map[p], "") for p in _providers if p in _env_key_map}
+        _keys = {p: k for p, k in _keys.items() if k}
+
+        def _cloud_alert(provider: str, status: str, error):
+            """Boundary: fatih_hoca emits alert; we deliver via Telegram notification."""
+            msg = f"[cloud] {provider} {status} — {error or ''}"
+            try:
+                from src.app.telegram_bot import get_telegram
+                bot = get_telegram()
+                if bot is not None:
+                    import asyncio as _asyncio
+                    _asyncio.create_task(bot.send_notification(msg))
+            except Exception:
+                pass
+
         # Seed the snapshot cache before init so first select() has VRAM data
         if _nerd_herd:
             try:
@@ -531,6 +556,8 @@ async def main():
             models_dir=_models_dir,
             nerd_herd=_nerd_herd,  # has sync snapshot() returning cached value
             available_providers=_providers,
+            api_keys=_keys or None,
+            alert_fn=_cloud_alert if _keys else None,
         )
         _log.info("Fatih Hoca initialized", model_count=len(_fh_models),
                    cloud_providers=sorted(_providers) if _providers else "none")

@@ -394,7 +394,7 @@ class LLMDispatcher:
                 category=cat_value,
                 success=success,
                 error_category=error_category,
-                provider=getattr(model, "provider", "local") or "local",
+                provider=("local" if getattr(model, "is_local", False) else (getattr(model, "provider", "local") or "local")),
             )
         except Exception as e:  # noqa: BLE001 — telemetry must never break dispatch
             logger.debug("pick_log record failed: %s", e)

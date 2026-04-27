@@ -292,3 +292,66 @@ def test_resolve_provider_inferred():
     from fatih_hoca.registry import _resolve_provider
     assert _resolve_provider("claude-3-opus") == "anthropic"
     assert _resolve_provider("gpt-4o") == "openai"
+
+
+# ─── register_cloud_from_discovered ──────────────────────────────────────────
+
+def test_register_cloud_from_discovered_merges_scraped_fields():
+    from fatih_hoca.cloud.types import DiscoveredModel
+    from fatih_hoca.registry import ModelRegistry, register_cloud_from_discovered
+
+    registry = ModelRegistry()
+    discovered = DiscoveredModel(
+        litellm_name="groq/llama-3.3-70b-versatile",
+        raw_id="llama-3.3-70b-versatile",
+        context_length=131072,
+        max_output_tokens=32768,
+        cost_per_1k_input=0.59,
+        cost_per_1k_output=0.79,
+        sampling_defaults={"temperature": 1.0},
+        extra={"owned_by": "Meta"},
+    )
+    register_cloud_from_discovered(registry, "groq", discovered)
+    m = registry.get("groq/llama-3.3-70b-versatile")
+    assert m is not None
+    assert m.location == "cloud"
+    assert m.provider == "groq"
+    assert m.context_length == 131072
+    assert m.max_tokens == 32768
+    assert m.cost_per_1k_input == 0.59
+    assert m.cost_per_1k_output == 0.79
+    assert m.family == "llama-3.3-70b"
+
+
+def test_register_cloud_skips_inactive():
+    from fatih_hoca.cloud.types import DiscoveredModel
+    from fatih_hoca.registry import ModelRegistry, register_cloud_from_discovered
+
+    registry = ModelRegistry()
+    discovered = DiscoveredModel(
+        litellm_name="groq/dead", raw_id="dead", active=False,
+    )
+    result = register_cloud_from_discovered(registry, "groq", discovered)
+    assert result is None
+    assert registry.get("groq/dead") is None
+
+
+def test_register_cloud_uses_detect_defaults_when_scraped_missing():
+    """Scraped fields are optional — when None, detect_cloud_model() defaults apply."""
+    from fatih_hoca.cloud.types import DiscoveredModel
+    from fatih_hoca.registry import ModelRegistry, register_cloud_from_discovered
+
+    registry = ModelRegistry()
+    discovered = DiscoveredModel(
+        litellm_name="claude-sonnet-4-20250514",
+        raw_id="claude-sonnet-4-20250514",
+        # All scraped fields None.
+    )
+    m = register_cloud_from_discovered(registry, "anthropic", discovered)
+    assert m is not None
+    # detect_cloud_model() must have produced sane defaults.
+    assert m.context_length > 0
+    assert m.max_tokens > 0
+    assert m.location == "cloud"
+    assert m.provider == "anthropic"
+    assert m.family == "claude-sonnet-4"

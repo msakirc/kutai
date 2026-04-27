@@ -963,6 +963,66 @@ def detect_cloud_model(litellm_name: str, provider: str) -> dict:
     return info
 
 
+def register_cloud_from_discovered(
+    registry: "ModelRegistry",
+    provider: str,
+    discovered,  # DiscoveredModel; loose annotation to avoid forward-ref headaches at module import time
+) -> "ModelInfo | None":
+    """Register a discovered cloud model into the registry.
+
+    Merges adapter-scraped fields with detect_cloud_model() output:
+        - context_length: scraped wins over litellm-db default
+        - max_tokens: scraped wins
+        - cost_per_1k_*: scraped wins (provider-data is authoritative)
+        - sampling_defaults: scraped seeds sampling_overrides if absent
+        - active=False: skip registration entirely
+    Family is computed via cloud.family.normalize().
+    Returns the registered ModelInfo, or None if skipped.
+    """
+    if not getattr(discovered, "active", True):
+        return None
+
+    from .cloud.family import normalize as _family_normalize
+
+    detected = detect_cloud_model(discovered.litellm_name, provider)
+
+    if discovered.context_length is not None:
+        detected["context_length"] = discovered.context_length
+    if discovered.max_output_tokens is not None:
+        detected["max_tokens"] = discovered.max_output_tokens
+    if discovered.cost_per_1k_input is not None:
+        detected["cost_per_1k_input"] = discovered.cost_per_1k_input
+    if discovered.cost_per_1k_output is not None:
+        detected["cost_per_1k_output"] = discovered.cost_per_1k_output
+
+    family = _family_normalize(provider, discovered.litellm_name)
+
+    model = ModelInfo(
+        name=discovered.litellm_name,
+        location="cloud",
+        provider=provider,
+        litellm_name=discovered.litellm_name,
+        capabilities=detected["capabilities"],
+        context_length=detected["context_length"],
+        max_tokens=detected["max_tokens"],
+        supports_function_calling=detected.get("supports_function_calling", True),
+        supports_json_mode=detected.get("supports_json_mode", True),
+        supports_json_schema=detected.get("supports_json_schema", False),
+        thinking_model=detected.get("thinking_model", False),
+        has_vision=detected.get("has_vision", False),
+        tier=detected.get("tier", "paid"),
+        rate_limit_rpm=detected["rate_limit_rpm"],
+        rate_limit_tpm=detected.get("rate_limit_tpm", 100000),
+        cost_per_1k_input=detected.get("cost_per_1k_input", 0.0),
+        cost_per_1k_output=detected.get("cost_per_1k_output", 0.0),
+        family=family,
+    )
+    if discovered.sampling_defaults and not model.sampling_overrides:
+        model.sampling_overrides = {"default": dict(discovered.sampling_defaults)}
+    registry.register(model)
+    return model
+
+
 # ─── Provider Resolution ─────────────────────────────────────────────────────
 
 def _resolve_provider(litellm_name: str) -> str | None:

@@ -213,6 +213,55 @@ async def on_task_finished(task_id: int, result: dict) -> None:
         return
     task_ctx = parse_context(task)
 
+    # Persist generating_model + accumulate failed_models. The retry-
+    # recovery layers (model exclusion at attempts >= 3, difficulty
+    # bump in src/core/retry.py::get_model_constraints) gate on
+    # ctx.failed_models. Agent emits ``result.generating_model`` /
+    # ``result.model`` but no code path was writing it back to ctx —
+    # so failed_models stayed [] across 5+ retries and R1/R2 had
+    # nothing to act on. Live signal: mission 57 task 4441 hit DLQ at
+    # attempts=5 with empty failed_models. Fix: always record the
+    # current run's model in ctx.generating_model; on quality-failure
+    # status, append it to failed_models so the next retry's selector
+    # can see it. Idempotent (no duplicates).
+    _model = (
+        (result or {}).get("generating_model")
+        or (result or {}).get("model")
+        or ""
+    )
+    _status = (result or {}).get("status") or "completed"
+    if _model:
+        _ctx_changed = False
+        if task_ctx.get("generating_model") != _model:
+            task_ctx["generating_model"] = _model
+            _ctx_changed = True
+        # Quality-class failures (worker schema-fail, exhausted, timeout,
+        # disguised failure) all flow through status="failed" here.
+        # needs_clarification is NOT a model failure — agent worked, just
+        # needs human input.
+        if _status == "failed":
+            _failed = list(task_ctx.get("failed_models") or [])
+            if _model not in _failed:
+                _failed.append(_model)
+                task_ctx["failed_models"] = _failed
+                _ctx_changed = True
+                log.info(
+                    "tracked failed_model",
+                    task_id=task_id,
+                    model=_model,
+                    failed_count=len(_failed),
+                )
+        if _ctx_changed:
+            try:
+                from src.infra.db import update_task as _ut
+                import json as _json
+                await _ut(task_id, context=_json.dumps(task_ctx))
+                # Refresh local task dict so downstream route_result
+                # / apply_actions see the persisted state.
+                task["context"] = _json.dumps(task_ctx)
+            except Exception as e:
+                log.warning("failed_model persist failed", task_id=task_id, error=str(e))
+
     # Workflow-step post-hook runs synchronously before routing — stores
     # artifacts and may flip status (degenerate output, schema validation,
     # disguised failures, human-gate clarifications). Deferring this to

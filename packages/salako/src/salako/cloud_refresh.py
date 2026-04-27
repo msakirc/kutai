@@ -81,6 +81,17 @@ async def _refresh_cloud_subsystem() -> dict[str, Any]:
             p for p, r in results.items() if r.auth_ok
         }
 
+    # Cross-package bridge: tell KDV which providers are currently enabled.
+    # Idempotent — first call sets the timestamp, repeats are no-ops.
+    try:
+        from src.core.router import get_kdv
+        kdv = get_kdv()
+        for provider, result in results.items():
+            if result.auth_ok:
+                kdv.mark_provider_enabled(provider)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("KDV mark_provider_enabled wireup failed: %s", e)
+
     # Build aa_lookup from current registry, then re-apply bench match.
     from fatih_hoca.cloud.family import normalize as _normalize
     aa_lookup: dict[str, dict[str, float]] = {}

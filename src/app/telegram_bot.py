@@ -2100,15 +2100,26 @@ class TelegramInterface:
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats = await get_daily_stats()
-        await self._reply(update,
+        status_msg = (
             f"⚙️ *System Status*\n\n"
             f"✅ Completed: {stats['completed']}\n"
             f"⏳ Pending: {stats['pending']}\n"
             f" Processing: {stats['processing']}\n"
             f"❌ Failed: {stats['failed']}\n"
-            f" Cost today: ${stats['today_cost']:.4f}",
-            parse_mode="Markdown"
+            f" Cost today: ${stats['today_cost']:.4f}"
         )
+        try:
+            from src.core.router import get_kdv
+            _kdv_warnings = get_kdv().no_data_warnings(min_age_hours=24)
+            if _kdv_warnings:
+                _lines = [
+                    f"  • {w['provider']} — {w['age_hours']:.1f}h since enable, no calls"
+                    for w in _kdv_warnings
+                ]
+                status_msg += "\n\n⚠️ Cloud providers using cold-start defaults:\n" + "\n".join(_lines)
+        except Exception:
+            pass
+        await self._reply(update, status_msg, parse_mode="Markdown")
 
     async def cmd_bench_picks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show 7-day model pick distribution from model_pick_log."""

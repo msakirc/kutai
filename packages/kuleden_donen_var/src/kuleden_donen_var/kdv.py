@@ -25,6 +25,8 @@ class KuledenDonenVar:
         self._rate_limiter = RateLimitManager()
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
         self._providers: dict[str, set[str]] = {}  # provider → {model_ids}
+        self._provider_enabled_at: dict[str, float] = {}
+        self._provider_call_count: dict[str, int] = {}
 
     def _get_cb(self, provider: str) -> CircuitBreaker:
         if provider not in self._circuit_breakers:
@@ -69,6 +71,49 @@ class KuledenDonenVar:
         )
         self._providers.setdefault(provider, set()).add(model_id)
 
+    def mark_provider_enabled(self, provider: str, at_unix: float | None = None) -> None:
+        """Record when a provider was first enabled (boot or first auth_ok refresh).
+
+        Idempotent: re-marking the same provider does NOT update the timestamp.
+        Used to compute 'idle since enabled' for ``no_data_warnings()``.
+        """
+        if provider in self._provider_enabled_at:
+            return
+        self._provider_enabled_at[provider] = (
+            at_unix if at_unix is not None else time.time()
+        )
+
+    def record_call_observation(self, provider: str) -> None:
+        """Bump per-provider observation count. Wired internally from post_call.
+
+        Public surface so external callers (tests, manual reconciliation) can
+        inject observations too.
+        """
+        self._provider_call_count[provider] = self._provider_call_count.get(provider, 0) + 1
+
+    def no_data_warnings(self, min_age_hours: float = 24.0) -> list[dict]:
+        """Return list of providers enabled longer than ``min_age_hours`` with
+        zero observations.
+
+        Each entry: ``{"provider": str, "enabled_at_unix": float, "age_hours": float}``.
+        Caller (status command, scheduled task) uses this to surface "defaults
+        still in use" warnings to the operator.
+        """
+        now = time.time()
+        out: list[dict] = []
+        for provider, enabled_at in self._provider_enabled_at.items():
+            age_hours = (now - enabled_at) / 3600.0
+            if age_hours < min_age_hours:
+                continue
+            if self._provider_call_count.get(provider, 0) > 0:
+                continue
+            out.append({
+                "provider": provider,
+                "enabled_at_unix": enabled_at,
+                "age_hours": age_hours,
+            })
+        return out
+
     def pre_call(
         self,
         model_id: str,
@@ -102,6 +147,8 @@ class KuledenDonenVar:
         headers: dict[str, Any] | None,
         token_count: int,
     ) -> None:
+        # Track real-call observation count for no_data_warnings.
+        self.record_call_observation(provider)
         # Record request (RPM tracking) and tokens (TPM tracking)
         self._rate_limiter.record_request(model_id, provider)
         self._rate_limiter.record_tokens(model_id, provider, token_count)

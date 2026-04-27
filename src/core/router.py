@@ -85,6 +85,10 @@ def get_kdv() -> KuledenDonenVar:
                     provider_aggregate_rpm=agg.get("rpm"),
                     provider_aggregate_tpm=agg.get("tpm"),
                 )
+            # Mark each cloud provider as enabled so KDV can surface
+            # "no observations after Nh" warnings later.
+            for provider in {m.provider for m in registry.cloud_models()}:
+                _kdv.mark_provider_enabled(provider)
         except Exception:
             pass
 

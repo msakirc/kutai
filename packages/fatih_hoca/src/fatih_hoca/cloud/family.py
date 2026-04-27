@@ -17,7 +17,6 @@ logger = get_logger("fatih_hoca.cloud.family")
 
 # (regex pattern matched against stripped/lowered name, family key)
 _FAMILY_RULES: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"^meta-?llama-3\.3-70b"), "llama-3.3-70b"),
     (re.compile(r"^llama-?3\.3-70b"), "llama-3.3-70b"),
     (re.compile(r"^llama3\.3-70b"), "llama-3.3-70b"),
     (re.compile(r"^llama-?3\.1-70b"), "llama-3.1-70b"),
@@ -49,12 +48,20 @@ _KNOWN_FAMILIES: set[str] = {key for _, key in _FAMILY_RULES}
 
 
 def _strip_provider_prefix(litellm_name: str) -> str:
-    """Strip leading ``provider/`` segment(s). Openrouter uses two segments
-    (``openrouter/meta-llama/...``) — strip everything except the last segment."""
+    """Strip leading ``provider/`` segment(s) and ``meta-`` model-org prefix.
+
+    Openrouter uses two segments (``openrouter/meta-llama/...``) — strip
+    everything except the last segment. Some hosts (SambaNova) include a
+    ``Meta-`` org prefix in the model id (e.g. ``Meta-Llama-3.3-70B-Instruct``);
+    strip that too so the llama-3.3-70b rule matches uniformly.
+    """
     parts = litellm_name.split("/")
-    if len(parts) >= 2:
-        return parts[-1]
-    return litellm_name
+    last = parts[-1] if len(parts) >= 2 else litellm_name
+    # Drop ``meta-`` org prefix that some hosts include in the model id.
+    lower = last.lower()
+    if lower.startswith("meta-"):
+        last = last[5:]
+    return last
 
 
 def normalize(provider: str, litellm_name: str) -> str:

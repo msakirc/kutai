@@ -2107,12 +2107,13 @@
       "artifact_schema": {
         "integration_requirements": {
           "type": "array",
-          "min_items": 0,
+          "min_items": 1,
           "item_fields": [
             "integration_id",
             "service_name",
             "purpose",
             "api_type",
+            "authentication_method",
             "failure_mode"
           ]
         }
@@ -2152,7 +2153,11 @@
           "type": "object",
           "required_fields": [
             "primary_platform",
-            "browser_support"
+            "browser_support",
+            "mobile_support",
+            "screen_sizes",
+            "os_versions",
+            "device_types"
           ]
         },
         "accessibility_requirements": {

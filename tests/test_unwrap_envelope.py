@@ -162,6 +162,27 @@ class TestUnwrapEnvelope:
     def test_passthrough_when_no_envelope(self):
         assert _unwrap_envelope("plain text") == "plain text"
 
+    def test_list_input_serialized_not_crashed(self):
+        """Mission 57 task 4581 crashed with ``'list' object has no
+        attribute 'strip'``. Agent emitted a JSON array directly into
+        ``result.result``; ``_unwrap_envelope(<list>)`` then called
+        ``.strip()`` on the list. Defensive coercion via json.dumps."""
+        out = _unwrap_envelope([{"name": "AnyList", "url": "x.com"}])
+        assert isinstance(out, str)
+        assert "AnyList" in out
+
+    def test_dict_input_envelope_extraction(self):
+        """Dict input goes through json.dumps, then envelope extractor
+        kicks in — final_answer envelope's result still extracted."""
+        out = _unwrap_envelope({"action": "final_answer", "result": "hello"})
+        assert out == "hello"
+
+    def test_none_returns_empty_string(self):
+        assert _unwrap_envelope(None) == ""
+
+    def test_number_coerced_to_str(self):
+        assert _unwrap_envelope(42) == "42"
+
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

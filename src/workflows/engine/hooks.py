@@ -165,7 +165,7 @@ def canonicalize_for_retry(text: str, max_depth: int = 4) -> str:
     return current
 
 
-def _unwrap_envelope(text: str) -> str:
+def _unwrap_envelope(text) -> str:
     """Strip JSON envelopes, model tokens, and degenerate repetition.
 
     Handles:
@@ -175,8 +175,29 @@ def _unwrap_envelope(text: str) -> str:
       - Model-specific tokens: <|function_call|>, <|function_result|>
       - Markdown code fences
       - Degenerate repetition (same section repeated 3+ times)
+
+    ``text`` may be a list/dict when the agent emitted a structured
+    artifact directly (e.g. step 1.10 competitor_research with
+    ``artifact_schema.competitors.type == "array"`` and the agent put
+    the JSON array straight into ``result.result``). Such inputs are
+    serialized to JSON text first so the downstream string operations
+    don't blow up with ``'list' object has no attribute 'strip'``
+    (mission 57 task 4581 workflow_advance crashed here 2026-04-27).
+    Anything else non-string is coerced via ``str()``; ``None`` and
+    empty string short-circuit to ``""``.
     """
     import re as _re
+
+    if text is None:
+        return ""
+    if not isinstance(text, str):
+        if isinstance(text, (list, dict)):
+            try:
+                text = json.dumps(text, ensure_ascii=False)
+            except (TypeError, ValueError):
+                text = str(text)
+        else:
+            text = str(text)
 
     # ── Strip model-specific tokens ──
     stripped = text.strip()

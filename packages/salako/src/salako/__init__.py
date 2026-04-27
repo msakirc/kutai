@@ -90,4 +90,12 @@ async def run(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "cloud_refresh":
+        from salako.cloud_refresh import run as cloud_refresh_run
+        try:
+            res = await cloud_refresh_run(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

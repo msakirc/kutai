@@ -52,6 +52,12 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 600,
         "payload": {"_marker": "nerd_herd_health"},
     },
+    {
+        "title": "cloud_refresh",
+        "description": "Re-run cloud provider /models discovery + bench refresh",
+        "interval_seconds": 21600,  # 6h
+        "payload": {"_executor": "cloud_refresh"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.

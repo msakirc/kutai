@@ -8,8 +8,14 @@ from kuleden_donen_var.rate_limiter import RateLimitState, RateLimitManager  # n
 from kuleden_donen_var.header_parser import RateLimitSnapshot  # noqa: F401
 
 # ─── Initial Provider Limits (fallback before header discovery) ──────────────
+# Only list providers that actually enforce an account-wide aggregate cap.
+# When a provider is absent here, its aggregate dict is empty and both
+# provider_aggregate_rpm / provider_aggregate_tpm flow into register_model()
+# as None, which now skips provider-level state creation. Per-model buckets
+# do all gating until response headers update real values.
+#
+# Groq free tier: per-model only (verified against console dashboard 2026-04-28).
 _INITIAL_PROVIDER_LIMITS: dict[str, dict[str, int]] = {
-    "groq": {"rpm": 30, "tpm": 131072},
     "gemini": {"rpm": 15, "tpm": 1000000},
     "cerebras": {"rpm": 30, "tpm": 131072},
     "sambanova": {"rpm": 20, "tpm": 100000},

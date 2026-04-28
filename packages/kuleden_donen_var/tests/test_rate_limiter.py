@@ -141,7 +141,30 @@ async def test_manager_wait_and_acquire_no_wait():
 
 def test_manager_get_status():
     mgr = RateLimitManager()
-    mgr.register_model("groq/llama-8b", "groq", rpm=30, tpm=131072)
+    mgr.register_model(
+        "groq/llama-8b", "groq",
+        rpm=30, tpm=131072,
+        provider_aggregate_rpm=300, provider_aggregate_tpm=500_000,
+    )
     status = mgr.get_status()
     assert "groq/llama-8b" in status["models"]
     assert "groq" in status["providers"]
+
+
+def test_register_skips_provider_state_when_aggregate_unset():
+    """Provider state is created only when an aggregate is supplied.
+
+    Without aggregates the per-model buckets gate alone, and
+    has_capacity short-circuits via the `if provider_state else True` guard.
+    """
+    mgr = RateLimitManager()
+    mgr.register_model("groq/llama-8b", "groq", rpm=30, tpm=131072)
+    assert "groq" not in mgr._provider_limits
+    assert mgr.has_capacity("groq/llama-8b", "groq") is True
+    # Subsequent register on same provider WITH aggregate creates the entry.
+    mgr.register_model(
+        "groq/llama-70b", "groq",
+        rpm=30, tpm=12000,
+        provider_aggregate_rpm=300, provider_aggregate_tpm=500_000,
+    )
+    assert "groq" in mgr._provider_limits

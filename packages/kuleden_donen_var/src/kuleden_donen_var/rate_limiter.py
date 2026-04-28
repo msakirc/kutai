@@ -332,13 +332,20 @@ class RateLimitManager:
                 rpm_limit=rpm, tpm_limit=tpm,
             )
 
-        # Provider aggregate — only create once per provider
+        # Provider aggregate — only create once per provider. When BOTH
+        # aggregate values are None (caller signal: provider does not enforce
+        # an account-wide cap), skip creation entirely so per-model buckets
+        # do the gating. has_capacity/record_*/update_from_headers all guard
+        # on `if provider_state:` so a missing entry short-circuits cleanly.
         if provider not in self._provider_limits:
-            agg_rpm = provider_aggregate_rpm or rpm * 3  # heuristic
-            agg_tpm = provider_aggregate_tpm or tpm * 3
-            self._provider_limits[provider] = RateLimitState(
-                rpm_limit=agg_rpm, tpm_limit=agg_tpm,
-            )
+            if provider_aggregate_rpm is None and provider_aggregate_tpm is None:
+                pass
+            else:
+                agg_rpm = provider_aggregate_rpm or rpm * 3  # heuristic
+                agg_tpm = provider_aggregate_tpm or tpm * 3
+                self._provider_limits[provider] = RateLimitState(
+                    rpm_limit=agg_rpm, tpm_limit=agg_tpm,
+                )
 
     def has_capacity(
         self,

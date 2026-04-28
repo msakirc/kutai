@@ -58,6 +58,12 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 21600,  # 6h
         "payload": {"_executor": "cloud_refresh"},
     },
+    {
+        "title": "kdv_persist",
+        "description": "Persist KDV rate-limit state (adapted limits, 429 history, daily counters) to kutai.db",
+        "interval_seconds": 60,
+        "payload": {"_executor": "kdv_persist"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.

@@ -45,3 +45,19 @@ class CircuitBreaker:
                 self.failures.clear()
             return False
         return True
+
+    # ── Persistence ──────────────────────────────────────────────────────
+    def snapshot_state(self) -> dict:
+        return {
+            "failures": list(self.failures),
+            "degraded_until": self.degraded_until,
+        }
+
+    def restore_state(self, snap: dict) -> None:
+        # Drop failure timestamps that fell outside the window during downtime.
+        now = time.time()
+        cutoff = now - self.window_seconds
+        self.failures = [t for t in snap.get("failures", []) if t > cutoff]
+        # If the cooldown clock already expired during downtime, leave it 0.
+        deg = float(snap.get("degraded_until", 0.0))
+        self.degraded_until = deg if deg > now else 0.0

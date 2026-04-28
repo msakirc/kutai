@@ -691,6 +691,17 @@ async def main():
                 await _nerd_herd.close()
             except Exception as _exc:
                 logger.debug(f"nerd_herd close raised: {_exc!r}")
+        # Final KDV state flush — captures whatever happened since the last
+        # 60s cron tick. Without this, a clean /restart loses up to 60s of
+        # adapted limits / 429 history. Best-effort; silent on failure.
+        try:
+            _db = os.environ.get("DB_PATH")
+            if _db:
+                from src.core.router import get_kdv
+                from src.infra import kdv_persistence
+                await kdv_persistence.save(get_kdv(), _db)
+        except Exception as _exc:
+            logger.debug(f"kdv final flush raised: {_exc!r}")
 
     # Propagate exit code to wrapper (EXIT_RESTART=42, EXIT_STOP=0).
     # Use sys.exit() so that atexit handlers (llama-server cleanup) still run.

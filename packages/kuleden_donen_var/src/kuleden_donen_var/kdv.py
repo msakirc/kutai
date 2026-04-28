@@ -272,3 +272,60 @@ class KuledenDonenVar:
             provider: self._build_provider_status(provider)
             for provider in self._providers
         }
+
+    # ── Persistence ──────────────────────────────────────────────────────
+    # snapshot_state / restore_state allow a host process to persist KDV
+    # state across reboots. State is keyed by (scope, scope_key) so the
+    # storage layer can write per-row without parsing the whole blob.
+    #
+    # Returned shape:
+    #   {
+    #     "models":    {model_id: {field: value, ...}, ...},
+    #     "providers": {provider:   {field: value, ...}, ...},
+    #     "breakers":  {provider:   {field: value, ...}, ...},
+    #     "enabled_at":  {provider: float},
+    #     "call_count":  {provider: int},
+    #   }
+    # Per-minute counters (_request_timestamps, _token_log) are intentionally
+    # NOT persisted — see RateLimitState._PERSISTED_FIELDS.
+    def snapshot_state(self) -> dict:
+        return {
+            "models": {
+                mid: state.snapshot_state()
+                for mid, state in self._rate_limiter.model_limits.items()
+            },
+            "providers": {
+                prov: state.snapshot_state()
+                for prov, state in self._rate_limiter._provider_limits.items()
+            },
+            "breakers": {
+                prov: cb.snapshot_state()
+                for prov, cb in self._circuit_breakers.items()
+            },
+            "enabled_at": dict(self._provider_enabled_at),
+            "call_count": dict(self._provider_call_count),
+        }
+
+    def restore_state(self, snap: dict) -> None:
+        """Apply a previously-captured snapshot. Only known model_ids and
+        providers are restored — anything that has since been deregistered
+        is silently skipped. The caller (persistence layer) is responsible
+        for staleness checks (e.g., dropping snapshots older than 24h).
+        """
+        for mid, model_snap in snap.get("models", {}).items():
+            state = self._rate_limiter.model_limits.get(mid)
+            if state is not None:
+                state.restore_state(model_snap)
+        for prov, prov_snap in snap.get("providers", {}).items():
+            state = self._rate_limiter._provider_limits.get(prov)
+            if state is not None:
+                state.restore_state(prov_snap)
+        for prov, cb_snap in snap.get("breakers", {}).items():
+            cb = self._get_cb(prov)
+            cb.restore_state(cb_snap)
+        for prov, ts in snap.get("enabled_at", {}).items():
+            self._provider_enabled_at.setdefault(prov, ts)
+        for prov, count in snap.get("call_count", {}).items():
+            self._provider_call_count[prov] = (
+                self._provider_call_count.get(prov, 0) + int(count)
+            )

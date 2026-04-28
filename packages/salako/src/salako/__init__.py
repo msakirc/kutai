@@ -98,4 +98,12 @@ async def run(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "kdv_persist":
+        from salako.kdv_persist import run as kdv_persist_run
+        try:
+            res = await kdv_persist_run(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

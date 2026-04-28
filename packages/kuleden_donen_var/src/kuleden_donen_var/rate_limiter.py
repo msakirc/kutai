@@ -52,6 +52,30 @@ class RateLimitState:
         self._original_rpm = self.rpm_limit
         self._original_tpm = self.tpm_limit
 
+    # ── Persistence ──────────────────────────────────────────────────────
+    # snapshot_state captures the fields that should survive a process
+    # restart: adapted limits + 429 history (so maybe_restore_limits decay
+    # continues), daily counters (provider-enforced), and header-derived
+    # quotas (still meaningful until reset_at). Per-minute timestamps and
+    # token logs are NOT persisted — stale 60s windows lead to over-throttle.
+    _PERSISTED_FIELDS = (
+        "rpm_limit", "tpm_limit",
+        "_rate_limit_hits", "_last_429_at",
+        "_original_rpm", "_original_tpm",
+        "_header_rpm_remaining", "_header_tpm_remaining",
+        "_header_rpm_reset_at", "_header_tpm_reset_at",
+        "_limits_discovered", "_last_header_update",
+        "rpd_limit", "rpd_remaining", "rpd_reset_at",
+    )
+
+    def snapshot_state(self) -> dict:
+        return {k: getattr(self, k) for k in self._PERSISTED_FIELDS}
+
+    def restore_state(self, snap: dict) -> None:
+        for k in self._PERSISTED_FIELDS:
+            if k in snap:
+                setattr(self, k, snap[k])
+
     def _cleanup(self, now: float | None = None) -> None:
         """Remove entries older than 60 seconds."""
         now = now or time.time()

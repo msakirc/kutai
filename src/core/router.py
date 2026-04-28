@@ -103,6 +103,21 @@ def get_kdv() -> KuledenDonenVar:
             configure_in_flight_push(nerd_herd, make_state_getter(_kdv))
         except Exception:
             pass
+
+        # Restore persisted KDV state synchronously here so the first
+        # pre_call after boot sees real adapted limits / 429 history /
+        # daily counters / header reset clocks. Uses plain sqlite3 (not
+        # aiosqlite) so it works whether or not an event loop is active.
+        # Best-effort: failures degrade to cold-start state. Skipped
+        # silently when DB_PATH is unset (CLI tools, tests).
+        try:
+            import os
+            db_path = os.environ.get("DB_PATH")
+            if db_path:
+                from src.infra import kdv_persistence
+                kdv_persistence.load_sync(_kdv, db_path)
+        except Exception:
+            pass
     return _kdv
 
 

@@ -307,9 +307,9 @@ def init(
                 continue
             aa_lookup.setdefault(family, dict(m.benchmark_scores))
 
-        # Resolve approval + review artifact paths next to the cloud cache dir.
+        # Resolve approval + review artifact paths inside the cloud cache dir.
         from pathlib import Path as _Path
-        cache_root = _Path(cloud_cache_dir).parent if cloud_cache_dir else _Path(".benchmark_cache")
+        cache_root = _Path(cloud_cache_dir) if cloud_cache_dir else _Path(".benchmark_cache")
         approved_path = cache_root / "cloud_match_approved.json"
         review_path = cache_root / "cloud_match_review.json"
 

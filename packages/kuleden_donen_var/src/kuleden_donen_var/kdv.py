@@ -196,7 +196,11 @@ class KuledenDonenVar:
         provider: str,
         error_type: str,
     ) -> None:
-        if error_type == "rate_limit":
+        # Accept both "rate_limit" (legacy) and "rate_limited" (the string
+        # hallederiz_kadir.classify_error actually emits). Without the
+        # latter, real Groq 429 responses never triggered adaptive
+        # reduction — _rate_limit_hits stayed 0 forever.
+        if error_type in ("rate_limit", "rate_limited"):
             self._rate_limiter.record_429(model_id, provider)
             self._fire(provider, model_id, "limit_hit")
         elif error_type in ("server_error", "timeout"):

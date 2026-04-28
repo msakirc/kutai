@@ -73,14 +73,15 @@ def _extract_candidate_fields(text: str) -> set[str]:
 
 
 # Comma-list field enumeration: "For each: a, b, c." / "must include: x, y."
-# / "fields: alpha_one, beta, gamma_three." Captures every token between the
-# trigger and the next sentence break, regardless of underscore presence.
-# 3.5 hits this pattern (and the audit-script's underscore filter missed
-# `pricing`, `alternatives` because they're single-word). Live grader DLQs
-# called those out by name (2026-04-28).
+# / "fields: alpha_one, beta, gamma_three." / "with pricing, setup, lock_in".
+# Captures every token between the trigger and the next sentence break,
+# regardless of underscore presence. 3.5 hits the colon variant; 4.8 hits
+# the comma-after-"with" variant ("recommend a vendor with pricing, setup
+# complexity, SDK quality, lock-in risk"). Live grader DLQs called these
+# out by name (2026-04-28).
 _LIST_TRIGGER_RE = re.compile(
     r"(?:for each|must include|include|fields|with|consist(?:ing)? of|"
-    r"following|these)\s*:\s*([^.\n]{8,400}?)(?:\.|\n|$)",
+    r"following|these)\s*[:,]\s*([^.\n]{8,400}?)(?:\.|\n|$)",
     re.IGNORECASE,
 )
 _LIST_ITEM_RE = re.compile(r"\b([a-z][a-z0-9_]{2,})\b")
@@ -108,22 +109,42 @@ def _extract_listed_fields(text: str) -> set[str]:
 def _required_fields_from_schema(schema: dict) -> set[str]:
     """Collect every field name declared as required in artifact_schema.
 
-    Walks all top-level artifact rules, picking required_fields (object)
-    and item_fields (array). Adds the artifact NAME itself too — some
-    instructions reference the artifact by name as if it were a field.
+    Walks rules recursively. Handles both legacy form (``required_fields``
+    / ``item_fields`` flat lists) and canonical E1 form (``fields`` map /
+    ``items`` rule, recursively).
     """
-    fields: set[str] = set()
+    out: set[str] = set()
     if not isinstance(schema, dict):
-        return fields
+        return out
     for art_name, rules in schema.items():
         if not isinstance(rules, dict):
             continue
-        fields.add(art_name)
-        for key in ("required_fields", "item_fields"):
-            for f in rules.get(key) or []:
-                if isinstance(f, str):
-                    fields.add(f)
-    return fields
+        out.add(art_name)
+        _collect_field_names(rules, out)
+    return out
+
+
+def _collect_field_names(rule: dict, out: set[str]) -> None:
+    """Recursively pull every field name from a dialect rule."""
+    if not isinstance(rule, dict):
+        return
+    # Canonical: object.fields map
+    fields_map = rule.get("fields")
+    if isinstance(fields_map, dict):
+        for fname, frule in fields_map.items():
+            if isinstance(fname, str):
+                out.add(fname)
+            if isinstance(frule, dict):
+                _collect_field_names(frule, out)
+    # Canonical: array.items rule (single rule, not list)
+    items_rule = rule.get("items")
+    if isinstance(items_rule, dict):
+        _collect_field_names(items_rule, out)
+    # Legacy: required_fields / item_fields flat lists
+    for key in ("required_fields", "item_fields"):
+        for f in rule.get(key) or []:
+            if isinstance(f, str):
+                out.add(f)
 
 
 def audit() -> int:

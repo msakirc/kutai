@@ -2879,15 +2879,20 @@
       "artifact_schema": {
         "third_party_selections": {
           "type": "array",
-          "min_items": 0,
-          "item_fields": [
-            "integration_id",
-            "vendor",
-            "pricing",
-            "setup_complexity",
-            "lock_in_risk"
-          ]
-        }
+          "min_items": 1,
+          "items": {
+            "type": "object",
+            "fields": {
+              "integration_id": {"type": "string"},
+              "vendor": {"type": "string"},
+              "pricing": {"type": "string"},
+              "setup_complexity": {"type": "string"},
+              "sdk_quality": {"type": "string"},
+              "lock_in_risk": {"type": "string"}
+            }
+          }
+        },
+        "total_monthly_cost": {"type": "string"}
       },
       "context": {}
     },

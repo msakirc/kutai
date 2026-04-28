@@ -998,6 +998,8 @@ def register_cloud_from_discovered(
         detected["rate_limit_rpm"] = discovered.rate_limit_rpm
     if getattr(discovered, "rate_limit_tpm", None) is not None:
         detected["rate_limit_tpm"] = discovered.rate_limit_tpm
+    if getattr(discovered, "supports_function_calling", None) is not None:
+        detected["supports_function_calling"] = discovered.supports_function_calling
 
     family = _family_normalize(provider, discovered.litellm_name)
 

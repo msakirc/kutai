@@ -27,6 +27,21 @@ _NON_CHAT_ID_PREFIXES = (
     "canopylabs/orpheus-",      # Text-to-speech
 )
 
+# Models that respond to /v1/chat/completions but reject user-supplied tool
+# specs (compound = built-in tool model; safeguard / prompt-guard = text
+# classifiers). Verified against Groq runtime errors of the form
+# "tool calling is not supported with this model". When marked False the
+# eligibility filter excludes them for any call where needs_function_calling
+# is True (researcher, coder, fixer, analyst, implementer, test_generator).
+_NO_TOOLS_RAW_IDS = frozenset({
+    "groq/compound",
+    "groq/compound-mini",
+    "openai/gpt-oss-safeguard-20b",
+    "meta-llama/llama-prompt-guard-2-22m",
+    "meta-llama/llama-prompt-guard-2-86m",
+    "allam-2-7b",
+})
+
 # Groq /models does not return rate limits; values below mirror the free-tier
 # dashboard (https://console.groq.com/settings/limits) as of 2026-04-28.
 # Keys match raw_id (no "groq/" prefix). KDV reads these to gate admission.
@@ -83,6 +98,9 @@ class GroqAdapter:
             if any(lower_id.startswith(p) for p in _NON_CHAT_ID_PREFIXES):
                 continue
             limits = _FREE_TIER_RATE_LIMITS.get(raw_id, {})
+            supports_fc: bool | None = None
+            if raw_id in _NO_TOOLS_RAW_IDS:
+                supports_fc = False
             models.append(DiscoveredModel(
                 litellm_name=f"groq/{raw_id}",
                 raw_id=raw_id,
@@ -93,6 +111,7 @@ class GroqAdapter:
                 rate_limit_tpm=limits.get("tpm"),
                 rate_limit_rpd=limits.get("rpd"),
                 rate_limit_tpd=limits.get("tpd"),
+                supports_function_calling=supports_fc,
                 extra={"owned_by": entry.get("owned_by", "")},
             ))
         return ProviderResult(provider=self.name, status="ok", auth_ok=True, models=models)

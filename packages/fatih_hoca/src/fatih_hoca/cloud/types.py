@@ -26,6 +26,7 @@ class DiscoveredModel:
     rate_limit_tpm: int | None = None
     rate_limit_rpd: int | None = None
     rate_limit_tpd: int | None = None
+    supports_function_calling: bool | None = None
     sampling_defaults: dict[str, float] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 

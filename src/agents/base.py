@@ -786,9 +786,15 @@ class BaseAgent:
         # ``_tail_schema_block`` collects the Required Output Format block
         # so it can be appended LAST (recency, handoff item Q). Stays
         # empty when the step has no artifact_schema.
+        # Now backed by ``schema_dialect`` so nested types render properly
+        # (E1): info/paths/components show as nested objects, sprint
+        # plans show array-of-objects-with-nested-arrays, etc.
         _tail_schema_block: str = ""
         artifact_schema = task_context.get("artifact_schema")
         if artifact_schema and isinstance(artifact_schema, dict):
+            from src.workflows.engine.schema_dialect import (
+                make_example as _dialect_example,
+            )
             artifact_items = [
                 (n, r) for n, r in artifact_schema.items() if isinstance(r, dict)
             ]
@@ -799,32 +805,22 @@ class BaseAgent:
                     "Your final answer MUST be a JSON object with these keys: "
                     + ", ".join(f"`{n}`" for n, _ in artifact_items)
                 )
-            example = {}
+            example: object = {} if multi else None
             for art_name, rules in artifact_items:
                 schema_type = rules.get("type", "string")
-                if schema_type == "object":
-                    fields = rules.get("required_fields", [])
-                    desc = "object with fields: " + ", ".join(f"`{f}`" for f in fields)
-                    obj_ex = {f: "..." for f in fields}
+                if schema_type in ("object", "array"):
+                    art_example = _dialect_example(rules)
+                    desc = "object" if schema_type == "object" else "array"
+                    if schema_type == "array":
+                        min_items = int(rules.get("min_items") or 0)
+                        if min_items:
+                            desc += f" (min {min_items} items)"
                     if multi:
                         fmt_lines.append(f"- `{art_name}`: {desc}")
-                        example[art_name] = obj_ex
+                        example[art_name] = art_example  # type: ignore[index]
                     else:
                         fmt_lines.append(f"Your final answer MUST be a JSON {desc}")
-                        example = obj_ex
-                elif schema_type == "array":
-                    min_items = rules.get("min_items", 1)
-                    item_fields = rules.get("item_fields", [])
-                    desc = f"array (min {min_items} items)"
-                    if item_fields:
-                        desc += f" each with: {', '.join(f'`{f}`' for f in item_fields)}"
-                    arr_ex = [{f: "..." for f in item_fields}] if item_fields else ["..."]
-                    if multi:
-                        fmt_lines.append(f"- `{art_name}`: {desc}")
-                        example[art_name] = arr_ex
-                    else:
-                        fmt_lines.append(f"Your final answer MUST be a JSON {desc}")
-                        example = arr_ex
+                        example = art_example
                 elif schema_type == "markdown":
                     sections = rules.get("required_sections", [])
                     desc = "markdown with sections: " + ", ".join(f"`{s}`" for s in sections)
@@ -839,35 +835,19 @@ class BaseAgent:
                     else:
                         fmt_lines.append(f"Your final answer type: {schema_type}")
                     continue
-            if example:
+            if example is not None and example != {}:
                 fmt_lines.append(
                     "\nExample:\n```json\n"
                     + json.dumps(example, indent=2)
                     + "\n```"
                 )
-                # The auto-generated example uses ``"..."`` as a placeholder
-                # for every required field, regardless of declared type. For
-                # fields that are themselves objects/arrays (e.g. openapi_spec
-                # "info"/"paths"/"components"), the example shows them as
-                # strings — misleading the model into emitting ``"info": {}``
-                # or literal ``"info": "..."``, which the empty-placeholder
-                # validator (b72ecca) then rejects. Schema dialect doesn't
-                # capture nested types yet (item P3 / E1). Until it does,
-                # this prose nudge is the best signal we can give the model.
                 fmt_lines.append(
                     "**Each field above MUST contain real content.** "
                     "Empty objects (`{}`), empty arrays (`[]`), and literal "
                     "`\"...\"` placeholder strings are rejected by validation. "
-                    "When a required field is itself an object or array, fill "
-                    "it with the proper structure populated from the task "
-                    "context — not a stub."
+                    "Fill nested structures with content drawn from the task "
+                    "context — not stubs."
                 )
-            # Recency: defer to end-of-prompt instead of appending here.
-            # Small models attend more strongly to end-of-prompt content;
-            # the schema instruction was previously buried mid-prompt
-            # (after Context Artifacts, before deps/skills/etc) and got
-            # lost in the noise. Stored as ``_tail_schema_block``,
-            # appended last just before return. (Handoff item Q.)
             _tail_schema_block = "\n".join(fmt_lines)
 
         # input_artifacts are excluded from the JSON dump because their
@@ -937,29 +917,35 @@ class BaseAgent:
 
             per_artifact_blocks: list[str] = []
             if artifact_schema and isinstance(artifact_schema, dict):
+                from src.workflows.engine.schema_dialect import (
+                    render_checklist as _dialect_checklist,
+                )
                 for art_name, rules in artifact_schema.items():
                     if not isinstance(rules, dict):
                         continue
                     schema_type = rules.get("type", "string")
 
-                    if schema_type == "object":
-                        required = rules.get("required_fields", []) or []
+                    if schema_type in ("object", "array"):
+                        # Pull the value for THIS artifact out of _prev_obj,
+                        # then let the dialect render a recursive checklist
+                        # so nested missing fields surface (info.title,
+                        # sprint_plans[0].tasks[0].task_id, etc.).
                         data = None
-                        if isinstance(_prev_obj, dict):
-                            if art_name in _prev_obj and isinstance(_prev_obj[art_name], dict):
-                                data = _prev_obj[art_name]
-                            elif all(f in _prev_obj for f in required[:1]):
+                        if schema_type == "object":
+                            if isinstance(_prev_obj, dict):
+                                inner = _prev_obj.get(art_name)
+                                data = inner if isinstance(inner, dict) else _prev_obj
+                        else:  # array
+                            if isinstance(_prev_obj, list):
                                 data = _prev_obj
-                        lines = []
-                        if data is not None:
-                            for f in required:
-                                mark = "x" if f in data else " "
-                                lines.append(f"    - [{mark}] {f}")
-                        else:
-                            for f in required:
-                                lines.append(f"    - [ ] {f}")
+                            elif (isinstance(_prev_obj, dict)
+                                    and isinstance(_prev_obj.get(art_name), list)):
+                                data = _prev_obj[art_name]
+                        lines = _dialect_checklist(rules, data) or [
+                            "    - [ ] (no parseable previous output)"
+                        ]
                         per_artifact_blocks.append(
-                            f"  {art_name} (object):\n" + "\n".join(lines)
+                            f"  {art_name} ({schema_type}):\n" + "\n".join(lines)
                         )
 
                     elif schema_type == "markdown":
@@ -981,31 +967,6 @@ class BaseAgent:
                         per_artifact_blocks.append(
                             f"  {art_name} (markdown):\n" + "\n".join(lines)
                         )
-
-                    elif schema_type == "array":
-                        min_items = int(rules.get("min_items", 0) or 0)
-                        item_fields = rules.get("item_fields", []) or []
-                        arr = None
-                        if isinstance(_prev_obj, list):
-                            arr = _prev_obj
-                        elif (isinstance(_prev_obj, dict)
-                                and isinstance(_prev_obj.get(art_name), list)):
-                            arr = _prev_obj[art_name]
-                        have = len(arr) if isinstance(arr, list) else 0
-                        cnt_mark = "x" if have >= min_items else " "
-                        block = [
-                            f"  {art_name} (array, need >= {min_items}, have {have}):",
-                            f"    - [{cnt_mark}] minimum item count",
-                        ]
-                        if item_fields and have:
-                            first = arr[0] if isinstance(arr[0], dict) else {}
-                            for f in item_fields:
-                                mark = "x" if f in first else " "
-                                block.append(f"    - [{mark}] item.{f} (checked on item[0])")
-                        elif item_fields:
-                            for f in item_fields:
-                                block.append(f"    - [ ] item.{f}")
-                        per_artifact_blocks.append("\n".join(block))
 
             shape_hint = (
                 "Keep every [x] item exactly as it was. Add each [ ] item "

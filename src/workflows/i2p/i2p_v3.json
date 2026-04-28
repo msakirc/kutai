@@ -1572,11 +1572,25 @@
       "artifact_schema": {
         "value_proposition_canvas": {
           "type": "object",
-          "required_fields": [
-            "customer_profile",
-            "value_map",
-            "top_fits"
-          ]
+          "fields": {
+            "customer_profile": {
+              "type": "object",
+              "fields": {
+                "jobs": {"type": "array", "min_items": 1},
+                "pains": {"type": "array", "min_items": 1},
+                "gains": {"type": "array", "min_items": 1}
+              }
+            },
+            "value_map": {
+              "type": "object",
+              "fields": {
+                "products_and_services": {"type": "array", "min_items": 1},
+                "pain_relievers": {"type": "array", "min_items": 1},
+                "gain_creators": {"type": "array", "min_items": 1}
+              }
+            },
+            "top_fits": {"type": "array", "min_items": 1}
+          }
         }
       },
       "context": {}
@@ -1839,10 +1853,29 @@
       "artifact_schema": {
         "success_metrics": {
           "type": "object",
-          "required_fields": [
-            "aarrr_metrics",
-            "north_star_metric"
-          ]
+          "fields": {
+            "aarrr_metrics": {
+              "type": "array",
+              "min_items": 5,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "name": {"type": "string"},
+                  "formula": {"type": "string"},
+                  "data_source": {"type": "string"},
+                  "target_value": {"type": "string"},
+                  "measurement_frequency": {"type": "string"}
+                }
+              }
+            },
+            "north_star_metric": {
+              "type": "object",
+              "fields": {
+                "name": {"type": "string"},
+                "justification": {"type": "string"}
+              }
+            }
+          }
         }
       },
       "context": {}
@@ -2718,12 +2751,24 @@
       "artifact_schema": {
         "openapi_spec": {
           "type": "object",
-          "required_fields": [
-            "openapi",
-            "info",
-            "paths",
-            "components"
-          ]
+          "fields": {
+            "openapi": {"type": "string"},
+            "info": {
+              "type": "object",
+              "fields": {
+                "title": {"type": "string"},
+                "version": {"type": "string"},
+                "description": {"type": "string"}
+              }
+            },
+            "paths": {"type": "object", "min_keys": 1},
+            "components": {
+              "type": "object",
+              "fields": {
+                "schemas": {"type": "object", "min_keys": 1}
+              }
+            }
+          }
         }
       }
     },
@@ -3945,19 +3990,49 @@
       "artifact_schema": {
         "sprint_0_plan": {
           "type": "object",
-          "required_fields": [
-            "tasks",
-            "order"
-          ]
+          "fields": {
+            "tasks": {
+              "type": "array",
+              "min_items": 1,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "task_id": {"type": "string"},
+                  "name": {"type": "string"},
+                  "category": {"type": "string"},
+                  "agent": {"type": "string"},
+                  "estimated_effort": {"type": "string"}
+                }
+              }
+            },
+            "order": {"type": "array", "min_items": 1}
+          }
         },
         "sprint_plans": {
           "type": "array",
           "min_items": 1,
-          "item_fields": [
-            "sprint_id",
-            "tasks",
-            "deliverable"
-          ]
+          "items": {
+            "type": "object",
+            "fields": {
+              "sprint_id": {"type": "string"},
+              "name": {"type": "string"},
+              "goal": {"type": "string"},
+              "tasks": {
+                "type": "array",
+                "min_items": 1,
+                "items": {
+                  "type": "object",
+                  "fields": {
+                    "task_id": {"type": "string"},
+                    "story_id": {"type": "string"},
+                    "agent": {"type": "string"},
+                    "estimated_effort": {"type": "string"}
+                  }
+                }
+              },
+              "deliverable": {"type": "string"}
+            }
+          }
         }
       }
     },
@@ -4984,10 +5059,20 @@
       "artifact_schema": {
         "architecture_deviation_report": {
           "type": "object",
-          "required_fields": [
-            "deviations",
-            "adrs_created"
-          ]
+          "fields": {
+            "deviations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "fields": {
+                  "classification": {"type": "string"},
+                  "description": {"type": "string"},
+                  "design_was_wrong": {"type": "boolean"}
+                }
+              }
+            },
+            "adrs_created": {"type": "array"}
+          }
         }
       },
       "context": {}

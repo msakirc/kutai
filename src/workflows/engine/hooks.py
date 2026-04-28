@@ -278,6 +278,77 @@ def _detect_repetition_ratio(text: str) -> float:
     return duplicated / len(norm_headers) if norm_headers else 0.0
 
 
+def _top_level_required_field_names(rule: dict) -> list[str]:
+    """Return required (non-optional) top-level field names from an object rule.
+
+    Used by the text fallback for small LLMs that produce structured prose
+    instead of JSON. Returns empty list for non-object rules. Accepts
+    either canonical (``fields``) or legacy (``required_fields``) form —
+    delegates to the dialect normalizer.
+    """
+    if not isinstance(rule, dict) or rule.get("type") != "object":
+        return []
+    from src.workflows.engine.schema_dialect import _normalize_rule
+    rule = _normalize_rule(rule)
+    fields = rule.get("fields") or {}
+    return [
+        fname for fname, frule in fields.items()
+        if isinstance(frule, dict) and not frule.get("optional")
+    ]
+
+
+def _extract_artifact_value(output_value, artifact_name: str, rtype: str):
+    """Parse output and extract the value for ``artifact_name``.
+
+    Returns the extracted value (dict/list/str) or None if parse failed.
+    Tries direct JSON, artifact-name-keyed wrapper, single matching value
+    of correct type, then ``\`\`\`json ... \`\`\`\`` code block.
+    """
+    if isinstance(output_value, (dict, list)):
+        data = output_value
+    else:
+        try:
+            data = json.loads(output_value) if isinstance(output_value, str) else output_value
+        except (json.JSONDecodeError, TypeError):
+            # Code-block extraction
+            import re as _re2
+            text = str(output_value)
+            blk = _re2.search(r'```(?:json)?\s*\n([\s\S]*?)\n```', text)
+            if blk:
+                try:
+                    data = json.loads(blk.group(1))
+                except (json.JSONDecodeError, TypeError):
+                    return None
+            else:
+                return None
+
+    # Direct shape match
+    expected_pytype = (
+        dict if rtype == "object"
+        else list if rtype == "array"
+        else None
+    )
+    if expected_pytype is not None and isinstance(data, expected_pytype):
+        # If it's a dict-typed artifact and the dict happens to wrap the
+        # named artifact (``{"openapi_spec": {...}}``), unwrap.
+        if rtype == "object" and isinstance(data, dict) and artifact_name in data:
+            inner = data[artifact_name]
+            if isinstance(inner, dict):
+                return inner
+        return data
+
+    # Artifact-keyed wrapper
+    if isinstance(data, dict):
+        if artifact_name in data:
+            return data[artifact_name]
+        # Single value of correct type
+        if expected_pytype is not None:
+            matches = [v for v in data.values() if isinstance(v, expected_pytype)]
+            if len(matches) == 1:
+                return matches[0]
+    return None
+
+
 def _is_empty_required_value(val) -> bool:
     """Decide if a required-field value is a placeholder rather than real
     content. Used by validate_artifact_schema to guard against constrained-
@@ -320,155 +391,70 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
     if isinstance(output_value, str):
         output_value = _unwrap_envelope(output_value)
 
+    from src.workflows.engine.schema_dialect import validate_value as _dialect_validate
+
     for artifact_name, rules in schema.items():
         if not isinstance(rules, dict):
             continue  # skip non-artifact entries like max_output_chars
         schema_type = rules.get("type", "string")
 
-        if schema_type == "object":
-            required = rules.get("required_fields", [])
-            # Try JSON first
-            try:
-                data = json.loads(output_value) if isinstance(output_value, str) else output_value
-                if isinstance(data, dict):
-                    # If agent wrapped output in the artifact name, unwrap
-                    if artifact_name in data and isinstance(data[artifact_name], dict):
-                        data = data[artifact_name]
-                    missing = [f for f in required if f not in data]
-                    if missing:
-                        return False, f"Missing required fields in '{artifact_name}': {missing}"
-                    # Empty-value guard: a constrained-decoding pass can
-                    # satisfy "field present" with placeholder ``{}`` /
-                    # ``""`` / ``[]`` for every required field — schema
-                    # PRESENCE check passed but downstream consumers got
-                    # nothing usable. Reject empties as if the field
-                    # were missing. Mission 46 task 2964 produced
-                    # ``[{feature_id: {}, feature_name: {}, ...}]`` —
-                    # validator accepted, downstream broke.
-                    empty_value_fields = [
-                        f for f in required
-                        if _is_empty_required_value(data.get(f))
-                    ]
-                    if empty_value_fields:
-                        return False, (
-                            f"Required fields in '{artifact_name}' have empty "
-                            f"placeholder values: {empty_value_fields}. Each "
-                            f"required field must hold real content."
-                        )
-                    continue  # this artifact passed
-            except (json.JSONDecodeError, TypeError):
-                pass
-            # Fallback: accept text/markdown if required fields appear as keywords
-            # Small LLMs often produce structured text, not JSON.
-            # Check each word of multi-word fields independently — e.g.
-            # "per_competitor" matches if both "per" and "competitor"
-            # appear anywhere in the text, since LLMs rephrase freely.
-            if required:
-                import re as _re_obj
-                # Normalize: remove apostrophes, replace dashes/underscores with space
-                def _norm(s):
-                    s = s.lower().replace("'", "").replace("\u2019", "")
-                    return _re_obj.sub(r"[\u2010-\u2015\u2212\-_]", " ", s)
-                text_norm = _norm(str(output_value))
-                missing = []
-                _QUALIFIER_SUFFIXES = {
-                    "level", "rate", "count", "status", "type",
-                    "value", "score", "index", "ratio",
-                }
-                for f in required:
-                    words = _norm(f).split()
-                    # Qualifier-only suffixes (level, rate, etc.) are
-                    # informational; small LLMs drop them ("High
-                    # confidence" == "confidence_level: High"). Check
-                    # only the non-qualifier core words.
-                    core = [w for w in words if w not in _QUALIFIER_SUFFIXES]
-                    if not core:
-                        core = words
-                    if not all(w in text_norm for w in core):
-                        missing.append(f)
-                if missing:
-                    return False, f"'{artifact_name}' missing content about: {missing}"
+        if schema_type in ("object", "array"):
+            data = _extract_artifact_value(output_value, artifact_name, schema_type)
+            if data is not None:
+                err = _dialect_validate(rules, data, path=artifact_name)
+                if err:
+                    return False, f"Schema validation: {err}"
+                continue  # passed dialect check
 
-        elif schema_type == "array":
-            # Try JSON first — the output may be a raw JSON array, a JSON
-            # object containing the array as a field, or markdown text with
-            # embedded JSON.
-            try:
-                data = json.loads(output_value) if isinstance(output_value, str) else output_value
-                # If it's a dict, look for the artifact key or any list value
-                if isinstance(data, dict):
-                    data = data.get(artifact_name) or next(
-                        (v for v in data.values() if isinstance(v, list)), None
-                    )
-                if isinstance(data, list):
-                    min_items = rules.get("min_items", 0)
-                    if len(data) < min_items:
-                        return False, f"'{artifact_name}' has {len(data)} items, need >= {min_items}"
-                    item_fields = rules.get("item_fields", [])
-                    if item_fields and data:
-                        for i, item in enumerate(data):
-                            if isinstance(item, dict):
-                                missing = [f for f in item_fields if f not in item]
-                                if missing:
-                                    return False, f"Item {i} in '{artifact_name}' missing fields: {missing}"
-                                # Empty-value guard (same rationale as object).
-                                empty_fields = [
-                                    f for f in item_fields
-                                    if _is_empty_required_value(item.get(f))
-                                ]
-                                if empty_fields:
-                                    return False, (
-                                        f"Item {i} in '{artifact_name}' has empty "
-                                        f"placeholder values: {empty_fields}. Each "
-                                        f"required field must hold real content."
-                                    )
-                    continue  # passed
-            except (json.JSONDecodeError, TypeError):
-                # Try extracting JSON from markdown code blocks
-                import re as _re2
-                _json_block = _re2.search(r'```(?:json)?\s*\n([\s\S]*?)\n```', str(output_value))
-                if _json_block:
-                    try:
-                        data = json.loads(_json_block.group(1))
-                        if isinstance(data, dict):
-                            data = data.get(artifact_name) or next(
-                                (v for v in data.values() if isinstance(v, list)), None
-                            )
-                        if isinstance(data, list):
-                            if len(data) >= rules.get("min_items", 0):
-                                continue  # passed
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-            # Fallback: accept text if it has numbered/bulleted/table/JSON items
-            min_items = rules.get("min_items", 0)
+            # Parse failed — fall back for small LLMs that emit prose.
+            if schema_type == "object":
+                required = _top_level_required_field_names(rules)
+                if required:
+                    import re as _re_obj
+                    def _norm(s):
+                        s = s.lower().replace("'", "").replace("’", "")
+                        return _re_obj.sub(r"[‐-―−\-_]", " ", s)
+                    text_norm = _norm(str(output_value))
+                    _QUALIFIER_SUFFIXES = {
+                        "level", "rate", "count", "status", "type",
+                        "value", "score", "index", "ratio",
+                    }
+                    missing = []
+                    for f in required:
+                        words = _norm(f).split()
+                        core = [w for w in words if w not in _QUALIFIER_SUFFIXES]
+                        if not core:
+                            core = words
+                        if not all(w in text_norm for w in core):
+                            missing.append(f)
+                    if missing:
+                        return False, f"'{artifact_name}' missing content about: {missing}"
+                continue
+
+            # Array text fallback — count list items.
+            min_items = int(rules.get("min_items") or 0)
             if min_items > 0:
                 import re as _re
                 text = str(output_value)
-                # Numbered/bulleted lists
                 items = _re.findall(r'(?:^|\n)\s*(?:\d+[\.\)]|\-|\*)\s+\S', text)
-                # Markdown table data rows (exclude header separator lines like |---|)
                 if len(items) < min_items:
                     table_rows = [
                         line for line in text.split("\n")
                         if line.strip().startswith("|")
-                        and not _re.match(r'^\s*\|[\s\-:]+\|', line)  # skip separator
-                        and not _re.match(r'^\s*\|\s*:?-', line)  # skip separator variant
+                        and not _re.match(r'^\s*\|[\s\-:]+\|', line)
+                        and not _re.match(r'^\s*\|\s*:?-', line)
                     ]
-                    # Exclude header row (first table row) from count
                     if len(table_rows) > 1:
-                        items = table_rows[1:]  # skip header
-                # Truncated JSON arrays: count complete {...} objects
-                # (models often truncate mid-array at output token limit)
-                if len(items) < min_items:
-                    item_fields = rules.get("item_fields", [])
-                    if item_fields and text.lstrip().startswith("["):
-                        json_items = _re.findall(r'\{[^{}]{20,}\}', text)
-                        if len(json_items) >= min_items:
-                            items = json_items
+                        items = table_rows[1:]
+                if len(items) < min_items and text.lstrip().startswith("["):
+                    json_items = _re.findall(r'\{[^{}]{20,}\}', text)
+                    if len(json_items) >= min_items:
+                        items = json_items
                 if len(items) < min_items:
                     return False, f"'{artifact_name}' has ~{len(items)} list items, need >= {min_items}"
+            continue
 
-        elif schema_type == "string":
+        if schema_type == "string":
             min_length = rules.get("min_length", 1)
             if not output_value or len(str(output_value).strip()) < min_length:
                 return False, f"'{artifact_name}' is too short (min {min_length} chars)"

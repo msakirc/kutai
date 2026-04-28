@@ -1171,6 +1171,36 @@ class BaseAgent:
             parts.append(_tail_schema_block)
         if _tail_retry_block:
             parts.append(_tail_retry_block)
+
+        # ── Per-section size telemetry ──
+        # Emit one line per call so future bloat regressions are visible
+        # without re-reading multi-MB user_context dumps. Bucketing by
+        # the first markdown heading on each part: anything starting with
+        # "## X" → section "X"; otherwise grouped under "_unheaded".
+        # Cheap (single pass), bounded (one log line per agent dispatch).
+        try:
+            _section_chars: dict[str, int] = {}
+            for _p in parts:
+                if not isinstance(_p, str):
+                    continue
+                _first = _p.lstrip().split("\n", 1)[0]
+                if _first.startswith("## "):
+                    _label = _first[3:].split(" (", 1)[0].strip()[:48]
+                else:
+                    _label = "_unheaded"
+                _section_chars[_label] = _section_chars.get(_label, 0) + len(_p)
+            _total = sum(_section_chars.values())
+            _ranked = sorted(
+                _section_chars.items(), key=lambda kv: -kv[1]
+            )
+            _summary = " ".join(f"{k}={v}c" for k, v in _ranked)
+            logger.info(
+                f"[Task #{task.get('id','?')}] context sections "
+                f"(total={_total}c): {_summary}"
+            )
+        except Exception as _exc:
+            logger.debug(f"context-section telemetry failed: {_exc!r}")
+
         return "\n\n".join(parts)
 
     def _truncate_to_tokens(self, text: str, max_tokens: int) -> str:
@@ -2164,6 +2194,34 @@ class BaseAgent:
                 f"[Task #{task_id}] Agent '{self.name}' iteration "
                 f"{iteration + 1}/{effective_max_iterations}"
             )
+            # ── Accumulated messages telemetry ──
+            # ReAct loop appends assistant+tool_result pairs each iteration;
+            # tool outputs can be 0.1-50kB each. The pruner trims when over
+            # 80% ctx, but a 90k-token call may originate from accumulated
+            # messages rather than _build_context alone. Log size + role
+            # breakdown so retries-after-many-iterations are visible.
+            try:
+                _msg_counts: dict[str, int] = {}
+                _msg_chars: dict[str, int] = {}
+                for _m in messages:
+                    _role = _m.get("role", "?")
+                    _c = _m.get("content") or ""
+                    if not isinstance(_c, str):
+                        _c = str(_c)
+                    _msg_counts[_role] = _msg_counts.get(_role, 0) + 1
+                    _msg_chars[_role] = _msg_chars.get(_role, 0) + len(_c)
+                _total_chars = sum(_msg_chars.values())
+                _breakdown = " ".join(
+                    f"{r}={_msg_counts[r]}#/{_msg_chars[r]}c"
+                    for r in sorted(_msg_chars.keys())
+                )
+                logger.info(
+                    f"[Task #{task_id}] messages state iter "
+                    f"{iteration + 1}: total={_total_chars}c "
+                    f"n={len(messages)} {_breakdown}"
+                )
+            except Exception as _exc:
+                logger.debug(f"messages-size telemetry failed: {_exc!r}")
             # Per-task progress signal — orchestrator's no-progress
             # watchdog (src/core/heartbeat.py) keys off these bumps to
             # decide whether the dispatch is wedged.

@@ -22,6 +22,10 @@ class DiscoveredModel:
     max_output_tokens: int | None = None
     cost_per_1k_input: float | None = None
     cost_per_1k_output: float | None = None
+    rate_limit_rpm: int | None = None
+    rate_limit_tpm: int | None = None
+    rate_limit_rpd: int | None = None
+    rate_limit_tpd: int | None = None
     sampling_defaults: dict[str, float] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 

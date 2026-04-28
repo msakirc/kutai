@@ -994,6 +994,10 @@ def register_cloud_from_discovered(
         detected["cost_per_1k_input"] = discovered.cost_per_1k_input
     if discovered.cost_per_1k_output is not None:
         detected["cost_per_1k_output"] = discovered.cost_per_1k_output
+    if getattr(discovered, "rate_limit_rpm", None) is not None:
+        detected["rate_limit_rpm"] = discovered.rate_limit_rpm
+    if getattr(discovered, "rate_limit_tpm", None) is not None:
+        detected["rate_limit_tpm"] = discovered.rate_limit_tpm
 
     family = _family_normalize(provider, discovered.litellm_name)
 

@@ -2142,10 +2142,29 @@
       "artifact_schema": {
         "data_requirements": {
           "type": "object",
-          "required_fields": [
-            "entities",
-            "data_flows"
-          ]
+          "fields": {
+            "entities": {
+              "type": "array",
+              "min_items": 1,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "entity_name": {"type": "string"},
+                  "description": {"type": "string"},
+                  "data_fields": {"type": "array", "min_items": 1},
+                  "sensitivity_level": {"type": "string"},
+                  "volume_estimate": {"type": "string"},
+                  "retention_policy": {"type": "string"},
+                  "deletion_requirements": {"type": "string"},
+                  "backup_requirements": {"type": "string"}
+                }
+              }
+            },
+            "data_flows": {"type": "array", "min_items": 1},
+            "data_transformations": {"type": "array"},
+            "data_access_patterns": {"type": "array"},
+            "data_archival_strategy": {"type": "string"}
+          }
         }
       },
       "context": {}

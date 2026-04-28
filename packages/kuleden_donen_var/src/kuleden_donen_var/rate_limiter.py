@@ -96,10 +96,13 @@ class RateLimitState:
         else:
             rpm_ok = self.rpm_headroom > 1
 
+        # Use >= so cold-start calls where headroom EQUALS the estimate are
+        # admitted (e.g. qwen3-32b free tier tpm=6000, researcher estimate=6000).
+        # Strict > made any tight-limit model unusable for the largest typical call.
         if header_fresh and self._header_tpm_remaining is not None:
-            tpm_ok = self._header_tpm_remaining > estimated_tokens
+            tpm_ok = self._header_tpm_remaining >= estimated_tokens
         else:
-            tpm_ok = self.tpm_headroom > estimated_tokens
+            tpm_ok = self.tpm_headroom >= estimated_tokens
 
         return rpm_ok and tpm_ok
 

@@ -845,6 +845,23 @@ class BaseAgent:
                     + json.dumps(example, indent=2)
                     + "\n```"
                 )
+                # The auto-generated example uses ``"..."`` as a placeholder
+                # for every required field, regardless of declared type. For
+                # fields that are themselves objects/arrays (e.g. openapi_spec
+                # "info"/"paths"/"components"), the example shows them as
+                # strings — misleading the model into emitting ``"info": {}``
+                # or literal ``"info": "..."``, which the empty-placeholder
+                # validator (b72ecca) then rejects. Schema dialect doesn't
+                # capture nested types yet (item P3 / E1). Until it does,
+                # this prose nudge is the best signal we can give the model.
+                fmt_lines.append(
+                    "**Each field above MUST contain real content.** "
+                    "Empty objects (`{}`), empty arrays (`[]`), and literal "
+                    "`\"...\"` placeholder strings are rejected by validation. "
+                    "When a required field is itself an object or array, fill "
+                    "it with the proper structure populated from the task "
+                    "context — not a stub."
+                )
             # Recency: defer to end-of-prompt instead of appending here.
             # Small models attend more strongly to end-of-prompt content;
             # the schema instruction was previously buried mid-prompt

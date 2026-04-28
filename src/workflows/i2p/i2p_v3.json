@@ -1303,7 +1303,8 @@
             "name",
             "description",
             "relevance_to_our_product",
-            "maturity_level"
+            "maturity_level",
+            "adoption_risk"
           ]
         }
       },
@@ -1343,7 +1344,8 @@
             "requirement_name",
             "applies_if",
             "summary_of_obligations",
-            "compliance_effort"
+            "compliance_effort",
+            "consequence_of_non_compliance"
           ]
         }
       },
@@ -1640,9 +1642,15 @@
           "min_items": 2,
           "item_fields": [
             "name",
+            "age",
             "occupation",
+            "location",
+            "tech_savviness",
             "goals",
             "frustrations",
+            "current_tools",
+            "behavioral_patterns",
+            "quote",
             "primary_pain",
             "is_primary"
           ]
@@ -2144,7 +2152,12 @@
             "purpose",
             "api_type",
             "authentication_method",
-            "failure_mode"
+            "rate_limits",
+            "pricing",
+            "data_exchanged",
+            "latency_expectation",
+            "failure_mode",
+            "alternatives"
           ]
         }
       },
@@ -3890,8 +3903,12 @@
             "risk_id",
             "description",
             "category",
+            "likelihood",
+            "impact",
             "risk_score",
-            "mitigation_strategy"
+            "early_warning_signs",
+            "mitigation_strategy",
+            "contingency_plan"
           ]
         }
       },
@@ -4328,7 +4345,8 @@
           "required_fields": [
             "framework",
             "config_file",
-            "example_test_passes"
+            "example_test_passes",
+            "coverage_tool"
           ]
         },
         "frontend_test_config": {
@@ -4336,7 +4354,8 @@
           "required_fields": [
             "framework",
             "config_file",
-            "example_test_passes"
+            "example_test_passes",
+            "coverage_tool"
           ]
         }
       }

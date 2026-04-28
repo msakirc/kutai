@@ -72,6 +72,39 @@ def _extract_candidate_fields(text: str) -> set[str]:
     return {c for c in candidates if c not in _STOPWORDS and "_" in c}
 
 
+# Comma-list field enumeration: "For each: a, b, c." / "must include: x, y."
+# / "fields: alpha_one, beta, gamma_three." Captures every token between the
+# trigger and the next sentence break, regardless of underscore presence.
+# 3.5 hits this pattern (and the audit-script's underscore filter missed
+# `pricing`, `alternatives` because they're single-word). Live grader DLQs
+# called those out by name (2026-04-28).
+_LIST_TRIGGER_RE = re.compile(
+    r"(?:for each|must include|include|fields|with|consist(?:ing)? of|"
+    r"following|these)\s*:\s*([^.\n]{8,400}?)(?:\.|\n|$)",
+    re.IGNORECASE,
+)
+_LIST_ITEM_RE = re.compile(r"\b([a-z][a-z0-9_]{2,})\b")
+
+
+def _extract_listed_fields(text: str) -> set[str]:
+    """Extract tokens from comma-list enumerations following list-trigger words.
+
+    Looser than ``_extract_candidate_fields``: drops the underscore-only
+    requirement because instructions often mix snake_case (rate_limits) with
+    plain words (pricing, alternatives).
+    """
+    if not text:
+        return set()
+    found: set[str] = set()
+    for m in _LIST_TRIGGER_RE.finditer(text):
+        body = m.group(1)
+        for tok in _LIST_ITEM_RE.findall(body.lower()):
+            if tok in _STOPWORDS:
+                continue
+            found.add(tok)
+    return found
+
+
 def _required_fields_from_schema(schema: dict) -> set[str]:
     """Collect every field name declared as required in artifact_schema.
 
@@ -108,6 +141,8 @@ def audit() -> int:
 
         schema_fields = _required_fields_from_schema(schema)
         instr_candidates = _extract_candidate_fields(instr)
+        listed = _extract_listed_fields(instr)
+        instr_candidates |= listed
 
         # Subtract upstream artifact names — they're inputs to THIS step,
         # not output fields. Reduces false positives when the instruction
@@ -134,6 +169,10 @@ def audit() -> int:
             elif (f"{cand}:" in instr_lower
                   or f"{cand}(" in instr_lower
                   or f"`{cand}`" in instr_lower):
+                likely.append((cand, count))
+            elif cand in listed:
+                # Appeared explicitly in a comma-list field enumeration —
+                # high-confidence regardless of overall mention count.
                 likely.append((cand, count))
 
         if likely:

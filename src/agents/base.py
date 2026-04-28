@@ -1211,7 +1211,101 @@ class BaseAgent:
         return text[:max_chars] + "\n... [truncated to budget]"
 
     async def _fetch_deps(self, task: dict, max_tokens: int) -> str:
-        """Fetch dependency results, truncated to budget."""
+        """Fetch dependency results, truncated to budget.
+
+        Workflow steps: prefer artifact-store lookup keyed by the step's
+        ``input_artifacts`` list, with `<name>_summary` preferred over
+        the full form. Each upstream task's ``result`` may bundle 3+
+        artifacts (e.g. one architect step writes openapi_spec +
+        api_resource_model + error_codes); this step only needs what
+        ``input_artifacts`` declares. Granular fetch slashes the deps
+        block when only a subset is required.
+
+        Non-workflow tasks: fall back to the legacy task-id path which
+        dumps full upstream results.
+        """
+        # ── Workflow-aware artifact-granular fetch ──
+        _ctx = task.get("context") or {}
+        if isinstance(_ctx, str):
+            try:
+                _ctx = json.loads(_ctx)
+            except (json.JSONDecodeError, TypeError):
+                _ctx = {}
+        if not isinstance(_ctx, dict):
+            _ctx = {}
+        _input_artifacts = _ctx.get("input_artifacts") or []
+        _mid = task.get("mission_id") or _ctx.get("mission_id")
+        _is_wf = bool(_ctx.get("is_workflow_step")) and bool(_input_artifacts) and _mid is not None
+
+        if _is_wf:
+            try:
+                from src.workflows.engine.hooks import get_artifact_store
+                _store = get_artifact_store()
+            except Exception as exc:
+                logger.warning(f"_fetch_deps: artifact_store unavailable ({exc}); falling back to task-id path")
+                _is_wf = False
+
+        if _is_wf:
+            # Resolve each declared artifact, preferring summary form.
+            # Missing entries are skipped here — the dedicated
+            # `## Missing Input Artifacts` block in _build_context
+            # already surfaces them with anti-hallucination guidance.
+            from dogru_mu_samet import assess as cq_assess, salvage as cq_salvage
+
+            entries: list[tuple[str, str, str]] = []  # (name, form, text)
+            for art_name in _input_artifacts:
+                if not isinstance(art_name, str):
+                    continue
+                form = "summary"
+                value: str | None = None
+                # Prefer the summary form unless the caller already requested the summary directly.
+                if not art_name.endswith("_summary"):
+                    value = await _store.retrieve(_mid, f"{art_name}_summary")
+                if value is None:
+                    form = "full"
+                    value = await _store.retrieve(_mid, art_name)
+                # If the requested name is a *_summary that doesn't exist,
+                # fall back to the bare artifact (matches the missing-artifact NOTE logic).
+                if value is None and art_name.endswith("_summary"):
+                    bare = art_name[: -len("_summary")]
+                    value = await _store.retrieve(_mid, bare)
+                    form = "full" if value is not None else form
+                if value is None or not value.strip():
+                    continue
+                entries.append((art_name, form, value))
+
+            if entries:
+                parts = [
+                    "## Results from Previous Steps",
+                    "These ARE your input artifacts in full. Do NOT call read_file, "
+                    "read_pdf, read_docx, or any fetch tool to re-read them — there "
+                    "is no other copy on disk. Use the content below directly.",
+                ]
+                budget_chars = max_tokens * 4
+                used = sum(len(p) for p in parts)
+                per_art = max(500, (budget_chars - used) // max(len(entries), 1))
+
+                _form_log: list[str] = []
+                for name, form, text in entries:
+                    _cq = cq_assess(text)
+                    if _cq.is_degenerate:
+                        cleaned = cq_salvage(text)
+                        text = cleaned if cleaned else "(artifact was degenerate — skipped)"
+                    truncated = len(text) > per_art
+                    if truncated:
+                        text = text[:per_art] + "\n... (truncated; fetch full via read_blackboard)"
+                    parts.append(f"### {name} ({form}):\n{text}")
+                    _form_log.append(f"{name}={form}{'+trunc' if truncated else ''}")
+
+                logger.info(
+                    f"[Task #{task.get('id','?')}] _fetch_deps artifact-mode: "
+                    f"{len(entries)}/{len(_input_artifacts)} resolved "
+                    f"({', '.join(_form_log)})"
+                )
+                return self._truncate_to_tokens("\n".join(parts), max_tokens)
+            # No artifacts resolved — fall through to legacy path so the
+            # block isn't silently empty when artifact_store missed.
+
         depends_on = task.get("depends_on")
         if isinstance(depends_on, str):
             try:

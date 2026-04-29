@@ -499,6 +499,29 @@ async def call(
                    + parsed["usage"].get("completion_tokens", 0))
     _record_metrics(model.name, parsed["cost"], call_latency * 1000, total_tokens)
 
+    # Per-call token telemetry (feeds B-table rollup + calibration)
+    try:
+        from src.infra.db import record_call_tokens
+        await record_call_tokens(
+            task_id=getattr(task, "id", None) if task else None,
+            agent_type=getattr(task, "agent_type", None) if task else None,
+            workflow_step_id=(task.context or {}).get("workflow_step_id") if task and getattr(task, "context", None) else None,
+            workflow_phase=(task.context or {}).get("workflow_phase") if task and getattr(task, "context", None) else None,
+            call_category=getattr(task, "call_category", "main_work") if task else "main_work",
+            model=model.name,
+            provider=model.provider,
+            is_streaming=use_stream,
+            prompt_tokens=(raw_result.usage.prompt_tokens or 0) if not use_stream and getattr(raw_result, "usage", None) else 0,
+            completion_tokens=(raw_result.usage.completion_tokens or 0) if not use_stream and getattr(raw_result, "usage", None) else 0,
+            reasoning_tokens=getattr(raw_result.usage, "reasoning_tokens", 0) if not use_stream and getattr(raw_result, "usage", None) else 0,
+            total_tokens=total_tokens,
+            duration_ms=int(call_latency * 1000),
+            iteration_n=0,  # plumbed in a later task
+            success=True,
+        )
+    except Exception:
+        pass  # telemetry best-effort
+
     # ── Audit ──
     try:
         await _record_audit(task, model.litellm_name, task, parsed["cost"], call_latency)

@@ -82,3 +82,38 @@ async def test_model_pick_log_has_outcome_column(monkeypatch):
         assert "outcome" in cols
         await db_mod.close_db()
         db_mod._db_connection = None
+
+
+@pytest.mark.asyncio
+async def test_record_call_tokens_inserts_row(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "test.db"
+        import src.infra.db as db_mod
+        monkeypatch.setattr(db_mod, "DB_PATH", str(db_path))
+        db_mod._db_connection = None
+        await db_mod.init_db()
+        await db_mod.record_call_tokens(
+            task_id=42,
+            agent_type="analyst",
+            workflow_step_id="3.5",
+            workflow_phase="phase_3",
+            call_category="main_work",
+            model="gpt-4",
+            provider="openai",
+            is_streaming=False,
+            prompt_tokens=1000,
+            completion_tokens=500,
+            reasoning_tokens=0,
+            total_tokens=1500,
+            duration_ms=2500,
+            iteration_n=1,
+            success=True,
+        )
+        async with aiosqlite.connect(str(db_path)) as conn:
+            cur = await conn.execute(
+                "SELECT task_id, total_tokens FROM model_call_tokens WHERE task_id=42"
+            )
+            row = await cur.fetchone()
+        assert row == (42, 1500)
+        await db_mod.close_db()
+        db_mod._db_connection = None

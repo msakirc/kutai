@@ -2178,6 +2178,42 @@ async def record_model_call(
     await db.commit()
 
 
+async def record_call_tokens(
+    *,
+    task_id: int | None,
+    agent_type: str | None,
+    workflow_step_id: str | None,
+    workflow_phase: str | None,
+    call_category: str,
+    model: str,
+    provider: str,
+    is_streaming: bool,
+    prompt_tokens: int,
+    completion_tokens: int,
+    reasoning_tokens: int,
+    total_tokens: int,
+    duration_ms: int,
+    iteration_n: int,
+    success: bool,
+) -> None:
+    """Persist per-call token usage. Single INSERT, no upsert.
+
+    Feeds step_token_stats rollup (Beckman cron) and offline calibration.
+    """
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO model_call_tokens
+           (task_id, agent_type, workflow_step_id, workflow_phase, call_category,
+            model, provider, is_streaming, prompt_tokens, completion_tokens,
+            reasoning_tokens, total_tokens, duration_ms, iteration_n, success)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (task_id, agent_type, workflow_step_id, workflow_phase, call_category,
+         model, provider, int(is_streaming), prompt_tokens, completion_tokens,
+         reasoning_tokens, total_tokens, duration_ms, iteration_n, int(success)),
+    )
+    await db.commit()
+
+
 async def get_model_stats(
     model: str | None = None,
     agent_type: str | None = None,

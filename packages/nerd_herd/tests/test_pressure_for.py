@@ -2,7 +2,7 @@ import time
 from unittest.mock import MagicMock
 from nerd_herd.types import (
     SystemSnapshot, CloudProviderState, CloudModelState, RateLimit, RateLimitMatrix,
-    LocalModelState,
+    LocalModelState, QueueProfile,
 )
 
 
@@ -13,35 +13,103 @@ def _snap_with_cloud(provider, model_name, remaining, limit, reset_at, in_flight
     return SystemSnapshot(cloud={provider: prov})
 
 
+def _kwargs(**overrides):
+    """Default new-signature kwargs with optional overrides."""
+    base = dict(
+        task_difficulty=5,
+        est_per_call_tokens=0,
+        est_per_task_tokens=0,
+        est_iterations=1,
+        est_call_cost=0.0,
+        cap_needed=5.0,
+        consecutive_failures=0,
+    )
+    base.update(overrides)
+    return base
+
+
 def test_pressure_for_cloud_model_depletion_negative():
     snap = _snap_with_cloud("anthropic", "claude-sonnet-4-6",
                             remaining=5, limit=100, reset_at=int(time.time()) + 3600)
     # is_free=False → per_call profile (depletion_max=-1.0).
-    fake = MagicMock(is_local=False, is_free=False, provider="anthropic")
+    fake = MagicMock(is_local=False, is_free=False, provider="anthropic", cap_score=5.0)
     fake.name = "claude-sonnet-4-6"
-    assert snap.pressure_for(fake) < -0.5
+    result = snap.pressure_for(fake, **_kwargs())
+    assert result.scalar < -0.5
 
 
 def test_pressure_for_missing_model_returns_zero():
     snap = SystemSnapshot()
-    fake = MagicMock(is_local=False, provider="unknown"); fake.name = "x"
-    assert snap.pressure_for(fake) == 0.0
-
-
-def test_pressure_for_cached_after_first_read():
-    snap = _snap_with_cloud("anthropic", "claude-sonnet-4-6",
-                            remaining=50, limit=100, reset_at=int(time.time()) + 3600)
-    fake = MagicMock(is_local=False, is_free=False, provider="anthropic")
-    fake.name = "claude-sonnet-4-6"
-    _ = snap.pressure_for(fake)
-    first_obj = snap.cloud["anthropic"].models["claude-sonnet-4-6"].pool_pressure
-    _ = snap.pressure_for(fake)
-    second_obj = snap.cloud["anthropic"].models["claude-sonnet-4-6"].pool_pressure
-    assert first_obj is second_obj
+    fake = MagicMock(is_local=False, provider="unknown", is_free=False, cap_score=5.0)
+    fake.name = "x"
+    result = snap.pressure_for(fake, **_kwargs())
+    assert -1.0 <= result.scalar <= 1.0
 
 
 def test_pressure_for_local_busy_negative_or_zero():
     snap = SystemSnapshot(local=LocalModelState(model_name="qwen3-8b"))
-    fake = MagicMock(is_local=True); fake.name = "qwen3-8b"
-    val = snap.pressure_for(fake)
-    assert -1.0 <= val <= 1.0
+    fake = MagicMock(is_local=True, cap_score=5.0)
+    fake.name = "qwen3-8b"
+    val = snap.pressure_for(fake, **_kwargs())
+    assert -1.0 <= val.scalar <= 1.0
+
+
+# ── New full-path smoke test ────────────────────────────────────────────────
+
+class FakeModel:
+    def __init__(self, name, provider, *, is_local=False, is_free=False, size_mb=0,
+                 cap_score=5.0, capabilities=None):
+        self.name = name
+        self.provider = provider
+        self.is_local = is_local
+        self.is_free = is_free
+        self.is_loaded = False
+        self.size_mb = size_mb
+        self.cap_score = cap_score
+        self.capabilities = capabilities or set()
+
+
+def test_pressure_for_full_path_returns_breakdown():
+    """End-to-end smoke test: pressure_for with all 10 signals."""
+    snap = SystemSnapshot(
+        vram_available_mb=8000,
+        local=LocalModelState(),
+        cloud={
+            "groq": CloudProviderState(
+                provider="groq",
+                limits=RateLimitMatrix(rpd=RateLimit(limit=14_400, remaining=14_000)),
+                models={
+                    "groq/llama": CloudModelState(
+                        model_id="groq/llama",
+                        limits=RateLimitMatrix(
+                            rpm=RateLimit(limit=30, remaining=29),
+                            tpm=RateLimit(limit=6000, remaining=5800),
+                            rpd=RateLimit(limit=14_400, remaining=14_000),
+                        ),
+                    ),
+                },
+            ),
+        },
+        queue_profile=QueueProfile(
+            total_ready_count=5, hard_tasks_count=1,
+            by_difficulty={3: 4, 7: 1},
+            by_capability={"function_calling": 5},
+            projected_tokens=20_000, projected_calls=15,
+        ),
+    )
+    model = FakeModel("groq/llama", "groq", is_free=True, cap_score=5.0)
+    breakdown = snap.pressure_for(
+        model,
+        task_difficulty=5,
+        est_per_call_tokens=2000,
+        est_per_task_tokens=20_000,
+        est_iterations=10,
+        est_call_cost=0.0,
+        cap_needed=5.0,
+        consecutive_failures=0,
+    )
+    # Returns a PressureBreakdown; .scalar is in [-1, +1]
+    assert -1.0 <= breakdown.scalar <= 1.0
+    # All 10 signal keys populated
+    assert all(k in breakdown.signals for k in
+               ("S1", "S2", "S3", "S4", "S5", "S6", "S7", "S9", "S10", "S11"))

@@ -186,72 +186,108 @@ class SystemSnapshot:
     queue_profile: QueueProfile | None = None
     in_flight_calls: list[InFlightCall] = field(default_factory=list)
 
-    def pressure_for(self, model) -> float:
-        if getattr(model, "is_local", False):
-            return self._local_pressure()
-        # Pool profile: free-tier cloud = time_bucketed; paid cloud = per_call.
-        if getattr(model, "is_free", False) is True:
-            kwargs = dict(
-                depletion_threshold=0.30,
-                depletion_max=-0.5,
-                abundance_mode="time_decay",
-                exhausted_neutral=True,
-            )
-        else:
-            kwargs = dict(
-                depletion_threshold=0.15,
-                depletion_max=-1.0,
-                abundance_mode="flat",
-                exhausted_neutral=False,
-            )
+    def pressure_for(
+        self,
+        model,
+        *,
+        task_difficulty: int = 5,
+        est_per_call_tokens: int = 0,
+        est_per_task_tokens: int = 0,
+        est_iterations: int = 1,
+        est_call_cost: float = 0.0,
+        cap_needed: float = 5.0,
+        consecutive_failures: int = 0,
+    ):
+        """Compute pressure breakdown via 10 signals + 4 modifiers.
+
+        Returns a PressureBreakdown (use .scalar for the scalar value).
+        """
+        from nerd_herd.breakdown import PressureBreakdown
+        from nerd_herd.burn_log import get_burn_log
+        from nerd_herd.combine import combine_signals
+        from nerd_herd.modifiers import (
+            M1_capacity_amplifier, M2_perishability_dampener, M3_difficulty_weights,
+        )
+        from nerd_herd.signals.s1_remaining import s1_remaining
+        from nerd_herd.signals.s2_call_burden import s2_call_burden
+        from nerd_herd.signals.s3_task_burden import s3_task_burden
+        from nerd_herd.signals.s4_queue_tokens import s4_queue_tokens
+        from nerd_herd.signals.s5_queue_calls import s5_queue_calls
+        from nerd_herd.signals.s6_capable_supply import s6_capable_supply
+        from nerd_herd.signals.s7_burn_rate import s7_burn_rate
+        from nerd_herd.signals.s9_perishability import s9_perishability
+        from nerd_herd.signals.s10_failure import s10_failure
+        from nerd_herd.signals.s11_cost import s11_cost
+
+        # Resolve matrix for this model (model-specific cell wins; provider is fallback)
         provider = getattr(model, "provider", "")
-        model_id = getattr(model, "name", "")
-        # Cloud in-flight count is authored by dispatcher via push_in_flight.
-        # rpd.in_flight (pushed by KDV) is no longer consulted for pressure —
-        # the InFlightCall list is the single source of truth for "running now".
+        prov = self.cloud.get(provider)
+        model_state = (prov.models.get(getattr(model, "name", "")) if prov else None)
+        matrix = (model_state.limits if model_state else
+                  prov.limits if prov else
+                  RateLimitMatrix())
+
+        # Profile selection (free vs paid)
+        profile = "time_bucketed" if getattr(model, "is_free", False) else "per_call"
+
+        # Time-to-reset for the model's RPD cell (fall back to provider rpd)
+        rpd_cell = matrix.rpd if matrix.rpd.limit else (
+            prov.limits.rpd if prov else RateLimit()
+        )
+        import time as _time
+        now = _time.time()
+        reset_in = max(0.0, (rpd_cell.reset_at - now)) if rpd_cell.reset_at else 0.0
+
+        # Total in-flight count for the model's pool
         in_flight_n = sum(
             1 for c in self.in_flight_calls
-            if not c.is_local and c.provider == provider and c.model == model_id
+            if not c.is_local and c.provider == provider and c.model == getattr(model, "name", "")
         )
-        prov = self.cloud.get(provider)
-        if prov is None:
-            return 0.0
-        m = prov.models.get(model_id)
-        if m is None:
-            if prov.limits.rpd.limit:
-                return compute_pool_pressure(
-                    remaining=prov.limits.rpd.remaining,
-                    limit=prov.limits.rpd.limit,
-                    reset_at=prov.limits.rpd.reset_at,
-                    in_flight_count=in_flight_n,
-                    **kwargs,
-                ).value
-            return 0.0
-        # Per-snapshot memoization keyed on rpd fields + in-flight count +
-        # pool-profile kwargs (value depends on all).
-        key = (
-            m.limits.rpd.remaining,
-            m.limits.rpd.limit,
-            m.limits.rpd.reset_at,
-            in_flight_n,
-            kwargs["depletion_threshold"],
-            kwargs["depletion_max"],
-            kwargs["abundance_mode"],
-            kwargs["exhausted_neutral"],
+
+        # Compute signals
+        sig = {
+            "S1": s1_remaining(matrix, reset_in_secs=reset_in, in_flight=in_flight_n, profile=profile),
+            "S2": s2_call_burden(matrix, est_per_call_tokens=est_per_call_tokens),
+            "S3": s3_task_burden(matrix, est_per_task_tokens=est_per_task_tokens),
+            "S4": s4_queue_tokens(matrix, queue=self.queue_profile or QueueProfile()),
+            "S5": s5_queue_calls(matrix, queue=self.queue_profile or QueueProfile()),
+            "S6": s6_capable_supply(model, queue=self.queue_profile or QueueProfile(),
+                                    eligible_models=[], iter_avg=float(est_iterations or 8)),
+            "S7": s7_burn_rate(matrix, provider=provider, model=getattr(model, "name", ""),
+                               burn_log=get_burn_log(), now=now),
+            "S9": s9_perishability(model, local=self.local, vram_avail_mb=self.vram_available_mb,
+                                   matrix=matrix, task_difficulty=task_difficulty, now=now),
+            "S10": s10_failure(consecutive_failures=consecutive_failures),
+            "S11": s11_cost(est_call_cost=est_call_cost,
+                            daily_cost_remaining=(matrix.cpd.remaining or 0.0)),
+        }
+
+        # Modifiers
+        weights = M3_difficulty_weights(
+            difficulty=task_difficulty,
+            model_is_paid=not getattr(model, "is_free", False) and not getattr(model, "is_local", False),
         )
-        cached = m.pool_pressure
-        if cached is None or getattr(cached, "_key", None) != key:
-            pp = compute_pool_pressure(
-                remaining=m.limits.rpd.remaining,
-                limit=m.limits.rpd.limit,
-                reset_at=m.limits.rpd.reset_at,
-                in_flight_count=in_flight_n,
-                **kwargs,
-            )
-            object.__setattr__(pp, "_key", key)
-            m.pool_pressure = pp
-            cached = pp
-        return cached.value
+
+        # Apply M1 to negative-arm signals: amplify by limit-aware factor
+        # Use the smallest-limit populated cell as the amplifier basis (worst-axis-wins)
+        smallest_limit = min(
+            (rl.limit for _, rl in matrix.populated_cells() if rl.limit), default=100,
+        )
+        m1 = M1_capacity_amplifier(limit=smallest_limit)
+        for k in ("S1", "S2", "S3", "S4", "S5"):
+            if sig[k] < 0:
+                sig[k] *= m1
+
+        # Apply M2 to positive S9 (over-qualification dampener, perishability-conditional)
+        fit_excess = max(0.0, getattr(model, "cap_score", 5.0) - cap_needed)
+        m2 = M2_perishability_dampener(fit_excess=fit_excess, s9_value=sig["S9"])
+        if sig["S9"] > 0:
+            sig["S9"] *= m2
+
+        breakdown = combine_signals(signals=sig, weights=weights)
+        breakdown.modifiers = {"M1": m1, "M2": m2, "M3_difficulty": task_difficulty,
+                               "weights": dict(weights)}
+        return breakdown
 
     def _local_pressure(self) -> float:
         # Signed scarcity in [-1, +1]: positive = abundant capacity,

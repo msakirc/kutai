@@ -171,6 +171,11 @@ class InFlightCall:
 class QueueProfile:
     hard_tasks_count: int = 0
     total_ready_count: int = 0
+    # New fields (2026-04-29 — pressure utilization equilibrium)
+    by_difficulty: dict[int, int] = field(default_factory=dict)
+    by_capability: dict[str, int] = field(default_factory=dict)
+    projected_tokens: int = 0
+    projected_calls: int = 0
 
 
 @dataclass

@@ -28,16 +28,22 @@ class RateLimitSnapshot:
     tpm_remaining: int | None = None
     tpm_reset_at: float | None = None
 
-    # Daily limits (Cerebras, SambaNova, Gemini)
+    # Daily limits (Cerebras, SambaNova, Gemini, Groq paid tiers)
     rpd_limit: int | None = None
     rpd_remaining: int | None = None
     rpd_reset_at: float | None = None
+
+    # Token-day limits (Groq paid tiers expose these on some models)
+    tpd_limit: int | None = None
+    tpd_remaining: int | None = None
+    tpd_reset_at: float | None = None
 
     def has_any_data(self) -> bool:
         return any(v is not None for v in [
             self.rpm_limit, self.rpm_remaining,
             self.tpm_limit, self.tpm_remaining,
             self.rpd_limit, self.rpd_remaining,
+            self.tpd_limit, self.tpd_remaining,
         ])
 
 
@@ -234,9 +240,51 @@ def _parse_gemini(h: dict) -> RateLimitSnapshot:
     return snap
 
 
+def _parse_groq(h: dict) -> RateLimitSnapshot:
+    """Parse Groq's x-ratelimit-* headers.
+
+    Groq's standard response headers carry per-minute axes only:
+        x-ratelimit-limit-requests          (RPM)
+        x-ratelimit-remaining-requests
+        x-ratelimit-reset-requests
+        x-ratelimit-limit-tokens            (TPM)
+        x-ratelimit-remaining-tokens
+        x-ratelimit-reset-tokens
+
+    Some paid-tier Groq models additionally expose daily axes
+    (forward-compat, observed on selected accounts):
+        x-ratelimit-limit-requests-day      (RPD)
+        x-ratelimit-remaining-requests-day
+        x-ratelimit-reset-requests-day
+        x-ratelimit-limit-tokens-day        (TPD)
+        x-ratelimit-remaining-tokens-day
+        x-ratelimit-reset-tokens-day
+
+    Without daily-axis parsing, RPD/TPD only ever land via static
+    config in models.yaml — admission gate misses real provider
+    quota churn until 429. This parser populates day-axis cells
+    when the provider sends them, otherwise behaves like openai_style.
+    """
+    snap = _parse_openai_style(h)
+
+    rpd_limit = _safe_int(h.get("x-ratelimit-limit-requests-day"))
+    if rpd_limit is not None:
+        snap.rpd_limit = rpd_limit
+        snap.rpd_remaining = _safe_int(h.get("x-ratelimit-remaining-requests-day"))
+        snap.rpd_reset_at = _parse_reset_duration(h.get("x-ratelimit-reset-requests-day", ""))
+
+    tpd_limit = _safe_int(h.get("x-ratelimit-limit-tokens-day"))
+    if tpd_limit is not None:
+        snap.tpd_limit = tpd_limit
+        snap.tpd_remaining = _safe_int(h.get("x-ratelimit-remaining-tokens-day"))
+        snap.tpd_reset_at = _parse_reset_duration(h.get("x-ratelimit-reset-tokens-day", ""))
+
+    return snap
+
+
 _PROVIDER_PARSERS = {
     "openai": _parse_openai_style,
-    "groq": _parse_openai_style,
+    "groq": _parse_groq,
     "anthropic": _parse_anthropic,
     "cerebras": _parse_cerebras,
     "sambanova": _parse_sambanova,

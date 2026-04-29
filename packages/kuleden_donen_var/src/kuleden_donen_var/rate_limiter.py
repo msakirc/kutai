@@ -361,6 +361,14 @@ class RateLimitState:
         if snap.rpd_reset_at is not None:
             self.rpd_reset_at = snap.rpd_reset_at
 
+        # Token-day limits (Groq paid tiers, others as they expose them)
+        if snap.tpd_limit is not None:
+            self.tpd_limit = snap.tpd_limit
+        if snap.tpd_remaining is not None:
+            self.tpd_remaining = snap.tpd_remaining
+        if snap.tpd_reset_at is not None:
+            self.tpd_reset_at = snap.tpd_reset_at
+
 
 class RateLimitManager:
     """

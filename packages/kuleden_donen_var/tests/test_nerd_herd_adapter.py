@@ -74,3 +74,39 @@ def test_adapter_copies_tpm_cell_when_present():
     assert m.limits.tpm.limit == 6000
     assert m.limits.rpm.limit == 30
     assert m.limits.rpd.limit == 14_400
+
+
+def test_adapter_forwards_groq_daily_headers_end_to_end(kdv):
+    """Header → snapshot → state → adapter → matrix.tpd / matrix.rpd.
+
+    Validates the full pipeline works for Groq daily axes: parser
+    populates snapshot, state.update_from_snapshot writes through,
+    adapter forwards to matrix cells consumed by S1/S2/S9 signals.
+    """
+    from kuleden_donen_var.header_parser import parse_rate_limit_headers
+    kdv.register("groq/llama-3.1-70b", "groq", rpm=1000, tpm=200_000)
+    state = kdv._rate_limiter.model_limits["groq/llama-3.1-70b"]
+    headers = {
+        "x-ratelimit-limit-requests": "1000",
+        "x-ratelimit-remaining-requests": "950",
+        "x-ratelimit-limit-tokens": "200000",
+        "x-ratelimit-remaining-tokens": "180000",
+        "x-ratelimit-limit-requests-day": "100000",
+        "x-ratelimit-remaining-requests-day": "95000",
+        "x-ratelimit-reset-requests-day": "3600s",
+        "x-ratelimit-limit-tokens-day": "10000000",
+        "x-ratelimit-remaining-tokens-day": "9500000",
+        "x-ratelimit-reset-tokens-day": "3600s",
+    }
+    snap = parse_rate_limit_headers("groq", headers)
+    state.update_from_snapshot(snap)
+    cloud_state = build_cloud_provider_state(kdv, "groq")
+    m = cloud_state.models["groq/llama-3.1-70b"]
+    # Minute axis
+    assert m.limits.rpm.limit == 1000
+    assert m.limits.tpm.limit == 200_000
+    # Daily axis (the new piece)
+    assert m.limits.rpd.limit == 100_000
+    assert m.limits.rpd.remaining == 95_000
+    assert m.limits.tpd.limit == 10_000_000
+    assert m.limits.tpd.remaining == 9_500_000

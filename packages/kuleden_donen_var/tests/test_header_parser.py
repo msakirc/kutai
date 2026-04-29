@@ -30,6 +30,58 @@ def test_openai_style_headers():
     assert snap.tpm_remaining == 100000
     assert snap.rpm_reset_at is not None
     assert snap.rpm_reset_at > time.time()
+    # Daily axes absent → snapshot leaves them None
+    assert snap.rpd_limit is None
+    assert snap.tpd_limit is None
+
+
+def test_groq_with_daily_axes():
+    """Groq paid-tier responses with both minute + daily axes populate
+    all four cells. Validates RPM/TPM/RPD/TPD plumbing through to snapshot."""
+    headers = {
+        # Minute axis
+        "x-ratelimit-limit-requests": "1000",
+        "x-ratelimit-remaining-requests": "950",
+        "x-ratelimit-reset-requests": "30s",
+        "x-ratelimit-limit-tokens": "200000",
+        "x-ratelimit-remaining-tokens": "180000",
+        "x-ratelimit-reset-tokens": "45s",
+        # Daily axis
+        "x-ratelimit-limit-requests-day": "100000",
+        "x-ratelimit-remaining-requests-day": "95000",
+        "x-ratelimit-reset-requests-day": "3600s",
+        "x-ratelimit-limit-tokens-day": "10000000",
+        "x-ratelimit-remaining-tokens-day": "9500000",
+        "x-ratelimit-reset-tokens-day": "3600s",
+    }
+    snap = parse_rate_limit_headers("groq", headers)
+    assert snap is not None
+    assert snap.rpm_limit == 1000
+    assert snap.rpm_remaining == 950
+    assert snap.tpm_limit == 200000
+    assert snap.tpm_remaining == 180000
+    assert snap.rpd_limit == 100000
+    assert snap.rpd_remaining == 95000
+    assert snap.rpd_reset_at is not None
+    assert snap.rpd_reset_at > time.time()
+    assert snap.tpd_limit == 10000000
+    assert snap.tpd_remaining == 9500000
+    assert snap.tpd_reset_at is not None
+
+
+def test_groq_daily_only():
+    """Daily axes alone (no minute) — useful for tier checks."""
+    headers = {
+        "x-ratelimit-limit-tokens-day": "5000000",
+        "x-ratelimit-remaining-tokens-day": "4800000",
+        "x-ratelimit-reset-tokens-day": "7200s",
+    }
+    snap = parse_rate_limit_headers("groq", headers)
+    assert snap is not None
+    assert snap.tpd_limit == 5000000
+    assert snap.tpd_remaining == 4800000
+    assert snap.rpm_limit is None
+    assert snap.tpm_limit is None
 
 
 def test_anthropic_headers():

@@ -56,6 +56,20 @@ def test_state_update_from_snapshot():
     assert state._header_rpm_remaining == 55
 
 
+def test_state_update_from_snapshot_tpd():
+    """tpd_* fields on the snapshot land on RateLimitState; nerd_herd
+    adapter reads them via getattr to populate the matrix's tpd cell."""
+    state = RateLimitState(rpm_limit=1000, tpm_limit=200000)
+    reset_at = time.time() + 3600
+    snap = RateLimitSnapshot(
+        tpd_limit=10_000_000, tpd_remaining=9_500_000, tpd_reset_at=reset_at,
+    )
+    state.update_from_snapshot(snap)
+    assert state.tpd_limit == 10_000_000
+    assert state.tpd_remaining == 9_500_000
+    assert state.tpd_reset_at == reset_at
+
+
 def test_state_daily_limit_exhaustion():
     state = RateLimitState(rpm_limit=30, tpm_limit=100000)
     state.rpd_remaining = 0

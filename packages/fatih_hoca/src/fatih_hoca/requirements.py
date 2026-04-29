@@ -399,10 +399,10 @@ class QuotaPlanner:
             "max_upcoming_difficulty": self._max_upcoming_difficulty,
             "recent_429s": self._recent_429_rate(),
             "queue_profile": {
-                "total_tasks": qp.total_tasks,
-                "cloud_only": qp.cloud_only_count,
-                "needs_vision": qp.needs_vision_count,
-                "needs_thinking": qp.needs_thinking_count,
+                "total_tasks": qp.total_ready_count,
+                "cloud_only": qp.by_capability.get("cloud_only", 0),
+                "needs_vision": qp.by_capability.get("vision", 0),
+                "needs_thinking": qp.by_capability.get("thinking", 0),
                 "hard_tasks": qp.hard_tasks_count,
             },
         }

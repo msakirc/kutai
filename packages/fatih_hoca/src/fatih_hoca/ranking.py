@@ -19,14 +19,14 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from fatih_hoca.capabilities import TaskRequirements, score_model_for_task
-from fatih_hoca.capability_curve import cap_needed_for_difficulty
+from fatih_hoca.capability_curve import cap_needed_for_difficulty, CAP_NEEDED_BY_DIFFICULTY
+from fatih_hoca.estimates import estimate_for
 from fatih_hoca.grading import grading_perf_score
 from fatih_hoca.pools import (
     Pool, classify_pool,
     UTILIZATION_K,
 )
 from fatih_hoca.requirements import get_quota_planner
-from fatih_hoca.scarcity import pool_scarcity
 
 if TYPE_CHECKING:
     pass
@@ -144,50 +144,66 @@ def _apply_utilization_layer(
     scored: list[ScoredModel],
     snapshot: SystemSnapshot,
     task_difficulty: int,
+    reqs: "ModelRequirements | None" = None,
 ) -> None:
     """Apply Phase 2d unified utilization equation.
 
     For each ScoredModel:
-        fit_excess = (cap_score_100 - cap_needed_for_difficulty(d)) / 100
-        scarcity   = pool_scarcity(model, snapshot, d)
-        composite *= 1 + UTILIZATION_K * scarcity * (1 - max(0, fit_excess))
+        breakdown = snapshot.pressure_for(model, task_difficulty=d, ...)
+        composite *= 1 + UTILIZATION_K * breakdown.scalar
 
+    The fit dampener is absorbed inside pressure_for (M2 modifier).
     Queue state is read from snapshot.queue_profile (pushed by Beckman).
     Mutates each .score/.composite_score/.pool/.urgency in place.
     Does NOT re-sort — caller is responsible.
     """
     if not scored:
         return
-    cap_needed = cap_needed_for_difficulty(task_difficulty)
+    # Build estimate_for proxy: reqs already has agent_type; context is optional.
+    task_proxy = reqs  # estimate_for reads task.agent_type and task.context
     for sm in scored:
-        cap_score_100 = sm.capability_score * 10.0
-        fit_excess = (cap_score_100 - cap_needed) / 100.0
-        scarcity = pool_scarcity(sm.model, snapshot, task_difficulty)
         pool = classify_pool(sm.model)
         sm.pool = pool.value
-        # Reuse `urgency` column for scarcity scalar — telemetry schema continuity
-        sm.urgency = scarcity
 
-        if scarcity == 0.0:
+        # btable empty-dict cold-start; populated by Beckman rollup cron (Task 26)
+        estimates = estimate_for(task_proxy, btable={},
+                                 model_is_thinking=getattr(sm.model, "is_thinking", False))
+        prov_state = snapshot.cloud.get(getattr(sm.model, "provider", ""))
+        breakdown = snapshot.pressure_for(
+            sm.model,
+            task_difficulty=task_difficulty,
+            est_per_call_tokens=estimates.per_call_tokens,
+            est_per_task_tokens=estimates.total_tokens,
+            est_iterations=estimates.iterations,
+            est_call_cost=getattr(sm.model, "estimated_cost",
+                                  lambda *_: 0.0)(estimates.in_tokens, estimates.out_tokens),
+            cap_needed=CAP_NEEDED_BY_DIFFICULTY.get(task_difficulty, 5.0),
+            consecutive_failures=(
+                getattr(prov_state, "consecutive_failures", 0) if prov_state else 0
+            ),
+        )
+        scalar = breakdown.scalar
+        # For per_call (paid) models, suppress positive pressure on easy/mid tasks.
+        # S1 flat-abundance (+1.0 when budget is full) is correct for admission
+        # (don't block a call) but wrong for ranking on easy tasks — it would boost
+        # expensive paid models over local/free alternatives, wasting quota.
+        # On hard tasks (d>=7) the positive signal is appropriate: the right tool
+        # (paid cloud) should win against an over-stickied local.
+        # Conservation (negative) signals always apply at full strength.
+        if pool == Pool.PER_CALL and scalar > 0 and task_difficulty < 7:
+            scalar = 0.0
+        # Reuse `urgency` column for pressure scalar — telemetry schema continuity
+        sm.urgency = scalar
+
+        if scalar == 0.0:
             continue
-        # Symmetric fit dampener: positive scarcity ("burn me") only makes
-        # sense when the candidate is well-fit. An over-qualified candidate
-        # shouldn't be boosted onto an easy task (Claude on d=3), and an
-        # under-qualified candidate shouldn't be boosted onto a hard one
-        # (loaded local on d=8 "because it's idle"). Conservation signals
-        # (scarcity < 0) apply at full strength — we always want to reserve
-        # expensive quota regardless of the current task's fit.
-        if scarcity > 0:
-            fit_dampener = max(0.0, 1.0 - abs(fit_excess))
-        else:
-            fit_dampener = 1.0 - max(0.0, fit_excess)
-        adjustment = 1.0 + UTILIZATION_K * scarcity * fit_dampener
+        adjustment = 1.0 + UTILIZATION_K * scalar
         if adjustment == 1.0:
             continue
         sm.score *= adjustment
         sm.composite_score = sm.score
         sm.reasons.append(
-            f"util={pool.value}:s={scarcity:+.2f}×({fit_dampener:.2f})→{adjustment:.3f}"
+            f"util={pool.value}:s={scalar:+.2f}→{adjustment:.3f}"
         )
 
 
@@ -621,13 +637,17 @@ def rank_candidates(
     planner = get_quota_planner()
     if getattr(snapshot, "queue_profile", None) is None and planner.queue_profile is not None:
         try:
-            snapshot.queue_profile = planner.queue_profile
+            # Only mirror if the planner profile is nerd_herd-compatible (has projected_tokens).
+            # fatih_hoca.requirements.QueueProfile lacks this field and would break pressure_for.
+            if hasattr(planner.queue_profile, "projected_tokens"):
+                snapshot.queue_profile = planner.queue_profile
         except Exception:
             pass
     _apply_utilization_layer(
         scored,
         snapshot,
         task_difficulty=reqs.difficulty,
+        reqs=reqs,
     )
     scored.sort(key=lambda c: -c.score)
 

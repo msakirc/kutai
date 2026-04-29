@@ -96,7 +96,9 @@ def test_rank_prefers_loaded_model():
     unloaded = _make_model("llama-8b", is_loaded=False)
     snap = SystemSnapshot(
         vram_available_mb=8000,
-        local=LocalModelState(model_name="qwen3-30b", measured_tps=15.0),
+        # idle_seconds > 0 so the loaded model gets its S9 perishability signal
+        # (pressure_for returns 0 for idle=0; a warm loaded model is preferred).
+        local=LocalModelState(model_name="qwen3-30b", measured_tps=15.0, idle_seconds=30.0),
     )
     reqs = ModelRequirements(task="coder", difficulty=5)
     ranked = rank_candidates([loaded, unloaded], reqs, snap, failures=[])

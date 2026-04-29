@@ -183,16 +183,11 @@ def _apply_utilization_layer(
             ),
         )
         scalar = breakdown.scalar
-        # For per_call (paid) models, suppress positive pressure on easy/mid tasks.
-        # S1 flat-abundance (+1.0 when budget is full) is correct for admission
-        # (don't block a call) but wrong for ranking on easy tasks — it would boost
-        # expensive paid models over local/free alternatives, wasting quota.
-        # On hard tasks (d>=7) the positive signal is appropriate: the right tool
-        # (paid cloud) should win against an over-stickied local.
-        # Conservation (negative) signals always apply at full strength.
-        if pool == Pool.PER_CALL and scalar > 0 and task_difficulty < 7:
-            scalar = 0.0
-        # Reuse `urgency` column for pressure scalar — telemetry schema continuity
+        # Reuse `urgency` column for pressure scalar — telemetry schema continuity.
+        # Note: per_call positive abundance is suppressed at the source in
+        # s1_remaining.py PROFILE_PARAMS (abundance_max=0.0). Paid abundance
+        # for d>=7 comes from S9 right-tool-perishability — no ranking-layer
+        # gate needed.
         sm.urgency = scalar
 
         if scalar == 0.0:

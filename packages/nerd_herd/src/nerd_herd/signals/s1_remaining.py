@@ -18,8 +18,15 @@ from nerd_herd.types import RateLimit, RateLimitMatrix
 
 # Profile-driven thresholds
 PROFILE_PARAMS: dict[str, dict[str, float]] = {
+    # per_call (paid cloud, pay-per-token): conservation-only. Positive
+    # abundance lives exclusively in S9 right-tool-perishability for hard
+    # tasks (d>=7). Earlier abundance_max=1.0 made paid cloud win even
+    # easy router/classifier calls on remaining budget alone, wasting
+    # quota; ranking.py used to gate that with a d<7 suppression band-aid
+    # — root fix is here so the signal contract stays clean (S1 = stress,
+    # S9 = right-tool).
     "per_call":      {"depletion_threshold": 0.15, "depletion_max": -1.0,
-                      "abundance_mode": "flat", "abundance_max": 1.0,
+                      "abundance_mode": "flat", "abundance_max": 0.0,
                       "time_scale_secs": 86400.0, "exhausted_neutral": False},
     "time_bucketed": {"depletion_threshold": 0.30, "depletion_max": -0.5,
                       "abundance_mode": "time_decay", "abundance_max": 1.0,

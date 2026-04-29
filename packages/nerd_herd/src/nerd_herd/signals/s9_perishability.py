@@ -72,14 +72,18 @@ def s9_perishability(
                 strongest = v
         return strongest
 
-    # Paid cloud — right-tool perishability when budget flush + hard task
+    # Paid cloud — right-tool boost when budget remains AND task is hard.
+    # Earlier this gated on frac>=FLUSH_THRESHOLD copied from the free
+    # perishability arm, but paid pools don't reset, so "near reset"
+    # semantics don't apply. The signal here is "right tool for the task,"
+    # not "use-it-or-lose-it." Any remaining budget on a hard task should
+    # boost paid cloud (S1 depletion arm handles low-frac warning).
     if task_difficulty < PAID_RIGHT_TOOL_DIFFICULTY_THRESHOLD:
         return 0.0
     for _, rl in matrix.request_cells():
         if rl.limit is None or rl.limit <= 0:
             continue
         effective = max(0, (rl.remaining or 0) - rl.in_flight)
-        frac = effective / rl.limit
-        if frac >= FLUSH_THRESHOLD:
+        if effective > 0:
             return 1.0
     return 0.0

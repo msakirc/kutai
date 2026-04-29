@@ -70,7 +70,7 @@ def _build_snapshot_factory(scenario_providers: dict[str, Any]):
         CloudProviderState,
         LocalModelState,
         RateLimit,
-        RateLimits,
+        RateLimitMatrix,
         SystemSnapshot,
     )
 
@@ -109,7 +109,7 @@ def _build_snapshot_factory(scenario_providers: dict[str, Any]):
                     models[model_id] = CloudModelState(
                         model_id=model_id,
                         utilization_pct=0.0,
-                        limits=RateLimits(),
+                        limits=RateLimitMatrix(),
                     )
                     continue
                 reset_in_secs = max(0.0, counter.reset_at - state.virtual_clock)
@@ -122,13 +122,13 @@ def _build_snapshot_factory(scenario_providers: dict[str, Any]):
                 models[model_id] = CloudModelState(
                     model_id=model_id,
                     utilization_pct=util,
-                    limits=RateLimits(rpd=rpd),
+                    limits=RateLimitMatrix(rpd=rpd),
                 )
             cloud[provider] = CloudProviderState(
                 provider=provider,
                 utilization_pct=0.0,
                 consecutive_failures=0,
-                limits=RateLimits(),
+                limits=RateLimitMatrix(),
                 models=models,
             )
         return SystemSnapshot(local=local_snap, cloud=cloud)

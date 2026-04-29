@@ -4,7 +4,7 @@ from nerd_herd.types import (
     ExternalGPUUsage,
     HealthStatus,
     RateLimit,
-    RateLimits,
+    RateLimitMatrix,
     CloudModelState,
     CloudProviderState,
     LocalModelState,
@@ -95,7 +95,7 @@ def test_cloud_model_state():
     m = CloudModelState(model_id="gpt-4o", utilization_pct=42.5)
     assert m.model_id == "gpt-4o"
     assert m.utilization_pct == 42.5
-    assert isinstance(m.limits, RateLimits)
+    assert isinstance(m.limits, RateLimitMatrix)
     assert isinstance(m.limits.rpm, RateLimit)
 
 
@@ -110,7 +110,7 @@ def test_cloud_provider_state():
     assert p.consecutive_failures == 2
     assert p.last_failure_at == 1713000000
     assert p.models == {}
-    assert isinstance(p.limits, RateLimits)
+    assert isinstance(p.limits, RateLimitMatrix)
 
 
 def test_snapshot_with_cloud():

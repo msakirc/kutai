@@ -85,7 +85,7 @@ def _snapshot_with_cloud(provider, model_id, remaining, limit, reset_in_secs):
         CloudProviderState,
         LocalModelState,
         RateLimit,
-        RateLimits,
+        RateLimitMatrix,
         SystemSnapshot,
     )
     reset_at = int(_time.time() + reset_in_secs)
@@ -93,13 +93,13 @@ def _snapshot_with_cloud(provider, model_id, remaining, limit, reset_in_secs):
     model_state = CloudModelState(
         model_id=model_id,
         utilization_pct=0.0,
-        limits=RateLimits(rpd=rpd),
+        limits=RateLimitMatrix(rpd=rpd),
     )
     prov_state = CloudProviderState(
         provider=provider,
         utilization_pct=0.0,
         consecutive_failures=0,
-        limits=RateLimits(rpd=rpd),
+        limits=RateLimitMatrix(rpd=rpd),
         models={model_id: model_state},
     )
     return SystemSnapshot(local=LocalModelState(), cloud={provider: prov_state})

@@ -15,7 +15,7 @@ from nerd_herd.types import (
     CloudProviderState,
     InFlightCall,
     LocalModelState,
-    RateLimits,
+    RateLimitMatrix,
     SystemSnapshot,
 )
 from yazbunu import get_logger
@@ -318,7 +318,7 @@ class NerdHerdClient:
                 utilization_pct=float(prov_data.get("utilization_pct", 0.0)),
                 consecutive_failures=int(prov_data.get("consecutive_failures", 0)),
                 last_failure_at=prov_data.get("last_failure_at"),
-                limits=RateLimits(),
+                limits=RateLimitMatrix(),
             )
 
         in_flight_calls: list[InFlightCall] = []

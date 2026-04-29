@@ -6,7 +6,7 @@ from nerd_herd.types import (
     CloudModelState,
     CloudProviderState,
     RateLimit,
-    RateLimits,
+    RateLimitMatrix,
 )
 
 
@@ -16,10 +16,10 @@ def _make_state(provider="anthropic", model="claude-sonnet-4-6"):
         models={
             model: CloudModelState(
                 model_id=model,
-                limits=RateLimits(rpd=RateLimit(limit=1000, remaining=900)),
+                limits=RateLimitMatrix(rpd=RateLimit(limit=1000, remaining=900)),
             ),
         },
-        limits=RateLimits(rpd=RateLimit(limit=1000, remaining=900)),
+        limits=RateLimitMatrix(rpd=RateLimit(limit=1000, remaining=900)),
     )
 
 
@@ -74,14 +74,14 @@ def test_provider_level_in_flight_sums_models():
         models={
             "sonnet": CloudModelState(
                 model_id="sonnet",
-                limits=RateLimits(rpd=RateLimit(limit=1000, remaining=900)),
+                limits=RateLimitMatrix(rpd=RateLimit(limit=1000, remaining=900)),
             ),
             "opus": CloudModelState(
                 model_id="opus",
-                limits=RateLimits(rpd=RateLimit(limit=500, remaining=400)),
+                limits=RateLimitMatrix(rpd=RateLimit(limit=500, remaining=400)),
             ),
         },
-        limits=RateLimits(rpd=RateLimit(limit=1500, remaining=1300)),
+        limits=RateLimitMatrix(rpd=RateLimit(limit=1500, remaining=1300)),
     )
     t = InFlightTracker(nerd_herd=nh, state_getter=lambda p: state)
     t.begin_call("anthropic", "sonnet")

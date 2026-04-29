@@ -17,7 +17,7 @@ def _build_snapshot(state: SimState) -> Any:
         CloudProviderState,
         LocalModelState,
         RateLimit,
-        RateLimits,
+        RateLimitMatrix,
         SystemSnapshot,
     )
     cloud: dict[str, CloudProviderState] = {}
@@ -32,7 +32,7 @@ def _build_snapshot(state: SimState) -> Any:
         for model_id, (_mid, is_free) in models.items():
             pool = state.pool_for(provider, model_id, is_free)
             if pool is None:
-                mdict[model_id] = CloudModelState(model_id=model_id, limits=RateLimits())
+                mdict[model_id] = CloudModelState(model_id=model_id, limits=RateLimitMatrix())
                 continue
             rpd = RateLimit(
                 limit=pool.limit,
@@ -41,10 +41,10 @@ def _build_snapshot(state: SimState) -> Any:
                 in_flight=pool.in_flight,
             )
             mdict[model_id] = CloudModelState(
-                model_id=model_id, limits=RateLimits(rpd=rpd),
+                model_id=model_id, limits=RateLimitMatrix(rpd=rpd),
             )
         cloud[provider] = CloudProviderState(
-            provider=provider, limits=RateLimits(), models=mdict,
+            provider=provider, limits=RateLimitMatrix(), models=mdict,
         )
     return SystemSnapshot(local=LocalModelState(), cloud=cloud)
 

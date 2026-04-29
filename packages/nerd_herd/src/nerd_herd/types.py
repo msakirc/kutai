@@ -78,17 +78,61 @@ class RateLimit:
 
 
 @dataclass
-class RateLimits:
+class RateLimitMatrix:
+    # Request-axis cells
     rpm: RateLimit = field(default_factory=RateLimit)
-    tpm: RateLimit = field(default_factory=RateLimit)
+    rph: RateLimit = field(default_factory=RateLimit)
     rpd: RateLimit = field(default_factory=RateLimit)
+    rpw: RateLimit = field(default_factory=RateLimit)
+    rpmonth: RateLimit = field(default_factory=RateLimit)
+
+    # Token-axis cells (total)
+    tpm: RateLimit = field(default_factory=RateLimit)
+    tph: RateLimit = field(default_factory=RateLimit)
+    tpd: RateLimit = field(default_factory=RateLimit)
+    tpw: RateLimit = field(default_factory=RateLimit)
+    tpmonth: RateLimit = field(default_factory=RateLimit)
+
+    # Token-axis cells (split)
+    itpm: RateLimit = field(default_factory=RateLimit)
+    itpd: RateLimit = field(default_factory=RateLimit)
+    otpm: RateLimit = field(default_factory=RateLimit)
+    otpd: RateLimit = field(default_factory=RateLimit)
+
+    # Cost-axis cells
+    cpd: RateLimit = field(default_factory=RateLimit)
+    cpmonth: RateLimit = field(default_factory=RateLimit)
+
+    def populated_cells(self):
+        for name, rl in vars(self).items():
+            if isinstance(rl, RateLimit) and rl.limit is not None and rl.limit > 0:
+                yield name, rl
+
+    def token_cells(self):
+        for name, rl in self.populated_cells():
+            if name.startswith(("tp", "itp", "otp")):
+                yield name, rl
+
+    def request_cells(self):
+        for name, rl in self.populated_cells():
+            if name.startswith("rp"):
+                yield name, rl
+
+    def cost_cells(self):
+        for name, rl in self.populated_cells():
+            if name.startswith("cp"):
+                yield name, rl
+
+
+# Backward-compatible alias
+RateLimits = RateLimitMatrix
 
 
 @dataclass
 class CloudModelState:
     model_id: str = ""
     utilization_pct: float = 0.0
-    limits: RateLimits = field(default_factory=RateLimits)
+    limits: RateLimitMatrix = field(default_factory=RateLimitMatrix)
     pool_pressure: PoolPressure | None = None
 
 
@@ -98,7 +142,7 @@ class CloudProviderState:
     utilization_pct: float = 0.0
     consecutive_failures: int = 0
     last_failure_at: int | None = None   # epoch seconds
-    limits: RateLimits = field(default_factory=RateLimits)
+    limits: RateLimitMatrix = field(default_factory=RateLimitMatrix)
     models: dict[str, CloudModelState] = field(default_factory=dict)
 
 

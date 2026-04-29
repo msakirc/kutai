@@ -1,7 +1,7 @@
 import time
 from unittest.mock import MagicMock
 from nerd_herd.types import (
-    SystemSnapshot, CloudProviderState, CloudModelState, RateLimit, RateLimits,
+    SystemSnapshot, CloudProviderState, CloudModelState, RateLimit, RateLimitMatrix,
     LocalModelState,
 )
 

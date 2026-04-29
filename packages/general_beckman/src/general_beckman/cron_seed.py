@@ -64,6 +64,12 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 60,
         "payload": {"_executor": "kdv_persist"},
     },
+    {
+        "title": "btable_rollup",
+        "description": "Aggregate model_call_tokens into step_token_stats percentiles (14-day window)",
+        "interval_seconds": 3600,  # hourly
+        "payload": {"_marker": "btable_rollup"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.

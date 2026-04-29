@@ -40,6 +40,8 @@ async def fire_due() -> None:
                 await _refresh_benchmarks_if_stale()
             elif marker == "nerd_herd_health":
                 await _nerd_herd_health_alert()
+            elif marker == "btable_rollup":
+                await _btable_rollup()
             else:
                 await _insert_scheduled_task(row, payload)
             await _advance_schedule(row, now)
@@ -114,6 +116,15 @@ async def _refresh_benchmarks_if_stale() -> None:
             await hoca()
     except Exception as e:
         logger.debug("hoca benchmark refresh skipped", error=str(e))
+
+
+async def _btable_rollup() -> None:
+    try:
+        from general_beckman.btable_rollup import run_rollup
+        n = await run_rollup()
+        logger.info("btable_rollup complete", rows_written=n)
+    except Exception as e:
+        logger.warning("btable_rollup failed", error=str(e))
 
 
 async def _nerd_herd_health_alert() -> None:

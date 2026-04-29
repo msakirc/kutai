@@ -297,3 +297,115 @@ def test_response_format_ignored_with_function_calling_tools(mock_litellm):
     # tools branch wins; json_schema not propagated (would conflict with tool_choice)
     assert kwargs.get("tools") == tools
     assert kwargs.get("response_format") != _RF_JSON_SCHEMA
+
+
+# ── task_obj telemetry plumbing ─────────────────────────────────────────
+
+
+@patch("hallederiz_kadir.caller.litellm")
+def test_task_obj_populates_record_call_tokens(mock_litellm):
+    """task_obj dict reaches record_call_tokens with non-NULL keys.
+
+    Without this plumbing the B-table rollup filters every row out (it
+    requires non-NULL agent_type + workflow_step_id) and calibration
+    starves. Verify task.id, task.agent_type, task.context.workflow_step_id,
+    task.context.workflow_phase, iteration_n, call_category all flow.
+    """
+    captured = {}
+
+    async def _capture(**kw):
+        captured.update(kw)
+
+    resp = _make_litellm_response()
+    with patch("hallederiz_kadir.caller._get_dallama", return_value=None), \
+         patch(
+            "hallederiz_kadir.caller._stream_with_accumulator",
+            new_callable=AsyncMock, return_value=resp,
+         ), \
+         patch("src.infra.db.record_call_tokens", new=_capture):
+        model = _make_model_info(is_local=True)
+        task_obj = {
+            "id": 1234,
+            "agent_type": "coder",
+            "context": {
+                "workflow_step_id": "5.4b",
+                "workflow_phase": "phase_5",
+            },
+        }
+        run_async(call(
+            model=model, messages=[{"role": "user", "content": "hi"}],
+            tools=None, timeout=60.0, task="executor",
+            needs_thinking=False, estimated_output_tokens=500,
+            task_obj=task_obj, iteration_n=3, call_category="main_work",
+        ))
+    assert captured.get("task_id") == 1234
+    assert captured.get("agent_type") == "coder"
+    assert captured.get("workflow_step_id") == "5.4b"
+    assert captured.get("workflow_phase") == "phase_5"
+    assert captured.get("iteration_n") == 3
+    assert captured.get("call_category") == "main_work"
+
+
+@patch("hallederiz_kadir.caller.litellm")
+def test_task_obj_none_yields_null_keys(mock_litellm):
+    """No task_obj (e.g. shopping pipeline) -> NULL keys, no crash.
+
+    Rollup will discard these rows; that's expected. The contract is
+    that the call still succeeds and leaves a row with the call_category.
+    """
+    captured = {}
+
+    async def _capture(**kw):
+        captured.update(kw)
+
+    resp = _make_litellm_response()
+    with patch("hallederiz_kadir.caller._get_dallama", return_value=None), \
+         patch(
+            "hallederiz_kadir.caller._stream_with_accumulator",
+            new_callable=AsyncMock, return_value=resp,
+         ), \
+         patch("src.infra.db.record_call_tokens", new=_capture):
+        model = _make_model_info(is_local=True)
+        run_async(call(
+            model=model, messages=[{"role": "user", "content": "hi"}],
+            tools=None, timeout=60.0, task="executor",
+            needs_thinking=False, estimated_output_tokens=500,
+            call_category="overhead",
+        ))
+    assert captured.get("task_id") is None
+    assert captured.get("agent_type") is None
+    assert captured.get("workflow_step_id") is None
+    assert captured.get("workflow_phase") is None
+    assert captured.get("call_category") == "overhead"
+
+
+@patch("hallederiz_kadir.caller.litellm")
+def test_task_obj_context_as_json_string(mock_litellm):
+    """task['context'] sometimes stored as JSON string in DB rows. Parse it."""
+    import json as _json
+    captured = {}
+
+    async def _capture(**kw):
+        captured.update(kw)
+
+    resp = _make_litellm_response()
+    with patch("hallederiz_kadir.caller._get_dallama", return_value=None), \
+         patch(
+            "hallederiz_kadir.caller._stream_with_accumulator",
+            new_callable=AsyncMock, return_value=resp,
+         ), \
+         patch("src.infra.db.record_call_tokens", new=_capture):
+        model = _make_model_info(is_local=True)
+        task_obj = {
+            "id": 999,
+            "agent_type": "researcher",
+            "context": _json.dumps({"workflow_step_id": "7.6", "workflow_phase": "phase_7"}),
+        }
+        run_async(call(
+            model=model, messages=[{"role": "user", "content": "hi"}],
+            tools=None, timeout=60.0, task="executor",
+            needs_thinking=False, estimated_output_tokens=500,
+            task_obj=task_obj,
+        ))
+    assert captured.get("workflow_step_id") == "7.6"
+    assert captured.get("workflow_phase") == "phase_7"

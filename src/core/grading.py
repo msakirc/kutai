@@ -261,6 +261,7 @@ async def grade_task(task: dict) -> GradeResult:
         estimated_output_tokens=600,
         prefer_speed=True,
         exclude_models=all_excluded,
+        task_obj=task,
     )
 
     raw_content = response.get("content", "")

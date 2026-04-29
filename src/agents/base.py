@@ -2496,6 +2496,8 @@ class BaseAgent:
                         exclude_models=reqs.exclude_models or [],
                         remaining_budget=max(0.0, _remaining),
                         preselected_pick=task.get("preselected_pick") if iteration == 0 else None,
+                        task_obj=task,
+                        iteration_n=iteration,
                     )
                 except Exception as exc:
                     # Let ModelCallFailed propagate — the orchestrator handles
@@ -3775,6 +3777,7 @@ class BaseAgent:
                 ),
                 prefer_speed=True,
                 response_format=response_format,
+                task_obj=task,
             )
         except Exception as exc:
             logger.warning(
@@ -3862,6 +3865,8 @@ class BaseAgent:
                 min_context=reqs.effective_context_needed,
                 priority=reqs.priority,
                 exclude_models=reqs.exclude_models or [],
+                task_obj=task,
+                iteration_n=0,
             )
         except Exception as exc:
             # Propagate non-retryable errors to the orchestrator:
@@ -3959,6 +3964,7 @@ class BaseAgent:
                 estimated_output_tokens=reflect_reqs.estimated_output_tokens,
                 min_context=reflect_reqs.effective_context_needed,
                 prefer_speed=reflect_reqs.prefer_speed,
+                task_obj=task,
             )
             raw = response.get("content", "").strip()
             parsed = self._try_parse_json(raw)

@@ -141,6 +141,15 @@ class LLMDispatcher:
         # Re-injected into the call kwargs at the dispatch site.
         _response_format_kw = kwargs.pop("response_format", None)
 
+        # Telemetry plumbing. task_obj is the agent/workflow Task dict (id,
+        # agent_type, context.workflow_step_id/phase). iteration_n is the
+        # ReAct loop counter. Both feed model_call_tokens for the B-table
+        # rollup; without them rows have NULL keys and the rollup discards
+        # them. None is acceptable for non-task callers (shopping pipeline,
+        # ad-hoc graders) — those rows will be filtered out at rollup.
+        _task_obj_kw = kwargs.pop("task_obj", None)
+        _iteration_n_kw = int(kwargs.pop("iteration_n", 0) or 0)
+
         if preselected_pick is not None and not failures:
             # Iteration 0: reuse Beckman's admission-time Hoca query.
             pick = preselected_pick
@@ -269,6 +278,9 @@ class LLMDispatcher:
                     needs_thinking=needs_thinking,
                     estimated_output_tokens=kwargs.get("estimated_output_tokens", 0),
                     response_format=_response_format_kw,
+                    task_obj=_task_obj_kw,
+                    iteration_n=_iteration_n_kw,
+                    call_category=category.value,
                 )
             except Exception as exc:
                 # hallederiz_kadir wraps known failures as CallError. A raw
@@ -336,6 +348,9 @@ class LLMDispatcher:
             needs_thinking=needs_thinking,
             needs_function_calling=needs_function_calling,
             min_context=_min_context_kw,
+            task_obj=_task_obj_kw,
+            iteration_n=_iteration_n_kw,
+            response_format=_response_format_kw,
             **kwargs,
         )
 

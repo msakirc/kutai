@@ -256,6 +256,9 @@ async def call(
     needs_thinking: bool,
     estimated_output_tokens: int = 1000,
     response_format: dict | None = None,
+    task_obj: dict | None = None,
+    iteration_n: int = 0,
+    call_category: str = "main_work",
 ) -> CallResult | CallError:
     """Execute an LLM call against a single model.
 
@@ -499,15 +502,32 @@ async def call(
                    + parsed["usage"].get("completion_tokens", 0))
     _record_metrics(model.name, parsed["cost"], call_latency * 1000, total_tokens)
 
-    # Per-call token telemetry (feeds B-table rollup + calibration)
+    # Per-call token telemetry (feeds B-table rollup + calibration).
+    # task_obj is the agent/workflow Task dict — when present, populates
+    # the (agent_type, workflow_step_id, workflow_phase) keys the rollup
+    # filters on. Standalone callers (shopping pipeline, ad-hoc) leave
+    # task_obj=None; those rows survive in model_call_tokens but the
+    # rollup ignores them.
     try:
+        _t_ctx = (task_obj.get("context") if isinstance(task_obj, dict) else None) or {}
+        if isinstance(_t_ctx, str):
+            try:
+                import json as _json
+                _t_ctx = _json.loads(_t_ctx) or {}
+            except Exception:
+                _t_ctx = {}
+        _t_id = task_obj.get("id") if isinstance(task_obj, dict) else None
+        _t_agent = task_obj.get("agent_type") if isinstance(task_obj, dict) else None
+        _t_step = _t_ctx.get("workflow_step_id") if isinstance(_t_ctx, dict) else None
+        _t_phase = _t_ctx.get("workflow_phase") if isinstance(_t_ctx, dict) else None
+
         from src.infra.db import record_call_tokens
         await record_call_tokens(
-            task_id=getattr(task, "id", None) if task else None,
-            agent_type=getattr(task, "agent_type", None) if task else None,
-            workflow_step_id=(task.context or {}).get("workflow_step_id") if task and getattr(task, "context", None) else None,
-            workflow_phase=(task.context or {}).get("workflow_phase") if task and getattr(task, "context", None) else None,
-            call_category=getattr(task, "call_category", "main_work") if task else "main_work",
+            task_id=_t_id,
+            agent_type=_t_agent,
+            workflow_step_id=_t_step,
+            workflow_phase=_t_phase,
+            call_category=call_category,
             model=model.name,
             provider=model.provider,
             is_streaming=use_stream,
@@ -516,7 +536,7 @@ async def call(
             reasoning_tokens=getattr(raw_result.usage, "reasoning_tokens", 0) if not use_stream and getattr(raw_result, "usage", None) else 0,
             total_tokens=total_tokens,
             duration_ms=int(call_latency * 1000),
-            iteration_n=0,  # plumbed in a later task
+            iteration_n=int(iteration_n or 0),
             success=True,
         )
     except Exception:

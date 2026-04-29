@@ -45,7 +45,8 @@ async def test_variant_choice_compare_all_runs_format_compare():
     context = MagicMock()
     await iface._handle_variant_choice(update, context)
     iface._run_compare_all_and_reply.assert_awaited_once()
-    assert chat_id not in iface._pending_action
+    # Pending stays alive so user can still pick a line after reading cards
+    assert chat_id in iface._pending_action
 
 
 @pytest.mark.asyncio

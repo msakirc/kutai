@@ -43,15 +43,32 @@ class ProductGroup:
     variant: str | None = None
     authenticity_confidence: float = 0.5
     matches_user_intent: bool = True
+    line_id: str = ""           # LLM-emitted canonical slug; primary bucket key
+
+
+@dataclass
+class AspectInsight:
+    """Per-aspect (camera, battery, screen, perf, build, value, software, seller, shipping)
+    sentiment + mention count + verbatim quote."""
+    aspect: str
+    sentiment: float            # -1.0 (neg) … +1.0 (pos)
+    mention_count: int
+    summary: str                # one-line synthesis
+    quote: str = ""             # verbatim snippet (best representative)
 
 
 @dataclass
 class ReviewSynthesis:
-    """Synthesised pros/cons/red-flags for one ProductGroup."""
+    """Synthesised pros/cons/red-flags + aspect-level insights for one ProductGroup."""
     praise: list[str]
     complaints: list[str]
     red_flags: list[str]
     insufficient_data: bool
+    aspects: list[AspectInsight] = field(default_factory=list)
+    overall_sentiment: float = 0.0       # -1..1
+    review_volume: int = 0               # snippet count fed to LLM
+    notable_quote: str = ""              # single most informative verbatim
+    comparative_mentions: list[str] = field(default_factory=list)  # quotes referencing rival products
 
 
 async def _fetch_products(query: str) -> list:
@@ -67,8 +84,136 @@ def _attr(obj, name: str, default=None):
     return getattr(obj, name, default)
 
 
-_REVIEW_FETCH_TIMEOUT_S = 15
-_MAX_SNIPPETS_PER_PRODUCT = 10
+_REVIEW_FETCH_TIMEOUT_S = 45
+_MAX_SNIPPETS_PER_PRODUCT = 80
+_REVIEW_PAGES = 8
+_MIN_SNIPPET_CHARS = 20
+
+# Community / forum sources — tapped when commerce listings yield thin reviews
+# or when a deep-scrape pass is requested (post-pick).
+_COMMUNITY_SOURCES = ("eksisozluk", "sikayetvar", "technopat", "donanimhaber")
+_COMMUNITY_TOPICS_PER_SOURCE = 3
+_COMMUNITY_PAGES_PER_TOPIC = 2
+_COMMUNITY_TIMEOUT_S = 30
+_THIN_REVIEW_THRESHOLD = 25       # below this → trigger community augment
+
+# Boilerplate fragments common in TR e-commerce reviews — low signal.
+_BOILERPLATE_RE = re.compile(
+    r"^(çok\s+(iyi|güzel|hızlı|memnunum)|teşekkür(ler)?|tavsiye\s+ederim|"
+    r"güvenilir\s+satıcı|kargo\s+(hızlı|özen|güzel)|paketleme\s+güzel|"
+    r"sorunsuz|harika|mükemmel|süper|10\s+numara|5\s+yıldız)\.?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _filter_snippets(snippets: list[str]) -> list[str]:
+    """Drop too-short / boilerplate / near-duplicate snippets. Preserves order."""
+    seen_norm: set[str] = set()
+    out: list[str] = []
+    for s in snippets:
+        s = (s or "").strip()
+        if len(s) < _MIN_SNIPPET_CHARS:
+            continue
+        if _BOILERPLATE_RE.match(s):
+            continue
+        # near-dup detection: first 60 chars normalized
+        norm = re.sub(r"\s+", " ", s.lower())[:60]
+        if norm in seen_norm:
+            continue
+        seen_norm.add(norm)
+        out.append(s)
+    return out
+
+
+async def _fetch_community_reviews(
+    query: str,
+    *,
+    sources: tuple[str, ...] = _COMMUNITY_SOURCES,
+    topics_per_source: int = _COMMUNITY_TOPICS_PER_SOURCE,
+    pages_per_topic: int = _COMMUNITY_PAGES_PER_TOPIC,
+) -> list[str]:
+    """Search forum/community scrapers for *query*, harvest review-style snippets.
+
+    Used to augment thin product-page review piles (e.g. S25 Ultra had only 5
+    snippets from commerce listings). Returns deduped, filtered snippets.
+    Failures per source/topic swallowed — best-effort.
+    """
+    if not query:
+        return []
+    import logging as _logging
+    from src.shopping.scrapers import get_scraper
+
+    # Quiet scraper-level ERROR logs during best-effort community fetch.
+    # Search failures are expected (rate limits, 404s, budget) and shouldn't
+    # surface as Telegram alerts via the global error handler.
+    _scraper_loggers = [
+        _logging.getLogger(f"shopping.scrapers.{s}") for s in sources
+    ]
+    _orig_levels = [(lg, lg.level) for lg in _scraper_loggers]
+    for lg in _scraper_loggers:
+        if lg.level < _logging.CRITICAL:
+            lg.setLevel(_logging.CRITICAL)
+
+    async def _harvest_one_source(name: str) -> list[str]:
+        cls = get_scraper(name)
+        if cls is None:
+            return []
+        try:
+            scraper = cls()
+        except Exception:
+            return []
+        try:
+            topics = await asyncio.wait_for(
+                scraper.search(query, max_results=topics_per_source),
+                timeout=_COMMUNITY_TIMEOUT_S,
+            )
+        except Exception as exc:
+            logger.debug("community search failed", source=name, err=str(exc))
+            return []
+
+        async def _harvest_topic(topic) -> list[str]:
+            url = _attr(topic, "url") or ""
+            if not url:
+                return []
+            try:
+                reviews = await asyncio.wait_for(
+                    scraper.get_reviews(url, max_pages=pages_per_topic),
+                    timeout=_COMMUNITY_TIMEOUT_S,
+                )
+            except Exception:
+                return []
+            out: list[str] = []
+            for r in reviews or []:
+                if not isinstance(r, dict):
+                    continue
+                txt = str(r.get("text") or r.get("content") or r.get("comment") or "").strip()
+                if txt:
+                    out.append(txt)
+            return out
+
+        results = await asyncio.gather(
+            *[_harvest_topic(t) for t in (topics or [])],
+            return_exceptions=True,
+        )
+        flat: list[str] = []
+        for r in results:
+            if isinstance(r, list):
+                flat.extend(r)
+        return flat
+
+    try:
+        per_source = await asyncio.gather(
+            *[_harvest_one_source(s) for s in sources],
+            return_exceptions=True,
+        )
+    finally:
+        for lg, lvl in _orig_levels:
+            lg.setLevel(lvl)
+    pile: list[str] = []
+    for r in per_source:
+        if isinstance(r, list):
+            pile.extend(r)
+    return _filter_snippets(pile)
 
 
 async def _fetch_reviews(products: list) -> dict[str, list[str]]:
@@ -92,7 +237,7 @@ async def _fetch_reviews(products: list) -> dict[str, list[str]]:
         try:
             scraper = scraper_cls()
             reviews = await asyncio.wait_for(
-                scraper.get_reviews(url, max_pages=1),
+                scraper.get_reviews(url, max_pages=_REVIEW_PAGES),
                 timeout=_REVIEW_FETCH_TIMEOUT_S,
             )
         except Exception as exc:
@@ -106,6 +251,7 @@ async def _fetch_reviews(products: list) -> dict[str, list[str]]:
             text = str(text).strip()
             if text:
                 snippets.append(text)
+        snippets = _filter_snippets(snippets)
         return url, snippets[:_MAX_SNIPPETS_PER_PRODUCT]
 
     tasks = [asyncio.create_task(_one(p)) for p in products]
@@ -333,6 +479,11 @@ async def _synthesis_llm_call(prompt: str) -> dict:
     """Dispatch the synthesis prompt. Returns the dispatcher response dict."""
     from src.core.llm_dispatcher import get_dispatcher, CallCategory
     dispatcher = get_dispatcher()
+    # Estimate input size — review prompts can balloon to ~25K tokens at
+    # 80-snippet cap × 5 listings. Floor the load to avoid getting routed
+    # onto an 8K-ctx model that would truncate the snippet pile.
+    char_count = len(prompt)
+    est_tokens = char_count // 3
     return await dispatcher.request(
         category=CallCategory.MAIN_WORK,
         task="shopping_review_synthesizer",
@@ -342,6 +493,8 @@ async def _synthesis_llm_call(prompt: str) -> dict:
         # no chain-of-thought needed. Suppress reasoning to stay under the
         # dispatch timeout when a thinking model happens to be resident.
         needs_thinking=False,
+        estimated_output_tokens=1200,
+        min_context=max(8192, est_tokens + 2048),
         messages=[
             {"role": "system", "content": "You output valid JSON only."},
             {"role": "user", "content": prompt},
@@ -350,20 +503,97 @@ async def _synthesis_llm_call(prompt: str) -> dict:
 
 
 def _insufficient() -> ReviewSynthesis:
-    return ReviewSynthesis(praise=[], complaints=[], red_flags=[], insufficient_data=True)
+    return ReviewSynthesis(
+        praise=[], complaints=[], red_flags=[], insufficient_data=True,
+        aspects=[], overall_sentiment=0.0, review_volume=0,
+        notable_quote="", comparative_mentions=[],
+    )
+
+
+_ASPECT_ICONS = {
+    "kamera": "📷", "pil": "🔋", "ekran": "📱", "performans": "⚡",
+    "yapım_kalitesi": "🛠", "yazılım": "💾", "fiyat": "💰", "satıcı": "🏬",
+    "kargo": "📦", "ses": "🔊", "şarj": "🔌", "güncellemeler": "🔄",
+    "oyun": "🎮", "boyut": "📐", "ergonomi": "🤲", "ısınma": "🌡",
+}
+
+
+def _sentiment_bar(s: float, width: int = 6) -> str:
+    """Render sentiment as a small bar. Negative = ░, neutral = ▒, positive = █."""
+    s = max(-1.0, min(1.0, s))
+    if s >= 0.6:
+        return "█" * width
+    if s >= 0.2:
+        return "█" * (width - 1) + "▒"
+    if s >= -0.2:
+        return "▒" * width
+    if s >= -0.6:
+        return "░" * (width - 1) + "▒"
+    return "░" * width
+
+
+def _sentiment_label(s: float) -> str:
+    if s >= 0.6:
+        return "çok pozitif"
+    if s >= 0.2:
+        return "pozitif"
+    if s >= -0.2:
+        return "karışık"
+    if s >= -0.6:
+        return "negatif"
+    return "çok negatif"
 
 
 async def step_synthesize_reviews(
-    group: ProductGroup, candidates: list[Candidate],
+    group: ProductGroup,
+    candidates: list[Candidate],
+    *,
+    deep_scrape: bool = False,
+    community_query: str | None = None,
 ) -> ReviewSynthesis:
-    """LLM-based review synthesis for one group. Returns insufficient_data on failure."""
+    """LLM-based review synthesis for one group.
+
+    *deep_scrape=True* always taps community sources (eksisozluk / sikayetvar /
+    forums) for the line — used after user picks a variant. When False, taps
+    community only as fallback when commerce snippets are thin.
+
+    *community_query* defaults to group.representative_title; pass a cleaner
+    query (e.g. base_model only) for better forum search hits.
+    """
     from src.workflows.shopping.prompts_v2 import SYNTHESIS_PROMPT
 
-    # Gather snippets from all group members
+    # Gather snippets from all group members. Commerce snippets already filtered
+    # in _fetch_reviews; don't re-filter (would drop short test fixtures).
     snippets: list[str] = []
     for idx in group.member_indices:
         if 0 <= idx < len(candidates):
             snippets.extend(s for s in candidates[idx].review_snippets if s and s.strip())
+
+    # Augment with community/forum sources only on explicit deep_scrape (post-pick).
+    # Auto-augment on thin commerce piles disabled — community scrapers hit strict
+    # rate limits / daily budgets and surfaced ERROR-level alerts during compare-all.
+    # Deep_scrape runs after user commits to a line, where extra latency + risk is OK.
+    if deep_scrape:
+        cq = (community_query or group.base_model or group.representative_title or "").strip()
+        if cq:
+            try:
+                community = await _fetch_community_reviews(cq)
+            except Exception as exc:
+                logger.warning("community augment failed for %s: %s", cq, exc)
+                community = []
+            if community:
+                # Merge while keeping order + dedup against existing snippets
+                seen = {re.sub(r"\s+", " ", s.lower())[:60] for s in snippets}
+                for s in community:
+                    norm = re.sub(r"\s+", " ", s.lower())[:60]
+                    if norm in seen:
+                        continue
+                    seen.add(norm)
+                    snippets.append(s)
+                logger.info(
+                    "synthesize community-augmented",
+                    line=cq, before=len(snippets) - len(community), added=len(community),
+                )
 
     if not snippets:
         logger.info(
@@ -371,6 +601,11 @@ async def step_synthesize_reviews(
             representative_title=group.representative_title,
         )
         return _insufficient()
+
+    # Cap total to avoid context blow-up when community pile is huge
+    cap = _MAX_SNIPPETS_PER_PRODUCT * (3 if deep_scrape else 2)
+    if len(snippets) > cap:
+        snippets = snippets[:cap]
 
     prompt = SYNTHESIS_PROMPT.format(
         representative_title=group.representative_title,
@@ -390,15 +625,54 @@ async def step_synthesize_reviews(
         logger.warning("synthesis LLM output not parseable: %s", exc)
         return _insufficient()
 
-    def _take_list(key: str) -> list[str]:
+    def _take_list(key: str, n: int = 5) -> list[str]:
         v = parsed.get(key) or []
-        return [str(x).strip() for x in v if isinstance(x, (str, int, float)) and str(x).strip()][:5]
+        return [str(x).strip() for x in v if isinstance(x, (str, int, float)) and str(x).strip()][:n]
+
+    aspects: list[AspectInsight] = []
+    for a in (parsed.get("aspects") or [])[:8]:
+        if not isinstance(a, dict):
+            continue
+        try:
+            aspects.append(AspectInsight(
+                aspect=str(a.get("aspect", "")).strip().lower(),
+                sentiment=max(-1.0, min(1.0, float(a.get("sentiment", 0.0)))),
+                mention_count=int(a.get("mention_count", 0)),
+                summary=str(a.get("summary", "")).strip(),
+                quote=str(a.get("quote", "")).strip(),
+            ))
+        except (TypeError, ValueError):
+            continue
+    aspects.sort(key=lambda a: a.mention_count, reverse=True)
+
+    try:
+        overall = max(-1.0, min(1.0, float(parsed.get("overall_sentiment", 0.0))))
+    except (TypeError, ValueError):
+        overall = 0.0
+
+    # Dedup comparative_mentions — LLM occasionally repeats the same snippet
+    raw_comp = _take_list("comparative_mentions", n=8)
+    seen_comp: set[str] = set()
+    deduped_comp: list[str] = []
+    for q in raw_comp:
+        norm = re.sub(r"\s+", " ", q.lower())[:80]
+        if norm in seen_comp:
+            continue
+        seen_comp.add(norm)
+        deduped_comp.append(q)
+        if len(deduped_comp) >= 3:
+            break
 
     syn = ReviewSynthesis(
         praise=_take_list("praise"),
         complaints=_take_list("complaints"),
         red_flags=_take_list("red_flags"),
         insufficient_data=bool(parsed.get("insufficient_data", False)),
+        aspects=aspects,
+        overall_sentiment=overall,
+        review_volume=len(snippets),
+        notable_quote=str(parsed.get("notable_quote", "")).strip()[:240],
+        comparative_mentions=deduped_comp,
     )
     logger.info(
         "step_synthesize done",
@@ -491,46 +765,110 @@ def format_group_card(
     """Reviews-first Telegram markdown for one product group."""
     members = [candidates[i] for i in group.member_indices if 0 <= i < len(candidates)]
 
-    rating = next((m.rating for m in members if m.rating is not None), None)
-    review_count = next((m.review_count for m in members if m.review_count), None)
+    # Aggregate ratings — only count members with actual review backing.
+    # Default-5.0/0-review listings (price aggregators, never-rated SKUs) pollute
+    # the weighted average and surface as misleading "⭐ 5.0 (0)" in the UI.
+    rated = [m for m in members if m.rating is not None and (m.review_count or 0) > 0]
+    total_reviews = sum(m.review_count or 0 for m in members)
+    sources_with_reviews = sum(1 for m in members if (m.review_count or 0) > 0)
+    if rated:
+        weights = [m.review_count for m in rated]
+        wsum = sum(weights)
+        agg_rating = sum(m.rating * w for m, w in zip(rated, weights)) / wsum if wsum else None
+    else:
+        agg_rating = None
 
     lines: list[str] = []
     head = f"*{group.representative_title}*"
-    if rating is not None:
-        rc = f" ({review_count} değerlendirme)" if review_count else ""
-        head += f" ⭐ {rating:.1f}/5{rc}"
+    if agg_rating is not None:
+        rc_parts = []
+        if total_reviews:
+            rc_parts.append(f"{total_reviews:,}".replace(",", ".") + " değerlendirme")
+        if sources_with_reviews >= 2:
+            rc_parts.append(f"{sources_with_reviews} kaynak")
+        rc = f" ({', '.join(rc_parts)})" if rc_parts else ""
+        head += f" ⭐ {agg_rating:.1f}/5{rc}"
+    elif total_reviews:
+        head += f" ({total_reviews:,} değerlendirme)".replace(",", ".")
     lines.append(head)
     lines.append("")
 
     if not synthesis.insufficient_data:
-        if synthesis.praise:
-            lines.append("👍 Kullanıcılar beğeniyor:")
-            lines.extend(f"• {p}" for p in synthesis.praise)
+        # Aspect-rich block (preferred when LLM emitted aspects)
+        if synthesis.aspects:
+            vol = synthesis.review_volume or 0
+            vol_note = f" ({vol} yorum analiz edildi)" if vol else ""
+            lines.append(f"📊 *İnceleme analizi*{vol_note}")
+            for a in synthesis.aspects:
+                if not a.aspect or a.mention_count <= 0:
+                    continue
+                icon = _ASPECT_ICONS.get(a.aspect, "•")
+                bar = _sentiment_bar(a.sentiment)
+                label = _sentiment_label(a.sentiment)
+                aspect_title = a.aspect.replace("_", " ").capitalize()
+                pct = f" ({a.mention_count / vol * 100:.0f}%)" if vol else ""
+                line = (
+                    f"{icon} *{aspect_title}* `{bar}` {label} · "
+                    f"{a.mention_count}×{pct} — {a.summary}"
+                ).rstrip(" —")
+                lines.append(line)
+                if a.quote:
+                    lines.append(f"   _\"{a.quote}\"_")
             lines.append("")
-        if synthesis.complaints:
-            lines.append("👎 Şikayetler:")
-            lines.extend(f"• {c}" for c in synthesis.complaints)
-            lines.append("")
+        # Fall back / supplement with terse praise/complaints if aspects sparse
+        elif synthesis.praise or synthesis.complaints:
+            if synthesis.praise:
+                lines.append("👍 Kullanıcılar beğeniyor:")
+                lines.extend(f"• {p}" for p in synthesis.praise)
+                lines.append("")
+            if synthesis.complaints:
+                lines.append("👎 Şikayetler:")
+                lines.extend(f"• {c}" for c in synthesis.complaints)
+                lines.append("")
+
         if synthesis.red_flags:
-            lines.append("⚠️ Dikkat:")
+            lines.append("⚠️ *Dikkat:*")
             lines.extend(f"• {r}" for r in synthesis.red_flags)
             lines.append("")
 
+        if synthesis.comparative_mentions:
+            lines.append("⚔️ *Rakiplerle karşılaştırma:*")
+            for q in synthesis.comparative_mentions:
+                lines.append(f"   _\"{q}\"_")
+            lines.append("")
+
+        if synthesis.notable_quote:
+            lines.append(f"💬 _\"{synthesis.notable_quote}\"_")
+            lines.append("")
+
+    # Per-site row: price + rating + review_count (transparency on source weight)
     seen_sites: set[str] = set()
-    price_rows: list[tuple[str, float | None, str]] = []
+    price_rows: list[tuple[str, float | None, float | None, int, str]] = []
     for m in members:
         if m.site in seen_sites:
             continue
         seen_sites.add(m.site)
-        price_rows.append((_site_label(m.site), m.price, m.url))
+        price_rows.append((
+            _site_label(m.site), m.price, m.rating, m.review_count or 0, m.url,
+        ))
     price_rows.sort(key=lambda r: (r[1] is None, r[1] or 0))
     if price_rows:
+        # Highlight site with most review weight (most credible source)
+        top_site = max(price_rows, key=lambda r: r[3])[0] if any(r[3] for r in price_rows) else None
         lines.append("💰 *Fiyatlar:*")
-        for label, price, url in price_rows:
+        for label, price, m_rating, m_reviews, _url in price_rows:
+            # Only show rating when it's review-backed; bare 5.0/0 is noise.
+            star_part = ""
+            if m_rating is not None and m_reviews:
+                rc = f"/{m_reviews:,}".replace(",", ".")
+                star_part = f"  ⭐ {m_rating:.1f}{rc}"
+            elif m_reviews:
+                star_part = f"  ({m_reviews:,} değerl.)".replace(",", ".")
+            badge = " 🏆" if label == top_site else ""
             if price is None:
-                lines.append(f"• {label} — stokta yok")
+                lines.append(f"• {label}{badge} — stokta yok{star_part}")
             else:
-                lines.append(f"• {label} — {_fmt_price_tr(price)} TL")
+                lines.append(f"• {label}{badge} — {_fmt_price_tr(price)} TL{star_part}")
         lines.append("")
 
     community_counts = community_counts or {}
@@ -557,22 +895,44 @@ def step_compare_all(
 ) -> str:
     """Render a compact variant-comparison markdown table."""
     lines: list[str] = [f"*{base_label} — Karşılaştırma*", "─" * 20]
+    # Show full representative_title per row when base_model differs across groups
+    # (e.g. "S25" query returns both Galaxy S25 and Galaxy S25 FE) — otherwise the
+    # variant suffix alone ("256GB Siyah") is ambiguous across product lines.
+    base_models = {(g.base_model or "").lower() for g in groups}
+    disambiguate = len(base_models - {""}) > 1
     for g in groups:
         members = [candidates[i] for i in g.member_indices if 0 <= i < len(candidates)]
         prices = [m.price for m in members if m.price is not None]
         pmin = min(prices) if prices else None
         pmax = max(prices) if prices else None
-        rating = next((m.rating for m in members if m.rating is not None), None)
+        # Weighted rating, review-backed only — drops misleading "⭐ 5.0 (0)" rows
+        rated = [m for m in members if m.rating is not None and (m.review_count or 0) > 0]
         review_total = sum(m.review_count or 0 for m in members)
-        variant_label = g.variant or "Vanilla"
+        if rated:
+            wsum = sum(m.review_count for m in rated)
+            agg_rating = sum(m.rating * m.review_count for m in rated) / wsum if wsum else None
+        else:
+            agg_rating = None
 
-        price_str = (
-            f"{_fmt_price_tr(pmin)}–{_fmt_price_tr(pmax)} TL"
-            if pmin is not None else "fiyat yok"
-        )
-        rating_str = (
-            f" ⭐ {rating:.1f} ({review_total})" if rating is not None else ""
-        )
+        if disambiguate:
+            variant_label = g.representative_title or (
+                f"{g.base_model} {g.variant}" if g.variant else g.base_model or "Vanilla"
+            )
+        else:
+            variant_label = g.variant or "Vanilla"
+
+        if pmin is not None and pmax is not None and pmin == pmax:
+            price_str = f"{_fmt_price_tr(pmin)} TL"
+        elif pmin is not None:
+            price_str = f"{_fmt_price_tr(pmin)}–{_fmt_price_tr(pmax)} TL"
+        else:
+            price_str = "fiyat yok"
+
+        if agg_rating is not None and review_total:
+            rt = f"{review_total:,}".replace(",", ".")
+            rating_str = f" ⭐ {agg_rating:.1f} ({rt})"
+        else:
+            rating_str = ""
         lines.append(f"• *{variant_label}* — {price_str}{rating_str}")
     lines.append("─" * 20)
     lines.append("Seçmek için sorunuzu daraltın.")
@@ -672,7 +1032,9 @@ async def _handler_group_and_synthesize(task: dict, artifacts: dict, ctx: dict) 
 
 
 async def _handler_format_response(task: dict, artifacts: dict, ctx: dict) -> dict:
-    raw = artifacts.get("grouped_synth", "{}")
+    # Workflow emits the synth output as `synth_result`; legacy code looked for
+    # `grouped_synth` and silently produced "Sonuç bulunamadı". Read both.
+    raw = artifacts.get("synth_result") or artifacts.get("grouped_synth") or "{}"
     payload = json.loads(raw) if isinstance(raw, str) else raw
     cards = payload.get("cards", [])
     if not cards:
@@ -691,6 +1053,7 @@ def _group_to_dict(g: ProductGroup) -> dict:
         "variant": g.variant,
         "authenticity_confidence": g.authenticity_confidence,
         "matches_user_intent": g.matches_user_intent,
+        "line_id": g.line_id,
     }
 
 
@@ -705,6 +1068,7 @@ def _group_from_dict(d: dict) -> ProductGroup:
         variant=d.get("variant"),
         authenticity_confidence=float(d.get("authenticity_confidence", 0.5)),
         matches_user_intent=bool(d.get("matches_user_intent", True)),
+        line_id=str(d.get("line_id", "")),
     )
 
 
@@ -725,7 +1089,7 @@ async def _handler_group_label_filter_gate(
     groups = await step_group(cands, query=query)
     groups = await step_label(groups, cands, query=query)
     survivors = step_filter(groups)
-    gate = step_variant_gate(survivors, groups)
+    gate = step_variant_gate(survivors, groups, query=query)
 
     out: dict = {
         "gate": {"kind": gate["kind"]},
@@ -739,7 +1103,11 @@ async def _handler_group_label_filter_gate(
         out["clarify_payloads"] = {
             str(gid): _group_to_dict(g) for gid, g in gate["payloads"].items()
         }
-        out["base_label"] = survivors[0].base_model if survivors else ""
+        bases = {s.base_model for s in survivors if s.base_model}
+        if len(bases) == 1:
+            out["base_label"] = next(iter(bases))
+        else:
+            out["base_label"] = query.strip().title() or (survivors[0].base_model if survivors else "")
     elif gate["kind"] == "escalation":
         out["gate"]["reason"] = gate.get("reason", "unknown")
     return out
@@ -748,23 +1116,74 @@ async def _handler_group_label_filter_gate(
 async def _handler_synth_one(task: dict, artifacts: dict, ctx: dict) -> dict:
     raw = artifacts.get("gate_result", "{}")
     payload = json.loads(raw) if isinstance(raw, str) else raw
-    if payload.get("gate", {}).get("kind") != "chosen":
-        return {"cards": [], "escalation_needed": True}
-    group = _group_from_dict(payload["chosen_group"])
     cands = _candidates_from_json(payload.get("candidates", []))
-    syn = await step_synthesize_reviews(group, cands)
+
+    gate_kind = payload.get("gate", {}).get("kind")
+    group: ProductGroup | None = None
+    deep = False  # default: only synth pre-fetched commerce reviews
+
+    if gate_kind == "chosen":
+        group = _group_from_dict(payload["chosen_group"])
+    else:
+        # Post-clarify path: user picked a variant, look up that group in payloads.
+        # Trigger deep_scrape — pick = user committed, worth the extra latency to
+        # tap eksisozluk/sikayetvar/forums for richer review pile.
+        choice_raw = artifacts.get("clarify_choice", "{}")
+        choice = json.loads(choice_raw) if isinstance(choice_raw, str) else (choice_raw or {})
+        if choice.get("kind") == "variant":
+            gid = choice.get("group_id")
+            payloads = payload.get("clarify_payloads", {}) or {}
+            picked = payloads.get(str(gid)) if gid is not None else None
+            if picked:
+                group = _group_from_dict(picked)
+                deep = True
+
+    if group is None:
+        logger.warning(
+            "synth_one: no group resolved | gate_kind=%s clarify=%s",
+            gate_kind, artifacts.get("clarify_choice", "")[:120],
+        )
+        return {"cards": [], "escalation_needed": True}
+
+    syn = await step_synthesize_reviews(group, cands, deep_scrape=deep)
     cards = [format_group_card(group, syn, cands)]
     return {"cards": cards, "escalation_needed": False}
 
 
 async def _handler_format_compare(task: dict, artifacts: dict, ctx: dict) -> dict:
+    """Category-style compare: review-synth every line, stack full cards + price summary header.
+
+    Treats the clarified lines as a small category and presents each with full
+    pros/cons/red-flags/prices so the user can compare across products, not just
+    read a terse price table.
+    """
     raw = artifacts.get("gate_result", "{}")
     payload = json.loads(raw) if isinstance(raw, str) else raw
     payloads = payload.get("clarify_payloads", {}) or {}
     base_label = payload.get("base_label") or "Ürün"
     cands = _candidates_from_json(payload.get("candidates", []))
     groups = [_group_from_dict(v) for v in payloads.values()]
-    text = step_compare_all(groups, cands, base_label=base_label)
+
+    if not groups:
+        return {"formatted_text": f"*{base_label} — Karşılaştırma*\n\nVeri yok.\n", "escalation": True}
+
+    header = step_compare_all(groups, cands, base_label=base_label)
+
+    # Synthesize per line concurrently — one LLM call per group
+    synths = await asyncio.gather(
+        *[step_synthesize_reviews(g, cands) for g in groups],
+        return_exceptions=True,
+    )
+    cards: list[str] = []
+    for g, syn in zip(groups, synths):
+        if isinstance(syn, BaseException):
+            logger.warning("synth failed for %s: %s", g.representative_title, syn)
+            syn = _insufficient()
+        cards.append(format_group_card(g, syn, cands))
+
+    separator = "\n" + ("─" * 20) + "\n"
+    body = separator.join(cards)
+    text = f"{header}\n{body}"
     return {"formatted_text": text, "escalation": False}
 
 

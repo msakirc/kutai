@@ -67,11 +67,67 @@ def test_variant_gate_single_variant_returns_chosen():
 
 def test_variant_gate_multiple_variants_returns_clarify():
     from src.workflows.shopping.variant_gate import step_variant_gate
-    vanilla = _g("Galaxy S25", base_model="Samsung Galaxy S25", variant=None, prom=2.0)
-    fe = _g("Galaxy S25 FE", base_model="Samsung Galaxy S25", variant="FE", prom=3.0)
-    ultra = _g("Galaxy S25 Ultra", base_model="Samsung Galaxy S25", variant="Ultra", prom=2.5)
-    out = step_variant_gate(survivors=[vanilla, fe, ultra], all_groups=[vanilla, fe, ultra])
+    # Line-extension qualifier now lives in base_model, not variant.
+    vanilla = _g("Galaxy S25", base_model="Samsung Galaxy S25", variant="256GB", prom=2.0)
+    fe = _g("Galaxy S25 FE", base_model="Samsung Galaxy S25 FE", variant="256GB", prom=3.0)
+    ultra = _g("Galaxy S25 Ultra", base_model="Samsung Galaxy S25 Ultra", variant="256GB", prom=2.5)
+    out = step_variant_gate(
+        survivors=[vanilla, fe, ultra],
+        all_groups=[vanilla, fe, ultra],
+        query="Samsung S25",
+    )
     assert out["kind"] == "clarify"
     labels = [opt["label"] for opt in out["options"]]
-    assert labels[0] == "Galaxy S25 FE"        # highest prominence first
+    # Query "Samsung S25" should rank vanilla (fewer extra tokens) above FE/Ultra
+    assert labels[0] == "Samsung Galaxy S25"
+    assert set(labels) == {"Samsung Galaxy S25", "Samsung Galaxy S25 FE", "Samsung Galaxy S25 Ultra"}
     assert len(out["options"]) == 3
+
+
+def test_variant_gate_merges_when_llm_leaves_storage_color_in_base_model():
+    """Real-world LLM mistake: one group has clean base_model, another has storage+color baked in."""
+    from src.workflows.shopping.variant_gate import step_variant_gate
+    clean = _g(
+        "Samsung Galaxy S25 256 GB",
+        base_model="Samsung Galaxy S25",
+        variant="256GB",
+        prom=2.5,
+    )
+    leaky = _g(
+        "Samsung Galaxy S25 256 GB Buz Mavisi",
+        base_model="Samsung Galaxy S25 256 GB Buz Mavisi",
+        variant=None,
+        prom=1.0,
+    )
+    fe = _g(
+        "Samsung Galaxy S25 FE",
+        base_model="Samsung Galaxy S25 FE",
+        variant="256GB",
+        prom=3.0,
+    )
+    out = step_variant_gate(
+        survivors=[clean, leaky, fe],
+        all_groups=[clean, leaky, fe],
+        query="Samsung S25",
+    )
+    assert out["kind"] == "clarify"
+    labels = [opt["label"] for opt in out["options"]]
+    assert len(labels) == 2, f"clean+leaky must merge into one line, got: {labels}"
+    assert any("FE" in lab for lab in labels)
+
+
+def test_variant_gate_merges_color_duplicates_of_same_line():
+    """Same base_model + different variant (color/storage) must collapse to ONE line option."""
+    from src.workflows.shopping.variant_gate import step_variant_gate
+    blue = _g("Galaxy S25 Blue", base_model="Samsung Galaxy S25", variant="256GB Blue", prom=2.0)
+    black = _g("Galaxy S25 Black", base_model="Samsung Galaxy S25", variant="256GB Black", prom=1.5)
+    fe = _g("Galaxy S25 FE", base_model="Samsung Galaxy S25 FE", variant="256GB", prom=3.0)
+    out = step_variant_gate(
+        survivors=[blue, black, fe],
+        all_groups=[blue, black, fe],
+        query="Samsung S25",
+    )
+    assert out["kind"] == "clarify"
+    labels = [opt["label"] for opt in out["options"]]
+    assert len(labels) == 2
+    assert set(labels) == {"Samsung Galaxy S25", "Samsung Galaxy S25 FE"}

@@ -27,11 +27,11 @@ async def test_end_to_end_phone_ambiguous_triggers_clarify():
     # cands: trendyol TY-1(rank1), TY-2(rank2), TY-9(rank3); hepsiburada HB-1(rank1); amazon_tr AM-3(rank1)
     # sku_buckets iteration order → group 0=TY-1, 1=TY-2, 2=TY-9, 3=HB-1, 4=AM-3
     label_resp = json.dumps({"groups": [
-        {"group_id": 0, "product_type": "authentic_product", "base_model": "Samsung Galaxy S25", "variant": None,    "authenticity_confidence": 0.95, "matches_user_intent": True},
-        {"group_id": 1, "product_type": "authentic_product", "base_model": "Samsung Galaxy S25", "variant": "FE",    "authenticity_confidence": 0.95, "matches_user_intent": True},
-        {"group_id": 2, "product_type": "accessory",         "base_model": "Samsung Galaxy S25", "variant": None,    "authenticity_confidence": 0.95, "matches_user_intent": False},
-        {"group_id": 3, "product_type": "authentic_product", "base_model": "Samsung Galaxy S25", "variant": None,    "authenticity_confidence": 0.95, "matches_user_intent": True},
-        {"group_id": 4, "product_type": "authentic_product", "base_model": "Samsung Galaxy S25", "variant": "Ultra", "authenticity_confidence": 0.95, "matches_user_intent": True},
+        {"group_id": 0, "product_type": "authentic_product", "base_model": "Samsung Galaxy S25",       "variant": "128GB",  "authenticity_confidence": 0.95, "matches_user_intent": True},
+        {"group_id": 1, "product_type": "authentic_product", "base_model": "Samsung Galaxy S25 FE",    "variant": "128GB",  "authenticity_confidence": 0.95, "matches_user_intent": True},
+        {"group_id": 2, "product_type": "accessory",         "base_model": "Samsung Galaxy S25 Case",  "variant": None,     "authenticity_confidence": 0.95, "matches_user_intent": False},
+        {"group_id": 3, "product_type": "authentic_product", "base_model": "Samsung Galaxy S25",       "variant": "128GB",  "authenticity_confidence": 0.95, "matches_user_intent": True},
+        {"group_id": 4, "product_type": "authentic_product", "base_model": "Samsung Galaxy S25 Ultra", "variant": "256GB",  "authenticity_confidence": 0.95, "matches_user_intent": True},
     ]})
     with patch("src.workflows.shopping.pipeline_v2._fetch_products",
                new=AsyncMock(return_value=products)), \

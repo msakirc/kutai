@@ -97,6 +97,10 @@ async def step_label(
         g.base_model = str(e.get("base_model", g.representative_title))
         variant = e.get("variant")
         g.variant = str(variant) if variant else None
+        # LLM-emitted canonical line slug; sanitize to [a-z0-9-]
+        import re as _re
+        raw_lid = str(e.get("line_id", "")).lower().strip()
+        g.line_id = _re.sub(r"[^a-z0-9-]+", "-", raw_lid).strip("-")[:80]
         try:
             g.authenticity_confidence = float(e.get("authenticity_confidence", 0.5))
         except (TypeError, ValueError):

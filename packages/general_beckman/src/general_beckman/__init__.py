@@ -398,6 +398,12 @@ async def on_task_finished(task_id: int, result: dict) -> None:
         log.debug("progress ping failed", task_id=task_id, error=str(e))
 
     try:
+        from general_beckman.queue_profile_push import invalidate_completed_id_cache
+        invalidate_completed_id_cache(task_id)
+    except Exception:
+        pass
+
+    try:
         from general_beckman.queue_profile_push import build_and_push
         await build_and_push()
     except Exception as e:

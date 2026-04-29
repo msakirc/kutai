@@ -19,9 +19,10 @@ async def test_build_and_push_sends_profile(tmp_path):
         await conn.execute(
             "CREATE TABLE tasks ("
             " id INTEGER PRIMARY KEY, status TEXT, context TEXT,"
-            " next_retry_at TEXT)"
+            " next_retry_at TEXT, depends_on TEXT, completed_at TIMESTAMP,"
+            " agent_type TEXT)"
         )
-        # (status, context_json, next_retry_at)
+        # (status, context_json, next_retry_at) — depends_on='[]' so all are unblocked
         rows = [
             ("pending", json.dumps({"classification": {"difficulty": 3}}), None),
             ("pending", json.dumps({"classification": {"difficulty": 8}}), None),
@@ -32,10 +33,13 @@ async def test_build_and_push_sends_profile(tmp_path):
             ("pending", json.dumps({"difficulty": 8}), "2099-01-01 00:00:00"),
         ]
         await conn.executemany(
-            "INSERT INTO tasks(status, context, next_retry_at)"
-            " VALUES(?, ?, ?)", rows,
+            "INSERT INTO tasks(status, context, next_retry_at, depends_on)"
+            " VALUES(?, ?, ?, '[]')", rows,
         )
         await conn.commit()
+
+    from general_beckman.queue_profile_push import _reset_cache_for_tests
+    _reset_cache_for_tests()
 
     pushed = []
     with patch("nerd_herd.push_queue_profile",

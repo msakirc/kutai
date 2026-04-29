@@ -163,11 +163,13 @@ def _build_select_fn(scenario_providers: dict[str, Any], tasks: list[SimTask] | 
             remaining = tasks[task.idx:]
             total = len(remaining)
             hard = sum(1 for t in remaining if t.difficulty >= 7)
-            max_d = max((t.difficulty for t in remaining), default=0)
+            by_difficulty: dict[int, int] = {}
+            for t in remaining:
+                by_difficulty[t.difficulty] = by_difficulty.get(t.difficulty, 0) + 1
             queue_profile = QueueProfile(
-                total_tasks=total,
+                total_ready_count=total,
                 hard_tasks_count=hard,
-                max_difficulty=max_d,
+                by_difficulty=by_difficulty,
             )
 
         picked = _selector.select_for_simulation(

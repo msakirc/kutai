@@ -631,13 +631,9 @@ def rank_candidates(
     # snapshot, mirror planner.queue_profile onto snapshot.
     planner = get_quota_planner()
     if getattr(snapshot, "queue_profile", None) is None and planner.queue_profile is not None:
-        try:
-            # Only mirror if the planner profile is nerd_herd-compatible (has projected_tokens).
-            # fatih_hoca.requirements.QueueProfile lacks this field and would break pressure_for.
-            if hasattr(planner.queue_profile, "projected_tokens"):
-                snapshot.queue_profile = planner.queue_profile
-        except Exception:
-            pass
+        # Single QueueProfile type now (collapsed 2026-04-29) — direct mirror,
+        # no shape check needed.
+        snapshot.queue_profile = planner.queue_profile
     _apply_utilization_layer(
         scored,
         snapshot,

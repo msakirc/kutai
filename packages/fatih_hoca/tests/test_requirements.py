@@ -80,14 +80,44 @@ def test_queue_profile_property_returns_default_on_init():
     planner = QuotaPlanner()
     profile = planner.queue_profile
     assert isinstance(profile, QueueProfile)
-    assert profile.total_tasks == 0
+    assert profile.total_ready_count == 0
     assert profile.hard_tasks_count == 0
 
 
 def test_queue_profile_property_reflects_set_value():
     from fatih_hoca.requirements import QuotaPlanner, QueueProfile
     planner = QuotaPlanner()
-    profile = QueueProfile(total_tasks=182, hard_tasks_count=18, max_difficulty=9)
+    profile = QueueProfile(
+        total_ready_count=182,
+        hard_tasks_count=18,
+        by_difficulty={9: 18, 5: 100, 3: 64},
+    )
     planner.set_queue_profile(profile)
-    assert planner.queue_profile.total_tasks == 182
+    assert planner.queue_profile.total_ready_count == 182
     assert planner.queue_profile.hard_tasks_count == 18
+    # max difficulty derived from by_difficulty.keys()
+    assert planner._max_upcoming_difficulty == 9
+
+
+def test_queue_profile_unified_type_with_nerd_herd():
+    """fatih_hoca.requirements.QueueProfile must be the same type as
+    nerd_herd.types.QueueProfile after the 2026-04-29 collapse."""
+    from fatih_hoca.requirements import QueueProfile as FHQP
+    from nerd_herd.types import QueueProfile as NHQP
+    assert FHQP is NHQP, "QueueProfile collapse incomplete — still two types"
+
+
+def test_quota_planner_reads_cloud_only_from_by_capability():
+    """Recalculate must read cloud_only / thinking counts via by_capability,
+    not from removed flat needs_*_count fields."""
+    from fatih_hoca.requirements import QuotaPlanner, QueueProfile
+    planner = QuotaPlanner()
+    planner.update_paid_utilization("anthropic", 60.0, reset_in=3600)
+    profile = QueueProfile(
+        total_ready_count=10,
+        by_capability={"cloud_only": 5, "thinking": 0},
+    )
+    planner.set_queue_profile(profile)
+    threshold = planner.recalculate()
+    # cloud_only >= 3 forces threshold >= 6
+    assert threshold >= 6

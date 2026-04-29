@@ -98,8 +98,14 @@ async def build_profile(db_path: str | None = None) -> QueueProfile:
             ctx = {}
         unblocked.append(_TaskShim(agent_type or "", ctx if isinstance(ctx, dict) else {}))
 
+    # cloud_only: tasks that local models cannot serve (vision today; future
+    # capabilities like long-context >local-ctx, tool-form-only models also
+    # belong here). QuotaPlanner reads this to reserve paid quota for tasks
+    # that have no fallback path.
     by_difficulty: dict[int, int] = {}
-    by_capability: dict[str, int] = {"vision": 0, "thinking": 0, "function_calling": 0}
+    by_capability: dict[str, int] = {
+        "vision": 0, "thinking": 0, "function_calling": 0, "cloud_only": 0,
+    }
     projected_tokens = 0
     projected_calls = 0
     hard = 0
@@ -115,6 +121,7 @@ async def build_profile(db_path: str | None = None) -> QueueProfile:
             hard += 1
         if shim.agent_type in _NEEDS_VISION_AGENTS:
             by_capability["vision"] += 1
+            by_capability["cloud_only"] += 1
         if shim.agent_type in _NEEDS_THINKING_AGENTS:
             by_capability["thinking"] += 1
         if shim.agent_type in _NEEDS_TOOLS_AGENTS:

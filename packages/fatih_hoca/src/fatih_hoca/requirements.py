@@ -212,22 +212,17 @@ AVG_ITERATIONS_BY_AGENT: dict[str, int] = {
 
 
 # ─── Queue Profile ────────────────────────────────────────────────────────────
-
-@dataclass
-class QueueProfile:
-    """Summary of the upcoming task queue's capability needs.
-
-    Built by the orchestrator's forward-looking scan and fed to the QuotaPlanner
-    so it can reserve cloud quota for tasks that genuinely need it (e.g. vision
-    tasks that only cloud models can handle, or thinking-heavy tasks needing CoT).
-    """
-    total_tasks: int = 0
-    max_difficulty: int = 0
-    needs_vision_count: int = 0      # tasks requiring vision capability
-    needs_tools_count: int = 0       # tasks requiring function calling
-    needs_thinking_count: int = 0    # tasks explicitly requesting CoT
-    hard_tasks_count: int = 0        # tasks with difficulty >= 7
-    cloud_only_count: int = 0        # tasks that MUST use cloud (vision, etc.)
+#
+# Single source of truth lives in nerd_herd.types.QueueProfile (the widened
+# 2026-04-29 version with by_difficulty / by_capability dicts and projected
+# tokens/calls). Re-exported here so legacy callers continue to import from
+# fatih_hoca.requirements without a code change. Capability counts that the
+# old shape had as flat ints — needs_vision_count / needs_tools_count /
+# needs_thinking_count / cloud_only_count — now live as keys in
+# by_capability: by_capability.get("vision" | "function_calling" |
+# "thinking" | "cloud_only", 0). max_difficulty is derived from
+# max(by_difficulty.keys() or [0]).
+from nerd_herd.types import QueueProfile  # noqa: F401, re-export
 
 
 # ─── Quota Planner ────────────────────────────────────────────────────────────
@@ -276,12 +271,11 @@ class QuotaPlanner:
     def set_queue_profile(self, profile: QueueProfile) -> None:
         """Provide full capability analysis of the upcoming task queue.
 
-        This is the richer version of set_max_upcoming_difficulty() — it also
-        captures how many tasks need vision, tool use, thinking, and the
-        distribution of difficulty tiers so the planner can better anticipate
-        which models will be needed.
+        Reads max upcoming difficulty from profile.by_difficulty (the
+        widened nerd_herd shape — single source of truth across the
+        codebase since the 2026-04-29 type collapse).
         """
-        self._max_upcoming_difficulty = profile.max_difficulty
+        self._max_upcoming_difficulty = max(profile.by_difficulty.keys(), default=0)
         self._queue_profile = profile
 
     def record_429(self, provider: str) -> None:
@@ -369,13 +363,15 @@ class QuotaPlanner:
         # Cloud-only tasks (vision, etc.) need cloud quota reserved — if many
         # are pending, tighten threshold so overhead doesn't consume it.
         qp = self._queue_profile
-        if qp.cloud_only_count >= 3:
+        cloud_only = qp.by_capability.get("cloud_only", 0)
+        thinking_n = qp.by_capability.get("thinking", 0)
+        if cloud_only >= 3:
             threshold = max(threshold, 6)
-        elif qp.cloud_only_count >= 1 and paid_util > 50:
+        elif cloud_only >= 1 and paid_util > 50:
             threshold = max(threshold, 5)
 
         # Thinking-heavy queues: thinking models are often paid; reserve.
-        if qp.needs_thinking_count >= 2 and paid_util > 40:
+        if thinking_n >= 2 and paid_util > 40:
             threshold = max(threshold, 6)
 
         # Quota reset imminent (<5 min) — be more generous

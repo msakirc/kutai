@@ -68,7 +68,41 @@ _THINKING_PATTERNS = [
         r"(?:^|\n)#{1,6}\s*(?:thinking|reasoning|thought|analysis)\b.*?(?=\n#{1,6}\s|\n[A-Z_]{2,}\s*:|\Z)",
         re.DOTALL | re.IGNORECASE,
     ),
+    # Numbered-bullet analyze/evaluate preamble (Qwen3.5-A3B, Gemma style):
+    #   "1. **Analyze the Request:** ..."   "2. Evaluate the Result ..."
+    # Strip everything from the first such bullet up to the first structured KEY: line
+    # or end of input. Matches only when the numbered bullet starts near the top.
+    re.compile(
+        r"(?:^|\n)\s*\d+\.\s+\*{0,2}(?:analyze|evaluate|assess|review|consider|examine)\b.*?(?=\n[A-Z_]{2,}\s*:|\Z)",
+        re.DOTALL | re.IGNORECASE,
+    ),
 ]
+
+
+_FIELD_LINE_RE = re.compile(r"^[A-Z_]{2,}\s*:", re.MULTILINE)
+
+
+def _tail_fields_region(text: str) -> str:
+    """Return the suffix starting at the first structured KEY: line in the
+    LAST contiguous run of such lines. If none found, return original text.
+
+    Thinking-model output often puts final structured fields at the end after
+    a reasoning blob. Parsing only the tail region avoids regex collisions
+    with echoed keys like `Task:`, `Description:` inside the preamble.
+    """
+    matches = list(_FIELD_LINE_RE.finditer(text))
+    if not matches:
+        return text
+    # Walk backwards — find the start of the last contiguous KEY: run.
+    # Adjacent means ≤3 non-KEY lines between two KEY: lines.
+    start = matches[-1].start()
+    for i in range(len(matches) - 2, -1, -1):
+        between = text[matches[i].end():matches[i + 1].start()]
+        if between.count("\n") <= 3:
+            start = matches[i].start()
+        else:
+            break
+    return text[start:]
 
 
 def _strip_thinking(raw: str) -> str:
@@ -85,12 +119,13 @@ def _strip_thinking(raw: str) -> str:
 
 
 def _parse_yes_no(text: str, key: str) -> Optional[bool]:
-    """Extract a YES/NO value for a given key from grader output."""
-    pattern = rf"{key}\s*:\s*(YES|NO|PASS|FAIL)"
-    match = re.search(pattern, text, re.IGNORECASE)
-    if not match:
+    """Extract a YES/NO value for a given key. Line-anchored, last-match wins
+    (thinking models may echo keys inside reasoning; the final line is truth)."""
+    pattern = rf"^\s*{key}\s*:\s*(YES|NO|PASS|FAIL)\b"
+    matches = re.findall(pattern, text, re.IGNORECASE | re.MULTILINE)
+    if not matches:
         return None
-    val = match.group(1).upper()
+    val = matches[-1].upper()
     return val in ("YES", "PASS")
 
 
@@ -111,12 +146,12 @@ def _parse_text_field(text: str, key: str) -> str:
     Captures everything after KEY: until the next uppercase KEY: marker
     or end of string. Handles values that wrap across multiple lines.
     """
-    pattern = rf"{key}\s*:\s*(.+?)(?=\n[A-Z]{{2,}}\s*:|$)"
-    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-    if not match:
+    # Line-anchored start, last match wins. Value spans until next KEY: or EOF.
+    pattern = rf"^\s*{key}\s*:\s*(.+?)(?=\n[A-Z_]{{2,}}\s*:|\Z)"
+    matches = re.findall(pattern, text, re.IGNORECASE | re.DOTALL | re.MULTILINE)
+    if not matches:
         return ""
-    # Collapse internal newlines + whitespace into single spaces
-    value = match.group(1).strip()
+    value = matches[-1].strip()
     value = re.sub(r'\s*\n\s*', ' ', value)
     return value
 
@@ -135,6 +170,11 @@ def parse_grade_response(raw: str) -> GradeResult:
     are stripped before parsing so reasoning leak doesn't hide a valid grade.
     """
     raw = _strip_thinking(raw)
+    # Focus parsing on the last contiguous run of KEY: lines. Thinking models
+    # put the final structured answer at the end after a reasoning blob, and
+    # echoed keys in the preamble (e.g. "Task:", "Description:") must not
+    # collide with field regexes.
+    raw = _tail_fields_region(raw)
     relevant = _parse_yes_no(raw, "RELEVANT")
     complete = _parse_yes_no(raw, "COMPLETE")
     verdict = _parse_yes_no(raw, "VERDICT")
@@ -238,53 +278,85 @@ async def grade_task(task: dict) -> GradeResult:
         return GradeResult(passed=False, raw=f"auto-fail: {_grade_cq.summary}")
 
     dispatcher = get_dispatcher()
-    response = await dispatcher.request(
-        CallCategory.OVERHEAD,
-        task="reviewer",
-        difficulty=3,
-        messages=[
-            {"role": "system", "content": GRADING_SYSTEM},
-            {
-                "role": "user",
-                "content": GRADING_PROMPT.format(
-                    title=task.get("title", "")[:100],
-                    description=task.get("description", "")[:500],
-                    response=str(result_text)[:4000],
-                ),
-            },
-        ],
-        priority=1,
-        estimated_input_tokens=800,
-        # 100 was too tight: thinking-capable models burned the entire budget on
-        # visible reasoning ("Thinking Process: ...") and never reached VERDICT.
-        # 600 gives room for preamble + the 10 structured fields.
-        estimated_output_tokens=600,
-        prefer_speed=True,
-        exclude_models=all_excluded,
-        task_obj=task,
-    )
+    messages = [
+        {"role": "system", "content": GRADING_SYSTEM},
+        {
+            "role": "user",
+            "content": GRADING_PROMPT.format(
+                title=task.get("title", "")[:100],
+                description=task.get("description", "")[:500],
+                # Previously 4000 — truncated mid-JSON for shopping outputs
+                # (26KB candidate lists). Grader saw cut-off structure and
+                # rightly said WELL_FORMED=FAIL, triggering retry loops.
+                # 30000 fits full candidate JSON; summarization post-hook
+                # handles anything larger.
+                response=str(result_text)[:30000],
+            ),
+        },
+    ]
 
-    raw_content = response.get("content", "")
-    if isinstance(raw_content, list):
-        raw_content = " ".join(
-            block.get("text", "") if isinstance(block, dict) else str(block)
-            for block in raw_content
+    # Try with current exclusion list, then one retry with the grader model
+    # that failed added to exclusions. Thinking-model reasoning leaks cannot
+    # be fixed by server reload (swap cost >> retry cost).
+    exclusions = list(all_excluded)
+    last_raw = ""
+    last_grader: str = ""
+    for attempt in (0, 1):
+        response = await dispatcher.request(
+            CallCategory.OVERHEAD,
+            task="reviewer",
+            difficulty=3,
+            messages=messages,
+            priority=1,
+            estimated_input_tokens=800,
+            # Thinking-capable models burn budget on visible reasoning before
+            # reaching VERDICT. 600 leaves headroom for preamble + 10 fields.
+            estimated_output_tokens=600,
+            prefer_speed=True,
+            exclude_models=exclusions,
+            task_obj=task,
         )
 
-    raw_str = str(raw_content)
-    logger.debug(
-        f"grader raw response ({len(raw_str)} chars): {raw_str[:300]}",
-        task_id=task.get("id"),
-    )
-    try:
-        return parse_grade_response(raw_str)
-    except ValueError:
-        # Surface the full raw response so the next failure is diagnosable.
-        logger.warning(
-            f"grader parse failed, full raw ({len(raw_str)} chars): {raw_str[:2000]}",
+        raw_content = response.get("content", "")
+        if isinstance(raw_content, list):
+            raw_content = " ".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in raw_content
+            )
+        raw_str = str(raw_content)
+        last_raw = raw_str
+        last_grader = response.get("model", "")
+
+        logger.debug(
+            f"grader raw response ({len(raw_str)} chars) attempt={attempt} "
+            f"model={last_grader}: {raw_str[:300]}",
             task_id=task.get("id"),
         )
-        raise
+        try:
+            result = parse_grade_response(raw_str)
+            # Annotate which grader model produced the verdict (separate from
+            # the generating model in context). GraderAgent surfaces this.
+            result.raw = raw_str
+            return result
+        except ValueError as e:
+            logger.warning(
+                f"grader parse failed attempt={attempt} model={last_grader} "
+                f"full raw ({len(raw_str)} chars): {raw_str[:2000]}",
+                task_id=task.get("id"),
+            )
+            if last_grader and last_grader not in exclusions:
+                exclusions.append(last_grader)
+            # Fall through to retry (attempt 1). On attempt 1 failure, exit loop.
+            _last_error = str(e)
+
+    # Both attempts failed — auto-fail the source task's grade rather than
+    # raising. Raising would kill the grader task itself and cascade a DLQ
+    # entry against the source. A false-negative is recoverable (worker
+    # retries); a dead grader task is not.
+    return GradeResult(
+        passed=False,
+        raw=f"auto-fail: grader_incapable after 2 attempts (last model={last_grader}): {last_raw[:300]}",
+    )
 
 
 async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
@@ -367,8 +439,8 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
         try:
             _is_silent = ctx.get("silent", False)
             if not _is_silent:
-                from src.app.telegram_bot import get_bot
-                bot = get_bot()
+                from src.app.telegram_bot import get_telegram
+                bot = get_telegram()
                 if bot:
                     await bot.send_notification(
                         f"✅ Görev #{task_id} derecelendirildi ve tamamlandı\n"
@@ -475,8 +547,8 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
             # Notify on terminal failure
             try:
                 if not ctx.get("silent"):
-                    from src.app.telegram_bot import get_bot
-                    bot = get_bot()
+                    from src.app.telegram_bot import get_telegram
+                    bot = get_telegram()
                     if bot:
                         await bot.send_notification(
                             f"❌ Görev #{task_id} kalite kontrolünden geçemedi → DLQ\n"
@@ -504,8 +576,8 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
             # Notify on retry
             try:
                 if not ctx.get("silent"):
-                    from src.app.telegram_bot import get_bot
-                    bot = get_bot()
+                    from src.app.telegram_bot import get_telegram
+                    bot = get_telegram()
                     if bot:
                         await bot.send_notification(
                             f"🔄 Görev #{task_id} çıktısı reddedildi, farklı model ile tekrar deniyor\n"

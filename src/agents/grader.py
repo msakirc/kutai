@@ -40,18 +40,51 @@ class GraderAgent(BaseAgent):
                 "error": f"grader: source task {source_task_id} missing",
             }
 
-        verdict = await grade_task(source)
-        passed = bool(verdict.get("passed", False))
+        try:
+            verdict = await grade_task(source)
+        except Exception as e:
+            # grade_task now auto-fails internally on parse incapability, so
+            # only infra errors (DB, dispatcher with no candidates) reach here.
+            logger.warning(
+                f"grader dispatch exception for source #{source_task_id}: {e!r}",
+                task_id=task.get("id"),
+            )
+            return {
+                "status": "failed",
+                "error": f"grader: {type(e).__name__}: {str(e)[:200]}",
+            }
+
+        # grade_task returns dict in legacy/mocked paths or GradeResult dataclass
+        # in production. Normalize to dict for serialization + posthook payload.
+        if isinstance(verdict, dict):
+            raw_dict = verdict
+            passed = bool(verdict.get("passed", False))
+        else:
+            raw_dict = {
+                "passed": bool(verdict.passed),
+                "relevant": verdict.relevant,
+                "complete": verdict.complete,
+                "well_formed": verdict.well_formed,
+                "coherent": verdict.coherent,
+                "situation": verdict.situation,
+                "strategy": verdict.strategy,
+                "tools": verdict.tools,
+                "preference": verdict.preference,
+                "insight": verdict.insight,
+                "raw": verdict.raw,
+            }
+            passed = bool(verdict.passed)
+
         return {
             "status": "completed",
-            "result": json.dumps(verdict, default=str),
-            "model": verdict.get("grader_model", "unknown"),
-            "cost": float(verdict.get("cost", 0.0)),
+            "result": json.dumps(raw_dict, default=str),
+            "model": raw_dict.get("grader_model", "unknown"),
+            "cost": float(raw_dict.get("cost", 0.0)),
             "iterations": 1,
             "posthook_verdict": {
                 "kind": "grade",
                 "source_task_id": source_task_id,
                 "passed": passed,
-                "raw": verdict,
+                "raw": raw_dict,
             },
         }

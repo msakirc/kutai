@@ -207,6 +207,48 @@ class TestThinkingPreambleStrip:
         with pytest.raises(ValueError):
             parse_grade_response(raw)
 
+    def test_strip_numbered_analyze_preamble(self):
+        """Task #2384 regression: Qwen3.5-A3B style numbered bullet analysis
+        before structured fields must not block parsing."""
+        raw = (
+            "1.  **Analyze the Request:**\n"
+            "    *   Task: Evaluate a specific task result based on provided criteria.\n"
+            "    *   Input Task: `[0.1] raw_idea_intake` - Extract raw idea.\n\n"
+            "2.  **Evaluate the Result against Task Requirements:**\n"
+            "    *   Sections present: Original Statement, Mentioned Features\n\n"
+            "RELEVANT: YES\nCOMPLETE: YES\nVERDICT: PASS\n"
+            "WELL_FORMED: PASS\nCOHERENT: PASS\n"
+            "SITUATION: test\nSTRATEGY: test\nTOOLS: none"
+        )
+        result = parse_grade_response(raw)
+        assert result.passed is True
+        assert result.relevant is True
+
+    def test_tail_region_ignores_echoed_task_description(self):
+        """Echoed `Task:` / `Description:` in preamble must not collide with
+        field regex. Parser focuses on last contiguous KEY: run."""
+        raw = (
+            "Task: Compare products. Description: three items to compare.\n"
+            "Looking at the result, I see that the agent completed.\n\n"
+            "RELEVANT: YES\nCOMPLETE: YES\nVERDICT: FAIL\n"
+            "WELL_FORMED: PASS\nCOHERENT: PASS"
+        )
+        result = parse_grade_response(raw)
+        assert result.passed is False  # VERDICT: FAIL wins
+        assert result.relevant is True
+
+    def test_last_match_wins_when_key_echoed_in_reasoning(self):
+        """Model may quote the prompt (`VERDICT: PASS or FAIL`) inside
+        reasoning. The last line with an actual value must win."""
+        raw = (
+            "The instructions said to reply with VERDICT: PASS or FAIL.\n"
+            "I will evaluate now.\n\n"
+            "RELEVANT: YES\nCOMPLETE: YES\nVERDICT: FAIL\n"
+            "WELL_FORMED: PASS\nCOHERENT: PASS"
+        )
+        result = parse_grade_response(raw)
+        assert result.passed is False
+
 
 class TestPreferenceField:
     def test_preference_parsed(self):

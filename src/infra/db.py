@@ -550,6 +550,7 @@ async def init_db():
         ("success", "INTEGER"),
         ("error_category", "TEXT"),
         ("provider", "TEXT"),
+        ("outcome", "TEXT"),
     ):
         try:
             await db.execute(f"ALTER TABLE model_pick_log ADD COLUMN {col_name} {col_type}")
@@ -571,13 +572,6 @@ async def init_db():
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_pick_log_model ON model_pick_log(picked_model, timestamp DESC)"
     )
-    try:
-        await db.execute(
-            "ALTER TABLE model_pick_log ADD COLUMN outcome TEXT"
-        )
-    except Exception:
-        pass  # column already exists
-
     # ── KDV (kuleden_donen_var) persistent state ─────────────────────────
     # One row per (scope, scope_key). scope ∈ {"model","provider","breaker"}.
     # snapshot_json holds the dict from RateLimitState/CircuitBreaker

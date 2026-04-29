@@ -156,28 +156,58 @@ class ModelRequirements:
 # ─── Agent Requirement Templates ─────────────────────────────────────────────
 
 AGENT_REQUIREMENTS: dict[str, ModelRequirements] = {
-    # ── Difficult / sensitive → cloud (better quality, rate-limited) ──
-    "planner":        ModelRequirements(task="planner",        difficulty=5, estimated_output_tokens=2000, prefer_quality=True),
-    "architect":      ModelRequirements(task="architect",      difficulty=5, estimated_output_tokens=3000, prefer_quality=True),
-    "coder":          ModelRequirements(task="coder",          difficulty=6, estimated_output_tokens=4000, needs_function_calling=True),
-    "fixer":          ModelRequirements(task="fixer",          difficulty=6, estimated_output_tokens=3000, needs_function_calling=True),
-    "reviewer":       ModelRequirements(task="reviewer",       difficulty=6, estimated_output_tokens=2000),
-    "analyst":        ModelRequirements(task="analyst",        difficulty=6, estimated_output_tokens=3000, needs_function_calling=True),
-    # ── Moderate → let the scorer decide (local if free, cloud if rate OK) ──
-    "implementer":    ModelRequirements(task="implementer",    difficulty=5, estimated_output_tokens=4000, needs_function_calling=True),
-    "test_generator": ModelRequirements(task="test_generator", difficulty=5, estimated_output_tokens=3000, needs_function_calling=True),
-    "writer":         ModelRequirements(task="writer",         difficulty=5, estimated_output_tokens=3000),
-    "visual_reviewer": ModelRequirements(task="visual_reviewer", difficulty=5, estimated_output_tokens=2000, needs_vision=True),
-    # ── Token-heavy / conversational → prefer local (save cloud rate limits) ──
-    "researcher":     ModelRequirements(task="researcher",     difficulty=4, estimated_output_tokens=2000, needs_function_calling=True, prefer_local=True, prefer_speed=True),
-    "assistant":      ModelRequirements(task="assistant",      difficulty=3, estimated_output_tokens=2000, prefer_local=True, prefer_speed=True),
-    "executor":       ModelRequirements(task="executor",       difficulty=3, estimated_output_tokens=1000, needs_function_calling=True, prefer_speed=True, prefer_local=True),
-    "summarizer":     ModelRequirements(task="summarizer",     difficulty=4, estimated_output_tokens=2000, prefer_speed=True, prefer_local=True),
-    # ── Shopping agents → prefer local, need tool calling ──
-    "shopping_advisor":    ModelRequirements(task="shopping_advisor",    difficulty=5, estimated_output_tokens=2500, needs_function_calling=True, prefer_local=True, prefer_speed=True),
-    "product_researcher":  ModelRequirements(task="shopping_advisor",    difficulty=4, estimated_output_tokens=2000, needs_function_calling=True, prefer_local=True, prefer_speed=True),
-    "deal_analyst":        ModelRequirements(task="shopping_advisor",    difficulty=5, estimated_output_tokens=2000, needs_function_calling=True, prefer_local=True),
-    "shopping_clarifier":  ModelRequirements(task="shopping_advisor",    difficulty=3, estimated_output_tokens=1000, prefer_local=True, prefer_speed=True),
+    # ── Difficult / sensitive — calibrated to telemetry p90 ──
+    "planner":        ModelRequirements(task="planner",        difficulty=5, estimated_input_tokens=8_000,  estimated_output_tokens=20_000, prefer_quality=True),
+    "architect":      ModelRequirements(task="architect",      difficulty=5, estimated_input_tokens=8_000,  estimated_output_tokens=20_000, prefer_quality=True),
+    "coder":          ModelRequirements(task="coder",          difficulty=6, estimated_input_tokens=8_000,  estimated_output_tokens=15_000, needs_function_calling=True),
+    "fixer":          ModelRequirements(task="fixer",          difficulty=6, estimated_input_tokens=8_000,  estimated_output_tokens=12_000, needs_function_calling=True),
+    "reviewer":       ModelRequirements(task="reviewer",       difficulty=6, estimated_input_tokens=10_000, estimated_output_tokens=8_000),
+    "analyst":        ModelRequirements(task="analyst",        difficulty=6, estimated_input_tokens=8_000,  estimated_output_tokens=25_000, needs_function_calling=True),
+    # ── Moderate ──
+    "implementer":    ModelRequirements(task="implementer",    difficulty=5, estimated_input_tokens=8_000,  estimated_output_tokens=15_000, needs_function_calling=True),
+    "test_generator": ModelRequirements(task="test_generator", difficulty=5, estimated_input_tokens=8_000,  estimated_output_tokens=10_000, needs_function_calling=True),
+    "writer":         ModelRequirements(task="writer",         difficulty=5, estimated_input_tokens=8_000,  estimated_output_tokens=15_000),
+    "visual_reviewer": ModelRequirements(task="visual_reviewer", difficulty=5, estimated_input_tokens=4_000, estimated_output_tokens=4_000, needs_vision=True),
+    # ── Token-heavy / conversational ──
+    "researcher":     ModelRequirements(task="researcher",     difficulty=4, estimated_input_tokens=8_000,  estimated_output_tokens=5_000, needs_function_calling=True, prefer_local=True, prefer_speed=True),
+    "assistant":      ModelRequirements(task="assistant",      difficulty=3, estimated_input_tokens=4_000,  estimated_output_tokens=3_000, prefer_local=True, prefer_speed=True),
+    "executor":       ModelRequirements(task="executor",       difficulty=3, estimated_input_tokens=4_000,  estimated_output_tokens=2_000, needs_function_calling=True, prefer_speed=True, prefer_local=True),
+    "summarizer":     ModelRequirements(task="summarizer",     difficulty=4, estimated_input_tokens=4_000,  estimated_output_tokens=3_000, prefer_speed=True, prefer_local=True),
+    # ── Shopping ──
+    "shopping_advisor":    ModelRequirements(task="shopping_advisor",    difficulty=5, estimated_input_tokens=4_000, estimated_output_tokens=4_000, needs_function_calling=True, prefer_local=True, prefer_speed=True),
+    "product_researcher":  ModelRequirements(task="shopping_advisor",    difficulty=4, estimated_input_tokens=4_000, estimated_output_tokens=3_000, needs_function_calling=True, prefer_local=True, prefer_speed=True),
+    "deal_analyst":        ModelRequirements(task="shopping_advisor",    difficulty=5, estimated_input_tokens=4_000, estimated_output_tokens=3_000, needs_function_calling=True, prefer_local=True),
+    "shopping_clarifier":  ModelRequirements(task="shopping_advisor",    difficulty=3, estimated_input_tokens=2_000, estimated_output_tokens=1_500, prefer_local=True, prefer_speed=True),
+}
+
+
+# ─── Per-agent iteration estimates (cold-start values from 2026-04-28 telemetry) ─
+# Refined automatically by step_token_stats once samples accumulate.
+AVG_ITERATIONS_BY_AGENT: dict[str, int] = {
+    # Telemetry-backed (i2p ReAct path)
+    "analyst":          8,
+    "architect":        12,
+    "writer":           6,
+    "researcher":       24,
+    "reviewer":         12,
+    # Cold-start by analogy (will refine when telemetry catches up)
+    "planner":          8,
+    "coder":            6,
+    "implementer":      6,
+    "fixer":            5,
+    "test_generator":   5,
+    "executor":         4,
+    "summarizer":       3,
+    "visual_reviewer":  4,
+    # Shopping
+    "shopping_advisor":     4,
+    "product_researcher":   5,
+    "deal_analyst":         4,
+    "shopping_clarifier":   2,
+    # Default
+    "assistant":        4,
+    "classifier":       1,
+    "grader":           2,
 }
 
 

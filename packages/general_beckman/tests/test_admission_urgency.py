@@ -27,9 +27,12 @@ def test_age_scales_over_24h():
 
 
 def test_blocker_bump_capped():
+    # blocker_term = min(1.0, unblocks/BLOCKER_CAP) * BLOCKER_WEIGHT.
+    # Both hit the cap at unblocks>=5, so u1==u2 modulo age_term drift from
+    # time.time() being read twice inside task_age_seconds. Tolerate sub-µs.
     u1 = compute_urgency(_task(priority=5, unblocks=5))
     u2 = compute_urgency(_task(priority=5, unblocks=50))
-    assert u2 == u1
+    assert abs(u2 - u1) < 1e-6
 
 
 def test_urgency_clamped_0_1():

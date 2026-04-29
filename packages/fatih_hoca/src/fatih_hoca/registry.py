@@ -830,6 +830,7 @@ KNOWN_PROVIDERS = {
     "openai",
     "anthropic",
     "google",
+    "gemini",       # litellm prefix for Google Gemini (models.yaml uses gemini/model-name)
     "mistral",
     "cohere",
     "deepseek",
@@ -845,6 +846,8 @@ KNOWN_PROVIDERS = {
     "ollama",
     "lmstudio",
     "azure",
+    "cerebras",     # litellm prefix for Cerebras
+    "sambanova",    # litellm prefix for SambaNova
 }
 
 PROVIDER_PREFIXES = {

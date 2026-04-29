@@ -12,6 +12,13 @@ def _task(tid=1, priority=5, agent_type="coder"):
     }
 
 
+def _reject_breakdown():
+    """PressureBreakdown-compatible mock that always rejects (scalar=-1.0)."""
+    bd = MagicMock()
+    bd.scalar = -1.0
+    return bd
+
+
 def _stable_snap():
     """Snap with deterministic, hashable in_flight + cloud state."""
     snap = MagicMock()
@@ -21,7 +28,10 @@ def _stable_snap():
     snap.local.idle_seconds = 5.0
     snap.local.is_swapping = False
     snap.cloud = {}
-    snap.pressure_for = MagicMock(return_value=-1.0)  # always reject
+    # pressure_for must return a PressureBreakdown-like object with .scalar;
+    # returning a raw float triggered the except-fail-open path, admitting
+    # the task and crashing on the unmocked _claim_task DB call.
+    snap.pressure_for = MagicMock(return_value=_reject_breakdown())
     return snap
 
 

@@ -60,12 +60,14 @@ def _normalize_rule(rule: Any) -> Any:
                 k: _normalize_rule(v) for k, v in (rule.get("fields") or {}).items()
             }
             return normalized
-        # Legacy shape with required_fields list of strings.
+        # Legacy shape with required_fields list of strings. Pre-E1 had no
+        # per-field type info — defaulting to ``string`` was wrong (rejected
+        # legitimate arrays / numbers). Use empty rule = presence-only check.
         legacy = rule.get("required_fields")
         if isinstance(legacy, list):
             normalized = {k: v for k, v in rule.items() if k != "required_fields"}
             normalized["fields"] = {
-                f: {"type": "string"} for f in legacy if isinstance(f, str)
+                f: {} for f in legacy if isinstance(f, str)
             }
             return normalized
         return rule
@@ -76,14 +78,15 @@ def _normalize_rule(rule: Any) -> Any:
             normalized = dict(rule)
             normalized["items"] = _normalize_rule(rule["items"])
             return normalized
-        # Legacy item_fields → wrap as object items.
+        # Legacy item_fields → wrap as object items with presence-only sub
+        # rules (no string default — see comment above).
         legacy = rule.get("item_fields")
         if isinstance(legacy, list) and legacy:
             normalized = {k: v for k, v in rule.items() if k != "item_fields"}
             normalized["items"] = {
                 "type": "object",
                 "fields": {
-                    f: {"type": "string"} for f in legacy if isinstance(f, str)
+                    f: {} for f in legacy if isinstance(f, str)
                 },
             }
             return normalized
@@ -122,6 +125,12 @@ def validate_value(rule: dict, value: Any, path: str = "") -> Optional[str]:
         return f"{path or '<root>'}: rule is not a dict"
     rule = _normalize_rule(rule)
     rtype = rule.get("type")
+
+    # Untyped rule = presence-only check (legacy fields without type info).
+    # ``is_empty_required_value`` upstream catches empty placeholders; nothing
+    # left to validate at this level.
+    if rtype is None:
+        return None
 
     if rtype == "object":
         if not isinstance(value, dict):

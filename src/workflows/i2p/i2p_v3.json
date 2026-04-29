@@ -3886,19 +3886,38 @@
         "epics": {
           "type": "array",
           "min_items": 1,
-          "item_fields": [
-            "epic_id",
-            "name",
-            "user_stories",
-            "dependencies",
-            "priority_order"
-          ]
+          "items": {
+            "type": "object",
+            "fields": {
+              "epic_id": {"type": "string"},
+              "name": {"type": "string"},
+              "description": {"type": "string"},
+              "user_stories": {"type": "array", "min_items": 1},
+              "dependencies": {"type": "array", "optional": true},
+              "estimated_total_effort": {"type": "string"},
+              "priority_order": {"type": "number"}
+            }
+          }
         },
         "work_breakdown": {
           "type": "object",
-          "required_fields": [
-            "tasks"
-          ]
+          "fields": {
+            "tasks": {
+              "type": "array",
+              "min_items": 1,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "task_id": {"type": "string"},
+                  "story_id": {"type": "string"},
+                  "epic_id": {"type": "string"},
+                  "agent": {"type": "string"},
+                  "dependencies": {"type": "array", "optional": true},
+                  "estimated_effort": {"type": "string"}
+                }
+              }
+            }
+          }
         }
       }
     },

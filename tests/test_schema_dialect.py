@@ -17,11 +17,14 @@ from src.workflows.engine.schema_dialect import (
 
 class TestNormalize:
     def test_object_legacy_required_fields_to_canonical(self):
+        # Legacy required_fields had no per-field type — auto-normalizer
+        # leaves them untyped (presence-only) so legitimate non-string
+        # values (arrays, numbers) aren't rejected.
         legacy = {"type": "object", "required_fields": ["a", "b"]}
         out = _normalize_rule(legacy)
         assert out == {
             "type": "object",
-            "fields": {"a": {"type": "string"}, "b": {"type": "string"}},
+            "fields": {"a": {}, "b": {}},
         }
 
     def test_array_legacy_item_fields_to_canonical(self):
@@ -30,9 +33,7 @@ class TestNormalize:
         assert out == {
             "type": "array",
             "min_items": 1,
-            "items": {"type": "object", "fields": {
-                "x": {"type": "string"}, "y": {"type": "string"}
-            }},
+            "items": {"type": "object", "fields": {"x": {}, "y": {}}},
         }
 
     def test_canonical_object_passthrough(self):

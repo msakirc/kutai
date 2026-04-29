@@ -44,13 +44,12 @@ class BurnLog:
                 return BurnRate(0.0, 0.0)
             tot_tok = sum(e[1] for e in d)
             tot_calls = sum(e[2] for e in d)
-            # Use actual span of observed data (oldest entry to now), clamped to window.
-            # This avoids diluting a dense burst over an empty window.
-            span_secs = max(1.0, ts - d[0][0])
-        # rate normalized to per-minute
+        # rate = total observed in window / window length, normalized per-minute.
+        # Cold-start with only 1 min of data on a 5-min window yields 1/5 rate —
+        # conservative on bursty/short history, prevents runaway extrapolation.
         return BurnRate(
-            tokens_per_min=(tot_tok * 60.0) / span_secs,
-            calls_per_min=(tot_calls * 60.0) / span_secs,
+            tokens_per_min=(tot_tok * 60.0) / self._window,
+            calls_per_min=(tot_calls * 60.0) / self._window,
         )
 
 

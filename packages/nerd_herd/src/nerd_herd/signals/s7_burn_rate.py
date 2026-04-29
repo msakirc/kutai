@@ -14,7 +14,7 @@ from nerd_herd.burn_log import BurnLog
 from nerd_herd.types import RateLimitMatrix
 
 
-THRESHOLD = 0.50
+THRESHOLD = 0.70
 SLOPE = 2.0
 
 

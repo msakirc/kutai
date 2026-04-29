@@ -17,12 +17,19 @@ def _mock_pick(provider="anthropic", model_name="claude-sonnet-4-6"):
     return MagicMock(model=fake_model, composite=0.6)
 
 
+def _breakdown(scalar: float):
+    """Return a mock PressureBreakdown with the given scalar."""
+    bd = MagicMock()
+    bd.scalar = scalar
+    return bd
+
+
 @pytest.mark.asyncio
 async def test_admits_when_pool_abundant():
     import general_beckman
 
     snap = MagicMock()
-    snap.pressure_for = MagicMock(return_value=0.7)
+    snap.pressure_for = MagicMock(return_value=_breakdown(0.7))
     with patch("general_beckman.queue.pick_ready_top_k", new=AsyncMock(return_value=[_task(1, priority=7)])), \
          patch("general_beckman._claim_task", new=AsyncMock(return_value=True)), \
          patch("general_beckman.cron.fire_due", new=AsyncMock(return_value=None)), \
@@ -39,7 +46,7 @@ async def test_holds_when_depleted_and_low_priority():
     import general_beckman
 
     snap = MagicMock()
-    snap.pressure_for = MagicMock(return_value=-0.8)
+    snap.pressure_for = MagicMock(return_value=_breakdown(-0.8))
     with patch("general_beckman.queue.pick_ready_top_k", new=AsyncMock(return_value=[_task(1, priority=3)])), \
          patch("general_beckman._claim_task", new=AsyncMock(return_value=True)), \
          patch("general_beckman.cron.fire_due", new=AsyncMock(return_value=None)), \
@@ -54,7 +61,7 @@ async def test_skips_candidate_when_hoca_none():
     import general_beckman
 
     snap = MagicMock()
-    snap.pressure_for = MagicMock(return_value=0.7)
+    snap.pressure_for = MagicMock(return_value=_breakdown(0.7))
     tasks = [_task(1), _task(2)]
     picks = iter([None, _mock_pick()])
     with patch("general_beckman.queue.pick_ready_top_k", new=AsyncMock(return_value=tasks)), \

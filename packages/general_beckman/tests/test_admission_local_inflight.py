@@ -25,16 +25,25 @@ def _mock_local_pick(model_name="qwen3-8b"):
     return MagicMock(model=fake_model, composite=0.8)
 
 
+def _breakdown(scalar: float):
+    """Return a mock PressureBreakdown with the given scalar."""
+    bd = MagicMock()
+    bd.scalar = scalar
+    return bd
+
+
 def _mock_snapshot_local_busy():
     """Snapshot that mirrors real `_local_pressure`: -1.0 when any is_local."""
     snap = MagicMock()
     fake_inflight = MagicMock(is_local=True, provider="llama.cpp", model="qwen3-8b")
     snap.in_flight_calls = [fake_inflight]
     # Match real type semantics: local pick → -1.0 when any in_flight_calls is_local.
-    def _pressure_for(model):
+    def _pressure_for(model, **kwargs):
         if getattr(model, "is_local", False):
-            return -1.0 if any(c.is_local for c in snap.in_flight_calls) else 0.0
-        return 1.0
+            scalar = -1.0 if any(c.is_local for c in snap.in_flight_calls) else 0.0
+        else:
+            scalar = 1.0
+        return _breakdown(scalar)
     snap.pressure_for = _pressure_for
     return snap
 
@@ -86,27 +95,30 @@ async def test_sequential_local_admits_then_rejects_after_begin_call():
        because _local_pressure sees the task slot's is_local=True entry.
     """
     import general_beckman
+    import src.core.in_flight as in_flight_mod
     import src.core.llm_dispatcher as dispatcher_mod
 
-    # Clear dispatcher in-flight registries in case a prior test left residue.
-    dispatcher_mod._task_slots.clear()
-    dispatcher_mod._call_entries.clear()
+    # Clear in-flight registries in case a prior test left residue.
+    in_flight_mod._task_slots.clear()
+    in_flight_mod._call_entries.clear()
 
     # Build a live snapshot whose in_flight_calls reflects dispatcher state.
     snap = MagicMock()
     def _current_in_flight():
         return [
             MagicMock(is_local=e.is_local, provider=e.provider, model=e.model)
-            for e in list(dispatcher_mod._task_slots.values())
-            + list(dispatcher_mod._call_entries.values())
+            for e in list(in_flight_mod._task_slots.values())
+            + list(in_flight_mod._call_entries.values())
         ]
     # `snap.in_flight_calls` is read inside _local_pressure in real code; here
     # we replicate that contract so pressure_for reads the dispatcher's state.
     type(snap).in_flight_calls = property(lambda self: _current_in_flight())
-    def _pressure_for(model):
+    def _pressure_for(model, **kwargs):
         if getattr(model, "is_local", False):
-            return -1.0 if any(c.is_local for c in snap.in_flight_calls) else 0.0
-        return 1.0
+            scalar = -1.0 if any(c.is_local for c in snap.in_flight_calls) else 0.0
+        else:
+            scalar = 1.0
+        return _breakdown(scalar)
     snap.pressure_for = _pressure_for
 
     # Phase 1: empty in-flight → admit.
@@ -120,9 +132,8 @@ async def test_sequential_local_admits_then_rejects_after_begin_call():
     assert first is not None and first["id"] == 1
 
     # Phase 2: dispatcher registers the slot (as it does in real request()).
-    # Skip _push_in_flight — this test verifies the snapshot-reading contract,
-    # not the nerd_herd push path.
-    with patch("src.core.llm_dispatcher._push_in_flight", new=AsyncMock()):
+    # Suppress the nerd_herd push since we test snapshot-reading contract only.
+    with patch("src.core.in_flight._push", new=AsyncMock()):
         await dispatcher_mod._begin_call(
             category="main_work", model_name="qwen3-8b",
             provider="llama.cpp", is_local=True, task_id=1,
@@ -139,5 +150,5 @@ async def test_sequential_local_admits_then_rejects_after_begin_call():
     assert second is None, "second local task must be held while slot is occupied"
 
     # Cleanup.
-    with patch("src.core.llm_dispatcher._push_in_flight", new=AsyncMock()):
+    with patch("src.core.in_flight._push", new=AsyncMock()):
         await dispatcher_mod.release_task(1)

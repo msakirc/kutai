@@ -195,7 +195,44 @@ async def next_task():
 
         if snap is not None:
             try:
-                pressure = snap.pressure_for(pick.model)
+                from fatih_hoca.estimates import estimate_for
+                from general_beckman.btable_cache import get_btable
+
+                class _TaskShim:
+                    def __init__(self, t):
+                        self.agent_type = t.get("agent_type", "")
+                        ctx = t.get("context") or {}
+                        if isinstance(ctx, str):
+                            import json as _json
+                            try:
+                                ctx = _json.loads(ctx)
+                            except Exception:
+                                ctx = {}
+                        self.context = ctx
+
+                shim = _TaskShim(task)
+                estimates = estimate_for(
+                    shim,
+                    btable=get_btable(),
+                    model_is_thinking=getattr(pick.model, "is_thinking", False),
+                )
+                prov_key = getattr(pick.model, "provider", "")
+                prov_state = snap.cloud.get(prov_key) if hasattr(snap, "cloud") else None
+                consecutive_failures = getattr(prov_state, "consecutive_failures", 0)
+                breakdown = snap.pressure_for(
+                    pick.model,
+                    task_difficulty=difficulty,
+                    est_per_call_tokens=estimates.per_call_tokens,
+                    est_per_task_tokens=estimates.total_tokens,
+                    est_iterations=estimates.iterations,
+                    est_call_cost=getattr(
+                        pick.model, "estimated_cost",
+                        lambda *_: 0.0,
+                    )(estimates.in_tokens, estimates.out_tokens),
+                    cap_needed=5.0,
+                    consecutive_failures=consecutive_failures,
+                )
+                pressure = breakdown.scalar
             except Exception as e:
                 _log.debug(f"admission: task #{task['id']} pressure_for raised {e!r}; fail-open")
                 pressure = 1.0  # fail-open: admit rather than starve
@@ -205,7 +242,7 @@ async def next_task():
         urgency = compute_urgency(task)
         thr = threshold(urgency)
         if pressure < thr:
-            _log.debug(
+            _log.info(
                 f"admission: task #{task['id']} REJECT model={pick.model.name} "
                 f"pressure={pressure:.3f} urgency={urgency:.3f} threshold={thr:.3f}"
             )

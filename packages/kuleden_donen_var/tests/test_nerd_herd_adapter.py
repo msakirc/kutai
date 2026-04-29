@@ -57,3 +57,20 @@ def test_build_handles_missing_rpd_fields(kdv):
     rpd = out.models["m"].limits.rpd
     assert rpd.limit is None
     assert rpd.remaining is None
+
+
+def test_adapter_copies_tpm_cell_when_present():
+    from kuleden_donen_var.kdv import KuledenDonenVar
+    from kuleden_donen_var import KuledenConfig
+    from kuleden_donen_var.nerd_herd_adapter import build_cloud_provider_state
+    kdv = KuledenDonenVar(KuledenConfig())
+    kdv.register("groq/llama", "groq", rpm=30, tpm=6000)
+    # Seed rpd so we can also assert rpd cell (matches register API)
+    state = kdv._rate_limiter.model_limits["groq/llama"]
+    state.rpd_limit = 14_400
+    state.rpd_remaining = 14_400
+    cloud_state = build_cloud_provider_state(kdv, "groq")
+    m = cloud_state.models["groq/llama"]
+    assert m.limits.tpm.limit == 6000
+    assert m.limits.rpm.limit == 30
+    assert m.limits.rpd.limit == 14_400

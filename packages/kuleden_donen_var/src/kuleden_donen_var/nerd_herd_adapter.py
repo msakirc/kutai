@@ -1,15 +1,8 @@
 """Adapter: KDV internal provider state -> nerd_herd.CloudProviderState.
 
-KDV stores rate-limit records as `ModelLimits` inside `rate_limiter`; nerd_herd
-consumes `CloudProviderState` (with `RateLimitMatrix.rpd`). This adapter walks KDV's
-registered providers and produces a fresh `CloudProviderState` on demand.
-
-Wired at app startup via `configure_in_flight_push(nerd_herd_module, getter)`.
-The in-flight tracker calls `getter(provider)` from `_push()` so nerd_herd
-receives a snapshot-ready state with in_flight counts overlaid.
-
-Only `rpd` is forwarded today — that's the field pool_pressure needs. rpm/tpm
-can be added if a consumer actually reads them.
+Forwards all populated rate-limit cells (request, token, cost axes).
+KDV's RateLimitState exposes per-axis attributes; missing axes return RateLimit()
+with no limit set — those cells stay invisible to signal consumers.
 """
 from __future__ import annotations
 
@@ -21,6 +14,27 @@ if TYPE_CHECKING:
     from .kdv import KuledenDonenVar
 
 
+# Axes the adapter forwards. Matches RateLimitMatrix field names.
+_ADAPTER_AXES = (
+    "rpm", "rph", "rpd", "rpw", "rpmonth",
+    "tpm", "tph", "tpd", "tpw", "tpmonth",
+    "itpm", "itpd", "otpm", "otpd",
+    "cpd", "cpmonth",
+)
+
+
+def _rl(state, axis: str):
+    """Build a RateLimit for axis from KDV state. Empty if state lacks the axis."""
+    from nerd_herd.types import RateLimit
+    if state is None:
+        return RateLimit()
+    return RateLimit(
+        limit=getattr(state, f"{axis}_limit", None),
+        remaining=getattr(state, f"{axis}_remaining", None),
+        reset_at=int(getattr(state, f"{axis}_reset_at", 0) or 0) or None,
+    )
+
+
 def build_cloud_provider_state(
     kdv: "KuledenDonenVar",
     provider: str,
@@ -28,36 +42,28 @@ def build_cloud_provider_state(
     from nerd_herd.types import (
         CloudModelState,
         CloudProviderState,
-        RateLimit,
         RateLimitMatrix,
     )
-
     model_ids = kdv._providers.get(provider)
     if not model_ids:
         return None
 
-    def _rl(state) -> RateLimit:
-        if state is None:
-            return RateLimit()
-        return RateLimit(
-            limit=state.rpd_limit,
-            remaining=state.rpd_remaining,
-            reset_at=int(state.rpd_reset_at) if state.rpd_reset_at else None,
-        )
+    def _matrix(state):
+        m = RateLimitMatrix()
+        for axis in _ADAPTER_AXES:
+            setattr(m, axis, _rl(state, axis))
+        return m
 
     models = {}
     for mid in model_ids:
         mstate = kdv._rate_limiter.model_limits.get(mid)
-        limits = RateLimitMatrix(rpd=_rl(mstate))
-        models[mid] = CloudModelState(model_id=mid, limits=limits)
+        models[mid] = CloudModelState(model_id=mid, limits=_matrix(mstate))
 
     prov_state = kdv._rate_limiter._provider_limits.get(provider)
-    prov_limits = RateLimitMatrix(rpd=_rl(prov_state))
-
     return CloudProviderState(
         provider=provider,
         models=models,
-        limits=prov_limits,
+        limits=_matrix(prov_state),
     )
 
 

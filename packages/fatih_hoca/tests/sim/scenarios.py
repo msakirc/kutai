@@ -75,8 +75,8 @@ def _build_snapshot_factory(scenario_providers: dict[str, Any]):
     )
 
     # Pin a wall-clock anchor so virtual-clock -> wall-clock mapping is stable
-    # within a sim run. pool_pressure.compute_pool_pressure uses time.time();
-    # we project `counter.reset_at` (virtual seconds) onto the same clock.
+    # within a sim run. We project `counter.reset_at` (virtual seconds) onto the
+    # same wall clock for rate-limit reset time calculations.
     wall_anchor = _time.time()
 
     def factory(state: SimState) -> Any:

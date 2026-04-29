@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from nerd_herd.pool_pressure import PoolPressure, compute_pool_pressure
-
 
 @dataclass
 class GPUState:
@@ -129,7 +127,6 @@ class CloudModelState:
     model_id: str = ""
     utilization_pct: float = 0.0
     limits: RateLimitMatrix = field(default_factory=RateLimitMatrix)
-    pool_pressure: PoolPressure | None = None
 
 
 @dataclass

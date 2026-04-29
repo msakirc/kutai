@@ -277,6 +277,21 @@ async def init_db():
     await db.execute("CREATE INDEX IF NOT EXISTS idx_mct_step ON model_call_tokens(agent_type, workflow_step_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_mct_recent ON model_call_tokens(timestamp)")
 
+    # Per-step token percentile rollup (pool-pressure machinery)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS step_token_stats (
+            agent_type TEXT NOT NULL,
+            workflow_step_id TEXT NOT NULL,
+            workflow_phase TEXT NOT NULL,
+            samples_n INTEGER NOT NULL,
+            in_p50 INTEGER, in_p90 INTEGER, in_p99 INTEGER,
+            out_p50 INTEGER, out_p90 INTEGER, out_p99 INTEGER,
+            iters_p50 REAL, iters_p90 REAL, iters_p99 REAL,
+            updated_at TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (agent_type, workflow_step_id, workflow_phase)
+        )
+    """)
+
     # Cost budget tracking (Phase 4)
     await db.execute("""
         CREATE TABLE IF NOT EXISTS cost_budgets (
@@ -556,6 +571,12 @@ async def init_db():
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_pick_log_model ON model_pick_log(picked_model, timestamp DESC)"
     )
+    try:
+        await db.execute(
+            "ALTER TABLE model_pick_log ADD COLUMN outcome TEXT"
+        )
+    except Exception:
+        pass  # column already exists
 
     # ── KDV (kuleden_donen_var) persistent state ─────────────────────────
     # One row per (scope, scope_key). scope ∈ {"model","provider","breaker"}.

@@ -119,28 +119,38 @@ class KuledenDonenVar:
         model_id: str,
         provider: str,
         headers: dict[str, Any] | None = None,
+        estimated_tokens: int = 0,
     ) -> None:
-        """Record an outgoing API call attempt — fires BEFORE LiteLLM POST and
-        again from the failure path so RPM bookkeeping reflects what actually
-        hit the provider (not just what succeeded).
+        """Record an outgoing API call attempt — fires BEFORE LiteLLM POST so
+        RPM bookkeeping reflects what actually hit the provider (not just
+        what succeeded) and so a concurrent admission on the same model sees
+        the reservation in its has_capacity check.
 
         Effects:
           * ``_provider_attempt_count[provider]`` += 1
           * ``RateLimitManager.record_request`` bumps the per-minute sliding
-            window for both per-model and per-provider-aggregate buckets.
-          * BurnLog gets a ``calls=1, tokens=0`` entry (S7 burn-rate signal).
+            window (per-model + per-provider-aggregate). Atomic with pre_call
+            in single-process asyncio because both are sync.
+          * If ``estimated_tokens > 0``, that count is added to the token log
+            as a PROVISIONAL RESERVATION. Closes the TPM-leg of the
+            check-and-reserve race: a second concurrent admission against
+            tight tpm_limit (e.g. groq qwen3-32b tpm=6000) now sees the
+            reservation when it computes tpm_headroom. ``post_call``
+            corrects the reservation to the actual token count via the
+            ``reserved_tokens`` parameter; the failure path must call
+            ``release_reservation`` to roll the reservation back.
+          * BurnLog gets a ``calls=1, tokens=0`` entry (S7 burn-rate signal;
+            actual tokens land at post_call to avoid double-counting).
           * If headers are provided (e.g. captured from a 429 response),
             ``update_from_headers`` parses x-ratelimit-* into authoritative
             ``_header_rpm/tpm/rpd_remaining`` + reset clocks.
-
-        Tokens are NOT counted here — actual usage is unknown until response.
-        post_call() bumps tokens on success. Failed attempts contribute zero
-        tokens but still consume the per-call slot, matching what Groq counts.
         """
         self._provider_attempt_count[provider] = (
             self._provider_attempt_count.get(provider, 0) + 1
         )
         self._rate_limiter.record_request(model_id, provider)
+        if estimated_tokens > 0:
+            self._rate_limiter.record_tokens(model_id, provider, estimated_tokens)
         try:
             from nerd_herd.burn_log import get_burn_log
             get_burn_log().record(provider=provider, model=model_id,
@@ -155,6 +165,27 @@ class KuledenDonenVar:
                                                           snapshot)
             except Exception:
                 pass
+
+    def release_reservation(
+        self,
+        model_id: str,
+        provider: str,
+        reserved_tokens: int,
+    ) -> None:
+        """Roll back a provisional TPM reservation. Use on the failure path
+        when ``record_attempt`` reserved tokens but the call never produced
+        any (4xx/5xx/timeout/network).
+
+        The implementation appends a NEGATIVE token-log entry rather than
+        editing the original entry, so the rollback eligibly expires from the
+        60s window the same way real usage would. ``current_tpm`` then
+        reflects the real provider-counted usage (which for a failed call
+        is the input-tokens charge for some providers, but typically zero).
+        Conservative: roll back the full estimate. RPM stays consumed because
+        the request slot was used, regardless of outcome.
+        """
+        if reserved_tokens > 0:
+            self._rate_limiter.record_tokens(model_id, provider, -reserved_tokens)
 
     def no_data_warnings(self, min_age_hours: float = 24.0) -> list[dict]:
         """Return providers enabled longer than ``min_age_hours`` with zero
@@ -212,12 +243,17 @@ class KuledenDonenVar:
         provider: str,
         headers: dict[str, Any] | None,
         token_count: int,
+        reserved_tokens: int = 0,
     ) -> None:
         # Track success count (different from attempt count — see __init__ doc).
         self.record_call_observation(provider)
         # Tokens (TPM tracking). RPM was already counted at record_attempt
         # time so we do NOT call record_request here — would double-count.
-        self._rate_limiter.record_tokens(model_id, provider, token_count)
+        # If record_attempt reserved a provisional estimate, record only the
+        # delta so the running TPM converges to the actual usage. Otherwise
+        # record the full count (legacy callers that don't pass reserved).
+        delta = token_count - max(0, reserved_tokens)
+        self._rate_limiter.record_tokens(model_id, provider, delta)
         # Feed S7 burn-rate signal with actual volume. Calls were already
         # counted at attempt time (calls=1); now add the realised tokens
         # (calls=0 to avoid double-counting).

@@ -54,22 +54,38 @@ def _kdv_pre_call(litellm_name: str, provider: str, estimated_tokens: int):
         return (True, 0.0, False)
 
 
-def _kdv_post_call(litellm_name, provider, headers, token_count):
+def _kdv_post_call(litellm_name, provider, headers, token_count, reserved_tokens=0):
     try:
         from src.core.router import get_kdv
-        get_kdv().post_call(litellm_name, provider, headers=headers, token_count=token_count)
+        get_kdv().post_call(
+            litellm_name, provider,
+            headers=headers, token_count=token_count,
+            reserved_tokens=reserved_tokens,
+        )
     except Exception:
         pass
 
 
-def _kdv_record_attempt(litellm_name, provider, headers=None):
-    """Record an outgoing API attempt with KDV — fires before LiteLLM POST
-    and again from the failure path so RPM bookkeeping stays in sync with
-    what the provider actually counted.
+def _kdv_record_attempt(litellm_name, provider, headers=None, estimated_tokens=0):
+    """Record an outgoing API attempt with KDV. Reserves TPM provisionally
+    so a concurrent admission on the same model sees the reservation and
+    refuses if the budget is tight. post_call corrects to actual.
     """
     try:
         from src.core.router import get_kdv
-        get_kdv().record_attempt(litellm_name, provider, headers=headers)
+        get_kdv().record_attempt(
+            litellm_name, provider,
+            headers=headers, estimated_tokens=estimated_tokens,
+        )
+    except Exception:
+        pass
+
+
+def _kdv_release_reservation(litellm_name, provider, reserved_tokens):
+    """Roll back a TPM reservation when the call never produced tokens."""
+    try:
+        from src.core.router import get_kdv
+        get_kdv().release_reservation(litellm_name, provider, reserved_tokens)
     except Exception:
         pass
 
@@ -387,6 +403,10 @@ async def call(
         # Else: leave whatever was set above (tools branch) or unset.
 
     # ── Rate limiting (cloud only) ──
+    # tpm_reservation tracks the provisional TPM reservation made at
+    # admission so the failure path can release it and the success path
+    # can correct it to the actual usage. 0 for local calls.
+    tpm_reservation: int = 0
     if not is_local:
         estimated_tokens = estimated_output_tokens * 3
         allowed, wait_secs, daily_exhausted = _kdv_pre_call(
@@ -401,11 +421,17 @@ async def call(
                 return CallError(category="rate_limited",
                                message=f"Rate limited for {model.name}", retryable=True)
         # Reserve the slot atomically with the admission decision: every
-        # outgoing LiteLLM POST below now bumps RPM and BurnLog regardless of
-        # outcome, matching what the provider actually counts. Without this,
-        # 4xx responses (e.g. unsupported tool calls) consumed Groq RPD on
-        # the provider side while KDV remained at 0/N RPM.
-        _kdv_record_attempt(model.litellm_name, model.provider)
+        # outgoing LiteLLM POST below now bumps RPM regardless of outcome,
+        # AND reserves estimated_tokens against TPM so a concurrent
+        # admission on the same model sees the reservation and refuses if
+        # the per-minute budget is tight (closes G6 TPM-leg of the
+        # check-and-reserve race). post_call corrects on success;
+        # _kdv_release_reservation rolls it back on failure.
+        tpm_reservation = estimated_tokens
+        _kdv_record_attempt(
+            model.litellm_name, model.provider,
+            estimated_tokens=tpm_reservation,
+        )
 
     # ── Local model manager reference (for health checks, speed tracking) ──
     local_manager = None
@@ -469,12 +495,20 @@ async def call(
     # ── Handle retry failure ──
     if isinstance(raw_result, CallError):
         if not is_local:
-            # The request slot was already counted at admission. If the
-            # provider returned x-ratelimit-* headers on the failing
-            # response, feed them through update_from_headers so KDV's
-            # _header_*_remaining + reset clocks track the provider's view.
-            # Header-only: do NOT call record_attempt again (would double-bump
-            # the per-minute RPM counter for one logical attempt).
+            # Roll back the TPM reservation made at admission — a failed
+            # call typically produced no completion tokens, so leaving the
+            # reservation in place would over-throttle subsequent calls
+            # for the next 60 seconds.
+            if tpm_reservation > 0:
+                _kdv_release_reservation(
+                    model.litellm_name, model.provider, tpm_reservation,
+                )
+            # The request slot itself stays consumed (RPM is one-way, matches
+            # what the provider counted). If the provider returned
+            # x-ratelimit-* headers, feed them through update_from_headers
+            # so KDV's _header_*_remaining + reset clocks track reality.
+            # Header-only: do NOT call record_attempt again (would
+            # double-bump RPM for one logical attempt).
             if raw_result.headers:
                 try:
                     from src.core.router import get_kdv
@@ -502,7 +536,22 @@ async def call(
         headers = {}
         if hidden:
             headers = dict(hidden.get("additional_headers") or hidden.get("headers") or {})
-        _kdv_post_call(model.litellm_name, model.provider, headers=headers, token_count=total_tokens)
+        # Pass tpm_reservation so post_call records (actual - reserved)
+        # delta — converges the running TPM to real usage without
+        # double-counting the provisional reservation made at admission.
+        _kdv_post_call(
+            model.litellm_name, model.provider,
+            headers=headers, token_count=total_tokens,
+            reserved_tokens=tpm_reservation,
+        )
+    elif not is_local and tpm_reservation > 0:
+        # Edge case: LiteLLM returned a result but with no usage object
+        # (some streaming paths, some providers). post_call never fired so
+        # the TPM reservation is hanging. Release it — without this, every
+        # such call leaves a 60s ghost reservation against the model bucket.
+        _kdv_release_reservation(
+            model.litellm_name, model.provider, tpm_reservation,
+        )
 
     # ── Local: update measured speed ──
     if is_local and raw_result.usage:

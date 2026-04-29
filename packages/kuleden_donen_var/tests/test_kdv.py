@@ -103,6 +103,70 @@ def test_post_call_does_not_double_bump_rpm(kdv_with_model):
     assert state.current_rpm == 1  # unchanged
 
 
+def test_record_attempt_reserves_tpm(kdv_with_model):
+    """Concurrent admissions on a tight tpm budget must see each other's
+    reservations. Without provisional reservation, both admissions pass
+    has_capacity simultaneously and the provider returns 429.
+    """
+    state = kdv_with_model._rate_limiter.model_limits["groq/llama-8b"]
+    state.tpm_limit = 6000  # Tighten to free-tier groq qwen3-32b shape.
+    state._original_tpm = 6000
+    # First admission reserves 5000.
+    kdv_with_model.record_attempt(
+        "groq/llama-8b", "groq", estimated_tokens=5000,
+    )
+    assert state.current_tpm == 5000
+    # Second admission with est=2000 should now see headroom = 1000 < 2000
+    # and be refused.
+    assert state.has_capacity(estimated_tokens=2000) is False
+    # Same model with est=1000 still fits.
+    assert state.has_capacity(estimated_tokens=1000) is True
+
+
+def test_post_call_corrects_reservation_to_actual(kdv_with_model):
+    """post_call records (actual - reserved) so the running TPM converges
+    to real usage. Reserved 5000 then actual 4200 → token_log nets to 4200.
+    """
+    state = kdv_with_model._rate_limiter.model_limits["groq/llama-8b"]
+    kdv_with_model.record_attempt(
+        "groq/llama-8b", "groq", estimated_tokens=5000,
+    )
+    assert state.current_tpm == 5000
+    kdv_with_model.post_call(
+        "groq/llama-8b", "groq",
+        headers={}, token_count=4200, reserved_tokens=5000,
+    )
+    # token_log entries: +5000, +(4200-5000)=-800. sum = 4200.
+    assert state.current_tpm == 4200
+
+
+def test_release_reservation_rolls_back(kdv_with_model):
+    """Failed call: full reservation is rolled back so subsequent calls
+    don't see a phantom 60s reservation against the bucket.
+    """
+    state = kdv_with_model._rate_limiter.model_limits["groq/llama-8b"]
+    kdv_with_model.record_attempt(
+        "groq/llama-8b", "groq", estimated_tokens=5000,
+    )
+    assert state.current_tpm == 5000
+    kdv_with_model.release_reservation("groq/llama-8b", "groq", reserved_tokens=5000)
+    assert state.current_tpm == 0
+
+
+def test_release_reservation_keeps_rpm_consumed(kdv_with_model):
+    """Release rolls back TPM only — RPM stays consumed because the request
+    slot WAS used (provider counted it regardless of outcome).
+    """
+    state = kdv_with_model._rate_limiter.model_limits["groq/llama-8b"]
+    kdv_with_model.record_attempt(
+        "groq/llama-8b", "groq", estimated_tokens=5000,
+    )
+    assert state.current_rpm == 1
+    kdv_with_model.release_reservation("groq/llama-8b", "groq", reserved_tokens=5000)
+    assert state.current_rpm == 1  # unchanged
+    assert state.current_tpm == 0  # rolled back
+
+
 def test_post_call_records_tokens(kdv_with_model):
     kdv_with_model.post_call("groq/llama-8b", "groq", headers={}, token_count=5000)
     util = kdv_with_model._rate_limiter.get_utilization("groq/llama-8b")

@@ -74,14 +74,33 @@ def test_pre_call_daily_exhausted(kdv_with_model):
 
 # -- post_call --
 
-def test_post_call_records_request_timestamp(kdv_with_model):
-    """RPM tracking requires request timestamps to be recorded."""
+def test_record_attempt_bumps_rpm(kdv_with_model):
+    """Per-minute request counter is bumped at admission time by
+    record_attempt — NOT in post_call. post_call only adds tokens.
+
+    This contract was inverted in the original implementation
+    (post_call bumped RPM) and changed when failed-call quota visibility
+    was added. Now record_attempt is the single bookkeeping site for
+    request counting, regardless of call outcome.
+    """
     state = kdv_with_model._rate_limiter.model_limits["groq/llama-8b"]
     assert state.current_rpm == 0
-    kdv_with_model.post_call("groq/llama-8b", "groq", headers={}, token_count=1000)
+    kdv_with_model.record_attempt("groq/llama-8b", "groq")
+    assert state.current_rpm == 1
+    kdv_with_model.record_attempt("groq/llama-8b", "groq")
+    assert state.current_rpm == 2
+
+
+def test_post_call_does_not_double_bump_rpm(kdv_with_model):
+    """post_call must NOT bump RPM — record_attempt already counted at
+    admission. Without this guarantee, every successful call would be
+    counted twice.
+    """
+    state = kdv_with_model._rate_limiter.model_limits["groq/llama-8b"]
+    kdv_with_model.record_attempt("groq/llama-8b", "groq")
     assert state.current_rpm == 1
     kdv_with_model.post_call("groq/llama-8b", "groq", headers={}, token_count=1000)
-    assert state.current_rpm == 2
+    assert state.current_rpm == 1  # unchanged
 
 
 def test_post_call_records_tokens(kdv_with_model):

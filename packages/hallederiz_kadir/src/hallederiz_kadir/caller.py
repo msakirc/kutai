@@ -62,6 +62,18 @@ def _kdv_post_call(litellm_name, provider, headers, token_count):
         pass
 
 
+def _kdv_record_attempt(litellm_name, provider, headers=None):
+    """Record an outgoing API attempt with KDV — fires before LiteLLM POST
+    and again from the failure path so RPM bookkeeping stays in sync with
+    what the provider actually counted.
+    """
+    try:
+        from src.core.router import get_kdv
+        get_kdv().record_attempt(litellm_name, provider, headers=headers)
+    except Exception:
+        pass
+
+
 def _kdv_record_failure(litellm_name, provider, reason):
     try:
         from src.core.router import get_kdv
@@ -388,6 +400,12 @@ async def call(
             else:
                 return CallError(category="rate_limited",
                                message=f"Rate limited for {model.name}", retryable=True)
+        # Reserve the slot atomically with the admission decision: every
+        # outgoing LiteLLM POST below now bumps RPM and BurnLog regardless of
+        # outcome, matching what the provider actually counts. Without this,
+        # 4xx responses (e.g. unsupported tool calls) consumed Groq RPD on
+        # the provider side while KDV remained at 0/N RPM.
+        _kdv_record_attempt(model.litellm_name, model.provider)
 
     # ── Local model manager reference (for health checks, speed tracking) ──
     local_manager = None
@@ -451,6 +469,23 @@ async def call(
     # ── Handle retry failure ──
     if isinstance(raw_result, CallError):
         if not is_local:
+            # The request slot was already counted at admission. If the
+            # provider returned x-ratelimit-* headers on the failing
+            # response, feed them through update_from_headers so KDV's
+            # _header_*_remaining + reset clocks track the provider's view.
+            # Header-only: do NOT call record_attempt again (would double-bump
+            # the per-minute RPM counter for one logical attempt).
+            if raw_result.headers:
+                try:
+                    from src.core.router import get_kdv
+                    from kuleden_donen_var.header_parser import parse_rate_limit_headers
+                    snap = parse_rate_limit_headers(model.provider, raw_result.headers)
+                    if snap is not None:
+                        get_kdv()._rate_limiter.update_from_headers(
+                            model.litellm_name, model.provider, snap,
+                        )
+                except Exception:
+                    pass
             _kdv_record_failure(model.litellm_name, model.provider, raw_result.category)
         return raw_result
 

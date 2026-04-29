@@ -62,6 +62,12 @@ async def execute_with_retry(
         Raw litellm response on success, CallError on failure.
     """
     last_error: str | None = None
+    # Captured headers from the most recent exception, when LiteLLM surfaces
+    # them on the exception object (RateLimitError, BadRequestError, etc.
+    # all carry .response.headers when the call reached the provider).
+    # Forwarded to KDV.record_attempt so 4xx/5xx responses still update
+    # x-ratelimit-* counters.
+    last_headers: dict[str, str] | None = None
 
     for attempt in range(max_retries):
         try:
@@ -86,6 +92,19 @@ async def execute_with_retry(
         except Exception as e:
             error_str = str(e).lower()
             last_error = str(e)
+            # Try common LiteLLM exception shapes: e.response.headers,
+            # e.headers, e.response.headers when response is a Response-like
+            # object. Fall back to None on any AttributeError. Headers from
+            # 4xx/5xx are still authoritative rate-limit signals.
+            try:
+                resp = getattr(e, "response", None)
+                hdrs = getattr(resp, "headers", None) if resp is not None else None
+                if hdrs is None:
+                    hdrs = getattr(e, "headers", None)
+                if hdrs is not None:
+                    last_headers = dict(hdrs)
+            except Exception:
+                last_headers = None
 
             # Auth/billing — not retryable
             if any(kw in error_str for kw in (
@@ -147,4 +166,5 @@ async def execute_with_retry(
                                "server_error", "gpu_busy", "connection_error",
                                "context_overflow"),
         partial_content=partial,
+        headers=last_headers,
     )

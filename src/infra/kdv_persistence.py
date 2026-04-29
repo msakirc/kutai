@@ -53,6 +53,7 @@ async def save(kdv, db_path: str) -> None:
         json.dumps({
             "enabled_at": snap.get("enabled_at", {}),
             "call_count": snap.get("call_count", {}),
+            "attempt_count": snap.get("attempt_count", {}),
         }),
         now,
     ))
@@ -86,6 +87,7 @@ async def load(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> 
     snap_for_kdv: dict = {"models": {}, "providers": {}, "breakers": {}}
     enabled_at: dict = {}
     call_count: dict = {}
+    attempt_count: dict = {}
 
     try:
         async with aiosqlite.connect(db_path) as db:
@@ -114,6 +116,7 @@ async def load(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> 
                     elif scope == "meta":
                         enabled_at = dict(decoded.get("enabled_at", {}))
                         call_count = dict(decoded.get("call_count", {}))
+                        attempt_count = dict(decoded.get("attempt_count", {}))
                         report["meta"] += 1
     except Exception as e:  # noqa: BLE001
         logger.warning("kdv state load failed: %s", e)
@@ -121,6 +124,7 @@ async def load(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> 
 
     snap_for_kdv["enabled_at"] = enabled_at
     snap_for_kdv["call_count"] = call_count
+    snap_for_kdv["attempt_count"] = attempt_count
 
     try:
         kdv.restore_state(snap_for_kdv)
@@ -150,6 +154,7 @@ def load_sync(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> d
     snap_for_kdv: dict = {"models": {}, "providers": {}, "breakers": {}}
     enabled_at: dict = {}
     call_count: dict = {}
+    attempt_count: dict = {}
 
     try:
         with sqlite3.connect(db_path) as conn:
@@ -178,6 +183,7 @@ def load_sync(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> d
                 elif scope == "meta":
                     enabled_at = dict(decoded.get("enabled_at", {}))
                     call_count = dict(decoded.get("call_count", {}))
+                    attempt_count = dict(decoded.get("attempt_count", {}))
                     report["meta"] += 1
     except Exception as e:  # noqa: BLE001
         logger.warning("kdv state load_sync failed: %s", e)
@@ -185,6 +191,7 @@ def load_sync(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> d
 
     snap_for_kdv["enabled_at"] = enabled_at
     snap_for_kdv["call_count"] = call_count
+    snap_for_kdv["attempt_count"] = attempt_count
 
     try:
         kdv.restore_state(snap_for_kdv)

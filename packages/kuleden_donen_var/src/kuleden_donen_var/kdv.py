@@ -26,7 +26,15 @@ class KuledenDonenVar:
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
         self._providers: dict[str, set[str]] = {}  # provider → {model_ids}
         self._provider_enabled_at: dict[str, float] = {}
+        # Two counters with deliberately different semantics:
+        #   _provider_call_count    — successes only (post_call). Drives
+        #     downstream observability (success rate per provider). Kept
+        #     unchanged for backward compatibility with existing call sites.
+        #   _provider_attempt_count — every outgoing API call regardless of
+        #     outcome (record_attempt). Drives no_data_warnings: a provider
+        #     getting hammered with 4xx is "live", not "no data".
         self._provider_call_count: dict[str, int] = {}
+        self._provider_attempt_count: dict[str, int] = {}
 
     def _get_cb(self, provider: str) -> CircuitBreaker:
         if provider not in self._circuit_breakers:
@@ -89,29 +97,73 @@ class KuledenDonenVar:
         )
 
     def reset_provider_enabled(self, provider: str) -> None:
-        """Drop the enabled-at timestamp + observation count for a provider.
+        """Drop the enabled-at timestamp + both counters for a provider.
 
         Use on auth_fail→ok recovery to restart the no-data-warning clock.
         Caller is responsible for re-marking afterward.
         """
         self._provider_enabled_at.pop(provider, None)
         self._provider_call_count.pop(provider, None)
+        self._provider_attempt_count.pop(provider, None)
 
     def record_call_observation(self, provider: str) -> None:
-        """Bump per-provider observation count. Wired internally from post_call.
+        """Bump per-provider success count. Wired internally from post_call.
 
         Public surface so external callers (tests, manual reconciliation) can
         inject observations too.
         """
         self._provider_call_count[provider] = self._provider_call_count.get(provider, 0) + 1
 
+    def record_attempt(
+        self,
+        model_id: str,
+        provider: str,
+        headers: dict[str, Any] | None = None,
+    ) -> None:
+        """Record an outgoing API call attempt — fires BEFORE LiteLLM POST and
+        again from the failure path so RPM bookkeeping reflects what actually
+        hit the provider (not just what succeeded).
+
+        Effects:
+          * ``_provider_attempt_count[provider]`` += 1
+          * ``RateLimitManager.record_request`` bumps the per-minute sliding
+            window for both per-model and per-provider-aggregate buckets.
+          * BurnLog gets a ``calls=1, tokens=0`` entry (S7 burn-rate signal).
+          * If headers are provided (e.g. captured from a 429 response),
+            ``update_from_headers`` parses x-ratelimit-* into authoritative
+            ``_header_rpm/tpm/rpd_remaining`` + reset clocks.
+
+        Tokens are NOT counted here — actual usage is unknown until response.
+        post_call() bumps tokens on success. Failed attempts contribute zero
+        tokens but still consume the per-call slot, matching what Groq counts.
+        """
+        self._provider_attempt_count[provider] = (
+            self._provider_attempt_count.get(provider, 0) + 1
+        )
+        self._rate_limiter.record_request(model_id, provider)
+        try:
+            from nerd_herd.burn_log import get_burn_log
+            get_burn_log().record(provider=provider, model=model_id,
+                                  tokens=0, calls=1)
+        except Exception:
+            pass
+        if headers:
+            try:
+                snapshot = parse_rate_limit_headers(provider, headers)
+                if snapshot is not None:
+                    self._rate_limiter.update_from_headers(model_id, provider,
+                                                          snapshot)
+            except Exception:
+                pass
+
     def no_data_warnings(self, min_age_hours: float = 24.0) -> list[dict]:
-        """Return list of providers enabled longer than ``min_age_hours`` with
-        zero observations.
+        """Return providers enabled longer than ``min_age_hours`` with zero
+        attempts. A provider returning 4xx/5xx on every call is NOT "no data" —
+        it's getting plenty of data, the data is just bad. Use attempt count,
+        not success count, so the warning fires only when the provider is
+        truly unused.
 
         Each entry: ``{"provider": str, "enabled_at_unix": float, "age_hours": float}``.
-        Caller (status command, scheduled task) uses this to surface "defaults
-        still in use" warnings to the operator.
         """
         now = time.time()
         out: list[dict] = []
@@ -119,7 +171,7 @@ class KuledenDonenVar:
             age_hours = (now - enabled_at) / 3600.0
             if age_hours < min_age_hours:
                 continue
-            if self._provider_call_count.get(provider, 0) > 0:
+            if self._provider_attempt_count.get(provider, 0) > 0:
                 continue
             out.append({
                 "provider": provider,
@@ -161,11 +213,20 @@ class KuledenDonenVar:
         headers: dict[str, Any] | None,
         token_count: int,
     ) -> None:
-        # Track real-call observation count for no_data_warnings.
+        # Track success count (different from attempt count — see __init__ doc).
         self.record_call_observation(provider)
-        # Record request (RPM tracking) and tokens (TPM tracking)
-        self._rate_limiter.record_request(model_id, provider)
+        # Tokens (TPM tracking). RPM was already counted at record_attempt
+        # time so we do NOT call record_request here — would double-count.
         self._rate_limiter.record_tokens(model_id, provider, token_count)
+        # Feed S7 burn-rate signal with actual volume. Calls were already
+        # counted at attempt time (calls=1); now add the realised tokens
+        # (calls=0 to avoid double-counting).
+        try:
+            from nerd_herd.burn_log import get_burn_log
+            get_burn_log().record(provider=provider, model=model_id,
+                                  tokens=token_count, calls=0)
+        except Exception:
+            pass
 
         # Parse and apply response headers
         if headers:
@@ -284,11 +345,12 @@ class KuledenDonenVar:
     #
     # Returned shape:
     #   {
-    #     "models":    {model_id: {field: value, ...}, ...},
-    #     "providers": {provider:   {field: value, ...}, ...},
-    #     "breakers":  {provider:   {field: value, ...}, ...},
-    #     "enabled_at":  {provider: float},
-    #     "call_count":  {provider: int},
+    #     "models":         {model_id: {field: value, ...}, ...},
+    #     "providers":      {provider: {field: value, ...}, ...},
+    #     "breakers":       {provider: {field: value, ...}, ...},
+    #     "enabled_at":     {provider: float},
+    #     "call_count":     {provider: int},   # successes
+    #     "attempt_count":  {provider: int},   # successes + failures
     #   }
     # Per-minute counters (_request_timestamps, _token_log) are intentionally
     # NOT persisted — see RateLimitState._PERSISTED_FIELDS.
@@ -308,6 +370,7 @@ class KuledenDonenVar:
             },
             "enabled_at": dict(self._provider_enabled_at),
             "call_count": dict(self._provider_call_count),
+            "attempt_count": dict(self._provider_attempt_count),
         }
 
     def restore_state(self, snap: dict) -> None:
@@ -332,4 +395,8 @@ class KuledenDonenVar:
         for prov, count in snap.get("call_count", {}).items():
             self._provider_call_count[prov] = (
                 self._provider_call_count.get(prov, 0) + int(count)
+            )
+        for prov, count in snap.get("attempt_count", {}).items():
+            self._provider_attempt_count[prov] = (
+                self._provider_attempt_count.get(prov, 0) + int(count)
             )

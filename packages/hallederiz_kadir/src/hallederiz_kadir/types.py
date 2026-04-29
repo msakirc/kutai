@@ -26,3 +26,9 @@ class CallError:
     message: str
     retryable: bool
     partial_content: str | None = None
+    # Response headers from the failing call, when available. LiteLLM exposes
+    # these on its exception types (RateLimitError.response.headers etc.).
+    # Captured by execute_with_retry and forwarded to KDV.record_attempt so
+    # x-ratelimit-* counters stay in sync with the provider's view even on
+    # 4xx/5xx responses (which still consume request quota).
+    headers: dict[str, str] | None = None

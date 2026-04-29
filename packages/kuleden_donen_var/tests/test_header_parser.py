@@ -98,6 +98,54 @@ def test_anthropic_headers():
     assert snap.rpm_limit == 50
     assert snap.rpm_remaining == 48
     assert snap.tpm_limit == 80000
+    # Combined-only response → input/output splits stay None
+    assert snap.itpm_limit is None
+    assert snap.otpm_limit is None
+
+
+def test_anthropic_input_output_token_splits():
+    """Anthropic paid plans expose separate input/output token sub-budgets.
+    These map to itpm / otpm matrix cells (and itpd / otpd on tiers
+    that include the day suffix)."""
+    headers = {
+        "anthropic-ratelimit-requests-limit": "50",
+        "anthropic-ratelimit-requests-remaining": "48",
+        "anthropic-ratelimit-tokens-limit": "200000",
+        "anthropic-ratelimit-tokens-remaining": "180000",
+        "anthropic-ratelimit-input-tokens-limit": "150000",
+        "anthropic-ratelimit-input-tokens-remaining": "140000",
+        "anthropic-ratelimit-input-tokens-reset": "2026-01-27T12:00:30Z",
+        "anthropic-ratelimit-output-tokens-limit": "50000",
+        "anthropic-ratelimit-output-tokens-remaining": "40000",
+        "anthropic-ratelimit-output-tokens-reset": "2026-01-27T12:00:30Z",
+    }
+    snap = parse_rate_limit_headers("anthropic", headers)
+    assert snap is not None
+    assert snap.itpm_limit == 150000
+    assert snap.itpm_remaining == 140000
+    assert snap.otpm_limit == 50000
+    assert snap.otpm_remaining == 40000
+    # Combined still parsed alongside the splits
+    assert snap.tpm_limit == 200000
+
+
+def test_anthropic_input_output_token_day_axes():
+    """Day-axis variants (some Anthropic tiers) populate itpd / otpd."""
+    headers = {
+        "anthropic-ratelimit-input-tokens-day-limit": "50000000",
+        "anthropic-ratelimit-input-tokens-day-remaining": "47000000",
+        "anthropic-ratelimit-input-tokens-day-reset": "2026-01-28T00:00:00Z",
+        "anthropic-ratelimit-output-tokens-day-limit": "10000000",
+        "anthropic-ratelimit-output-tokens-day-remaining": "9000000",
+        "anthropic-ratelimit-output-tokens-day-reset": "2026-01-28T00:00:00Z",
+    }
+    snap = parse_rate_limit_headers("anthropic", headers)
+    assert snap is not None
+    assert snap.itpd_limit == 50_000_000
+    assert snap.itpd_remaining == 47_000_000
+    assert snap.otpd_limit == 10_000_000
+    assert snap.otpd_remaining == 9_000_000
+    assert snap.itpd_reset_at is not None
 
 
 def test_cerebras_daily_limits():
@@ -125,6 +173,32 @@ def test_llm_provider_prefix_stripped():
     assert snap is not None
     assert snap.rpm_limit == 15
     assert snap.rpm_remaining == 10
+
+
+def test_gemini_full_axis_set():
+    """Gemini paid tier exposes RPM + TPM + RPD + TPD; all four axes
+    must populate so admission gate can see daily exhaustion before 429."""
+    headers = {
+        "x-ratelimit-limit-requests": "1000",
+        "x-ratelimit-remaining-requests": "950",
+        "x-ratelimit-limit-tokens": "1000000",
+        "x-ratelimit-remaining-tokens": "900000",
+        "x-ratelimit-limit-requests-day": "50000",
+        "x-ratelimit-remaining-requests-day": "47000",
+        "x-ratelimit-reset-requests-day": "7200s",
+        "x-ratelimit-limit-tokens-day": "50000000",
+        "x-ratelimit-remaining-tokens-day": "48000000",
+        "x-ratelimit-reset-tokens-day": "7200s",
+    }
+    snap = parse_rate_limit_headers("gemini", headers)
+    assert snap is not None
+    assert snap.rpm_limit == 1000
+    assert snap.tpm_limit == 1_000_000
+    assert snap.rpd_limit == 50_000
+    assert snap.rpd_remaining == 47_000
+    assert snap.tpd_limit == 50_000_000
+    assert snap.tpd_remaining == 48_000_000
+    assert snap.tpd_reset_at is not None
 
 
 def test_empty_headers_returns_none():

@@ -76,6 +76,78 @@ def test_adapter_copies_tpm_cell_when_present():
     assert m.limits.rpd.limit == 14_400
 
 
+def test_adapter_forwards_anthropic_token_splits_end_to_end(kdv):
+    """Header → snapshot → state → adapter → matrix.itpm/otpm/itpd/otpd.
+
+    Anthropic exposes input/output token sub-budgets which map to the
+    matrix's split-axis cells. Without end-to-end plumbing, S2 burden
+    only sees the combined tpm cell and misses an output-burst exhaustion
+    on long-completion calls.
+    """
+    from kuleden_donen_var.header_parser import parse_rate_limit_headers
+    kdv.register("anthropic/claude-sonnet-4-6", "anthropic", rpm=50, tpm=200_000)
+    state = kdv._rate_limiter.model_limits["anthropic/claude-sonnet-4-6"]
+    headers = {
+        "anthropic-ratelimit-requests-limit": "50",
+        "anthropic-ratelimit-requests-remaining": "48",
+        "anthropic-ratelimit-tokens-limit": "200000",
+        "anthropic-ratelimit-tokens-remaining": "180000",
+        "anthropic-ratelimit-input-tokens-limit": "150000",
+        "anthropic-ratelimit-input-tokens-remaining": "140000",
+        "anthropic-ratelimit-output-tokens-limit": "50000",
+        "anthropic-ratelimit-output-tokens-remaining": "40000",
+        "anthropic-ratelimit-input-tokens-day-limit": "50000000",
+        "anthropic-ratelimit-input-tokens-day-remaining": "47000000",
+        "anthropic-ratelimit-output-tokens-day-limit": "10000000",
+        "anthropic-ratelimit-output-tokens-day-remaining": "9000000",
+    }
+    snap = parse_rate_limit_headers("anthropic", headers)
+    state.update_from_snapshot(snap)
+    cloud_state = build_cloud_provider_state(kdv, "anthropic")
+    m = cloud_state.models["anthropic/claude-sonnet-4-6"]
+    # Combined cells
+    assert m.limits.rpm.limit == 50
+    assert m.limits.tpm.limit == 200_000
+    # Split cells (the new piece)
+    assert m.limits.itpm.limit == 150_000
+    assert m.limits.itpm.remaining == 140_000
+    assert m.limits.otpm.limit == 50_000
+    assert m.limits.otpm.remaining == 40_000
+    assert m.limits.itpd.limit == 50_000_000
+    assert m.limits.itpd.remaining == 47_000_000
+    assert m.limits.otpd.limit == 10_000_000
+    assert m.limits.otpd.remaining == 9_000_000
+
+
+def test_adapter_forwards_gemini_full_axes_end_to_end(kdv):
+    """Gemini RPM + TPM + RPD + TPD all reach matrix cells."""
+    from kuleden_donen_var.header_parser import parse_rate_limit_headers
+    kdv.register("gemini/gemini-2.0-flash", "gemini", rpm=1000, tpm=1_000_000)
+    state = kdv._rate_limiter.model_limits["gemini/gemini-2.0-flash"]
+    headers = {
+        "x-ratelimit-limit-requests": "1000",
+        "x-ratelimit-remaining-requests": "950",
+        "x-ratelimit-limit-tokens": "1000000",
+        "x-ratelimit-remaining-tokens": "900000",
+        "x-ratelimit-limit-requests-day": "50000",
+        "x-ratelimit-remaining-requests-day": "47000",
+        "x-ratelimit-reset-requests-day": "7200s",
+        "x-ratelimit-limit-tokens-day": "50000000",
+        "x-ratelimit-remaining-tokens-day": "48000000",
+        "x-ratelimit-reset-tokens-day": "7200s",
+    }
+    snap = parse_rate_limit_headers("gemini", headers)
+    state.update_from_snapshot(snap)
+    cloud_state = build_cloud_provider_state(kdv, "gemini")
+    m = cloud_state.models["gemini/gemini-2.0-flash"]
+    assert m.limits.rpm.limit == 1000
+    assert m.limits.tpm.limit == 1_000_000
+    assert m.limits.rpd.limit == 50_000
+    assert m.limits.rpd.remaining == 47_000
+    assert m.limits.tpd.limit == 50_000_000
+    assert m.limits.tpd.remaining == 48_000_000
+
+
 def test_adapter_forwards_groq_daily_headers_end_to_end(kdv):
     """Header → snapshot → state → adapter → matrix.tpd / matrix.rpd.
 

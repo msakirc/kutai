@@ -108,6 +108,13 @@ class RateLimitState:
         "_header_rpm_reset_at", "_header_tpm_reset_at",
         "_limits_discovered", "_last_header_update",
         "rpd_limit", "rpd_remaining", "rpd_reset_at",
+        # Daily axes added by the parallel agent's groq parser (12d5889).
+        # Without persisting these, a Groq response-then-restart cycle
+        # loses the provider-reported daily-bucket position until the
+        # next response.
+        "tpd_limit", "tpd_remaining", "tpd_reset_at",
+        "itpd_limit", "itpd_remaining", "itpd_reset_at",
+        "otpd_limit", "otpd_remaining", "otpd_reset_at",
     )
 
     def snapshot_state(self) -> dict:
@@ -361,13 +368,21 @@ class RateLimitState:
         if snap.rpd_reset_at is not None:
             self.rpd_reset_at = snap.rpd_reset_at
 
-        # Token-day limits (Groq paid tiers, others as they expose them)
+        # Token-day limits (Groq/Gemini paid tiers)
         if snap.tpd_limit is not None:
             self.tpd_limit = snap.tpd_limit
         if snap.tpd_remaining is not None:
             self.tpd_remaining = snap.tpd_remaining
         if snap.tpd_reset_at is not None:
             self.tpd_reset_at = snap.tpd_reset_at
+
+        # Input/output token splits (Anthropic exposes minute; tiers expose day)
+        for axis in ("itpm", "itpd", "otpm", "otpd"):
+            for suffix in ("limit", "remaining", "reset_at"):
+                attr = f"{axis}_{suffix}"
+                v = getattr(snap, attr, None)
+                if v is not None:
+                    setattr(self, attr, v)
 
 
 class RateLimitManager:

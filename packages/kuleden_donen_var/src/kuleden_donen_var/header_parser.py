@@ -38,12 +38,32 @@ class RateLimitSnapshot:
     tpd_remaining: int | None = None
     tpd_reset_at: float | None = None
 
+    # Input-token splits (Anthropic exposes these per minute; some tiers per day)
+    itpm_limit: int | None = None
+    itpm_remaining: int | None = None
+    itpm_reset_at: float | None = None
+    itpd_limit: int | None = None
+    itpd_remaining: int | None = None
+    itpd_reset_at: float | None = None
+
+    # Output-token splits (Anthropic; symmetric to input)
+    otpm_limit: int | None = None
+    otpm_remaining: int | None = None
+    otpm_reset_at: float | None = None
+    otpd_limit: int | None = None
+    otpd_remaining: int | None = None
+    otpd_reset_at: float | None = None
+
     def has_any_data(self) -> bool:
         return any(v is not None for v in [
             self.rpm_limit, self.rpm_remaining,
             self.tpm_limit, self.tpm_remaining,
             self.rpd_limit, self.rpd_remaining,
             self.tpd_limit, self.tpd_remaining,
+            self.itpm_limit, self.itpm_remaining,
+            self.itpd_limit, self.itpd_remaining,
+            self.otpm_limit, self.otpm_remaining,
+            self.otpd_limit, self.otpd_remaining,
         ])
 
 
@@ -165,11 +185,23 @@ def _parse_openai_style(h: dict) -> RateLimitSnapshot:
 
 
 def _parse_anthropic(h: dict) -> RateLimitSnapshot:
+    """Parse Anthropic's anthropic-ratelimit-* headers.
+
+    Header families (all anthropic-ratelimit-{family}-{limit,remaining,reset}):
+
+      requests        → rpm   (combined request budget)
+      tokens          → tpm   (combined input+output token budget)
+      input-tokens    → itpm  (input-only sub-budget; some tiers cap separately)
+      output-tokens   → otpm  (output-only sub-budget; expensive completions)
+
+    Anthropic also exposes input-tokens-day / output-tokens-day on certain
+    tiers — parsed when present so itpd / otpd matrix cells populate. Without
+    these, the admission gate can only see the combined tpm budget and
+    misses an output-burst exhaustion the headers actually warn about.
+
+    `reset` values are ISO 8601 timestamps (e.g. "2026-01-27T12:00:30Z").
     """
-    Parse Anthropic's anthropic-ratelimit-* headers.
-    Format: anthropic-ratelimit-{requests,tokens}-{limit,remaining,reset}
-    """
-    return RateLimitSnapshot(
+    snap = RateLimitSnapshot(
         rpm_limit=_safe_int(h.get("anthropic-ratelimit-requests-limit")),
         rpm_remaining=_safe_int(h.get("anthropic-ratelimit-requests-remaining")),
         rpm_reset_at=_parse_reset_duration(h.get("anthropic-ratelimit-requests-reset", "")),
@@ -177,6 +209,34 @@ def _parse_anthropic(h: dict) -> RateLimitSnapshot:
         tpm_remaining=_safe_int(h.get("anthropic-ratelimit-tokens-remaining")),
         tpm_reset_at=_parse_reset_duration(h.get("anthropic-ratelimit-tokens-reset", "")),
     )
+
+    # Input-token split
+    itpm_limit = _safe_int(h.get("anthropic-ratelimit-input-tokens-limit"))
+    if itpm_limit is not None:
+        snap.itpm_limit = itpm_limit
+        snap.itpm_remaining = _safe_int(h.get("anthropic-ratelimit-input-tokens-remaining"))
+        snap.itpm_reset_at = _parse_reset_duration(h.get("anthropic-ratelimit-input-tokens-reset", ""))
+
+    itpd_limit = _safe_int(h.get("anthropic-ratelimit-input-tokens-day-limit"))
+    if itpd_limit is not None:
+        snap.itpd_limit = itpd_limit
+        snap.itpd_remaining = _safe_int(h.get("anthropic-ratelimit-input-tokens-day-remaining"))
+        snap.itpd_reset_at = _parse_reset_duration(h.get("anthropic-ratelimit-input-tokens-day-reset", ""))
+
+    # Output-token split
+    otpm_limit = _safe_int(h.get("anthropic-ratelimit-output-tokens-limit"))
+    if otpm_limit is not None:
+        snap.otpm_limit = otpm_limit
+        snap.otpm_remaining = _safe_int(h.get("anthropic-ratelimit-output-tokens-remaining"))
+        snap.otpm_reset_at = _parse_reset_duration(h.get("anthropic-ratelimit-output-tokens-reset", ""))
+
+    otpd_limit = _safe_int(h.get("anthropic-ratelimit-output-tokens-day-limit"))
+    if otpd_limit is not None:
+        snap.otpd_limit = otpd_limit
+        snap.otpd_remaining = _safe_int(h.get("anthropic-ratelimit-output-tokens-day-remaining"))
+        snap.otpd_reset_at = _parse_reset_duration(h.get("anthropic-ratelimit-output-tokens-day-reset", ""))
+
+    return snap
 
 
 def _parse_cerebras(h: dict) -> RateLimitSnapshot:
@@ -225,9 +285,12 @@ def _parse_sambanova(h: dict) -> RateLimitSnapshot:
 
 
 def _parse_gemini(h: dict) -> RateLimitSnapshot:
-    """
-    Parse Gemini headers. Uses generic x-ratelimit-* names.
-    May include daily limits (RPD).
+    """Parse Gemini headers. Uses generic x-ratelimit-* names.
+
+    Free tier exposes RPD (requests-day) prominently — without per-day
+    parsing, only the per-minute axis lands and the admission gate
+    can't see a daily exhaustion until it 429s. Paid tiers have added
+    TPD (tokens-day) on selected models — captured when present.
     """
     snap = _parse_openai_style(h)
 
@@ -236,6 +299,12 @@ def _parse_gemini(h: dict) -> RateLimitSnapshot:
         snap.rpd_limit = rpd_limit
         snap.rpd_remaining = _safe_int(h.get("x-ratelimit-remaining-requests-day"))
         snap.rpd_reset_at = _parse_reset_duration(h.get("x-ratelimit-reset-requests-day", ""))
+
+    tpd_limit = _safe_int(h.get("x-ratelimit-limit-tokens-day"))
+    if tpd_limit is not None:
+        snap.tpd_limit = tpd_limit
+        snap.tpd_remaining = _safe_int(h.get("x-ratelimit-remaining-tokens-day"))
+        snap.tpd_reset_at = _parse_reset_duration(h.get("x-ratelimit-reset-tokens-day", ""))
 
     return snap
 

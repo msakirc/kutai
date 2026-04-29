@@ -124,10 +124,6 @@ class RateLimitMatrix:
                 yield name, rl
 
 
-# Backward-compatible alias
-RateLimits = RateLimitMatrix
-
-
 @dataclass
 class CloudModelState:
     model_id: str = ""

@@ -251,6 +251,32 @@ async def init_db():
         )
     """)
 
+    # Per-call token telemetry (pool-pressure machinery)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS model_call_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+            task_id INTEGER,
+            agent_type TEXT,
+            workflow_step_id TEXT,
+            workflow_phase TEXT,
+            call_category TEXT,
+            model TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            is_streaming INTEGER,
+            prompt_tokens INTEGER,
+            completion_tokens INTEGER,
+            reasoning_tokens INTEGER DEFAULT 0,
+            total_tokens INTEGER NOT NULL,
+            duration_ms INTEGER,
+            iteration_n INTEGER,
+            success INTEGER NOT NULL
+        )
+    """)
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_mct_task ON model_call_tokens(task_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_mct_step ON model_call_tokens(agent_type, workflow_step_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_mct_recent ON model_call_tokens(timestamp)")
+
     # Cost budget tracking (Phase 4)
     await db.execute("""
         CREATE TABLE IF NOT EXISTS cost_budgets (

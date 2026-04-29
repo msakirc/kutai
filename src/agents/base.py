@@ -2086,6 +2086,22 @@ class BaseAgent:
                                 f"{', '.join(_changed_fields)} re-synced from "
                                 f"live JSON (step={_step_id}, wf={_wf_name})"
                             )
+                            # Persist to DB so the post-execute hook (which
+                            # re-fetches the task via workflow_engine.advance)
+                            # validates against the LIVE schema, not the stale
+                            # snapshot stored at admission time. Without this
+                            # write, mission 57 task 4450 (6.1) kept DLQ'ing on
+                            # an empty-placeholder check for ``dependencies``
+                            # because advance saw the old legacy schema even
+                            # though base.py had refreshed in-memory.
+                            try:
+                                from src.infra.db import update_task as _update_task
+                                await _update_task(task["id"], context=task["context"])
+                            except Exception as _persist_exc:
+                                logger.warning(
+                                    f"[Task #{task.get('id','?')}] step-refresh "
+                                    f"persist failed: {_persist_exc!r}"
+                                )
             except Exception as _e:
                 logger.warning(
                     f"[Task #{task.get('id','?')}] step config refresh failed: {_e}"

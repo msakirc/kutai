@@ -30,3 +30,58 @@ def test_agent_requirements_calibrated_to_p90():
     # Telemetry showed analyst p90 = 25k tokens; old default 3k under-reserves 8x
     analyst = AGENT_REQUIREMENTS["analyst"]
     assert analyst.estimated_output_tokens >= 15_000  # at least p75
+
+
+import asyncio
+
+
+class FakeTask:
+    def __init__(self, agent_type, step_id=None, phase=None):
+        self.agent_type = agent_type
+        self.context = {}
+        if step_id:
+            self.context["workflow_step_id"] = step_id
+        if phase:
+            self.context["workflow_phase"] = phase
+
+
+def test_estimate_for_uses_static_overrides_when_step_known():
+    from fatih_hoca.estimates import estimate_for
+    task = FakeTask("architect", step_id="4.5b")
+    e = estimate_for(task, btable={})
+    assert e.out_tokens >= 100_000
+
+
+def test_estimate_for_falls_back_to_agent_requirements():
+    from fatih_hoca.estimates import estimate_for
+    task = FakeTask("analyst")
+    e = estimate_for(task, btable={})
+    assert e.out_tokens >= 15_000
+
+
+def test_estimate_for_uses_btable_when_samples_sufficient():
+    from fatih_hoca.estimates import estimate_for, Estimates
+    task = FakeTask("analyst", step_id="2.6", phase="phase_2")
+    btable = {
+        ("analyst", "2.6", "phase_2"): {
+            "samples_n": 10,
+            "in_p90": 5000, "out_p90": 4000, "iters_p90": 7,
+        }
+    }
+    e = estimate_for(task, btable=btable)
+    assert e.in_tokens == 5000
+    assert e.out_tokens == 4000
+    assert e.iterations == 7
+
+
+def test_estimate_for_skips_btable_when_samples_below_threshold():
+    from fatih_hoca.estimates import estimate_for
+    task = FakeTask("analyst", step_id="4.5b", phase="phase_4")
+    btable = {
+        ("analyst", "4.5b", "phase_4"): {
+            "samples_n": 2,  # below MIN_SAMPLES=5
+            "in_p90": 100, "out_p90": 100, "iters_p90": 1,
+        }
+    }
+    e = estimate_for(task, btable=btable)
+    assert e.out_tokens >= 100_000  # falls through to STEP_TOKEN_OVERRIDES

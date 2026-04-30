@@ -76,6 +76,28 @@ def test_adapter_copies_tpm_cell_when_present():
     assert m.limits.rpd.limit == 14_400
 
 
+def test_adapter_carries_sliding_window_remaining_for_providers_without_headers(kdv):
+    """End-to-end: provider with no rate-limit headers (Gemini) must still
+    have matrix.rpm.remaining shrink as calls land. Without this, pool
+    pressure is inert and selector keeps hammering the saturated model."""
+    import time as _time
+    kdv.register("gemini/foo", "gemini", rpm=5, tpm=250_000)
+    state = kdv._rate_limiter.model_limits["gemini/foo"]
+    # Cold state → full bucket
+    cs = build_cloud_provider_state(kdv, "gemini")
+    assert cs.models["gemini/foo"].limits.rpm.remaining == 5
+    # 3 calls record locally
+    for _ in range(3):
+        state._request_timestamps.append(_time.time())
+    cs = build_cloud_provider_state(kdv, "gemini")
+    assert cs.models["gemini/foo"].limits.rpm.remaining == 2
+    # Saturate
+    for _ in range(10):
+        state._request_timestamps.append(_time.time())
+    cs = build_cloud_provider_state(kdv, "gemini")
+    assert cs.models["gemini/foo"].limits.rpm.remaining == 0
+
+
 def test_adapter_forwards_anthropic_token_splits_end_to_end(kdv):
     """Header → snapshot → state → adapter → matrix.itpm/otpm/itpd/otpd.
 

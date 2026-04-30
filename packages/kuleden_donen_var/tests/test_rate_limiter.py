@@ -56,6 +56,46 @@ def test_state_update_from_snapshot():
     assert state._header_rpm_remaining == 55
 
 
+def test_rpm_remaining_falls_back_to_sliding_window():
+    """Pool pressure depends on matrix.rpm.remaining being populated.
+    Gemini-class providers emit nothing in response headers — without
+    a sliding-window fallback, S1 sees None, treats as 0 via the
+    exhausted-neutral path on time_bucketed pools, gives no signal,
+    selector keeps picking the saturated model, hits 429 by surprise.
+
+    Property must return rpm_limit when no calls + no headers (full
+    bucket), shrink as calls land, bottom at 0."""
+    state = RateLimitState(rpm_limit=5, tpm_limit=250_000)
+    # Cold: full bucket
+    assert state.rpm_remaining == 5
+    # Three calls in this minute → 2 left
+    state.record_attempt = lambda: state._request_timestamps.append(time.time())
+    state._request_timestamps.append(time.time())
+    state._request_timestamps.append(time.time())
+    state._request_timestamps.append(time.time())
+    assert state.rpm_remaining == 2
+    # Saturate
+    for _ in range(10):
+        state._request_timestamps.append(time.time())
+    assert state.rpm_remaining == 0
+
+
+def test_rpm_remaining_prefers_fresh_header():
+    """When provider headers ARE present (Groq/Anthropic), authoritative
+    header value wins over the local sliding-window estimate."""
+    state = RateLimitState(rpm_limit=100, tpm_limit=200_000)
+    # Local count says 90 left
+    state._request_timestamps.append(time.time())
+    assert state.rpm_remaining == 99
+    # But provider header says 50 left and is fresh
+    state._header_rpm_remaining = 50
+    state._last_header_update = time.time()
+    assert state.rpm_remaining == 50
+    # Stale header → fall back to local count
+    state._last_header_update = time.time() - 60
+    assert state.rpm_remaining == 99
+
+
 def test_state_update_from_snapshot_tpd():
     """tpd_* fields on the snapshot land on RateLimitState; nerd_herd
     adapter reads them via getattr to populate the matrix's tpd cell."""

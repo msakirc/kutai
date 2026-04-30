@@ -153,6 +153,63 @@ class RateLimitState:
     def tpm_headroom(self) -> int:
         return max(0, self.tpm_limit - self.current_tpm)
 
+    # ── Adapter-facing `remaining` properties ────────────────────────────
+    # The nerd_herd adapter reads `getattr(state, f"{axis}_remaining", ...)`
+    # to populate matrix.rpm.remaining / matrix.tpm.remaining for S1
+    # depletion arm + S2/S3 burden. Without these properties, the adapter
+    # got None for every Gemini-class provider (Gemini emits nothing in
+    # response headers, only on 429 body) — matrix cells stayed empty and
+    # S1 returned 0.0 via the exhausted-neutral path on time_bucketed
+    # pools. Selector saw no signal, kept picking the saturated model,
+    # 429'd. Pool pressure was inert.
+    #
+    # Precedence: fresh provider header (authoritative when reset_at >
+    # now and last_header_update < 5s) → sliding-window-derived
+    # (rpm_limit - current_rpm). When neither is available, fall back to
+    # rpm_limit so a never-called model still reports SOMETHING — the
+    # full bucket — instead of None.
+    @property
+    def rpm_remaining(self) -> int | None:
+        if self.rpm_limit <= 0:
+            return None
+        now = time.time()
+        if (
+            self._header_rpm_remaining is not None
+            and (now - self._last_header_update) < 5.0
+        ):
+            return int(self._header_rpm_remaining)
+        return max(0, self.rpm_limit - self.current_rpm)
+
+    @property
+    def tpm_remaining(self) -> int | None:
+        if self.tpm_limit <= 0:
+            return None
+        now = time.time()
+        if (
+            self._header_tpm_remaining is not None
+            and (now - self._last_header_update) < 5.0
+        ):
+            return int(self._header_tpm_remaining)
+        return max(0, self.tpm_limit - self.current_tpm)
+
+    @property
+    def rpm_reset_at(self) -> float | None:
+        # Use header reset when fresh; else estimate end-of-current-window
+        # (oldest timestamp + 60s). When no calls and no header, return None.
+        if self._header_rpm_reset_at is not None:
+            return float(self._header_rpm_reset_at)
+        if self._request_timestamps:
+            return float(min(self._request_timestamps)) + 60.0
+        return None
+
+    @property
+    def tpm_reset_at(self) -> float | None:
+        if self._header_tpm_reset_at is not None:
+            return float(self._header_tpm_reset_at)
+        if self._token_log:
+            return float(min(t for t, _ in self._token_log)) + 60.0
+        return None
+
     def has_capacity(self, estimated_tokens: int = 0) -> bool:
         """Check if a request can be made without waiting."""
         # Daily limit exhaustion is absolute

@@ -336,6 +336,39 @@ def test_register_cloud_skips_inactive():
     assert registry.get("groq/dead") is None
 
 
+def test_register_cloud_skips_non_text_modality():
+    """Image / TTS / embedding / video models reach the discovery layer
+    alongside chat models on Gemini and OpenRouter. The 15-dim capability
+    vector is text-task oriented; without skipping, the unknown-cloud
+    fallback assigns 6.0 across all dims and the selector picks them for
+    coder roles. Triage in production: gemini/gemini-2.5-flash-image was
+    chosen for a coder task and 403'd on the chat endpoint."""
+    from fatih_hoca.cloud.types import DiscoveredModel
+    from fatih_hoca.registry import ModelRegistry, register_cloud_from_discovered
+
+    registry = ModelRegistry()
+    for modality in ("image", "audio", "embedding", "video"):
+        d = DiscoveredModel(
+            litellm_name=f"gemini/foo-{modality}",
+            raw_id=f"foo-{modality}",
+            output_modality=modality,
+        )
+        result = register_cloud_from_discovered(registry, "gemini", d)
+        assert result is None, f"{modality} should not register"
+        assert registry.get(f"gemini/foo-{modality}") is None
+
+    # Text still registers
+    text = DiscoveredModel(
+        litellm_name="gemini/foo-text", raw_id="foo-text",
+        output_modality="text",
+    )
+    assert register_cloud_from_discovered(registry, "gemini", text) is not None
+    # Default modality (unset) treated as text — back-compat for adapters
+    # that haven't been migrated yet.
+    legacy = DiscoveredModel(litellm_name="gemini/legacy", raw_id="legacy")
+    assert register_cloud_from_discovered(registry, "gemini", legacy) is not None
+
+
 def test_register_cloud_uses_detect_defaults_when_scraped_missing():
     """Scraped fields are optional — when None, detect_cloud_model() defaults apply."""
     from fatih_hoca.cloud.types import DiscoveredModel

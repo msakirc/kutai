@@ -44,3 +44,46 @@ async def test_openrouter_401():
     with patch("httpx.AsyncClient.get", AsyncMock(return_value=_resp(401, {}))):
         result = await a.fetch_models("k")
     assert result.status == "auth_fail"
+
+
+_MIXED_MODALITY = {
+    "data": [
+        {
+            "id": "meta-llama/llama-3.3-70b-instruct",
+            "architecture": {"modality": "text->text",
+                              "output_modalities": ["text"]},
+        },
+        {
+            "id": "stability-ai/stable-diffusion-3.5",
+            "architecture": {"modality": "text->image",
+                              "output_modalities": ["image"]},
+        },
+        {
+            "id": "openai/gpt-4o-tts",
+            "architecture": {"modality": "text->audio",
+                              "output_modalities": ["audio"]},
+        },
+        {
+            "id": "openai/embedding-3-large",
+            "architecture": {"modality": "text->embedding"},
+        },
+        {
+            # Architecture missing — fall back to id-pattern detection
+            "id": "vendor/some-image-model",
+        },
+    ],
+}
+
+
+@pytest.mark.asyncio
+async def test_openrouter_tags_modality_from_architecture_and_id():
+    a = OpenRouterAdapter()
+    with patch("httpx.AsyncClient.get", AsyncMock(return_value=_resp(200, _MIXED_MODALITY))):
+        result = await a.fetch_models("k")
+    by_id = {m.raw_id: m for m in result.models}
+    assert by_id["meta-llama/llama-3.3-70b-instruct"].output_modality == "text"
+    assert by_id["stability-ai/stable-diffusion-3.5"].output_modality == "image"
+    assert by_id["openai/gpt-4o-tts"].output_modality == "audio"
+    assert by_id["openai/embedding-3-large"].output_modality == "embedding"
+    # ID-pattern fallback when architecture absent
+    assert by_id["vendor/some-image-model"].output_modality == "image"

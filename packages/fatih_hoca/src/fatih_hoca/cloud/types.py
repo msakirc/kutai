@@ -18,6 +18,13 @@ class DiscoveredModel:
     litellm_name: str
     raw_id: str
     active: bool = True
+    # Output modality: "text" (chat/completion), "image" (text→image gen),
+    # "audio" (TTS / speech), "embedding" (vector), "video". The 15-dim
+    # capability vector is text-task oriented; non-text models would score
+    # high on irrelevant dims and be picked for coder/reviewer tasks. Adapter
+    # detects modality from /models response (supportedGenerationMethods,
+    # name patterns) so registry can skip non-text registrations.
+    output_modality: str = "text"
     context_length: int | None = None
     max_output_tokens: int | None = None
     cost_per_1k_input: float | None = None

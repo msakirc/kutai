@@ -23,6 +23,16 @@ _OK = {
             "displayName": "Embedding",
             "supportedGenerationMethods": ["embedContent"],
         },
+        {
+            "name": "models/gemini-2.5-flash-image",
+            "displayName": "Gemini 2.5 Flash Image",
+            "supportedGenerationMethods": ["generateContent"],
+        },
+        {
+            "name": "models/gemini-2.5-flash-preview-tts",
+            "displayName": "Gemini 2.5 Flash TTS",
+            "supportedGenerationMethods": ["generateContent"],
+        },
     ],
 }
 
@@ -51,6 +61,21 @@ async def test_gemini_scrapes_token_limits_and_sampling():
     assert m.context_length == 1048576
     assert m.max_output_tokens == 8192
     assert m.sampling_defaults == {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0}
+
+
+@pytest.mark.asyncio
+async def test_gemini_tags_modality_for_image_and_tts_models():
+    """Image / TTS models share `generateContent` with text models so the
+    method-based filter alone lets them through. Adapter must tag them with
+    the right output_modality so registry skips them.
+    """
+    a = GeminiAdapter()
+    with patch("httpx.AsyncClient.get", AsyncMock(return_value=_resp(200, _OK))):
+        result = await a.fetch_models("k")
+    by_id = {m.raw_id: m for m in result.models}
+    assert by_id["gemini-2.0-flash"].output_modality == "text"
+    assert by_id["gemini-2.5-flash-image"].output_modality == "image"
+    assert by_id["gemini-2.5-flash-preview-tts"].output_modality == "audio"
 
 
 @pytest.mark.asyncio

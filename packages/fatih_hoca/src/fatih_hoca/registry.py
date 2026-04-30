@@ -985,6 +985,22 @@ def register_cloud_from_discovered(
     if not getattr(discovered, "active", True):
         return None
 
+    # Non-text-output models (image generation, TTS, embedding, video) reach
+    # /models endpoints alongside chat models but the 15-dim capability
+    # vector is text-task oriented. Without skipping, the unknown-cloud-model
+    # fallback assigns 6.0 across all dims (`detect_cloud_model`), making
+    # them eligible for coder/reviewer/etc. selection — observed in
+    # production with `gemini/gemini-2.5-flash-image` picked for a coder
+    # role and 403'ing on the chat endpoint. Adapter populates
+    # output_modality from /models response.
+    modality = getattr(discovered, "output_modality", "text") or "text"
+    if modality != "text":
+        logger.debug(
+            "skip non-text discovered model: name=%s modality=%s provider=%s",
+            discovered.litellm_name, modality, provider,
+        )
+        return None
+
     from .cloud.family import normalize as _family_normalize
 
     detected = detect_cloud_model(discovered.litellm_name, provider)

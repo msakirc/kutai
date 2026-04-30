@@ -59,8 +59,12 @@ class GeminiAdapter:
             if not raw_id:
                 continue
             methods = entry.get("supportedGenerationMethods", [])
+            # Embedding models use embedContent (already excluded). Text /
+            # image / audio models all use generateContent — modality is
+            # inferred from the model name suffix below.
             if "generateContent" not in methods:
                 continue
+            modality = _infer_modality(raw_id)
             sampling: dict[str, float] = {}
             if entry.get("temperature") is not None:
                 sampling["temperature"] = float(entry["temperature"])
@@ -71,9 +75,40 @@ class GeminiAdapter:
             models.append(DiscoveredModel(
                 litellm_name=f"gemini/{raw_id}",
                 raw_id=raw_id,
+                output_modality=modality,
                 context_length=entry.get("inputTokenLimit"),
                 max_output_tokens=entry.get("outputTokenLimit"),
                 sampling_defaults=sampling,
                 extra={"display_name": entry.get("displayName", "")},
             ))
         return ProviderResult(provider=self.name, status="ok", auth_ok=True, models=models)
+
+
+def _infer_modality(raw_id: str) -> str:
+    """Map a Gemini model id to output modality.
+
+    Gemini's /v1beta/models response doesn't expose modality as a structured
+    field; it's encoded in the id. Image and TTS models share the same
+    `generateContent` method as text models but produce a different output
+    type. Without this distinction, registry treats them as generic text
+    candidates and the selector picks them for code/reviewer tasks
+    (witnessed in production: gemini-2.5-flash-image picked for a `coder`
+    role, returning a 403/PERMISSION_DENIED on the chat endpoint).
+
+    Patterns drawn from Gemini's published model family naming:
+        *-image*       → image generation
+        *-tts*         → text-to-speech
+        *-audio*       → audio generation
+        *-embedding*   → embedding (also filtered earlier by method check)
+        *-video*       → video generation
+    """
+    n = raw_id.lower()
+    if "embedding" in n:
+        return "embedding"
+    if "image" in n:
+        return "image"
+    if "tts" in n or "audio" in n:
+        return "audio"
+    if "video" in n:
+        return "video"
+    return "text"

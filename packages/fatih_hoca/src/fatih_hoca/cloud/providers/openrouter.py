@@ -56,9 +56,11 @@ class OpenRouterAdapter:
                 continue
             pricing = entry.get("pricing", {}) or {}
             top_prov = entry.get("top_provider", {}) or {}
+            modality = _infer_modality(entry, raw_id)
             models.append(DiscoveredModel(
                 litellm_name=f"openrouter/{raw_id}",
                 raw_id=raw_id,
+                output_modality=modality,
                 context_length=entry.get("context_length"),
                 max_output_tokens=top_prov.get("max_completion_tokens"),
                 cost_per_1k_input=_to_per_1k(pricing.get("prompt")),
@@ -69,3 +71,43 @@ class OpenRouterAdapter:
                 },
             ))
         return ProviderResult(provider=self.name, status="ok", auth_ok=True, models=models)
+
+
+def _infer_modality(entry: dict, raw_id: str) -> str:
+    """Read output modality from OpenRouter's `architecture.modality` field.
+
+    Modality string format is `<input>-><output>` (e.g. "text->text",
+    "text+image->text", "text->image"). Some entries use a list under
+    `architecture.output_modalities`. Fallback to id-pattern detection
+    (mirrors gemini adapter's `*-image*` / `*-tts*` heuristic) when
+    architecture metadata is absent.
+    """
+    arch = entry.get("architecture") or {}
+    out_mods = arch.get("output_modalities")
+    if isinstance(out_mods, list) and out_mods:
+        m = str(out_mods[0]).lower()
+        if m in {"text", "image", "audio", "video", "embedding"}:
+            return m
+    modality_str = arch.get("modality")
+    if isinstance(modality_str, str) and "->" in modality_str:
+        out = modality_str.split("->", 1)[1].strip().lower()
+        if "image" in out:
+            return "image"
+        if "audio" in out or "speech" in out:
+            return "audio"
+        if "video" in out:
+            return "video"
+        if "embedding" in out:
+            return "embedding"
+        if "text" in out:
+            return "text"
+    n = raw_id.lower()
+    if "embedding" in n:
+        return "embedding"
+    if "image" in n:
+        return "image"
+    if "tts" in n or "audio" in n:
+        return "audio"
+    if "video" in n:
+        return "video"
+    return "text"

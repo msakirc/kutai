@@ -7,8 +7,17 @@ Response: {"data": [{"id": "<org>/<model>", "context_length": int,
                                       "is_moderated": bool}}, ...]}
 
 Pricing is per-token; we convert to per-1k to match ModelInfo.cost_per_1k_*.
+
+Free-only mode (env OPENROUTER_FREE_ONLY=1):
+    Drops every model that costs > $0 per token. Useful when the user's
+    OpenRouter key has a $0 spend cap (or just wants to confine the bot
+    to free models without raising the cap). Free models on OpenRouter
+    carry a `:free` suffix in the id and have pricing.prompt = "0" /
+    pricing.completion = "0". Both signals are checked.
 """
 from __future__ import annotations
+
+import os
 
 import httpx
 
@@ -25,6 +34,20 @@ def _to_per_1k(value) -> float | None:
         return float(value) * 1000.0
     except (TypeError, ValueError):
         return None
+
+
+def _is_free(raw_id: str, pricing: dict) -> bool:
+    """A model is free when EITHER (a) its id ends with `:free`, OR (b)
+    both prompt and completion pricing are exactly 0. OpenRouter uses
+    string '0' (not 0.0) so we compare floats post-conversion."""
+    if raw_id.lower().endswith(":free"):
+        return True
+    try:
+        in_cost = float(pricing.get("prompt", "1") or "1")
+        out_cost = float(pricing.get("completion", "1") or "1")
+        return in_cost == 0.0 and out_cost == 0.0
+    except (TypeError, ValueError):
+        return False
 
 
 class OpenRouterAdapter:
@@ -49,13 +72,20 @@ class OpenRouterAdapter:
         except Exception as e:  # noqa: BLE001
             return ProviderResult(provider=self.name, status="server_error",
                                   auth_ok=False, error=f"json parse: {e}")
+        free_only = os.getenv("OPENROUTER_FREE_ONLY", "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
         models: list[DiscoveredModel] = []
+        skipped_paid = 0
         for entry in payload.get("data", []):
             raw_id = entry.get("id", "")
             if not raw_id:
                 continue
             pricing = entry.get("pricing", {}) or {}
             top_prov = entry.get("top_provider", {}) or {}
+            if free_only and not _is_free(raw_id, pricing):
+                skipped_paid += 1
+                continue
             modality = _infer_modality(entry, raw_id)
             models.append(DiscoveredModel(
                 litellm_name=f"openrouter/{raw_id}",
@@ -70,6 +100,12 @@ class OpenRouterAdapter:
                     "is_moderated": top_prov.get("is_moderated"),
                 },
             ))
+        if free_only and skipped_paid > 0:
+            import logging as _logging
+            _logging.getLogger(__name__).info(
+                "openrouter: OPENROUTER_FREE_ONLY=1 active — kept %d free, "
+                "skipped %d paid models", len(models), skipped_paid,
+            )
         return ProviderResult(provider=self.name, status="ok", auth_ok=True, models=models)
 
 

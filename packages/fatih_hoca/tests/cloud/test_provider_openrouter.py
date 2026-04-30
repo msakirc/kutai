@@ -75,6 +75,66 @@ _MIXED_MODALITY = {
 }
 
 
+_FREE_AND_PAID = {
+    "data": [
+        {
+            "id": "qwen/qwen3-coder:free",
+            "pricing": {"prompt": "0", "completion": "0"},
+        },
+        {
+            "id": "google/gemma-3-27b-it:free",
+            "pricing": {"prompt": "0", "completion": "0"},
+        },
+        {
+            "id": "anthropic/claude-sonnet-4.6",
+            "pricing": {"prompt": "0.000003", "completion": "0.000015"},
+        },
+        {
+            "id": "openai/gpt-5",
+            "pricing": {"prompt": "0.00001", "completion": "0.00003"},
+        },
+        {
+            # Paid but no `:free` suffix — pricing tells the truth
+            "id": "vendor/free-by-pricing",
+            "pricing": {"prompt": "0", "completion": "0"},
+        },
+    ],
+}
+
+
+@pytest.mark.asyncio
+async def test_openrouter_free_only_drops_paid_models(monkeypatch):
+    """OPENROUTER_FREE_ONLY=1 restricts the adapter to free models only.
+    Production triage 2026-04-30: user wanted to confine bot to OR free
+    models without setting key spend cap to $0 (which blocks key
+    altogether). Adapter filter implements 'free-only' at registration
+    so selector never sees paid OR models."""
+    monkeypatch.setenv("OPENROUTER_FREE_ONLY", "1")
+    a = OpenRouterAdapter()
+    with patch("httpx.AsyncClient.get", AsyncMock(return_value=_resp(200, _FREE_AND_PAID))):
+        result = await a.fetch_models("k")
+    assert result.status == "ok"
+    ids = {m.raw_id for m in result.models}
+    # Free survives (suffix OR pricing=0)
+    assert "qwen/qwen3-coder:free" in ids
+    assert "google/gemma-3-27b-it:free" in ids
+    assert "vendor/free-by-pricing" in ids
+    # Paid dropped
+    assert "anthropic/claude-sonnet-4.6" not in ids
+    assert "openai/gpt-5" not in ids
+    assert len(result.models) == 3
+
+
+@pytest.mark.asyncio
+async def test_openrouter_default_keeps_paid_models(monkeypatch):
+    """Without the env flag, every model survives — paid + free."""
+    monkeypatch.delenv("OPENROUTER_FREE_ONLY", raising=False)
+    a = OpenRouterAdapter()
+    with patch("httpx.AsyncClient.get", AsyncMock(return_value=_resp(200, _FREE_AND_PAID))):
+        result = await a.fetch_models("k")
+    assert len(result.models) == 5  # all kept
+
+
 @pytest.mark.asyncio
 async def test_openrouter_tags_modality_from_architecture_and_id():
     a = OpenRouterAdapter()

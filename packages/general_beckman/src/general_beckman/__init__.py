@@ -143,6 +143,8 @@ async def next_task():
     except Exception:
         snap = None
 
+    # (overlay block below — moved past the _log import)
+
     try:
         import fatih_hoca
     except Exception:
@@ -150,6 +152,31 @@ async def next_task():
 
     from src.infra.logging_config import get_logger
     _log = get_logger("beckman.admission")
+
+    # Overlay LOCAL in_flight registry onto snapshot.in_flight_calls.
+    # refresh_snapshot fetches from the nerd_herd sidecar via HTTP — there's
+    # a race window between reserve_task's push and the next refresh's read
+    # where a just-admitted task isn't yet visible to the sidecar. Production
+    # triage 2026-05-01: 7 local tasks admitted concurrently because each
+    # admission tick read the sidecar mid-flight on the previous push,
+    # saw an empty in_flight, and S9 LOCAL_BUSY_PENALTY never fired.
+    #
+    # Local registry (`src.core.in_flight._task_slots`) is updated
+    # SYNCHRONOUSLY by reserve_task before the next next_task() call.
+    # Reading it here is authoritative and immune to the sidecar race.
+    if snap is not None:
+        try:
+            from src.core.in_flight import in_flight_snapshot as _local_in_flight
+            local_calls = _local_in_flight()
+            if local_calls:
+                try:
+                    snap.in_flight_calls = list(local_calls)
+                except (AttributeError, TypeError):
+                    # MagicMock with property — skip overlay; tests that
+                    # rely on the mock's in_flight_calls keep their setup.
+                    pass
+        except Exception as e:
+            _log.debug(f"local in_flight overlay failed: {e}")
 
     candidates = await _queue.pick_ready_top_k(k=top_k)
 

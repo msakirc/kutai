@@ -23,6 +23,14 @@ def _resp(code, body):
     return httpx.Response(code, json=body, request=httpx.Request("GET", "https://openrouter.ai"))
 
 
+@pytest.fixture(autouse=True)
+def _clear_openrouter_free_only(monkeypatch):
+    """OPENROUTER_FREE_ONLY can leak from .env or shell — clear by default
+    so tests assume the legacy "all models" behavior. Tests that exercise
+    the filter explicitly setenv it themselves."""
+    monkeypatch.delenv("OPENROUTER_FREE_ONLY", raising=False)
+
+
 @pytest.mark.asyncio
 async def test_openrouter_scrapes_pricing_and_context():
     a = OpenRouterAdapter()

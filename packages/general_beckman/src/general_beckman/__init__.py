@@ -23,6 +23,48 @@ _last_admission_fp: tuple | None = None
 _last_admission_admitted: bool = True
 
 
+def _format_breakdown(breakdown) -> str:
+    """One-line summary of a PressureBreakdown for log lines.
+
+    Output shape:
+        S1=-1.00 S2=0.00 ... S11=-0.10 | M1=2.00 M2=1.00 buckets=B/Q/O:0.0/-0.7/-0.1
+
+    Drops zero-valued signals to keep the line short — operator scans for
+    the non-zero ones. Buckets prefix shorthand: B=burden (S2/S3), Q=queue
+    (S4/S5), O=other (everything else). Without this, REJECT logs printed
+    only the final scalar — no way to see WHICH signal pushed the model
+    out, which made every triage session a code-spelunk.
+    """
+    if breakdown is None:
+        return ""
+
+    def _f(x, default=0.0):
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return float(default)
+
+    try:
+        sigs = breakdown.signals or {}
+        nonzero = " ".join(
+            f"{k}={_f(v):+.2f}" for k, v in sorted(sigs.items())
+            if isinstance(k, str) and abs(_f(v)) >= 0.005
+        ) or "(all-zero)"
+        mods = breakdown.modifiers or {}
+        m1 = _f(mods.get("M1", 1.0), 1.0)
+        m2 = _f(mods.get("M2", 1.0), 1.0)
+        bt = breakdown.bucket_totals or {}
+        buckets = (
+            f"{_f(bt.get('burden', 0.0)):+.2f}/{_f(bt.get('queue', 0.0)):+.2f}/"
+            f"{_f(bt.get('other', 0.0)):+.2f}"
+        )
+        return f"{nonzero} | M1={m1:.2f} M2={m2:.2f} BQO={buckets}"
+    except Exception:
+        # Never let log formatting break admission. Real PressureBreakdown
+        # objects always work; tests with Mock objects can fail-soft here.
+        return ""
+
+
 def _admission_fingerprint(snap, candidates) -> tuple:
     """Cheap stable hash of admission-relevant state.
 
@@ -236,15 +278,28 @@ async def next_task():
             except Exception as e:
                 _log.debug(f"admission: task #{task['id']} pressure_for raised {e!r}; fail-open")
                 pressure = 1.0  # fail-open: admit rather than starve
+                breakdown = None
         else:
             pressure = 1.0
+            breakdown = None
 
         urgency = compute_urgency(task)
         thr = threshold(urgency)
+
+        # Per-signal breakdown for visibility. Exposes WHICH signal
+        # pushed the model out (REJECT) or which dominant positive
+        # carried it through (ADMIT). Without this, every "REJECT
+        # pressure=-0.34" log line was opaque — no way to tell if S1
+        # depletion, S9 busy, or M3 weight collapse was the cause.
+        # User feedback 2026-04-30: "test and debug every damn signal,
+        # multiplier, factor, decider and anything".
+        bd_str = _format_breakdown(breakdown) if breakdown is not None else ""
+
         if pressure < thr:
             _log.info(
                 f"admission: task #{task['id']} REJECT model={pick.model.name} "
                 f"pressure={pressure:.3f} urgency={urgency:.3f} threshold={thr:.3f}"
+                + (f" | {bd_str}" if bd_str else "")
             )
             continue
 
@@ -275,6 +330,7 @@ async def next_task():
         _log.info(
             f"admission: task #{task['id']} ADMIT model={pick.model.name} "
             f"pressure={pressure:.3f} urgency={urgency:.3f} threshold={thr:.3f}"
+            + (f" | {bd_str}" if bd_str else "")
         )
         task["preselected_pick"] = pick
         task["status"] = "processing"

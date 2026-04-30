@@ -175,27 +175,15 @@ def build_system_prompt(profile, task: dict) -> str:
             f"Only provide your final_answer when you're truly done."
         )
 
-    # Workflow-step constraint: input artifacts are inlined in the
-    # user message as "## Results from Previous Steps". Models that
-    # see input_artifacts names tend to call read_file for each,
-    # wasting an iteration before the intercept sends them back.
-    # Tell the model up-front.
-    try:
-        _tctx_raw = task.get("context", "{}")
-        _tctx = json.loads(_tctx_raw) if isinstance(_tctx_raw, str) else (_tctx_raw or {})
-    except (json.JSONDecodeError, TypeError):
-        _tctx = {}
-    if _tctx.get("is_workflow_step") and _tctx.get("input_artifacts"):
-        # Tool-name enumeration removed — the tools section above
-        # already lists every available read/fetch tool. Repeating
-        # them here was pure formatting bytes for an instruction the
-        # model has the names for elsewhere.
-        parts.append(
-            "INPUT ARTIFACTS: All input artifacts for this step are "
-            "injected in full inside the user message under the heading "
-            "'## Results from Previous Steps'. Do NOT call any read or "
-            "fetch tool for them — read the user message instead."
-        )
+    # Phase 2: INPUT ARTIFACTS warning removed from the system prompt.
+    # The same instruction is delivered by the user-prompt deps header
+    # ("These ARE your input artifacts in full. Do NOT call any read
+    # or fetch tool to re-read them — there is no other copy on disk.
+    # Use the content below directly.") which fires whenever deps
+    # exist (a strict superset of the cases where this warning fired).
+    # The warning here was duplicate text. Validation: post-deploy,
+    # watch tool-call traces for re-fetch attempts on input_artifacts;
+    # if the rate climbs vs the Phase 1 baseline, restore.
 
     # Tool hygiene: agents repeatedly re-read the same files / prior
     # artifacts within one task, burning iterations. Blackboard already
@@ -629,7 +617,44 @@ async def build_user_context(
     _skip = {"workspace_snapshot", "tool_result", "prior_steps", "tool_depth",
              "recent_conversation", "user_clarification", "clarification_history",
              "artifact_schema", "input_artifacts"}
-    extra = {k: v for k, v in task_context.items() if k not in _skip and not k.startswith("_")}
+    # Phase 2 deny-list: meta/plumbing keys the agent doesn't read.
+    # All of these were silently leaking into ## Additional Context as
+    # JSON noise. Audit basis (per-key reasoning):
+    #   workflow_step_id / step_name / workflow_phase: identifiers used
+    #     for logging + dispatch routing, agent never references them.
+    #   mission_id / chat_id: internal handles for blackboard / Telegram
+    #     plumbing, opaque to the LLM.
+    #   is_workflow_step / may_need_clarification / triggers_clarification:
+    #     control flags evaluated by the orchestrator before dispatch.
+    #   difficulty / needs_thinking / prefer_quality: routing hints
+    #     consumed by Fatih Hoca + DaLLaMa, not by the agent.
+    #   condition / step_type / trigger / skip_when / skip_when_expr:
+    #     workflow-engine plumbing evaluated upstream.
+    #   failed_models / classification: dispatcher state.
+    #   tools_hint: ALREADY filters allowed_tools upstream before the
+    #     tools section renders, so the agent sees only the hinted
+    #     tools in its tools list — reflecting the same names again
+    #     here was duplicate.
+    # Defensively keeping any unknown key (free-form step-level context
+    # like per_site_n / max_groups / requires_grading) so workflow
+    # authors can add new step-level config without code changes.
+    _drop_meta = {
+        "workflow_step_id", "step_name", "workflow_phase",
+        "mission_id", "chat_id",
+        "is_workflow_step", "may_need_clarification",
+        "triggers_clarification",
+        "difficulty", "needs_thinking", "prefer_quality",
+        "condition", "step_type", "trigger",
+        "skip_when", "skip_when_expr",
+        "failed_models", "classification",
+        "tools_hint",
+    }
+    extra = {
+        k: v for k, v in task_context.items()
+        if k not in _skip
+        and k not in _drop_meta
+        and not k.startswith("_")
+    }
     if extra:
         # Render as markdown subsections rather than json.dumps(extra,
         # indent=2). Same fields, no information loss — the JSON wrapper

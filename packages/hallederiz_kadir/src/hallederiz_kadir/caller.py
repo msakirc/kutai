@@ -520,6 +520,24 @@ async def call(
                         )
                 except Exception:
                     pass
+            # Some providers (Gemini) carry rate-limit info ONLY in the
+            # 429 body — not in headers. Parse the error message and
+            # write through to the matrix so S1 depletion fires negative
+            # on the next selection (otherwise selector keeps re-trying
+            # the same tier-locked model on every new task).
+            if raw_result.category == "rate_limited":
+                try:
+                    from src.core.router import get_kdv
+                    from kuleden_donen_var.header_parser import parse_429_body
+                    body_snap = parse_429_body(
+                        model.provider, raw_result.message or "",
+                    )
+                    if body_snap is not None:
+                        get_kdv()._rate_limiter.update_from_headers(
+                            model.litellm_name, model.provider, body_snap,
+                        )
+                except Exception:
+                    pass
             _kdv_record_failure(model.litellm_name, model.provider, raw_result.category)
         return raw_result
 

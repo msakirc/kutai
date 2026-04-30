@@ -67,6 +67,57 @@ class RateLimitSnapshot:
         ])
 
 
+def parse_429_body(provider: str, error_message: str) -> RateLimitSnapshot | None:
+    """Extract rate-limit state from a 429 RESOURCE_EXHAUSTED body.
+
+    Some providers (Gemini in particular) don't surface daily-axis rate
+    limit info via response headers — it only appears in the error body
+    of a 429:
+
+        "Quota exceeded for metric: ...generate_content_free_tier_requests,
+         limit: 0, model: gemini-2.0-flash"
+        "Please retry in 40.121029375s."
+
+    Without parsing this, RateLimitMatrix.rpd stays empty for tier-locked
+    models and the selector keeps rediscovering the limit by failing.
+    Returns a snapshot with rpd_limit/remaining/reset_at populated so
+    update_from_snapshot can write through to the matrix and S1 depletion
+    fires negative pressure on the next selection.
+
+    Currently implemented: gemini RESOURCE_EXHAUSTED. Other providers can
+    add their own body-shape clauses here.
+    """
+    if not error_message:
+        return None
+    msg = str(error_message)
+    if provider != "gemini":
+        return None
+    if "RESOURCE_EXHAUSTED" not in msg and "Quota exceeded" not in msg:
+        return None
+    # `limit: N` pattern. Pick the smallest non-negative limit across all
+    # quotaMetric occurrences — represents the most-restrictive axis the
+    # caller can satisfy without 429ing.
+    limit_match = re.findall(r"limit:\s*(\d+)", msg)
+    limit_val = min((int(x) for x in limit_match), default=None)
+    # `Please retry in 40.5s` or `Please retry in 86400s`.
+    retry_match = re.search(r"retry in ([\d\.]+)\s*s", msg, re.IGNORECASE)
+    retry_secs: float
+    if retry_match:
+        try:
+            retry_secs = float(retry_match.group(1))
+        except ValueError:
+            retry_secs = 60.0
+    else:
+        retry_secs = 86400.0  # fall back to daily-rollover window
+    snap = RateLimitSnapshot()
+    # Always at least one daily-axis quota-failure → write rpd cell.
+    if limit_val is not None:
+        snap.rpd_limit = max(1, limit_val)  # 0 → 1 marker so cell isn't dropped
+        snap.rpd_remaining = 0
+        snap.rpd_reset_at = time.time() + max(60.0, retry_secs)
+    return snap if snap.has_any_data() else None
+
+
 def parse_rate_limit_headers(
     provider: str,
     headers: dict,

@@ -79,6 +79,62 @@ async def test_gemini_tags_modality_for_image_and_tts_models():
 
 
 @pytest.mark.asyncio
+async def test_gemini_seeds_free_tier_quota_from_table():
+    """Adapter populates rate_limit_rpm/tpm/rpd from the static
+    free-tier table. Tier-locked models (all-zero allocation) are marked
+    active=False so registry skips them — selector never sees them and
+    we don't burn a 429 round-trip discovering the lock at runtime.
+    """
+    payload = {
+        "models": [
+            # Has free-tier allocation — should register active with quotas
+            {
+                "name": "models/gemini-2.5-flash",
+                "supportedGenerationMethods": ["generateContent"],
+                "inputTokenLimit": 1048576,
+                "outputTokenLimit": 65536,
+            },
+            # Tier-locked (0/0/0) — should be active=False
+            {
+                "name": "models/gemini-2.5-pro",
+                "supportedGenerationMethods": ["generateContent"],
+                "inputTokenLimit": 1048576,
+                "outputTokenLimit": 65536,
+            },
+            # Gemma family — has its own quota row
+            {
+                "name": "models/gemma-3-27b-it",
+                "supportedGenerationMethods": ["generateContent"],
+                "inputTokenLimit": 8192,
+                "outputTokenLimit": 8192,
+            },
+        ],
+    }
+    a = GeminiAdapter()
+    with patch("httpx.AsyncClient.get", AsyncMock(return_value=_resp(200, payload))):
+        result = await a.fetch_models("k")
+    by_id = {m.raw_id: m for m in result.models}
+
+    # Free-tier flash → 5 RPM / 250K TPM / 20 RPD
+    flash = by_id["gemini-2.5-flash"]
+    assert flash.active is True
+    assert flash.rate_limit_rpm == 5
+    assert flash.rate_limit_tpm == 250_000
+    assert flash.rate_limit_rpd == 20
+
+    # Tier-locked pro → active=False, no quotas attached
+    pro = by_id["gemini-2.5-pro"]
+    assert pro.active is False
+
+    # Gemma → 30 / 15K / 14400
+    gemma = by_id["gemma-3-27b-it"]
+    assert gemma.active is True
+    assert gemma.rate_limit_rpm == 30
+    assert gemma.rate_limit_tpm == 15_000
+    assert gemma.rate_limit_rpd == 14_400
+
+
+@pytest.mark.asyncio
 async def test_gemini_400_invalid_key_treated_as_auth_fail():
     """Gemini returns 400 with key-invalid message instead of 401."""
     a = GeminiAdapter()

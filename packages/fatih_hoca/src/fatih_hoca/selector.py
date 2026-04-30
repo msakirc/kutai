@@ -150,6 +150,34 @@ class Selector:
             )
             return None
 
+        # Visibility: per-provider eligible-candidate count. When a provider
+        # like openrouter has 300+ registered models but ZERO get picked,
+        # this surfaces whether the issue is at eligibility (provider
+        # filtered out entirely) or at ranking (scores too low). Pre-this,
+        # no way to tell from logs without setting DEBUG on every model
+        # filtered line.
+        prov_counts: Counter[str] = Counter()
+        for c in candidates:
+            prov = "local" if getattr(c, "is_local", False) else getattr(c, "provider", "?")
+            prov_counts[prov] += 1
+        prov_str = ", ".join(f"{p}={n}" for p, n in prov_counts.most_common())
+        # Note also which providers were FULLY filtered (had registrations
+        # but every model was filtered). Catches the "openrouter present
+        # in registry but always filtered" case.
+        filtered_provs: Counter[str] = Counter()
+        for m in self._registry.all_models():
+            if m.is_local:
+                continue
+            if m not in candidates:
+                filtered_provs[m.provider] += 1
+        fully_filtered = [p for p in filtered_provs
+                          if p not in prov_counts and filtered_provs[p] > 0]
+        logger.debug(
+            "selector eligibility: task=%s candidates=%d providers=[%s]%s",
+            task, len(candidates), prov_str,
+            (f" fully_filtered=[{','.join(fully_filtered)}]" if fully_filtered else ""),
+        )
+
         # ── Layer 2/3: Ranking ───────────────────────────────────────────────
         scored = rank_candidates(
             candidates=candidates,

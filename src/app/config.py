@@ -78,12 +78,19 @@ COST_BUDGET_DAILY: float = float(os.getenv("COST_BUDGET_DAILY", "1.0"))
 # ─── API Key Detection ───────────────────────────────────────────────────────
 
 AVAILABLE_KEYS: dict[str, bool] = {
-    "groq":      bool(os.getenv("GROQ_API_KEY", "")),
-    "openai":    bool(os.getenv("OPENAI_API_KEY", "")),
-    "anthropic": bool(os.getenv("ANTHROPIC_API_KEY", "")),
-    "gemini":    bool(os.getenv("GEMINI_API_KEY", "")),
-    "cerebras":  bool(os.getenv("CEREBRAS_API_KEY", "")),
-    "sambanova": bool(os.getenv("SAMBANOVA_API_KEY", "")),
+    "groq":       bool(os.getenv("GROQ_API_KEY", "")),
+    "openai":     bool(os.getenv("OPENAI_API_KEY", "")),
+    "anthropic":  bool(os.getenv("ANTHROPIC_API_KEY", "")),
+    "gemini":     bool(os.getenv("GEMINI_API_KEY", "")),
+    "cerebras":   bool(os.getenv("CEREBRAS_API_KEY", "")),
+    "sambanova":  bool(os.getenv("SAMBANOVA_API_KEY", "")),
+    # OpenRouter was missing — every OR model passed eligibility's
+    # provider-key check as "no_api_key(openrouter)" even when 300+
+    # OR models had been registered via discovery + KDV.register
+    # at boot. Production triage 2026-04-30: pick_log showed zero OR
+    # picks ever despite a working OPENROUTER_API_KEY; selector
+    # filtered the entire provider out at eligibility time.
+    "openrouter": bool(os.getenv("OPENROUTER_API_KEY", "")),
 }
 
 # ─── Geocoding API Keys ─────────────────────────────────────────────────────

@@ -984,7 +984,12 @@ def assert_pp8(scenario: "Scenario") -> list[str]:
 
 
 def _realistic_providers() -> dict:
-    """Provider config that matches production keys + tiers post-fix."""
+    """Provider config that matches production keys + tiers post-fix.
+
+    OpenRouter modelled with two representatives:
+      openrouter/anthropic/claude-sonnet-4.6 — paid premium, cap=88
+      openrouter/qwen/qwen3-coder              — paid mid, cap=72
+    """
     return {
         "gemini": {
             "is_free": True,
@@ -1000,6 +1005,13 @@ def _realistic_providers() -> dict:
                 "groq/openai/gpt-oss-120b": {"cap_score_100": 78},
             },
         },
+        "openrouter": {
+            "is_free": False,
+            "models": {
+                "openrouter/anthropic/claude-sonnet-4.6": {"cap_score_100": 88},
+                "openrouter/qwen/qwen3-coder": {"cap_score_100": 72},
+            },
+        },
         "anthropic": {
             "is_free": False,
             "models": {"anthropic/claude-sonnet-4-6": {"cap_score_100": 90}},
@@ -1009,7 +1021,8 @@ def _realistic_providers() -> dict:
 
 def _realistic_state(*, gemini_remaining_rpd: int = 20,
                       groq_remaining_rpd: int = 14_400,
-                      claude_remaining_rpd: int = 1_000) -> SimState:
+                      claude_remaining_rpd: int = 1_000,
+                      openrouter_remaining_rpd: int = 1_000) -> SimState:
     state = SimState()
     state.locals["loaded-local"] = SimLocalModel(
         is_loaded=True, idle_seconds=300.0, tokens_per_second=15.0,
@@ -1027,9 +1040,15 @@ def _realistic_state(*, gemini_remaining_rpd: int = 20,
     state.time_bucketed["groq/openai/gpt-oss-120b"] = SimPoolCounter(
         remaining=min(groq_remaining_rpd, 1000), limit=1000, reset_at=86400.0,
     )
-    # Paid per-call counter
+    # Paid per-call counters
     state.per_call["anthropic/claude-sonnet-4-6"] = SimPoolCounter(
         remaining=claude_remaining_rpd, limit=1000, reset_at=86400.0,
+    )
+    state.per_call["openrouter/anthropic/claude-sonnet-4.6"] = SimPoolCounter(
+        remaining=openrouter_remaining_rpd, limit=1000, reset_at=86400.0,
+    )
+    state.per_call["openrouter/qwen/qwen3-coder"] = SimPoolCounter(
+        remaining=openrouter_remaining_rpd, limit=1000, reset_at=86400.0,
     )
     return state
 

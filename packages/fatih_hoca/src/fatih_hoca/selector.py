@@ -238,6 +238,11 @@ class Selector:
         if model.litellm_name in reqs.exclude_models or name in reqs.exclude_models:
             return "excluded"
 
+        # Runtime dead-model set: 404'd at call-time, provider retired the id.
+        # Same id won't resurrect — exclude until restart or rediscovery.
+        if self._registry.is_dead(name) or self._registry.is_dead(model.litellm_name):
+            return "model_not_found"
+
         # local_only — reject cloud models
         if reqs.local_only and not model.is_local:
             return "local_only"

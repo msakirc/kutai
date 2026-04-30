@@ -19,6 +19,22 @@ def test_classify_auth():
     assert classify_error("Invalid API key") == "auth_failure"
     assert classify_error("billing quota exceeded") == "auth_failure"
 
+
+def test_classify_model_not_found():
+    """404 NOT_FOUND from a provider (e.g. Gemini retiring a *-preview-MM-DD
+    slug) classifies as model_not_found — caller marks dead, retry skips."""
+    assert classify_error(
+        "litellm.NotFoundError: GeminiException - 404 NOT_FOUND. "
+        "models/gemini-2.5-flash-preview-05-20 is not found"
+    ) == "model_not_found"
+    assert classify_error(
+        "models/gemini-2.5-flash-preview-05-20 is not found for API version v1beta"
+    ) == "model_not_found"
+    assert classify_error("model_not_found: foo") == "model_not_found"
+    # Generic 404 without not-found keyword stays unknown — could be a
+    # transient routing/proxy 404 unrelated to the model id.
+    assert classify_error("upstream returned 404") == "unknown"
+
 def test_classify_gpu_busy():
     assert classify_error("GPU queue timeout for qwen3-30b") == "gpu_busy"
 

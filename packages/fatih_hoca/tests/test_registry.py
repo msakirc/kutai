@@ -388,3 +388,41 @@ def test_register_cloud_uses_detect_defaults_when_scraped_missing():
     assert m.location == "cloud"
     assert m.provider == "anthropic"
     assert m.family == "claude-sonnet-4"
+
+
+def test_registry_mark_dead_excludes_by_either_key():
+    """mark_dead is the runtime kill-switch for a model that 404'd. Set
+    membership keys on BOTH name and litellm_name so eligibility filter
+    excludes regardless of which path queries it."""
+    from fatih_hoca.cloud.types import DiscoveredModel
+    from fatih_hoca.registry import ModelRegistry, register_cloud_from_discovered
+
+    registry = ModelRegistry()
+    discovered = DiscoveredModel(
+        litellm_name="gemini/gemini-2.5-flash-preview-05-20",
+        raw_id="gemini-2.5-flash-preview-05-20",
+        rate_limit_rpm=5, rate_limit_tpm=250000, rate_limit_rpd=20,
+    )
+    register_cloud_from_discovered(registry, "gemini", discovered)
+    name = "gemini/gemini-2.5-flash-preview-05-20"
+    assert registry.is_dead(name) is False
+
+    # Mark dead by litellm_name → name lookup also matches
+    registry.mark_dead(name)
+    assert registry.is_dead(name) is True
+
+    # Revive clears both keys
+    registry.revive(name)
+    assert registry.is_dead(name) is False
+
+
+def test_registry_mark_dead_safe_with_unknown_id():
+    """mark_dead on an id that isn't registered yet still records the
+    string — caller may invoke before discovery finishes."""
+    from fatih_hoca.registry import ModelRegistry
+    registry = ModelRegistry()
+    registry.mark_dead("gemini/some-future-model")
+    assert registry.is_dead("gemini/some-future-model") is True
+    # Empty/None safe
+    registry.mark_dead("")
+    assert registry.is_dead("") is False

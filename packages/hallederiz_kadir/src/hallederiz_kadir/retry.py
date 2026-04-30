@@ -25,6 +25,16 @@ def classify_error(error: str) -> str:
         return "no_model"
     if any(k in e for k in ("api key", "authentication", "unauthorized", "billing")):
         return "auth_failure"
+    # Model retirement / typo. Provider replies 404 NOT_FOUND for ids that
+    # were valid yesterday (Gemini retires *-preview-MM-DD slugs without
+    # warning). Non-retryable: same id will keep 404'ing. Caller marks
+    # the model dead in the registry so future admissions skip it.
+    if (
+        ("404" in e and ("not found" in e or "not_found" in e))
+        or "is not found for api version" in e
+        or "model_not_found" in e
+    ):
+        return "model_not_found"
     if any(k in e for k in ("timeout", "timed out")):
         return "timeout"
     if any(k in e for k in ("connection", "network", "dns", "refused")):
@@ -111,6 +121,16 @@ async def execute_with_retry(
                 "api key", "authentication", "unauthorized",
                 "billing", "credit", "quota",
             )):
+                break
+
+            # 404 model not found — not retryable. Provider retired the
+            # id (Gemini retires *-preview-MM-DD slugs) or models.yaml /
+            # discovery has a stale entry. Same id won't resurrect.
+            if (
+                ("404" in error_str and ("not found" in error_str or "not_found" in error_str))
+                or "is not found for api version" in error_str
+                or "model_not_found" in error_str
+            ):
                 break
 
             # Rate limit — backoff then retry

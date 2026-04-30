@@ -1212,6 +1212,12 @@ class ModelRegistry:
         self._lock = threading.RLock()
         self._speed_cache_dirty = False
         self._speed_cache_last_save: float = 0.0
+        # Runtime kill-switch for models that 404'd (provider retired the
+        # id without notice — Gemini does this with *-preview-MM-DD
+        # slugs). Keyed by name AND litellm_name so either lookup path
+        # excludes. Cleared on next discovery refresh that re-confirms
+        # the model is back, or process restart.
+        self._dead_models: set[str] = set()
 
     # ── Core catalog interface ────────────────────────────────────────────────
 
@@ -1226,6 +1232,37 @@ class ModelRegistry:
     def all_models(self) -> list[ModelInfo]:
         """Return all registered models."""
         return list(self._models.values())
+
+    def mark_dead(self, identifier: str) -> None:
+        """Mark a model as dead (404'd at call time). Keyed by name OR
+        litellm_name — selector eligibility filter checks both."""
+        if not identifier:
+            return
+        with self._lock:
+            self._dead_models.add(identifier)
+            # Also add the matching litellm_name (or name) for symmetric
+            # exclusion regardless of which path the lookup uses.
+            m = self._models.get(identifier)
+            if m is not None:
+                self._dead_models.add(m.litellm_name)
+            else:
+                for cand in self._models.values():
+                    if cand.litellm_name == identifier:
+                        self._dead_models.add(cand.name)
+                        break
+        logger.warning("registry: marked dead %s — excluded until restart or rediscovery", identifier)
+
+    def is_dead(self, identifier: str) -> bool:
+        return identifier in self._dead_models
+
+    def revive(self, identifier: str) -> None:
+        """Drop a model from the dead set — called by discovery on next
+        refresh when the provider reports the id again."""
+        with self._lock:
+            self._dead_models.discard(identifier)
+            m = self._models.get(identifier)
+            if m is not None:
+                self._dead_models.discard(m.litellm_name)
 
     def by_litellm_name(self, litellm_name: str) -> ModelInfo | None:
         """Find a model by its litellm_name."""

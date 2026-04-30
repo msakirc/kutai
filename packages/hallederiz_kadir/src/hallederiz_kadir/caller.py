@@ -562,6 +562,16 @@ async def call(
                         )
                 except Exception:
                     pass
+            # 404 NOT_FOUND: provider retired the model id (Gemini does
+            # this with *-preview-MM-DD slugs) or static yaml registered
+            # a stale id. Same id won't come back. Mark dead so selector
+            # excludes from candidate pool until restart / rediscovery.
+            if raw_result.category == "model_not_found":
+                try:
+                    from src.models.model_registry import get_registry
+                    get_registry().mark_dead(model.litellm_name)
+                except Exception:
+                    pass
             _kdv_record_failure(model.litellm_name, model.provider, raw_result.category)
         return raw_result
 

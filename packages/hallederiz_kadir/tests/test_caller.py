@@ -380,6 +380,40 @@ def test_task_obj_none_yields_null_keys(mock_litellm):
 
 
 @patch("hallederiz_kadir.caller.litellm")
+def test_cloud_provider_key_overrides_litellm_env_fallback(mock_litellm, monkeypatch):
+    """Explicit api_key arg must override litellm's env-var fallback chain.
+
+    Without this, litellm picks GOOGLE_API_KEY when both GOOGLE_API_KEY and
+    GEMINI_API_KEY are set — and if the GOOGLE_API_KEY targets a project
+    where Generative Language API is disabled, every gemini call 403s.
+    Production triage 2026-04-30: GOOGLE_API_KEY OS env var pointed to
+    project 1014325976735 (API disabled); GEMINI_API_KEY in .env pointed
+    to a working project. Bot kept hitting 403 until this override landed.
+    """
+    monkeypatch.setenv("GOOGLE_API_KEY", "WRONG-key-from-os-env")
+    monkeypatch.setenv("GEMINI_API_KEY", "RIGHT-key-from-dotenv")
+    resp = _make_litellm_response()
+    mock_litellm.acompletion = AsyncMock(return_value=resp)
+    model = _make_model_info(
+        is_local=False, litellm_name="gemini/gemini-flash-latest",
+        location="cloud", provider="gemini", api_base=None,
+    )
+    with patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False)), \
+         patch("hallederiz_kadir.caller._kdv_record_attempt"), \
+         patch("hallederiz_kadir.caller._kdv_post_call"), \
+         patch("hallederiz_kadir.caller.litellm.completion_cost", return_value=0.0):
+        run_async(call(
+            model=model, messages=[{"role": "user", "content": "hi"}],
+            tools=None, timeout=60.0, task="executor",
+            needs_thinking=False, estimated_output_tokens=500,
+        ))
+    kwargs = mock_litellm.acompletion.call_args.kwargs
+    assert kwargs["api_key"] == "RIGHT-key-from-dotenv", (
+        f"Expected GEMINI_API_KEY override, got {kwargs.get('api_key')}"
+    )
+
+
+@patch("hallederiz_kadir.caller.litellm")
 def test_task_obj_context_as_json_string(mock_litellm):
     """task['context'] sometimes stored as JSON string in DB rows. Parse it."""
     import json as _json

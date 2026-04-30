@@ -370,6 +370,30 @@ async def call(
     if is_local and not is_ollama:
         completion_kwargs["api_key"] = "sk-no-key"
         completion_kwargs["num_retries"] = 0
+    elif not is_local:
+        # Explicit per-provider key injection. Without this, litellm walks
+        # its own env-var fallback chain (e.g. GOOGLE_API_KEY before
+        # GEMINI_API_KEY for the gemini provider) and may pick up an OS
+        # env var tied to a different Google Cloud project where the
+        # Generative Language API isn't enabled — observed in production
+        # as 403 PERMISSION_DENIED on project 1014325976735 even when the
+        # .env key targeted a working project. Explicit api_key argument
+        # overrides litellm's fallback chain entirely.
+        import os as _os
+        _provider_key_envs = {
+            "gemini":     "GEMINI_API_KEY",
+            "groq":       "GROQ_API_KEY",
+            "anthropic":  "ANTHROPIC_API_KEY",
+            "openai":     "OPENAI_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY",
+            "cerebras":   "CEREBRAS_API_KEY",
+            "sambanova":  "SAMBANOVA_API_KEY",
+        }
+        _env_name = _provider_key_envs.get(model.provider)
+        if _env_name:
+            _key = _os.getenv(_env_name)
+            if _key:
+                completion_kwargs["api_key"] = _key
 
     # ── Tools ──
     use_tools = None

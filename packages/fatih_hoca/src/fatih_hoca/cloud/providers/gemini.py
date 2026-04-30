@@ -87,15 +87,62 @@ _CONSERVATIVE_DEFAULT: tuple[int, int, int] = (5, 100_000, 50)
 
 
 def _quota_for(raw_id: str) -> tuple[int, int, int]:
-    """Longest-substring lookup. Falls back to conservative default."""
+    """Longest-substring lookup with tier-locked pattern fallback.
+
+    Gemini's /v1beta/models endpoint lists every model but exposes ZERO
+    quota info per model. Free-tier vs paid-only is encoded ONLY in
+    Google AI Studio's quota dashboard. Without a comprehensive static
+    seed, paid-only models default to the conservative quota and 429
+    on first call — pool pressure self-heals after that, but the
+    "ONE wasted 429 per model" still bothers operators (and burns the
+    daily budget on a doomed call). Production triage 2026-04-30:
+    gemini-3-pro-preview wasn't in the explicit table, registered with
+    conservative (5, 100K, 50), 429'd, took several admission cycles
+    to get excluded.
+
+    Strategy:
+        1. Explicit-id substring match wins (longest wins on ties).
+        2. Pattern fallback for paid-only families: `pro` + (`preview`
+           or `latest`), plus single-tier models (robotics, computer-
+           use, deep-research, nano-banana, lyria, veo, imagen).
+        3. Conservative (5, 100K, 50) only for genuinely-unknown ids
+           that don't match either path.
+
+    Returning (0, 0, 0) marks the model active=False at the adapter
+    layer, so registry skips it entirely — selector never sees the id,
+    no admission cycle, no 429.
+    """
     n = raw_id.lower()
+    # 1. Explicit-id match
     best_key = ""
-    best_val = _CONSERVATIVE_DEFAULT
+    best_val: tuple[int, int, int] | None = None
     for key, val in _FREE_TIER_QUOTAS.items():
         if key in n and len(key) > len(best_key):
             best_key = key
             best_val = val
-    return best_val
+    if best_val is not None:
+        return best_val
+
+    # 2. Tier-locked patterns (paid-only on free tier per Google AI
+    #    Studio quota dashboard, snapshot 2026-04-30):
+    #      pro + preview/latest  → Gemini 2.5/3/3.1 Pro variants
+    #      robotics              → Gemini Robotics ER paid only on some tiers
+    #      computer-use          → Computer Use Preview
+    #      deep-research         → Deep Research family
+    #      nano-banana           → Nano Banana image family
+    #      lyria                 → Lyria audio family
+    #      veo                   → Veo video family
+    #      imagen                → Imagen family
+    if "pro" in n and ("preview" in n or "latest" in n):
+        return (0, 0, 0)
+    if any(p in n for p in (
+        "robotics", "computer-use", "deep-research",
+        "nano-banana", "lyria", "veo", "imagen",
+    )):
+        return (0, 0, 0)
+
+    # 3. Genuinely unknown — conservative.
+    return _CONSERVATIVE_DEFAULT
 
 
 class GeminiAdapter:

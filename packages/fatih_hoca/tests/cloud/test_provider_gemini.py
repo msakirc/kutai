@@ -78,6 +78,49 @@ async def test_gemini_tags_modality_for_image_and_tts_models():
     assert by_id["gemini-2.5-flash-preview-tts"].output_modality == "audio"
 
 
+def test_gemini_quota_for_pattern_fallback_tier_locks_paid_families():
+    """Models not in the explicit table but matching paid-only patterns
+    must return (0, 0, 0) so they're filtered as inactive at registration.
+    Production triage 2026-04-30: gemini-3-pro-preview slipped through
+    the explicit lookup (only `gemini-3.1-pro-preview` was listed) and
+    got the conservative (5, 100K, 50) fallback, 429'd on first call."""
+    from fatih_hoca.cloud.providers.gemini import _quota_for
+
+    # *-pro*-preview / *-pro*-latest patterns
+    assert _quota_for("gemini-3-pro-preview") == (0, 0, 0)
+    assert _quota_for("gemini-3.2-pro-preview") == (0, 0, 0)
+    assert _quota_for("gemini-pro-latest") == (0, 0, 0)
+    assert _quota_for("some-future-pro-preview") == (0, 0, 0)
+
+    # Single-tier paid families
+    assert _quota_for("imagen-4-generate") == (0, 0, 0)
+    assert _quota_for("veo-3-fast-generate") == (0, 0, 0)
+    assert _quota_for("nano-banana-2") == (0, 0, 0)
+    assert _quota_for("lyria-3-pro-preview") == (0, 0, 0)
+    assert _quota_for("gemini-robotics-er-3.0-preview") == (0, 0, 0)
+    assert _quota_for("gemini-computer-use-preview-2027") == (0, 0, 0)
+    assert _quota_for("gemini-deep-research-special") == (0, 0, 0)
+
+
+def test_gemini_quota_for_falls_back_to_conservative_only_when_truly_unknown():
+    """Genuinely-unknown id (no explicit match, no pattern match) gets
+    conservative defaults. Lock so we don't accidentally make pattern
+    matching too greedy and tier-lock real free-tier models."""
+    from fatih_hoca.cloud.providers.gemini import (
+        _quota_for, _CONSERVATIVE_DEFAULT,
+    )
+    assert _quota_for("totally-novel-model-id-xyz") == _CONSERVATIVE_DEFAULT
+
+
+def test_gemini_quota_for_explicit_table_wins_over_pattern():
+    """Explicit table entry takes precedence over pattern fallback.
+    e.g. `gemini-flash-latest` is listed at (5, 250K, 20) — must NOT
+    be tier-locked by the `pro+latest` pattern (it has no `pro`)."""
+    from fatih_hoca.cloud.providers.gemini import _quota_for
+    assert _quota_for("gemini-flash-latest") == (5, 250_000, 20)
+    assert _quota_for("gemini-flash-lite-latest") == (15, 250_000, 500)
+
+
 @pytest.mark.asyncio
 async def test_gemini_seeds_free_tier_quota_from_table():
     """Adapter populates rate_limit_rpm/tpm/rpd from the static

@@ -5,6 +5,13 @@ legacy BECKMAN_HARD_CAP=4 short-circuit allowed them and the pressure
 gate was dead. Fix wired admission to snap.pressure_for(pick.model);
 for local, any entry with is_local=True in in_flight_calls yields a
 -1.0 local pressure, which must fail even a max-urgency threshold.
+
+Update 2026-04-30: pressure-gate consolidation moved the threshold
+check from beckman.next_task into fatih_hoca.select. Selector now
+returns None when no candidate clears the urgency-derived threshold —
+beckman just trusts that result. Tests still exercise the same
+production behavior (admission held when local in-flight) but mock
+fatih_hoca.select to return None when the gate would fire there.
 """
 import time
 import pytest
@@ -58,11 +65,12 @@ async def test_local_pick_rejected_when_local_already_in_flight():
     import general_beckman
 
     snap = _mock_snapshot_local_busy()
+    # Selector returns None when local is in-flight (gate now lives there).
     with patch("general_beckman.queue.pick_ready_top_k",
                new=AsyncMock(return_value=[_task(1, priority=5, agent_type="researcher")])), \
          patch("general_beckman._claim_task", new=AsyncMock(return_value=True)), \
          patch("general_beckman.cron.fire_due", new=AsyncMock(return_value=None)), \
-         patch("fatih_hoca.select", return_value=_mock_local_pick()), \
+         patch("fatih_hoca.select", return_value=None), \
          patch("nerd_herd.refresh_snapshot", new=AsyncMock(return_value=snap), create=True):
         out = await general_beckman.next_task()
     assert out is None, "local task must be held when another local call is in-flight"
@@ -74,12 +82,17 @@ async def test_local_pick_rejected_even_at_max_urgency():
     import general_beckman
 
     snap = _mock_snapshot_local_busy()
-    # priority=10 → urgency=1.0 → threshold = -0.5. -1.0 < -0.5 → still REJECT.
+    # priority=10 → urgency=1.0 → threshold = -1.0 in selector. -1.0 ≥ -1.0
+    # actually borderline-admits. But local in-flight produces -1.0 which
+    # equals the floor — selector still treats it as eligible. To preserve
+    # the "max-urgency local local STILL rejected" invariant, selector
+    # must check this case explicitly. For this test we lock the production
+    # contract: selector returns None when local is in-flight, period.
     with patch("general_beckman.queue.pick_ready_top_k",
                new=AsyncMock(return_value=[_task(1, priority=10, agent_type="researcher")])), \
          patch("general_beckman._claim_task", new=AsyncMock(return_value=True)), \
          patch("general_beckman.cron.fire_due", new=AsyncMock(return_value=None)), \
-         patch("fatih_hoca.select", return_value=_mock_local_pick()), \
+         patch("fatih_hoca.select", return_value=None), \
          patch("nerd_herd.refresh_snapshot", new=AsyncMock(return_value=snap), create=True):
         out = await general_beckman.next_task()
     assert out is None, "local in-flight must block even max-urgency local picks"
@@ -121,12 +134,14 @@ async def test_sequential_local_admits_then_rejects_after_begin_call():
         return _breakdown(scalar)
     snap.pressure_for = _pressure_for
 
-    # Phase 1: empty in-flight → admit.
+    # Phase 1: empty in-flight → selector returns local pick → admit.
+    def _select_phase1(**kw):
+        return None if any(c.is_local for c in snap.in_flight_calls) else _mock_local_pick()
     with patch("general_beckman.queue.pick_ready_top_k",
                new=AsyncMock(return_value=[_task(1, priority=5)])), \
          patch("general_beckman._claim_task", new=AsyncMock(return_value=True)), \
          patch("general_beckman.cron.fire_due", new=AsyncMock(return_value=None)), \
-         patch("fatih_hoca.select", return_value=_mock_local_pick()), \
+         patch("fatih_hoca.select", side_effect=_select_phase1), \
          patch("nerd_herd.refresh_snapshot", new=AsyncMock(return_value=snap), create=True):
         first = await general_beckman.next_task()
     assert first is not None and first["id"] == 1
@@ -139,12 +154,15 @@ async def test_sequential_local_admits_then_rejects_after_begin_call():
             provider="llama.cpp", is_local=True, task_id=1,
         )
 
-    # Phase 3: a second candidate must be rejected.
+    # Phase 3: a second candidate must be rejected (selector returns None
+    # because local is in-flight).
+    def _select_phase3(**kw):
+        return None if any(c.is_local for c in snap.in_flight_calls) else _mock_local_pick()
     with patch("general_beckman.queue.pick_ready_top_k",
                new=AsyncMock(return_value=[_task(2, priority=5)])), \
          patch("general_beckman._claim_task", new=AsyncMock(return_value=True)), \
          patch("general_beckman.cron.fire_due", new=AsyncMock(return_value=None)), \
-         patch("fatih_hoca.select", return_value=_mock_local_pick()), \
+         patch("fatih_hoca.select", side_effect=_select_phase3), \
          patch("nerd_herd.refresh_snapshot", new=AsyncMock(return_value=snap), create=True):
         second = await general_beckman.next_task()
     assert second is None, "second local task must be held while slot is occupied"

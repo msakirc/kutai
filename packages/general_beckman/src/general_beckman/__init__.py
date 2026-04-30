@@ -120,7 +120,7 @@ async def next_task():
     """
     import os
     from general_beckman import queue as _queue
-    from general_beckman.admission import compute_urgency, threshold
+    from general_beckman.admission import compute_urgency
     from general_beckman.cron import fire_due
 
     top_k = int(os.environ.get("BECKMAN_TOP_K", "5"))
@@ -217,13 +217,28 @@ async def next_task():
             return task
 
         pick = None
+        # Single selection gate: fatih_hoca.select() owns BOTH ranking AND
+        # pool-pressure threshold-checking now. Pre-2026-04-30 this code had
+        # its own pressure_for / threshold(urgency) gate that fired AFTER
+        # selector returned a pick — three pressure gates total (selector
+        # ranking, beckman admission, dispatcher recursion) each with their
+        # own threshold logic. They drifted out of sync and let dead models
+        # through. User feedback: "There must be a singular selection
+        # mechanism for everything. Only one".
+        #
+        # Now: selector takes urgency as input, applies the threshold
+        # internally during ranking, and either returns a pick that already
+        # cleared the gate or returns None. Beckman trusts that result.
+        urgency = compute_urgency(task)
         select_err = None
+        pick = None
         if fatih_hoca is not None:
             try:
                 pick = fatih_hoca.select(
                     task=agent_type,
                     agent_type=agent_type,
                     difficulty=difficulty,
+                    urgency=urgency,
                 )
             except Exception as e:
                 select_err = repr(e)
@@ -231,75 +246,7 @@ async def next_task():
         if pick is None:
             _log.debug(
                 f"admission: task #{task['id']} agent={agent_type} d={difficulty} "
-                f"select=None err={select_err}"
-            )
-            continue
-
-        if snap is not None:
-            try:
-                from fatih_hoca.estimates import estimate_for
-                from general_beckman.btable_cache import get_btable
-
-                class _TaskShim:
-                    def __init__(self, t):
-                        self.agent_type = t.get("agent_type", "")
-                        ctx = t.get("context") or {}
-                        if isinstance(ctx, str):
-                            import json as _json
-                            try:
-                                ctx = _json.loads(ctx)
-                            except Exception:
-                                ctx = {}
-                        self.context = ctx
-
-                shim = _TaskShim(task)
-                estimates = estimate_for(
-                    shim,
-                    btable=get_btable(),
-                    model_is_thinking=getattr(pick.model, "is_thinking", False),
-                )
-                prov_key = getattr(pick.model, "provider", "")
-                prov_state = snap.cloud.get(prov_key) if hasattr(snap, "cloud") else None
-                consecutive_failures = getattr(prov_state, "consecutive_failures", 0)
-                breakdown = snap.pressure_for(
-                    pick.model,
-                    task_difficulty=difficulty,
-                    est_per_call_tokens=estimates.per_call_tokens,
-                    est_per_task_tokens=estimates.total_tokens,
-                    est_iterations=estimates.iterations,
-                    est_call_cost=getattr(
-                        pick.model, "estimated_cost",
-                        lambda *_: 0.0,
-                    )(estimates.in_tokens, estimates.out_tokens),
-                    cap_needed=5.0,
-                    consecutive_failures=consecutive_failures,
-                )
-                pressure = breakdown.scalar
-            except Exception as e:
-                _log.debug(f"admission: task #{task['id']} pressure_for raised {e!r}; fail-open")
-                pressure = 1.0  # fail-open: admit rather than starve
-                breakdown = None
-        else:
-            pressure = 1.0
-            breakdown = None
-
-        urgency = compute_urgency(task)
-        thr = threshold(urgency)
-
-        # Per-signal breakdown for visibility. Exposes WHICH signal
-        # pushed the model out (REJECT) or which dominant positive
-        # carried it through (ADMIT). Without this, every "REJECT
-        # pressure=-0.34" log line was opaque — no way to tell if S1
-        # depletion, S9 busy, or M3 weight collapse was the cause.
-        # User feedback 2026-04-30: "test and debug every damn signal,
-        # multiplier, factor, decider and anything".
-        bd_str = _format_breakdown(breakdown) if breakdown is not None else ""
-
-        if pressure < thr:
-            _log.info(
-                f"admission: task #{task['id']} REJECT model={pick.model.name} "
-                f"pressure={pressure:.3f} urgency={urgency:.3f} threshold={thr:.3f}"
-                + (f" | {bd_str}" if bd_str else "")
+                f"urgency={urgency:.3f} select=None err={select_err}"
             )
             continue
 
@@ -329,8 +276,7 @@ async def next_task():
 
         _log.info(
             f"admission: task #{task['id']} ADMIT model={pick.model.name} "
-            f"pressure={pressure:.3f} urgency={urgency:.3f} threshold={thr:.3f}"
-            + (f" | {bd_str}" if bd_str else "")
+            f"urgency={urgency:.3f} (selector cleared pool-pressure gate)"
         )
         task["preselected_pick"] = pick
         task["status"] = "processing"

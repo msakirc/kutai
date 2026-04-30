@@ -119,9 +119,30 @@ async def run_ticks(state: SimState, ticks: int = 50) -> dict:
         # candidate in priority order — we match by the head of unclaimed.
         # Scenarios configure per-task intended_model so we map by agent_type.
         agent = kwargs.get("agent_type") or kwargs.get("task")
+        urgency = kwargs.get("urgency", 0.5)
+        # Real selector applies the pool-pressure gate before returning;
+        # mirror that here so adm_sim still verifies admission behavior
+        # after the gate moved out of beckman (2026-04-30 consolidation).
+        # Threshold formula matches selector.select.
+        threshold = max(-1.0, -0.5 - 0.5 * urgency)
         for t in state.unclaimed_tasks():
-            if t.agent_type == agent:
+            if t.agent_type != agent:
+                continue
+            pool = state.pool_for(t.intended_provider, t.intended_model, t.intended_is_free)
+            if pool is None:
                 return _pick_for_task(t)
+            # Approximate scalar from pool depletion ratio (mirrors S1
+            # depletion arm at frac < 0.30 / 0.15).
+            if pool.limit and pool.limit > 0:
+                frac = pool.remaining / pool.limit
+                # paid: per_call_threshold=0.15; free: time_bucketed=0.30
+                dep_thr = 0.15 if not t.intended_is_free else 0.30
+                if frac < dep_thr:
+                    intensity = (dep_thr - frac) / dep_thr
+                    scalar = -1.0 * intensity
+                    if scalar < threshold:
+                        return None
+            return _pick_for_task(t)
         return None
 
     for _ in range(ticks):

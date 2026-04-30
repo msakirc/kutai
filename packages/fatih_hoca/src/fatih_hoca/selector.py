@@ -72,6 +72,7 @@ class Selector:
         exclude_models: list[str] | None = None,
         remaining_budget: float = 0.0,
         call_category: str = "main_work",
+        urgency: float = 0.5,
     ) -> Pick | None:
         """
         Select the best model for a task.
@@ -191,6 +192,45 @@ class Selector:
             logger.warning(
                 "selector: rank_candidates returned empty: task=%s candidates=%d",
                 task, len(candidates),
+            )
+            return None
+
+        # ── Pool-pressure gate (single source of truth) ──────────────────────
+        # rank_candidates stamps `urgency` on each ScoredModel as the pool-
+        # pressure scalar. Filter out models whose pressure is below the
+        # task's urgency-derived admission threshold. This is the SINGLE
+        # mechanism — Beckman's admission-time pressure check and the
+        # dispatcher's recursion-time pressure check both delegate here.
+        # Without consolidating, three separate gates with three separate
+        # thresholds drifted out of sync (production triage 2026-04-30).
+        #
+        # Threshold formula `-0.5 - 0.5 * urgency` maps:
+        #   urgency=0.0 (idle):    threshold=-0.5  (excludes any clearly
+        #                                          negative pressure)
+        #   urgency=0.5 (default): threshold=-0.75 (still excludes severe)
+        #   urgency=1.0 (critical):threshold=-1.0  (admits anything not
+        #                                          at the absolute floor)
+        # This is intentionally PERMISSIVE — ranking already biases
+        # against negative-pressure models via the score multiplier; the
+        # gate only fires when pressure is so extreme that even low-
+        # urgency tasks shouldn't burn an admission cycle on it. Catches
+        # the "TPM=8K but estimate=30K → S2=-1.0" class of bug where a
+        # model is structurally unable to serve the task.
+        threshold = max(-1.0, -0.5 - 0.5 * urgency)
+        scored_after = [s for s in scored if getattr(s, "urgency", 0.0) >= threshold]
+        if scored_after:
+            scored = scored_after
+        else:
+            # Every candidate fell below threshold — return None so caller
+            # can either back off or escalate urgency. Important: do NOT
+            # silently relax the threshold — that's how we got back into
+            # the "selector keeps picking dead models" loop.
+            logger.info(
+                "selector: all candidates below pressure threshold "
+                "task=%s urgency=%.2f threshold=%+.2f scalars=[%s]",
+                task, urgency, threshold,
+                ", ".join(f"{s.model.name}={getattr(s, 'urgency', 0.0):+.2f}"
+                          for s in scored[:5]),
             )
             return None
 

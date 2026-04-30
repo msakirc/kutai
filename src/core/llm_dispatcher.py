@@ -178,62 +178,10 @@ class LLMDispatcher:
                 error_category="no_model",
             )
 
-        # Dispatcher-layer pool pressure gate. Beckman admission gates the
-        # INITIAL pick via pressure_for, but recursion path (this function
-        # called with non-empty `failures`) re-runs selector and gets the
-        # NEXT candidate — without re-checking pressure. With all cloud
-        # models at score=0 from utilization-layer × negative pressure,
-        # dispatcher kept trying tier-locked / TPM-too-small models that
-        # KDV pre_call refused immediately ("Rate limited for ..."), one
-        # by one until max_recursion exhausted. User triage 2026-04-30:
-        # groq gpt-oss-120b/20b TPM=8K refused every coder call without
-        # the call ever leaving the box.
-        #
-        # Skip candidates whose pressure is clearly below admission
-        # threshold (-0.5 — well below mid-urgency threshold=0.0 but
-        # leaves headroom for high-urgency tasks at threshold=-0.5+).
-        # On retry path only — first call uses preselected_pick from
-        # admission which already passed pressure.
-        if failures and not is_overhead:
-            try:
-                import nerd_herd as _nh
-                snap = _nh.snapshot()
-                breakdown = snap.pressure_for(
-                    pick.model,
-                    task_difficulty=difficulty,
-                    est_per_call_tokens=int(kwargs.get("estimated_input_tokens", 0) or 0)
-                                        + int(kwargs.get("estimated_output_tokens", 0) or 0),
-                    est_per_task_tokens=int(kwargs.get("estimated_output_tokens", 0) or 0) * 4,
-                    est_iterations=4,
-                    est_call_cost=0.0,
-                    cap_needed=5.0,
-                    consecutive_failures=0,
-                )
-                if breakdown.scalar < -0.5:
-                    logger.info(
-                        f"dispatcher: skip recursion candidate "
-                        f"model={pick.model.name} pressure={breakdown.scalar:+.2f} "
-                        f"(below -0.5 threshold)"
-                    )
-                    new_failure = Failure(
-                        model=pick.model.litellm_name,
-                        reason="pool_pressure_skip",
-                        latency=None,
-                    )
-                    return await self.request(
-                        category=category, task=task, agent_type=agent_type,
-                        difficulty=difficulty, messages=messages, tools=tools,
-                        failures=failures + [new_failure], preselected_pick=None,
-                        needs_thinking=needs_thinking,
-                        needs_function_calling=needs_function_calling,
-                        min_context=_min_context_kw, task_obj=_task_obj_kw,
-                        iteration_n=_iteration_n_kw,
-                        response_format=_response_format_kw,
-                        **kwargs,
-                    )
-            except Exception as e:
-                logger.debug(f"dispatcher pressure-gate raised; admit anyway: {e!r}")
-
+        # Pool pressure is enforced INSIDE selector (single source of truth).
+        # Selector returns None when no candidate clears the urgency-derived
+        # threshold; dispatcher just trusts that result. No second-guess
+        # gate here.
         model = pick.model
 
         # Register in-flight BEFORE swap + any other awaits.

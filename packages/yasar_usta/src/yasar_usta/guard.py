@@ -488,7 +488,14 @@ class ProcessGuard:
 
                     elif (text == self.msgs.btn_remote
                           or text.startswith("/remote")):
-                        await self._handle_remote()
+                        # _handle_remote awaits start_claude_remote which
+                        # polls the session log for up to 30s waiting for
+                        # the URL. Awaiting here would block the Telegram
+                        # message-poll loop for that window — observed
+                        # 2026-04-30: user pressed "🔧 Durum" mid-launch
+                        # and got no reply because getUpdates wasn't
+                        # firing. Spawn as background task instead.
+                        asyncio.create_task(self._handle_remote())
 
                     elif text == self.msgs.btn_system:
                         if self.subprocess.process and self.subprocess.process.returncode is None:

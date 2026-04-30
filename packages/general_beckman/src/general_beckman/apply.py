@@ -193,8 +193,23 @@ async def _apply_exhausted(task: dict, a: Exhausted) -> None:
 
 
 async def _apply_failed(task: dict, a: Failed) -> None:
-    await _retry_or_dlq(task, category=task.get("error_category") or "worker",
-                        error=a.error)
+    # Category precedence: this attempt's result wins over the stale row.
+    # The orchestrator stamps `error_category=availability` on the result
+    # dict when a ModelCallFailed bubbles up (rate-limited / no-model /
+    # provider-down). Without preferring it here, the task carried the
+    # PRIOR attempt's category — typically `quality` from a grader-FAIL —
+    # and decide_retry took the immediate-retry path that's correct for
+    # quality failures but wrong for availability ones. That burned
+    # worker_attempts in seconds when waiting was the right move
+    # (production triage 2026-04-30: task #4457 hit 5/6 attempts in
+    # under a minute against rate-limited gemini quota).
+    raw = a.raw or {}
+    category = (
+        raw.get("error_category")
+        or task.get("error_category")
+        or "worker"
+    )
+    await _retry_or_dlq(task, category=category, error=a.error)
 
 
 async def _apply_mission_advance(task: dict, a: MissionAdvance) -> None:

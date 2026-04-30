@@ -359,12 +359,15 @@ class BaseAgent:
         except (json.JSONDecodeError, TypeError):
             _tctx = {}
         if _tctx.get("is_workflow_step") and _tctx.get("input_artifacts"):
+            # Tool-name enumeration removed — the tools section above
+            # already lists every available read/fetch tool. Repeating
+            # them here was pure formatting bytes for an instruction the
+            # model has the names for elsewhere.
             parts.append(
                 "INPUT ARTIFACTS: All input artifacts for this step are "
                 "injected in full inside the user message under the heading "
-                "'## Results from Previous Steps'. Do NOT call read_file / "
-                "read_pdf / read_docx / read_spreadsheet for them. Read the "
-                "user message instead."
+                "'## Results from Previous Steps'. Do NOT call any read or "
+                "fetch tool for them — read the user message instead."
             )
 
         # Tool hygiene: agents repeatedly re-read the same files / prior
@@ -861,9 +864,28 @@ class BaseAgent:
                  "artifact_schema", "input_artifacts"}
         extra = {k: v for k, v in task_context.items() if k not in _skip and not k.startswith("_")}
         if extra:
-            parts.append(
-                f"## Additional Context\n{json.dumps(extra, indent=2)}"
-            )
+            # Render as markdown subsections rather than json.dumps(extra,
+            # indent=2). Same fields, no information loss — the JSON wrapper
+            # added 15-30% formatting overhead (braces, commas, quoted keys,
+            # indented spacing) without any semantic value to the agent.
+            # Scalars render inline; dicts/lists render as one-liner JSON
+            # so nested shape stays inspectable but doesn't pull a full
+            # multi-line indent for every key. Long string values stay
+            # readable as flowing text, not JSON-quoted.
+            _ac_lines: list[str] = ["## Additional Context"]
+            for _k, _v in extra.items():
+                if isinstance(_v, str):
+                    if "\n" in _v:
+                        _ac_lines.append(f"**{_k}**:\n{_v}")
+                    else:
+                        _ac_lines.append(f"**{_k}**: {_v}")
+                elif isinstance(_v, (dict, list)):
+                    _ac_lines.append(
+                        f"**{_k}**: {json.dumps(_v, ensure_ascii=False)}"
+                    )
+                else:
+                    _ac_lines.append(f"**{_k}**: {_v}")
+            parts.append("\n".join(_ac_lines))
 
         # ── Schema-validation retry hint ──
         # Lives here as the sole producer. The old hook pipeline
@@ -1277,9 +1299,9 @@ class BaseAgent:
             if entries:
                 parts = [
                     "## Results from Previous Steps",
-                    "These ARE your input artifacts in full. Do NOT call read_file, "
-                    "read_pdf, read_docx, or any fetch tool to re-read them — there "
-                    "is no other copy on disk. Use the content below directly.",
+                    "These ARE your input artifacts in full. Do NOT call any "
+                    "read or fetch tool to re-read them — there is no other "
+                    "copy on disk. Use the content below directly.",
                 ]
                 budget_chars = max_tokens * 4
                 used = sum(len(p) for p in parts)

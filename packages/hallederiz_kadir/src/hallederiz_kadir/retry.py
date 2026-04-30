@@ -23,7 +23,11 @@ def classify_error(error: str) -> str:
         return "circuit_breaker"
     if "no models available" in e or "no models matched" in e:
         return "no_model"
-    if any(k in e for k in ("api key", "authentication", "unauthorized", "billing")):
+    if any(k in e for k in (
+        "api key", "authentication", "unauthorized", "billing",
+        "key limit exceeded",  # OpenRouter: credit/spend cap on the key
+        "insufficient_quota", "insufficient credits", "credit balance",
+    )):
         return "auth_failure"
     # Model retirement / typo. Provider replies 404 NOT_FOUND for ids that
     # were valid yesterday (Gemini retires *-preview-MM-DD slugs without

@@ -20,6 +20,19 @@ def test_classify_auth():
     assert classify_error("billing quota exceeded") == "auth_failure"
 
 
+def test_classify_openrouter_key_limit():
+    """OpenRouter 'Key limit exceeded' (account-level credit cap, 403)
+    must classify as auth_failure — not retryable, triggers provider-
+    wide mark_dead in caller.py error path. Pre-fix this fell through
+    to 'unknown' and dispatcher kept burning recursion attempts."""
+    assert classify_error(
+        "OpenrouterException - Key limit exceeded (total limit). "
+        "Manage it using https://openrouter.ai/settings/keys"
+    ) == "auth_failure"
+    assert classify_error("insufficient_quota: please add credits") == "auth_failure"
+    assert classify_error("credit balance is too low") == "auth_failure"
+
+
 def test_classify_model_not_found():
     """404 NOT_FOUND from a provider (e.g. Gemini retiring a *-preview-MM-DD
     slug) classifies as model_not_found — caller marks dead, retry skips."""

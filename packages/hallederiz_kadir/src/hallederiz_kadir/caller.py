@@ -591,6 +591,30 @@ async def call(
                     get_registry().mark_dead(model.litellm_name)
                 except Exception:
                     pass
+            # auth_failure: provider-level credential / billing / key-cap
+            # issue. Production triage 2026-04-30: OpenRouter key hit its
+            # account-level "Key limit exceeded" cap → every OR call 403'd
+            # with the same error → 123 fails / 0 successes in 6h. The
+            # error is provider-wide, not per-model, so mark_dead ALL
+            # registered models on this provider until process restart
+            # (which re-runs discovery and revalidates auth).
+            if raw_result.category == "auth_failure":
+                try:
+                    from src.models.model_registry import get_registry
+                    reg = get_registry()
+                    dead_count = 0
+                    for m in reg.all_models():
+                        if (not m.is_local
+                                and getattr(m, "provider", "") == model.provider):
+                            reg.mark_dead(m.litellm_name)
+                            dead_count += 1
+                    _get_logger().warning(
+                        "auth_failure on %s — marked %d models dead "
+                        "(provider-wide, until restart): %s",
+                        model.provider, dead_count, raw_result.message[:200],
+                    )
+                except Exception:
+                    pass
             _kdv_record_failure(model.litellm_name, model.provider, raw_result.category)
         return raw_result
 

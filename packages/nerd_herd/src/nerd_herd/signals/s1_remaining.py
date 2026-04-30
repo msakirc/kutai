@@ -28,9 +28,16 @@ PROFILE_PARAMS: dict[str, dict[str, float]] = {
     "per_call":      {"depletion_threshold": 0.15, "depletion_max": -1.0,
                       "abundance_mode": "flat", "abundance_max": 0.0,
                       "time_scale_secs": 86400.0, "exhausted_neutral": False},
-    "time_bucketed": {"depletion_threshold": 0.30, "depletion_max": -0.5,
+    # time_bucketed (free cloud, periodic reset): when remaining=0 we
+    # MUST fire negative — pre-2026-04-30 production triage showed
+    # exhausted_neutral=True silently zeroed S1 when daily quota hit 0,
+    # selector kept picking the model, dispatcher kept 429'ing on
+    # KDV.pre_call's daily_exhausted gate, task DLQ'd. Returning -1.0
+    # via depletion_max (frac=0 < depletion_threshold=0.30 → intensity=1
+    # → depletion_max applied) makes selector route to peers naturally.
+    "time_bucketed": {"depletion_threshold": 0.30, "depletion_max": -1.0,
                       "abundance_mode": "time_decay", "abundance_max": 1.0,
-                      "time_scale_secs": 86400.0, "exhausted_neutral": True},
+                      "time_scale_secs": 86400.0, "exhausted_neutral": False},
 }
 
 

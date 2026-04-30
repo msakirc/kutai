@@ -64,6 +64,27 @@ def test_s1_zero_when_no_cells_populated():
     assert p == 0.0
 
 
+def test_s1_time_bucketed_fires_negative_on_full_exhaustion():
+    """Production triage 2026-04-30: gemini-3-pro-preview returned 429
+    'Daily limit exhausted'. Caller's parse_429_body wrote rpd_limit=1,
+    rpd_remaining=0, rpd_reset_at=now+24h to the matrix. Pool pressure
+    MUST fire negative — selector should never pick this model again
+    until reset.
+
+    Pre-fix: time_bucketed had `exhausted_neutral=True` which short-
+    circuited to 0.0 (neutral) when remaining=0, masking the depletion
+    arm. Selector saw no signal, kept picking the dead model, every
+    call 429'd at KDV pre_call. Daily-exhausted alarm fired in a tight
+    loop until task hit DLQ.
+    """
+    m = RateLimitMatrix(rpd=RateLimit(limit=1, remaining=0,
+                                       reset_at=int(time.time() + 86400)))
+    p = s1_remaining(m, profile="time_bucketed", reset_in_secs=86400)
+    assert p <= -0.5, (
+        f"time_bucketed exhausted (remaining=0) MUST fire negative; got {p}"
+    )
+
+
 # ── S2: call burden ──────────────────────────────────────────────────────
 
 

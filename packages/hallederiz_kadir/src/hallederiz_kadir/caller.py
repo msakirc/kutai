@@ -282,6 +282,7 @@ async def call(
     timeout: float,
     task: str,
     needs_thinking: bool,
+    estimated_input_tokens: int = 0,
     estimated_output_tokens: int = 1000,
     response_format: dict | None = None,
     task_obj: dict | None = None,
@@ -432,7 +433,25 @@ async def call(
     # can correct it to the actual usage. 0 for local calls.
     tpm_reservation: int = 0
     if not is_local:
-        estimated_tokens = estimated_output_tokens * 3
+        # KDV TPM gate sees this estimate. Old code: estimated_output_tokens
+        # * 3 — a rough total = output * 3 multiplier. Wildly over-estimates
+        # for small-TPM tier models: groq's gpt-oss-120b free tier has
+        # tpm_limit=8000; a coder task with estimated_output_tokens=10000
+        # produced estimate=30000 → tpm_headroom (8000) < 30000 → KDV
+        # refused EVERY call as "Rate limited" without ever hitting the
+        # provider. Production triage 2026-04-30: groq picks all rate_limited
+        # despite zero actual quota burn.
+        #
+        # Real estimate: estimated_input + estimated_output (plus a small
+        # safety margin for tokenizer overhead). When dispatcher doesn't
+        # plumb input (legacy callers), fall back to the conservative 3x
+        # multiplier.
+        if estimated_input_tokens > 0:
+            estimated_tokens = (
+                estimated_input_tokens + estimated_output_tokens + 256
+            )
+        else:
+            estimated_tokens = estimated_output_tokens * 3
         allowed, wait_secs, daily_exhausted = _kdv_pre_call(
             model.litellm_name, model.provider, estimated_tokens)
         if daily_exhausted:

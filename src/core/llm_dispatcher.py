@@ -276,6 +276,7 @@ class LLMDispatcher:
                     timeout=timeout,
                     task=task or category.value,
                     needs_thinking=needs_thinking,
+                    estimated_input_tokens=kwargs.get("estimated_input_tokens", 0),
                     estimated_output_tokens=kwargs.get("estimated_output_tokens", 0),
                     response_format=_response_format_kw,
                     task_obj=_task_obj_kw,

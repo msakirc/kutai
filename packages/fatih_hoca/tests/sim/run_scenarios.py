@@ -47,6 +47,7 @@ from sim.scenarios import (  # noqa: E402
     staggered_i2p,
     POOL_PRESSURE_SCENARIOS,
     POOL_PRESSURE_ASSERTIONS,
+    REALISTIC_POOL_SCENARIOS,
 )
 from sim.runner import run_simulation  # noqa: E402
 from sim.report import compute_metrics  # noqa: E402
@@ -112,6 +113,37 @@ def main() -> int:
             result = "PASS"
             detail = ""
         print(f"{name:36s} {result:>6s}  {detail}")
+
+    # ── Realistic-pool distribution scenarios ───────────────────────────────
+    # Operator-eyeball: how does the pick distribution shift as cloud
+    # quotas tighten? No pass/fail — just run + report. If shifts make
+    # sense (gemini drops to 0 when burned, claude reserved for hard,
+    # local picks up the slack), pool pressure is doing its job.
+    print()
+    print("Realistic-pool distribution scenarios")
+    print(f"{'scenario':45s} {'hard':>6s} {'waste':>6s} {'free_q':>7s}  picks")
+    print(f"{'-' * 45} {'-' * 6} {'-' * 6} {'-' * 7}  {'-' * 60}")
+    for name, factory in REALISTIC_POOL_SCENARIOS:
+        scenario = factory()
+        run = run_simulation(
+            tasks=scenario.tasks,
+            initial_state=scenario.initial_state,
+            select_fn=scenario.select_fn,
+            snapshot_factory=scenario.snapshot_factory,
+        )
+        m = compute_metrics(run)
+        picks = Counter(p.model_name for p in run.picks)
+        # Show top picks by frequency, abbreviated
+        picks_str = " ".join(
+            f"{k.split('/')[-1][:14]}={v}" for k, v in picks.most_common(6)
+        )
+        print(
+            f"{name:45s} "
+            f"{m.hard_task_satisfaction:>6.1%} "
+            f"{m.easy_task_waste:>6.1%} "
+            f"{m.free_quota_utilization:>7.1%}  "
+            f"{picks_str}"
+        )
 
     print()
     if all_pp_passed:

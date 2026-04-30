@@ -966,6 +966,150 @@ def assert_pp8(scenario: "Scenario") -> list[str]:
     return failures
 
 
+# ── Realistic-Pool (RP) scenarios ─────────────────────────────────────────────
+# Mirrors actual production state observed 2026-04-30 after the discovery
+# + quota-seed + property-fallback fixes. Pools are tier-realistic, not
+# the round numbers used by PP1-PP8.
+#
+# Production reality reflected here:
+#   gemini free tier:    gemini-3-flash-preview = 5 RPM / 250K TPM / 20 RPD
+#                        gemini-2.5-flash      = 5 RPM / 250K TPM / 20 RPD
+#   groq free tier:      compound-mini = 30 RPM / 6K TPM / 14400 RPD
+#                        gpt-oss-120b  = 30 RPM / 6K TPM / 1000 RPD
+#   anthropic paid:      claude-sonnet = 50 RPM / 80K TPM / 1000 RPD
+#   openrouter paid:     varies (treat as cap=15 RPM)
+#   local:               loaded Qwen3.5-9B, idle 300s
+#
+# Each scenario tests one realistic constraint pattern.
+
+
+def _realistic_providers() -> dict:
+    """Provider config that matches production keys + tiers post-fix."""
+    return {
+        "gemini": {
+            "is_free": True,
+            "models": {
+                "gemini/gemini-3-flash-preview": {"cap_score_100": 75},
+                "gemini/gemini-2.5-flash": {"cap_score_100": 70},
+            },
+        },
+        "groq": {
+            "is_free": True,
+            "models": {
+                "groq/compound-mini": {"cap_score_100": 65},
+                "groq/openai/gpt-oss-120b": {"cap_score_100": 78},
+            },
+        },
+        "anthropic": {
+            "is_free": False,
+            "models": {"anthropic/claude-sonnet-4-6": {"cap_score_100": 90}},
+        },
+    }
+
+
+def _realistic_state(*, gemini_remaining_rpd: int = 20,
+                      groq_remaining_rpd: int = 14_400,
+                      claude_remaining_rpd: int = 1_000) -> SimState:
+    state = SimState()
+    state.locals["loaded-local"] = SimLocalModel(
+        is_loaded=True, idle_seconds=300.0, tokens_per_second=15.0,
+    )
+    # Free-cloud time-bucketed counters
+    state.time_bucketed["gemini/gemini-3-flash-preview"] = SimPoolCounter(
+        remaining=gemini_remaining_rpd, limit=20, reset_at=86400.0,
+    )
+    state.time_bucketed["gemini/gemini-2.5-flash"] = SimPoolCounter(
+        remaining=gemini_remaining_rpd, limit=20, reset_at=86400.0,
+    )
+    state.time_bucketed["groq/compound-mini"] = SimPoolCounter(
+        remaining=groq_remaining_rpd, limit=14_400, reset_at=86400.0,
+    )
+    state.time_bucketed["groq/openai/gpt-oss-120b"] = SimPoolCounter(
+        remaining=min(groq_remaining_rpd, 1000), limit=1000, reset_at=86400.0,
+    )
+    # Paid per-call counter
+    state.per_call["anthropic/claude-sonnet-4-6"] = SimPoolCounter(
+        remaining=claude_remaining_rpd, limit=1000, reset_at=86400.0,
+    )
+    return state
+
+
+def rp1_realistic_baseline() -> Scenario:
+    """Production state with full quotas. Distribution should:
+       - lean local for easy/medium tasks (loaded, fast)
+       - lean groq compound-mini for medium-cloud (free, abundant)
+       - reserve gemini-3-flash for medium-hard (its 20 RPD is precious)
+       - reserve claude-sonnet for d>=8 hard tasks (right-tool perishability)
+    """
+    providers = _realistic_providers()
+    state = _realistic_state()
+    tasks = _standard_i2p_task_mix()
+    return Scenario(
+        name="rp1_realistic_baseline",
+        tasks=tasks,
+        initial_state=state,
+        snapshot_factory=_build_snapshot_factory(providers),
+        select_fn=_build_select_fn(providers, tasks=tasks),
+    )
+
+
+def rp2_gemini_rpd_burned() -> Scenario:
+    """Gemini RPD already depleted (1/20 left across both flash models).
+    Selector must shift to groq + local; gemini share should approach 0.
+    Hard tasks still go to claude (paid per_call abundant)."""
+    providers = _realistic_providers()
+    state = _realistic_state(gemini_remaining_rpd=1)
+    tasks = _standard_i2p_task_mix()
+    return Scenario(
+        name="rp2_gemini_rpd_burned",
+        tasks=tasks,
+        initial_state=state,
+        snapshot_factory=_build_snapshot_factory(providers),
+        select_fn=_build_select_fn(providers, tasks=tasks),
+    )
+
+
+def rp3_groq_constrained_premium_intelligent() -> Scenario:
+    """Groq + Gemini both deeply depleted. Premium claude is the only
+    cloud option with capacity. M3 difficulty weights should keep
+    claude reserved for hard tasks; easy tasks must fall to local
+    (NOT waste claude on d=3 router calls)."""
+    providers = _realistic_providers()
+    state = _realistic_state(
+        gemini_remaining_rpd=2,
+        groq_remaining_rpd=100,  # <1% of 14400
+    )
+    tasks = _standard_i2p_task_mix()
+    return Scenario(
+        name="rp3_groq_constrained_premium_intelligent",
+        tasks=tasks,
+        initial_state=state,
+        snapshot_factory=_build_snapshot_factory(providers),
+        select_fn=_build_select_fn(providers, tasks=tasks),
+    )
+
+
+def rp4_full_cloud_exhaustion() -> Scenario:
+    """Every cloud pool ≤2% remaining. Local should pick up everything
+    that fits its capability; hard tasks beyond local-cap should fall
+    to whichever cloud has even a sliver left (whose S1 abundance is
+    higher). Verifies graceful degradation, not catastrophic failure."""
+    providers = _realistic_providers()
+    state = _realistic_state(
+        gemini_remaining_rpd=1,
+        groq_remaining_rpd=50,
+        claude_remaining_rpd=20,
+    )
+    tasks = _standard_i2p_task_mix()
+    return Scenario(
+        name="rp4_full_cloud_exhaustion",
+        tasks=tasks,
+        initial_state=state,
+        snapshot_factory=_build_snapshot_factory(providers),
+        select_fn=_build_select_fn(providers, tasks=tasks),
+    )
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 POOL_PRESSURE_SCENARIOS = [
@@ -977,6 +1121,16 @@ POOL_PRESSURE_SCENARIOS = [
     ("pp6_capability_shortage", pp6_capability_shortage),
     ("pp7_difficulty_lookahead", pp7_difficulty_lookahead),
     ("pp8_equilibrium_mission", pp8_equilibrium_mission),
+]
+
+# Realistic-pool scenarios — distribution observation (no pass/fail
+# assertions; reported alongside picks so an operator can eyeball
+# whether the distribution shifts make sense for the constraint).
+REALISTIC_POOL_SCENARIOS = [
+    ("rp1_realistic_baseline", rp1_realistic_baseline),
+    ("rp2_gemini_rpd_burned", rp2_gemini_rpd_burned),
+    ("rp3_groq_constrained_premium_intelligent", rp3_groq_constrained_premium_intelligent),
+    ("rp4_full_cloud_exhaustion", rp4_full_cloud_exhaustion),
 ]
 
 # Per-scenario assertion callables (scenarios 1-7 pressure-only; 8 full-flow)

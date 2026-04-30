@@ -250,6 +250,46 @@ def init(
                         provider, getattr(dm, "litellm_name", "?"), e,
                     )
 
+        # ── Cross-validate yaml-loaded cloud models against discovery ──
+        # Yaml entries (models.yaml) load BEFORE discovery and stay in the
+        # registry even if the provider has retired the id (Gemini retires
+        # *-preview-MM-DD slugs, models.yaml/gemini-flash-thinking ↔
+        # gemini/gemini-2.5-flash-preview-05-20 was the production
+        # culprit). Without cross-validation, selector ranks the dead id
+        # via cached benchmark scores, every call 404s.
+        #
+        # For each provider whose discovery succeeded (auth_ok), build the
+        # set of live litellm_names. Any registered cloud model on that
+        # provider whose litellm_name is missing from the live set gets
+        # mark_dead'd here — keeps the entry in the registry so other
+        # subsystems that lookup-by-name don't break, but the eligibility
+        # filter excludes it.
+        #
+        # Skipped when discovery failed (auth_fail / network / rate_limit)
+        # — empty live set on a transient outage would mark every model
+        # dead. Better to keep candidates and let the runtime 404 hook
+        # mark_dead on actual call failure.
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+        for provider, result in discovery_results.items():
+            if not result.auth_ok or result.status != "ok":
+                continue
+            live_litellm = {dm.litellm_name for dm in result.models}
+            stale = []
+            for m in _registry.all_models():
+                if m.is_local or m.provider != provider:
+                    continue
+                if m.litellm_name not in live_litellm:
+                    stale.append(m.litellm_name)
+            for ln in stale:
+                _registry.mark_dead(ln)
+            if stale:
+                _log.warning(
+                    "discovery cross-check: %d stale yaml entries on %s "
+                    "(retired/typo) — marked dead: %s",
+                    len(stale), provider, ", ".join(stale[:5]),
+                )
+
     # ── Benchmark enrichment: populate ModelInfo.benchmark_scores from cached AA data ──
     import logging
     logger = logging.getLogger(__name__)

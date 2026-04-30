@@ -85,6 +85,18 @@ def get_kdv() -> KuledenDonenVar:
                     provider_aggregate_rpm=agg.get("rpm"),
                     provider_aggregate_tpm=agg.get("tpm"),
                 )
+                # Propagate the daily-axis quota when known. KDV.register
+                # only accepts rpm/tpm; rpd lives on RateLimitState as a
+                # separate field. Static seeds (Gemini free tier per AI
+                # Studio quota table) populate this on every registration
+                # — without it, S1's time_bucketed depletion arm has no
+                # rpd cell to compute frac on, and exhausted models stay
+                # invisible to pool pressure.
+                if model.rate_limit_rpd is not None:
+                    state = _kdv._rate_limiter.model_limits.get(model.litellm_name)
+                    if state is not None:
+                        state.rpd_limit = int(model.rate_limit_rpd)
+                        state.rpd_remaining = int(model.rate_limit_rpd)
             # Mark each cloud provider as enabled so KDV can surface
             # "no observations after Nh" warnings later.
             for provider in {m.provider for m in registry.cloud_models()}:

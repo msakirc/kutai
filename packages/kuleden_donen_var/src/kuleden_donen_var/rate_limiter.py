@@ -121,7 +121,30 @@ class RateLimitState:
         return {k: getattr(self, k) for k in self._PERSISTED_FIELDS}
 
     def restore_state(self, snap: dict) -> None:
+        # rpm_limit / tpm_limit are determined fresh at boot by registration
+        # (discovery + static seed). Persisted values are stale whenever
+        # the seed changes — production triage 2026-04-30: gemini-3-flash-
+        # preview kept the pre-fix detect_cloud_model defaults (rpm=15,
+        # tpm=1M) restored over the new static seed (5, 250K) for hours
+        # after the fix shipped. Pool pressure saw inflated headroom,
+        # selector kept picking, KDV kept refusing.
+        #
+        # Only restore the ADAPTIVE state (rate_limit_hits, last_429_at,
+        # etc.) — persistence's job is "remember adapted reduction across
+        # restarts so we don't re-discover the throttled limit". When
+        # _rate_limit_hits == 0, there's no adaptive reduction to keep
+        # and `rpm_limit` / `tpm_limit` should reflect the freshly
+        # registered values. When > 0, persisted limits represent the
+        # adapted (smaller) state and are still safer than registration's
+        # pristine values.
+        hits = int(snap.get("_rate_limit_hits", 0) or 0)
+        skip_keys: set[str] = set()
+        if hits == 0:
+            skip_keys = {"rpm_limit", "tpm_limit",
+                         "_original_rpm", "_original_tpm"}
         for k in self._PERSISTED_FIELDS:
+            if k in skip_keys:
+                continue
             if k in snap:
                 setattr(self, k, snap[k])
 

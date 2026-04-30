@@ -74,6 +74,7 @@ class ModelInfo:
     tier: str = "free"
     rate_limit_rpm: int = 30
     rate_limit_tpm: int = 100000
+    rate_limit_rpd: int | None = None  # daily limit when known (Gemini free tier, etc.)
     cost_per_1k_input: float = 0.0
     cost_per_1k_output: float = 0.0
 
@@ -1017,6 +1018,8 @@ def register_cloud_from_discovered(
         detected["rate_limit_rpm"] = discovered.rate_limit_rpm
     if getattr(discovered, "rate_limit_tpm", None) is not None:
         detected["rate_limit_tpm"] = discovered.rate_limit_tpm
+    if getattr(discovered, "rate_limit_rpd", None) is not None:
+        detected["rate_limit_rpd"] = discovered.rate_limit_rpd
     if getattr(discovered, "supports_function_calling", None) is not None:
         detected["supports_function_calling"] = discovered.supports_function_calling
 
@@ -1038,6 +1041,7 @@ def register_cloud_from_discovered(
         tier=detected.get("tier", "paid"),
         rate_limit_rpm=detected["rate_limit_rpm"],
         rate_limit_tpm=detected.get("rate_limit_tpm", 100000),
+        rate_limit_rpd=detected.get("rate_limit_rpd"),
         cost_per_1k_input=detected.get("cost_per_1k_input", 0.0),
         cost_per_1k_output=detected.get("cost_per_1k_output", 0.0),
         family=family,

@@ -43,6 +43,13 @@ logger = get_logger("core.in_flight")
 _task_slots: dict[int, "_InFlightEntry"] = {}
 _call_entries: dict[str, "_InFlightEntry"] = {}
 
+# Recent cloud attempts per task: task_id -> (provider, model, ts).
+# Updated by begin_call whenever a non-local model gets dispatched, even if
+# the call fast-fails. Cleared on release_task. Used by /queue UI to expose
+# cloud bounce activity that's otherwise invisible — gemini fast-fails take
+# a sub-second window the UI poll rarely catches.
+_recent_cloud: dict[int, tuple[str, str, float]] = {}
+
 
 class _InFlightEntry:
     __slots__ = ("call_id", "task_id", "category", "model", "provider", "is_local", "started_at")
@@ -76,6 +83,24 @@ def get_task_entry(task_id: int):
     if task_id is None:
         return None
     return _task_slots.get(int(task_id))
+
+
+def get_recent_cloud(task_id: int, within: float = 30.0):
+    """Return (provider, model, age_seconds) for the last cloud call on this
+    task within the window, or None. Lets /queue surface cloud bounce activity
+    even when the current slot is local — important for fast-failing cloud
+    retries that the UI poll otherwise misses entirely.
+    """
+    if task_id is None:
+        return None
+    rec = _recent_cloud.get(int(task_id))
+    if rec is None:
+        return None
+    provider, model, ts = rec
+    age = time.time() - ts
+    if age > within:
+        return None
+    return provider, model, age
 
 
 def is_task_in_flight(task_id: int) -> bool:
@@ -152,6 +177,7 @@ async def release_task(task_id: int) -> None:
     tasks that never reached dispatcher).
     """
     if _task_slots.pop(task_id, None) is not None:
+        _recent_cloud.pop(task_id, None)
         logger.info(
             "release_task task=%s remaining=%d",
             task_id, len(_task_slots) + len(_call_entries),
@@ -186,6 +212,12 @@ async def begin_call(
             provider=provider,
             is_local=is_local,
             started_at=time.time(),
+        )
+        if not is_local:
+            _recent_cloud[task_id] = (provider, model_name, time.time())
+        logger.info(
+            "begin_call task=%s model=%s provider=%s local=%s",
+            task_id, model_name, provider, is_local,
         )
     else:
         call_id = str(uuid.uuid4())

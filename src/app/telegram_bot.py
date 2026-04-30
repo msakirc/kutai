@@ -2051,7 +2051,7 @@ class TelegramInterface:
 
         msg = "📬 Task Queue:\n\n"
         if processing:
-            from src.core.in_flight import get_task_entry
+            from src.core.in_flight import get_task_entry, get_recent_cloud
             msg += "⚙️ In Progress:\n"
             for t in processing:
                 agent = t.get('agent_type', '?')
@@ -2062,7 +2062,16 @@ class TelegramInterface:
                     tag = f"{agent}→{where}:{model}"
                 else:
                     tag = f"{agent}→?"
-                msg += f"  #{t['id']} [{tag}] {t['title'][:50]}\n"
+                # If current slot is local but cloud was tried recently, show
+                # the bounce — fast-failing cloud retries are otherwise
+                # invisible because the slot reverts to local within ms.
+                bounce = ""
+                if entry is None or entry.is_local:
+                    rc = get_recent_cloud(t['id'])
+                    if rc is not None:
+                        cprov, cmodel, age = rc
+                        bounce = f" ↔{cprov}:{cmodel} ({int(age)}s ago)"
+                msg += f"  #{t['id']} [{tag}]{bounce} {t['title'][:50]}\n"
             msg += "\n"
         if ready:
             msg += "⏳ Ready:\n"

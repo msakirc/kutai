@@ -13,33 +13,17 @@ personal_projects:
   - "side-project"
 
 # ─── Cloud Models ────────────────────────────────────────────────────────────
-cloud:
-  gemini-flash:
-    litellm_name: "gemini/gemini-2.0-flash"
-
-  gemini-flash-thinking:
-    litellm_name: "gemini/gemini-2.5-flash-preview-05-20"
-
-  groq-llama-70b:
-    litellm_name: "groq/llama-3.3-70b-versatile"
-
-  groq-llama-8b:
-    litellm_name: "groq/llama-3.1-8b-instant"
-
-  cerebras-llama-70b:
-    litellm_name: "cerebras/llama3.3-70b"
-
-  sambanova-qwen3-32b:
-    litellm_name: "sambanova/Qwen3-32B"
-
-  claude-sonnet:
-    litellm_name: "claude-sonnet-4-20250514"
-
-  gpt-4o:
-    litellm_name: "gpt-4o"
-
-  gpt-4o-mini:
-    litellm_name: "gpt-4o-mini"
+# Discovery is now the sole source for cloud model registration. Adapters
+# in packages/fatih_hoca/src/fatih_hoca/cloud/providers/ probe each
+# provider's /models endpoint at boot and on a 6h cron, register everything
+# they return, and skip retired ids automatically. Static cloud entries
+# here drift the moment a provider retires a slug (Gemini retires
+# *-preview-MM-DD without notice) and are a chronic source of 404s.
+#
+# Per-model OVERRIDES still go in the `overrides:` section below, keyed
+# by the litellm_name (e.g. `gemini/gemini-2.5-flash`) — those compose
+# on top of whatever discovery + benchmark enrichment computed.
+cloud: {}
 
 # ─── Overrides (apply to any model by name) ─────────────────────────────────
 # Model name for local = GGUF filename stem (e.g., "Qwen3-30B-A3B-Q4_K_M")

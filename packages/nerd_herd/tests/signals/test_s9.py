@@ -27,14 +27,62 @@ def test_s9_loaded_local_idle_positive():
     assert p == pytest.approx(0.25, abs=0.05)
 
 
-# Loaded local + processing → busy penalty
+# Loaded local + processing → hard busy veto. -1.0 not -0.10: llama-server
+# is serial (--parallel 1) so a second admission must NEVER squeeze through
+# even at max urgency.
 def test_s9_loaded_local_busy_negative():
     m = FakeModel(is_local=True, name="loaded-x")
     m.is_loaded = True
     local = LocalModelState(model_name="loaded-x", idle_seconds=0, requests_processing=1)
     p = s9_perishability(m, local=local, vram_avail_mb=8000, matrix=RateLimitMatrix(),
                          task_difficulty=5, now=time.time())
-    assert p == pytest.approx(-0.10, abs=0.01)
+    assert p == pytest.approx(-1.0, abs=0.01)
+
+
+# In-flight registry signals busy even before requests_processing catches up.
+# Production triage 2026-04-30: tasks #4464 + #4457 admitted 15s apart on
+# the same local model because requests_processing was still 0 during the
+# admission→prompt-processing gap. The in_flight_calls list has the
+# admitted-not-yet-running entry (reserve_task fires synchronously at
+# admission); S9 must veto on it.
+def test_s9_local_in_flight_blocks_concurrent_admission():
+    from nerd_herd.types import InFlightCall
+    m = FakeModel(is_local=True, name="loaded-x")
+    m.is_loaded = True
+    local = LocalModelState(
+        model_name="loaded-x", idle_seconds=30, requests_processing=0,
+    )
+    in_flight = [InFlightCall(
+        call_id="task-4464", task_id=4464, category="main_work",
+        model="loaded-x", provider="local", is_local=True,
+        started_at=time.time(),
+    )]
+    # Even when requests_processing reads 0 (admission window before
+    # llama-server picks up the request), in_flight presence vetoes a
+    # second local admission.
+    p = s9_perishability(
+        m, local=local, vram_avail_mb=8000, matrix=RateLimitMatrix(),
+        task_difficulty=5, now=time.time(), in_flight_calls=in_flight,
+    )
+    assert p == pytest.approx(-1.0, abs=0.01)
+
+
+# Cold local during another local's in-flight: also vetoed (GPU is shared).
+def test_s9_cold_local_in_flight_blocks_swap():
+    from nerd_herd.types import InFlightCall
+    m = FakeModel(is_local=True, name="cold-x", size_mb=4000)
+    m.is_loaded = False
+    local = LocalModelState(model_name="loaded-y")
+    in_flight = [InFlightCall(
+        call_id="task-1", task_id=1, category="main_work",
+        model="loaded-y", provider="local", is_local=True,
+        started_at=time.time(),
+    )]
+    p = s9_perishability(
+        m, local=local, vram_avail_mb=8000, matrix=RateLimitMatrix(),
+        task_difficulty=5, now=time.time(), in_flight_calls=in_flight,
+    )
+    assert p == pytest.approx(-1.0, abs=0.01)
 
 
 # Cold local + VRAM available

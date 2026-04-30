@@ -15,7 +15,12 @@ from nerd_herd.types import LocalModelState, RateLimitMatrix
 
 LOCAL_IDLE_SAT_SECS = 60.0
 LOCAL_IDLE_MAX = 0.5
-LOCAL_BUSY_PENALTY = -0.10
+# Local serial-only: llama-server runs --parallel 1 and the GPU hosts at
+# most one model. ANY in-flight local task means a second local admission
+# would either queue behind the first or trigger a swap. Both outcomes
+# are bad — surface as a hard veto via -1.0 (admission threshold for any
+# urgency clamps to >= -1.0, so this guarantees rejection).
+LOCAL_BUSY_PENALTY = -1.0
 COLD_LOCAL_VRAM_OK = 0.4
 COLD_LOCAL_NO_VRAM = -0.5
 TIME_DECAY_SCALE_SECS = 86400.0
@@ -35,18 +40,35 @@ def s9_perishability(
     matrix: RateLimitMatrix,
     task_difficulty: int,
     now: float | None = None,
+    in_flight_calls: list | None = None,
 ) -> float:
     ts = now if now is not None else time.time()
 
     # ── Local branches ─────────────────────────────────────────────
     if getattr(model, "is_local", False):
+        # Hard busy gate: any in-flight local call (admitted-not-yet-running
+        # OR mid-call OR between iterations) blocks ALL local admissions
+        # until release. Without this, the admission→prompt-processing gap
+        # (~5-15s while agent runs RAG + chain-context + file-tree before
+        # the first dispatcher.request lands) leaves requests_processing=0
+        # at the metrics endpoint and a second admission squeaks through,
+        # producing the swap storm or duplicate-llama-server pattern.
+        # Production triage 2026-04-30: tasks #4464+#4457 admitted 15s
+        # apart on the same loaded model.
+        if in_flight_calls:
+            for c in in_flight_calls:
+                if getattr(c, "is_local", False):
+                    return LOCAL_BUSY_PENALTY
         loaded_name = (local.model_name or "") if local else ""
         if getattr(model, "is_loaded", False) and loaded_name == getattr(model, "name", ""):
             if int(getattr(local, "requests_processing", 0) or 0) > 0:
                 return LOCAL_BUSY_PENALTY
             idle = float(getattr(local, "idle_seconds", 0.0) or 0.0)
             return _clamp(min(1.0, idle / LOCAL_IDLE_SAT_SECS) * LOCAL_IDLE_MAX, 0, LOCAL_IDLE_MAX)
-        # Cold local
+        # Cold local — same GPU veto as above. Even cold local can't be
+        # admitted while another local call is mid-flight: claiming it
+        # would either trigger an immediate swap (kicking out the running
+        # model) or wait at the queue head.
         size_mb = int(getattr(model, "size_mb", 0) or 0)
         if size_mb <= 0 or vram_avail_mb >= size_mb:
             return COLD_LOCAL_VRAM_OK

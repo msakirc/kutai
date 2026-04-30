@@ -110,6 +110,15 @@ class Selector:
         failed_models: set[str] = {f.model for f in failures}
 
         # ── Layer 1: Eligibility filtering ───────────────────────────────────
+        # Track filter-reason histogram for visibility. When the eligible
+        # set comes up empty, the warning carries the histogram so the
+        # operator can see WHICH filter killed every candidate (vs.
+        # spelunking through DEBUG lines for each model). Pre-2026-04-30
+        # production ran with a registry full of dead models that all
+        # filtered out for the same reason — but with only a generic
+        # "no eligible candidates" warning, triage took hours.
+        from collections import Counter
+        filter_reasons: Counter[str] = Counter()
         candidates: list[ModelInfo] = []
         for model in self._registry.all_models():
             reason = self._check_eligibility(
@@ -119,6 +128,7 @@ class Selector:
                 snapshot=snapshot,
             )
             if reason is not None:
+                filter_reasons[reason] += 1
                 logger.debug(
                     "model filtered: name=%s reason=%s task=%s",
                     model.name, reason, task,
@@ -127,9 +137,16 @@ class Selector:
             candidates.append(model)
 
         if not candidates:
+            # Histogram in descending order of frequency. Prefix common
+            # reasons with their count so log greppers can spot patterns.
+            hist = ", ".join(
+                f"{count}×{reason}"
+                for reason, count in filter_reasons.most_common()
+            )
             logger.warning(
-                "selector: no eligible candidates: task=%s local_only=%s",
-                task, local_only,
+                "selector: no eligible candidates: task=%s local_only=%s "
+                "filtered=%d reasons=[%s]",
+                task, local_only, sum(filter_reasons.values()), hist,
             )
             return None
 

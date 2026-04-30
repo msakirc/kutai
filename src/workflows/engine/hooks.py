@@ -6,6 +6,7 @@ template expansion triggers, and CodingPipeline delegation detection.
 from __future__ import annotations
 
 import json
+import os
 from typing import Optional
 
 from src.infra.logging_config import get_logger
@@ -375,6 +376,193 @@ def _is_empty_required_value(val) -> bool:
     if isinstance(val, list):
         return len(val) == 0
     return False
+
+
+# ── Lazy-true evidence patterns ─────────────────────────────────────────
+#
+# Default evidence tokens by verification flag name. The post-execute hook
+# checks the task's audit_log (since this attempt's started_at) for tool
+# executions whose ``target`` or ``details`` contain at least one token. If
+# the flag is true but no token matched, the agent lied — fail with a
+# didactic message and route to retry. Per-schema ``evidence_for`` map
+# overrides this default.
+_DEFAULT_EVIDENCE_TOKENS: dict[str, list[str]] = {
+    "health_check_verified": [
+        "curl", "wget", "http://", "https://", "requests.get",
+        "fetch", "axios", ".get(",
+    ],
+    "health_check_passed": [
+        "curl", "wget", "http://", "https://", "fetch", "axios",
+    ],
+    "dev_server_verified": [
+        "curl", "wget", "http://", "fetch", "playwright", "puppeteer",
+        "axios", "browser",
+    ],
+    "dependencies_installed": [
+        "pip install", "pip3 install", "pipenv install", "poetry add",
+        "poetry install", "npm install", "npm i ", "npm ci",
+        "yarn add", "yarn install", "pnpm install", "pnpm add",
+        "go get", "go mod", "cargo add", "cargo build",
+        # KutAI-internal tools that wrap install commands.
+        "verify_deps", "scaffold",
+    ],
+    "connection_verified": [
+        "psql", "mysql", "mongo", "redis-cli", "sqlite3",
+        "SELECT", "ping", "connect(", ".connect", "create_engine",
+    ],
+    "smoke_tests_passed": [
+        "pytest", "jest", "mocha", "playwright", "vitest", "go test",
+        "cargo test", "rspec", "phpunit",
+    ],
+    "all_passed": [
+        "pytest", "jest", "mocha", "playwright", "vitest", "go test",
+        "cargo test", "test", "check",
+    ],
+    "all_resolved": [
+        "patch", "fix", "edit", "write_file", "modify",
+    ],
+    "data_seeded": [
+        "INSERT", "seed", "fixture", "load_data", "seeders",
+        "psql", "mysql", "mongo",
+    ],
+    "headers_configured": [
+        "helmet", "headers", "X-Frame", "Content-Security-Policy",
+        "Strict-Transport", "write_file",
+    ],
+    "patches_applied": [
+        "patch", "apt", "yum", "apk", "upgrade", "update", "pip install",
+        "npm install", "fix",
+    ],
+    "fixes_applied": [
+        "edit", "write_file", "patch", "fix", "git commit",
+    ],
+    "optimizations_applied": [
+        "edit", "write_file", "patch", "optimize", "git commit",
+    ],
+    "sprint_id_completed": [
+        "git commit", "git tag", "git push", "merge",
+    ],
+    "features_completed": [
+        "git commit", "git tag", "git push", "merge",
+    ],
+}
+
+
+def _truthy_flag_fields(rule: dict) -> list[str]:
+    """Return field names whose rule requires ``equals: true`` (canonical or
+    legacy ``must_be_true`` form). Walks one level — verification flags are
+    top-level booleans on the artifact object."""
+    if not isinstance(rule, dict):
+        return []
+    must_true = list(rule.get("must_be_true") or [])
+    fields = rule.get("fields") or {}
+    for fname, frule in fields.items():
+        if (
+            isinstance(frule, dict)
+            and frule.get("type") == "boolean"
+            and frule.get("equals") is True
+        ):
+            must_true.append(fname)
+    return list(dict.fromkeys(must_true))  # dedupe, keep order
+
+
+async def _check_truthy_evidence(
+    task: dict, output_value: str, schema: dict
+) -> Optional[str]:
+    """For each verification flag set to ``true`` in the artifact, confirm
+    that the agent actually ran a matching command during this attempt.
+
+    Returns an error message (didactic) if a flag is unsupported by audit
+    evidence, or None if every truthy flag has evidence.
+
+    Only inspects audit_log entries newer than ``task.started_at`` so that
+    evidence from earlier attempts doesn't whitewash a lazy retry.
+    """
+    if not schema or not output_value:
+        return None
+    task_id = task.get("id")
+    if not task_id:
+        return None
+
+    # Parse output once.
+    try:
+        if isinstance(output_value, str):
+            obj = json.loads(_unwrap_envelope(output_value))
+        else:
+            obj = output_value
+    except (json.JSONDecodeError, TypeError):
+        return None  # validator already caught structural problems
+
+    # Walk each artifact rule. ``schema`` may have artifact_name -> rule.
+    for art_name, rule in schema.items():
+        if not isinstance(rule, dict):
+            continue
+        # Locate the artifact value in the output. If the output IS the
+        # artifact (e.g. the agent returned the dict directly), use it.
+        if isinstance(obj, dict) and art_name in obj and isinstance(obj[art_name], dict):
+            art_value = obj[art_name]
+        elif isinstance(obj, dict):
+            art_value = obj
+        else:
+            continue
+
+        flag_fields = _truthy_flag_fields(rule)
+        if not flag_fields:
+            continue
+
+        # Evidence map: schema override beats defaults.
+        per_schema = rule.get("evidence_for") or {}
+
+        # Filter to flags that the agent claimed are True.
+        claimed_true = [
+            f for f in flag_fields
+            if isinstance(art_value.get(f), bool) and art_value[f] is True
+        ]
+        if not claimed_true:
+            continue
+
+        # Pull audit events for this task.
+        try:
+            from ...infra.audit import get_audit_log
+        except ImportError:
+            return None
+        entries = await get_audit_log(task_id=task_id, limit=500)
+        # Filter by attempt window: events newer than started_at.
+        started_at = task.get("started_at") or ""
+        if started_at:
+            entries = [e for e in entries if (e.get("timestamp") or "") >= started_at]
+        # Build a single haystack of target+details for substring scan.
+        haystack = "\n".join(
+            f"{e.get('target') or ''} {e.get('details') or ''}".lower()
+            for e in entries
+        )
+
+        unsupported: list[str] = []
+        for f in claimed_true:
+            tokens = per_schema.get(f) or _DEFAULT_EVIDENCE_TOKENS.get(f)
+            if not tokens:
+                continue  # no evidence rule for this field — skip
+            tokens_lower = [t.lower() for t in tokens]
+            if not any(t in haystack for t in tokens_lower):
+                unsupported.append(f)
+
+        if unsupported:
+            sample_tokens = {
+                f: (per_schema.get(f) or _DEFAULT_EVIDENCE_TOKENS.get(f) or [])[:3]
+                for f in unsupported
+            }
+            return (
+                f"'{art_name}' lazy-true detected for {unsupported}: claimed "
+                f"true but audit_log for this attempt shows NO matching "
+                f"command. Verification flags require ACTUAL work, not just "
+                f"flipping the bool. Examples of expected evidence: "
+                f"{sample_tokens}. Run the verification command via the "
+                f"shell tool, then emit true. If the check genuinely fails, "
+                f"emit false and report the blocker — this step has not "
+                f"completed."
+            )
+
+    return None
 
 
 def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str]:
@@ -1122,6 +1310,26 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
             )
         else:
             is_valid, error_msg = validate_artifact_schema(output_value, artifact_schema)
+        if is_valid and os.environ.get("LAZY_TRUE_EVIDENCE_CHECK") == "1":
+            # Lazy-true detection: agent claimed a verification flag is true
+            # but the audit_log shows no actual verification command ran.
+            # Mission 57 task 4458 (2026-04-30): emitted
+            # ``health_check_verified: true`` with zero curl in audit_log
+            # because constrained decoding had been forcing the bool. Even
+            # without const, small models still flip on retry pressure.
+            # Gated by env var while the token lists get validated against
+            # real successful missions — false positives would stall
+            # legitimate work. Flip the flag to observe behavior, then
+            # decide whether to make it default-on.
+            try:
+                evidence_err = await _check_truthy_evidence(
+                    task, output_value, artifact_schema
+                )
+                if evidence_err:
+                    is_valid = False
+                    error_msg = evidence_err
+            except Exception as e:
+                logger.debug(f"[Workflow Hook] Evidence check skipped: {e}")
         if not is_valid:
             attempts = task.get("worker_attempts", 0)
             logger.warning(

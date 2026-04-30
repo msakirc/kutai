@@ -298,6 +298,7 @@ class LLMDispatcher:
                 await self._record_pick(
                     pick=pick, task=task, category=category,
                     success=False, error_category="raw_exception",
+                    agent_type=agent_type, difficulty=difficulty,
                 )
                 raise
         finally:
@@ -307,6 +308,7 @@ class LLMDispatcher:
             await self._record_pick(
                 pick=pick, task=task, category=category,
                 success=True, error_category="",
+                agent_type=agent_type, difficulty=difficulty,
             )
             return self._result_to_dict(result, model)
 
@@ -320,6 +322,7 @@ class LLMDispatcher:
         await self._record_pick(
             pick=pick, task=task, category=category,
             success=False, error_category=last_category,
+            agent_type=agent_type, difficulty=difficulty,
         )
 
         if not result.retryable or len(failures) >= max_recursion:
@@ -393,6 +396,8 @@ class LLMDispatcher:
         category: CallCategory,
         success: bool,
         error_category: str = "",
+        agent_type: str = "",
+        difficulty: int | None = None,
     ) -> None:
         """Fire-and-forget pick_log write. Never propagates errors."""
         try:
@@ -415,6 +420,8 @@ class LLMDispatcher:
                 success=success,
                 error_category=error_category,
                 provider=("local" if getattr(model, "is_local", False) else (getattr(model, "provider", "local") or "local")),
+                agent_type=agent_type,
+                difficulty=difficulty,
             )
         except Exception as e:  # noqa: BLE001 — telemetry must never break dispatch
             logger.debug("pick_log record failed: %s", e)

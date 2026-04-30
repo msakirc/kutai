@@ -970,7 +970,7 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
                                 except OSError:
                                     pass
                             break
-                        if len(file_content) > 200:
+                        if len(file_content) > 100:
                             file_parts.append(file_content)
                             logger.info(
                                 f"[Workflow Hook] Found artifact '{name}' "

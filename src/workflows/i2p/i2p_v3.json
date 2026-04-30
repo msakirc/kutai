@@ -4294,7 +4294,8 @@
             "project_path",
             "dependencies_installed",
             "health_check_verified"
-          ]
+          ],
+          "must_be_true": ["dependencies_installed", "health_check_verified"]
         }
       }
     },
@@ -4352,7 +4353,8 @@
           "required_fields": [
             "client_path",
             "connection_verified"
-          ]
+          ],
+          "must_be_true": ["connection_verified"]
         },
         "migration_system": {
           "type": "object",
@@ -4406,7 +4408,8 @@
             "project_path",
             "dependencies_installed",
             "dev_server_verified"
-          ]
+          ],
+          "must_be_true": ["dependencies_installed", "dev_server_verified"]
         }
       }
     },
@@ -4783,7 +4786,8 @@
           "required_fields": [
             "deployed",
             "health_check_passed"
-          ]
+          ],
+          "must_be_true": ["health_check_passed"]
         }
       },
       "context": {}
@@ -4817,7 +4821,8 @@
           "required_fields": [
             "checks",
             "all_passed"
-          ]
+          ],
+          "must_be_true": ["all_passed"]
         }
       },
       "context": {}
@@ -5070,7 +5075,8 @@
             "sprint_id_completed",
             "features_completed",
             "velocity_ratio"
-          ]
+          ],
+          "must_be_true": ["sprint_id_completed", "features_completed"]
         }
       },
       "context": {}
@@ -5366,7 +5372,8 @@
           "required_fields": [
             "optimizations_applied",
             "before_after_metrics"
-          ]
+          ],
+          "must_be_true": ["optimizations_applied"]
         }
       },
       "context": {
@@ -5446,7 +5453,8 @@
           "required_fields": [
             "fixes_applied",
             "verified"
-          ]
+          ],
+          "must_be_true": ["fixes_applied"]
         }
       },
       "context": {
@@ -5827,7 +5835,8 @@
           "type": "object",
           "required_fields": [
             "headers_configured"
-          ]
+          ],
+          "must_be_true": ["headers_configured"]
         }
       },
       "context": {
@@ -5946,7 +5955,8 @@
           "required_fields": [
             "fixes_applied",
             "remaining_issues"
-          ]
+          ],
+          "must_be_true": ["fixes_applied"]
         }
       },
       "context": {
@@ -5983,7 +5993,8 @@
           "required_fields": [
             "critical_count",
             "all_resolved"
-          ]
+          ],
+          "must_be_true": ["all_resolved"]
         },
         "security_audit_report": {
           "type": "markdown",
@@ -6804,7 +6815,8 @@
           "required_fields": [
             "data_seeded",
             "verified"
-          ]
+          ],
+          "must_be_true": ["data_seeded"]
         }
       },
       "context": {}
@@ -6935,7 +6947,8 @@
             "ssl_grade",
             "headers_configured",
             "waf_active"
-          ]
+          ],
+          "must_be_true": ["headers_configured"]
         },
         "email_deliverability_results": {
           "type": "object",
@@ -7250,7 +7263,8 @@
             "deployed",
             "health_check_passed",
             "smoke_tests_passed"
-          ]
+          ],
+          "must_be_true": ["health_check_passed", "smoke_tests_passed"]
         }
       },
       "context": {}
@@ -7917,7 +7931,8 @@
           "required_fields": [
             "advisories_reviewed",
             "patches_applied"
-          ]
+          ],
+          "must_be_true": ["patches_applied"]
         }
       },
       "context": {}

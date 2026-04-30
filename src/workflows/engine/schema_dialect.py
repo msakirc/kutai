@@ -63,12 +63,27 @@ def _normalize_rule(rule: Any) -> Any:
         # Legacy shape with required_fields list of strings. Pre-E1 had no
         # per-field type info — defaulting to ``string`` was wrong (rejected
         # legitimate arrays / numbers). Use empty rule = presence-only check.
+        # ``must_be_true`` is the legacy hook for verification flags
+        # (``dependencies_installed``, ``health_check_passed``, etc.) — fields
+        # listed here become ``{type: boolean, equals: true}`` instead of the
+        # default presence-only check, so the validator rejects ``false``
+        # self-reports without a full schema migration.
         legacy = rule.get("required_fields")
         if isinstance(legacy, list):
-            normalized = {k: v for k, v in rule.items() if k != "required_fields"}
-            normalized["fields"] = {
-                f: {} for f in legacy if isinstance(f, str)
+            must_true = set(rule.get("must_be_true") or [])
+            normalized = {
+                k: v for k, v in rule.items()
+                if k not in ("required_fields", "must_be_true")
             }
+            built: dict[str, dict] = {}
+            for f in legacy:
+                if not isinstance(f, str):
+                    continue
+                built[f] = (
+                    {"type": "boolean", "equals": True}
+                    if f in must_true else {}
+                )
+            normalized["fields"] = built
             return normalized
         return rule
 
@@ -194,6 +209,20 @@ def validate_value(rule: dict, value: Any, path: str = "") -> Optional[str]:
     if rtype == "boolean":
         if not isinstance(value, bool):
             return f"{path or '<root>'}: expected boolean, got {type(value).__name__}"
+        if "equals" in rule and value != rule["equals"]:
+            # Didactic error: small models tend to flip the bool on retry
+            # without actually doing the verification. Spell out the
+            # requirement so the retry prompt steers toward real work.
+            if rule["equals"] is True:
+                return (
+                    f"{path or '<root>'}: must be true — this is a "
+                    f"VERIFICATION flag. Do NOT just flip the value. "
+                    f"Actually run the check (start the server, curl the "
+                    f"endpoint, run the test, etc.) and only emit true if "
+                    f"the check succeeds. If you can't verify, the step "
+                    f"genuinely failed; report the blocker, don't fake it."
+                )
+            return f"{path or '<root>'}: expected {rule['equals']!r}, got {value!r}"
         return None
 
     if rtype == "markdown":
@@ -266,6 +295,14 @@ def translate_rule(rule: dict) -> Optional[dict]:
     if rtype == "number":
         return {"type": "number"}
     if rtype == "boolean":
+        # NOTE: ``equals`` is intentionally NOT translated to JSON Schema
+        # ``const``. Forcing the token at decode time made small models
+        # fabricate ``true`` for verification flags they never actually
+        # checked (mission 57 task 4458 2026-04-30: agent emitted
+        # ``health_check_verified: true`` with zero curl in audit_log).
+        # ``equals`` stays a post-emit validator constraint only — the
+        # model is free to emit ``false``, validator rejects it, retry
+        # prompt feedback steers the agent toward real verification.
         return {"type": "boolean"}
 
     # markdown / unknown — not constrainable.
@@ -311,6 +348,8 @@ def make_example(rule: dict) -> Any:
     if rtype == "number":
         return 0
     if rtype == "boolean":
+        if "equals" in rule and isinstance(rule["equals"], bool):
+            return rule["equals"]
         return False
     if rtype == "markdown":
         return "..."

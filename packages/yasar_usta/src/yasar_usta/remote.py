@@ -127,6 +127,12 @@ async def start_claude_remote(
             )
             kwargs["close_fds"] = True
 
+        # Pipe stdin so we can answer the "Enable Remote Control? (y/n)"
+        # prompt that fires after a Claude CLI update or fresh trust state.
+        # Without a real stdin, the bun runtime read() raises UV_EBADF and
+        # the process exits before producing a session URL.
+        kwargs["stdin"] = _sp.PIPE
+
         proc = _sp.Popen(
             [claude_cmd, "remote-control",
              "--name", name,
@@ -134,6 +140,12 @@ async def start_claude_remote(
             cwd=cwd,
             **kwargs,
         )
+        try:
+            proc.stdin.write(b"y\n")
+            proc.stdin.flush()
+            proc.stdin.close()
+        except Exception as exc:
+            logger.warning("stdin auto-accept write failed: %s", exc)
     except FileNotFoundError:
         logger.warning("claude command not found at %s", claude_cmd)
         if out_fh:

@@ -128,7 +128,7 @@ def _make_keyboard(rows: list[list[str]], resize_keyboard: bool = True, **kwargs
 
 REPLY_KEYBOARD = _make_keyboard([
     ["⚡ Hizmet", "🛒 Alışveriş", "📋 Listem"],
-    ["🎯 Görevler", "⚙️ Sistem"],
+    ["🎯 Görevler", "📬 İş Kuyruğu", "⚙️ Sistem"],
 ])
 
 KB_HIZMET = _make_keyboard([
@@ -148,7 +148,7 @@ KB_LISTEM = _make_keyboard([
 ])
 
 KB_GOREVLER = _make_keyboard([
-    ["🎯 Yeni Görev", "📬 İş Kuyruğu", "⏰ Zamanla"],
+    ["🎯 Yeni Görev", "⏰ Zamanla"],
     ["🔙 Geri"],
 ])
 
@@ -2051,10 +2051,18 @@ class TelegramInterface:
 
         msg = "📬 Task Queue:\n\n"
         if processing:
+            from src.core.in_flight import get_task_entry
             msg += "⚙️ In Progress:\n"
             for t in processing:
                 agent = t.get('agent_type', '?')
-                msg += f"  #{t['id']} [{agent}] {t['title'][:50]}\n"
+                entry = get_task_entry(t['id'])
+                if entry is not None:
+                    where = "local" if entry.is_local else (entry.provider or "?")
+                    model = entry.model or "?"
+                    tag = f"{agent}→{where}:{model}"
+                else:
+                    tag = f"{agent}→?"
+                msg += f"  #{t['id']} [{tag}] {t['title'][:50]}\n"
             msg += "\n"
         if ready:
             msg += "⏳ Ready:\n"

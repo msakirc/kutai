@@ -67,6 +67,17 @@ def in_flight_snapshot() -> list:
     return list(_task_slots.values()) + list(_call_entries.values())
 
 
+def get_task_entry(task_id: int):
+    """Return the in-flight entry for a task, or None if no slot is held.
+
+    Used by /queue UI to show which model/provider is currently running each
+    processing task. Reads the local task-slot dict directly; no await.
+    """
+    if task_id is None:
+        return None
+    return _task_slots.get(int(task_id))
+
+
 def is_task_in_flight(task_id: int) -> bool:
     """Return True if the dispatcher is currently running this task.
 

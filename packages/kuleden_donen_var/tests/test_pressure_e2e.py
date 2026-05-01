@@ -250,6 +250,45 @@ def test_synthetic_429_backoff_writes_through_to_matrix():
     assert after.scalar < cold.scalar
 
 
+def test_post_429_cooldown_holds_remaining_at_zero():
+    """After a 429, sliding-window decay can free a slot in ~60s while
+    the provider is still throttling — selector picks the model again,
+    429 fires again, loop. Post-429 cooldown property forces
+    rpm_remaining=0 for 60s regardless of sliding-window math.
+
+    Production triage 2026-05-01: groq/llama-4-scout 1276 fails / 45
+    success (3%), groq/llama-3.3-70b 811/2 (0%) — selector thrashed
+    on marginal capacity because S1 only fired -0.89 (above the
+    strict -1.0 floor) once the oldest timestamp aged out."""
+    kdv = KuledenDonenVar(KuledenConfig())
+    kdv.register("groq/scout", "groq", rpm=30, tpm=30_000)
+    state = kdv._rate_limiter.model_limits["groq/scout"]
+    m = _FakeModel(name="groq/scout", provider="groq")
+
+    # Simulate burst that produced 429: most recent request long enough
+    # ago that sliding window says 1/30 used → frac=0.97 (would normally
+    # admit), but provider just rate-limited.
+    state.record_429()
+    assert state.in_post_429_cooldown is True
+    assert state.rpm_remaining == 0, (
+        f"cooldown must clamp rpm_remaining to 0; got {state.rpm_remaining}"
+    )
+
+    # Pressure must reflect the clamp. S1 fires hard depletion.
+    pressure = _pressure(kdv, m, difficulty=5)
+    assert pressure.signals["S1"] <= -0.95, (
+        f"post-429 cooldown must drive S1 to depletion floor; "
+        f"got {pressure.signals}"
+    )
+
+    # Simulate cooldown expiry — flip the saved timestamp into the past.
+    state._last_429_at = time.time() - 65.0
+    assert state.in_post_429_cooldown is False
+    # rpm_remaining now reflects sliding window (empty here, but rpm_limit
+    # was adapted down by record_429's 20% cut).
+    assert state.rpm_remaining == state.rpm_limit > 0
+
+
 def test_consecutive_failures_propagate_to_s10():
     """consecutive_failures kwarg flows from snapshot.cloud[provider]
     state through pressure_for into S10."""

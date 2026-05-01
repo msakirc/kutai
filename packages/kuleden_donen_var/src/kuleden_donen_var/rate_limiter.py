@@ -203,10 +203,36 @@ class RateLimitState:
     # (rpm_limit - current_rpm). When neither is available, fall back to
     # rpm_limit so a never-called model still reports SOMETHING — the
     # full bucket — instead of None.
+    # Post-429 cooldown window: how long after a 429 hit we keep
+    # reporting 0 remaining regardless of sliding-window recovery.
+    # Without this, the sliding window decays the oldest timestamp and
+    # frees a slot ~60s after the burst — selector sees frac=1/30=0.033,
+    # S1 fires -0.89 (under the strict -1.0 floor), threshold at high
+    # urgency lets the model through, and we 429 again. Production
+    # triage 2026-05-01: groq/llama-4-scout 1276 fails / 45 success
+    # (3%), groq/llama-3.3 811/2 (0%) — selector kept thrashing on
+    # marginal capacity. 60s matches the typical RPM window, longer
+    # than the keepalive interval, shorter than DLQ retry.
+    POST_429_COOLDOWN_SECONDS: float = 60.0
+
+    @property
+    def in_post_429_cooldown(self) -> bool:
+        """True if a 429 fired within the cooldown window. Used to gate
+        rpm_remaining at 0 even when the sliding window has decayed
+        enough to suggest free capacity."""
+        if self._last_429_at <= 0:
+            return False
+        return (time.time() - self._last_429_at) < self.POST_429_COOLDOWN_SECONDS
+
     @property
     def rpm_remaining(self) -> int | None:
         if self.rpm_limit <= 0:
             return None
+        # Hard cooldown after a recent 429 — overrides both fresh
+        # provider headers and sliding-window math. The provider just
+        # told us we're over; sliding-window slot recovery is misleading.
+        if self.in_post_429_cooldown:
+            return 0
         now = time.time()
         if (
             self._header_rpm_remaining is not None

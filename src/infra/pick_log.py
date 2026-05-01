@@ -39,6 +39,14 @@ async def write_pick_log_row(
     Never raises. If the row cannot be persisted (missing DB, schema
     mismatch, whatever) it logs a warning and returns.
     """
+    # Derive `outcome` (TEXT semantic label) from success+error_category.
+    # success → "success"; failure → error_category if non-empty, else
+    # generic "failed". Lets queries filter / group by outcome without
+    # joining the int success column with the string error_category.
+    # Production triage 2026-05-01: outcome column was added to schema
+    # but writer never populated it — every row had outcome=NULL,
+    # making pool-pressure analytics joins blind to actual results.
+    outcome = "success" if success else (error_category or "failed")
     try:
         from src.infra.db import connect_aux
         async with connect_aux(db_path) as db:
@@ -46,8 +54,8 @@ async def write_pick_log_row(
                 "INSERT INTO model_pick_log "
                 "(task_name, agent_type, difficulty, picked_model, picked_score, "
                 " call_category, candidates_json, snapshot_summary, success, "
-                " error_category, provider) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " error_category, provider, outcome) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     task_name,
                     agent_type or None,
@@ -60,6 +68,7 @@ async def write_pick_log_row(
                     1 if success else 0,
                     error_category,
                     provider,
+                    outcome,
                 ),
             )
             await db.commit()

@@ -17,6 +17,17 @@ logger = get_logger("infra.db")
 # same connection, and a single writer avoids contention.
 
 _db_connection: aiosqlite.Connection | None = None
+# Global lock guarding explicit BEGIN/COMMIT regions. aiosqlite serialises
+# individual SQL statements via its worker thread, but transactions span
+# multiple awaits — if coroutine A is between its BEGIN and COMMIT, any
+# concurrent BEGIN from B raises sqlite3.OperationalError "cannot start
+# a transaction within a transaction" (single connection, single open
+# tx). Production triage 2026-05-01: burst of on_task_finished calls
+# fired add_task / add_subtasks_atomically / insert_tasks_atomically
+# concurrently; one batch's BEGIN landed while another's was still open.
+# All callers must acquire this lock for the duration of an explicit
+# BEGIN ... COMMIT block.
+_tx_lock: asyncio.Lock = asyncio.Lock()
 
 
 async def get_db() -> aiosqlite.Connection:
@@ -28,7 +39,7 @@ async def get_db() -> aiosqlite.Connection:
         # Enable WAL for concurrent reads + better write performance
         await _db_connection.execute("PRAGMA journal_mode=WAL")
         await _db_connection.execute("PRAGMA synchronous=NORMAL")
-        await _db_connection.execute("PRAGMA busy_timeout=5000")
+        await _db_connection.execute("PRAGMA busy_timeout=60000")
     return _db_connection
 
 
@@ -946,67 +957,68 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
     # race conditions between concurrent async coroutines.
     task_hash = compute_task_hash(title, description, agent_type, mission_id, parent_task_id)
 
-    try:
-        await db.execute("BEGIN IMMEDIATE")
+    async with _tx_lock:
+        try:
+            await db.execute("BEGIN IMMEDIATE")
 
-        cursor = await db.execute(
-            """SELECT id, title, status, started_at FROM tasks
-               WHERE task_hash = ?
-                 AND status IN ('pending', 'processing')
-               LIMIT 1""",
-            (task_hash,)
-        )
-        duplicate = await cursor.fetchone()
-        if duplicate:
-            dup = dict(duplicate)
-            # If the duplicate is stuck in 'processing' for >10 minutes,
-            # reset it instead of blocking the new task creation.
-            if dup["status"] == "processing" and dup.get("started_at"):
-                stuck_cursor = await db.execute(
-                    """SELECT 1 FROM tasks
-                       WHERE id = ? AND status = 'processing'
-                         AND started_at < datetime('now', '-10 minutes')""",
-                    (dup["id"],)
-                )
-                if await stuck_cursor.fetchone():
-                    logger.warning(
-                        f"Task dedup: duplicate #{dup['id']} stuck in "
-                        f"processing — resetting to pending"
-                    )
-                    await db.execute(
-                        "UPDATE tasks SET status = 'pending', "
-                        "worker_attempts = COALESCE(worker_attempts, 0) + 1 "
-                        "WHERE id = ?",
+            cursor = await db.execute(
+                """SELECT id, title, status, started_at FROM tasks
+                   WHERE task_hash = ?
+                     AND status IN ('pending', 'processing')
+                   LIMIT 1""",
+                (task_hash,)
+            )
+            duplicate = await cursor.fetchone()
+            if duplicate:
+                dup = dict(duplicate)
+                # If the duplicate is stuck in 'processing' for >10 minutes,
+                # reset it instead of blocking the new task creation.
+                if dup["status"] == "processing" and dup.get("started_at"):
+                    stuck_cursor = await db.execute(
+                        """SELECT 1 FROM tasks
+                           WHERE id = ? AND status = 'processing'
+                             AND started_at < datetime('now', '-10 minutes')""",
                         (dup["id"],)
                     )
-                    await db.commit()
-                    return dup["id"]
-            logger.info(
-                f"⏭️ Task dedup: '{title[:50]}' matches pending task "
-                f"#{dup['id']} — skipping creation"
-            )
-            await db.execute("ROLLBACK")
-            return None
+                    if await stuck_cursor.fetchone():
+                        logger.warning(
+                            f"Task dedup: duplicate #{dup['id']} stuck in "
+                            f"processing — resetting to pending"
+                        )
+                        await db.execute(
+                            "UPDATE tasks SET status = 'pending', "
+                            "worker_attempts = COALESCE(worker_attempts, 0) + 1 "
+                            "WHERE id = ?",
+                            (dup["id"],)
+                        )
+                        await db.commit()
+                        return dup["id"]
+                logger.info(
+                    f"⏭️ Task dedup: '{title[:50]}' matches pending task "
+                    f"#{dup['id']} — skipping creation"
+                )
+                await db.execute("ROLLBACK")
+                return None
 
-        cursor = await db.execute(
-            """INSERT INTO tasks
-               (mission_id, parent_task_id, title, description, agent_type,
-                tier, priority, requires_approval, depends_on, context,
-                task_hash)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (mission_id, parent_task_id, title, description, agent_type,
-             tier, priority, requires_approval,
-             json.dumps(depends_on or []), json.dumps(context or {}),
-             task_hash)
-        )
-        await db.commit()
-        return cursor.lastrowid
-    except Exception:
-        try:
-            await db.execute("ROLLBACK")
+            cursor = await db.execute(
+                """INSERT INTO tasks
+                   (mission_id, parent_task_id, title, description, agent_type,
+                    tier, priority, requires_approval, depends_on, context,
+                    task_hash)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (mission_id, parent_task_id, title, description, agent_type,
+                 tier, priority, requires_approval,
+                 json.dumps(depends_on or []), json.dumps(context or {}),
+                 task_hash)
+            )
+            await db.commit()
+            return cursor.lastrowid
         except Exception:
-            pass
-        raise
+            try:
+                await db.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
 
 async def get_ready_tasks(limit=5):
     """Get pending tasks whose dependencies are all completed.
@@ -1380,58 +1392,59 @@ async def add_subtasks_atomically(
     db = await get_db()
     created_ids: list[int] = []
 
-    # aiosqlite auto-commits by default; disable temporarily for
-    # explicit transaction control.
-    old_isolation = db._conn.isolation_level if db._conn else None
-    try:
-        await db.execute("BEGIN")
+    async with _tx_lock:
+        try:
+            await db.execute("BEGIN")
 
-        for st in subtasks:
-            title = st.get("title", "Subtask")
-            description = st.get("description", "")
-            agent_type = st.get("agent_type", "executor")
-            task_hash = compute_task_hash(
-                title, description, agent_type, mission_id, parent_task_id
-            )
+            for st in subtasks:
+                title = st.get("title", "Subtask")
+                description = st.get("description", "")
+                agent_type = st.get("agent_type", "executor")
+                task_hash = compute_task_hash(
+                    title, description, agent_type, mission_id, parent_task_id
+                )
 
-            # Dedup check within transaction
-            cursor = await db.execute(
-                """SELECT id FROM tasks
-                   WHERE task_hash = ? AND status IN ('pending', 'processing')
-                   LIMIT 1""",
-                (task_hash,)
-            )
-            dup = await cursor.fetchone()
-            if dup:
-                created_ids.append(-1)
-                continue
+                # Dedup check within transaction
+                cursor = await db.execute(
+                    """SELECT id FROM tasks
+                       WHERE task_hash = ? AND status IN ('pending', 'processing')
+                       LIMIT 1""",
+                    (task_hash,)
+                )
+                dup = await cursor.fetchone()
+                if dup:
+                    created_ids.append(-1)
+                    continue
 
-            cursor = await db.execute(
-                """INSERT INTO tasks
-                   (mission_id, parent_task_id, title, description, agent_type,
-                    tier, priority, requires_approval, depends_on, context,
-                    task_hash)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, '{}', ?)""",
-                (mission_id, parent_task_id, title, description, agent_type,
-                 st.get("tier", "auto"), st.get("priority", 5),
-                 json.dumps(st.get("depends_on", [])),
-                 task_hash)
-            )
-            created_ids.append(cursor.lastrowid)
+                cursor = await db.execute(
+                    """INSERT INTO tasks
+                       (mission_id, parent_task_id, title, description, agent_type,
+                        tier, priority, requires_approval, depends_on, context,
+                        task_hash)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, '{}', ?)""",
+                    (mission_id, parent_task_id, title, description, agent_type,
+                     st.get("tier", "auto"), st.get("priority", 5),
+                     json.dumps(st.get("depends_on", [])),
+                     task_hash)
+                )
+                created_ids.append(cursor.lastrowid)
 
-        # Update parent task status (safe: keys are hardcoded above)
-        update_fields = {"status": parent_status}
-        if parent_result is not None:
-            update_fields["result"] = parent_result
-        _validate_columns(update_fields, _TASK_COLUMNS, "tasks")
-        sets = ", ".join(f"{k} = ?" for k in update_fields)
-        values = list(update_fields.values()) + [parent_task_id]
-        await db.execute(f"UPDATE tasks SET {sets} WHERE id = ?", values)
+            # Update parent task status (safe: keys are hardcoded above)
+            update_fields = {"status": parent_status}
+            if parent_result is not None:
+                update_fields["result"] = parent_result
+            _validate_columns(update_fields, _TASK_COLUMNS, "tasks")
+            sets = ", ".join(f"{k} = ?" for k in update_fields)
+            values = list(update_fields.values()) + [parent_task_id]
+            await db.execute(f"UPDATE tasks SET {sets} WHERE id = ?", values)
 
-        await db.commit()
-    except Exception:
-        await db.execute("ROLLBACK")
-        raise
+            await db.commit()
+        except Exception:
+            try:
+                await db.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
 
     return created_ids
 
@@ -1455,55 +1468,59 @@ async def insert_tasks_atomically(
     db = await get_db()
     created_ids: list[int] = []
 
-    try:
-        await db.execute("BEGIN")
+    async with _tx_lock:
+        try:
+            await db.execute("BEGIN")
 
-        seen_hashes: set[str] = set()
+            seen_hashes: set[str] = set()
 
-        for t in tasks:
-            title = t.get("title", "Task")
-            description = t.get("description", "")
-            agent_type = t.get("agent_type", "executor")
-            task_hash = compute_task_hash(
-                title, description, agent_type, mission_id, None
-            )
+            for t in tasks:
+                title = t.get("title", "Task")
+                description = t.get("description", "")
+                agent_type = t.get("agent_type", "executor")
+                task_hash = compute_task_hash(
+                    title, description, agent_type, mission_id, None
+                )
 
-            # Dedup within this batch
-            if task_hash in seen_hashes:
-                created_ids.append(-1)
-                continue
-            seen_hashes.add(task_hash)
+                # Dedup within this batch
+                if task_hash in seen_hashes:
+                    created_ids.append(-1)
+                    continue
+                seen_hashes.add(task_hash)
 
-            # Dedup against existing DB tasks
-            cursor = await db.execute(
-                """SELECT id FROM tasks
-                   WHERE task_hash = ? AND status IN ('pending', 'processing')
-                   LIMIT 1""",
-                (task_hash,)
-            )
-            dup = await cursor.fetchone()
-            if dup:
-                created_ids.append(-1)
-                continue
+                # Dedup against existing DB tasks
+                cursor = await db.execute(
+                    """SELECT id FROM tasks
+                       WHERE task_hash = ? AND status IN ('pending', 'processing')
+                       LIMIT 1""",
+                    (task_hash,)
+                )
+                dup = await cursor.fetchone()
+                if dup:
+                    created_ids.append(-1)
+                    continue
 
-            cursor = await db.execute(
-                """INSERT INTO tasks
-                   (mission_id, parent_task_id, title, description, agent_type,
-                    tier, priority, requires_approval, depends_on, context,
-                    task_hash)
-                   VALUES (?, NULL, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
-                (mission_id, title, description, agent_type,
-                 t.get("tier", "auto"), t.get("priority", 5),
-                 json.dumps(t.get("depends_on", [])),
-                 json.dumps(t.get("context", {})),
-                 task_hash)
-            )
-            created_ids.append(cursor.lastrowid)
+                cursor = await db.execute(
+                    """INSERT INTO tasks
+                       (mission_id, parent_task_id, title, description, agent_type,
+                        tier, priority, requires_approval, depends_on, context,
+                        task_hash)
+                       VALUES (?, NULL, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
+                    (mission_id, title, description, agent_type,
+                     t.get("tier", "auto"), t.get("priority", 5),
+                     json.dumps(t.get("depends_on", [])),
+                     json.dumps(t.get("context", {})),
+                     task_hash)
+                )
+                created_ids.append(cursor.lastrowid)
 
-        await db.commit()
-    except Exception:
-        await db.execute("ROLLBACK")
-        raise
+            await db.commit()
+        except Exception:
+            try:
+                await db.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
 
     return created_ids
 

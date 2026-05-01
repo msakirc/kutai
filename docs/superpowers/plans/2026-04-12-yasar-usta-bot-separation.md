@@ -19,7 +19,7 @@
 
 Add to `.env`:
 ```
-YASAR_USTA_BOT_TOKEN=8624073383:AAGumWfCsRlM06Wg03XeiD9hU35-FmYJWUU
+YASAR_USTA_BOT_TOKEN=<get-from-BotFather>  # e.g. 8624073383:AAG...
 ```
 
 - [ ] **Step 2: Commit**

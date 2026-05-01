@@ -4970,15 +4970,18 @@
         "implementation_backlog": {
           "type": "array",
           "min_items": 1,
-          "item_fields": [
-            "feature_id",
-            "feature_name",
-            "epic_id",
-            "sprint_id",
-            "status",
-            "template_ref",
-            "depends_on_features"
-          ]
+          "items": {
+            "type": "object",
+            "fields": {
+              "feature_id": {},
+              "feature_name": {},
+              "epic_id": {},
+              "sprint_id": {},
+              "status": {},
+              "template_ref": {},
+              "depends_on_features": {"type": "array", "optional": true}
+            }
+          }
         }
       },
       "context": {}
@@ -8428,10 +8431,10 @@
           "artifact_schema": {
             "frontend_page_files": {
               "type": "object",
-              "required_fields": [
-                "page_files",
-                "states_implemented"
-              ]
+              "fields": {
+                "page_files": {},
+                "states_implemented": {"type": "array", "optional": true}
+              }
             }
           }
         },

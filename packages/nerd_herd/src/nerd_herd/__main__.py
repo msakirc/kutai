@@ -49,12 +49,24 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+async def _apply_pragmas(db) -> None:
+    """Apply WAL + 60s busy_timeout to coexist with other writers on kutai.db.
+
+    Inlined here (not imported from src.infra.db) so this subprocess stays
+    package-self-contained.
+    """
+    await db.execute("PRAGMA journal_mode=WAL")
+    await db.execute("PRAGMA synchronous=NORMAL")
+    await db.execute("PRAGMA busy_timeout=60000")
+
+
 async def _load_mode_from_db(db_path: str) -> str:
     """Read current load mode from the load_mode table. Returns 'full' on any error."""
     try:
         import aiosqlite
 
         async with aiosqlite.connect(db_path) as db:
+            await _apply_pragmas(db)
             async with db.execute(
                 "SELECT mode FROM load_mode WHERE id = 1"
             ) as cursor:
@@ -72,6 +84,7 @@ async def _persist_mode(db_path: str, mode: str, auto_managed: bool) -> None:
         import aiosqlite
 
         async with aiosqlite.connect(db_path) as db:
+            await _apply_pragmas(db)
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS load_mode (

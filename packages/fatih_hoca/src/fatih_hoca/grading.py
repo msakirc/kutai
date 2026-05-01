@@ -33,7 +33,8 @@ def grading_perf_score(model_name: str) -> Optional[float]:
     if not path or not os.path.exists(path):
         return None
     try:
-        conn = sqlite3.connect(path)
+        from src.infra.db import connect_aux_sync
+        conn = connect_aux_sync(path)
         try:
             cur = conn.execute(
                 "SELECT total_calls, success_rate FROM model_stats WHERE model = ?",

@@ -59,7 +59,8 @@ async def save(kdv, db_path: str) -> None:
     ))
 
     try:
-        async with aiosqlite.connect(db_path) as db:
+        from src.infra.db import connect_aux
+        async with connect_aux(db_path) as db:
             await db.executemany(
                 "INSERT INTO kdv_state (scope, scope_key, snapshot_json, last_persisted) "
                 "VALUES (?, ?, ?, ?) "
@@ -90,7 +91,8 @@ async def load(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> 
     attempt_count: dict = {}
 
     try:
-        async with aiosqlite.connect(db_path) as db:
+        from src.infra.db import connect_aux
+        async with connect_aux(db_path) as db:
             async with db.execute(
                 "SELECT scope, scope_key, snapshot_json, last_persisted "
                 "FROM kdv_state"
@@ -157,7 +159,9 @@ def load_sync(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> d
     attempt_count: dict = {}
 
     try:
-        with sqlite3.connect(db_path) as conn:
+        from src.infra.db import connect_aux_sync
+        conn = connect_aux_sync(db_path)
+        try:
             cur = conn.execute(
                 "SELECT scope, scope_key, snapshot_json, last_persisted "
                 "FROM kdv_state"
@@ -185,6 +189,8 @@ def load_sync(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> d
                     call_count = dict(decoded.get("call_count", {}))
                     attempt_count = dict(decoded.get("attempt_count", {}))
                     report["meta"] += 1
+        finally:
+            conn.close()
     except Exception as e:  # noqa: BLE001
         logger.warning("kdv state load_sync failed: %s", e)
         return report

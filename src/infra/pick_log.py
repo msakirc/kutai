@@ -40,7 +40,8 @@ async def write_pick_log_row(
     mismatch, whatever) it logs a warning and returns.
     """
     try:
-        async with aiosqlite.connect(db_path) as db:
+        from src.infra.db import connect_aux
+        async with connect_aux(db_path) as db:
             await db.execute(
                 "INSERT INTO model_pick_log "
                 "(task_name, agent_type, difficulty, picked_model, picked_score, "

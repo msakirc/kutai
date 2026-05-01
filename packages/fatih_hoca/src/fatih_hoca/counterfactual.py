@@ -28,7 +28,8 @@ from typing import Any
 
 
 def _load_rows(db_path: str, limit_days: int | None) -> list[dict[str, Any]]:
-    conn = sqlite3.connect(db_path)
+    from src.infra.db import connect_aux_sync
+    conn = connect_aux_sync(db_path)
     conn.row_factory = sqlite3.Row
     q = ("SELECT picked_model, agent_type, difficulty, candidates_json "
          "FROM model_pick_log")
@@ -44,7 +45,8 @@ def _load_rows(db_path: str, limit_days: int | None) -> list[dict[str, Any]]:
 
 def _load_success_map(db_path: str) -> dict[str, float]:
     """model_name → weighted success rate across agent types."""
-    conn = sqlite3.connect(db_path)
+    from src.infra.db import connect_aux_sync
+    conn = connect_aux_sync(db_path)
     try:
         cur = conn.execute(
             "SELECT model, total_calls, success_rate FROM model_stats"

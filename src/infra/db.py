@@ -63,6 +63,63 @@ async def close_db(checkpoint: bool = True) -> None:
         logger.info("Database connection closed", checkpoint=checkpoint)
 
 
+def _apply_pragmas_sync(conn) -> None:
+    """Apply WAL + 60s busy_timeout + synchronous=NORMAL to a sync sqlite3 conn."""
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=60000")
+
+
+async def _apply_pragmas(db: aiosqlite.Connection) -> None:
+    """Apply WAL + 60s busy_timeout + synchronous=NORMAL to an aiosqlite conn."""
+    await db.execute("PRAGMA journal_mode=WAL")
+    await db.execute("PRAGMA synchronous=NORMAL")
+    await db.execute("PRAGMA busy_timeout=60000")
+
+
+def connect_aux(db_path):
+    """Async context manager wrapping aiosqlite.connect with WAL pragmas applied.
+
+    Use for any DB write/read OUTSIDE the get_db() singleton. Ensures every
+    auxiliary connection respects the 60s busy_timeout and WAL journal mode
+    so it cannot fall back to default 0ms (immediate "database is locked").
+
+    Usage:
+        async with connect_aux(DB_PATH) as db:
+            await db.execute(...)
+            await db.commit()
+    """
+    class _Ctx:
+        def __init__(self, p):
+            self._p = p
+            self._db = None
+
+        async def __aenter__(self):
+            self._db = await aiosqlite.connect(self._p)
+            await _apply_pragmas(self._db)
+            return self._db
+
+        async def __aexit__(self, exc_type, exc, tb):
+            try:
+                await self._db.close()
+            finally:
+                self._db = None
+
+    return _Ctx(db_path)
+
+
+def connect_aux_sync(db_path, timeout: float = 60.0):
+    """Sync analogue of connect_aux for sqlite3 (not aiosqlite) callsites.
+
+    Returns a sqlite3.Connection with WAL pragmas applied. Caller is
+    responsible for calling .close() (use try/finally or contextlib).
+    """
+    import sqlite3
+    conn = sqlite3.connect(db_path, timeout=timeout)
+    _apply_pragmas_sync(conn)
+    return conn
+
+
 async def init_db():
     db = await get_db()
 

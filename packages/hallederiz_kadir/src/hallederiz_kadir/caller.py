@@ -480,7 +480,14 @@ async def call(
                 "kdv refusal | model=%s reason=%s scope=%s wait=%.1fs",
                 model.name, why or "rate_limit", scope, wait_secs,
             )
-            if wait_secs > 0:
+            # Bounded wait: orchestrator's no-progress watchdog kills tasks
+            # at 300s. Daily-quota reset can be 86400s; even minute-window
+            # waits stack up. Cap inline sleep at 90s — anything longer
+            # returns retryable so dispatcher reselects another model.
+            # Production triage 2026-05-01: task #7353 wedged 300s on a
+            # KDV refusal sleep, watchdog killed it.
+            MAX_INLINE_SLEEP = 90.0
+            if 0 < wait_secs <= MAX_INLINE_SLEEP:
                 await asyncio.sleep(wait_secs)
             else:
                 return CallError(

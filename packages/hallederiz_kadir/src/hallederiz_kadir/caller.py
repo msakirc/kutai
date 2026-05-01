@@ -104,7 +104,7 @@ def _kdv_record_failure(litellm_name, provider, reason):
 
 def _get_sampling_params(task, sampling_overrides=None):
     try:
-        from src.models.model_profiles import get_sampling_params
+        from fatih_hoca.profiles import get_sampling_params
         return get_sampling_params(task, sampling_overrides=sampling_overrides)
     except Exception:
         return None

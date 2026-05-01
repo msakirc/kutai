@@ -221,8 +221,7 @@ class TestSwapStartedAtTimestamp(unittest.TestCase):
         with patch.object(d, "_swap_version", return_value=100.0), \
              patch.object(d, "_get_loaded_model_name", return_value=None), \
              patch.object(d, "_should_wait_for_cold_start", return_value=False), \
-             patch.object(d, "_exclude_all_local", side_effect=_track_exclude_all), \
-             patch("src.core.router.call_model", mock_call):
+             patch.object(d, "_exclude_all_local", side_effect=_track_exclude_all):
             from src.core.router import ModelRequirements
             reqs = ModelRequirements(task="classifier", difficulty=2)
             run_async(d._route_overhead(reqs, [{"role": "user", "content": "x"}], None))
@@ -249,8 +248,7 @@ class TestSwapStartedAtTimestamp(unittest.TestCase):
              patch.object(d, "_get_loaded_model_name", return_value="model-a"), \
              patch.object(d, "_should_wait_for_cold_start", return_value=False), \
              patch.object(d, "_exclude_unloaded_local",
-                          side_effect=_track_exclude_unloaded), \
-             patch("src.core.router.call_model", mock_call):
+                          side_effect=_track_exclude_unloaded):
             from src.core.router import ModelRequirements
             reqs = ModelRequirements(task="classifier", difficulty=2)
             run_async(d._route_overhead(reqs, [{"role": "user", "content": "x"}], None))

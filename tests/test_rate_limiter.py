@@ -3,7 +3,7 @@ import sys, os, unittest, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.models.rate_limiter import RateLimitState, RateLimitManager
-from src.models.header_parser import RateLimitSnapshot
+from kuleden_donen_var.header_parser import RateLimitSnapshot
 
 
 class TestRateLimitStateHeaders(unittest.TestCase):

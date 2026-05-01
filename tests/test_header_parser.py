@@ -2,7 +2,7 @@
 import sys, os, unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.models.header_parser import RateLimitSnapshot, parse_rate_limit_headers
+from kuleden_donen_var.header_parser import RateLimitSnapshot, parse_rate_limit_headers
 
 
 class TestRateLimitSnapshot(unittest.TestCase):

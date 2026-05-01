@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 class TestQueueProfile(unittest.TestCase):
 
     def test_queue_profile_dataclass(self):
-        from src.models.quota_planner import QueueProfile
+        from fatih_hoca.requirements import QueueProfile
         qp = QueueProfile()
         self.assertEqual(qp.total_tasks, 0)
         self.assertEqual(qp.max_difficulty, 0)
@@ -34,7 +34,7 @@ class TestQueueProfile(unittest.TestCase):
         self.assertEqual(qp.cloud_only_count, 0)
 
     def test_set_queue_profile_updates_max_difficulty(self):
-        from src.models.quota_planner import QuotaPlanner, QueueProfile
+        from fatih_hoca.requirements import QuotaPlanner, QueueProfile
         qp = QuotaPlanner()
         profile = QueueProfile(total_tasks=5, max_difficulty=9)
         qp.set_queue_profile(profile)
@@ -42,7 +42,7 @@ class TestQueueProfile(unittest.TestCase):
 
     def test_cloud_only_tasks_tighten_threshold(self):
         """When ≥3 cloud-only tasks are pending, threshold should be ≥6."""
-        from src.models.quota_planner import QuotaPlanner, QueueProfile
+        from fatih_hoca.requirements import QuotaPlanner, QueueProfile
         qp = QuotaPlanner()
         qp._paid_utilization = {"gemini": 20.0}
         qp._paid_reset_in = {"gemini": 3600.0}
@@ -60,7 +60,7 @@ class TestQueueProfile(unittest.TestCase):
 
     def test_thinking_tasks_raise_threshold(self):
         """When ≥2 thinking tasks and moderate utilization, threshold ≥6."""
-        from src.models.quota_planner import QuotaPlanner, QueueProfile
+        from fatih_hoca.requirements import QuotaPlanner, QueueProfile
         qp = QuotaPlanner()
         qp._paid_utilization = {"gemini": 50.0}  # moderate util
         qp._paid_reset_in = {"gemini": 3600.0}
@@ -76,7 +76,7 @@ class TestQueueProfile(unittest.TestCase):
 
     def test_no_special_tasks_normal_threshold(self):
         """Queue with no vision/thinking/cloud_only: threshold from normal rules."""
-        from src.models.quota_planner import QuotaPlanner, QueueProfile
+        from fatih_hoca.requirements import QuotaPlanner, QueueProfile
         qp = QuotaPlanner()
         qp._paid_utilization = {"gemini": 10.0}
         qp._paid_reset_in = {"gemini": 3600.0}
@@ -89,7 +89,7 @@ class TestQueueProfile(unittest.TestCase):
 
     def test_queue_profile_in_status(self):
         """get_status() should include queue_profile fields."""
-        from src.models.quota_planner import QuotaPlanner, QueueProfile
+        from fatih_hoca.requirements import QuotaPlanner, QueueProfile
         qp = QuotaPlanner()
         qp.set_queue_profile(QueueProfile(
             total_tasks=10, cloud_only_count=2,

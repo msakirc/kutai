@@ -731,74 +731,9 @@ def test_dispatcher_has_no_on_model_swap():
 # CONTRACT TESTS — module-boundary invariants
 #
 # Purpose: catch regressions at seams where past bugs have slipped through
-# (clarify-field dispatch, call_model legacy shim, ensure_model return-type
+# (clarify-field dispatch, ensure_model return-type
 # drift). These pin the contracts at router ↔ dispatcher ↔ local_model_manager.
 # ═══════════════════════════════════════════════════════════════════════════════
-
-
-class TestCallModelLegacyShim:
-    """src.core.router.call_model → dispatcher.request forwarding contract."""
-
-    @pytest.mark.asyncio
-    async def test_call_model_forwards_to_dispatcher_request(self):
-        """call_model must forward kwargs into dispatcher.request with MAIN_WORK."""
-        from src.core.router import call_model
-        from src.core.llm_dispatcher import CallCategory
-        from fatih_hoca.requirements import ModelRequirements
-
-        reqs = ModelRequirements(
-            task="coder",
-            agent_type="coder",
-            difficulty=7,
-            needs_thinking=True,
-            needs_function_calling=True,
-            local_only=False,
-            prefer_speed=False,
-            prefer_quality=True,
-            prefer_local=False,
-            estimated_input_tokens=100,
-            estimated_output_tokens=200,
-        )
-
-        captured = {}
-        async def fake_request(self_, **kwargs):
-            captured.update(kwargs)
-            return {"content": "ok"}
-
-        with patch("src.core.llm_dispatcher.LLMDispatcher.request",
-                   new=fake_request):
-            out = await call_model(reqs, messages=[{"role": "user", "content": "hi"}],
-                                    tools=[{"name": "x"}])
-
-        assert out == {"content": "ok"}
-        assert captured["category"] == CallCategory.MAIN_WORK
-        assert captured["task"] == "coder"
-        assert captured["agent_type"] == "coder"
-        assert captured["difficulty"] == 7
-        assert captured["needs_thinking"] is True
-        assert captured["needs_function_calling"] is True
-        assert captured["estimated_input_tokens"] == 100
-        assert captured["estimated_output_tokens"] == 200
-        assert captured["messages"] == [{"role": "user", "content": "hi"}]
-        assert captured["tools"] == [{"name": "x"}]
-
-    @pytest.mark.asyncio
-    async def test_call_model_propagates_local_only(self):
-        """local_only must propagate into dispatcher.request."""
-        from src.core.router import call_model
-        from fatih_hoca.requirements import ModelRequirements
-
-        reqs = ModelRequirements(task="router", local_only=True)
-
-        captured = {}
-        async def fake_request(self_, **kwargs):
-            captured.update(kwargs)
-            return {}
-
-        with patch("src.core.llm_dispatcher.LLMDispatcher.request",
-                   new=fake_request):
-            await call_model(reqs, messages=[])
-        assert captured["local_only"] is True
 
 
 class TestEnsureLocalModelContract:

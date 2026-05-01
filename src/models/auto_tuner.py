@@ -12,7 +12,7 @@ import time
 from typing import Any
 
 from src.infra.logging_config import get_logger
-from src.models.capabilities import TASK_PROFILES, Cap
+from fatih_hoca.capabilities import TASK_PROFILES, Cap
 
 log = get_logger("auto_tuner")
 

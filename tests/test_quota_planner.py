@@ -2,7 +2,7 @@
 import sys, os, unittest, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.models.quota_planner import QuotaPlanner
+from fatih_hoca.requirements import QuotaPlanner
 
 
 class TestQuotaPlanner(unittest.TestCase):

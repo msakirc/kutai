@@ -173,7 +173,7 @@ class TestReorderByModelAffinity(unittest.TestCase):
 
     # 7. tasks matching loaded model sort higher within same base priority
     def test_reorder_boosts_matching_tasks(self):
-        from src.models.capabilities import TASK_PROFILES
+        from fatih_hoca.capabilities import TASK_PROFILES
         # Pick a real task_key known to exist in TASK_PROFILES
         known_task = list(TASK_PROFILES.keys())[0]  # e.g. "planner"
 
@@ -202,7 +202,7 @@ class TestReorderByModelAffinity(unittest.TestCase):
                    return_value=mock_manager), \
              patch("src.models.model_registry.get_registry",
                    return_value=mock_registry), \
-             patch("src.models.capabilities.score_model_for_task",
+             patch("fatih_hoca.capabilities.score_model_for_task",
                    side_effect=score_side_effect):
             result = self._fn([task_other, task_matching])
 
@@ -234,7 +234,7 @@ class TestReorderByModelAffinity(unittest.TestCase):
                    return_value=mock_manager), \
              patch("src.models.model_registry.get_registry",
                    return_value=mock_registry), \
-             patch("src.models.capabilities.score_model_for_task",
+             patch("fatih_hoca.capabilities.score_model_for_task",
                    side_effect=score_side_effect):
             result = self._fn([task_low, task_high])
 

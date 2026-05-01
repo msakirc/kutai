@@ -118,7 +118,7 @@ class TestLLMClassification(unittest.IsolatedAsyncioTestCase):
         obj._pending_clarifications = {}
         return obj
 
-    @patch("src.core.router.call_model", new_callable=AsyncMock)
+    @patch("src.core.llm_dispatcher.LLMDispatcher.request", new_callable=AsyncMock)
     async def test_llm_returns_mission_workflow(self, mock_call):
         mock_call.return_value = {
             "content": '{"type": "mission", "confidence": 0.95, "workflow": "i2p"}'
@@ -130,7 +130,7 @@ class TestLLMClassification(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["type"], "mission")
         self.assertEqual(result.get("workflow"), "i2p")
 
-    @patch("src.core.router.call_model", new_callable=AsyncMock)
+    @patch("src.core.llm_dispatcher.LLMDispatcher.request", new_callable=AsyncMock)
     async def test_llm_returns_task(self, mock_call):
         mock_call.return_value = {
             "content": '{"type": "task", "confidence": 0.85}'
@@ -140,7 +140,7 @@ class TestLLMClassification(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["type"], "task")
         self.assertNotIn("workflow", result)
 
-    @patch("src.core.router.call_model", new_callable=AsyncMock)
+    @patch("src.core.llm_dispatcher.LLMDispatcher.request", new_callable=AsyncMock)
     async def test_llm_failure_falls_to_keywords(self, mock_call):
         mock_call.side_effect = RuntimeError("model unavailable")
         iface = self._make_interface()

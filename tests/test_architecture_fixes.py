@@ -73,33 +73,6 @@ class TestRecordModelCallUnified(unittest.TestCase):
             "db.py record_model_call must call track_model_call_metrics internally",
         )
 
-    def test_router_uses_renamed_function(self):
-        """router.py call_model is now a dispatcher shim — no direct litellm calls.
-
-        After the HaLLederiz Kadir migration, router.py no longer calls litellm or
-        track_model_call_metrics directly. Instead call_model() delegates to
-        LLMDispatcher.request() which routes through HaLLederiz Kadir.
-        """
-        source = _read_source("src/core/router.py")
-        # Old litellm alias must be gone
-        self.assertNotIn(
-            "record_model_call as _record_metrics",
-            source,
-            "router.py must not use the old 'record_model_call as _record_metrics' alias",
-        )
-        # Shim must delegate to dispatcher
-        self.assertIn(
-            "get_dispatcher",
-            source,
-            "router.py call_model shim must import and call get_dispatcher()",
-        )
-        self.assertIn(
-            "CallCategory.MAIN_WORK",
-            source,
-            "router.py call_model shim must use CallCategory.MAIN_WORK",
-        )
-
-
 # ─── 2. Graceful Shutdown Flag ───────────────────────────────────────────────
 
 class TestGracefulShutdownFlag(unittest.TestCase):

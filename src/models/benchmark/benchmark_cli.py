@@ -23,7 +23,7 @@ if _project_root not in sys.path:
 
 from src.models.benchmark.benchmark_fetcher import BenchmarkFetcher, \
     enrich_registry_with_benchmarks
-from src.models.capabilities import TASK_PROFILES, Cap
+from fatih_hoca.capabilities import TASK_PROFILES, Cap
 from src.models.model_registry import get_registry, reload_registry
 from yazbunu import get_logger
 

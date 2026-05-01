@@ -763,27 +763,28 @@ class TestFullPipelineLLM:
         run_async(_run())
 
     @pytest.mark.timeout(120)
-    def test_direct_llm_call_via_router(self, temp_db, fastest_local_model):
-        """call_model via the router returns a dict with 'content' key."""
-        from src.core.router import ModelRequirements, call_model
+    def test_direct_llm_call_via_dispatcher(self, temp_db, fastest_local_model):
+        """dispatcher.request returns a dict with 'content' key."""
+        from src.core.llm_dispatcher import get_dispatcher, CallCategory
 
         async def _run():
-            reqs = ModelRequirements(
+            messages = [
+                {"role": "user", "content": "Reply with exactly the word: PONG"}
+            ]
+            kwargs = dict(
+                category=CallCategory.MAIN_WORK,
                 task="assistant",
                 difficulty=2,
+                messages=messages,
                 prefer_speed=True,
                 estimated_input_tokens=50,
                 estimated_output_tokens=50,
             )
             if fastest_local_model:
-                reqs.model_override = fastest_local_model
+                kwargs["model_override"] = fastest_local_model
 
-            messages = [
-                {"role": "user", "content": "Reply with exactly the word: PONG"}
-            ]
-
-            response = await call_model(reqs, messages)
-            assert isinstance(response, dict), "call_model must return a dict"
+            response = await get_dispatcher().request(**kwargs)
+            assert isinstance(response, dict), "dispatcher.request must return a dict"
             assert "content" in response, f"Response missing 'content' key: {response}"
             content = response["content"]
             assert isinstance(content, str) and len(content) > 0, (
@@ -795,29 +796,30 @@ class TestFullPipelineLLM:
     @pytest.mark.timeout(120)
     def test_llm_returns_parseable_json_for_classifier(self, temp_db, fastest_local_model):
         """The classifier prompt produces JSON parseable by _extract_json."""
-        from src.core.router import ModelRequirements, call_model
+        from src.core.llm_dispatcher import get_dispatcher, CallCategory
         from src.core.task_classifier import CLASSIFIER_PROMPT, _extract_json
 
         async def _run():
-            reqs = ModelRequirements(
-                task="router",
-                difficulty=2,
-                prefer_speed=True,
-                needs_json_mode=True,
-                estimated_input_tokens=300,
-                estimated_output_tokens=100,
-            )
-            if fastest_local_model:
-                reqs.model_override = fastest_local_model
-
             messages = [{
                 "role": "user",
                 "content": CLASSIFIER_PROMPT.format(
                     task_description="Write a Python hello world script: simple coding task"
                 )
             }]
+            kwargs = dict(
+                category=CallCategory.MAIN_WORK,
+                task="router",
+                difficulty=2,
+                messages=messages,
+                prefer_speed=True,
+                needs_json_mode=True,
+                estimated_input_tokens=300,
+                estimated_output_tokens=100,
+            )
+            if fastest_local_model:
+                kwargs["model_override"] = fastest_local_model
 
-            response = await call_model(reqs, messages)
+            response = await get_dispatcher().request(**kwargs)
             content = response.get("content", "")
             assert len(content) > 0, "LLM returned empty content for classifier prompt"
 

@@ -26,7 +26,7 @@ from src.models.auto_tuner import (
     maybe_run_tuning,
     run_tuning_cycle,
 )
-from src.models.capabilities import Cap
+from fatih_hoca.capabilities import Cap
 
 
 # ═════════════════════════════════════════════════════════════════════════════

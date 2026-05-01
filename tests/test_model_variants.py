@@ -8,7 +8,7 @@ from src.models.model_registry import (
     _apply_thinking_deltas,
     _create_model_variants,
 )
-from src.models.model_profiles import FamilyProfile
+from fatih_hoca.profiles import FamilyProfile
 
 
 def _make_base_model(name="test-model", mmproj_path=None, **kwargs):

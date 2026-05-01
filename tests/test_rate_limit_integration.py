@@ -7,9 +7,9 @@ header parsing → rate limiter update → quota planner adjustment → model sc
 import sys, os, unittest, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.models.header_parser import parse_rate_limit_headers
+from kuleden_donen_var.header_parser import parse_rate_limit_headers
 from src.models.rate_limiter import RateLimitManager, RateLimitState
-from src.models.quota_planner import QuotaPlanner
+from fatih_hoca.requirements import QuotaPlanner
 
 
 class TestEndToEndHeaderFlow(unittest.TestCase):

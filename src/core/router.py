@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 class ModelCallFailed(RuntimeError):
     """All model candidates exhausted — no backpressure, no retry.
 
-    Raised by call_model() when every candidate fails. The caller
+    Raised by the dispatcher when every candidate fails. The caller
     (process_task) catches this and puts the task to sleep, waiting
     for a signal that capacity has changed.
     """
@@ -30,8 +30,8 @@ class ModelCallFailed(RuntimeError):
 
 from src.infra.logging_config import get_logger
 from kuleden_donen_var import KuledenDonenVar, KuledenConfig, CapacityEvent
-from src.models.quota_planner import get_quota_planner
-from src.models.capabilities import ALL_CAPABILITIES, Cap, TASK_PROFILES, \
+from fatih_hoca.requirements import get_quota_planner
+from fatih_hoca.capabilities import ALL_CAPABILITIES, Cap, TASK_PROFILES, \
   TaskRequirements as CapabilityTaskReqs, score_model_for_task
 from src.models.model_registry import ModelInfo, get_registry
 
@@ -697,42 +697,6 @@ def select_model(reqs: ModelRequirements) -> list[ScoredModel]:
 def select_for_task(task: str, **kwargs) -> list[ScoredModel]:
     """Simplified selection by task name."""
     return select_model(ModelRequirements(task=task, **kwargs))
-
-
-
-# ─── Main API: call_model ────────────────────────────────────────────────────
-
-async def call_model(
-    reqs: ModelRequirements,
-    messages: list[dict],
-    tools: list[dict] | None = None,
-    timeout_override: float | None = None,
-) -> dict:
-    """Legacy shim — routes through dispatcher.
-
-    All new code should call dispatcher.request() directly.
-    This shim preserves backward compatibility during migration.
-    """
-    from src.core.llm_dispatcher import get_dispatcher, CallCategory
-    return await get_dispatcher().request(
-        category=CallCategory.MAIN_WORK,
-        task=reqs.effective_task or reqs.primary_capability,
-        agent_type=reqs.agent_type,
-        difficulty=reqs.difficulty,
-        messages=messages,
-        tools=tools,
-        needs_thinking=reqs.needs_thinking,
-        needs_function_calling=reqs.needs_function_calling,
-        needs_vision=reqs.needs_vision,
-        local_only=reqs.local_only,
-        prefer_speed=reqs.prefer_speed,
-        prefer_quality=reqs.prefer_quality,
-        prefer_local=reqs.prefer_local,
-        estimated_input_tokens=reqs.estimated_input_tokens,
-        estimated_output_tokens=reqs.estimated_output_tokens,
-        priority=reqs.priority,
-        exclude_models=reqs.exclude_models or [],
-    )
 
 
 

@@ -349,7 +349,17 @@ async def call(
     if is_local:
         _max_tokens = None  # omit from request → server uses full context
     else:
-        _max_tokens = min(estimated_output_tokens * 2, model.max_tokens)
+        # model.max_tokens can be None when detect_cloud_model picked up a
+        # litellm.get_model_info entry whose `max_output_tokens` key was
+        # explicitly None (some openrouter meta-routes do this — e.g.
+        # openrouter/openrouter/free returns max_output_tokens=null).
+        # `dict.get(key, default)` returns the explicit None over the
+        # default, so the registry's later `setdefault("max_tokens", 4096)`
+        # is a no-op. Production triage 2026-05-01: TypeError "<' not
+        # supported between instances of 'NoneType' and 'int'" killed
+        # 3 backend_tests / frontend_tests in succession.
+        _model_cap = model.max_tokens if model.max_tokens is not None else 4096
+        _max_tokens = min(estimated_output_tokens * 2, _model_cap)
 
     # ── Per-request reasoning override ──
     # If a thinking-capable model is loaded with --reasoning on but this

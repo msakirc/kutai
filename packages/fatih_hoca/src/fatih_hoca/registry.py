@@ -901,7 +901,13 @@ def detect_cloud_model(litellm_name: str, provider: str) -> dict:
                 or model_info.get("max_tokens")
                 or 128000
             )
-            info["max_tokens"] = model_info.get("max_output_tokens", 4096)
+            # `dict.get(key, default)` returns the EXPLICIT VALUE when the
+            # key exists, even if it's None — provider model-info entries
+            # for some openrouter meta-routes carry max_output_tokens=null
+            # which would propagate as None and break downstream callers
+            # that do arithmetic on it. Coerce None → default.
+            _mot = model_info.get("max_output_tokens")
+            info["max_tokens"] = _mot if _mot is not None else 4096
             info["supports_function_calling"] = model_info.get("supports_function_calling", True)
             info["supports_json_mode"] = model_info.get("supports_response_format", True)
 

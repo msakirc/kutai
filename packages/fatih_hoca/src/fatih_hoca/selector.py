@@ -116,6 +116,26 @@ class Selector:
             pass
 
         # ── Build requirements ───────────────────────────────────────────────
+        # Floor needs_function_calling against the canonical agent profile.
+        # llm_dispatcher derives this flag from `bool(tools)` on the request
+        # — but ReAct-style agents may call between iterations without
+        # tools=, and constrained_emit / grader paths never carry tools.
+        # Without this floor, models flagged supports_function_calling=False
+        # (groq/compound{,-mini}, gpt-oss-safeguard-20b, llama-prompt-guard-2-*,
+        # allam-2-7b) leak past eligibility for tool-using agents. Production
+        # 2026-05-01 task #7532: prompt-guard-2-22m picked for test_generator
+        # (which has needs_function_calling=True in AGENT_REQUIREMENTS),
+        # immediate "This model does not support JSON output" → DLQ.
+        # Profile is the source of truth; caller can only escalate False→True,
+        # never relax True→False.
+        from fatih_hoca.requirements import AGENT_REQUIREMENTS
+        _profile = AGENT_REQUIREMENTS.get(task) or AGENT_REQUIREMENTS.get(agent_type)
+        if _profile is not None:
+            if _profile.needs_function_calling and not needs_function_calling:
+                needs_function_calling = True
+            if _profile.needs_vision and not needs_vision:
+                needs_vision = True
+
         reqs = ModelRequirements(
             task=task,
             agent_type=agent_type,

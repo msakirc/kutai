@@ -196,6 +196,34 @@ def test_select_picks_model_with_function_calling():
     assert result.model.name == "with-fc"
 
 
+def test_select_floors_function_calling_from_agent_profile():
+    """Regression: caller may omit needs_function_calling=True between
+    ReAct iterations or for constrained_emit paths, but the agent profile
+    in AGENT_REQUIREMENTS is the source of truth. Selector must floor
+    needs_function_calling from the profile so models flagged
+    supports_function_calling=False (groq/compound, prompt-guard,
+    safeguard-20b, allam-2-7b) cannot leak into the candidate pool.
+    Production 2026-05-01: prompt-guard-2-22m picked for test_generator."""
+    no_fc = _make_model("no-fc", function_calling=False)
+    with_fc = _make_model("with-fc", function_calling=True)
+    sel = _make_selector([no_fc, with_fc])
+    # Caller does NOT pass needs_function_calling — selector must look up
+    # AGENT_REQUIREMENTS["test_generator"].needs_function_calling=True.
+    result = sel.select(task="test_generator", difficulty=5)
+    assert result is not None
+    assert result.model.name == "with-fc"
+
+
+def test_select_floors_function_calling_via_agent_type():
+    """Profile lookup should also consult agent_type when task is empty."""
+    no_fc = _make_model("no-fc", function_calling=False)
+    with_fc = _make_model("with-fc", function_calling=True)
+    sel = _make_selector([no_fc, with_fc])
+    result = sel.select(task="", agent_type="coder", difficulty=5)
+    assert result is not None
+    assert result.model.name == "with-fc"
+
+
 # ─── Eligibility: vision ──────────────────────────────────────────────────────
 
 def test_select_respects_needs_vision():

@@ -459,9 +459,17 @@ async def call(
         allowed, wait_secs, daily_exhausted, why, binding_provider = _kdv_pre_call(
             model.litellm_name, model.provider, estimated_tokens)
         if daily_exhausted:
+            # retryable=True so dispatcher records this model in failures
+            # and reselects. Selector excludes daily-exhausted model two
+            # ways: (1) via failures list, (2) via S1 since matrix.rpd
+            # is already 0 (pre_call wouldn't have flagged daily_exhausted
+            # otherwise). Without retryable=True a single daily-out model
+            # killed the whole task — production triage 2026-05-01:
+            # "All models failed: Daily limit exhausted for gemini/X"
+            # short-circuited before any other candidate was tried.
             return CallError(category="daily_exhausted",
                            message=f"Daily limit exhausted for {model.name}",
-                           retryable=False)
+                           retryable=True)
         if not allowed:
             # Diagnostic: WHY (which axis is binding) and HOW LONG until
             # recovery. Pool pressure consumers can read pick_log to see

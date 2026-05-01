@@ -44,6 +44,12 @@ def test_classify_model_not_found():
         "models/gemini-2.5-flash-preview-05-20 is not found for API version v1beta"
     ) == "model_not_found"
     assert classify_error("model_not_found: foo") == "model_not_found"
+    # OpenRouter retired-model signal: id in OR catalog but no provider
+    # currently serves it. Caller marks dead so future selections skip it.
+    assert classify_error(
+        "litellm.NotFoundError: NotFoundError: OpenrouterException - "
+        '{"error":{"message":"No endpoints found for some/retired-model"}}'
+    ) == "model_not_found"
     # Generic 404 without not-found keyword stays unknown — could be a
     # transient routing/proxy 404 unrelated to the model id.
     assert classify_error("upstream returned 404") == "unknown"

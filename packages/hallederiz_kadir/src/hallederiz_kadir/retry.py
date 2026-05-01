@@ -33,10 +33,16 @@ def classify_error(error: str) -> str:
     # were valid yesterday (Gemini retires *-preview-MM-DD slugs without
     # warning). Non-retryable: same id will keep 404'ing. Caller marks
     # the model dead in the registry so future admissions skip it.
+    # OpenRouter says "No endpoints found" when no upstream provider serves
+    # a given model id (model id is registered in OR catalog but no
+    # provider currently routes it). Treat as model_not_found so caller
+    # marks it dead — production triage 2026-05-01: openrouter test_generator
+    # picks failed every retry on retired ids without ever being marked.
     if (
         ("404" in e and ("not found" in e or "not_found" in e))
         or "is not found for api version" in e
         or "model_not_found" in e
+        or "no endpoints found" in e
     ):
         return "model_not_found"
     if any(k in e for k in ("timeout", "timed out")):

@@ -299,7 +299,13 @@ def expand_template(
         if "tools_hint" in tpl_step:
             step["tools_hint"] = list(tpl_step["tools_hint"])
         if "artifact_schema" in tpl_step:
-            step["artifact_schema"] = dict(tpl_step["artifact_schema"])
+            raw_schema = tpl_step["artifact_schema"]
+            if art_prefix:
+                step["artifact_schema"] = {
+                    f"{art_prefix}{k}": v for k, v in raw_schema.items()
+                }
+            else:
+                step["artifact_schema"] = dict(raw_schema)
 
         expanded.append(step)
 

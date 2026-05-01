@@ -1025,13 +1025,19 @@ async def find_duplicate_task(task_hash: str) -> dict | None:
 async def add_task(title, description, mission_id=None, parent_task_id=None,
                    agent_type="executor", tier="auto", priority=5,
                    requires_approval=False, depends_on=None, context=None):
-    db = await get_db()
+    """Atomic dedup + insert.
 
-    # Atomic dedup + insert — wrapped in explicit transaction to prevent
-    # race conditions between concurrent async coroutines.
+    Uses an isolated connection (connect_aux) for the BEGIN/COMMIT
+    region. Sharing the singleton's connection with concurrent
+    coroutines is unsafe even with _tx_lock — another coroutine on
+    the same conn can issue ``db.commit()`` (= "COMMIT" SQL) and
+    close OUR explicit tx, leaving ROLLBACK with nothing to roll back
+    ("cannot rollback - no transaction is active").
+    """
     task_hash = compute_task_hash(title, description, agent_type, mission_id, parent_task_id)
 
-    async with _tx_lock:
+    async with connect_aux(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
         try:
             await db.execute("BEGIN IMMEDIATE")
 
@@ -1065,7 +1071,7 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
                             "WHERE id = ?",
                             (dup["id"],)
                         )
-                        await db.commit()
+                        await db.execute("COMMIT")
                         return dup["id"]
                 logger.info(
                     f"⏭️ Task dedup: '{title[:50]}' matches pending task "
@@ -1085,11 +1091,13 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
                  json.dumps(depends_on or []), json.dumps(context or {}),
                  task_hash)
             )
-            await db.commit()
-            return cursor.lastrowid
+            row_id = cursor.lastrowid
+            await db.execute("COMMIT")
+            return row_id
         except Exception:
             try:
-                await db.execute("ROLLBACK")
+                if db._conn.in_transaction:
+                    await db.execute("ROLLBACK")
             except Exception:
                 pass
             raise
@@ -1463,12 +1471,14 @@ async def add_subtasks_atomically(
 
     Returns list of created task IDs (or -1 for deduped entries).
     """
-    db = await get_db()
     created_ids: list[int] = []
 
-    async with _tx_lock:
+    # Isolated connection for the BEGIN/COMMIT region — see add_task
+    # docstring for why _tx_lock alone cannot protect the singleton.
+    async with connect_aux(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
         try:
-            await db.execute("BEGIN")
+            await db.execute("BEGIN IMMEDIATE")
 
             for st in subtasks:
                 title = st.get("title", "Subtask")
@@ -1512,10 +1522,11 @@ async def add_subtasks_atomically(
             values = list(update_fields.values()) + [parent_task_id]
             await db.execute(f"UPDATE tasks SET {sets} WHERE id = ?", values)
 
-            await db.commit()
+            await db.execute("COMMIT")
         except Exception:
             try:
-                await db.execute("ROLLBACK")
+                if db._conn.in_transaction:
+                    await db.execute("ROLLBACK")
             except Exception:
                 pass
             raise
@@ -1539,12 +1550,13 @@ async def insert_tasks_atomically(
 
     Returns list of created task IDs (or -1 for deduped entries).
     """
-    db = await get_db()
     created_ids: list[int] = []
 
-    async with _tx_lock:
+    # Isolated connection for the BEGIN/COMMIT region.
+    async with connect_aux(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
         try:
-            await db.execute("BEGIN")
+            await db.execute("BEGIN IMMEDIATE")
 
             seen_hashes: set[str] = set()
 
@@ -1588,10 +1600,11 @@ async def insert_tasks_atomically(
                 )
                 created_ids.append(cursor.lastrowid)
 
-            await db.commit()
+            await db.execute("COMMIT")
         except Exception:
             try:
-                await db.execute("ROLLBACK")
+                if db._conn.in_transaction:
+                    await db.execute("ROLLBACK")
             except Exception:
                 pass
             raise

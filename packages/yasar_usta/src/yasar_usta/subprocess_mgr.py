@@ -205,9 +205,31 @@ class SubprocessManager:
                 return code
             except asyncio.TimeoutError:
                 if self.is_heartbeat_stale():
+                    age = self.heartbeat_age()
+                    pid = getattr(self.process, "pid", "?")
+                    # Try to read managed app's state snapshot to see WHAT
+                    # was happening at the last heartbeat. Looks for a
+                    # ``<heartbeat_file>.state.json`` companion + the
+                    # well-known ``logs/orchestrator.state.json`` path.
+                    state_msg = ""
+                    if self.heartbeat_file:
+                        from .heartbeat import read_state_snapshot
+                        candidates = [
+                            self.heartbeat_file + ".state.json",
+                            "logs/orchestrator.state.json",
+                        ]
+                        for path in candidates:
+                            snap = read_state_snapshot(path)
+                            if snap:
+                                state_msg = f" last_state={snap}"
+                                break
                     logger.error(
-                        "Heartbeat stale >%ds — killing hung process",
+                        "Heartbeat stale >%ds (age=%ss pid=%s) — "
+                        "killing hung process.%s",
                         self.heartbeat_stale_seconds,
+                        f"{age:.0f}" if age is not None else "?",
+                        pid,
+                        state_msg,
                     )
                     try:
                         self.process.kill()

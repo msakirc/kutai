@@ -391,9 +391,39 @@ class Orchestrator:
     # ─── Background Tasks & Startup ───────────────────────────────────────
 
     async def _heartbeat_loop(self):
+        """Run heartbeat + state-snapshot writer.
+
+        State snapshot includes currently-active connect_aux blocks and
+        in-flight task IDs so that when Yaşar Usta detects a freeze and
+        kills the orchestrator, it can log WHAT was happening at the
+        moment of the last heartbeat.
+        """
         from yasar_usta import HeartbeatWriter
+
+        def _state_provider() -> dict:
+            try:
+                from src.infra.db import _aux_active_summary
+                aux = _aux_active_summary()
+            except Exception:
+                aux = "(unavailable)"
+            try:
+                from src.core.in_flight import in_flight_snapshot
+                snap = in_flight_snapshot()
+                inflight = [
+                    f"task={getattr(e,'task_id','?')}|model={getattr(e,'model','?')}"
+                    for e in snap[:8]
+                ]
+            except Exception:
+                inflight = "(unavailable)"
+            return {"aux_active": aux, "in_flight": inflight}
+
         await HeartbeatWriter(
-            "logs/orchestrator.heartbeat", "logs/heartbeat", interval=15.0).run()
+            "logs/orchestrator.heartbeat",
+            "logs/heartbeat",
+            interval=15.0,
+            state_path="logs/orchestrator.state.json",
+            state_provider=_state_provider,
+        ).run()
 
     async def start(self):
         await init_db()

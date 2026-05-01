@@ -12,7 +12,14 @@ Manages any subprocess with:
 
 from .config import GuardConfig, Messages, SidecarConfig
 from .guard import ProcessGuard
-from .heartbeat import EXIT_RESTART, EXIT_STOP, HeartbeatWriter, write_heartbeat
+from .heartbeat import (
+    EXIT_RESTART,
+    EXIT_STOP,
+    HeartbeatWriter,
+    read_state_snapshot,
+    write_heartbeat,
+    write_state_snapshot,
+)
 
 __all__ = [
     "ProcessGuard",
@@ -22,5 +29,7 @@ __all__ = [
     "EXIT_RESTART",
     "EXIT_STOP",
     "HeartbeatWriter",
+    "read_state_snapshot",
     "write_heartbeat",
+    "write_state_snapshot",
 ]

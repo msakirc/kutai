@@ -60,7 +60,7 @@ async def save(kdv, db_path: str) -> None:
 
     try:
         from src.infra.db import connect_aux
-        async with connect_aux(db_path) as db:
+        async with connect_aux(db_path, _label="kdv_save") as db:
             await db.executemany(
                 "INSERT INTO kdv_state (scope, scope_key, snapshot_json, last_persisted) "
                 "VALUES (?, ?, ?, ?) "
@@ -92,7 +92,7 @@ async def load(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> 
 
     try:
         from src.infra.db import connect_aux
-        async with connect_aux(db_path) as db:
+        async with connect_aux(db_path, _label="kdv_load") as db:
             async with db.execute(
                 "SELECT scope, scope_key, snapshot_json, last_persisted "
                 "FROM kdv_state"

@@ -2151,7 +2151,7 @@ class TelegramInterface:
         """
         try:
             from src.infra.db import connect_aux
-            async with connect_aux(DB_PATH) as db:
+            async with connect_aux(DB_PATH, _label="bench_picks_query") as db:
                 cursor = await db.execute(query)
                 rows = await cursor.fetchall()
         except Exception as exc:

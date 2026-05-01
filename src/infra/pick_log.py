@@ -49,7 +49,7 @@ async def write_pick_log_row(
     outcome = "success" if success else (error_category or "failed")
     try:
         from src.infra.db import connect_aux
-        async with connect_aux(db_path) as db:
+        async with connect_aux(db_path, _label="pick_log") as db:
             await db.execute(
                 "INSERT INTO model_pick_log "
                 "(task_name, agent_type, difficulty, picked_model, picked_score, "

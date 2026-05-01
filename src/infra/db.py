@@ -91,7 +91,7 @@ async def _apply_pragmas(db: aiosqlite.Connection) -> None:
     await db.execute("PRAGMA busy_timeout=60000")
 
 
-def connect_aux(db_path):
+def connect_aux(db_path, _label: str | None = None):
     """Async context manager wrapping aiosqlite.connect with WAL pragmas applied.
 
     Use for any DB write/read OUTSIDE the get_db() singleton. Ensures every
@@ -102,16 +102,26 @@ def connect_aux(db_path):
     statement, no implicit transactions. Wrap multi-statement work in
     explicit BEGIN/COMMIT if you need atomicity.
 
+    Pass ``_label`` to tag this conn in slow-region telemetry. When the
+    block holds the conn open for > AUX_HOLD_WARN_SEC, a WARNING is
+    emitted with the label so we can identify which aux callsite is
+    starving the singleton's writer slot.
+
     Usage:
-        async with connect_aux(DB_PATH) as db:
+        async with connect_aux(DB_PATH, _label="add_task") as db:
             await db.execute(...)
     """
+    import time as _time
+    AUX_HOLD_WARN_SEC = 5.0  # any aux region > 5s is suspicious
     class _Ctx:
-        def __init__(self, p):
+        def __init__(self, p, lab):
             self._p = p
+            self._lab = lab
             self._db = None
+            self._t0 = 0.0
 
         async def __aenter__(self):
+            self._t0 = _time.monotonic()
             self._db = await aiosqlite.connect(self._p, isolation_level=None)
             await _apply_pragmas(self._db)
             return self._db
@@ -121,8 +131,14 @@ def connect_aux(db_path):
                 await self._db.close()
             finally:
                 self._db = None
+            held = _time.monotonic() - self._t0
+            if held >= AUX_HOLD_WARN_SEC:
+                logger.warning(
+                    "connect_aux slow region: label=%s held=%.1fs",
+                    self._lab or "?", held,
+                )
 
-    return _Ctx(db_path)
+    return _Ctx(db_path, _label)
 
 
 def connect_aux_sync(db_path, timeout: float = 60.0):
@@ -1036,7 +1052,7 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
     """
     task_hash = compute_task_hash(title, description, agent_type, mission_id, parent_task_id)
 
-    async with connect_aux(DB_PATH) as db:
+    async with connect_aux(DB_PATH, _label="add_task") as db:
         db.row_factory = aiosqlite.Row
         try:
             await db.execute("BEGIN IMMEDIATE")
@@ -1489,7 +1505,7 @@ async def add_subtasks_atomically(
 
     # Isolated connection for the BEGIN/COMMIT region — see add_task
     # docstring for why _tx_lock alone cannot protect the singleton.
-    async with connect_aux(DB_PATH) as db:
+    async with connect_aux(DB_PATH, _label="add_subtasks_atomically") as db:
         db.row_factory = aiosqlite.Row
         try:
             await db.execute("BEGIN IMMEDIATE")
@@ -1574,7 +1590,7 @@ async def insert_tasks_atomically(
     created_ids: list[int] = []
 
     # Isolated connection for the BEGIN/COMMIT region.
-    async with connect_aux(DB_PATH) as db:
+    async with connect_aux(DB_PATH, _label="insert_tasks_atomically") as db:
         db.row_factory = aiosqlite.Row
         try:
             await db.execute("BEGIN IMMEDIATE")

@@ -35,7 +35,7 @@ async def _refresh_completed_ids(db_path: str) -> set[int]:
         return _COMPLETED_IDS
     try:
         from src.infra.db import connect_aux
-        async with connect_aux(db_path) as db:
+        async with connect_aux(db_path, _label="queue_profile_completed_ids") as db:
             async with db.execute(
                 "SELECT id FROM tasks WHERE status='completed' "
                 "AND (completed_at IS NULL OR completed_at > datetime('now', '-7 days'))"
@@ -72,7 +72,7 @@ class _TaskShim:
 async def build_profile(db_path: str | None = None) -> QueueProfile:
     db_path = db_path or os.environ.get("DB_PATH", "kutai.db")
     from src.infra.db import connect_aux
-    async with connect_aux(db_path) as db:
+    async with connect_aux(db_path, _label="queue_profile_build") as db:
         async with db.execute(
             """SELECT id, agent_type, depends_on, context
                FROM tasks

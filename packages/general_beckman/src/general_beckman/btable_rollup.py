@@ -35,7 +35,7 @@ async def run_rollup(db_path: str | None = None) -> int:
     """
     db_path = db_path or os.environ.get("DB_PATH", "kutai.db")
     from src.infra.db import connect_aux
-    async with connect_aux(db_path) as db:
+    async with connect_aux(db_path, _label="btable_rollup_read") as db:
         async with db.execute(
             f"""SELECT agent_type, workflow_step_id, workflow_phase,
                        prompt_tokens, completion_tokens, iteration_n
@@ -61,7 +61,7 @@ async def run_rollup(db_path: str | None = None) -> int:
     rows_written = 0
     btable_dict: dict[tuple[str, str, str], dict] = {}
     from src.infra.db import connect_aux
-    async with connect_aux(db_path) as db:
+    async with connect_aux(db_path, _label="btable_rollup_write") as db:
         for key, vals in grouped.items():
             in_sorted = sorted(vals["in"])
             out_sorted = sorted(vals["out"])

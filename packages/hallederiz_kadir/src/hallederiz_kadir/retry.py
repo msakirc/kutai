@@ -6,9 +6,80 @@ from typing import Callable, Awaitable
 from .types import CallError
 
 
-def classify_error(error: str) -> str:
-    """Classify an error string into a category for retry/routing decisions."""
+def _extract_status_code(exc) -> int | None:
+    """Pull HTTP status off a LiteLLM exception. Tries the common shapes:
+    e.status_code, e.response.status_code, e.response.status. Returns
+    None when no numeric status is available (raw asyncio errors,
+    network errors before the response landed, etc.)."""
+    sc = getattr(exc, "status_code", None)
+    if isinstance(sc, int):
+        return sc
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        sc = getattr(resp, "status_code", None) or getattr(resp, "status", None)
+        if isinstance(sc, int):
+            return sc
+    return None
+
+
+def _classify_by_status(status_code: int | None, error_lc: str) -> str | None:
+    """Map an HTTP status code to a retry category. Returns None when the
+    code carries no actionable signal (200s, 1xx, or unknown 4xx/5xx that
+    text matching can disambiguate further). Status codes outrank text
+    matches because providers wrap consistent semantics behind status
+    while phrasing varies (Gemini "is not found for api version" vs
+    OpenRouter "No endpoints found" vs OpenAI "model_not_found" — all
+    HTTP 404)."""
+    if status_code is None:
+        return None
+    if status_code in (401, 403):
+        return "auth_failure"
+    if status_code == 404:
+        return "model_not_found"
+    if status_code == 408:
+        return "timeout"
+    if status_code == 413 or status_code == 422:
+        # 413 Payload Too Large; 422 Unprocessable Entity is what some
+        # providers return for context-overflow before the model sees the
+        # request. Disambiguate via text — "context" hint stays useful
+        # since 422 also covers schema/validation failures.
+        if "context" in error_lc or "exceeds" in error_lc:
+            return "context_overflow"
+        return None
+    if status_code == 429:
+        return "rate_limited"
+    if status_code in (500, 502, 503, 504):
+        return "server_error"
+    return None
+
+
+def classify_error(error: str, status_code: int | None = None) -> str:
+    """Classify a provider error into a retry category.
+
+    Order of precedence:
+    1. HTTP status code (when provided) — providers consistently wrap
+       semantics behind status (404=not_found, 429=rate_limit, 401/403=
+       auth, 5xx=server_error). Text phrasing varies by provider and
+       version, status does not.
+    2. Text fallback — covers locally-raised errors with no HTTP context
+       (asyncio.TimeoutError, GPU-queue messages, llama.cpp loading state,
+       circuit-breaker, etc.) and disambiguates buckets that share a
+       status (e.g. daily_exhausted vs rpm rate_limited both 429).
+    """
     e = error.lower()
+
+    # 1. Status-code-driven categories (when caller provided status).
+    cat = _classify_by_status(status_code, e)
+    if cat is not None:
+        # Refine status-derived rate_limited into daily_exhausted when
+        # body parser already wrote a Daily marker into the error msg.
+        # daily_exhausted retries differently in the dispatcher (model
+        # added to failures, not the call retried with backoff).
+        if cat == "rate_limited" and "daily limit exhausted" in e:
+            return "daily_exhausted"
+        return cat
+
+    # 2. Text fallback for non-HTTP errors and additional disambiguation.
     if "gpu queue timeout" in e or "gpu access denied" in e:
         return "gpu_busy"
     if any(k in e for k in ("rate limit", "rate_limit", "429",
@@ -29,15 +100,6 @@ def classify_error(error: str) -> str:
         "insufficient_quota", "insufficient credits", "credit balance",
     )):
         return "auth_failure"
-    # Model retirement / typo. Provider replies 404 NOT_FOUND for ids that
-    # were valid yesterday (Gemini retires *-preview-MM-DD slugs without
-    # warning). Non-retryable: same id will keep 404'ing. Caller marks
-    # the model dead in the registry so future admissions skip it.
-    # OpenRouter says "No endpoints found" when no upstream provider serves
-    # a given model id (model id is registered in OR catalog but no
-    # provider currently routes it). Treat as model_not_found so caller
-    # marks it dead — production triage 2026-05-01: openrouter test_generator
-    # picks failed every retry on retired ids without ever being marked.
     if (
         ("404" in e and ("not found" in e or "not_found" in e))
         or "is not found for api version" in e
@@ -88,6 +150,11 @@ async def execute_with_retry(
     # Forwarded to KDV.record_attempt so 4xx/5xx responses still update
     # x-ratelimit-* counters.
     last_headers: dict[str, str] | None = None
+    # Captured HTTP status off the most recent exception. Drives error
+    # classification with priority over text matching — providers wrap
+    # consistent HTTP semantics (404=not_found, 429=rate_limit, 401/403=
+    # auth, 5xx=server_error) but vary their human-readable phrasing.
+    last_status_code: int | None = None
 
     for attempt in range(max_retries):
         try:
@@ -125,25 +192,41 @@ async def execute_with_retry(
                     last_headers = dict(hdrs)
             except Exception:
                 last_headers = None
+            last_status_code = _extract_status_code(e)
 
-            # Auth/billing — not retryable
+            # Status-code-driven branches first (when present). HTTP semantics
+            # are stable across providers; text phrasing is not.
+            if last_status_code in (401, 403):
+                break  # auth — never retryable
+            if last_status_code == 404:
+                break  # provider says id doesn't exist; same id won't resurrect
+            if last_status_code == 429:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep((attempt + 1) * 5)
+                    continue
+                break
+
+            # Text-fallback branches for errors that arrived without a status
+            # code (network errors before response, asyncio cancellations,
+            # local llama-server loading state, GPU queue messages).
+
+            # Auth/billing
             if any(kw in error_str for kw in (
                 "api key", "authentication", "unauthorized",
                 "billing", "credit", "quota",
             )):
                 break
 
-            # 404 model not found — not retryable. Provider retired the
-            # id (Gemini retires *-preview-MM-DD slugs) or models.yaml /
-            # discovery has a stale entry. Same id won't resurrect.
+            # 404 / model not found (text fallback when status missing)
             if (
                 ("404" in error_str and ("not found" in error_str or "not_found" in error_str))
                 or "is not found for api version" in error_str
                 or "model_not_found" in error_str
+                or "no endpoints found" in error_str
             ):
                 break
 
-            # Rate limit — backoff then retry
+            # Rate limit (text fallback)
             is_rate_limit = any(kw in error_str for kw in (
                 "rate limit", "rate_limit", "429",
                 "too many requests", "tokens per minute",
@@ -167,8 +250,13 @@ async def execute_with_retry(
                     continue
                 break
 
-            # Local 500 during swap — wait briefly
-            is_server_error = "500" in error_str or "internal server error" in error_str
+            # Local 5xx during swap — wait briefly. Status code path catches
+            # 500/502/503/504; text fallback for raw Connection errors that
+            # sometimes carry "500" in the body without a status attribute.
+            is_server_error = (
+                last_status_code in (500, 502, 503, 504)
+                or "500" in error_str or "internal server error" in error_str
+            )
             if is_server_error and is_local and is_swap_in_progress:
                 if is_swap_in_progress():
                     swap_wait = 0
@@ -184,7 +272,7 @@ async def execute_with_retry(
             break
 
     # All retries exhausted
-    category = classify_error(last_error or "Unknown")
+    category = classify_error(last_error or "Unknown", last_status_code)
     partial = None
     if partial_content_ref and partial_content_ref[0]:
         partial = partial_content_ref[0]
@@ -197,4 +285,5 @@ async def execute_with_retry(
                                "context_overflow"),
         partial_content=partial,
         headers=last_headers,
+        status_code=last_status_code,
     )

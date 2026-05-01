@@ -32,3 +32,8 @@ class CallError:
     # x-ratelimit-* counters stay in sync with the provider's view even on
     # 4xx/5xx responses (which still consume request quota).
     headers: dict[str, str] | None = None
+    # HTTP status code from the failing response, when the exception carried
+    # one. Used by the caller's mark_dead path: status 404 means the provider
+    # said "no such id" — same id won't resurrect, marking dead skips it
+    # for the rest of the process.
+    status_code: int | None = None

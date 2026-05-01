@@ -7,6 +7,38 @@ from hallederiz_kadir.retry import classify_error, execute_with_retry
 from hallederiz_kadir.types import CallError
 
 
+def test_classify_by_status_code_outranks_text():
+    """HTTP status code drives classification when present. Provider
+    text varies (Gemini 'is not found for api version' vs OpenRouter
+    'No endpoints found' vs OpenAI 'model_not_found') but 404 is 404.
+    User feedback 2026-05-01: 'we should also respect to http codes,
+    text search is not enough'."""
+    # 404 → model_not_found regardless of body text
+    assert classify_error("any garbage body", status_code=404) == "model_not_found"
+    assert classify_error("", status_code=404) == "model_not_found"
+    # 401/403 → auth_failure even if text doesn't match auth keywords
+    assert classify_error("internal error", status_code=401) == "auth_failure"
+    assert classify_error("forbidden", status_code=403) == "auth_failure"
+    # 429 → rate_limited
+    assert classify_error("provider message", status_code=429) == "rate_limited"
+    # 5xx → server_error
+    assert classify_error("upstream broken", status_code=500) == "server_error"
+    assert classify_error("bad gateway", status_code=502) == "server_error"
+    assert classify_error("svc unavailable", status_code=503) == "server_error"
+    assert classify_error("gateway timeout", status_code=504) == "server_error"
+    # 408 → timeout
+    assert classify_error("client request timeout", status_code=408) == "timeout"
+    # Daily-exhausted refinement: 429 + body marker → daily_exhausted
+    # (dispatcher handles these differently — adds to failures vs backoff).
+    assert classify_error("Daily limit exhausted for X", status_code=429) == "daily_exhausted"
+    # Status code missing → falls back to text matching
+    assert classify_error("rate limit exceeded", status_code=None) == "rate_limited"
+    # 2xx never reached classify_error (success path), but defensive: returns unknown
+    assert classify_error("ok", status_code=200) == "unknown"
+    # Unmapped 4xx falls back to text matching
+    assert classify_error("rate limit exceeded", status_code=418) == "rate_limited"
+
+
 def test_classify_timeout():
     assert classify_error("Timeout on qwen3-30b") == "timeout"
     assert classify_error("Connection timed out") == "timeout"

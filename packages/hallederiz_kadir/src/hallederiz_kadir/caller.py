@@ -44,14 +44,18 @@ def _get_dallama():
 
 
 def _kdv_pre_call(litellm_name: str, provider: str, estimated_tokens: int):
-    """Returns: (allowed, wait_seconds, daily_exhausted)"""
+    """Returns: (allowed, wait_seconds, daily_exhausted, reason, binding_provider)"""
     try:
         from src.core.router import get_kdv
         kdv = get_kdv()
         pre = kdv.pre_call(litellm_name, provider, estimated_tokens)
-        return (pre.allowed, pre.wait_seconds, pre.daily_exhausted)
+        return (
+            pre.allowed, pre.wait_seconds, pre.daily_exhausted,
+            getattr(pre, "reason", ""),
+            getattr(pre, "binding_provider", False),
+        )
     except Exception:
-        return (True, 0.0, False)
+        return (True, 0.0, False, "", False)
 
 
 def _kdv_post_call(litellm_name, provider, headers, token_count, reserved_tokens=0):
@@ -452,17 +456,34 @@ async def call(
             )
         else:
             estimated_tokens = estimated_output_tokens * 3
-        allowed, wait_secs, daily_exhausted = _kdv_pre_call(
+        allowed, wait_secs, daily_exhausted, why, binding_provider = _kdv_pre_call(
             model.litellm_name, model.provider, estimated_tokens)
         if daily_exhausted:
             return CallError(category="daily_exhausted",
-                           message=f"Daily limit exhausted for {model.name}", retryable=False)
+                           message=f"Daily limit exhausted for {model.name}",
+                           retryable=False)
         if not allowed:
+            # Diagnostic: WHY (which axis is binding) and HOW LONG until
+            # recovery. Pool pressure consumers can read pick_log to see
+            # if a model keeps getting blocked on rpm vs tpm vs provider-
+            # aggregate vs daily.
+            scope = "provider" if binding_provider else "model"
+            _get_logger().info(
+                "kdv refusal | model=%s reason=%s scope=%s wait=%.1fs",
+                model.name, why or "rate_limit", scope, wait_secs,
+            )
             if wait_secs > 0:
                 await asyncio.sleep(wait_secs)
             else:
-                return CallError(category="rate_limited",
-                               message=f"Rate limited for {model.name}", retryable=True)
+                return CallError(
+                    category="rate_limited",
+                    message=(
+                        f"Rate limited for {model.name} "
+                        f"(reason={why or 'rate_limit'}, scope={scope}, "
+                        f"wait={wait_secs:.1f}s)"
+                    ),
+                    retryable=True,
+                )
         # Reserve the slot atomically with the admission decision: every
         # outgoing LiteLLM POST below now bumps RPM regardless of outcome,
         # AND reserves estimated_tokens against TPM so a concurrent

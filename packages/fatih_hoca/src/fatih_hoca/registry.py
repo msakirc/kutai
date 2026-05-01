@@ -1222,6 +1222,13 @@ class ModelRegistry:
         # excludes. Cleared on next discovery refresh that re-confirms
         # the model is back, or process restart.
         self._dead_models: set[str] = set()
+        # Time-bound quarantine for rate-limited models/providers.
+        # Maps identifier → unix-ts unquarantine time. Selector
+        # eligibility filter checks via is_quarantined() and skips
+        # entries whose unquarantine time hasn't passed yet. Auto-
+        # expires; no manual revive needed. Used for the simple
+        # "rate-limit error → don't pick again for N seconds" flow.
+        self._quarantined: dict[str, float] = {}
 
     # ── Core catalog interface ────────────────────────────────────────────────
 
@@ -1267,6 +1274,63 @@ class ModelRegistry:
             m = self._models.get(identifier)
             if m is not None:
                 self._dead_models.discard(m.litellm_name)
+
+    def quarantine(self, identifier: str, duration_secs: float = 60.0) -> None:
+        """Quarantine a model for `duration_secs`. Keyed by name AND
+        litellm_name. Selector eligibility skips quarantined models
+        until the timer expires. Auto-expires; no revive needed.
+
+        Used for rate-limit responses: provider 429 or KDV pre_call
+        refusal → quarantine for the wait_seconds returned by KDV (or
+        a default). Subsequent admissions don't even consider the
+        model until the timer clears.
+        """
+        if not identifier:
+            return
+        import time as _t
+        until = _t.time() + max(1.0, float(duration_secs))
+        with self._lock:
+            self._quarantined[identifier] = until
+            m = self._models.get(identifier)
+            if m is not None:
+                self._quarantined[m.litellm_name] = until
+            else:
+                for cand in self._models.values():
+                    if cand.litellm_name == identifier:
+                        self._quarantined[cand.name] = until
+                        break
+        logger.info(
+            "registry: quarantined %s for %.0fs",
+            identifier, duration_secs,
+        )
+
+    def quarantine_provider(self, provider: str, duration_secs: float = 60.0) -> int:
+        """Quarantine ALL cloud models on a provider in one shot. Returns
+        count quarantined. Used for provider-aggregate rate limits where
+        the binding constraint is shared across the entire family
+        (e.g. gemini's 15 RPM aggregate)."""
+        n = 0
+        for m in self.all_models():
+            if not m.is_local and getattr(m, "provider", "") == provider:
+                self.quarantine(m.name, duration_secs)
+                n += 1
+        return n
+
+    def is_quarantined(self, identifier: str) -> bool:
+        """True if quarantine timer hasn't expired yet. Auto-prunes
+        expired entries on read."""
+        if not identifier:
+            return False
+        import time as _t
+        now = _t.time()
+        with self._lock:
+            until = self._quarantined.get(identifier)
+            if until is None:
+                return False
+            if now >= until:
+                self._quarantined.pop(identifier, None)
+                return False
+            return True
 
     def by_litellm_name(self, litellm_name: str) -> ModelInfo | None:
         """Find a model by its litellm_name."""

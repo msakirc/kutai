@@ -229,8 +229,18 @@ class RateLimitState:
 
     @property
     def rpm_reset_at(self) -> float | None:
-        # Use header reset when fresh; else estimate end-of-current-window
-        # (oldest timestamp + 60s). When no calls and no header, return None.
+        """Real-time recovery hint: when does the RPM bucket clear next?
+
+        Provider header wins when present (authoritative). Otherwise
+        compute from oldest sliding-window entry: that entry expires at
+        `oldest + 60s`, which is when the next call slot opens. Pool
+        pressure consumers (S9 perishability, S1 time-decay) use this
+        to know HOW LONG until recovery — answers the user's question
+        without a quarantine timer.
+
+        When no calls and no header → None (no info, signal stays
+        neutral).
+        """
         if self._header_rpm_reset_at is not None:
             return float(self._header_rpm_reset_at)
         if self._request_timestamps:

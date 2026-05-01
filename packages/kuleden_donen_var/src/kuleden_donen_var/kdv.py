@@ -220,22 +220,89 @@ class KuledenDonenVar:
         # Circuit breaker check
         cb = self._get_cb(provider)
         if cb.is_degraded:
-            return PreCallResult(allowed=False, wait_seconds=0.0, daily_exhausted=False)
+            return PreCallResult(
+                allowed=False, wait_seconds=0.0, daily_exhausted=False,
+                reason="circuit_breaker", binding_provider=True,
+            )
 
         # Daily limit check
         if self._rate_limiter.is_daily_exhausted(model_id):
-            return PreCallResult(allowed=False, wait_seconds=0.0, daily_exhausted=True)
-
-        # Rate limit capacity check
-        if not self._rate_limiter.has_capacity(model_id, provider, estimated_tokens):
             state = self._rate_limiter.model_limits.get(model_id)
             wait = 0.0
-            if state and state._request_timestamps:
-                oldest = state._request_timestamps[0]
-                wait = max(0, 60 - (time.time() - oldest) + 0.5)
-            return PreCallResult(allowed=False, wait_seconds=wait, daily_exhausted=False)
+            if state and state.rpd_reset_at:
+                wait = max(0.0, state.rpd_reset_at - time.time())
+            return PreCallResult(
+                allowed=False, wait_seconds=wait, daily_exhausted=True,
+                reason="rpd",
+            )
+
+        # Rate limit capacity check — diagnose which axis is binding so
+        # caller logs WHY (rpm vs tpm vs provider-aggregate) and HOW LONG
+        # until recovery. Pool pressure consumers downstream can use the
+        # reason to populate matrix cells (e.g. rpm.reset_at) and drive
+        # selection without guessing.
+        if not self._rate_limiter.has_capacity(model_id, provider, estimated_tokens):
+            reason, wait, binding_prov = self._diagnose_capacity(
+                model_id, provider, estimated_tokens,
+            )
+            return PreCallResult(
+                allowed=False, wait_seconds=wait, daily_exhausted=False,
+                reason=reason, binding_provider=binding_prov,
+            )
 
         return PreCallResult(allowed=True, wait_seconds=0.0, daily_exhausted=False)
+
+    def _diagnose_capacity(
+        self,
+        model_id: str,
+        provider: str,
+        estimated_tokens: int,
+    ) -> tuple[str, float, bool]:
+        """Identify the binding constraint when has_capacity returned False.
+
+        Returns (reason, wait_seconds, binding_provider).
+        """
+        now = time.time()
+        model_state = self._rate_limiter.model_limits.get(model_id)
+        provider_state = self._rate_limiter._provider_limits.get(provider)
+
+        # Walk both layers; per-layer pick which axis is binding.
+        def _check(state, layer: str) -> tuple[str, float] | None:
+            if state is None:
+                return None
+            # RPM: if sliding window saturated → wait until oldest expires
+            if state.rpm_limit > 0 and state.rpm_headroom <= 1:
+                if state._request_timestamps:
+                    oldest = state._request_timestamps[0]
+                    wait = max(0.0, 60.0 - (now - oldest) + 0.5)
+                else:
+                    wait = 0.0
+                return (f"{layer}rpm", wait)
+            # TPM: token bucket too tight for this call
+            if (state.tpm_limit > 0 and estimated_tokens > 0
+                    and state.tpm_headroom < estimated_tokens):
+                if state._token_log:
+                    oldest_t = state._token_log[0][0]
+                    wait = max(0.0, 60.0 - (now - oldest_t) + 0.5)
+                else:
+                    wait = 0.0
+                return (f"{layer}tpm", wait)
+            return None
+
+        # Prefer model-layer reason when both bind (most diagnostic).
+        m = _check(model_state, "")
+        if m:
+            return (m[0], m[1], False)
+        p = _check(provider_state, "provider_")
+        if p:
+            return (p[0], p[1], True)
+        # Fallback when neither matches — return no specific axis but
+        # still surface a generic wait (oldest timestamp of either layer).
+        wait = 0.0
+        for state in (model_state, provider_state):
+            if state and state._request_timestamps:
+                wait = max(wait, 60.0 - (now - state._request_timestamps[0]) + 0.5)
+        return ("rate_limit", max(0.0, wait), False)
 
     def post_call(
         self,

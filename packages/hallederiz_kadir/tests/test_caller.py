@@ -90,7 +90,7 @@ def test_call_cloud_success(mock_litellm):
     mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
     model = _make_model_info(is_local=False, litellm_name="groq/llama-8b",
                              name="llama-8b", location="cloud", provider="groq", api_base=None)
-    with patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False)), \
+    with patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False, "", False)), \
          patch("hallederiz_kadir.caller._kdv_post_call"), \
          patch("hallederiz_kadir.caller.litellm.completion_cost", return_value=0.001):
         result = run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],
@@ -107,7 +107,7 @@ def test_call_timeout_returns_call_error(mock_litellm):
     mock_litellm.acompletion = AsyncMock(side_effect=asyncio.TimeoutError)
     model = _make_model_info(is_local=False, litellm_name="groq/llama-8b",
                              location="cloud", provider="groq", api_base=None)
-    with patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False)), \
+    with patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False, "", False)), \
          patch("hallederiz_kadir.caller._kdv_record_failure"):
         result = run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],
                                tools=None, timeout=1.0, task="executor",
@@ -256,7 +256,7 @@ def test_response_format_dropped_when_no_json_at_all(mock_litellm):
     mock_litellm.acompletion = AsyncMock(return_value=resp)
     with patch(
         "hallederiz_kadir.caller._kdv_pre_call",
-        return_value=(True, 0.0, False),
+        return_value=(True, 0.0, False, "", False),
     ):
         model = _make_model_info_with_jschema(
             is_local=False, location="cloud", provider="anthropic",
@@ -398,7 +398,7 @@ def test_cloud_provider_key_overrides_litellm_env_fallback(mock_litellm, monkeyp
         is_local=False, litellm_name="gemini/gemini-flash-latest",
         location="cloud", provider="gemini", api_base=None,
     )
-    with patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False)), \
+    with patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False, "", False)), \
          patch("hallederiz_kadir.caller._kdv_record_attempt"), \
          patch("hallederiz_kadir.caller._kdv_post_call"), \
          patch("hallederiz_kadir.caller.litellm.completion_cost", return_value=0.0):

@@ -50,7 +50,19 @@ class CapacityEvent:
 
 @dataclass
 class PreCallResult:
-    """Result of pre_call check."""
+    """Result of pre_call check.
+
+    When `allowed=False`, `reason` indicates the binding constraint and
+    `wait_seconds` the calculated time until recovery:
+        rpm        — sliding-window saturation (recovers as oldest entry ages)
+        tpm        — token bucket too tight for this call's estimate
+        rpd        — daily allotment exhausted (recovers at rpd_reset_at)
+        provider_rpm/tpm/rpd — provider-aggregate equivalent
+        circuit_breaker — too many recent failures, in cooldown
+        daily      — explicit daily exhausted (also sets daily_exhausted=True)
+    """
     allowed: bool
     wait_seconds: float
     daily_exhausted: bool
+    reason: str = ""
+    binding_provider: bool = False  # True if provider-aggregate was binding

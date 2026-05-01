@@ -182,6 +182,13 @@ class SystemSnapshot:
     cloud: dict[str, CloudProviderState] = field(default_factory=dict)
     queue_profile: QueueProfile | None = None
     in_flight_calls: list[InFlightCall] = field(default_factory=list)
+    # Recent swap count within nerd_herd's swap-budget window (default
+    # 300s / 3 swaps). Populated by nerd_herd.snapshot() so ranking can
+    # apply anti-flap stickiness — when swaps have just happened, dial
+    # up loaded-model stickiness so the next pick can't oscillate. Read
+    # by ranking._apply_loaded_stickiness; defaults to 0 in tests that
+    # build snapshots manually.
+    recent_swap_count: int = 0
 
     def pressure_for(
         self,

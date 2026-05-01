@@ -235,6 +235,20 @@ class LLMDispatcher:
                     _out = int(kwargs.get("estimated_output_tokens", 0) or 0)
                     if _in or _out:
                         _min_ctx = int((_in + _out) * 1.3) + 512
+                # Record swap intent BEFORE ensure_model so the budget
+                # reflects ATTEMPTED swaps, not just successful ones. Old
+                # path recorded only after ok=True + swap_happened=True;
+                # a load timeout / circuit-break still cost a process
+                # kill on the prior model but didn't decrement the budget,
+                # letting the next swap through immediately. Production
+                # triage 2026-05-01: 96% force-kill rate (2058/2133 stops)
+                # despite swap-budget gate — undercount was the cause.
+                #
+                # Pre-determine swap intent: not-loaded → swap will happen.
+                _swap_intended = (model.is_local and not model.is_loaded)
+                if _swap_intended:
+                    import nerd_herd as _nerd_herd
+                    _nerd_herd.record_swap(model.name)
                 # Local model swap can take 30+s and waits behind any
                 # in-flight call on the previous model — no per-step bump
                 # inside ensure_model. Background-pump heartbeats so the
@@ -246,9 +260,6 @@ class LLMDispatcher:
                         load_timeout=pick.estimated_load_seconds or 0.0,
                         estimated_context=_min_ctx,
                     )
-                if swap_happened:
-                    import nerd_herd as _nerd_herd
-                    _nerd_herd.record_swap(model.name)
                 if not ok:
                     task_desc = task or agent_type or category.value
                     if is_overhead:

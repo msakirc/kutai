@@ -343,6 +343,7 @@ class NerdHerdClient:
             local=local,
             cloud=cloud,
             in_flight_calls=in_flight_calls,
+            recent_swap_count=int(data.get("recent_swap_count", 0) or 0),
         )
 
     async def mark_degraded(self, capability: str) -> None:

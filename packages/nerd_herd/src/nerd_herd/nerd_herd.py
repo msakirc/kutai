@@ -162,6 +162,7 @@ class NerdHerd:
             cloud=dict(self._cloud_state),
             queue_profile=self._queue_profile,
             in_flight_calls=list(self._in_flight_calls),
+            recent_swap_count=self._swap_budget.recent_count(),
         )
 
     def prometheus_lines(self) -> str:

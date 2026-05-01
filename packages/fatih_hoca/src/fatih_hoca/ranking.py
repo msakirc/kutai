@@ -573,7 +573,28 @@ def rank_candidates(
                 composite *= 1.05
                 reasons.append("thinking_mismatch")
             else:
-                _stick_raw = 1.50 if _is_overhead else 1.10
+                # Anti-flap: when recent swaps have occurred, dial up the
+                # stickiness multiplier so a 35B↔9B oscillation can't keep
+                # winning by a hair. Production triage 2026-05-01: 8 swaps
+                # in 3 min, ~96% force-kill rate. Each task picked
+                # independently, easy task→9B wins, hard task→35B wins,
+                # mixed queue → ping-pong. Hard veto in swap_policy fires
+                # only at 3/window — between firings, swaps were free.
+                # Now: stickiness ramps with recent_swap_count so the 2nd
+                # and 3rd swaps require a much bigger cap delta to win.
+                # 0 swaps: 1.10× (default)
+                # 1 swap: 1.25× (cold model needs +25% composite)
+                # 2 swaps: 1.50× (cold model needs +50% composite)
+                # Hard veto at 3 still owned by swap_policy.can_swap.
+                _base_stick = 1.50 if _is_overhead else 1.10
+                _recent_swaps = int(getattr(snapshot, "recent_swap_count", 0) or 0)
+                if _recent_swaps >= 2:
+                    _antiflap = 1.50 if not _is_overhead else 1.80
+                elif _recent_swaps == 1:
+                    _antiflap = 1.25 if not _is_overhead else 1.65
+                else:
+                    _antiflap = _base_stick
+                _stick_raw = _antiflap
                 _fit_excess = (cap_score - cap_needed_for_difficulty(reqs.difficulty)) / 100.0
                 if _fit_excess >= 0:
                     _qual_factor = 1.0
@@ -586,6 +607,8 @@ def rank_candidates(
                         f"loaded_qual({_qual_factor:.2f}→{_stick:.2f})"
                         + ("_overhead" if _is_overhead else "")
                     )
+                elif _recent_swaps >= 1:
+                    reasons.append(f"loaded_antiflap({_recent_swaps}swaps→{_stick:.2f}x)")
                 else:
                     reasons.append("loaded" if not _is_overhead else "loaded_overhead")
         elif model.is_local and not model.is_loaded:

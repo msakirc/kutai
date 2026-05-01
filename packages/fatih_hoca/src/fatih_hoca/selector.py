@@ -204,20 +204,18 @@ class Selector:
         # Without consolidating, three separate gates with three separate
         # thresholds drifted out of sync (production triage 2026-04-30).
         #
-        # Threshold formula `-0.5 - 0.5 * urgency` maps:
-        #   urgency=0.0 (idle):    threshold=-0.5  (excludes any clearly
-        #                                          negative pressure)
-        #   urgency=0.5 (default): threshold=-0.75 (still excludes severe)
-        #   urgency=1.0 (critical):threshold=-1.0  (admits anything not
-        #                                          at the absolute floor)
-        # This is intentionally PERMISSIVE — ranking already biases
-        # against negative-pressure models via the score multiplier; the
-        # gate only fires when pressure is so extreme that even low-
-        # urgency tasks shouldn't burn an admission cycle on it. Catches
-        # the "TPM=8K but estimate=30K → S2=-1.0" class of bug where a
-        # model is structurally unable to serve the task.
         threshold = max(-1.0, -0.5 - 0.5 * urgency)
-        scored_after = [s for s in scored if getattr(s, "urgency", 0.0) >= threshold]
+        # Strict-greater-than at the floor: scalar=-1.0 means "literally
+        # depleted" (S1 hit depletion_max with full intensity, or S9
+        # local busy hard-veto). No urgency level should admit a model
+        # that's structurally unable to serve. With `>= threshold` and
+        # threshold=-1.0 (urgency=1.0 case), -1.0 admitted → defeated
+        # the gate's purpose.
+        scored_after = [
+            s for s in scored
+            if getattr(s, "urgency", 0.0) >= threshold
+            and getattr(s, "urgency", 0.0) > -1.0
+        ]
         if scored_after:
             scored = scored_after
         else:
@@ -374,6 +372,30 @@ class Selector:
             )
             if est_cost > reqs.max_cost:
                 return f"cost({est_cost:.4f}>{reqs.max_cost:.4f})"
+
+        # Per-call TPM hard filter. Cloud models with a TPM ceiling that
+        # cannot fit a single call are STRUCTURALLY ineligible — the
+        # provider will 429 with "Request too large for model" regardless
+        # of how empty the bucket is. Pool pressure's S2 burden signal
+        # warns about this softly; this hard gate prevents the model
+        # from even reaching ranking. Production triage 2026-05-01:
+        # groq/openai/gpt-oss-20b (TPM=8K) kept getting picked for
+        # implementer tasks (~12K estimate) and bouncing off Groq's
+        # per-call ceiling.
+        #
+        # Skip for local (TPM-based limits don't apply — llama-server
+        # ctx-size is the binding constraint, handled above) and for
+        # models without a known per-minute cap.
+        if (not model.is_local
+                and getattr(model, "rate_limit_tpm", 0) > 0
+                and reqs.estimated_input_tokens + reqs.estimated_output_tokens > 0):
+            est = reqs.estimated_input_tokens + reqs.estimated_output_tokens
+            tpm_cap = int(model.rate_limit_tpm)
+            # Allow some slack — actual provider ceiling is usually a bit
+            # above the documented TPM (per-call vs per-minute). Reject
+            # only when estimate exceeds tpm_cap by 10%+.
+            if est > tpm_cap * 1.1:
+                return f"per_call_too_large(est={est}>tpm={tpm_cap})"
 
         # Coding specialty mismatch — XML function-call format incompatible with
         # non-code tasks. Hard-filter to avoid the model winning on raw capability.

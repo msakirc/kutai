@@ -183,13 +183,23 @@ async def next_task():
         # writer for tpm_remaining / rpm_remaining / rpd_remaining via
         # the property accessors. Rebuild the matrix cells from KDV
         # directly so admission sees post-reservation truth.
+        #
+        # Iterate KDV's KNOWN providers (KDV._providers), not snap.cloud
+        # — production triage 2026-05-01: post-restart snap.cloud was
+        # empty (sidecar's cloud cache hadn't been populated yet) so
+        # the for-loop iterated nothing and the overlay was effectively
+        # disabled. selector then saw empty matrix → S1 fired no
+        # depletion → admitted saturated models hundreds of times in
+        # a row.
         try:
             from src.core.router import get_kdv as _get_kdv
             from kuleden_donen_var.nerd_herd_adapter import (
                 build_cloud_provider_state as _build_cloud,
             )
             kdv = _get_kdv()
-            for prov_name in list(getattr(snap, "cloud", {}) or {}):
+            if not isinstance(getattr(snap, "cloud", None), dict):
+                snap.cloud = {}
+            for prov_name in list(kdv._providers.keys()):
                 fresh = _build_cloud(kdv, prov_name)
                 if fresh is not None:
                     try:

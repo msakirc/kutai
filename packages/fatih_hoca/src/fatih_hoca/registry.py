@@ -1228,6 +1228,9 @@ class ModelRegistry:
         # excludes. Cleared on next discovery refresh that re-confirms
         # the model is back, or process restart.
         self._dead_models: set[str] = set()
+        # Hydrate from persisted file. Cold-start picks up known-bad ids
+        # so the first call doesn't have to re-discover them via 404.
+        self._load_dead_persisted()
         # Time-bound quarantine for rate-limited models/providers.
         # Maps identifier → unix-ts unquarantine time. Selector
         # eligibility filter checks via is_quarantined() and skips
@@ -1250,12 +1253,50 @@ class ModelRegistry:
         """Return all registered models."""
         return list(self._models.values())
 
+    # Persistent dead-set: same id won't resurrect this session AND
+    # subsequent restarts. JSON file (atomic replace via tempfile) at
+    # the registry's cache dir. Loaded at instance creation, written on
+    # every mark_dead. Eliminates the cold-start cascade where each
+    # restart re-tries every retired/no-endpoint id once before mark_dead
+    # learns again. Production triage 2026-05-01: 8 OR free-tier ids
+    # 404'd repeatedly across restarts.
+    _DEAD_FILE = Path(os.getenv("KUTAI_DATA_DIR", ".")) / ".dead_models.json"
+
+    def _load_dead_persisted(self) -> None:
+        """Load persisted dead set on registry init. Best-effort — a
+        missing/corrupt file just means an empty starting set."""
+        try:
+            if self._DEAD_FILE.exists():
+                import json as _json
+                data = _json.loads(self._DEAD_FILE.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    self._dead_models.update(str(x) for x in data if x)
+        except Exception as e:
+            logger.debug("dead_models persistence load failed: %s", e)
+
+    def _save_dead_persisted(self) -> None:
+        """Atomic-replace write of the dead set. Swallows IO errors —
+        worst case is the next restart re-learns the dead ids."""
+        try:
+            import json as _json
+            self._DEAD_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._DEAD_FILE.with_suffix(".json.tmp")
+            tmp.write_text(
+                _json.dumps(sorted(self._dead_models), indent=2),
+                encoding="utf-8",
+            )
+            tmp.replace(self._DEAD_FILE)
+        except Exception as e:
+            logger.debug("dead_models persistence save failed: %s", e)
+
     def mark_dead(self, identifier: str) -> None:
         """Mark a model as dead (404'd at call time). Keyed by name OR
-        litellm_name — selector eligibility filter checks both."""
+        litellm_name — selector eligibility filter checks both.
+        Persisted to disk so subsequent restarts skip the same id."""
         if not identifier:
             return
         with self._lock:
+            before = set(self._dead_models)
             self._dead_models.add(identifier)
             # Also add the matching litellm_name (or name) for symmetric
             # exclusion regardless of which path the lookup uses.
@@ -1267,19 +1308,27 @@ class ModelRegistry:
                     if cand.litellm_name == identifier:
                         self._dead_models.add(cand.name)
                         break
-        logger.warning("registry: marked dead %s — excluded until restart or rediscovery", identifier)
+            changed = self._dead_models != before
+        if changed:
+            self._save_dead_persisted()
+        logger.warning("registry: marked dead %s — excluded until rediscovery confirms it back", identifier)
 
     def is_dead(self, identifier: str) -> bool:
         return identifier in self._dead_models
 
     def revive(self, identifier: str) -> None:
         """Drop a model from the dead set — called by discovery on next
-        refresh when the provider reports the id again."""
+        refresh when the provider reports the id again. Updates persisted
+        file so the revive sticks across restarts."""
         with self._lock:
+            before = set(self._dead_models)
             self._dead_models.discard(identifier)
             m = self._models.get(identifier)
             if m is not None:
                 self._dead_models.discard(m.litellm_name)
+            changed = self._dead_models != before
+        if changed:
+            self._save_dead_persisted()
 
     def quarantine(self, identifier: str, duration_secs: float = 60.0) -> None:
         """Quarantine a model for `duration_secs`. Keyed by name AND

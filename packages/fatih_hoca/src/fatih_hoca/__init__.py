@@ -289,6 +289,22 @@ def init(
                     "(retired/typo) — marked dead: %s",
                     len(stale), provider, ", ".join(stale[:5]),
                 )
+            # Symmetric path: revive any persisted-dead id that has come
+            # back in this provider's live set. Without this, a model
+            # marked dead in a prior session stays dead forever even if
+            # the provider restored it (OR re-routes a model to a new
+            # upstream, Gemini publishes a previously-retired slug, etc.)
+            revived = []
+            for ln in list(live_litellm):
+                if _registry.is_dead(ln):
+                    _registry.revive(ln)
+                    revived.append(ln)
+            if revived:
+                _log.info(
+                    "discovery cross-check: %d previously-dead ids "
+                    "revived on %s: %s",
+                    len(revived), provider, ", ".join(revived[:5]),
+                )
 
     # ── Benchmark enrichment: populate ModelInfo.benchmark_scores from cached AA data ──
     import logging

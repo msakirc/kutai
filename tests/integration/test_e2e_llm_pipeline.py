@@ -138,8 +138,8 @@ class TestWorkflowJsonFiles:
 
     # Shopping-specific workflows (exist inside src/workflows/shopping/)
     SHOPPING_WORKFLOWS = [
-        "shopping/quick_search",
-        "shopping/shopping",
+        "shopping/quick_search_v2",
+        "shopping/shopping_v2",
         "shopping/exploration",
     ]
 

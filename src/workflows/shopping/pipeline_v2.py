@@ -980,9 +980,15 @@ def _candidates_from_json(items: list[dict]) -> list[Candidate]:
 
 
 async def _read_artifacts(mission_id: int, keys: list[str]) -> dict:
-    """Reuse v1's artifact reader — same table, same semantics."""
-    from src.workflows.shopping.pipeline import _read_artifacts as _v1_read
-    return await _v1_read(mission_id, keys)
+    """Read artifacts from the mission blackboard."""
+    from src.workflows.engine.artifacts import ArtifactStore
+    store = ArtifactStore()
+    result: dict = {}
+    for name in keys:
+        value = await store.retrieve(mission_id, name)
+        if value is not None:
+            result[name] = value
+    return result
 
 
 async def _handler_resolve_candidates(task: dict, artifacts: dict, ctx: dict) -> dict:

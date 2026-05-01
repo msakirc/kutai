@@ -25,7 +25,6 @@ from __future__ import annotations
 #   than running grader as judge-of-judge.
 _NO_POSTHOOKS_AGENT_TYPES: frozenset[str] = frozenset({
     "mechanical",
-    "shopping_pipeline",
     "shopping_pipeline_v2",
     "grader",
     "artifact_summarizer",

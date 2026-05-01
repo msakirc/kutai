@@ -30,7 +30,7 @@ def test_mechanical_task_needs_no_posthooks():
 
 
 def test_shopping_pipeline_task_needs_no_posthooks():
-    task = {"agent_type": "shopping_pipeline"}
+    task = {"agent_type": "shopping_pipeline_v2"}
     assert determine_posthooks(task, {}, {}) == []
 
 

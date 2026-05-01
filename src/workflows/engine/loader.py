@@ -70,14 +70,14 @@ def _resolve_workflow_path(workflow_name: str) -> Path:
 
     Supports two calling conventions:
 
-    1. Slash-separated: ``"shopping/quick_search"`` →
-       ``WORKFLOW_DIR/shopping/quick_search.json``
+    1. Slash-separated: ``"shopping/quick_search_v2"`` →
+       ``WORKFLOW_DIR/shopping/quick_search_v2.json``
     2. Plain name: ``"i2p_v3"`` → strips version suffix, looks for
        ``WORKFLOW_DIR/<dir_name>/<workflow_name>.json`` (original behaviour).
        If that directory does not exist the loader scans every immediate
        sub-directory of WORKFLOW_DIR for ``<workflow_name>.json`` so that
        sub-workflows stored under a parent directory (e.g.
-       ``shopping/quick_search.json``) are found automatically.
+       ``shopping/quick_search_v2.json``) are found automatically.
     """
     # ── 1. Explicit slash-separated path ────────────────────────────────
     if "/" in workflow_name:

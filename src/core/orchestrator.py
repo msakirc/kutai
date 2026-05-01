@@ -246,9 +246,6 @@ class Orchestrator:
                         "result": json.dumps(r.result),
                     }
                 return {"status": "failed", "error": r.error or "mechanical failed"}
-            if agent_type == "shopping_pipeline":
-                from src.workflows.shopping.pipeline import ShoppingPipeline
-                return await ShoppingPipeline().run(task)
             if agent_type == "shopping_pipeline_v2":
                 from src.workflows.shopping.pipeline_v2 import ShoppingPipelineV2
                 return await ShoppingPipelineV2().run(task)

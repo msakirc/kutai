@@ -104,13 +104,26 @@ def _aux_active_summary() -> str:
     """Return a one-line summary of currently-active aux regions.
 
     Each entry: ``label@<held_seconds>s``. Sorted longest-held first.
+    Appends singleton state (``singleton.tx=1`` when an explicit BEGIN
+    is open on the shared conn). Production triage: when slow regions
+    fire with ``other_active=[(none)]``, the holder was either the
+    singleton or a sibling process (nerd_herd sidecar). Without this
+    flag the operator can't tell which.
     """
     now = _time.monotonic()
     entries = [
         (lab, now - t0) for (lab, t0) in _aux_active.values()
     ]
     entries.sort(key=lambda x: -x[1])
-    return ", ".join(f"{lab}@{held:.1f}s" for lab, held in entries[:8]) or "(none)"
+    parts = [f"{lab}@{held:.1f}s" for lab, held in entries[:8]]
+    if _db_connection is not None:
+        try:
+            in_tx = bool(_db_connection._conn.in_transaction)
+            if in_tx:
+                parts.append("singleton.tx=1")
+        except Exception:
+            pass
+    return ", ".join(parts) or "(none)"
 
 
 def connect_aux(db_path, _label: str | None = None):
@@ -1391,6 +1404,51 @@ async def get_completed_dependency_results(depends_on):
             results[dep_id] = dict(row)
     return results
 
+async def _retry_on_locked(coro_factory, *, label: str, max_attempts: int = 4):
+    """Retry an awaitable factory on 'database is locked' OperationalError.
+
+    The singleton's busy_timeout=60s waits for the writer slot, then raises.
+    On contention bursts (production 2026-05-01: held=132s on add_task aux
+    conns while singleton update_task fired ModelCallFailed via 'database
+    is locked' on on_task_finished's posthook verdict), the singleton's one
+    pass is not enough — by the time we surface OperationalError, the
+    writer-slot is usually freed and a quick retry succeeds.
+
+    Retry budget: 4 attempts, exponential backoff
+    (0.2s → 0.5s → 1.0s → fail). With 60s busy_timeout per attempt, total
+    wall-clock cap is ~241s. Bounded by `_aux_active_summary()` evidence
+    that long holds typically cluster within ~140s, then quiet down.
+
+    Caller passes a coroutine FACTORY (zero-arg callable) so each attempt
+    creates a fresh awaitable — re-awaiting a consumed coroutine raises.
+    """
+    import sqlite3
+    delays = [0.2, 0.5, 1.0]
+    last_exc = None
+    for attempt in range(max_attempts):
+        try:
+            return await coro_factory()
+        except sqlite3.OperationalError as e:
+            last_exc = e
+            msg = str(e).lower()
+            if "database is locked" not in msg and "database is busy" not in msg:
+                raise
+            if attempt >= len(delays):
+                logger.error(
+                    "%s: lock retry exhausted attempts=%d holders=[%s]",
+                    label, attempt + 1, _aux_active_summary(),
+                )
+                raise
+            logger.warning(
+                "%s: lock retry %d/%d backoff=%.1fs holders=[%s]",
+                label, attempt + 1, max_attempts, delays[attempt],
+                _aux_active_summary(),
+            )
+            await asyncio.sleep(delays[attempt])
+    if last_exc is not None:
+        raise last_exc
+
+
 async def update_task(task_id, **kwargs):
     _validate_columns(kwargs, _TASK_COLUMNS, "tasks")
     if kwargs.get("status") == "skipped":
@@ -1402,8 +1460,13 @@ async def update_task(task_id, **kwargs):
     db = await get_db()
     sets = ", ".join(f"{k} = ?" for k in kwargs)
     values = list(kwargs.values()) + [task_id]
-    await db.execute(f"UPDATE tasks SET {sets} WHERE id = ?", values)
-    await db.commit()
+    sql = f"UPDATE tasks SET {sets} WHERE id = ?"
+
+    async def _do():
+        await db.execute(sql, values)
+        await db.commit()
+
+    await _retry_on_locked(_do, label=f"update_task #{task_id}")
 
 
 async def update_task_by_context_field(
@@ -1427,12 +1490,18 @@ async def update_task_by_context_field(
     db = await get_db()
     sets = ", ".join(f"{k} = ?" for k in kwargs)
     values = list(kwargs.values()) + [mission_id, value]
-    await db.execute(
+    sql = (
         f"UPDATE tasks SET {sets} "
-        f"WHERE mission_id = ? AND json_extract(context, '$.{field}') = ?",
-        values,
+        f"WHERE mission_id = ? AND json_extract(context, '$.{field}') = ?"
     )
-    await db.commit()
+
+    async def _do():
+        await db.execute(sql, values)
+        await db.commit()
+
+    await _retry_on_locked(
+        _do, label=f"update_task_by_context_field mission={mission_id}",
+    )
 
 
 async def accelerate_retries(reason: str) -> int:

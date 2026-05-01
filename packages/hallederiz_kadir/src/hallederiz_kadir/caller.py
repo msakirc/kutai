@@ -168,11 +168,21 @@ async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
     INTER_CHUNK_TIMEOUT = 20.0
 
     completion_kwargs["stream"] = True
+    # Ask OpenAI-compatible providers (groq, openrouter, openai-direct,
+    # gemini-via-openai-compat) to include usage in the final chunk. Without
+    # this the streamed ModelResponse has usage=None and KDV's post_call
+    # falls back to the request-time estimate. With it, KDV reflects actual
+    # consumption — important for TPM bucket accuracy on free tiers where
+    # estimate-vs-actual gaps cause spurious refusals or admit-and-fail.
+    # Anthropic native streams its own usage shape; litellm normalises so
+    # this kwarg is safe to pass everywhere.
+    completion_kwargs.setdefault("stream_options", {"include_usage": True})
     chunks = []
     accumulated = ""
     accumulated_reasoning = ""
     role = "assistant"
     finish_reason = None
+    final_usage = None  # Populated from any chunk that carries usage.
     # Tool call accumulation: {index: {"id": ..., "name": ..., "arguments": ...}}
     tool_call_parts: dict[int, dict] = {}
 
@@ -210,6 +220,13 @@ async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
                 _hb.bump()
             except Exception:
                 pass
+        # Capture usage from any chunk that carries it. Some providers put
+        # it on the final chunk (after include_usage), others sprinkle
+        # incrementally (Anthropic). Last-write-wins — the final landing
+        # is authoritative.
+        chunk_usage = getattr(chunk, "usage", None)
+        if chunk_usage is not None:
+            final_usage = chunk_usage
         delta = chunk.choices[0].delta if chunk.choices else None
         if delta:
             if delta.content:
@@ -272,7 +289,7 @@ async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
     resp = litellm.ModelResponse(
         id=getattr(last, "id", "0"),
         choices=[{"message": msg_dict, "finish_reason": finish_reason or "stop"}],
-        usage=getattr(last, "usage", None),
+        usage=final_usage if final_usage is not None else getattr(last, "usage", None),
     )
     return resp
 
@@ -522,7 +539,24 @@ async def call(
     # thinking model + tools caused llama-server to silently drop requests
     # (2026-04-15 incident: 190s "all slots idle" while request sat
     # unprocessed).  The accumulator reassembles tool_call deltas.
-    use_stream = is_local and not is_ollama
+    #
+    # Cloud calls also stream (added 2026-05-01 in response to user feedback
+    # "partial responses or streaming chunks not returned from cloud
+    # dispatches?"). Benefits:
+    # - partial_content_ref captures bytes that landed before any failure,
+    #   so a 429/timeout mid-call returns CallError(partial_content=...)
+    #   and the dispatcher can salvage the work via the existing partial-
+    #   recovery path that local already uses
+    # - stream-inactivity watchdog (20s) catches hung cloud calls long
+    #   before the 600s wall-clock timeout
+    # - per-chunk heartbeat throttled to 5s keeps the 300s no-progress
+    #   watchdog satisfied during slow generation (the new keepalive in
+    #   src/core/heartbeat.py is a backstop; per-chunk is finer-grained)
+    # - degenerate-output detection (dogru_mu_samet) fires mid-stream so
+    #   we abort wasted generation before the full payload lands
+    # Ollama stays non-streaming — its OpenAI-compat layer historically
+    # mishandled tool_calls in stream mode, untouched here.
+    use_stream = not is_ollama
 
     # ── Execute with retry ──
     max_retries = 2 if is_local else 3
@@ -781,9 +815,14 @@ async def call(
             model=model.name,
             provider=model.provider,
             is_streaming=use_stream,
-            prompt_tokens=(raw_result.usage.prompt_tokens or 0) if not use_stream and getattr(raw_result, "usage", None) else 0,
-            completion_tokens=(raw_result.usage.completion_tokens or 0) if not use_stream and getattr(raw_result, "usage", None) else 0,
-            reasoning_tokens=getattr(raw_result.usage, "reasoning_tokens", 0) if not use_stream and getattr(raw_result, "usage", None) else 0,
+            # With include_usage=True wired into the streaming accumulator,
+            # streamed responses now carry usage on the final ModelResponse
+            # the same way non-streaming does. Read unconditionally — the
+            # accumulator falls back to 0 internally when no provider chunk
+            # exposed usage (Ollama path, or older OpenRouter routing).
+            prompt_tokens=(raw_result.usage.prompt_tokens or 0) if getattr(raw_result, "usage", None) else 0,
+            completion_tokens=(raw_result.usage.completion_tokens or 0) if getattr(raw_result, "usage", None) else 0,
+            reasoning_tokens=getattr(raw_result.usage, "reasoning_tokens", 0) if getattr(raw_result, "usage", None) else 0,
             total_tokens=total_tokens,
             duration_ms=int(call_latency * 1000),
             iteration_n=int(iteration_n or 0),

@@ -91,6 +91,28 @@ async def _apply_pragmas(db: aiosqlite.Connection) -> None:
     await db.execute("PRAGMA busy_timeout=60000")
 
 
+# Holder tracker: maps label → list of (entry_time, ctx_id) for active
+# connect_aux blocks. When a slow region times out, dump current holders
+# so we can see who's blocking. Module-level so we can read from any
+# reporter coroutine.
+import time as _time
+_aux_active: dict[int, tuple[str, float]] = {}
+_aux_active_seq = 0
+
+
+def _aux_active_summary() -> str:
+    """Return a one-line summary of currently-active aux regions.
+
+    Each entry: ``label@<held_seconds>s``. Sorted longest-held first.
+    """
+    now = _time.monotonic()
+    entries = [
+        (lab, now - t0) for (lab, t0) in _aux_active.values()
+    ]
+    entries.sort(key=lambda x: -x[1])
+    return ", ".join(f"{lab}@{held:.1f}s" for lab, held in entries[:8]) or "(none)"
+
+
 def connect_aux(db_path, _label: str | None = None):
     """Async context manager wrapping aiosqlite.connect with WAL pragmas applied.
 
@@ -103,25 +125,30 @@ def connect_aux(db_path, _label: str | None = None):
     explicit BEGIN/COMMIT if you need atomicity.
 
     Pass ``_label`` to tag this conn in slow-region telemetry. When the
-    block holds the conn open for > AUX_HOLD_WARN_SEC, a WARNING is
-    emitted with the label so we can identify which aux callsite is
-    starving the singleton's writer slot.
+    block holds the conn open for > AUX_HOLD_WARN_SEC (1s), a WARNING is
+    emitted with the label AND a snapshot of currently-active aux
+    regions so we can identify the writer-slot holder vs waiters.
 
     Usage:
         async with connect_aux(DB_PATH, _label="add_task") as db:
             await db.execute(...)
     """
-    import time as _time
-    AUX_HOLD_WARN_SEC = 5.0  # any aux region > 5s is suspicious
+    AUX_HOLD_WARN_SEC = 1.0  # any aux region > 1s is suspicious
+    label = _label or "?"
+
     class _Ctx:
-        def __init__(self, p, lab):
+        def __init__(self, p):
             self._p = p
-            self._lab = lab
             self._db = None
             self._t0 = 0.0
+            self._tok = -1
 
         async def __aenter__(self):
+            global _aux_active_seq
             self._t0 = _time.monotonic()
+            _aux_active_seq += 1
+            self._tok = _aux_active_seq
+            _aux_active[self._tok] = (label, self._t0)
             self._db = await aiosqlite.connect(self._p, isolation_level=None)
             await _apply_pragmas(self._db)
             return self._db
@@ -132,13 +159,19 @@ def connect_aux(db_path, _label: str | None = None):
             finally:
                 self._db = None
             held = _time.monotonic() - self._t0
+            _aux_active.pop(self._tok, None)
             if held >= AUX_HOLD_WARN_SEC:
+                # Snapshot of OTHER active regions while we logged.
+                # Helps distinguish "I'm the holder" from "I waited on
+                # someone else who is still active."
+                other_holders = _aux_active_summary()
                 logger.warning(
-                    "connect_aux slow region: label=%s held=%.1fs",
-                    self._lab or "?", held,
+                    "connect_aux slow region: label=%s held=%.1fs "
+                    "other_active=[%s]",
+                    label, held, other_holders,
                 )
 
-    return _Ctx(db_path, _label)
+    return _Ctx(db_path)
 
 
 def connect_aux_sync(db_path, timeout: float = 60.0):

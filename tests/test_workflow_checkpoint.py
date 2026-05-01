@@ -38,7 +38,7 @@ class TestUpsertWorkflowCheckpoint(unittest.TestCase):
 
         self._run(upsert_workflow_checkpoint(
             mission_id=1,
-            workflow_name="i2p_v2",
+            workflow_name="i2p_v3",
             current_phase="phase_1",
             completed_phases=["phase_0"],
             metadata={"key": "value"},
@@ -51,7 +51,7 @@ class TestUpsertWorkflowCheckpoint(unittest.TestCase):
 
         self.assertIn("INSERT OR REPLACE", sql)
         self.assertEqual(params[0], 1)  # mission_id
-        self.assertEqual(params[1], "i2p_v2")  # workflow_name
+        self.assertEqual(params[1], "i2p_v3")  # workflow_name
         self.assertEqual(params[2], "phase_1")  # current_phase
         self.assertEqual(json.loads(params[3]), ["phase_0"])  # completed_phases
         self.assertIsNone(params[4])  # failed_step_id
@@ -193,7 +193,7 @@ class TestFindResumable(unittest.TestCase):
 
         mock_missions.return_value = []
         runner = WorkflowRunner()
-        result = self._run(runner.find_resumable("i2p_v2"))
+        result = self._run(runner.find_resumable("i2p_v3"))
         self.assertIsNone(result)
 
     @patch("src.infra.db.get_workflow_checkpoint", new_callable=AsyncMock)
@@ -203,11 +203,11 @@ class TestFindResumable(unittest.TestCase):
         from src.workflows.engine.runner import WorkflowRunner
 
         mock_missions.return_value = [
-            {"id": 42, "context": json.dumps({"workflow_name": "i2p_v2"})},
+            {"id": 42, "context": json.dumps({"workflow_name": "i2p_v3"})},
         ]
-        mock_cp.return_value = {"workflow_name": "i2p_v2", "completed_phases": []}
+        mock_cp.return_value = {"workflow_name": "i2p_v3", "completed_phases": []}
         runner = WorkflowRunner()
-        result = self._run(runner.find_resumable("i2p_v2"))
+        result = self._run(runner.find_resumable("i2p_v3"))
         self.assertEqual(result, 42)
 
     @patch("src.infra.db.get_workflow_checkpoint", new_callable=AsyncMock)
@@ -217,11 +217,11 @@ class TestFindResumable(unittest.TestCase):
         from src.workflows.engine.runner import WorkflowRunner
 
         mock_missions.return_value = [
-            {"id": 10, "context": json.dumps({"workflow_name": "i2p_v2"})},
+            {"id": 10, "context": json.dumps({"workflow_name": "i2p_v3"})},
         ]
         mock_cp.return_value = None
         runner = WorkflowRunner()
-        result = self._run(runner.find_resumable("i2p_v2"))
+        result = self._run(runner.find_resumable("i2p_v3"))
         self.assertIsNone(result)
 
     @patch("src.infra.db.get_workflow_checkpoint", new_callable=AsyncMock)
@@ -234,7 +234,7 @@ class TestFindResumable(unittest.TestCase):
             {"id": 10, "context": json.dumps({"workflow_name": "other_workflow"})},
         ]
         runner = WorkflowRunner()
-        result = self._run(runner.find_resumable("i2p_v2"))
+        result = self._run(runner.find_resumable("i2p_v3"))
         self.assertIsNone(result)
         mock_cp.assert_not_called()
 
@@ -261,7 +261,7 @@ class TestResume(unittest.TestCase):
         from src.workflows.engine.runner import WorkflowRunner
 
         mock_cp.return_value = {
-            "workflow_name": "i2p_v2",
+            "workflow_name": "i2p_v3",
             "completed_phases": ["phase_1"],
             "metadata": {},
         }
@@ -308,7 +308,7 @@ class TestResume(unittest.TestCase):
         from src.workflows.engine.runner import WorkflowRunner
 
         mock_cp.return_value = {
-            "workflow_name": "i2p_v2",
+            "workflow_name": "i2p_v3",
             "completed_phases": [],
             "metadata": {},
         }

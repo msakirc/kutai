@@ -35,11 +35,11 @@ def run_async(coro):
 class TestWorkflowJsonLoading:
     """The i2p workflow JSON files parse correctly."""
 
-    def test_load_i2p_v1(self):
-        """i2p_v1.json is valid JSON and has expected structure."""
+    def test_load_i2p_v3(self):
+        """i2p_v3.json is valid JSON and has expected structure."""
         workflow_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "src", "workflows", "i2p", "i2p_v1.json"
+            "src", "workflows", "i2p", "i2p_v3.json"
         )
         assert os.path.exists(workflow_path), f"Workflow file missing: {workflow_path}"
 
@@ -47,23 +47,9 @@ class TestWorkflowJsonLoading:
             data = json.load(f)
 
         assert isinstance(data, dict), "Workflow JSON should be a dict"
-        # Check expected top-level keys
         assert "phases" in data or "steps" in data or "workflow" in data, (
             f"Workflow JSON lacks expected keys. Keys found: {list(data.keys())}"
         )
-
-    def test_load_i2p_v2(self):
-        """i2p_v2.json is valid JSON."""
-        workflow_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "src", "workflows", "i2p", "i2p_v2.json"
-        )
-        assert os.path.exists(workflow_path), f"Workflow file missing: {workflow_path}"
-
-        with open(workflow_path, encoding="utf-8") as f:
-            data = json.load(f)
-
-        assert isinstance(data, dict)
 
 
 # ---------------------------------------------------------------------------

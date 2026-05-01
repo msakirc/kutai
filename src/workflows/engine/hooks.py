@@ -247,38 +247,6 @@ def _unwrap_envelope(text) -> str:
     return stripped
 
 
-def _detect_repetition_ratio(text: str) -> float:
-    """Return 0.0–1.0 indicating how much of the text is repetitive.
-
-    .. deprecated::
-        Use ``dogru_mu_samet.assess()`` instead. All callsites now use
-        the dogru_mu_samet package. Kept for reference.
-
-    Splits into ## sections, normalizes headers, and counts how many
-    sections share a normalized header with at least one other section.
-    Does NOT modify the text — purely a signal.
-    """
-    import re as _re2
-
-    sections = text.split("\n## ")
-    if len(sections) < 5:
-        return 0.0
-
-    norm_headers: list[str] = []
-    for sec in sections[1:]:  # skip content before first ##
-        header = sec.split("\n", 1)[0].strip()
-        norm = _re2.sub(
-            r'\s+(summary|examples?|notes|details)\s*$', '',
-            header.lower(),
-        ).strip()
-        norm_headers.append(norm)
-
-    from collections import Counter
-    counts = Counter(norm_headers)
-    duplicated = sum(c - 1 for c in counts.values() if c > 1)
-    return duplicated / len(norm_headers) if norm_headers else 0.0
-
-
 def _top_level_required_field_names(rule: dict) -> list[str]:
     """Return required (non-optional) top-level field names from an object rule.
 
@@ -1218,11 +1186,29 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
             )
             return
 
+    # Multi-artifact envelope split: when LLM emits {art1: ..., art2: ...}
+    # for a multi-output step, store per-key value not the whole envelope.
+    parsed_envelope = None
+    if len(output_names) > 1 and output_value:
+        try:
+            cand = json.loads(output_value)
+            if isinstance(cand, dict) and all(n in cand for n in output_names):
+                parsed_envelope = cand
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    def _slot_value(name: str) -> str:
+        if parsed_envelope is not None:
+            v = parsed_envelope[name]
+            return v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+        return output_value
+
     for name in output_names:
-        await store.store(mission_id, name, output_value)
+        sv = _slot_value(name)
+        await store.store(mission_id, name, sv)
         logger.info(
             f"[Workflow Hook] Post-execute: stored artifact '{name}' "
-            f"for mission {mission_id} ({len(output_value)} chars)"
+            f"for mission {mission_id} ({len(sv)} chars)"
         )
 
     # ── Auto-summarize large artifacts ──
@@ -1230,15 +1216,18 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
     # LLM upgrade is queued for the orchestrator to process between cycles.
     _SUMMARY_THRESHOLD = 3000
     _MIN_SUMMARY_LEN = 50
-    if output_value and len(output_value) > _SUMMARY_THRESHOLD:
+    if output_value:
         for name in output_names:
-            summary = _structural_summary(output_value)
+            sv = _slot_value(name)
+            if len(sv) <= _SUMMARY_THRESHOLD:
+                continue
+            summary = _structural_summary(sv)
             if summary and len(summary) >= _MIN_SUMMARY_LEN:
                 summary_name = f"{name}_summary"
                 await store.store(mission_id, summary_name, summary)
                 logger.info(
                     f"[Workflow Hook] Structural summary '{name}' -> '{summary_name}' "
-                    f"({len(output_value)} -> {len(summary)} chars)"
+                    f"({len(sv)} -> {len(summary)} chars)"
                 )
             # LLM-upgrade summary is scheduled by Beckman as a post-hook
             # task after grade passes (packages/general_beckman/apply.py::
@@ -1301,7 +1290,17 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
             or (isinstance(result, dict) and (result.get("clarification") or "").strip())
         )
     )
-    if artifact_schema and _is_producer and not _is_clarify_action:
+    # Skip schema validation when upstream already declared failure — the
+    # real cause (availability, timeout, ModelCallFailed) is already in
+    # result["error"]. Overwriting with "empty output schema validation"
+    # masks it and spams Telegram with misleading messages while real
+    # availability errors silently roll up.
+    _upstream_failed = (
+        isinstance(result, dict)
+        and (result.get("status") == "failed"
+             or result.get("error_category") == "availability")
+    )
+    if artifact_schema and _is_producer and not _is_clarify_action and not _upstream_failed:
         if not output_value or not str(output_value).strip():
             is_valid = False
             error_msg = (
@@ -1739,7 +1738,7 @@ async def _trigger_template_expansion(mission_id: int, backlog_text: str) -> Non
         from .expander import expand_template, expand_steps_to_tasks
         from ...infra.db import add_task as insert_task, update_task
 
-        # Try the workflow used by this mission, fall back to i2p_v3 then i2p_v2
+        # Try the workflow used by this mission, fall back to i2p_v3
         workflow_name = "i2p_v3"
         try:
             from ...infra.db import get_mission

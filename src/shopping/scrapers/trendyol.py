@@ -735,35 +735,7 @@ class TrendyolScraper(BaseScraper):
             all_reviews.extend(page_reviews)
             await _asyncio.sleep(2.0)
 
-        # --- Strategy 2: legacy public-mdc API (DNS dead since 2026-03 but cheap to try) ---
-        if not all_reviews:
-            for page in range(1, max_pages + 1):
-                try:
-                    reviews_url = (
-                        f"{_REVIEW_API}/reviews/{content_id}"
-                        f"?page={page}&culture=tr-TR&order=MOST_RECENT"
-                    )
-                    response = await self._fetch(reviews_url)
-                except Exception as exc:
-                    logger.debug(
-                        "legacy review API fetch failed",
-                        url=url, page=page, error=str(exc),
-                    )
-                    api_failed = True
-                    break
-
-                if response.status_code != 200:
-                    api_failed = True
-                    break
-
-                page_reviews = self._parse_review_response(response)
-                if not page_reviews:
-                    break
-
-                all_reviews.extend(page_reviews)
-                await _asyncio.sleep(2.0)
-
-        # --- Strategy 3: HTML /yorumlar fallback ---
+        # --- Strategy 2: HTML /yorumlar fallback ---
         if api_failed or not all_reviews:
             logger.info("falling back to /yorumlar HTML scraping", url=url)
             html_reviews = await self._get_reviews_from_html(

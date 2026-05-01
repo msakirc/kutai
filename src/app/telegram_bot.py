@@ -2150,7 +2150,8 @@ class TelegramInterface:
             ORDER BY task_name, n DESC
         """
         try:
-            async with aiosqlite.connect(DB_PATH) as db:
+            from src.infra.db import connect_aux
+            async with connect_aux(DB_PATH) as db:
                 cursor = await db.execute(query)
                 rows = await cursor.fetchall()
         except Exception as exc:
@@ -2988,11 +2989,6 @@ class TelegramInterface:
                 await self._reply(update,
                     f"❌ Ingestion failed: {result.get('error', 'unknown error')}"
                 )
-        except ImportError:
-            await self._reply(update,
-                "❌ Memory system not available. "
-                "Install chromadb: pip install chromadb"
-            )
         except Exception as e:
             await self._reply(update,
                 f"❌ {_friendly_error(str(e))}"
@@ -4800,8 +4796,6 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             else:
                 lines.append("No active price watches.")
             await self._reply(update,"\n".join(lines), parse_mode="Markdown")
-        except ImportError:
-            await self._reply(update,"Shopping module not yet available.")
         except Exception as e:
             logger.warning("deals command failed", error=str(e))
             await self._reply(update,"Could not fetch deals right now.")
@@ -4826,8 +4820,6 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             if len(lines) == 1:
                 lines.append("No items or preferences recorded yet.")
             await self._reply(update,"\n".join(lines), parse_mode="Markdown")
-        except ImportError:
-            await self._reply(update,"Shopping module not yet available.")
         except Exception as e:
             logger.warning("mystuff command failed", error=str(e))
             await self._reply(update,"Could not fetch your profile right now.")
@@ -5601,10 +5593,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         if len(result) > 3000:
             # Use mission-specific directory if available
             # Import WORKSPACE_DIR to match where write_file puts files
-            try:
-                from src.tools.workspace import WORKSPACE_DIR as _ws_dir
-            except ImportError:
-                _ws_dir = "workspace"
+            from src.tools.workspace import WORKSPACE_DIR as _ws_dir
             if mission_id:
                 results_dir = Path(_ws_dir) / f"mission_{mission_id}"
             else:

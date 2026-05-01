@@ -72,7 +72,7 @@ def _resolve_workflow_path(workflow_name: str) -> Path:
 
     1. Slash-separated: ``"shopping/quick_search"`` →
        ``WORKFLOW_DIR/shopping/quick_search.json``
-    2. Plain name: ``"i2p_v2"`` → strips version suffix, looks for
+    2. Plain name: ``"i2p_v3"`` → strips version suffix, looks for
        ``WORKFLOW_DIR/<dir_name>/<workflow_name>.json`` (original behaviour).
        If that directory does not exist the loader scans every immediate
        sub-directory of WORKFLOW_DIR for ``<workflow_name>.json`` so that
@@ -136,7 +136,7 @@ def load_workflow(workflow_name: str) -> WorkflowDefinition:
     Parameters
     ----------
     workflow_name:
-        Logical name such as ``i2p_v2``.  The directory is
+        Logical name such as ``i2p_v3``.  The directory is
         derived by stripping the version suffix (``i2p``).
     """
     path = _resolve_workflow_path(workflow_name)

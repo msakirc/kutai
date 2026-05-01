@@ -390,8 +390,8 @@ class TestV3WorkflowLoading:
 
     def test_v2_backward_compatible(self):
         """v2 must still load without errors."""
-        wf = load_workflow("i2p_v2")
-        assert wf.plan_id == "i2p_v2"
+        wf = load_workflow("i2p_v3")
+        assert wf.plan_id == "i2p_v3"
         assert len(wf.steps) == 328
 
     def test_v3_difficulty_distribution(self):

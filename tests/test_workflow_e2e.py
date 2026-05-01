@@ -29,7 +29,7 @@ class TestLoaderPlusExpanderStepCount(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.wf = load_workflow("i2p_v2")
+        cls.wf = load_workflow("i2p_v3")
 
     def test_total_step_count_exceeds_100(self):
         self.assertGreater(len(self.wf.steps), 100)
@@ -169,7 +169,7 @@ class TestTemplateExpansionFull(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.wf = load_workflow("i2p_v2")
+        cls.wf = load_workflow("i2p_v3")
         cls.template = cls.wf.get_template("feature_implementation_template")
 
     def test_template_exists(self):
@@ -278,7 +278,7 @@ class TestPipelineBridgeDelegationMatrix(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        wf = load_workflow("i2p_v2")
+        wf = load_workflow("i2p_v3")
         cls.template = wf.get_template("feature_implementation_template")
         cls.expanded = expand_template(
             cls.template,
@@ -332,7 +332,7 @@ class TestStatusWithRealWorkflow(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.wf = load_workflow("i2p_v2")
+        cls.wf = load_workflow("i2p_v3")
 
     def _make_fake_tasks(self):
         """Create fake tasks from real workflow steps with mixed statuses."""
@@ -389,10 +389,10 @@ class TestStatusWithRealWorkflow(unittest.TestCase):
     def test_format_status_message_structure(self):
         tasks = self._make_fake_tasks()
         progress = compute_phase_progress(tasks)
-        msg = format_status_message("i2p_v2", 42, progress)
+        msg = format_status_message("i2p_v3", 42, progress)
 
         # Should contain the workflow ID and mission ID
-        self.assertIn("i2p_v2", msg)
+        self.assertIn("i2p_v3", msg)
         self.assertIn("42", msg)
 
         # Should contain phase names
@@ -402,7 +402,7 @@ class TestStatusWithRealWorkflow(unittest.TestCase):
     def test_format_status_phases_ordered(self):
         tasks = self._make_fake_tasks()
         progress = compute_phase_progress(tasks)
-        msg = format_status_message("i2p_v2", 42, progress)
+        msg = format_status_message("i2p_v3", 42, progress)
 
         # Phase -1 should appear before Phase 0 which should appear before Phase 1
         lines = msg.split("\n")

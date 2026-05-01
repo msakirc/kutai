@@ -39,6 +39,37 @@ def test_classify_by_status_code_outranks_text():
     assert classify_error("rate limit exceeded", status_code=418) == "rate_limited"
 
 
+def test_classify_groq_context_overflow():
+    """Groq returns 'Please reduce the length of the messages...' for
+    context overflow on small-context models (allam-2-7b @ 4K). Was
+    classifying as 'unknown' → retried generically → same model picked
+    again. Production triage 2026-05-01: ~4 tasks failed via this path."""
+    body = (
+        'litellm.BadRequestError: GroqException - {"error":{"message":'
+        '"Please reduce the length of the messages or completion. '
+        'Currently, the model has 4096 tokens of context and the '
+        'request is 6243 tokens.","type":"invalid_request_error"}}'
+    )
+    assert classify_error(body) == "context_overflow"
+    # Other phrasings
+    assert classify_error("maximum context length is 8192") == "context_overflow"
+    assert classify_error("Request too large for model") == "context_overflow"
+
+
+def test_classify_groq_json_unsupported():
+    """Groq returns 'This model does not support JSON output' when
+    response_format=json_object hits a non-supporting model (compound,
+    compound-mini). Caller's selection should already filter via
+    needs_json_mode, but if it slips through the classifier must mark
+    it retryable so dispatcher reselects to a json-capable peer."""
+    body = (
+        'litellm.BadRequestError: GroqException - {"error":{"message":'
+        '"This model does not support JSON output","type":'
+        '"invalid_request_error","param":"response_format"}}'
+    )
+    assert classify_error(body) == "json_unsupported"
+
+
 def test_classify_timeout():
     assert classify_error("Timeout on qwen3-30b") == "timeout"
     assert classify_error("Connection timed out") == "timeout"

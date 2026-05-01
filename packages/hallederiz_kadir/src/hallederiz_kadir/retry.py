@@ -124,8 +124,25 @@ def classify_error(error: str, status_code: int | None = None) -> str:
         return "connection_error"
     if any(k in e for k in ("500", "internal server error")):
         return "server_error"
-    if "exceeds the available context size" in e or "context_length_exceeded" in e:
+    if (
+        "exceeds the available context size" in e
+        or "context_length_exceeded" in e
+        # Groq phrasing for context overflow on small-context models like
+        # allam-2-7b. Production triage 2026-05-01: "Please reduce the
+        # length of the messages or completion." was classifying as
+        # "unknown" → retried generically → same model picked again →
+        # same overflow → DLQ.
+        or "please reduce the length of the messages" in e
+        or "maximum context length" in e
+        or "request too large for model" in e  # tpm-style overflow
+    ):
         return "context_overflow"
+    # Groq's "model does not support JSON output" — non-retryable on
+    # the same model. Categorize so dispatcher records it in failures
+    # and selector reselects a json-capable peer. Pre-this fix it
+    # classified as "unknown" → generic retry → same incapable model.
+    if "does not support json output" in e:
+        return "json_unsupported"
     return "unknown"
 
 
@@ -294,7 +311,7 @@ async def execute_with_retry(
         message=last_error or "Unknown error",
         retryable=category in ("timeout", "rate_limited", "loading",
                                "server_error", "gpu_busy", "connection_error",
-                               "context_overflow"),
+                               "context_overflow", "json_unsupported"),
         partial_content=partial,
         headers=last_headers,
         status_code=last_status_code,

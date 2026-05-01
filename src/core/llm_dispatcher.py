@@ -140,6 +140,16 @@ class LLMDispatcher:
         # here so it doesn't leak into the selector's kwarg rejection.
         # Re-injected into the call kwargs at the dispatch site.
         _response_format_kw = kwargs.pop("response_format", None)
+        # If caller supplies response_format, the selected model MUST
+        # support JSON mode — production triage 2026-05-01:
+        #   "BadRequestError: This model does not support JSON output"
+        # killed 4 tasks in 60s because constrained_emit asked for
+        # response_format=json_object but selector picked groq/compound
+        # which doesn't support that param. Set needs_json_mode so the
+        # selector's eligibility filter (selector.py:357-358) excludes
+        # models that lack it.
+        if _response_format_kw is not None:
+            kwargs.setdefault("needs_json_mode", True)
 
         # Telemetry plumbing. task_obj is the agent/workflow Task dict (id,
         # agent_type, context.workflow_step_id/phase). iteration_n is the

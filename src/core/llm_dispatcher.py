@@ -235,11 +235,17 @@ class LLMDispatcher:
                     _out = int(kwargs.get("estimated_output_tokens", 0) or 0)
                     if _in or _out:
                         _min_ctx = int((_in + _out) * 1.3) + 512
-                ok, swap_happened = await self._ensure_local_model(
-                    model, needs_thinking=is_thinking,
-                    load_timeout=pick.estimated_load_seconds or 0.0,
-                    estimated_context=_min_ctx,
-                )
+                # Local model swap can take 30+s and waits behind any
+                # in-flight call on the previous model — no per-step bump
+                # inside ensure_model. Background-pump heartbeats so the
+                # 300s watchdog doesn't kill the task during a slow swap.
+                from src.core import heartbeat as _hb_ka
+                async with _hb_ka.keepalive():
+                    ok, swap_happened = await self._ensure_local_model(
+                        model, needs_thinking=is_thinking,
+                        load_timeout=pick.estimated_load_seconds or 0.0,
+                        estimated_context=_min_ctx,
+                    )
                 if swap_happened:
                     import nerd_herd as _nerd_herd
                     _nerd_herd.record_swap(model.name)
@@ -273,20 +279,29 @@ class LLMDispatcher:
                 pass
 
             try:
-                result = await hallederiz_kadir.call(
-                    model=model,
-                    messages=_messages,
-                    tools=tools,
-                    timeout=timeout,
-                    task=task or category.value,
-                    needs_thinking=needs_thinking,
-                    estimated_input_tokens=kwargs.get("estimated_input_tokens", 0),
-                    estimated_output_tokens=kwargs.get("estimated_output_tokens", 0),
-                    response_format=_response_format_kw,
-                    task_obj=_task_obj_kw,
-                    iteration_n=_iteration_n_kw,
-                    call_category=category.value,
-                )
+                # Cloud non-streaming calls block awaiting litellm.acompletion
+                # — no per-token bump like local streaming gives. With timeout
+                # of 600s a slow cloud call would starve the 300s watchdog.
+                # Background-pump heartbeats around every cloud call. (Local
+                # streaming already bumps every 5s from inside the accumulator,
+                # so the keepalive is mostly a no-op there but cheap to leave
+                # uniform.)
+                from src.core import heartbeat as _hb_ka
+                async with _hb_ka.keepalive():
+                    result = await hallederiz_kadir.call(
+                        model=model,
+                        messages=_messages,
+                        tools=tools,
+                        timeout=timeout,
+                        task=task or category.value,
+                        needs_thinking=needs_thinking,
+                        estimated_input_tokens=kwargs.get("estimated_input_tokens", 0),
+                        estimated_output_tokens=kwargs.get("estimated_output_tokens", 0),
+                        response_format=_response_format_kw,
+                        task_obj=_task_obj_kw,
+                        iteration_n=_iteration_n_kw,
+                        call_category=category.value,
+                    )
             except Exception as exc:
                 # hallederiz_kadir wraps known failures as CallError. A raw
                 # exception here is a bug in hallederiz — but we still want

@@ -15,7 +15,9 @@ and clears it after.
 """
 from __future__ import annotations
 
+import asyncio
 import time
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 
 current_task_id: ContextVar[int | None] = ContextVar("current_task_id", default=None)
@@ -68,3 +70,42 @@ def clear(task_id: int | str | None) -> None:
     except (TypeError, ValueError):
         return
     _HEARTBEATS.pop(key, None)
+
+
+@asynccontextmanager
+async def keepalive(interval: float = 30.0):
+    """Background-bump the active task heartbeat every ``interval`` seconds.
+
+    Long-running awaits between agent iterations — cloud non-streaming
+    calls (no per-token bump from the streaming accumulator), local
+    model swaps (no bump while ensure_model awaits load), KDV refusal
+    sleeps below the inline cap — can starve the watchdog. Wrap such
+    sections with::
+
+        async with heartbeat.keepalive():
+            result = await long_running_op()
+
+    A background task bumps every ``interval`` seconds (default 30s,
+    well below the 300s watchdog window) until the with-block exits.
+    Cancellation-safe: the background task is cancelled in the finally
+    block whether the body succeeded or raised.
+    """
+    task_id = current_task_id.get()
+
+    async def _pump() -> None:
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                bump(task_id)
+        except asyncio.CancelledError:
+            return
+
+    pump_task = asyncio.create_task(_pump())
+    try:
+        yield
+    finally:
+        pump_task.cancel()
+        try:
+            await pump_task
+        except (asyncio.CancelledError, Exception):
+            pass

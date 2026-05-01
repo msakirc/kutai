@@ -65,7 +65,7 @@ async def _load_mode_from_db(db_path: str) -> str:
     try:
         import aiosqlite
 
-        async with aiosqlite.connect(db_path) as db:
+        async with aiosqlite.connect(db_path, isolation_level=None) as db:
             await _apply_pragmas(db)
             async with db.execute(
                 "SELECT mode FROM load_mode WHERE id = 1"
@@ -83,7 +83,7 @@ async def _persist_mode(db_path: str, mode: str, auto_managed: bool) -> None:
     try:
         import aiosqlite
 
-        async with aiosqlite.connect(db_path) as db:
+        async with aiosqlite.connect(db_path, isolation_level=None) as db:
             await _apply_pragmas(db)
             await db.execute(
                 """

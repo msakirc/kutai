@@ -31,10 +31,24 @@ _tx_lock: asyncio.Lock = asyncio.Lock()
 
 
 async def get_db() -> aiosqlite.Connection:
-    """Return the shared database connection, creating it on first call."""
+    """Return the shared database connection, creating it on first call.
+
+    Uses ``isolation_level=None`` (autocommit). Default deferred mode
+    auto-began an implicit transaction on every DML, which collided with
+    explicit ``BEGIN IMMEDIATE`` blocks in add_task / add_subtasks /
+    insert_tasks (raising "cannot start a transaction within a
+    transaction"). With autocommit, each statement is its own tx unless
+    wrapped in an explicit BEGIN/COMMIT region — those callers already
+    use ``_tx_lock`` to serialize.
+
+    Atomicity note: any caller that issues multiple DML statements
+    expecting them to commit as one tx must wrap them in BEGIN/COMMIT
+    AND acquire ``_tx_lock``. Plain ``await db.commit()`` after a series
+    of inserts is now a no-op; the inserts auto-committed individually.
+    """
     global _db_connection
     if _db_connection is None:
-        _db_connection = await aiosqlite.connect(DB_PATH)
+        _db_connection = await aiosqlite.connect(DB_PATH, isolation_level=None)
         _db_connection.row_factory = aiosqlite.Row
         # Enable WAL for concurrent reads + better write performance
         await _db_connection.execute("PRAGMA journal_mode=WAL")
@@ -84,10 +98,13 @@ def connect_aux(db_path):
     auxiliary connection respects the 60s busy_timeout and WAL journal mode
     so it cannot fall back to default 0ms (immediate "database is locked").
 
+    Uses ``isolation_level=None`` to match the singleton — auto-commit per
+    statement, no implicit transactions. Wrap multi-statement work in
+    explicit BEGIN/COMMIT if you need atomicity.
+
     Usage:
         async with connect_aux(DB_PATH) as db:
             await db.execute(...)
-            await db.commit()
     """
     class _Ctx:
         def __init__(self, p):
@@ -95,7 +112,7 @@ def connect_aux(db_path):
             self._db = None
 
         async def __aenter__(self):
-            self._db = await aiosqlite.connect(self._p)
+            self._db = await aiosqlite.connect(self._p, isolation_level=None)
             await _apply_pragmas(self._db)
             return self._db
 
@@ -111,11 +128,11 @@ def connect_aux(db_path):
 def connect_aux_sync(db_path, timeout: float = 60.0):
     """Sync analogue of connect_aux for sqlite3 (not aiosqlite) callsites.
 
-    Returns a sqlite3.Connection with WAL pragmas applied. Caller is
-    responsible for calling .close() (use try/finally or contextlib).
+    Returns a sqlite3.Connection with WAL pragmas applied + isolation_level=None
+    for autocommit semantics. Caller is responsible for calling .close().
     """
     import sqlite3
-    conn = sqlite3.connect(db_path, timeout=timeout)
+    conn = sqlite3.connect(db_path, timeout=timeout, isolation_level=None)
     _apply_pragmas_sync(conn)
     return conn
 

@@ -279,8 +279,18 @@ class Orchestrator:
                 watchdog_task.cancel()
                 _hb.clear(task_id)
         except ModelCallFailed as mcf:
-            result = {"status": "failed", "error": str(mcf)[:500], "error_category": "availability"}
-            logger.warning("ModelCallFailed task #%s: %s", task_id, mcf)
+            # Preserve the dispatcher's specific category. "no_model"
+            # (selector returned None — provider pool transiently
+            # empty) gets a different retry curve in beckman than
+            # generic "availability" (call rejected by provider).
+            # Production 2026-05-02: 50 cloud ids in dead-models +
+            # local pool busy → every retry hit "no candidates" within
+            # 40s, exhausted worker_attempts, DLQ'd. Keeping the
+            # specific category lets retry.py back off longer and let
+            # the pool actually recover.
+            cat = getattr(mcf, "error_category", "") or "availability"
+            result = {"status": "failed", "error": str(mcf)[:500], "error_category": cat}
+            logger.warning("ModelCallFailed task #%s: %s (category=%s)", task_id, mcf, cat)
         except Exception as e:
             result = {"status": "failed", "error": f"{type(e).__name__}: {str(e)[:300]}"}
             logger.exception("dispatch failed task #%s: %s", task_id, e)

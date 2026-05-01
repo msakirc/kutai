@@ -12,6 +12,17 @@ from dataclasses import dataclass
 from typing import Union
 
 _BACKOFF_SECONDS = [0, 10, 30, 120, 600]
+# "no_model" is the dispatcher's signal that fatih_hoca.select() returned
+# None — every cloud provider rate-limited / dead AND local pool busy.
+# This is not a worker bug; it's transient pool exhaustion. Default
+# availability ladder (0/10/30) burns the 3 worker_attempts in <60s and
+# DLQs the task before any provider can recover. Use a longer ladder
+# AND a higher attempt cap so a slow gemini quota reset / one local
+# release lets the task progress instead of dying. Production 2026-05-02:
+# all gemini + openrouter ids dead, every executor task hit DLQ within
+# 40s of the same "No model candidates available" error.
+_NO_MODEL_BACKOFF_SECONDS = [30, 60, 120, 300, 600, 600, 600, 600, 600, 600]
+_NO_MODEL_MAX_ATTEMPTS = 10
 _MAX_BONUS = 2
 
 
@@ -59,6 +70,22 @@ def decide_retry(
     attempts = int(failure.get("worker_attempts", 0))
     max_attempts = int(failure.get("max_worker_attempts", 3))
     category = failure.get("category", "unknown")
+
+    # "no_model" (dispatcher's pick=None signal) gets its own ladder and
+    # attempt cap. Failure is environmental — every provider exhausted
+    # in the same instant. The default 3-attempt × 0/10/30 ladder DLQs
+    # in under 60s before any quota or local slot can recover.
+    if category == "no_model":
+        no_model_max = max(max_attempts, _NO_MODEL_MAX_ATTEMPTS)
+        if attempts < no_model_max:
+            idx = min(max(0, attempts - 1), len(_NO_MODEL_BACKOFF_SECONDS) - 1)
+            delay = _NO_MODEL_BACKOFF_SECONDS[idx]
+            return RetryDecision(action="delayed", delay_seconds=delay)
+        return DLQAction(
+            category=category,
+            reason=failure.get("error", "")[:300]
+            or f"no_model exhausted after {attempts} attempts",
+        )
 
     if attempts < max_attempts:
         # Quality / deterministic failures: immediate retry, no backoff.

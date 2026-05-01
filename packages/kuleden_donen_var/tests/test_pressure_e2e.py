@@ -215,6 +215,44 @@ def test_local_inflight_vetoes_concurrent_admission_via_pressure_for():
 # ── Failure tracking → S10 ──────────────────────────────────────────────
 
 
+def test_synthetic_429_backoff_writes_through_to_matrix():
+    """When a provider 429s with NO headers and NO parseable body, the
+    caller should still register a 60s backoff so subsequent admissions
+    skip the model. Tests the synthetic-snapshot path that fires when
+    real data isn't available. User feedback 2026-05-01: '429 should
+    also be recognized, even if no headers, no point trying it again
+    in same minute'."""
+    from kuleden_donen_var.header_parser import RateLimitSnapshot
+    import time as _t
+
+    kdv = KuledenDonenVar(KuledenConfig())
+    kdv.register("groq/foo", "groq", rpm=30, tpm=8000)
+    state = kdv._rate_limiter.model_limits["groq/foo"]
+    m = _FakeModel(name="groq/foo", provider="groq")
+
+    cold = _pressure(kdv, m, difficulty=5)
+    assert cold.signals["S1"] >= -0.1  # fresh, no depletion
+
+    # Apply synthetic 60s backoff (the path caller.py takes when 429
+    # comes with no parseable headers/body).
+    synthetic = RateLimitSnapshot(
+        rpm_remaining=0,
+        rpm_reset_at=_t.time() + 60.0,
+    )
+    kdv._rate_limiter.update_from_headers("groq/foo", "groq", synthetic)
+
+    # Property reads through fresh-header path: rpm_remaining returns 0.
+    assert state.rpm_remaining == 0
+
+    # Pressure recomputed from updated state. Depletion arm fires.
+    after = _pressure(kdv, m, difficulty=5)
+    assert after.signals["S1"] < -0.5, (
+        f"synthetic backoff must fire S1 depletion; "
+        f"got {after.signals}"
+    )
+    assert after.scalar < cold.scalar
+
+
 def test_consecutive_failures_propagate_to_s10():
     """consecutive_failures kwarg flows from snapshot.cloud[provider]
     state through pressure_for into S10."""

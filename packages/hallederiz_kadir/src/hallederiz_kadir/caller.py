@@ -589,7 +589,17 @@ async def call(
             # write through to the matrix so S1 depletion fires negative
             # on the next selection (otherwise selector keeps re-trying
             # the same tier-locked model on every new task).
+            #
+            # Synthetic backoff: when a 429 fires with NEITHER headers
+            # NOR a parseable body retry-hint, treat it as "this minute
+            # is over for this model" — set _header_rpm_remaining=0 +
+            # reset_at=now+60s. Pool pressure's S1 then sees the cell
+            # as depleted with a 60s recovery window and selector
+            # excludes for that duration. User feedback 2026-05-01:
+            # "429 should also be recognized, even if no headers, no
+            # point trying it again in same minute".
             if raw_result.category == "rate_limited":
+                applied_real_data = False
                 try:
                     from src.core.router import get_kdv
                     from kuleden_donen_var.header_parser import parse_429_body
@@ -600,8 +610,33 @@ async def call(
                         get_kdv()._rate_limiter.update_from_headers(
                             model.litellm_name, model.provider, body_snap,
                         )
+                        applied_real_data = True
                 except Exception:
                     pass
+                # Apply 60s synthetic backoff if neither header parser
+                # nor body parser landed a real signal. Captures every
+                # provider 429 path that doesn't expose headers (e.g.
+                # Groq's "Request too large" RateLimitError without
+                # x-ratelimit-* in the response).
+                if (not applied_real_data and not raw_result.headers):
+                    try:
+                        from src.core.router import get_kdv
+                        from kuleden_donen_var.header_parser import RateLimitSnapshot
+                        import time as _t
+                        synthetic = RateLimitSnapshot(
+                            rpm_remaining=0,
+                            rpm_reset_at=_t.time() + 60.0,
+                        )
+                        get_kdv()._rate_limiter.update_from_headers(
+                            model.litellm_name, model.provider, synthetic,
+                        )
+                        _get_logger().info(
+                            "synthetic 60s backoff applied | model=%s "
+                            "(429 with no headers/body — assume RPM saturated)",
+                            model.name,
+                        )
+                    except Exception:
+                        pass
             # 404 NOT_FOUND: provider retired the model id (Gemini does
             # this with *-preview-MM-DD slugs) or static yaml registered
             # a stale id. Same id won't come back. Mark dead so selector

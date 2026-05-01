@@ -9,6 +9,7 @@ Receives a ModelInfo + messages from the dispatcher and handles:
 """
 from __future__ import annotations
 import asyncio
+import logging
 import time
 from typing import Callable
 import litellm
@@ -18,6 +19,17 @@ from .retry import execute_with_retry, classify_error
 
 litellm.suppress_debug_info = True
 litellm.return_response_headers = True
+
+# Silence LiteLLM's Python logger. ``suppress_debug_info=True`` only mutes
+# the verbose stdout dump; the logger emits DEBUG events independently
+# (HTTP request preview, AiohttpTransport setup, etc.) and they get
+# routed into hallederiz_kadir.jsonl + wrapper_restart.out via the
+# orchestrator's stdio capture. Production triage 2026-05-01: this
+# stream filled 50MB/min and pushed the C: drive to 100% inside hours.
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+logging.getLogger("litellm").setLevel(logging.WARNING)
+logging.getLogger("LiteLLM Router").setLevel(logging.WARNING)
+logging.getLogger("LiteLLM Proxy").setLevel(logging.WARNING)
 # No global request_timeout — each call passes its own timeout via
 # completion_kwargs["timeout"], computed from the dispatcher's budget.
 # A global cap here silently truncates long generations (e.g. 300s coder

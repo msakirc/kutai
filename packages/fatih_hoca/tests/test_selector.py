@@ -224,6 +224,43 @@ def test_select_floors_function_calling_via_agent_type():
     assert result.model.name == "with-fc"
 
 
+# ─── Eligibility: needs_json_mode plumbing ───────────────────────────────────
+
+
+def test_select_accepts_needs_json_mode_kwarg():
+    """Regression: dispatcher passes needs_json_mode=True when caller
+    supplies response_format. Pre-fix, selector.select() raised
+    TypeError('unexpected keyword argument 'needs_json_mode'') because
+    the parameter wasn't in the signature, dropping every constrained_emit
+    call back to draft (logged as 'constrained_emit dispatch failed:
+    TypeError... — keeping draft' on production 2026-05-01)."""
+    model = _make_model("any")
+    model.supports_json_mode = True
+    sel = _make_selector([model])
+    # Must NOT raise.
+    result = sel.select(
+        task="coder", difficulty=5, needs_function_calling=True,
+        needs_json_mode=True,
+    )
+    assert result is not None
+
+
+def test_select_filters_models_without_json_mode_when_required():
+    """When needs_json_mode=True, models with supports_json_mode=False
+    must be excluded by eligibility."""
+    no_json = _make_model("no-json")
+    no_json.supports_json_mode = False
+    with_json = _make_model("with-json")
+    with_json.supports_json_mode = True
+    sel = _make_selector([no_json, with_json])
+    result = sel.select(
+        task="coder", difficulty=5, needs_function_calling=True,
+        needs_json_mode=True,
+    )
+    assert result is not None
+    assert result.model.name == "with-json"
+
+
 # ─── Eligibility: vision ──────────────────────────────────────────────────────
 
 def test_select_respects_needs_vision():

@@ -67,11 +67,17 @@ def test_classify_openrouter_key_limit():
 
 def test_classify_model_not_found():
     """404 NOT_FOUND from a provider (e.g. Gemini retiring a *-preview-MM-DD
-    slug) classifies as model_not_found — caller marks dead, retry skips."""
-    assert classify_error(
-        "litellm.NotFoundError: GeminiException - 404 NOT_FOUND. "
-        "models/gemini-2.5-flash-preview-05-20 is not found"
-    ) == "model_not_found"
+    slug) classifies as model_not_found — caller marks dead, retry skips.
+
+    Note: status code 404 is the structured signal (covered by
+    test_classify_by_status_code_outranks_text). Text fallback only matches
+    unambiguous provider tags — loose "404"+"not found" substring matching
+    was removed because error bodies echo request payloads (Groq
+    json_validate_failed contains failed_generation that can include
+    arbitrary user code with HTTP 404 / 'not found' literals)."""
+    # Status 404 → model_not_found regardless of text
+    assert classify_error("provider rejected", status_code=404) == "model_not_found"
+    # Provider-specific tags in text (no status code)
     assert classify_error(
         "models/gemini-2.5-flash-preview-05-20 is not found for API version v1beta"
     ) == "model_not_found"
@@ -79,12 +85,25 @@ def test_classify_model_not_found():
     # OpenRouter retired-model signal: id in OR catalog but no provider
     # currently serves it. Caller marks dead so future selections skip it.
     assert classify_error(
-        "litellm.NotFoundError: NotFoundError: OpenrouterException - "
-        '{"error":{"message":"No endpoints found for some/retired-model"}}'
+        'OpenrouterException - {"error":{"message":"No endpoints found for x"}}'
     ) == "model_not_found"
-    # Generic 404 without not-found keyword stays unknown — could be a
-    # transient routing/proxy 404 unrelated to the model id.
+    # Generic 404 in body without status code stays unknown —
+    # could be a transient routing/proxy 404 unrelated to the model id.
     assert classify_error("upstream returned 404") == "unknown"
+    # Crucial regression: error body echoing user code that contains
+    # "404" + "not found" literals must NOT misclassify (production
+    # 2026-05-01: Groq json_validate_failed payload included generated
+    # FastAPI HTTPException 404 strings → model wrongly marked dead).
+    groq_json_fail = (
+        'litellm.BadRequestError: GroqException - {"error":{"message":'
+        '"Failed to generate JSON. Please adjust your prompt. See '
+        "'failed_generation' for more details.\","
+        '"code":"json_validate_failed",'
+        '"failed_generation":"raise HTTPException(404, \\"item not found\\")"}}'
+    )
+    assert classify_error(groq_json_fail) == "unknown"
+    # Same body with status_code=400 (the actual HTTP status) → unknown
+    assert classify_error(groq_json_fail, status_code=400) == "unknown"
 
 def test_classify_gpu_busy():
     assert classify_error("GPU queue timeout for qwen3-30b") == "gpu_busy"

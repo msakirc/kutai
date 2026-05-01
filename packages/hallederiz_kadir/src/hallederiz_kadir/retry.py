@@ -100,11 +100,22 @@ def classify_error(error: str, status_code: int | None = None) -> str:
         "insufficient_quota", "insufficient credits", "credit balance",
     )):
         return "auth_failure"
+    # Provider-specific not-found tags. Loose substring "404" + "not found"
+    # was previously matched here as fallback but it false-positives on
+    # error bodies that ECHO the request payload back — Groq's
+    # json_validate_failed includes the failed_generation field which can
+    # carry arbitrary user code (FastAPI handlers raise HTTPException 404
+    # not_found), and Anthropic / Gemini bodies sometimes embed conversation
+    # context. Production triage 2026-05-01: groq/openai/gpt-oss-20b's
+    # constrained_emit error contained generated FastAPI router code with
+    # `404`/`"not found"` literals; classifier flagged the model as
+    # model_not_found and mark_dead'd it for the rest of the session. Only
+    # match unambiguous provider tags now; rely on status_code 404 from
+    # _classify_by_status (above) for the structured-not-found case.
     if (
-        ("404" in e and ("not found" in e or "not_found" in e))
-        or "is not found for api version" in e
-        or "model_not_found" in e
-        or "no endpoints found" in e
+        "is not found for api version" in e        # Gemini retired ids
+        or "model_not_found" in e                  # OpenAI native code
+        or "no endpoints found" in e               # OpenRouter routing
     ):
         return "model_not_found"
     if any(k in e for k in ("timeout", "timed out")):
@@ -217,10 +228,11 @@ async def execute_with_retry(
             )):
                 break
 
-            # 404 / model not found (text fallback when status missing)
+            # 404 / model not found (text fallback when status missing).
+            # Loose "404"+"not found" check removed — false-positives on
+            # request-echo bodies (Groq json_validate_failed payload).
             if (
-                ("404" in error_str and ("not found" in error_str or "not_found" in error_str))
-                or "is not found for api version" in error_str
+                "is not found for api version" in error_str
                 or "model_not_found" in error_str
                 or "no endpoints found" in error_str
             ):

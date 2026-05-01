@@ -250,50 +250,30 @@ def init(
                         provider, getattr(dm, "litellm_name", "?"), e,
                     )
 
-        # ── Cross-validate yaml-loaded cloud models against discovery ──
-        # Yaml entries (models.yaml) load BEFORE discovery and stay in the
-        # registry even if the provider has retired the id (Gemini retires
-        # *-preview-MM-DD slugs, models.yaml/gemini-flash-thinking ↔
-        # gemini/gemini-2.5-flash-preview-05-20 was the production
-        # culprit). Without cross-validation, selector ranks the dead id
-        # via cached benchmark scores, every call 404s.
+        # ── Revive previously-dead ids that re-appeared in discovery ──
+        # The runtime 404 hook (registry.mark_dead) is the AUTHORITATIVE
+        # signal for "this id no longer responds." Cross-check used to
+        # ALSO mark-dead any registered model missing from /models, but
+        # that diff is too coarse to be trusted: provider /models
+        # responses are tier-filtered, paginated, schema-drifty, and a
+        # single-pass mismatch can mark every yaml entry dead in one
+        # shot (production 2026-05-02: 16 gemini + 33 openrouter ids
+        # all marked dead from one degraded discovery, persisted to
+        # .dead_models.json across restarts; selector returned None on
+        # every cloud-fallback path). A 404 at call time is unambiguous;
+        # absence from /models is not.
         #
-        # For each provider whose discovery succeeded (auth_ok), build the
-        # set of live litellm_names. Any registered cloud model on that
-        # provider whose litellm_name is missing from the live set gets
-        # mark_dead'd here — keeps the entry in the registry so other
-        # subsystems that lookup-by-name don't break, but the eligibility
-        # filter excludes it.
-        #
-        # Skipped when discovery failed (auth_fail / network / rate_limit)
-        # — empty live set on a transient outage would mark every model
-        # dead. Better to keep candidates and let the runtime 404 hook
-        # mark_dead on actual call failure.
+        # We KEEP the symmetric revive path: if a previously-dead id
+        # shows up in this provider's live set, the operator/discovery
+        # is telling us the id is back. Combined with the runtime hook,
+        # the only way an id stays dead is if it actually returned 404
+        # from a live call AND has not since been re-published.
         import logging as _logging
         _log = _logging.getLogger(__name__)
         for provider, result in discovery_results.items():
             if not result.auth_ok or result.status != "ok":
                 continue
             live_litellm = {dm.litellm_name for dm in result.models}
-            stale = []
-            for m in _registry.all_models():
-                if m.is_local or m.provider != provider:
-                    continue
-                if m.litellm_name not in live_litellm:
-                    stale.append(m.litellm_name)
-            for ln in stale:
-                _registry.mark_dead(ln)
-            if stale:
-                _log.warning(
-                    "discovery cross-check: %d stale yaml entries on %s "
-                    "(retired/typo) — marked dead: %s",
-                    len(stale), provider, ", ".join(stale[:5]),
-                )
-            # Symmetric path: revive any persisted-dead id that has come
-            # back in this provider's live set. Without this, a model
-            # marked dead in a prior session stays dead forever even if
-            # the provider restored it (OR re-routes a model to a new
-            # upstream, Gemini publishes a previously-retired slug, etc.)
             revived = []
             for ln in list(live_litellm):
                 if _registry.is_dead(ln):
@@ -301,8 +281,7 @@ def init(
                     revived.append(ln)
             if revived:
                 _log.info(
-                    "discovery cross-check: %d previously-dead ids "
-                    "revived on %s: %s",
+                    "discovery: %d previously-dead ids revived on %s: %s",
                     len(revived), provider, ", ".join(revived[:5]),
                 )
 

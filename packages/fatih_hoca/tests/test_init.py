@@ -286,3 +286,110 @@ async def test_init_disables_provider_when_discovery_auth_fails(monkeypatch, tmp
     # discovery_results exposed for the boot caller (KDV wiring etc.).
     assert "groq" in fatih_hoca.discovery_results
     assert fatih_hoca.discovery_results["openai"].auth_ok is True
+
+
+@pytest.mark.asyncio
+async def test_init_does_not_mark_dead_yaml_models_missing_from_discovery(
+    monkeypatch, tmp_path,
+):
+    """Regression: a yaml-registered model that doesn't appear in the
+    provider's /models response must NOT be auto-marked dead.
+
+    Previously cross-validation marked any registered model missing from
+    discovery as dead, then persisted across restarts. Production
+    2026-05-02: 16 gemini + 33 openrouter ids all marked dead from one
+    degraded discovery, killing every cloud-fallback path.
+
+    Runtime 404 hook is the authoritative signal — discovery-diff is too
+    coarse (tier-filtering, pagination, schema drift)."""
+    from fatih_hoca.cloud.types import DiscoveredModel, ProviderResult
+    from fatih_hoca.registry import ModelInfo
+    import fatih_hoca
+
+    # Discovery returns ONE model. Yaml has TWO models registered.
+    fake_results = {
+        "openai": ProviderResult(
+            provider="openai", status="ok", auth_ok=True,
+            models=[DiscoveredModel(
+                litellm_name="openai/gpt-4o", raw_id="gpt-4o",
+                context_length=128000,
+            )],
+        ),
+    }
+
+    async def _fake_refresh(api_keys):
+        return fake_results
+
+    monkeypatch.setattr(fatih_hoca, "_run_cloud_discovery", _fake_refresh)
+
+    fatih_hoca.init(
+        api_keys={"openai": "k"},
+        cloud_cache_dir=str(tmp_path / "cache"),
+        cloud_alert_state_path=str(tmp_path / "throttle.json"),
+    )
+
+    # Pre-register a yaml-style entry that is NOT in the discovery response.
+    yaml_only = ModelInfo(
+        name="openai/gpt-4-retired",
+        location="cloud",
+        provider="openai",
+        litellm_name="openai/gpt-4-retired",
+        capabilities={"reasoning": 7.0},
+    )
+    fatih_hoca._registry.register(yaml_only)
+
+    # Re-run discovery cross-check by re-init-ing — yaml entry must NOT
+    # be marked dead just because it's missing from /models.
+    fatih_hoca.init(
+        api_keys={"openai": "k"},
+        cloud_cache_dir=str(tmp_path / "cache"),
+        cloud_alert_state_path=str(tmp_path / "throttle.json"),
+    )
+    # Re-register after init wipes registry.
+    fatih_hoca._registry.register(yaml_only)
+
+    assert not fatih_hoca._registry.is_dead("openai/gpt-4-retired"), (
+        "yaml-only model must not be auto-marked dead by discovery diff"
+    )
+
+
+@pytest.mark.asyncio
+async def test_init_revives_previously_dead_id_when_back_in_discovery(
+    monkeypatch, tmp_path,
+):
+    """Symmetric path: if a previously-dead id reappears in /models, revive."""
+    from fatih_hoca.cloud.types import DiscoveredModel, ProviderResult
+    import fatih_hoca
+
+    fake_results = {
+        "openai": ProviderResult(
+            provider="openai", status="ok", auth_ok=True,
+            models=[DiscoveredModel(
+                litellm_name="openai/gpt-4o", raw_id="gpt-4o",
+                context_length=128000,
+            )],
+        ),
+    }
+
+    async def _fake_refresh(api_keys):
+        return fake_results
+
+    monkeypatch.setattr(fatih_hoca, "_run_cloud_discovery", _fake_refresh)
+    fatih_hoca.init(
+        api_keys={"openai": "k"},
+        cloud_cache_dir=str(tmp_path / "cache"),
+        cloud_alert_state_path=str(tmp_path / "throttle.json"),
+    )
+
+    # Mark gpt-4o dead, then re-run init — should revive.
+    fatih_hoca._registry.mark_dead("openai/gpt-4o")
+    assert fatih_hoca._registry.is_dead("openai/gpt-4o")
+
+    fatih_hoca.init(
+        api_keys={"openai": "k"},
+        cloud_cache_dir=str(tmp_path / "cache"),
+        cloud_alert_state_path=str(tmp_path / "throttle.json"),
+    )
+    assert not fatih_hoca._registry.is_dead("openai/gpt-4o"), (
+        "id present in fresh discovery must be revived"
+    )

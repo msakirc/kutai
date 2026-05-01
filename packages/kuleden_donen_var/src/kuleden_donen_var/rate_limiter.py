@@ -140,8 +140,20 @@ class RateLimitState:
         hits = int(snap.get("_rate_limit_hits", 0) or 0)
         skip_keys: set[str] = set()
         if hits == 0:
-            skip_keys = {"rpm_limit", "tpm_limit",
-                         "_original_rpm", "_original_tpm"}
+            # rpd_limit / tpd_limit also belong here. Production triage
+            # 2026-05-01: register_cloud_from_discovered → ModelInfo.
+            # rate_limit_rpd → state.rpd_limit set to 1500 at boot for
+            # gemma-4-31b-it. restore_state then wrote back the persisted
+            # rpd_limit=None (from the older state predating the rpd
+            # propagation fix). Result: matrix.rpd cell empty → S1
+            # never saw daily quota → selector kept picking saturated
+            # gemini models.
+            skip_keys = {
+                "rpm_limit", "tpm_limit",
+                "rpd_limit", "rpd_remaining", "rpd_reset_at",
+                "tpd_limit", "tpd_remaining", "tpd_reset_at",
+                "_original_rpm", "_original_tpm",
+            }
         for k in self._PERSISTED_FIELDS:
             if k in skip_keys:
                 continue

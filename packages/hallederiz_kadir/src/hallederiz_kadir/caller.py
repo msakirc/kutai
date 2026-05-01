@@ -438,6 +438,20 @@ async def call(
             _key = _os.getenv(_env_name)
             if _key:
                 completion_kwargs["api_key"] = _key
+        # Explicit provider forces litellm to use the named backend
+        # regardless of which Google env vars happen to be set in the
+        # process. Pre-this fix: GOOGLE_API_KEY (set by an unrelated
+        # Google tool in the user's shell) was triggering litellm to
+        # auto-route gemini/<model> ids to vertex_ai_beta backend
+        # instead of the direct Generative Language API. Vertex_ai_beta
+        # then 4xx'd with rate-limit shape errors against a project
+        # we don't even own. Production triage 2026-05-01: every
+        # gemini call returned `vertex_ai_betaException`.
+        # custom_llm_provider matches the litellm route prefix; for our
+        # ids `gemini/gemini-2.5-flash` it should be "gemini".
+        if model.provider in ("gemini", "groq", "anthropic", "openai",
+                              "openrouter", "cerebras", "sambanova"):
+            completion_kwargs["custom_llm_provider"] = model.provider
 
     # ── Tools ──
     use_tools = None

@@ -1071,13 +1071,21 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
                             "WHERE id = ?",
                             (dup["id"],)
                         )
-                        await db.execute("COMMIT")
+                        if db._conn.in_transaction:
+                            await db.execute("COMMIT")
+                        else:
+                            logger.warning(
+                                f"add_task: tx vanished before COMMIT "
+                                f"(stuck-reset path, dup #{dup['id']}); "
+                                f"work likely auto-rolled-back"
+                            )
                         return dup["id"]
                 logger.info(
                     f"⏭️ Task dedup: '{title[:50]}' matches pending task "
                     f"#{dup['id']} — skipping creation"
                 )
-                await db.execute("ROLLBACK")
+                if db._conn.in_transaction:
+                    await db.execute("ROLLBACK")
                 return None
 
             cursor = await db.execute(
@@ -1092,7 +1100,13 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
                  task_hash)
             )
             row_id = cursor.lastrowid
-            await db.execute("COMMIT")
+            if db._conn.in_transaction:
+                await db.execute("COMMIT")
+            else:
+                logger.warning(
+                    f"add_task: tx vanished before COMMIT (insert path, "
+                    f"new row {row_id}); work likely auto-rolled-back"
+                )
             return row_id
         except Exception:
             try:
@@ -1522,7 +1536,13 @@ async def add_subtasks_atomically(
             values = list(update_fields.values()) + [parent_task_id]
             await db.execute(f"UPDATE tasks SET {sets} WHERE id = ?", values)
 
-            await db.execute("COMMIT")
+            if db._conn.in_transaction:
+                await db.execute("COMMIT")
+            else:
+                logger.warning(
+                    "add_subtasks_atomically: tx vanished before COMMIT; "
+                    "work likely auto-rolled-back"
+                )
         except Exception:
             try:
                 if db._conn.in_transaction:
@@ -1600,7 +1620,13 @@ async def insert_tasks_atomically(
                 )
                 created_ids.append(cursor.lastrowid)
 
-            await db.execute("COMMIT")
+            if db._conn.in_transaction:
+                await db.execute("COMMIT")
+            else:
+                logger.warning(
+                    "insert_tasks_atomically: tx vanished before COMMIT; "
+                    "work likely auto-rolled-back"
+                )
         except Exception:
             try:
                 if db._conn.in_transaction:

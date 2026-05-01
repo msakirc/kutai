@@ -1519,10 +1519,11 @@ async def add_subtasks_atomically(
                        (mission_id, parent_task_id, title, description, agent_type,
                         tier, priority, requires_approval, depends_on, context,
                         task_hash)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, '{}', ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
                     (mission_id, parent_task_id, title, description, agent_type,
                      st.get("tier", "auto"), st.get("priority", 5),
                      json.dumps(st.get("depends_on", [])),
+                     json.dumps(st.get("context", {})),
                      task_hash)
                 )
                 created_ids.append(cursor.lastrowid)

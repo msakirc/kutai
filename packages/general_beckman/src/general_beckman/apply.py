@@ -109,19 +109,33 @@ async def _apply_complete(task: dict, a) -> None:
 
 
 async def _apply_subtasks(task: dict, a: SpawnSubtasks) -> None:
-    from src.infra.db import add_task, update_task
-    for sub in a.subtasks:
-        await add_task(
-            title=sub.get("title", ""),
-            description=sub.get("description", ""),
-            agent_type=sub.get("agent_type", "coder"),
-            parent_task_id=a.parent_task_id,
-            mission_id=task.get("mission_id"),
-            depends_on=sub.get("depends_on", []),
-            context=sub.get("context", {}),
-            priority=sub.get("priority", task.get("priority", 5)),
-        )
-    await update_task(a.parent_task_id, status="waiting_subtasks")
+    """Spawn N subtasks atomically.
+
+    Was a loop of add_task() calls, each opening its own aux connection
+    + BEGIN/COMMIT — N writer-slot acquisitions per batch. Migrated to
+    add_subtasks_atomically which does ONE connection + ONE tx for the
+    whole batch, dropping write-lock contention on bursty mission
+    advances.
+    """
+    from src.infra.db import add_subtasks_atomically
+    subtasks = [
+        {
+            "title": sub.get("title", ""),
+            "description": sub.get("description", ""),
+            "agent_type": sub.get("agent_type", "coder"),
+            "tier": sub.get("tier", "auto"),
+            "priority": sub.get("priority", task.get("priority", 5)),
+            "depends_on": sub.get("depends_on", []),
+            "context": sub.get("context", {}),
+        }
+        for sub in a.subtasks
+    ]
+    await add_subtasks_atomically(
+        parent_task_id=a.parent_task_id,
+        subtasks=subtasks,
+        mission_id=task.get("mission_id"),
+        parent_status="waiting_subtasks",
+    )
 
 
 async def _apply_clarify(task: dict, a: RequestClarification) -> None:

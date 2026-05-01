@@ -85,6 +85,35 @@ class Selector:
 
         # ── Get system snapshot ──────────────────────────────────────────────
         snapshot = self._nerd_herd.snapshot()
+        # In-flight overlay: nerd_herd.client's cached snapshot is sourced
+        # from the sidecar HTTP cache, which lags the in-process registry
+        # by one refresh cycle (~1s). Beckman overlays in_flight in its
+        # next_task(), but the dispatcher's retry recursion calls
+        # fatih_hoca.select() directly — without an overlay here it sees
+        # stale in_flight and S9's hard local-busy veto silently passes.
+        # Production triage 2026-05-01: tasks #7712 + #7755 both ended
+        # up on local 9B/35B because dispatcher recursion's snap was
+        # stale between admission and the retry's select. Pull
+        # in-process truth from src.core.in_flight here so EVERY
+        # selector entry path (admission + retry recursion) sees the
+        # same authoritative list. Fail-open on import error (test
+        # environments without the runtime in_flight module).
+        try:
+            from src.core.in_flight import in_flight_snapshot as _ifs
+            from nerd_herd.types import InFlightCall as _IFC
+            _local_ifs = _ifs()
+            if _local_ifs:
+                snapshot.in_flight_calls = [
+                    _IFC(
+                        call_id=e.call_id, task_id=e.task_id,
+                        category=e.category, model=e.model,
+                        provider=e.provider, is_local=e.is_local,
+                        started_at=e.started_at,
+                    )
+                    for e in _local_ifs
+                ]
+        except Exception:
+            pass
 
         # ── Build requirements ───────────────────────────────────────────────
         reqs = ModelRequirements(

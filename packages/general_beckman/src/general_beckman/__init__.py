@@ -153,17 +153,19 @@ async def next_task():
     from src.infra.logging_config import get_logger
     _log = get_logger("beckman.admission")
 
-    # Overlay LOCAL in_flight registry onto snapshot.in_flight_calls.
-    # refresh_snapshot fetches from the nerd_herd sidecar via HTTP — there's
-    # a race window between reserve_task's push and the next refresh's read
-    # where a just-admitted task isn't yet visible to the sidecar. Production
-    # triage 2026-05-01: 7 local tasks admitted concurrently because each
-    # admission tick read the sidecar mid-flight on the previous push,
-    # saw an empty in_flight, and S9 LOCAL_BUSY_PENALTY never fired.
+    # Overlay in-process truth onto snapshot:
+    #   1. in_flight_calls — from src.core.in_flight._task_slots
+    #   2. cloud[provider].models[name].limits — from KDV directly
+    # Both bypass the nerd_herd sidecar HTTP round-trip that creates a
+    # race window between writers (reserve_task / KDV.record_attempt)
+    # and readers (refresh_snapshot via /api/snapshot GET). Production
+    # triage 2026-05-01: 9 cloud tasks admitted concurrently to a single
+    # 8K-TPM model because each parallel admission tick saw a stale
+    # snapshot with full TPM headroom while reservations from prior
+    # ticks hadn't propagated to the sidecar yet.
     #
-    # Local registry (`src.core.in_flight._task_slots`) is updated
-    # SYNCHRONOUSLY by reserve_task before the next next_task() call.
-    # Reading it here is authoritative and immune to the sidecar race.
+    # Both registries are SAME-PROCESS writers and SYNCHRONOUS — reading
+    # them here is authoritative and immune to the HTTP race.
     if snap is not None:
         try:
             from src.core.in_flight import in_flight_snapshot as _local_in_flight
@@ -177,6 +179,25 @@ async def next_task():
                     pass
         except Exception as e:
             _log.debug(f"local in_flight overlay failed: {e}")
+        # Cloud state overlay: KDV's RateLimitState (in-process) is the
+        # writer for tpm_remaining / rpm_remaining / rpd_remaining via
+        # the property accessors. Rebuild the matrix cells from KDV
+        # directly so admission sees post-reservation truth.
+        try:
+            from src.core.router import get_kdv as _get_kdv
+            from kuleden_donen_var.nerd_herd_adapter import (
+                build_cloud_provider_state as _build_cloud,
+            )
+            kdv = _get_kdv()
+            for prov_name in list(getattr(snap, "cloud", {}) or {}):
+                fresh = _build_cloud(kdv, prov_name)
+                if fresh is not None:
+                    try:
+                        snap.cloud[prov_name] = fresh
+                    except (AttributeError, TypeError):
+                        pass
+        except Exception as e:
+            _log.debug(f"cloud state overlay failed: {e}")
 
     candidates = await _queue.pick_ready_top_k(k=top_k)
 

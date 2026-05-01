@@ -434,6 +434,52 @@ def test_select_local_with_vram():
 
 # ─── Coding specialty mismatch ────────────────────────────────────────────────
 
+def test_select_holds_when_free_tier_rpm_saturated():
+    """User feedback 2026-05-01: 'every provider's free-tier RPM is
+    indeed genuinely insufficient. pool pressures should respect that
+    and hold the dispatch accordingly'.
+
+    When the only candidate is a free-tier cloud model and its RPM
+    matrix cell shows remaining=0 (sliding-window saturated, synthetic
+    backoff applied, or 429-body parsed limit:0), S1 fires depletion_max
+    -1.0. Selector's strict >−1.0 gate excludes it. select() returns
+    None — beckman defers admission this tick. After RPM bucket recovers
+    (sliding window or reset_at), pressure rebounds and selector picks
+    on the next tick. This is the HOLD path."""
+    from nerd_herd.types import RateLimit, RateLimitMatrix
+
+    cloud = _make_model(
+        "free-tier-flash",
+        location="cloud",
+        provider="gemini",
+        litellm_name="gemini/free-tier-flash",
+        tier="free",
+        cost_in=0.0, cost_out=0.0,
+    )
+
+    # RPM saturation: limit=5, remaining=0 → S1 fires -1.0
+    snap = SystemSnapshot(vram_available_mb=8192)
+    snap.cloud["gemini"] = CloudProviderState(
+        provider="gemini",
+        consecutive_failures=0,
+        limits=RateLimitMatrix(rpm=RateLimit(limit=5, remaining=0, reset_at=0)),
+    )
+    nh = MagicMock()
+    nh.snapshot.return_value = snap
+    nh.recent_swap_count.return_value = 0
+
+    reg = _make_registry(cloud)
+    sel = Selector(registry=reg, nerd_herd=nh,
+                   available_providers={"gemini"})
+
+    # urgency=1.0 (max) → threshold=-1.0; strict gate excludes scalar=-1.0
+    result = sel.select(task="coder", difficulty=5, urgency=1.0)
+    assert result is None, (
+        "free-tier RPM=0 must hold dispatch even at max urgency — got "
+        f"pick={result.model.name if result else None}"
+    )
+
+
 def test_select_coding_specialty_rejected_for_non_code_task():
     coding_model = _make_model("code-specialist", specialty="coding")
     sel = _make_selector([coding_model])

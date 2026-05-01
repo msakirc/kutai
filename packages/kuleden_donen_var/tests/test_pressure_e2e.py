@@ -79,23 +79,20 @@ def test_rpm_pressure_shifts_negative_after_burst_calls():
     m = _FakeModel(name="gemini/foo", provider="gemini", is_free=True)
 
     cold = _pressure(kdv, m, difficulty=5)
-    # Cold: full bucket, remaining=5/5 → S1 returns positive abundance
-    # (time_bucketed profile + free pool + reset_at unset → 0 actually,
-    # but at minimum no depletion).
     assert cold.signals["S1"] >= 0.0, f"cold S1 should be non-negative, got {cold.signals}"
 
     # Saturate via record_attempt — same path the caller uses
     for _ in range(5):
         kdv.record_attempt("gemini/foo", "gemini", estimated_tokens=0)
     saturated = _pressure(kdv, m, difficulty=5)
-    # remaining=0 + time_bucketed exhausted_neutral=True → S1 returns 0.0
-    # (neutral, NOT depletion). But S2 burden definitely fires negative
-    # since per-call eats all remaining. Verify the scalar shifted.
-    assert saturated.scalar < cold.scalar, (
-        f"scalar must shift negative under saturation: "
-        f"cold={cold.scalar:+.3f} saturated={saturated.scalar:+.3f} "
-        f"signals={saturated.signals}"
+    # remaining=0 → time_bucketed depletion arm fires depletion_max=-1.0.
+    # User feedback 2026-05-01: free-tier RPM saturation MUST hold
+    # dispatch — selector strict-gate excludes scalar=-1.0 candidates.
+    assert saturated.signals["S1"] <= -0.95, (
+        f"saturated S1 must hit hard depletion (free-tier RPM=0 → "
+        f"selector exclusion floor); got {saturated.signals}"
     )
+    assert saturated.scalar < cold.scalar
 
 
 def test_tpm_pressure_shifts_negative_after_token_burst():

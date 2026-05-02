@@ -1222,12 +1222,16 @@ class ModelRegistry:
         self._lock = threading.RLock()
         self._speed_cache_dirty = False
         self._speed_cache_last_save: float = 0.0
-        # Runtime kill-switch for models that 404'd (provider retired the
-        # id without notice — Gemini does this with *-preview-MM-DD
-        # slugs). Keyed by name AND litellm_name so either lookup path
-        # excludes. Cleared on next discovery refresh that re-confirms
-        # the model is back, or process restart.
-        self._dead_models: set[str] = set()
+        # Runtime kill-switch for models that 404'd. Maps identifier →
+        # expiration unix-ts. Keyed by name AND litellm_name so either
+        # lookup path excludes. Cleared on next discovery refresh that
+        # re-confirms the model is back, on TTL expiry, or by manual
+        # revive. Production 2026-05-02: openrouter free-tier "No
+        # endpoints found" 404s often transient (upstream provider
+        # rotation), but legacy permanent mark_dead burned all 33 free-
+        # tier ids until manual file deletion. TTL gives them a chance
+        # to come back without operator intervention.
+        self._dead_models: dict[str, float] = {}
         # Hydrate from persisted file. Cold-start picks up known-bad ids
         # so the first call doesn't have to re-discover them via 404.
         self._load_dead_persisted()
@@ -1261,28 +1265,59 @@ class ModelRegistry:
     # learns again. Production triage 2026-05-01: 8 OR free-tier ids
     # 404'd repeatedly across restarts.
     _DEAD_FILE = Path(os.getenv("KUTAI_DATA_DIR", ".")) / ".dead_models.json"
+    # TTL for runtime-marked dead ids. After this window the entry
+    # auto-expires and the id becomes eligible again. If it 404s
+    # again, mark_dead re-arms the timer. 1h was chosen because:
+    #   - openrouter upstream rotations typically resolve in minutes
+    #   - shorter TTLs cycle dead/alive too fast under sustained 404s
+    #   - longer TTLs keep transiently-broken ids out for hours
+    _DEAD_TTL_SECONDS: float = 3600.0
 
     def _load_dead_persisted(self) -> None:
         """Load persisted dead set on registry init. Best-effort — a
-        missing/corrupt file just means an empty starting set."""
+        missing/corrupt file just means an empty starting set.
+
+        Accepts two on-disk formats:
+          - dict (current): id → expiration unix-ts, expired entries dropped
+          - list (legacy): treat each id as just-marked (TTL from now)
+        """
         try:
             if self._DEAD_FILE.exists():
                 import json as _json
+                import time as _time
                 data = _json.loads(self._DEAD_FILE.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    self._dead_models.update(str(x) for x in data if x)
+                now = _time.time()
+                if isinstance(data, dict):
+                    for k, v in data.items():
+                        if not isinstance(k, str) or not k:
+                            continue
+                        try:
+                            exp = float(v)
+                        except (TypeError, ValueError):
+                            continue
+                        if exp > now:
+                            self._dead_models[k] = exp
+                elif isinstance(data, list):
+                    # Legacy format: treat existing entries as freshly-
+                    # marked so TTL applies from this load.
+                    for x in data:
+                        if x:
+                            self._dead_models[str(x)] = now + self._DEAD_TTL_SECONDS
         except Exception as e:
             logger.debug("dead_models persistence load failed: %s", e)
 
     def _save_dead_persisted(self) -> None:
-        """Atomic-replace write of the dead set. Swallows IO errors —
+        """Atomic-replace write of the dead map. Swallows IO errors —
         worst case is the next restart re-learns the dead ids."""
         try:
             import json as _json
             self._DEAD_FILE.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._DEAD_FILE.with_suffix(".json.tmp")
             tmp.write_text(
-                _json.dumps(sorted(self._dead_models), indent=2),
+                _json.dumps(
+                    {k: self._dead_models[k] for k in sorted(self._dead_models)},
+                    indent=2,
+                ),
                 encoding="utf-8",
             )
             tmp.replace(self._DEAD_FILE)
@@ -1292,40 +1327,59 @@ class ModelRegistry:
     def mark_dead(self, identifier: str) -> None:
         """Mark a model as dead (404'd at call time). Keyed by name OR
         litellm_name — selector eligibility filter checks both.
-        Persisted to disk so subsequent restarts skip the same id."""
+        Persisted to disk so subsequent restarts respect the TTL.
+        Re-marking refreshes the timer — sustained 404s keep the id
+        out, occasional 404s heal after TTL."""
         if not identifier:
             return
+        import time as _time
+        exp = _time.time() + self._DEAD_TTL_SECONDS
         with self._lock:
-            before = set(self._dead_models)
-            self._dead_models.add(identifier)
+            before = dict(self._dead_models)
+            self._dead_models[identifier] = exp
             # Also add the matching litellm_name (or name) for symmetric
             # exclusion regardless of which path the lookup uses.
             m = self._models.get(identifier)
             if m is not None:
-                self._dead_models.add(m.litellm_name)
+                self._dead_models[m.litellm_name] = exp
             else:
                 for cand in self._models.values():
                     if cand.litellm_name == identifier:
-                        self._dead_models.add(cand.name)
+                        self._dead_models[cand.name] = exp
                         break
             changed = self._dead_models != before
         if changed:
             self._save_dead_persisted()
-        logger.warning("registry: marked dead %s — excluded until rediscovery confirms it back", identifier)
+        logger.warning(
+            "registry: marked dead %s — excluded for %.0fs (until "
+            "discovery re-confirms or TTL expires)",
+            identifier, self._DEAD_TTL_SECONDS,
+        )
 
     def is_dead(self, identifier: str) -> bool:
-        return identifier in self._dead_models
+        """True iff identifier is in the dead-set AND its TTL has
+        not yet expired. Auto-cleans expired entries on read."""
+        exp = self._dead_models.get(identifier)
+        if exp is None:
+            return False
+        import time as _time
+        if _time.time() >= exp:
+            # Expired — drop and treat as alive. Next 404 will re-mark.
+            with self._lock:
+                self._dead_models.pop(identifier, None)
+            return False
+        return True
 
     def revive(self, identifier: str) -> None:
         """Drop a model from the dead set — called by discovery on next
         refresh when the provider reports the id again. Updates persisted
         file so the revive sticks across restarts."""
         with self._lock:
-            before = set(self._dead_models)
-            self._dead_models.discard(identifier)
+            before = dict(self._dead_models)
+            self._dead_models.pop(identifier, None)
             m = self._models.get(identifier)
             if m is not None:
-                self._dead_models.discard(m.litellm_name)
+                self._dead_models.pop(m.litellm_name, None)
             changed = self._dead_models != before
         if changed:
             self._save_dead_persisted()

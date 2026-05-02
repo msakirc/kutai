@@ -426,3 +426,47 @@ def test_registry_mark_dead_safe_with_unknown_id():
     # Empty/None safe
     registry.mark_dead("")
     assert registry.is_dead("") is False
+
+
+def test_registry_mark_dead_ttl_expires_id_back_to_alive():
+    """Production 2026-05-02: openrouter free-tier "No endpoints found"
+    404s often transient (upstream rotation). Permanent mark_dead burned
+    all 33 ids until manual file deletion. TTL gives them a chance to
+    self-heal — after expiry, is_dead returns False and the next call
+    can re-test the id."""
+    from fatih_hoca.registry import ModelRegistry
+    registry = ModelRegistry()
+    # Force a tiny TTL for the test.
+    registry._DEAD_TTL_SECONDS = 0.05  # 50ms
+    registry.mark_dead("openrouter/test-id")
+    assert registry.is_dead("openrouter/test-id") is True
+    import time
+    time.sleep(0.1)
+    # After TTL, is_dead returns False AND drops the entry.
+    assert registry.is_dead("openrouter/test-id") is False
+
+
+def test_registry_mark_dead_persistence_legacy_list_format():
+    """Earlier versions persisted dead set as a list. New format is a
+    dict mapping id → expiration ts. Loader must accept both — list
+    entries get a fresh TTL applied so they expire normally."""
+    from fatih_hoca.registry import ModelRegistry
+    import json
+    import tempfile
+    import pathlib
+
+    tmpdir = tempfile.mkdtemp()
+    try:
+        # Create a registry pinned at a temp dead-file location.
+        registry = ModelRegistry()
+        legacy_path = pathlib.Path(tmpdir) / ".dead_models.json"
+        legacy_path.write_text(json.dumps(["openrouter/legacy-1", "openrouter/legacy-2"]))
+        # Reload via _load_dead_persisted with a custom file path.
+        registry._DEAD_FILE = legacy_path
+        registry._dead_models = {}
+        registry._load_dead_persisted()
+        assert registry.is_dead("openrouter/legacy-1") is True
+        assert registry.is_dead("openrouter/legacy-2") is True
+    finally:
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)

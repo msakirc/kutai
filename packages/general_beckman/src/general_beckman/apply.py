@@ -286,6 +286,19 @@ async def _retry_or_dlq(task: dict, *, category: str, error: str) -> None:
         ctx["_bonus_count"] = bonus_count + 1
         max_attempts += 1
 
+    # Bump max_worker_attempts when retry policy uses a category-specific
+    # higher cap (currently only "no_model": 10). Without this, sweep.py
+    # section 8 force-DLQs any pending task with worker_attempts >=
+    # task.max_worker_attempts (default 6), beating the retry layer's
+    # internal 10-attempt budget. Production 2026-05-02: 10 tasks DLQ'd
+    # with "Worker attempts exceeded: 6/6" despite category=no_model
+    # because sweep didn't know about the higher internal cap. Persist
+    # the cap on the row so sweep respects it.
+    if category == "no_model":
+        from general_beckman.retry import _NO_MODEL_MAX_ATTEMPTS
+        if max_attempts < _NO_MODEL_MAX_ATTEMPTS:
+            max_attempts = _NO_MODEL_MAX_ATTEMPTS
+
     next_retry_at = None
     if decision.action == "delayed":
         next_retry_at = to_db(utc_now() + timedelta(seconds=decision.delay_seconds))

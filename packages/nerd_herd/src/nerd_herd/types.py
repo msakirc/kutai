@@ -180,6 +180,17 @@ class InFlightCall:
     provider: str
     is_local: bool
     started_at: float
+    # Projected token consumption for THIS task on this model. Set by
+    # Beckman at reserve_task time from estimate_for(); zero for legacy
+    # callers / tests. Pool-pressure consumers read this to back-pressure
+    # admission against a saturated cloud BEFORE the actual call lands
+    # at KDV.record_attempt — closing the admission→call gap where
+    # several parallel admissions on the same cloud model all see fresh
+    # tpm_remaining and overshoot the budget. Production 2026-05-02
+    # observed: 5 ticks × 3s admit 5 tasks on gemini before any one's
+    # caller.py reaches KDV.record_attempt. Counted in nerd_herd.types
+    # pressure_for via subtract-from-effective on S1.
+    est_tokens: int = 0
 
 
 @dataclass
@@ -266,11 +277,47 @@ class SystemSnapshot:
             if not c.is_local and c.provider == provider and c.model == getattr(model, "name", "")
         )
 
+        # Sum of admission-time token reservations for this same model
+        # across all currently-in-flight tasks. Beckman writes
+        # InFlightCall.est_tokens at reserve_task; this lets pool
+        # pressure deduct projected consumption BEFORE each task's
+        # actual call lands at KDV.record_attempt. Without this,
+        # several admissions in the same 15s window all see fresh
+        # tpm_remaining (KDV's reservation only fires at call-time)
+        # and overshoot — the admission→call gap was the proximate
+        # cause of the 2026-05-02 14:44 saturation cascade.
+        in_flight_est_tokens = sum(
+            int(getattr(c, "est_tokens", 0) or 0)
+            for c in self.in_flight_calls
+            if not c.is_local
+            and c.provider == provider
+            and c.model == getattr(model, "name", "")
+        )
+
+        # Build an "effective" matrix that subtracts in-flight reservations
+        # from rpm/tpm/rpd remaining. Burden / remaining signals (S1, S2,
+        # S3) read this view instead of the raw KDV-fed matrix. The
+        # original matrix is preserved for non-budget signals.
+        if in_flight_est_tokens > 0 or in_flight_n > 0:
+            from copy import copy as _copy
+            eff = RateLimitMatrix()
+            for axis_name, rl in matrix.populated_cells():
+                new_rl = _copy(rl)
+                if rl.remaining is not None:
+                    if axis_name in ("tpm", "cpm", "tpd", "cpd"):
+                        new_rl.remaining = max(0, rl.remaining - in_flight_est_tokens)
+                    elif axis_name in ("rpm", "rpd"):
+                        new_rl.remaining = max(0, rl.remaining - in_flight_n)
+                setattr(eff, axis_name, new_rl)
+            matrix_effective = eff
+        else:
+            matrix_effective = matrix
+
         # Compute signals
         sig = {
-            "S1": s1_remaining(matrix, reset_in_secs=reset_in, in_flight=in_flight_n, profile=profile),
-            "S2": s2_call_burden(matrix, est_per_call_tokens=est_per_call_tokens),
-            "S3": s3_task_burden(matrix, est_per_task_tokens=est_per_task_tokens),
+            "S1": s1_remaining(matrix_effective, reset_in_secs=reset_in, in_flight=in_flight_n, profile=profile),
+            "S2": s2_call_burden(matrix_effective, est_per_call_tokens=est_per_call_tokens),
+            "S3": s3_task_burden(matrix_effective, est_per_task_tokens=est_per_task_tokens),
             "S4": s4_queue_tokens(matrix, queue=self.queue_profile or QueueProfile()),
             "S5": s5_queue_calls(matrix, queue=self.queue_profile or QueueProfile()),
             "S6": s6_capable_supply(model, queue=self.queue_profile or QueueProfile(),

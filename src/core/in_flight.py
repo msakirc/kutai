@@ -52,9 +52,11 @@ _recent_cloud: dict[int, tuple[str, str, float]] = {}
 
 
 class _InFlightEntry:
-    __slots__ = ("call_id", "task_id", "category", "model", "provider", "is_local", "started_at")
+    __slots__ = ("call_id", "task_id", "category", "model", "provider",
+                 "is_local", "started_at", "est_tokens")
 
-    def __init__(self, call_id, task_id, category, model, provider, is_local, started_at):
+    def __init__(self, call_id, task_id, category, model, provider, is_local,
+                 started_at, est_tokens=0):
         self.call_id = call_id
         self.task_id = task_id
         self.category = category
@@ -62,6 +64,7 @@ class _InFlightEntry:
         self.provider = provider
         self.is_local = is_local
         self.started_at = started_at
+        self.est_tokens = int(est_tokens or 0)
 
 
 # ─── Read-only accessor ───────────────────────────────────────────────────
@@ -131,6 +134,7 @@ async def _push() -> None:
                 provider=e.provider,
                 is_local=e.is_local,
                 started_at=e.started_at,
+                est_tokens=getattr(e, "est_tokens", 0),
             )
             for e in list(_task_slots.values()) + list(_call_entries.values())
         ]
@@ -139,7 +143,7 @@ async def _push() -> None:
         logger.debug("in_flight push failed: %s", exc)
 
 
-async def reserve_task(task_id: int, pick) -> None:
+async def reserve_task(task_id: int, pick, est_tokens: int = 0) -> None:
     """Seed a per-task slot at admission time with the Beckman-chosen pick.
 
     Called by Beckman after ``_claim_task`` succeeds. Fills the gap between
@@ -149,6 +153,11 @@ async def reserve_task(task_id: int, pick) -> None:
     call-time model (retry / re-select may change it).
 
     ``pick.model`` must have ``name``, ``provider``, ``is_local`` attributes.
+    ``est_tokens`` is the projected total token consumption for this task
+    on this model (computed via fatih_hoca.estimates.estimate_for at
+    admission). Pool-pressure consumers subtract these from effective
+    rpm/tpm so parallel admissions in the same window don't all see
+    fresh budget and overshoot.
     """
     model = pick.model
     _task_slots[task_id] = _InFlightEntry(
@@ -159,11 +168,13 @@ async def reserve_task(task_id: int, pick) -> None:
         provider=getattr(model, "provider", ""),
         is_local=bool(getattr(model, "is_local", False)),
         started_at=time.time(),
+        est_tokens=int(est_tokens or 0),
     )
     logger.info(
-        "reserve_task task=%s model=%s local=%s total=%d",
+        "reserve_task task=%s model=%s local=%s est_tokens=%d total=%d",
         task_id, getattr(model, "name", ""),
         bool(getattr(model, "is_local", False)),
+        int(est_tokens or 0),
         len(_task_slots) + len(_call_entries),
     )
     await _push()
@@ -204,6 +215,13 @@ async def begin_call(
     """
     if task_id is not None:
         call_id = f"task-{task_id}"
+        # Preserve est_tokens from a prior reserve_task admission, so
+        # the projected-cost reservation survives the upsert. Mid-task
+        # model swaps (retry / re-select) don't have a fresh estimate
+        # at this layer; keeping the admission-time figure is the best
+        # available approximation.
+        prior = _task_slots.get(task_id)
+        prior_est = int(getattr(prior, "est_tokens", 0)) if prior else 0
         _task_slots[task_id] = _InFlightEntry(
             call_id=call_id,
             task_id=task_id,
@@ -212,6 +230,7 @@ async def begin_call(
             provider=provider,
             is_local=is_local,
             started_at=time.time(),
+            est_tokens=prior_est,
         )
         if not is_local:
             _recent_cloud[task_id] = (provider, model_name, time.time())

@@ -370,7 +370,14 @@ async def next_task():
         # Nerd_herd being down shouldn't halt the system.
         try:
             from src.core.in_flight import reserve_task
-            await reserve_task(task["id"], pick)
+            # Pass projected token consumption so pool-pressure consumers
+            # back-pressure parallel admissions in the same window. Without
+            # this, several tasks admitted within ~15s on the same cloud
+            # model all see fresh tpm_remaining and overshoot the quota.
+            await reserve_task(
+                task["id"], pick,
+                est_tokens=int((est_in or 0) + (est_out or 0)),
+            )
         except Exception as e:
             _log.warning(f"admission: reserve_task failed #{task['id']}: {e}")
 

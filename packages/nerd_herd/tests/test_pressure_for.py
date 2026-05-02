@@ -113,3 +113,45 @@ def test_pressure_for_full_path_returns_breakdown():
     # All 10 signal keys populated
     assert all(k in breakdown.signals for k in
                ("S1", "S2", "S3", "S4", "S5", "S6", "S7", "S9", "S10", "S11"))
+
+
+# ── Admission reservations subtract from effective remaining ───────────────
+
+
+def test_pressure_for_subtracts_in_flight_est_tokens_from_remaining():
+    """Beckman-admitted-but-not-yet-called tasks carry est_tokens in
+    InFlightCall. Pool pressure must subtract them from tpm/cpm
+    remaining so a second admission tick on the same model doesn't
+    see fresh budget. Production 2026-05-02: 5 parallel admissions
+    on gemini all saw fresh tpm_remaining and overshot the quota."""
+    from nerd_herd.types import InFlightCall
+
+    # Provider with 12K TPM remaining.
+    m = CloudModelState(model_id="gemini/flash")
+    m.limits.tpm = RateLimit(limit=12000, remaining=12000)
+    m.limits.rpm = RateLimit(limit=10, remaining=10)
+    prov = CloudProviderState(provider="gemini", models={"gemini/flash": m})
+
+    # Two tasks already admitted, each projecting 4500 tokens.
+    in_flight = [
+        InFlightCall(
+            call_id=f"task-{i}", task_id=i, category="main_work",
+            model="gemini/flash", provider="gemini", is_local=False,
+            started_at=time.time(), est_tokens=4500,
+        )
+        for i in (1, 2)
+    ]
+    snap = SystemSnapshot(cloud={"gemini": prov}, in_flight_calls=in_flight)
+
+    fake = MagicMock(is_local=False, is_free=False, provider="gemini", cap_score=5.0)
+    fake.name = "gemini/flash"
+
+    # Without subtraction, the matrix shows 12K remaining and a 4K-call
+    # has plenty of headroom (S2 ≈ 0). With subtraction, effective
+    # tpm_remaining = 12K - 9K = 3K, and a 4K-token call now exceeds
+    # capacity → S2 fires negative.
+    breakdown = snap.pressure_for(fake, **_kwargs(est_per_call_tokens=4000))
+    assert breakdown.signals["S2"] < 0, (
+        f"S2 should fire negative when in-flight reservations leave "
+        f"insufficient headroom: signals={breakdown.signals}"
+    )

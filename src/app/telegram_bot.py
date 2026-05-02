@@ -2020,8 +2020,10 @@ class TelegramInterface:
                ORDER BY priority DESC, started_at ASC LIMIT 10"""
         )
         processing = [dict(row) for row in await cursor.fetchall()]
-        # Fetch ready (pending with deps met)
-        ready = await get_ready_tasks(limit=15)
+        # Fetch ready (pending with deps met). Pass a high cap so we get an
+        # accurate total count for the queue header — render only the first
+        # 5 to keep the Telegram message short.
+        ready = await get_ready_tasks(limit=500)
         # Fetch retry-pending: pending tasks with future next_retry_at.
         # These were getting lost in "blocked" before — user couldn't tell
         # whether a phase was deadlocked vs just waiting on backoff timer.
@@ -2074,10 +2076,13 @@ class TelegramInterface:
                 msg += f"  #{t['id']} [{tag}]{bounce} {t['title'][:50]}\n"
             msg += "\n"
         if ready:
-            msg += "⏳ Ready:\n"
-            for t in ready:
+            ready_total = len(ready)
+            msg += f"⏳ Ready ({ready_total}):\n"
+            for t in ready[:5]:
                 agent = t.get('agent_type', '?')
                 msg += f"  #{t['id']} [{agent}|{t['tier']}] {t['title'][:50]}\n"
+            if ready_total > 5:
+                msg += f"  … +{ready_total - 5} more\n"
             msg += "\n"
         if retry_pending:
             msg += "🔁 Retry pending:\n"

@@ -260,16 +260,46 @@ async def _retry_or_dlq(task: dict, *, category: str, error: str) -> None:
     fresh = await _get_task(task["id"])
     if fresh:
         task = fresh
-    attempts = int(task.get("worker_attempts") or 0) + 1
+    prior_attempts = int(task.get("worker_attempts") or 0)
     max_attempts = int(task.get("max_worker_attempts") or 3)
     progress = _parse_progress(task)
     ctx = _parse_ctx(task)
     bonus_count = int(ctx.get("_bonus_count", 0))
 
+    # User design call 2026-05-02 18:05 UTC: "Backoff does not say 'you
+    # must do it this time' it says 'you can try after this'". A backoff
+    # expiry that lands when the pool is still empty isn't a worker
+    # failure — the worker never got a model to call. Burning
+    # worker_attempts on category=no_model conflates environmental
+    # backpressure with task-level failures and DLQs healthy tasks
+    # after enough wake-up windows hit empty pools.
+    #
+    # Use a separate ctx counter `_no_model_attempts` for ladder
+    # progression (drives backoff index + DLQ check inside decide_retry)
+    # while leaving worker_attempts untouched. worker_attempts only
+    # reflects calls the WORKER actually attempted — quality, schema,
+    # availability — not selector-returned-None deferrals.
+    if category == "no_model":
+        no_model_count = int(ctx.get("_no_model_attempts", 0)) + 1
+        ctx["_no_model_attempts"] = no_model_count
+        # decide_retry's no_model branch reads worker_attempts; pass the
+        # category-specific counter so its ladder index advances correctly.
+        attempts_for_decide = no_model_count
+        # worker_attempts in DB stays at prior value — no burn.
+        attempts_to_persist = prior_attempts
+    else:
+        # Non-environmental failures: real worker attempt, increment.
+        # Reset _no_model_attempts so a future no_model failure starts
+        # fresh from the bottom of its ladder rather than inheriting
+        # state from a previous saturation event.
+        ctx.pop("_no_model_attempts", None)
+        attempts_for_decide = prior_attempts + 1
+        attempts_to_persist = attempts_for_decide
+
     decision = decide_retry(
         {
             "category": category,
-            "worker_attempts": attempts,
+            "worker_attempts": attempts_for_decide,
             "max_worker_attempts": max_attempts,
             "model": task.get("model", ""),
             "error": error,
@@ -279,7 +309,10 @@ async def _retry_or_dlq(task: dict, *, category: str, error: str) -> None:
     )
 
     if isinstance(decision, DLQAction):
-        await _dlq_write(task, error=error, category=category, attempts=attempts)
+        await _dlq_write(
+            task, error=error, category=category,
+            attempts=attempts_for_decide,
+        )
         return
 
     if decision.bonus_used:
@@ -287,17 +320,17 @@ async def _retry_or_dlq(task: dict, *, category: str, error: str) -> None:
         max_attempts += 1
 
     # Bump max_worker_attempts when retry policy uses a category-specific
-    # higher cap (currently only "no_model": 10). Without this, sweep.py
-    # section 8 force-DLQs any pending task with worker_attempts >=
-    # task.max_worker_attempts (default 6), beating the retry layer's
-    # internal 10-attempt budget. Production 2026-05-02: 10 tasks DLQ'd
-    # with "Worker attempts exceeded: 6/6" despite category=no_model
-    # because sweep didn't know about the higher internal cap. Persist
-    # the cap on the row so sweep respects it.
+    # higher cap (currently only "no_model": 30). Sweep section 8 reads
+    # this column to force-DLQ over-cap tasks. The DLQ branch above already
+    # respects category caps via decide_retry; this just keeps sweep aligned.
     if category == "no_model":
         from general_beckman.retry import _NO_MODEL_MAX_ATTEMPTS
         if max_attempts < _NO_MODEL_MAX_ATTEMPTS:
             max_attempts = _NO_MODEL_MAX_ATTEMPTS
+
+    # Pass the persisted-attempts value through to update_task. Inside
+    # the local var name `attempts` is what update_task expects below.
+    attempts = attempts_to_persist
 
     next_retry_at = None
     if decision.action == "delayed":

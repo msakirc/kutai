@@ -8,7 +8,7 @@ from ..infra.db import (
     init_db, get_db, close_db, add_task, release_task_locks,
 )
 from src.infra.logging_config import get_logger
-from .router import ModelCallFailed
+from .router import DispatchDeferred, ModelCallFailed
 from .task_context import parse_context
 from .context_injection import inject_chain_context
 from .startup_recovery import startup_recovery
@@ -291,6 +291,47 @@ class Orchestrator:
             cat = getattr(mcf, "error_category", "") or "availability"
             result = {"status": "failed", "error": str(mcf)[:500], "error_category": cat}
             logger.warning("ModelCallFailed task #%s: %s (category=%s)", task_id, mcf, cat)
+        except DispatchDeferred as dd:
+            # Pool saturated mid-task — silent defer, NOT a failure.
+            # User design 2026-05-02 18:30 UTC: "if (urgency > pool
+            # pressures) dispatch. Else: nothing. No failure. No
+            # exception."
+            #
+            # Set status=pending with a small backoff so Beckman's
+            # next tick re-evaluates. Don't touch worker_attempts —
+            # the worker never got a model to call. Don't fire ❌ —
+            # the task is alive and waiting, not failed.
+            from datetime import timedelta
+            from src.infra.times import utc_now, to_db
+            from src.infra.db import update_task as _update_task
+            try:
+                next_retry = to_db(utc_now() + timedelta(seconds=60))
+                await _update_task(
+                    task_id, status="pending",
+                    next_retry_at=next_retry,
+                    error_category="no_model",
+                )
+            except Exception as _e:
+                logger.exception(
+                    "DispatchDeferred defer-write failed task #%s: %s",
+                    task_id, _e,
+                )
+            logger.info(
+                "DispatchDeferred task #%s — pool saturated, deferred 60s",
+                task_id,
+            )
+            # Skip on_task_finished + push_metrics + telegram path
+            # entirely. Release locks, return.
+            try:
+                await release_task_locks(task_id)
+            except Exception:
+                pass
+            try:
+                from src.core.llm_dispatcher import release_task as _dispatcher_release_task
+                await _dispatcher_release_task(task_id)
+            except Exception:
+                pass
+            return
         except Exception as e:
             result = {"status": "failed", "error": f"{type(e).__name__}: {str(e)[:300]}"}
             logger.exception("dispatch failed task #%s: %s", task_id, e)

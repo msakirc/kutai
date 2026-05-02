@@ -28,6 +28,26 @@ class ModelCallFailed(RuntimeError):
         self.error_category = error_category
 
 
+class DispatchDeferred(RuntimeError):
+    """Pool genuinely empty mid-task — defer without surfacing as failure.
+
+    User design 2026-05-02 18:30 UTC: "if (urgency > pool pressures)
+    dispatch. Else: nothing. No failure. No exception."
+
+    When dispatcher.request lands a moment where every provider is
+    saturated, the task is NOT failed — it just needs to wait. Raise
+    this instead of ModelCallFailed so the orchestrator can route it
+    through the defer path without firing the ❌ Telegram notification
+    or counting it as a worker attempt. Symmetric with Beckman's
+    admission-time skip: same disposition, same wake-on-capacity
+    semantics, just from a different code path.
+    """
+
+    def __init__(self, call_id: str):
+        super().__init__(f"Dispatch deferred for '{call_id}': pool saturated")
+        self.call_id = call_id
+
+
 from src.infra.logging_config import get_logger
 from kuleden_donen_var import KuledenDonenVar, KuledenConfig, CapacityEvent
 from fatih_hoca.requirements import (

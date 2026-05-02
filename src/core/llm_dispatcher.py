@@ -182,11 +182,15 @@ class LLMDispatcher:
                     f"OVERHEAD call failed: no model candidates available. "
                     f"Task: {task_desc}"
                 )
-            raise ModelCallFailed(
-                call_id=task_desc,
-                last_error="No model candidates available",
-                error_category="no_model",
-            )
+            # Pool genuinely empty — task should defer, not fail.
+            # User design 2026-05-02 18:30 UTC: "if (urgency > pool
+            # pressures) dispatch. Else: nothing. No failure. No
+            # exception." Raise the dedicated DispatchDeferred type so
+            # orchestrator can route to the defer path without firing
+            # ❌ or burning worker_attempts. Symmetric with Beckman's
+            # admission-time skip-on-None.
+            from src.core.router import DispatchDeferred
+            raise DispatchDeferred(call_id=task_desc)
 
         # Pool pressure is enforced INSIDE selector (single source of truth).
         # Selector returns None when no candidate clears the urgency-derived

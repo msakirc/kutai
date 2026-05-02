@@ -458,10 +458,29 @@ class Selector:
         ):
             return f"coding_specialty_mismatch(task={effective_task})"
 
-        # Cloud circuit breaker check
+        # Cloud circuit breaker check.
+        # Two paths converge here:
+        #   1. KDV's per-process CircuitBreaker (3 failures / 300s window,
+        #      600s cooldown). Authoritative — KDV's pre_call already
+        #      refuses calls while degraded. Plumbed via
+        #      CloudProviderState.circuit_breaker_open from the
+        #      kuleden_donen_var/nerd_herd_adapter (Beckman cloud overlay).
+        #   2. Legacy consecutive_failures threshold. Field exists on
+        #      CloudProviderState but has no production writer — kept for
+        #      backward compatibility with tests + future signals.
+        # Production 2026-05-02: gemini circuit breaker tripped after the
+        # free-tier 20-req daily quota got eaten. KDV refused every gemini
+        # pre_call with reason=circuit_breaker, but selector didn't see the
+        # signal and kept ranking gemini ids first. Each one fast-failed,
+        # got added to the failures list, retry recursion exhausted the
+        # pool. With this gate, gemini's entire model set drops out of
+        # eligibility while the breaker is open — selector picks a
+        # different provider instead of cycling through dead gemini ids.
         if not model.is_local:
             prov_state = getattr(snapshot, "cloud", {}).get(model.provider)
             if prov_state is not None:
+                if getattr(prov_state, "circuit_breaker_open", False):
+                    return f"circuit_breaker({model.provider})"
                 if getattr(prov_state, "consecutive_failures", 0) >= 5:
                     return f"circuit_breaker({model.provider})"
 

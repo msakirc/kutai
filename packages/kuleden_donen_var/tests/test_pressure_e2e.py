@@ -205,8 +205,11 @@ def test_local_inflight_vetoes_concurrent_admission_via_pressure_for():
         est_iterations=4, est_call_cost=0.0, cap_needed=5.0,
         consecutive_failures=0,
     )
-    assert br.signals["S9"] == -1.0, f"local in-flight veto failed: {br.signals}"
-    assert br.scalar < 0, f"scalar should be hard-negative: {br.scalar}"
+    # S9 LOCAL_BUSY_PENALTY is a sentinel ≤ -1.0 (currently -10.0) so it
+    # survives M3 weight dilution; combine_signals' final clamp produces
+    # scalar = -1.0 exactly. See dde55b7 fix(s9): ... for context.
+    assert br.signals["S9"] <= -1.0, f"local in-flight veto failed: {br.signals}"
+    assert br.scalar == -1.0, f"scalar should clamp to -1.0: {br.scalar}"
 
 
 # ── Failure tracking → S10 ──────────────────────────────────────────────

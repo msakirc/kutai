@@ -98,10 +98,12 @@ def build_cloud_provider_state(
             matrix = _matrix(mstate)
         models[mid] = CloudModelState(model_id=mid, limits=matrix)
 
+    cb = kdv._circuit_breakers.get(provider)
     return CloudProviderState(
         provider=provider,
         models=models,
         limits=_matrix(prov_state),
+        circuit_breaker_open=bool(cb.is_degraded) if cb is not None else False,
     )
 
 

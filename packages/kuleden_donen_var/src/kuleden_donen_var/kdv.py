@@ -220,8 +220,17 @@ class KuledenDonenVar:
         # Circuit breaker check
         cb = self._get_cb(provider)
         if cb.is_degraded:
+            # Surface the actual remaining cooldown so caller's retry
+            # scheduler can defer until the breaker resets — not 0.0
+            # which made every refusal log "wait=0.0s" misleadingly
+            # and forced the dispatcher's >0 sleep gate to fall through
+            # without backoff. Production 2026-05-02 task #7059: every
+            # gemini call refused with wait=0.0 → no sleep → immediate
+            # reselect → dispatcher cycled through all gemini variants
+            # in a single retry burst.
+            wait = max(0.0, cb.degraded_until - time.time())
             return PreCallResult(
-                allowed=False, wait_seconds=0.0, daily_exhausted=False,
+                allowed=False, wait_seconds=wait, daily_exhausted=False,
                 reason="circuit_breaker", binding_provider=True,
             )
 

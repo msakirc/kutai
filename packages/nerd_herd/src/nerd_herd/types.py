@@ -135,6 +135,15 @@ class CloudProviderState:
     utilization_pct: float = 0.0
     consecutive_failures: int = 0
     last_failure_at: int | None = None   # epoch seconds
+    # KDV's circuit breaker state. True when the provider's per-process
+    # CircuitBreaker is in cooldown (3+ failures in 300s window). The
+    # selector's existing consecutive_failures-based gate is dead in
+    # production (no writer outside tests); circuit_breaker_open is the
+    # authoritative signal. Without this field plumbed, selector kept
+    # picking gemini variants while every gemini call fast-failed at
+    # KDV.pre_call with "circuit_breaker" — production 2026-05-02 saw
+    # 5+ tasks burn through their candidate pools this way.
+    circuit_breaker_open: bool = False
     limits: RateLimitMatrix = field(default_factory=RateLimitMatrix)
     models: dict[str, CloudModelState] = field(default_factory=dict)
 

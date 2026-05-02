@@ -483,6 +483,25 @@ class Selector:
                     return f"circuit_breaker({model.provider})"
                 if getattr(prov_state, "consecutive_failures", 0) >= 5:
                     return f"circuit_breaker({model.provider})"
+                # Per-model daily-exhausted: KDV's body-derived rpd-out
+                # state. Selector's matrix-based S1 can't see this when
+                # the provider doesn't return rpd headers (gemini). KDV
+                # is the only authoritative source. Drop the model from
+                # candidates so retry recursion doesn't keep cycling
+                # through ids the caller will refuse on first call.
+                # Production 2026-05-02 14:54: tasks admitted on
+                # gemini/* with positive composites; every call refused
+                # with daily_exhausted; reselect picked another gemini
+                # variant; same refusal; pool exhausted → DLQ at 10/10.
+                mstate = getattr(prov_state, "models", {}).get(
+                    getattr(model, "litellm_name", "")
+                ) or getattr(prov_state, "models", {}).get(
+                    getattr(model, "name", "")
+                )
+                if mstate is not None and getattr(
+                    mstate, "daily_exhausted", False
+                ):
+                    return f"daily_exhausted({model.provider})"
 
         # Local inference allowed check — use snapshot.vram_available_mb > 0
         if model.is_local:

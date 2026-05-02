@@ -136,6 +136,17 @@ class CloudModelState:
     # not a binary kill-switch. Source: kuleden_donen_var.KuledenDonenVar
     # rolling outcome window via the nerd_herd_adapter.
     recent_success_rate: float = 1.0
+    # KDV's daily-exhausted state for the per-model rpd cell. True when
+    # KDV.pre_call would refuse with daily_exhausted reason — i.e. the
+    # provider has signaled the model has hit its daily quota and won't
+    # serve until the reset window. Selector eligibility must reject
+    # such models BEFORE ranking — otherwise ranking computes positive
+    # composites against rpd_remaining that's stale (gemini doesn't
+    # return rpd headers, so KDV's body-derived daily-exhausted state
+    # is the only authoritative signal). Production 2026-05-02 root:
+    # selector kept admitting tasks on gemini ids that KDV.pre_call
+    # would refuse — the two views of capacity diverged.
+    daily_exhausted: bool = False
 
 
 @dataclass

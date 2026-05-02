@@ -105,9 +105,19 @@ def build_cloud_provider_state(
             success_rate = float(kdv.recent_success_rate(mid))
         except Exception:
             success_rate = 1.0
+        # Daily-exhausted: surface KDV's per-model rpd-exhausted state
+        # so selector eligibility can reject before ranking. Pre-this,
+        # selector saw stale rpd_remaining (providers like gemini don't
+        # return rpd headers) and admitted tasks that KDV.pre_call
+        # would immediately refuse with daily_exhausted reason.
+        try:
+            daily_out = bool(kdv._rate_limiter.is_daily_exhausted(mid))
+        except Exception:
+            daily_out = False
         models[mid] = CloudModelState(
             model_id=mid, limits=matrix,
             recent_success_rate=success_rate,
+            daily_exhausted=daily_out,
         )
 
     cb = kdv._circuit_breakers.get(provider)

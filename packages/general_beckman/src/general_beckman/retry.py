@@ -14,15 +14,26 @@ from typing import Union
 _BACKOFF_SECONDS = [0, 10, 30, 120, 600]
 # "no_model" is the dispatcher's signal that fatih_hoca.select() returned
 # None — every cloud provider rate-limited / dead AND local pool busy.
-# This is not a worker bug; it's transient pool exhaustion. Default
-# availability ladder (0/10/30) burns the 3 worker_attempts in <60s and
-# DLQs the task before any provider can recover. Use a longer ladder
-# AND a higher attempt cap so a slow gemini quota reset / one local
-# release lets the task progress instead of dying. Production 2026-05-02:
-# all gemini + openrouter ids dead, every executor task hit DLQ within
-# 40s of the same "No model candidates available" error.
-_NO_MODEL_BACKOFF_SECONDS = [30, 60, 120, 300, 600, 600, 600, 600, 600, 600]
-_NO_MODEL_MAX_ATTEMPTS = 10
+# This is environmental scarcity, not a worker bug. Persistent saturation
+# (e.g. gemini free-tier 20-req/day cap hit at noon → unavailable until
+# midnight reset, ~12h) is common, so the budget needs to span much
+# longer than a single quota window. The earlier 10-attempt × 30/60/120/
+# 300/600 ladder DLQ'd at ~58min — well before a daily reset. Production
+# 2026-05-02 14:44-15:51: 20 no_model tasks DLQ'd at exactly 10/10
+# attempts.
+#
+# Rebalanced: cap backoff at 1h (3600s), allow up to 30 attempts. Total
+# patience window ~25h before DLQ, which spans any single-day reset.
+# accelerate_retries (Beckman.on_model_swap / KDV capacity_restored
+# events) wake deferred tasks early when capacity actually frees, so
+# the 1h cap is just an upper bound, not a typical wait.
+_NO_MODEL_BACKOFF_SECONDS = [
+    30, 60, 120, 300, 600, 1200, 1800, 3600,
+    3600, 3600, 3600, 3600, 3600, 3600, 3600,
+    3600, 3600, 3600, 3600, 3600, 3600, 3600,
+    3600, 3600, 3600, 3600, 3600, 3600, 3600, 3600,
+]
+_NO_MODEL_MAX_ATTEMPTS = 30
 _MAX_BONUS = 2
 
 

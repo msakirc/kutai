@@ -739,23 +739,55 @@ async def call(
             # error is provider-wide, not per-model, so mark_dead ALL
             # registered models on this provider until process restart
             # (which re-runs discovery and revalidates auth).
+            #
+            # 2026-05-02 quota-misclassification guard:
+            # Gemini's free-tier RESOURCE_EXHAUSTED comes back as
+            # litellm.BadRequestError (status_code 400) with body text
+            # mentioning "billing" / "plan" — classify_error's text
+            # fallback hits the "billing" branch before the "429"/
+            # "resource_exhausted" branch in some payload shapes, so
+            # category lands on auth_failure for what is really a
+            # transient daily quota. Mass-mark-dead in that case wipes
+            # all 16 gemini ids until restart even though credentials
+            # are valid and quota will reset within hours. Inspect the
+            # message body for quota markers and skip the mass-mark
+            # when found — let the per-model dead-mark above handle
+            # the single failed call, KDV's daily-exhausted tracker
+            # handle the cooldown.
             if raw_result.category == "auth_failure":
-                try:
-                    from src.models.model_registry import get_registry
-                    reg = get_registry()
-                    dead_count = 0
-                    for m in reg.all_models():
-                        if (not m.is_local
-                                and getattr(m, "provider", "") == model.provider):
-                            reg.mark_dead(m.litellm_name)
-                            dead_count += 1
+                msg_lc = (raw_result.message or "").lower()
+                _quota_markers = (
+                    "resource_exhausted", "quota exceeded", "quota_exceeded",
+                    "exceeded your current quota", "rate limit",
+                    "tokens per minute", "tokens per day",
+                    "requests per minute", "requests per day",
+                    "code\": 429", "code: 429", "code\":429",
+                    "ratelimitexceeded",
+                )
+                is_quota_shaped = any(m in msg_lc for m in _quota_markers)
+                if is_quota_shaped:
                     _get_logger().warning(
-                        "auth_failure on %s — marked %d models dead "
-                        "(provider-wide, until restart): %s",
-                        model.provider, dead_count, raw_result.message[:200],
+                        "auth_failure on %s LOOKS LIKE QUOTA — skipping "
+                        "provider-wide mark_dead, treating as transient: %s",
+                        model.provider, raw_result.message[:200],
                     )
-                except Exception:
-                    pass
+                else:
+                    try:
+                        from src.models.model_registry import get_registry
+                        reg = get_registry()
+                        dead_count = 0
+                        for m in reg.all_models():
+                            if (not m.is_local
+                                    and getattr(m, "provider", "") == model.provider):
+                                reg.mark_dead(m.litellm_name)
+                                dead_count += 1
+                        _get_logger().warning(
+                            "auth_failure on %s — marked %d models dead "
+                            "(provider-wide, until restart): %s",
+                            model.provider, dead_count, raw_result.message[:200],
+                        )
+                    except Exception:
+                        pass
             _kdv_record_failure(model.litellm_name, model.provider, raw_result.category)
         return raw_result
 

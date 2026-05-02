@@ -80,7 +80,13 @@ def test_classify_rate_limit():
 
 def test_classify_auth():
     assert classify_error("Invalid API key") == "auth_failure"
-    assert classify_error("billing quota exceeded") == "auth_failure"
+    # "billing quota exceeded" used to land on auth_failure because
+    # "billing" matched first. As of 2026-05-02, "quota exceeded" is
+    # an explicit rate_limited marker — quota exhaustion is transient,
+    # not a credentials problem. Mass-mark-dead must NOT fire.
+    assert classify_error("billing quota exceeded") == "rate_limited"
+    # Pure billing-without-quota-marker still classifies as auth_failure.
+    assert classify_error("billing details required") == "auth_failure"
 
 
 def test_classify_openrouter_key_limit():
@@ -208,3 +214,39 @@ def test_retry_preserves_partial_content():
     ))
     assert isinstance(result, CallError)
     assert result.partial_content == "some partial output"
+
+
+def test_classify_gemini_quota_resource_exhausted_is_rate_limited():
+    """Production 2026-05-02 task #7059: Gemini free-tier
+    RESOURCE_EXHAUSTED comes back as litellm.BadRequestError (NOT 429
+    in status_code). Body contains 'check your plan and billing
+    details' AND 'Quota exceeded' AND 'RESOURCE_EXHAUSTED'. The
+    'billing' substring used to short-circuit to auth_failure before
+    the rate_limited branch saw the body markers, mass-marking all
+    16 gemini ids dead.
+
+    Quota markers must outrank billing/credit text in classification."""
+    body = (
+        'litellm.BadRequestError: Vertex_ai_betaException BadRequestError - '
+        'b\'{"error":{"code":429,"message":"You exceeded your current quota, '
+        'please check your plan and billing details. For more information '
+        'on this error, head to: https://ai.google.dev/gemini-api/docs/'
+        'rate-limits.\\n* Quota exceeded for metric: '
+        'generativelanguage.googleapis.com/generate_content_free_tier_'
+        'requests, limit: 20, model: gemini-2.5-flash","status":'
+        '"RESOURCE_EXHAUSTED"}}\''
+    )
+    # Even without a 429 status_code, body markers must trigger rate_limited.
+    assert classify_error(body) == "rate_limited"
+    assert classify_error(body, status_code=400) == "rate_limited"
+
+
+def test_classify_quota_exceeded_phrasings():
+    """Gemini emits multiple quota phrasings depending on which limit
+    tripped. All must classify as rate_limited, not auth_failure."""
+    assert classify_error("Quota exceeded for metric X") == "rate_limited"
+    assert classify_error("exceeded your current quota") == "rate_limited"
+    assert classify_error("RESOURCE_EXHAUSTED") == "rate_limited"
+    # auth-shaped errors WITHOUT quota markers still classify as auth.
+    assert classify_error("invalid api key, check billing") == "auth_failure"
+    assert classify_error("unauthorized") == "auth_failure"

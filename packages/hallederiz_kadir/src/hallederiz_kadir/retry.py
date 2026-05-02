@@ -84,7 +84,19 @@ def classify_error(error: str, status_code: int | None = None) -> str:
         return "gpu_busy"
     if any(k in e for k in ("rate limit", "rate_limit", "429",
                              "too many requests", "tokens per minute",
-                             "resource_exhausted")):
+                             "resource_exhausted",
+                             # Gemini's free-tier RESOURCE_EXHAUSTED ships
+                             # as litellm.BadRequestError with body that
+                             # includes "Quota exceeded" / "exceeded your
+                             # current quota". Without these markers, the
+                             # auth_failure branch below catches "billing"
+                             # first and mass-marks every gemini id dead.
+                             # Production 2026-05-02 task #7059 hit this
+                             # path on a quota wall, killing all 16 gemini
+                             # ids until restart.
+                             "quota exceeded", "quota_exceeded",
+                             "exceeded your current quota",
+                             "exceeded your quota")):
         return "rate_limited"
     if "daily limit exhausted" in e:
         return "daily_exhausted"

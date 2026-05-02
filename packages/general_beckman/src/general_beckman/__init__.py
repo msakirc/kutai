@@ -288,6 +288,46 @@ async def next_task():
         # internally during ranking, and either returns a pick that already
         # cleared the gate or returns None. Beckman trusts that result.
         urgency = compute_urgency(task)
+
+        # Pass per-task token estimates to selector so the S2 (call
+        # burden) + S3 (task burden) signals can fire. Without this,
+        # selector defaults to estimated_input_tokens=0 / output=0,
+        # the burden signals see "free" calls regardless of how many
+        # iterations a task actually needs, and admission lets in
+        # tasks that exhaust mid-execution.
+        #
+        # Production 2026-05-02 post-restart: 5+ planner / implementer
+        # / test_generator tasks DLQ'd with "No model candidates
+        # available" within 60s of restart. Cause: free-tier gemini
+        # quota = 20 reqs/day. Each planner uses ~8 ReAct iterations.
+        # Admitting 5 planners in parallel = 40 reqs projected against
+        # 20 budget. Without estimates passed, selector saw 0-cost
+        # calls and admitted all five. Mid-task: quota wall, retry
+        # recursion's select() sees exhausted pool, returns None.
+        try:
+            from fatih_hoca.estimates import estimate_for
+            from general_beckman.btable_cache import get_btable
+            import json as _json
+
+            ctx_raw = task.get("context") or "{}"
+            try:
+                ctx_d = _json.loads(ctx_raw) if isinstance(ctx_raw, str) else dict(ctx_raw)
+            except Exception:
+                ctx_d = {}
+
+            class _EstShim:
+                __slots__ = ("agent_type", "context")
+
+            shim = _EstShim()
+            shim.agent_type = agent_type
+            shim.context = ctx_d if isinstance(ctx_d, dict) else {}
+            est = estimate_for(shim, btable=get_btable())
+            est_in = est.in_tokens
+            est_out = est.out_tokens
+        except Exception:
+            est_in = 0
+            est_out = 0
+
         select_err = None
         pick = None
         if fatih_hoca is not None:
@@ -297,6 +337,8 @@ async def next_task():
                     agent_type=agent_type,
                     difficulty=difficulty,
                     urgency=urgency,
+                    estimated_input_tokens=est_in,
+                    estimated_output_tokens=est_out,
                 )
             except Exception as e:
                 select_err = repr(e)

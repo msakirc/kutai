@@ -130,7 +130,7 @@ class TestCodingModelHardFilter(unittest.TestCase):
 
     def test_coding_model_filtered_for_non_code_task(self):
         """Coding-specialty model must not appear in candidates for planner task."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         coding_model = _make_cloud_model("code-specialist", specialty="coding")
         general_model = _make_cloud_model("general-model")
 
@@ -144,7 +144,7 @@ class TestCodingModelHardFilter(unittest.TestCase):
 
     def test_coding_model_filtered_for_assistant_task(self):
         """Coding-specialty model filtered for conversation/assistant tasks."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         coding_model = _make_cloud_model("code-specialist", specialty="coding")
 
         reqs = ModelRequirements(task="assistant", difficulty=5)
@@ -155,7 +155,7 @@ class TestCodingModelHardFilter(unittest.TestCase):
 
     def test_coding_model_filtered_for_researcher_task(self):
         """Coding-specialty model filtered for researcher task."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         coding_model = _make_cloud_model("code-specialist", specialty="coding")
 
         reqs = ModelRequirements(task="researcher", difficulty=5)
@@ -166,7 +166,7 @@ class TestCodingModelHardFilter(unittest.TestCase):
 
     def test_coding_model_passes_for_coder_task(self):
         """Coding-specialty model must be allowed for coder task."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         coding_model = _make_cloud_model("code-specialist", specialty="coding")
 
         reqs = ModelRequirements(task="coder", difficulty=5)
@@ -178,7 +178,7 @@ class TestCodingModelHardFilter(unittest.TestCase):
 
     def test_coding_model_passes_for_fixer_task(self):
         """Coding-specialty model must be allowed for fixer/implementer tasks."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         for task in ("fixer", "implementer", "test_generator"):
             with self.subTest(task=task):
                 coding_model = _make_cloud_model("code-specialist", specialty="coding")
@@ -190,7 +190,7 @@ class TestCodingModelHardFilter(unittest.TestCase):
 
     def test_non_coding_specialty_not_filtered(self):
         """Reasoning/vision specialty models are NOT hard-filtered for any task."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         reasoning_model = _make_cloud_model("deepthink", specialty="reasoning")
 
         reqs = ModelRequirements(task="assistant", difficulty=5)
@@ -202,7 +202,7 @@ class TestCodingModelHardFilter(unittest.TestCase):
 
     def test_no_specialty_model_never_filtered(self):
         """Models with no specialty are not filtered regardless of task."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         generic = _make_cloud_model("llama3", specialty=None)
 
         for task in ("planner", "coder", "assistant", "researcher"):
@@ -225,7 +225,7 @@ class TestLayerThreeMultipliers(unittest.TestCase):
 
     def test_specialty_match_bonus_still_applied(self):
         """Specialty-matched models still get the 1.15x bonus in Layer 3."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         coding_model = _make_cloud_model("code-specialist", specialty="coding")
         generic = _make_cloud_model("generic")
 
@@ -240,7 +240,7 @@ class TestLayerThreeMultipliers(unittest.TestCase):
 
     def test_coding_mismatch_reason_absent(self):
         """coding_model_mismatch reason must never appear — it's now a hard filter."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         # We can only verify on a passing candidate (coding model for coding task)
         coding_model = _make_cloud_model("code-specialist", specialty="coding")
         reqs = ModelRequirements(task="coder", difficulty=5)
@@ -254,7 +254,7 @@ class TestLayerThreeMultipliers(unittest.TestCase):
 
     def test_prefer_local_no_multiplier_reason(self):
         """prefer_local must NOT add a 'prefer_local' multiplier reason anymore."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         local_model = _make_local_model("llama3")
 
         reqs = ModelRequirements(task="assistant", difficulty=5, prefer_local=True)
@@ -269,7 +269,7 @@ class TestLayerThreeMultipliers(unittest.TestCase):
 
     def test_thinking_bonus_in_layer_3(self):
         """Thinking bonus still applied via Group A of Layer 3."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         thinking_model = _make_cloud_model("qwq", thinking_model=True)
         non_thinking = _make_cloud_model("llama3")
 
@@ -285,7 +285,7 @@ class TestLayerThreeMultipliers(unittest.TestCase):
         A single candidate should have at most 3 multiplier-related reasons.
         The 3 groups are: thinking_bonus, specialty=*, loaded/thinking_mismatch/needs_swap.
         """
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         # A thinking, coding-specialty, loaded model scoring a coding task w/ thinking
         loaded_thinking = _make_local_model("magic-coder", loaded=True, specialty="coding")
         loaded_thinking.thinking_model = True

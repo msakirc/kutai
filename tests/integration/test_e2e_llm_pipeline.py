@@ -521,7 +521,7 @@ class TestRouterModelRequirements:
 
     def test_model_requirements_defaults(self):
         """ModelRequirements has sensible defaults."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         reqs = ModelRequirements()
         assert reqs.difficulty == 5
         assert reqs.prefer_speed is False
@@ -530,7 +530,7 @@ class TestRouterModelRequirements:
 
     def test_model_requirements_speed_config(self):
         """prefer_speed=True is set correctly."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         reqs = ModelRequirements(
             task="assistant",
             agent_type="assistant",
@@ -542,7 +542,7 @@ class TestRouterModelRequirements:
 
     def test_capability_to_task_mapping_complete(self):
         """CAPABILITY_TO_TASK covers all common primary capabilities."""
-        from src.core.router import CAPABILITY_TO_TASK
+        from fatih_hoca.requirements import CAPABILITY_TO_TASK
         expected_caps = [
             "reasoning", "planning", "analysis", "code_generation",
             "code_reasoning", "system_design", "prose_quality",
@@ -554,7 +554,7 @@ class TestRouterModelRequirements:
 
     def test_model_requirements_agent_type_field(self):
         """ModelRequirements has an agent_type field (not just a kwarg)."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         reqs = ModelRequirements(
             task="coder",
             agent_type="coder",
@@ -567,14 +567,14 @@ class TestRouterModelRequirements:
 
     def test_model_requirements_model_override(self):
         """model_override can be set to pin to a specific model."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         reqs = ModelRequirements(task="assistant", difficulty=2)
         reqs.model_override = "llama_cpp/some-model"
         assert reqs.model_override == "llama_cpp/some-model"
 
     def test_model_requirements_effective_task_fallback(self):
         """effective_task falls back gracefully for unknown task names."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         reqs = ModelRequirements(task="unknown_task_xyz")
         # Should not raise; returns empty string for unknown task
         result = reqs.effective_task

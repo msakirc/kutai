@@ -40,7 +40,8 @@ class TestModelRouting(unittest.TestCase):
         self.registry = get_registry()
 
     def _route(self, task, difficulty=3, **kwargs):
-        from src.core.router import ModelRequirements, select_model
+        from fatih_hoca.requirements import ModelRequirements
+        from src.core.router import select_model
         reqs = ModelRequirements(task=task, difficulty=difficulty, **kwargs)
         return select_model(reqs)
 
@@ -116,20 +117,20 @@ class TestThinkingControl(unittest.TestCase):
 
     def test_thinking_disabled_for_classification(self):
         """Classification (difficulty=2) should have thinking=False."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         reqs = ModelRequirements(task="router", difficulty=2, prefer_speed=True)
         # is_thinking = model.thinking_model and reqs.needs_thinking
         self.assertFalse(reqs.needs_thinking)
 
     def test_thinking_disabled_for_researcher(self):
         """Researcher with needs_thinking=False should not enable thinking."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         reqs = ModelRequirements(task="researcher", difficulty=4, needs_thinking=False)
         self.assertFalse(reqs.needs_thinking)
 
     def test_thinking_enabled_when_requested(self):
         """Tasks that need thinking should have it enabled."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         reqs = ModelRequirements(task="planner", difficulty=7, needs_thinking=True)
         self.assertTrue(reqs.needs_thinking)
 
@@ -298,19 +299,19 @@ class TestMinScoreThresholds(unittest.TestCase):
 
     def test_difficulty_7_allows_score_3(self):
         """At difficulty 7, a model scoring 3.0 should pass."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         reqs = ModelRequirements(difficulty=7)
         # effective_min_score = (7-1) * 0.47 = 2.82
         self.assertLessEqual(reqs.effective_min_score, 3.0)
 
     def test_difficulty_5_allows_score_2(self):
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         reqs = ModelRequirements(difficulty=5)
         # (5-1) * 0.47 = 1.88
         self.assertLessEqual(reqs.effective_min_score, 2.0)
 
     def test_difficulty_3_allows_anything(self):
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         reqs = ModelRequirements(difficulty=3)
         # (3-1) * 0.47 = 0.94
         self.assertLessEqual(reqs.effective_min_score, 1.0)

@@ -1,9 +1,9 @@
 # router.py
 """
-Model Router — shim layer on top of fatih_hoca.
-select_model() is kept here (uses old registry API directly).
-ModelRequirements, ScoredModel, CAPABILITY_TO_TASK, AGENT_REQUIREMENTS
-are re-exported from fatih_hoca.requirements / fatih_hoca.ranking.
+Model Router — owns select_model() over the legacy registry plus
+get_kdv()/ModelCallFailed. Selection types live in fatih_hoca; import
+ModelRequirements / ScoredModel / AGENT_REQUIREMENTS / CAPABILITY_TO_TASK
+from fatih_hoca.requirements (or .ranking) directly.
 """
 
 from __future__ import annotations
@@ -30,19 +30,14 @@ class ModelCallFailed(RuntimeError):
 
 from src.infra.logging_config import get_logger
 from kuleden_donen_var import KuledenDonenVar, KuledenConfig, CapacityEvent
-from fatih_hoca.requirements import get_quota_planner
+from fatih_hoca.requirements import (
+    ModelRequirements,
+    get_quota_planner,
+)
+from fatih_hoca.ranking import ScoredModel
 from fatih_hoca.capabilities import ALL_CAPABILITIES, Cap, TASK_PROFILES, \
   TaskRequirements as CapabilityTaskReqs, score_model_for_task
 from src.models.model_registry import ModelInfo, get_registry
-
-# ── Re-exports from fatih_hoca (preserves all existing import paths) ──────────
-from fatih_hoca.requirements import (  # noqa: F401
-    ModelRequirements,
-    CAPABILITY_TO_TASK,
-    AGENT_REQUIREMENTS,
-    _make_adhoc_profile,
-)
-from fatih_hoca.ranking import ScoredModel  # noqa: F401
 
 logger = get_logger("core.router")
 

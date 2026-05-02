@@ -149,7 +149,7 @@ def speed_model_reqs(fastest_local_model):
     Uses model_override to pin to the fastest local model when available.
     Falls back to prefer_speed=True without pinning (cloud models).
     """
-    from src.core.router import ModelRequirements
+    from fatih_hoca.requirements import ModelRequirements
     reqs = ModelRequirements(
         task="assistant",
         agent_type="assistant",

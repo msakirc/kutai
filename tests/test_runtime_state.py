@@ -287,7 +287,7 @@ class TestRuntimeContextFilter(unittest.TestCase):
         When the runtime context is smaller than needed_ctx, the loaded model
         should be excluded from candidates even if registry ctx is sufficient.
         """
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         from src.models.local_model_manager import ModelRuntimeState
 
         # Registry says 16384 ctx — would pass static filter
@@ -310,7 +310,7 @@ class TestRuntimeContextFilter(unittest.TestCase):
                          "Loaded model with insufficient runtime ctx must be filtered out")
 
     def test_loaded_model_passes_when_runtime_ctx_sufficient(self):
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         from src.models.local_model_manager import ModelRuntimeState
 
         model = _make_local_model("llama3", loaded=True, ctx=16384)
@@ -328,7 +328,7 @@ class TestRuntimeContextFilter(unittest.TestCase):
         An unloaded model should never be filtered by runtime ctx
         (it hasn't been loaded yet, so we don't know its actual ctx).
         """
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         from src.models.local_model_manager import ModelRuntimeState
 
         # Model is unloaded — runtime is for a DIFFERENT loaded model
@@ -356,7 +356,7 @@ class TestThinkingMismatchStickiness(unittest.TestCase):
         When needs_thinking=True but loaded model has thinking_enabled=False,
         stickiness should be 1.10x not 1.40x — producing a lower final score.
         """
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         from src.models.local_model_manager import ModelRuntimeState
 
         model = _make_local_model("qwq", loaded=True, ctx=32768,
@@ -382,7 +382,7 @@ class TestThinkingMismatchStickiness(unittest.TestCase):
 
     def test_no_mismatch_uses_full_stickiness(self):
         """When thinking matches, reasons should contain 'loaded' not 'thinking_mismatch'."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         from src.models.local_model_manager import ModelRuntimeState
 
         model = _make_local_model("qwq", loaded=True, ctx=32768,
@@ -400,7 +400,7 @@ class TestThinkingMismatchStickiness(unittest.TestCase):
 
     def test_mismatch_reason_added(self):
         """thinking_mismatch reason should appear in candidate reasons."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         from src.models.local_model_manager import ModelRuntimeState
 
         model = _make_local_model("qwq", loaded=True, ctx=32768,
@@ -425,7 +425,7 @@ class TestThinkingMismatchStickiness(unittest.TestCase):
 
     def test_no_thinking_needed_no_mismatch(self):
         """If needs_thinking=False, thinking state doesn't cause mismatch."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         from src.models.local_model_manager import ModelRuntimeState
 
         model = _make_local_model("qwq", loaded=True, ctx=32768,
@@ -446,7 +446,7 @@ class TestMeasuredTpsInScoring(unittest.TestCase):
 
     def _get_speed_score_indirectly(self, tps_registry, tps_measured, loaded=True):
         """Run select_model and return the composite score (affected by speed)."""
-        from src.core.router import ModelRequirements
+        from fatih_hoca.requirements import ModelRequirements
         from src.models.local_model_manager import ModelRuntimeState
 
         model = _make_local_model("llama3", loaded=loaded, ctx=8192,

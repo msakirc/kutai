@@ -21,10 +21,8 @@ from ..context.onboarding import get_project_profile_for_task, \
 from ..memory.preferences import get_user_preferences, format_preferences
 from ..memory.rag import retrieve_context
 from ..models.model_registry import get_registry
-from ..core.router import (
-    ModelRequirements,
-    select_model,
-)
+from fatih_hoca.requirements import ModelRequirements
+from ..core.router import select_model
 from ..infra.db import (
     log_conversation,
     store_memory,
@@ -3467,7 +3465,7 @@ class BaseAgent:
         priority = task.get("priority", 5)
 
         # ── Start from curated AGENT_REQUIREMENTS template ──
-        from src.core.router import AGENT_REQUIREMENTS
+        from fatih_hoca.requirements import AGENT_REQUIREMENTS
         import copy
 
         classification = task_ctx.get("classification", {})

@@ -144,7 +144,8 @@ def _make_cloud_model(name, provider="gemini"):
 def _run_select_with_util(models, model_util_map, provider_util_map=None,
                           daily_exhausted_set=None):
     """Run select_model with controlled utilization values."""
-    from src.core.router import select_model, ModelRequirements
+    from fatih_hoca.requirements import ModelRequirements
+    from src.core.router import select_model
 
     reg = MagicMock()
     reg.models = {m.name: m for m in models}

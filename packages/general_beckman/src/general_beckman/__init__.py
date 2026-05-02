@@ -583,6 +583,20 @@ async def _send_step_progress(task: dict, status: str, result: dict) -> None:
             return
         if status in ("needs_clarification", "failed") and live_status == "completed":
             return
+        # Silence "failed" pings when apply_failed has already moved
+        # the row back to pending with a scheduled retry. The result
+        # dict still carries status="failed" from the orchestrator's
+        # ModelCallFailed handler, but the row state is "pending +
+        # next_retry_at in future" which means another attempt is
+        # coming — ❌ would falsely tell the user the task died.
+        # Production 2026-05-02: 5+ ❌ pings per task during a quota-
+        # exhaustion burst even though every task was deferred, not
+        # DLQ'd. Reserve ❌ for actual terminal failures (status=
+        # "failed" with no scheduled retry → DLQ path).
+        if status == "failed" and live_status == "pending":
+            next_retry = (live or {}).get("next_retry_at")
+            if next_retry:
+                return
     from src.app.telegram_bot import get_telegram
     tg = get_telegram()
     if tg is None:

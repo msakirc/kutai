@@ -320,11 +320,46 @@ async def execute_with_retry(
 
     return CallError(
         category=category,
-        message=last_error or "Unknown error",
+        message=_clean_provider_name_in_error(last_error, model_name) or "Unknown error",
         retryable=category in ("timeout", "rate_limited", "loading",
                                "server_error", "gpu_busy", "connection_error",
                                "context_overflow", "json_unsupported"),
         partial_content=partial,
         headers=last_headers,
         status_code=last_status_code,
+    )
+
+
+def _clean_provider_name_in_error(error_str: str | None, model_name: str) -> str | None:
+    """Rewrite litellm's misleading exception class names to match
+    the actual backend the call hit.
+
+    litellm wraps Generative Language API (gemini/<model>) calls in
+    ``vertex_ai_betaException`` / ``Vertex_ai_betaException`` /
+    ``vertexaibetaException`` even when the call targets
+    ``generativelanguage.googleapis.com`` (verified via response body
+    content). User feedback 2026-05-02 17:59 UTC: "Catch and display
+    correct names errors for vertex".
+
+    The exception class name is harmless to the call itself but leaks
+    into Telegram notifications and logs as misleading "vertex" labels.
+    Replace with the right provider so operators don't chase a Vertex
+    AI auth/billing issue when the actual problem is gemini quota.
+
+    Provider is inferred from model_name's prefix (e.g. ``gemini/...``
+    → ``GeminiException``). Other litellm exception names left alone.
+    """
+    if not error_str or not model_name:
+        return error_str
+    provider = model_name.split("/", 1)[0].lower() if "/" in model_name else ""
+    if provider != "gemini":
+        return error_str
+    # Map the noisy class names to a clean GeminiException tag. Case-
+    # insensitive replacement — litellm has cycled through several
+    # capitalisations.
+    import re as _re
+    return _re.sub(
+        r"[Vv]ertex[_ ]?ai[_ ]?beta[Ee]xception",
+        "GeminiException",
+        error_str,
     )

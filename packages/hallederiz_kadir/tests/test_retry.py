@@ -250,3 +250,36 @@ def test_classify_quota_exceeded_phrasings():
     # auth-shaped errors WITHOUT quota markers still classify as auth.
     assert classify_error("invalid api key, check billing") == "auth_failure"
     assert classify_error("unauthorized") == "auth_failure"
+
+
+def test_clean_provider_name_rewrites_vertex_to_gemini():
+    """litellm labels Generative Language API calls as
+    vertex_ai_betaException. Misleads operators chasing Vertex auth
+    issues when the actual cause is gemini quota. Rewrite for
+    gemini/* model_names."""
+    from hallederiz_kadir.retry import _clean_provider_name_in_error
+
+    body = (
+        "litellm.RateLimitError: vertex_ai_betaException - "
+        '{"error":{"code":429,"message":"Quota exceeded"}}'
+    )
+    cleaned = _clean_provider_name_in_error(body, "gemini/gemini-2.5-flash")
+    assert "vertex" not in cleaned.lower()
+    assert "GeminiException" in cleaned
+
+    # Other capitalisations litellm has used.
+    assert "GeminiException" in _clean_provider_name_in_error(
+        "Vertex_ai_betaException foo", "gemini/x")
+    assert "GeminiException" in _clean_provider_name_in_error(
+        "vertexaibetaException foo", "gemini/x")
+
+
+def test_clean_provider_name_leaves_non_gemini_alone():
+    """Don't rewrite for other providers — vertex IS the right name
+    when calling vertex_ai/* models."""
+    from hallederiz_kadir.retry import _clean_provider_name_in_error
+    body = "vertex_ai_betaException foo"
+    assert _clean_provider_name_in_error(body, "vertex_ai/text-bison") == body
+    assert _clean_provider_name_in_error(body, "groq/llama") == body
+    assert _clean_provider_name_in_error(body, "") == body
+    assert _clean_provider_name_in_error(None, "gemini/x") is None

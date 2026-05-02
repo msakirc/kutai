@@ -216,7 +216,17 @@ async def get_embedding(
     if cached is not None:
         return cached
 
-    emb = _get_st_embedding(text, is_query=is_query)
+    # _get_st_embedding is a sync CPU call (sentence-transformers on CPU).
+    # Calling it directly inside an `async def` blocks the asyncio loop
+    # for the duration of the encode (50-200ms typical, but seconds under
+    # CPU contention or first-load). Yaşar Usta's heartbeat watchdog
+    # writes every 15s and kills the process when stale > 120s — many
+    # stacked embedding calls (skill autocapture, RAG, memory store) can
+    # block the loop long enough to miss heartbeats and trigger the
+    # freeze→restart cycle observed 2026-05-02 11:25-12:06 UTC every
+    # ~15 minutes. Hand off to a thread so the loop stays responsive.
+    import asyncio as _asyncio
+    emb = await _asyncio.to_thread(_get_st_embedding, text, is_query)
 
     if emb is not None:
         if not _validate_dimension(emb):
@@ -257,8 +267,13 @@ async def get_embeddings(
     if not uncached_texts:
         return results
 
-    # Batch sentence-transformers
-    batch_results = _get_st_embeddings_batch(uncached_texts, is_query=is_query)
+    # Batch sentence-transformers — same loop-blocking concern as the
+    # single-text path above; offload to a thread so heartbeat keeps
+    # firing during longer batch encodes.
+    import asyncio as _asyncio
+    batch_results = await _asyncio.to_thread(
+        _get_st_embeddings_batch, uncached_texts, is_query,
+    )
 
     for idx, emb in zip(uncached_indices, batch_results):
         if emb is not None and _validate_dimension(emb):

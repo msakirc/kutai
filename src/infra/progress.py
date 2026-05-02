@@ -38,10 +38,6 @@ async def _ensure_table(db) -> None:
     except Exception:
         pass
     try:
-        await db.execute("ALTER TABLE progress_notes RENAME COLUMN project_id TO _deprecated_project_id")
-    except Exception:
-        pass
-    try:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_progress_mission ON progress_notes(mission_id)")
         await db.commit()
     except Exception:

@@ -947,12 +947,6 @@ async def init_db():
         except Exception as e:
             logger.debug(f"Index {idx_name} creation skipped: {e}")
 
-    # One-time cleanup: purge legacy skills without strategies
-    try:
-        await db.execute("DELETE FROM skills WHERE strategies = '[]' OR strategies IS NULL")
-    except Exception:
-        pass
-
     await db.commit()
 
 async def _migrate_task_lifecycle(db) -> None:

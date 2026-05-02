@@ -649,22 +649,40 @@ class RateLimitManager:
             self._tick_rpd(provider_state, now)
 
     @staticmethod
+    def _next_utc_midnight(now: float) -> float:
+        """Compute the next UTC midnight after `now` as a unix timestamp.
+
+        Calendar-based daily windows align with most provider quota
+        boundaries (gemini, openai). Rolling 24h-from-first-call drifts
+        by hours each day; midnight UTC stays anchored. If a provider
+        actually resets at a different time-of-day, the 429 body parser
+        refines `rpd_reset_at` from the server's `retryDelay` on the
+        first wall-hit and the local count corrects.
+        """
+        import datetime as _dt
+        d = _dt.datetime.utcfromtimestamp(now).date()
+        next_midnight = _dt.datetime.combine(d, _dt.time(0, 0)) + _dt.timedelta(days=1)
+        return next_midnight.replace(tzinfo=_dt.timezone.utc).timestamp()
+
+    @staticmethod
     def _tick_rpd(state, now: float) -> None:
         """Decrement rpd_remaining by 1 for a single attempt.
 
         No-op when rpd_limit is unknown — providers without a daily
         cap leave both fields None and we can't manufacture one.
         Refreshes the day window when rpd_reset_at has passed.
+        Calendar-based reset (next UTC midnight) replaces the earlier
+        rolling-24h approach so windows align with provider quotas.
         """
         if state.rpd_limit is None:
             return
         if state.rpd_reset_at and now >= state.rpd_reset_at:
             state.rpd_remaining = state.rpd_limit
-            state.rpd_reset_at = now + 86400.0
+            state.rpd_reset_at = RateLimitManager._next_utc_midnight(now)
         if state.rpd_remaining is None:
             state.rpd_remaining = state.rpd_limit
         if state.rpd_reset_at is None:
-            state.rpd_reset_at = now + 86400.0
+            state.rpd_reset_at = RateLimitManager._next_utc_midnight(now)
         if state.rpd_remaining > 0:
             state.rpd_remaining -= 1
 

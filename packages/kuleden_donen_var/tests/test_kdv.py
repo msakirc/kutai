@@ -373,3 +373,79 @@ def test_record_attempt_resets_rpd_window_after_24h(kdv_with_model):
     kdv_with_model.record_attempt("groq/llama-8b", "groq")
     assert state.rpd_remaining == 19  # reset to 20, then decremented by 1
     assert state.rpd_reset_at > time.time()
+
+
+def test_calendar_reset_aligns_with_utc_midnight(kdv_with_model):
+    """Daily reset clock should land on next UTC midnight, not
+    rolling-24h-from-first-call. Provider quota windows are typically
+    calendar-aligned so this stays in sync."""
+    import time, datetime as _dt
+    state = kdv_with_model._rate_limiter.model_limits["groq/llama-8b"]
+    state.rpd_limit = 20
+
+    kdv_with_model.record_attempt("groq/llama-8b", "groq")
+    reset_at = state.rpd_reset_at
+    reset_dt = _dt.datetime.utcfromtimestamp(reset_at)
+    assert reset_dt.hour == 0 and reset_dt.minute == 0
+
+
+# -- Canary gate (uncertainty-period throttling) --
+
+
+def test_canary_blocks_concurrent_admissions_until_first_returns(kdv_with_model):
+    """Cold start: first call admits as canary, second is refused
+    with reason=canary_in_flight until canary returns."""
+    r1 = kdv_with_model.pre_call("groq/llama-8b", "groq", estimated_tokens=10)
+    assert r1.allowed is True
+
+    r2 = kdv_with_model.pre_call("groq/llama-8b", "groq", estimated_tokens=10)
+    assert r2.allowed is False
+    assert r2.reason == "canary_in_flight"
+
+
+def test_canary_success_unlocks_subsequent_admissions(kdv_with_model):
+    """Canary returns 200 → provider verified → bursts admitted."""
+    kdv_with_model.pre_call("groq/llama-8b", "groq", estimated_tokens=10)
+    kdv_with_model.post_call("groq/llama-8b", "groq", headers={}, token_count=100)
+
+    # Now multiple admissions allowed.
+    for _ in range(3):
+        r = kdv_with_model.pre_call("groq/llama-8b", "groq", estimated_tokens=10)
+        assert r.allowed is True
+
+
+def test_canary_failure_re_locks_provider(kdv_with_model):
+    """Canary fails → provider goes back to unverified → next admission
+    becomes the new canary, others held."""
+    kdv_with_model.pre_call("groq/llama-8b", "groq", estimated_tokens=10)
+    kdv_with_model.record_failure("groq/llama-8b", "groq", "server_error")
+
+    # First call: admitted as new canary.
+    r1 = kdv_with_model.pre_call("groq/llama-8b", "groq", estimated_tokens=10)
+    assert r1.allowed is True
+    # Second call: blocked by canary gate.
+    r2 = kdv_with_model.pre_call("groq/llama-8b", "groq", estimated_tokens=10)
+    assert r2.allowed is False
+    assert r2.reason == "canary_in_flight"
+
+
+def test_canary_failure_during_burst_re_locks_provider(kdv_with_model):
+    """Steady-state defense: provider was verified, then a call fails.
+    Subsequent admissions go back through canary gate to validate
+    quota didn't run out mid-burst."""
+    # Verify provider.
+    kdv_with_model.pre_call("groq/llama-8b", "groq", estimated_tokens=10)
+    kdv_with_model.post_call("groq/llama-8b", "groq", headers={}, token_count=100)
+    # Verify burst flows.
+    r = kdv_with_model.pre_call("groq/llama-8b", "groq", estimated_tokens=10)
+    assert r.allowed is True
+
+    # A failure lands.
+    kdv_with_model.record_failure("groq/llama-8b", "groq", "rate_limited")
+
+    # Next admission: canary mode. First admits, second blocks.
+    r1 = kdv_with_model.pre_call("groq/llama-8b", "groq", estimated_tokens=10)
+    assert r1.allowed is True
+    r2 = kdv_with_model.pre_call("groq/llama-8b", "groq", estimated_tokens=10)
+    assert r2.allowed is False
+    assert r2.reason == "canary_in_flight"

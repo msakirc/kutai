@@ -51,6 +51,19 @@ class KuledenDonenVar:
         self._OUTCOME_MAX_LEN = 30
         self._OUTCOME_MAX_AGE_SECONDS = 3600.0
         self._OUTCOME_MIN_SAMPLES = 5
+        # Per-provider canary state. Cold start (or post-day-reset, or
+        # post-breaker-reset) we don't actually know the provider's
+        # quota state — gemini free tier doesn't expose remaining-rpd
+        # via headers, our local count may be stale (process restarted
+        # mid-day, another tool consumed the same key, etc.). To avoid
+        # bursting many tasks into a wall, we hold OTHER calls back
+        # until ONE call ("canary") returns. Success → flip to verified
+        # → others flow. 429/RESOURCE_EXHAUSTED → daily_exhausted fires
+        # via existing path → others filtered upfront.
+        # Cost: 1 wasted call per uncertainty event. Saves the ~20-call
+        # burst-then-wall pattern observed 2026-05-02.
+        self._canary_verified: dict[str, bool] = {}
+        self._canary_in_flight: dict[str, bool] = {}
 
     def _get_cb(self, provider: str) -> CircuitBreaker:
         if provider not in self._circuit_breakers:
@@ -261,6 +274,21 @@ class KuledenDonenVar:
                 reason="rpd",
             )
 
+        # Canary gate: when this provider hasn't been verified since the
+        # last uncertainty event (boot, day reset, breaker reset), allow
+        # only ONE call through at a time until it returns. Subsequent
+        # admissions wait for the canary to confirm capacity actually
+        # exists. Saves bursting many tasks into a wall when we have no
+        # authoritative quota signal (gemini free tier — no rpd headers).
+        if not self._canary_verified.get(provider, False):
+            if self._canary_in_flight.get(provider, False):
+                return PreCallResult(
+                    allowed=False, wait_seconds=5.0, daily_exhausted=False,
+                    reason="canary_in_flight", binding_provider=True,
+                )
+            # Reserve THIS call as the canary.
+            self._canary_in_flight[provider] = True
+
         # Rate limit capacity check — diagnose which axis is binding so
         # caller logs WHY (rpm vs tpm vs provider-aggregate) and HOW LONG
         # until recovery. Pool pressure consumers downstream can use the
@@ -379,6 +407,14 @@ class KuledenDonenVar:
         if was_degraded:
             self._fire(provider, model_id, "circuit_breaker_reset")
 
+        # Canary verified: this call returned 200, so the provider IS
+        # actually serving. Open the gate for queued admissions. The
+        # complementary failure path in record_failure flips this back
+        # to False — any subsequent failure triggers re-canary on the
+        # next admission attempt.
+        self._canary_verified[provider] = True
+        self._canary_in_flight[provider] = False
+
         # Reliability tracking: log a successful outcome.
         self._record_outcome(model_id, True)
 
@@ -440,6 +476,21 @@ class KuledenDonenVar:
         # worked given fresh quota.
         if error_type != "auth_failure":
             self._record_outcome(model_id, False)
+
+        # Canary slot release + state transition. Whatever the failure
+        # mode, the canary call has returned — clear the in-flight
+        # reservation so the NEXT admission can attempt a fresh canary.
+        #
+        # ALSO: any failure flips canary_verified back to False. A
+        # previously-verified provider that just failed is no longer
+        # trustworthy — next admission must re-canary instead of
+        # bursting onto the wall. This is the steady-state defense
+        # against quota wraparound: gemini hits its first 429, we
+        # mark unverified, subsequent admissions queue behind one
+        # canary that will hit daily_exhausted (set by 429 body parser)
+        # and the rpd gate filters out further admissions cleanly.
+        self._canary_in_flight[provider] = False
+        self._canary_verified[provider] = False
 
     def _build_provider_status(self, provider: str) -> ProviderStatus:
         cb = self._get_cb(provider)

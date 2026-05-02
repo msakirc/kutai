@@ -147,16 +147,27 @@ def _count_python_processes(
                 except ValueError:
                     continue
                 entries.append((pid, parent_pid))
-            # Dedup BEFORE applying exclude_pid so the launcher child of
-            # the running guard gets dropped (its parent IS in the raw
-            # candidate set, even though we'll exclude that parent later).
-            candidate_pids = {pid for pid, _ in entries}
-            for pid, parent_pid in entries:
-                if parent_pid in candidate_pids:
-                    continue
-                if pid == exclude_pid:
-                    continue
-                pids.append(pid)
+            # Group candidates by launcher-chain root. Two candidates are in
+            # the same chain when one is an ancestor of the other within the
+            # candidate set. Walk parents until they leave the candidate set
+            # — that PID is the root, one per logical run.
+            parent_map = {pid: parent for pid, parent in entries}
+
+            def _root(pid: int) -> int:
+                seen = {pid}
+                while parent_map.get(pid) in parent_map:
+                    pid = parent_map[pid]
+                    if pid in seen:
+                        break  # cycle guard
+                    seen.add(pid)
+                return pid
+
+            roots = {_root(pid) for pid, _ in entries}
+            # Drop the chain that contains exclude_pid (the running guard
+            # may be either the launcher root or a launcher child).
+            if exclude_pid is not None and exclude_pid in parent_map:
+                roots.discard(_root(exclude_pid))
+            pids = sorted(roots)
         except Exception:
             pass
     else:

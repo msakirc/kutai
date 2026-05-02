@@ -162,12 +162,16 @@ def test_s7_fires_negative_when_extrapolated_burn_exceeds_remaining():
 
 
 def test_s9_local_busy_full_veto():
+    from nerd_herd.signals.s9_perishability import LOCAL_BUSY_PENALTY
     m = _FakeModel(is_local=True, name="loaded-x", is_loaded=True)
     local = LocalModelState(model_name="loaded-x", requests_processing=1)
     p = s9_perishability(m, local=local, vram_avail_mb=8000,
                          matrix=RateLimitMatrix(), task_difficulty=5,
                          now=time.time())
-    assert p == pytest.approx(-1.0, abs=0.01)
+    # Sentinel value, not -1.0 — must survive M3 weight dilution to
+    # produce a final clamped scalar of -1.0 in combine_signals.
+    assert p == LOCAL_BUSY_PENALTY
+    assert p <= -1.0
 
 
 def test_s9_paid_right_tool_for_hard_task():

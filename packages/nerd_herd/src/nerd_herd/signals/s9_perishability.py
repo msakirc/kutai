@@ -18,9 +18,25 @@ LOCAL_IDLE_MAX = 0.5
 # Local serial-only: llama-server runs --parallel 1 and the GPU hosts at
 # most one model. ANY in-flight local task means a second local admission
 # would either queue behind the first or trigger a swap. Both outcomes
-# are bad — surface as a hard veto via -1.0 (admission threshold for any
-# urgency clamps to >= -1.0, so this guarantees rejection).
-LOCAL_BUSY_PENALTY = -1.0
+# are bad — surface as a hard veto.
+#
+# Sentinel value, NOT -1.0. M3_difficulty_weights applies a per-signal
+# multiplier in [0.5, 1.5] to S9 before the bucket-worst-wins step in
+# combine_signals. With weight=0.7 (hard task, local model on
+# d>=7 path) and S9=-1.0, weighted = -0.7, negative_total = -0.7,
+# scalar = clamp(-0.7) = -0.7. Selector's pressure-threshold gate
+# (selector.py:266) is `urgency > -1.0` strict-greater-than, so -0.7
+# passes — admitting a SECOND local task while the first holds the
+# slot. Production 2026-05-02 task #7065 admitted local gemma-26B at
+# 00:07:59 while task #7058 held the local slot (had just swapped to
+# gemini cloud and was about to swap back to local Qwen3.5-35B at
+# 00:08:04). Two local begin_calls within 5s on a single-GPU host.
+#
+# -10.0 survives any reasonable M3 weight: even at weight=0.5 the
+# weighted value is -5.0, well below the [-1, 1] clamp floor in
+# combine_signals._clamp(). Final scalar pegs at exactly -1.0,
+# tripping the strict-greater-than gate. Hard veto restored.
+LOCAL_BUSY_PENALTY = -10.0
 COLD_LOCAL_VRAM_OK = 0.4
 COLD_LOCAL_NO_VRAM = -0.5
 TIME_DECAY_SCALE_SECS = 86400.0

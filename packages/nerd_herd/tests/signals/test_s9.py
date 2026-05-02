@@ -5,7 +5,7 @@ import pytest
 from nerd_herd.types import (
     LocalModelState, RateLimit, RateLimitMatrix,
 )
-from nerd_herd.signals.s9_perishability import s9_perishability
+from nerd_herd.signals.s9_perishability import s9_perishability, LOCAL_BUSY_PENALTY
 
 
 class FakeModel:
@@ -27,16 +27,19 @@ def test_s9_loaded_local_idle_positive():
     assert p == pytest.approx(0.25, abs=0.05)
 
 
-# Loaded local + processing → hard busy veto. -1.0 not -0.10: llama-server
-# is serial (--parallel 1) so a second admission must NEVER squeeze through
-# even at max urgency.
+# Loaded local + processing → hard busy veto via LOCAL_BUSY_PENALTY sentinel.
+# llama-server is serial (--parallel 1) so a second admission must NEVER
+# squeeze through even at max urgency. Sentinel value is < -1 (currently
+# -10) so post-M3-weighting + combine_signals._clamp pegs the final scalar
+# at exactly -1.0; raw S9 return uses the sentinel.
 def test_s9_loaded_local_busy_negative():
     m = FakeModel(is_local=True, name="loaded-x")
     m.is_loaded = True
     local = LocalModelState(model_name="loaded-x", idle_seconds=0, requests_processing=1)
     p = s9_perishability(m, local=local, vram_avail_mb=8000, matrix=RateLimitMatrix(),
                          task_difficulty=5, now=time.time())
-    assert p == pytest.approx(-1.0, abs=0.01)
+    assert p == LOCAL_BUSY_PENALTY
+    assert p <= -1.0
 
 
 # In-flight registry signals busy even before requests_processing catches up.
@@ -64,7 +67,8 @@ def test_s9_local_in_flight_blocks_concurrent_admission():
         m, local=local, vram_avail_mb=8000, matrix=RateLimitMatrix(),
         task_difficulty=5, now=time.time(), in_flight_calls=in_flight,
     )
-    assert p == pytest.approx(-1.0, abs=0.01)
+    assert p == LOCAL_BUSY_PENALTY
+    assert p <= -1.0
 
 
 # Cold local during another local's in-flight: also vetoed (GPU is shared).
@@ -82,7 +86,8 @@ def test_s9_cold_local_in_flight_blocks_swap():
         m, local=local, vram_avail_mb=8000, matrix=RateLimitMatrix(),
         task_difficulty=5, now=time.time(), in_flight_calls=in_flight,
     )
-    assert p == pytest.approx(-1.0, abs=0.01)
+    assert p == LOCAL_BUSY_PENALTY
+    assert p <= -1.0
 
 
 # Cold local + VRAM available
@@ -93,6 +98,47 @@ def test_s9_cold_local_vram_available_positive():
     p = s9_perishability(m, local=local, vram_avail_mb=8000, matrix=RateLimitMatrix(),
                          task_difficulty=5, now=time.time())
     assert p == pytest.approx(0.4, abs=0.05)
+
+
+# Regression: M3 weight must not dilute LOCAL_BUSY_PENALTY enough that
+# the post-combine scalar slips above -1.0 and passes the urgency gate.
+# Production 2026-05-02 task #7058 (planner d=10, local model so
+# model_is_paid=False → s9_w=0.7) saw S9=-1.0 → weighted=-0.7 →
+# scalar=-0.7 → urgency=1.0 threshold=-1.0 strict-greater → ADMITTED.
+# Two local begin_calls within 5s on a single-GPU host. Sentinel value
+# survives the worst-case M3 weight of 0.5, leaving final scalar at -1.0.
+def test_s9_local_busy_survives_m3_weighting():
+    from nerd_herd.types import InFlightCall
+    from nerd_herd.combine import combine_signals
+    from nerd_herd.modifiers import M3_difficulty_weights
+
+    m = FakeModel(is_local=True, name="loaded-x")
+    m.is_loaded = True
+    local = LocalModelState(
+        model_name="loaded-x", idle_seconds=30, requests_processing=0,
+    )
+    in_flight = [InFlightCall(
+        call_id="task-other", task_id=1, category="main_work",
+        model="loaded-x", provider="local", is_local=True,
+        started_at=time.time(),
+    )]
+    s9 = s9_perishability(
+        m, local=local, vram_avail_mb=8000, matrix=RateLimitMatrix(),
+        task_difficulty=10, now=time.time(), in_flight_calls=in_flight,
+    )
+    # S9 raw value is the sentinel.
+    assert s9 == LOCAL_BUSY_PENALTY
+
+    # Run through M3+combine for difficulty=10 with model_is_paid=False
+    # (the diluting case). Final scalar must hit -1.0 exactly so the
+    # selector's `urgency > -1.0` strict-greater gate fires.
+    weights = M3_difficulty_weights(difficulty=10, model_is_paid=False)
+    sigs = {"S1": 0.0, "S2": 0.0, "S3": 0.0, "S4": 0.0, "S5": 0.0,
+            "S6": 0.0, "S7": 0.0, "S9": s9, "S10": 0.0, "S11": 0.0}
+    breakdown = combine_signals(signals=sigs, weights=weights)
+    assert breakdown.scalar == -1.0, (
+        f"hard veto diluted: scalar={breakdown.scalar} (expected -1.0)"
+    )
 
 
 # Cold local + VRAM unavailable

@@ -11,29 +11,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Union
 
-_BACKOFF_SECONDS = [0, 10, 30, 120, 600]
-# "no_model" is the dispatcher's signal that fatih_hoca.select() returned
-# None — every cloud provider rate-limited / dead AND local pool busy.
-# This is environmental scarcity, not a worker bug. Persistent saturation
-# (e.g. gemini free-tier 20-req/day cap hit at noon → unavailable until
-# midnight reset, ~12h) is common, so the budget needs to span much
-# longer than a single quota window. The earlier 10-attempt × 30/60/120/
-# 300/600 ladder DLQ'd at ~58min — well before a daily reset. Production
-# 2026-05-02 14:44-15:51: 20 no_model tasks DLQ'd at exactly 10/10
-# attempts.
-#
-# Rebalanced: cap backoff at 1h (3600s), allow up to 30 attempts. Total
-# patience window ~25h before DLQ, which spans any single-day reset.
-# accelerate_retries (Beckman.on_model_swap / KDV capacity_restored
-# events) wake deferred tasks early when capacity actually frees, so
-# the 1h cap is just an upper bound, not a typical wait.
-_NO_MODEL_BACKOFF_SECONDS = [
-    30, 60, 120, 300, 600, 1200, 1800, 3600,
-    3600, 3600, 3600, 3600, 3600, 3600, 3600,
-    3600, 3600, 3600, 3600, 3600, 3600, 3600,
-    3600, 3600, 3600, 3600, 3600, 3600, 3600, 3600,
-]
-_NO_MODEL_MAX_ATTEMPTS = 30
+# Shared availability/transient backoff ladder. 10 entries cap at 1h.
+# attempts=1 (first failure) → idx=0 → immediate retry; attempts=2 → 10s;
+# ladder advances per worker_attempts. accelerate_retries (Beckman.on_
+# model_swap / KDV capacity_restored events) wakes deferred tasks early
+# when capacity actually frees, so longer ladder steps are upper bounds
+# rather than typical waits.
+_BACKOFF_SECONDS = [0, 10, 30, 60, 120, 300, 600, 1200, 1800, 3600]
 _MAX_BONUS = 2
 
 
@@ -81,27 +65,6 @@ def decide_retry(
     attempts = int(failure.get("worker_attempts", 0))
     max_attempts = int(failure.get("max_worker_attempts", 3))
     category = failure.get("category", "unknown")
-
-    # "no_model" (dispatcher's pick=None signal) is pure environmental
-    # backpressure — the worker never got a model to call. User design
-    # call 2026-05-02 18:15 UTC: "Sleeping tasks awake with wake signals,
-    # but there is only one picking mechanism."
-    #
-    # Architecture: when the pool is empty, the task sleeps with a small
-    # constant backoff. Wake signals (Beckman.on_model_swap, KDV
-    # capacity_restored events) accelerate the next_retry_at. The single
-    # picker (Beckman.next_task) re-evaluates each ready task on every
-    # tick — if the pool is still empty, the picker skips silently
-    # without burning anything. If the pool has capacity, the task
-    # admits naturally.
-    #
-    # Backoff is just a "don't hammer selector with the same id every
-    # 3s" damper, not a budget. No counter. No DLQ. The single-picker
-    # semantics make a permanent-empty pool a no-op (task sits pending
-    # forever) which is the right behaviour — a structural failure to
-    # have ANY model is beyond a single task's responsibility to flag.
-    if category == "no_model":
-        return RetryDecision(action="delayed", delay_seconds=60)
 
     if attempts < max_attempts:
         # Quality / deterministic failures: immediate retry, no backoff.

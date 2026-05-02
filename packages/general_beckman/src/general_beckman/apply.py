@@ -260,35 +260,16 @@ async def _retry_or_dlq(task: dict, *, category: str, error: str) -> None:
     fresh = await _get_task(task["id"])
     if fresh:
         task = fresh
-    prior_attempts = int(task.get("worker_attempts") or 0)
-    max_attempts = int(task.get("max_worker_attempts") or 3)
+    attempts = int(task.get("worker_attempts") or 0) + 1
+    max_attempts = int(task.get("max_worker_attempts") or 10)
     progress = _parse_progress(task)
     ctx = _parse_ctx(task)
     bonus_count = int(ctx.get("_bonus_count", 0))
 
-    # User design 2026-05-02 18:15 UTC: no_model is pure environmental
-    # backpressure. Don't burn worker_attempts. Don't track a separate
-    # counter. Don't DLQ. Just defer with a constant backoff and let
-    # wake signals + the single picker re-evaluate on each tick.
-    #
-    # worker_attempts only reflects calls the WORKER actually attempted
-    # (quality / schema / availability after a real call landed). A
-    # backoff expiry that hits an empty pool isn't an attempt — the
-    # picker would skip the task at admission anyway, no dispatch fires.
-    if category == "no_model":
-        # decide_retry's no_model branch returns a constant 60s defer;
-        # value of attempts_for_decide is irrelevant to it.
-        attempts_for_decide = prior_attempts
-        attempts_to_persist = prior_attempts
-    else:
-        # Non-environmental failures: real worker attempt, increment.
-        attempts_for_decide = prior_attempts + 1
-        attempts_to_persist = attempts_for_decide
-
     decision = decide_retry(
         {
             "category": category,
-            "worker_attempts": attempts_for_decide,
+            "worker_attempts": attempts,
             "max_worker_attempts": max_attempts,
             "model": task.get("model", ""),
             "error": error,
@@ -298,28 +279,12 @@ async def _retry_or_dlq(task: dict, *, category: str, error: str) -> None:
     )
 
     if isinstance(decision, DLQAction):
-        await _dlq_write(
-            task, error=error, category=category,
-            attempts=attempts_for_decide,
-        )
+        await _dlq_write(task, error=error, category=category, attempts=attempts)
         return
 
     if decision.bonus_used:
         ctx["_bonus_count"] = bonus_count + 1
         max_attempts += 1
-
-    # Bump max_worker_attempts when retry policy uses a category-specific
-    # higher cap (currently only "no_model": 30). Sweep section 8 reads
-    # this column to force-DLQ over-cap tasks. The DLQ branch above already
-    # respects category caps via decide_retry; this just keeps sweep aligned.
-    if category == "no_model":
-        from general_beckman.retry import _NO_MODEL_MAX_ATTEMPTS
-        if max_attempts < _NO_MODEL_MAX_ATTEMPTS:
-            max_attempts = _NO_MODEL_MAX_ATTEMPTS
-
-    # Pass the persisted-attempts value through to update_task. Inside
-    # the local var name `attempts` is what update_task expects below.
-    attempts = attempts_to_persist
 
     next_retry_at = None
     if decision.action == "delayed":

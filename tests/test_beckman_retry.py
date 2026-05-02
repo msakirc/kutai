@@ -50,38 +50,36 @@ def test_quality_bonus_caps_at_two():
     assert isinstance(decision, DLQAction)
 
 
-# ─── no_model category: pure environmental backpressure ─────────────────────
+# ─── Shared availability ladder + 10-attempt cap ────────────────────────────
 #
-# User design 2026-05-02 18:15 UTC: "Counter is for valid worker and grader
-# attempts. DLQ is for truly not recoverable tasks. Not being dispatched is
-# neither." no_model is just a deferral — the worker never got a model to
-# call. Constant 60s backoff, no counter advancement, no DLQ.
+# User design 2026-05-02 18:50 UTC: extend shared backoff ladder to 10
+# entries up to 1h, bump default attempt cap to 10. no_model special
+# branch dropped — pool-empty mid-task surfaces as availability and
+# routes through the same path as any other transient failure.
 
 
-def test_no_model_uses_constant_60s_defer():
-    """Every no_model failure defers 60s, regardless of attempt count."""
-    for a in (1, 5, 50, 500):
-        decision = decide_retry(_failure(category="no_model", attempts=a))
-        assert decision.action == "delayed"
-        assert decision.delay_seconds == 60
+def test_availability_ladder_climbs_to_1h():
+    """Ladder: 0, 10, 30, 60, 120, 300, 600, 1200, 1800, 3600."""
+    delays = [
+        decide_retry(_failure(category="availability", attempts=a, max_attempts=20)).delay_seconds
+        for a in range(1, 11)
+    ]
+    assert delays == [0, 10, 30, 60, 120, 300, 600, 1200, 1800, 3600]
 
 
-def test_no_model_never_dlqs():
-    """No matter how many attempts have racked up, no_model never DLQs.
-    Permanently empty pool = task sits pending forever; that's a
-    structural failure beyond a single task's responsibility."""
-    for a in (10, 100, 9999):
-        decision = decide_retry(
-            _failure(category="no_model", attempts=a, max_attempts=3),
-        )
-        assert not isinstance(decision, DLQAction), (
-            f"no_model must never DLQ (attempts={a})"
-        )
+def test_availability_dlqs_after_cap():
+    """At max_attempts, availability DLQs."""
+    decision = decide_retry(
+        _failure(category="availability", attempts=10, max_attempts=10),
+    )
+    assert isinstance(decision, DLQAction)
 
 
-def test_no_model_does_not_affect_other_categories():
-    """Quality / availability paths unchanged."""
-    q = decide_retry(_failure(category="quality", attempts=1))
-    assert q.action == "immediate" and q.delay_seconds == 0
-    a = decide_retry(_failure(category="availability", attempts=2))
-    assert a.action == "delayed" and a.delay_seconds == 10
+def test_no_model_treated_as_availability():
+    """no_model is not a special category — falls through to shared
+    availability path. attempts++ each defer, DLQ at cap."""
+    decision = decide_retry(
+        _failure(category="no_model", attempts=1, max_attempts=10),
+    )
+    # attempt 1 → idx 0 → 0s (immediate)
+    assert decision.action == "immediate" and decision.delay_seconds == 0

@@ -127,6 +127,15 @@ class CloudModelState:
     model_id: str = ""
     utilization_pct: float = 0.0
     limits: RateLimitMatrix = field(default_factory=RateLimitMatrix)
+    # Rolling success rate over the last ~30 calls / 1h. 1.0 == perfect
+    # or no-data (don't penalize unknowns). Lower values flow through
+    # ranking as a continuous score multiplier — flaky models drop in
+    # rank but stay eligible. Production 2026-05-02 design decision:
+    # "we should not dispatch a task for likely fail models with
+    # questionable pressure" — reliability becomes a pressure signal,
+    # not a binary kill-switch. Source: kuleden_donen_var.KuledenDonenVar
+    # rolling outcome window via the nerd_herd_adapter.
+    recent_success_rate: float = 1.0
 
 
 @dataclass

@@ -724,14 +724,45 @@ async def call(
                         pass
             # 404 NOT_FOUND: provider retired the model id (Gemini does
             # this with *-preview-MM-DD slugs) or static yaml registered
-            # a stale id. Same id won't come back. Mark dead so selector
-            # excludes from candidate pool until restart / rediscovery.
+            # a stale id. mark_dead so selector excludes from candidate
+            # pool until rediscovery / TTL expiry.
+            #
+            # 2026-05-02 transient-vs-permanent refinement: openrouter
+            # free-tier returns 404 with body "No endpoints found that
+            # support your prompt" when no upstream provider is available
+            # right now (rotation, transient outage, account-level cap).
+            # Model is fully valid in /v1/models catalog. mark_dead'ing
+            # these burned all 33 free-tier ids on first call. Identify
+            # by body text and SKIP the mark_dead — let the new rolling
+            # success-rate pressure signal (CloudModelState.recent_
+            # success_rate fed via KDV.recent_success_rate) downrank
+            # them naturally instead. KDV's record_failure already
+            # appended a False outcome, so reliability tracking captures
+            # the failure.
             if raw_result.category == "model_not_found":
-                try:
-                    from src.models.model_registry import get_registry
-                    get_registry().mark_dead(model.litellm_name)
-                except Exception:
-                    pass
+                _msg_lc = (raw_result.message or "").lower()
+                _transient_404_markers = (
+                    "no endpoints found",
+                    "no providers available",
+                    "no upstream",
+                )
+                _is_transient_routing = any(
+                    m in _msg_lc for m in _transient_404_markers
+                )
+                if _is_transient_routing:
+                    _get_logger().warning(
+                        "404 looks transient (routing/rotation) on %s — "
+                        "skipping mark_dead, leaving to reliability "
+                        "pressure: %s",
+                        model.litellm_name,
+                        (raw_result.message or "")[:200],
+                    )
+                else:
+                    try:
+                        from src.models.model_registry import get_registry
+                        get_registry().mark_dead(model.litellm_name)
+                    except Exception:
+                        pass
             # auth_failure: provider-level credential / billing / key-cap
             # issue. Production triage 2026-04-30: OpenRouter key hit its
             # account-level "Key limit exceeded" cap → every OR call 403'd

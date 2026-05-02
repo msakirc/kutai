@@ -96,7 +96,19 @@ def build_cloud_provider_state(
             matrix = _worst_of(mstate, prov_state)
         else:
             matrix = _matrix(mstate)
-        models[mid] = CloudModelState(model_id=mid, limits=matrix)
+        # Reliability signal: rolling success rate over recent calls.
+        # 1.0 when no data — selector treats as fully reliable,
+        # consistent with KDV's recent_success_rate semantics. Flaky
+        # models surface here and feed the ranking layer's reliability
+        # multiplier.
+        try:
+            success_rate = float(kdv.recent_success_rate(mid))
+        except Exception:
+            success_rate = 1.0
+        models[mid] = CloudModelState(
+            model_id=mid, limits=matrix,
+            recent_success_rate=success_rate,
+        )
 
     cb = kdv._circuit_breakers.get(provider)
     return CloudProviderState(

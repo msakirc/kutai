@@ -35,6 +35,22 @@ class KuledenDonenVar:
         #     getting hammered with 4xx is "live", not "no data".
         self._provider_call_count: dict[str, int] = {}
         self._provider_attempt_count: dict[str, int] = {}
+        # Rolling per-model outcome window for reliability scoring. Each
+        # entry: (timestamp, success_bool). Bounded by both count and age
+        # so an idle model doesn't carry a 6-hour-old "all failed" verdict
+        # forever. Reads via recent_success_rate(model_id).
+        #
+        # Production 2026-05-02: openrouter free-tier ids returned
+        # "No endpoints found" 404s on transient upstream rotations. The
+        # binary mark_dead path treated them as permanent. User feedback:
+        # "we should not dispatch a task for likely fail models with
+        # questionable pressure" — reliability needs to be a continuous
+        # signal in the pressure equation, not a binary kill-switch.
+        from collections import deque
+        self._outcomes: dict[str, deque] = {}
+        self._OUTCOME_MAX_LEN = 30
+        self._OUTCOME_MAX_AGE_SECONDS = 3600.0
+        self._OUTCOME_MIN_SAMPLES = 5
 
     def _get_cb(self, provider: str) -> CircuitBreaker:
         if provider not in self._circuit_breakers:
@@ -363,6 +379,38 @@ class KuledenDonenVar:
         if was_degraded:
             self._fire(provider, model_id, "circuit_breaker_reset")
 
+        # Reliability tracking: log a successful outcome.
+        self._record_outcome(model_id, True)
+
+    def _record_outcome(self, model_id: str, success: bool) -> None:
+        """Append (timestamp, success) to the rolling outcome window."""
+        from collections import deque
+        import time as _time
+        dq = self._outcomes.get(model_id)
+        if dq is None:
+            dq = deque(maxlen=self._OUTCOME_MAX_LEN)
+            self._outcomes[model_id] = dq
+        dq.append((_time.time(), bool(success)))
+
+    def recent_success_rate(self, model_id: str) -> float:
+        """Fraction of successful calls in the rolling window for
+        ``model_id``. Returns 1.0 when fewer than _OUTCOME_MIN_SAMPLES
+        observations exist (no data → assume reliable, don't penalize
+        unfairly). Drops entries older than _OUTCOME_MAX_AGE_SECONDS so
+        an idle model doesn't carry stale verdicts forever."""
+        dq = self._outcomes.get(model_id)
+        if not dq:
+            return 1.0
+        import time as _time
+        cutoff = _time.time() - self._OUTCOME_MAX_AGE_SECONDS
+        # Trim aged entries from the left.
+        while dq and dq[0][0] < cutoff:
+            dq.popleft()
+        if len(dq) < self._OUTCOME_MIN_SAMPLES:
+            return 1.0
+        ok = sum(1 for _, s in dq if s)
+        return ok / len(dq)
+
     def record_failure(
         self,
         model_id: str,
@@ -383,6 +431,15 @@ class KuledenDonenVar:
             if cb.is_degraded and not was_degraded:
                 self._fire(provider, model_id, "circuit_breaker_tripped")
         # auth errors: not tracked (permanent, not transient)
+
+        # Reliability tracking: every non-auth failure feeds the rolling
+        # window. auth failures are excluded — they're a credentials
+        # problem, not a model-quality signal. quota/rate_limited included
+        # because a frequently-rate-limited model IS less reliable from
+        # the dispatcher's POV, even if the underlying call would have
+        # worked given fresh quota.
+        if error_type != "auth_failure":
+            self._record_outcome(model_id, False)
 
     def _build_provider_status(self, provider: str) -> ProviderStatus:
         cb = self._get_cb(provider)

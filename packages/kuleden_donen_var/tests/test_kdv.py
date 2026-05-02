@@ -274,3 +274,47 @@ def test_capacity_change_on_circuit_breaker_reset(kdv_with_model, events):
     kdv_with_model.post_call("groq/llama-8b", "groq", headers={}, token_count=100)
     cb_events = [e for e in events if e.event_type == "circuit_breaker_reset"]
     assert len(cb_events) == 1
+
+
+# -- recent_success_rate (reliability tracking) --
+
+
+def test_recent_success_rate_default_when_no_data(kdv_with_model):
+    """Until MIN_SAMPLES outcomes accumulate, return 1.0 (no penalty)."""
+    assert kdv_with_model.recent_success_rate("groq/llama-8b") == 1.0
+
+
+def test_recent_success_rate_tracks_outcomes(kdv_with_model):
+    """Mix of successes + failures lands in (0, 1)."""
+    for _ in range(8):
+        kdv_with_model.post_call("groq/llama-8b", "groq", headers={}, token_count=10)
+    for _ in range(2):
+        kdv_with_model.record_failure("groq/llama-8b", "groq", "server_error")
+    rate = kdv_with_model.recent_success_rate("groq/llama-8b")
+    assert 0.7 < rate < 0.85, f"got {rate}"
+
+
+def test_recent_success_rate_excludes_auth_failures(kdv_with_model):
+    """auth_failure is a credentials problem, not a model-quality
+    signal — outcome window must NOT include it."""
+    for _ in range(6):
+        kdv_with_model.post_call("groq/llama-8b", "groq", headers={}, token_count=10)
+    for _ in range(3):
+        kdv_with_model.record_failure("groq/llama-8b", "groq", "auth_failure")
+    assert kdv_with_model.recent_success_rate("groq/llama-8b") == 1.0
+
+
+def test_recent_success_rate_includes_quota_failures(kdv_with_model):
+    """A frequently-rate-limited model IS less reliable from the
+    dispatcher's POV — track quota/rate_limited as a failure outcome."""
+    for _ in range(3):
+        kdv_with_model.post_call("groq/llama-8b", "groq", headers={}, token_count=10)
+    for _ in range(7):
+        kdv_with_model.record_failure("groq/llama-8b", "groq", "rate_limited")
+    rate = kdv_with_model.recent_success_rate("groq/llama-8b")
+    assert rate == 0.3, f"got {rate}"
+
+
+def test_recent_success_rate_unknown_model(kdv):
+    """Unregistered ids return 1.0 (no data → no penalty)."""
+    assert kdv.recent_success_rate("nonexistent/model") == 1.0

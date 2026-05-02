@@ -82,21 +82,26 @@ def decide_retry(
     max_attempts = int(failure.get("max_worker_attempts", 3))
     category = failure.get("category", "unknown")
 
-    # "no_model" (dispatcher's pick=None signal) gets its own ladder and
-    # attempt cap. Failure is environmental — every provider exhausted
-    # in the same instant. The default 3-attempt × 0/10/30 ladder DLQs
-    # in under 60s before any quota or local slot can recover.
+    # "no_model" (dispatcher's pick=None signal) is pure environmental
+    # backpressure — the worker never got a model to call. User design
+    # call 2026-05-02 18:15 UTC: "Sleeping tasks awake with wake signals,
+    # but there is only one picking mechanism."
+    #
+    # Architecture: when the pool is empty, the task sleeps with a small
+    # constant backoff. Wake signals (Beckman.on_model_swap, KDV
+    # capacity_restored events) accelerate the next_retry_at. The single
+    # picker (Beckman.next_task) re-evaluates each ready task on every
+    # tick — if the pool is still empty, the picker skips silently
+    # without burning anything. If the pool has capacity, the task
+    # admits naturally.
+    #
+    # Backoff is just a "don't hammer selector with the same id every
+    # 3s" damper, not a budget. No counter. No DLQ. The single-picker
+    # semantics make a permanent-empty pool a no-op (task sits pending
+    # forever) which is the right behaviour — a structural failure to
+    # have ANY model is beyond a single task's responsibility to flag.
     if category == "no_model":
-        no_model_max = max(max_attempts, _NO_MODEL_MAX_ATTEMPTS)
-        if attempts < no_model_max:
-            idx = min(max(0, attempts - 1), len(_NO_MODEL_BACKOFF_SECONDS) - 1)
-            delay = _NO_MODEL_BACKOFF_SECONDS[idx]
-            return RetryDecision(action="delayed", delay_seconds=delay)
-        return DLQAction(
-            category=category,
-            reason=failure.get("error", "")[:300]
-            or f"no_model exhausted after {attempts} attempts",
-        )
+        return RetryDecision(action="delayed", delay_seconds=60)
 
     if attempts < max_attempts:
         # Quality / deterministic failures: immediate retry, no backoff.

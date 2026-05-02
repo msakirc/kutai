@@ -266,33 +266,22 @@ async def _retry_or_dlq(task: dict, *, category: str, error: str) -> None:
     ctx = _parse_ctx(task)
     bonus_count = int(ctx.get("_bonus_count", 0))
 
-    # User design call 2026-05-02 18:05 UTC: "Backoff does not say 'you
-    # must do it this time' it says 'you can try after this'". A backoff
-    # expiry that lands when the pool is still empty isn't a worker
-    # failure — the worker never got a model to call. Burning
-    # worker_attempts on category=no_model conflates environmental
-    # backpressure with task-level failures and DLQs healthy tasks
-    # after enough wake-up windows hit empty pools.
+    # User design 2026-05-02 18:15 UTC: no_model is pure environmental
+    # backpressure. Don't burn worker_attempts. Don't track a separate
+    # counter. Don't DLQ. Just defer with a constant backoff and let
+    # wake signals + the single picker re-evaluate on each tick.
     #
-    # Use a separate ctx counter `_no_model_attempts` for ladder
-    # progression (drives backoff index + DLQ check inside decide_retry)
-    # while leaving worker_attempts untouched. worker_attempts only
-    # reflects calls the WORKER actually attempted — quality, schema,
-    # availability — not selector-returned-None deferrals.
+    # worker_attempts only reflects calls the WORKER actually attempted
+    # (quality / schema / availability after a real call landed). A
+    # backoff expiry that hits an empty pool isn't an attempt — the
+    # picker would skip the task at admission anyway, no dispatch fires.
     if category == "no_model":
-        no_model_count = int(ctx.get("_no_model_attempts", 0)) + 1
-        ctx["_no_model_attempts"] = no_model_count
-        # decide_retry's no_model branch reads worker_attempts; pass the
-        # category-specific counter so its ladder index advances correctly.
-        attempts_for_decide = no_model_count
-        # worker_attempts in DB stays at prior value — no burn.
+        # decide_retry's no_model branch returns a constant 60s defer;
+        # value of attempts_for_decide is irrelevant to it.
+        attempts_for_decide = prior_attempts
         attempts_to_persist = prior_attempts
     else:
         # Non-environmental failures: real worker attempt, increment.
-        # Reset _no_model_attempts so a future no_model failure starts
-        # fresh from the bottom of its ladder rather than inheriting
-        # state from a previous saturation event.
-        ctx.pop("_no_model_attempts", None)
         attempts_for_decide = prior_attempts + 1
         attempts_to_persist = attempts_for_decide
 

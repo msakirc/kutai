@@ -617,16 +617,56 @@ class RateLimitManager:
         litellm_name: str,
         provider: str,
     ) -> None:
-        """Record a request timestamp for RPM tracking."""
+        """Record a request timestamp for RPM tracking AND decrement
+        the daily RPD counter when a static cap is known.
+
+        Daily decrement runs locally so providers that don't return
+        rpd headers (notably Gemini's free tier — 20 req/day with no
+        x-ratelimit-* response headers) still surface daily exhaustion
+        BEFORE the first 429 body parse. Production 2026-05-02
+        15:00-17:00 UTC: every gemini admit hit a 429 because
+        is_daily_exhausted only flipped after the response body parser
+        ran — by which time the burst had already committed many calls
+        to the wall.
+
+        Reset window: 24h rolling from first call of the day. When
+        rpd_reset_at falls in the past, both rpd_remaining and the
+        reset clock are refreshed. Header-derived updates from
+        update_from_headers still take precedence (line 492-495 in
+        update_from_headers) so providers that DO send headers
+        (groq) override our local count with their authoritative one.
+        """
         import time
         now = time.time()
         model_state = self.model_limits.get(litellm_name)
         if model_state:
             model_state._request_timestamps.append(now)
+            self._tick_rpd(model_state, now)
 
         provider_state = self._provider_limits.get(provider)
         if provider_state:
             provider_state._request_timestamps.append(now)
+            self._tick_rpd(provider_state, now)
+
+    @staticmethod
+    def _tick_rpd(state, now: float) -> None:
+        """Decrement rpd_remaining by 1 for a single attempt.
+
+        No-op when rpd_limit is unknown — providers without a daily
+        cap leave both fields None and we can't manufacture one.
+        Refreshes the day window when rpd_reset_at has passed.
+        """
+        if state.rpd_limit is None:
+            return
+        if state.rpd_reset_at and now >= state.rpd_reset_at:
+            state.rpd_remaining = state.rpd_limit
+            state.rpd_reset_at = now + 86400.0
+        if state.rpd_remaining is None:
+            state.rpd_remaining = state.rpd_limit
+        if state.rpd_reset_at is None:
+            state.rpd_reset_at = now + 86400.0
+        if state.rpd_remaining > 0:
+            state.rpd_remaining -= 1
 
     def record_tokens(
         self,

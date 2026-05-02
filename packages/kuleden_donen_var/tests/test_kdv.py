@@ -318,3 +318,58 @@ def test_recent_success_rate_includes_quota_failures(kdv_with_model):
 def test_recent_success_rate_unknown_model(kdv):
     """Unregistered ids return 1.0 (no data → no penalty)."""
     assert kdv.recent_success_rate("nonexistent/model") == 1.0
+
+
+# -- Daily-cap local decrement (preemptive daily-exhaustion) --
+
+
+def test_record_attempt_decrements_rpd_when_limit_set(kdv_with_model):
+    """Production 2026-05-02 root: gemini's free-tier 20-req/day cap
+    was invisible to selector because the provider doesn't return
+    x-ratelimit-remaining-requests-day headers — rpd_remaining stayed
+    at registration value (20) until a 429 body parse flipped it.
+    Decrement locally per call so daily exhaustion fires preemptively."""
+    state = kdv_with_model._rate_limiter.model_limits["groq/llama-8b"]
+    state.rpd_limit = 20
+    state.rpd_remaining = 20
+    state.rpd_reset_at = None
+
+    for i in range(15):
+        kdv_with_model.record_attempt("groq/llama-8b", "groq")
+
+    # 15 attempts → 5 remaining
+    assert state.rpd_remaining == 5
+    # is_daily_exhausted should NOT yet fire
+    assert not kdv_with_model._rate_limiter.is_daily_exhausted("groq/llama-8b")
+
+    for i in range(5):
+        kdv_with_model.record_attempt("groq/llama-8b", "groq")
+
+    # 20 attempts total → 0 remaining → daily exhausted
+    assert state.rpd_remaining == 0
+    assert kdv_with_model._rate_limiter.is_daily_exhausted("groq/llama-8b")
+
+
+def test_record_attempt_no_op_when_rpd_limit_unset(kdv_with_model):
+    """Models without a daily cap (most paid tiers) shouldn't get a
+    fabricated rpd_remaining."""
+    state = kdv_with_model._rate_limiter.model_limits["groq/llama-8b"]
+    assert state.rpd_limit is None
+    for i in range(50):
+        kdv_with_model.record_attempt("groq/llama-8b", "groq")
+    assert state.rpd_limit is None
+    assert state.rpd_remaining is None
+
+
+def test_record_attempt_resets_rpd_window_after_24h(kdv_with_model):
+    """When rpd_reset_at is in the past, refresh both remaining and
+    the reset clock — covers the daily window rollover."""
+    import time
+    state = kdv_with_model._rate_limiter.model_limits["groq/llama-8b"]
+    state.rpd_limit = 20
+    state.rpd_remaining = 0
+    state.rpd_reset_at = time.time() - 1.0  # past
+
+    kdv_with_model.record_attempt("groq/llama-8b", "groq")
+    assert state.rpd_remaining == 19  # reset to 20, then decremented by 1
+    assert state.rpd_reset_at > time.time()

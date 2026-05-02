@@ -113,26 +113,46 @@ def _count_python_processes(
     script_name: str,
     exclude_pid: int | None = None,
 ) -> list[int]:
-    """Return PIDs of python.exe processes whose command line contains script_name."""
+    """Return PIDs of python.exe processes whose command line contains script_name.
+
+    On Windows, virtualenv-created venvs use a launcher-style
+    ``.venv\\Scripts\\python.exe`` that spawns the base interpreter as a
+    child carrying the same cmdline. Both show up in WMIC's
+    ``name='python.exe'`` filter so a single logical run looks like a
+    duplicate. Collapse by dropping any PID whose parent is also in the
+    candidate set — leaves only the outermost launcher per logical run.
+    """
     pids: list[int] = []
     if sys.platform == "win32":
         try:
             raw = _sp.check_output(
                 ['wmic', 'process', 'where', "name='python.exe'",
-                 'get', 'ProcessId,CommandLine', '/format:csv'],
+                 'get', 'CommandLine,ParentProcessId,ProcessId', '/format:csv'],
                 text=True, timeout=5,
             )
+            entries: list[tuple[int, int]] = []  # (pid, parent_pid)
             for line in raw.strip().splitlines():
                 line = line.strip()
                 if not line or line.startswith("Node"):
                     continue
                 if script_name not in line:
                     continue
-                # CSV format: Node,CommandLine,ProcessId
-                pid_str = line.rsplit(",", 1)[-1].strip()
+                # CSV format: Node,CommandLine,ParentProcessId,ProcessId
+                cols = line.rsplit(",", 2)
+                if len(cols) < 3:
+                    continue
                 try:
-                    pid = int(pid_str)
+                    parent_pid = int(cols[-2].strip())
+                    pid = int(cols[-1].strip())
                 except ValueError:
+                    continue
+                entries.append((pid, parent_pid))
+            # Dedup BEFORE applying exclude_pid so the launcher child of
+            # the running guard gets dropped (its parent IS in the raw
+            # candidate set, even though we'll exclude that parent later).
+            candidate_pids = {pid for pid, _ in entries}
+            for pid, parent_pid in entries:
+                if parent_pid in candidate_pids:
                     continue
                 if pid == exclude_pid:
                     continue

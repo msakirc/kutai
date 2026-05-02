@@ -1123,7 +1123,8 @@ class TelegramInterface:
             if not dlq_entries:
                 await self._reply(update, "📭 DLQ\n\nBaşarısız görev yok.")
                 return
-            lines = ["📭 Dead-Letter Queue\n"]
+            total = len(dlq_entries)
+            lines = [f"📭 Dead-Letter Queue ({total} total)\n"]
             buttons = []
             for i, entry in enumerate(dlq_entries[:10], 1):
                 task_id = entry["task_id"]
@@ -1136,10 +1137,15 @@ class TelegramInterface:
                     lines.append(f"   {error_short}")
                 buttons.append(InlineKeyboardButton(
                     f"{i}", callback_data=f"m:dlq:detail:{task_id}"))
+            if total > 10:
+                lines.append(f"\n… +{total - 10} more")
             btn_rows = [buttons[j:j+5] for j in range(0, len(buttons), 5)]
+            btn_rows.append([InlineKeyboardButton(
+                f"🔄 Tümünü Yeniden Dene ({total})",
+                callback_data="m:dlq:retry_all")])
             await update.message.reply_text(
                 "\n".join(lines),
-                reply_markup=InlineKeyboardMarkup(btn_rows) if btn_rows else None,
+                reply_markup=InlineKeyboardMarkup(btn_rows),
             )
         except Exception as e:
             logger.error("DLQ listing failed", error=str(e))
@@ -2035,7 +2041,7 @@ class TelegramInterface:
                   AND next_retry_at IS NOT NULL
                   AND next_retry_at > datetime('now')
                 ORDER BY next_retry_at ASC
-                LIMIT 10"""
+                LIMIT 500"""
         )
         retry_pending = [dict(row) for row in await cursor_retry.fetchall()]
         # Fetch blocked task summary
@@ -2085,11 +2091,12 @@ class TelegramInterface:
                 msg += f"  … +{ready_total - 5} more\n"
             msg += "\n"
         if retry_pending:
-            msg += "🔁 Retry pending:\n"
+            retry_total = len(retry_pending)
+            msg += f"🔁 Retry pending ({retry_total}):\n"
             from datetime import datetime
             from src.infra.times import from_db, utc_now
             now = utc_now()
-            for t in retry_pending:
+            for t in retry_pending[:5]:
                 agent = t.get('agent_type', '?')
                 att = t.get('worker_attempts') or 0
                 mx = t.get('max_worker_attempts') or 0
@@ -2111,6 +2118,8 @@ class TelegramInterface:
                     f"  #{t['id']} [{agent}] {t['title'][:42]} "
                     f"att={att}/{mx} cat={cat} eta={eta_str}\n"
                 )
+            if retry_total > 5:
+                msg += f"  … +{retry_total - 5} more\n"
             msg += "\n"
         if blocked_count > 0:
             msg += f"🚫 {blocked_count} tasks blocked (waiting on dependencies)\n"
@@ -5168,6 +5177,29 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 from ..infra.dead_letter import retry_dlq_task
                 await retry_dlq_task(task_id)
                 await query.message.reply_text(f"🔄 Görev #{task_id} kuyruğa geri eklendi.")
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
+            return
+
+        if data == "m:dlq:retry_all":
+            try:
+                from ..infra.dead_letter import get_dlq_tasks, retry_dlq_task
+                entries = await get_dlq_tasks(unresolved_only=True)
+                retried = 0
+                failed: list[tuple[int, str]] = []
+                for entry in entries:
+                    tid = entry["task_id"]
+                    try:
+                        if await retry_dlq_task(tid):
+                            retried += 1
+                    except Exception as exc:
+                        failed.append((tid, str(exc)[:60]))
+                lines = [f"🔄 Tümü yeniden denendi: {retried}/{len(entries)} görev kuyruğa eklendi."]
+                if failed:
+                    lines.append(f"\n⚠️ {len(failed)} başarısız:")
+                    for tid, err in failed[:5]:
+                        lines.append(f"  #{tid}: {err}")
+                await query.message.reply_text("\n".join(lines))
             except Exception as e:
                 await query.message.reply_text(f"❌ {e}")
             return

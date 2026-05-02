@@ -261,20 +261,10 @@ class TestAgentResponseParsing:
 
 @pytest.mark.integration
 class TestAgentMaxIterations:
-    """Test that agents respect max_iterations without real LLM calls.
-
-    NOTE: These tests cannot import src.agents.base due to the shell.py
-    NameError bug (LOCAL_BLOCKED_PATTERNS defined before BLOCKED_PATTERNS).
-    They are marked xfail with a descriptive reason until the bug is fixed.
-    """
+    """Test that agents respect max_iterations without real LLM calls."""
 
     def test_max_iterations_respected(self, temp_db):
         """Agent stops after max_iterations even without a final_answer."""
-        pytest.xfail(
-            "Cannot import src.agents.base: shell.py NameError bug — "
-            "LOCAL_BLOCKED_PATTERNS (line 38) references BLOCKED_PATTERNS "
-            "which is not defined until line 47. See plan_integration_test_findings.md"
-        )
         from src.agents.base import BaseAgent
 
         # Create a minimal task
@@ -302,17 +292,12 @@ class TestAgentMaxIterations:
             agent.max_iterations = 3
             agent.allowed_tools = ["shell"]
 
-            call_count = 0
-
-            async def mock_call_model(reqs, messages, tools=None):
-                nonlocal call_count
-                call_count += 1
-                return mock_response
+            mock_request = AsyncMock(return_value=mock_response)
 
             async def mock_execute_tool(name, args, task_id=None, mission_id=None):
                 return "tool output"
 
-            with patch("src.agents.base.call_model", mock_call_model), \
+            with patch("src.core.llm_dispatcher.LLMDispatcher.request", new=mock_request), \
                  patch("src.agents.base.execute_tool", mock_execute_tool), \
                  patch("src.agents.base.log_conversation", AsyncMock()), \
                  patch("src.agents.base.store_memory", AsyncMock()), \
@@ -329,7 +314,7 @@ class TestAgentMaxIterations:
             # Agent should have stopped — result must be a dict
             assert isinstance(result, dict)
             # Should not have run more iterations than the max
-            assert call_count <= agent.max_iterations + 2  # +2 for format retries
+            assert mock_request.call_count <= agent.max_iterations + 2  # +2 for format retries
 
         run_async(_run())
 

@@ -298,7 +298,7 @@ async def init_db():
             error TEXT,
             context JSON DEFAULT '{}',
             worker_attempts INTEGER DEFAULT 0,
-            max_worker_attempts INTEGER DEFAULT 6,
+            max_worker_attempts INTEGER DEFAULT 10,
             grade_attempts INTEGER DEFAULT 0,
             max_grade_attempts INTEGER DEFAULT 3,
             next_retry_at TIMESTAMP,
@@ -966,7 +966,7 @@ async def init_db():
     if "worker_attempts" not in columns and "attempts" not in columns:
         for col_sql in [
             "ALTER TABLE tasks ADD COLUMN worker_attempts INTEGER DEFAULT 0",
-            "ALTER TABLE tasks ADD COLUMN max_worker_attempts INTEGER DEFAULT 6",
+            "ALTER TABLE tasks ADD COLUMN max_worker_attempts INTEGER DEFAULT 10",
             "ALTER TABLE tasks ADD COLUMN grade_attempts INTEGER DEFAULT 0",
             "ALTER TABLE tasks ADD COLUMN max_grade_attempts INTEGER DEFAULT 3",
             "ALTER TABLE tasks ADD COLUMN next_retry_at TIMESTAMP",
@@ -1075,6 +1075,18 @@ async def _migrate_task_lifecycle(db) -> None:
         await db.execute(
             "UPDATE tasks SET max_worker_attempts = COALESCE(max_retries, 3) + 3 "
             "WHERE max_worker_attempts = 6 AND max_retries IS NOT NULL AND max_retries != 3"
+        )
+        # Lift max_worker_attempts cap from 6 → 10 on still-active rows.
+        # The retry policy + backoff ladder were sized for 10 attempts
+        # (apply.py:264 / sweep.py:403 both default `or 10`), but the DB
+        # column DEFAULT had been left at 6 — so existing rows DLQ'd at
+        # att=5/6 on availability cascades that should have ridden out
+        # the longer ladder. Only touch live rows; failed/completed/
+        # cancelled history stays as-is.
+        await db.execute(
+            "UPDATE tasks SET max_worker_attempts = 10 "
+            "WHERE max_worker_attempts = 6 "
+            "AND status IN ('pending','ready','processing','ungraded','waiting_human')"
         )
         # Convert sleeping → pending with next_retry_at
         await db.execute(

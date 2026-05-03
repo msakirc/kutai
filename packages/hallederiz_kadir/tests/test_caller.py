@@ -170,6 +170,27 @@ def test_call_local_skips_cloud_inflight(mock_litellm):
 
 
 @patch("hallederiz_kadir.caller.litellm")
+def test_call_disables_internal_retries(mock_litellm):
+    """num_retries + max_retries must be 0 for both local and cloud paths.
+    OpenAI SDK default max_retries=2 — internally retries on 429 with
+    same idempotency_key, bypassing pre_call/canary/record_attempt. With
+    retry-after of 55s on a rpm=1 cerebras tier, the second internal
+    retry burns a guaranteed provider 429 KDV never sees."""
+    mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
+    model = _make_model_info(is_local=False, litellm_name="cerebras/llama-8b",
+                             location="cloud", provider="cerebras", api_base=None)
+    with patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False, "", False)), \
+         patch("hallederiz_kadir.caller._kdv_post_call"), \
+         patch("hallederiz_kadir.caller.litellm.completion_cost", return_value=0.001):
+        run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],
+                       tools=None, timeout=60.0, task="executor",
+                       needs_thinking=False, estimated_output_tokens=500))
+    kwargs = mock_litellm.acompletion.call_args.kwargs
+    assert kwargs.get("num_retries") == 0
+    assert kwargs.get("max_retries") == 0
+
+
+@patch("hallederiz_kadir.caller.litellm")
 def test_call_timeout_returns_call_error(mock_litellm):
     """Timeout returns CallError with category='timeout'."""
     mock_litellm.acompletion = AsyncMock(side_effect=asyncio.TimeoutError)

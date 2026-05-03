@@ -441,9 +441,19 @@ async def call(
 
     if model.api_base:
         completion_kwargs["api_base"] = model.api_base
+    # Disable both litellm's `num_retries` AND the underlying SDK's
+    # `max_retries` (openai client default is 2). Our retry.py owns
+    # retry policy with retry-after awareness, KDV pre_call, canary
+    # gate, and record_attempt bookkeeping. Internal SDK retry bypasses
+    # all of that — production triage 2026-05-03: cerebras free tier is
+    # rpm=1, openai client retried 429 internally with idempotency_key
+    # within ~270ms, both HTTPs landed before our canary gate could see
+    # the second attempt, the second eats a real provider 429 that KDV
+    # never had a chance to suppress.
+    completion_kwargs["num_retries"] = 0
+    completion_kwargs["max_retries"] = 0
     if is_local and not is_ollama:
         completion_kwargs["api_key"] = "sk-no-key"
-        completion_kwargs["num_retries"] = 0
     elif not is_local:
         # Explicit per-provider key injection. Without this, litellm walks
         # its own env-var fallback chain (e.g. GOOGLE_API_KEY before

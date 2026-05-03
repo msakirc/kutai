@@ -12,6 +12,7 @@ import aiohttp
 
 from nerd_herd.exposition import API_VERSION
 from nerd_herd.types import (
+    CloudModelState,
     CloudProviderState,
     InFlightCall,
     LocalModelState,
@@ -313,12 +314,43 @@ class NerdHerdClient:
 
         cloud: dict[str, CloudProviderState] = {}
         for prov, prov_data in (data.get("cloud") or {}).items():
+            # Reconstruct per-model state from sidecar JSON. Pre-2026-05-04
+            # this loop omitted both `circuit_breaker_open` and the entire
+            # `models` dict — selector's eligibility checks
+            # (selector.py:489 / :503-525) silently no-op'd because
+            # prov_state.models was always {} after HTTP refresh, and the
+            # circuit_breaker check read False permanently. Production
+            # 2026-05-03 forensics: 294 daily_exhausted_at_call violations
+            # in 2h on gemini ids that selector kept admitting because
+            # daily_exhausted=True never reached this side of the wire.
+            models: dict[str, CloudModelState] = {}
+            for mid, m_data in (prov_data.get("models") or {}).items():
+                if not isinstance(m_data, dict):
+                    continue
+                # provider_prior_rate is None | float in JSON (asdict
+                # preserves None), don't coerce to 0.0.
+                ppr = m_data.get("provider_prior_rate", None)
+                models[mid] = CloudModelState(
+                    model_id=m_data.get("model_id", mid),
+                    utilization_pct=float(m_data.get("utilization_pct", 0.0)),
+                    recent_success_rate=float(m_data.get("recent_success_rate", 1.0)),
+                    recent_samples_n=int(m_data.get("recent_samples_n", 0)),
+                    provider_prior_rate=(
+                        float(ppr) if ppr is not None else None
+                    ),
+                    daily_exhausted=bool(m_data.get("daily_exhausted", False)),
+                    rpm_cooldown=bool(m_data.get("rpm_cooldown", False)),
+                )
             cloud[prov] = CloudProviderState(
                 provider=prov_data.get("provider", prov),
                 utilization_pct=float(prov_data.get("utilization_pct", 0.0)),
                 consecutive_failures=int(prov_data.get("consecutive_failures", 0)),
                 last_failure_at=prov_data.get("last_failure_at"),
+                circuit_breaker_open=bool(
+                    prov_data.get("circuit_breaker_open", False)
+                ),
                 limits=RateLimitMatrix(),
+                models=models,
             )
 
         in_flight_calls: list[InFlightCall] = []

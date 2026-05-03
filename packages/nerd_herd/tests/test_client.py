@@ -182,3 +182,81 @@ async def test_dead_mark_degraded(dead_client):
 async def test_dead_prometheus_lines(dead_client):
     text = await dead_client.prometheus_lines()
     assert isinstance(text, str)  # empty string is acceptable
+
+
+# ---------------------------------------------------------------------------
+# Snapshot roundtrip — per-model state must survive HTTP serialization
+# ---------------------------------------------------------------------------
+
+def test_parse_snapshot_preserves_per_model_state():
+    """Regression: pre-2026-05-04, _parse_snapshot stripped the `models`
+    dict and `circuit_breaker_open` flag from cloud provider state.
+    Selector eligibility checks (daily_exhausted, rpm_cooldown,
+    circuit_breaker) silently no-op'd, leading to repeated admission of
+    exhausted gemini ids (294 violations in 2h before the fix)."""
+    from nerd_herd.client import NerdHerdClient
+    payload = {
+        "vram_available_mb": 8000,
+        "local": {},
+        "cloud": {
+            "gemini": {
+                "provider": "gemini",
+                "utilization_pct": 75.0,
+                "consecutive_failures": 2,
+                "circuit_breaker_open": True,
+                "models": {
+                    "gemini/gemini-2.5-flash": {
+                        "model_id": "gemini/gemini-2.5-flash",
+                        "utilization_pct": 90.0,
+                        "recent_success_rate": 0.45,
+                        "recent_samples_n": 12,
+                        "provider_prior_rate": 0.50,
+                        "daily_exhausted": True,
+                        "rpm_cooldown": False,
+                    },
+                    "gemini/gemini-2.5-flash-lite": {
+                        "daily_exhausted": False,
+                        "rpm_cooldown": True,
+                    },
+                },
+            },
+        },
+        "in_flight_calls": [],
+        "recent_swap_count": 0,
+    }
+    client = NerdHerdClient.__new__(NerdHerdClient)
+    snap = client._parse_snapshot(payload)
+    prov = snap.cloud["gemini"]
+    assert prov.circuit_breaker_open is True
+    assert prov.consecutive_failures == 2
+    flash = prov.models["gemini/gemini-2.5-flash"]
+    assert flash.daily_exhausted is True
+    assert flash.recent_success_rate == 0.45
+    assert flash.recent_samples_n == 12
+    assert flash.provider_prior_rate == 0.50
+    lite = prov.models["gemini/gemini-2.5-flash-lite"]
+    assert lite.rpm_cooldown is True
+    assert lite.daily_exhausted is False
+    # Defaults when fields missing
+    assert lite.recent_success_rate == 1.0
+    assert lite.provider_prior_rate is None
+
+
+def test_parse_snapshot_handles_empty_cloud():
+    from nerd_herd.client import NerdHerdClient
+    client = NerdHerdClient.__new__(NerdHerdClient)
+    snap = client._parse_snapshot({"vram_available_mb": 0, "local": {},
+                                    "cloud": {}, "in_flight_calls": []})
+    assert snap.cloud == {}
+
+
+def test_parse_snapshot_skips_non_dict_model_entries():
+    from nerd_herd.client import NerdHerdClient
+    client = NerdHerdClient.__new__(NerdHerdClient)
+    payload = {
+        "local": {}, "in_flight_calls": [],
+        "cloud": {"groq": {"models": {"x": "not_a_dict", "y": {"daily_exhausted": True}}}},
+    }
+    snap = client._parse_snapshot(payload)
+    assert "x" not in snap.cloud["groq"].models
+    assert snap.cloud["groq"].models["y"].daily_exhausted is True

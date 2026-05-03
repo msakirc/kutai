@@ -70,7 +70,21 @@ def _admission_fingerprint(snap, candidates) -> tuple:
 
     Captures in_flight (auth source for local saturation), loaded model
     name, idle bucket (10s granularity — matches pressure ladder steps),
-    cloud rpd-remaining per provider, and candidate task IDs.
+    cloud rpd-remaining per provider, candidate task IDs, per-model
+    daily_exhausted / rpm_cooldown flags, and a 30s wall-clock bucket so
+    the cache forces a re-evaluate at least twice per minute even when
+    every other component is stable.
+
+    The time bucket fixes a deadlock pattern (production 2026-05-03):
+    when every candidate's pressure scalar lands at -1.0 the selector
+    returns None, _last_admission_admitted flips to False, and as long
+    as in_flight / loaded / cloud_rpd / candidate IDs stay constant the
+    fingerprint matches forever — the pump silently short-circuits at
+    the cache check, the dead-set TTL never gets a chance to surface
+    fresh capacity, and the queue stalls. Per-model availability flips
+    (daily_exhausted=True→False at midnight, rpm_cooldown clearing)
+    used to be invisible to the fingerprint; surfacing them plus a
+    30s upper bound on cache age dissolves the trap.
     """
     if snap is None:
         # No snapshot → can't trust state; bypass cache.
@@ -87,8 +101,21 @@ def _admission_fingerprint(snap, candidates) -> tuple:
         (p, st.limits.rpd.remaining if st.limits and st.limits.rpd else None)
         for p, st in (snap.cloud or {}).items()
     ))
+    # Per-model availability flags. Without these, a model flipping from
+    # daily_exhausted=True → False (e.g. gemini at midnight UTC) is
+    # invisible to the fingerprint as long as cloud-level rpd stays put.
+    cloud_models = tuple(sorted(
+        (p, mid,
+         bool(getattr(ms, "daily_exhausted", False)),
+         bool(getattr(ms, "rpm_cooldown", False)))
+        for p, st in (snap.cloud or {}).items()
+        for mid, ms in (getattr(st, "models", {}) or {}).items()
+    ))
     cand_ids = tuple(sorted(c.get("id", 0) for c in candidates))
-    return (in_flight, loaded, idle_bucket, is_swapping, cloud_rpd, cand_ids)
+    import time as _time
+    time_bucket = int(_time.time() // 30)
+    return (in_flight, loaded, idle_bucket, is_swapping, cloud_rpd,
+            cloud_models, cand_ids, time_bucket)
 
 
 def _capacity_snapshot():

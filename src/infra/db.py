@@ -783,6 +783,61 @@ async def init_db():
             PRIMARY KEY (scope, scope_key)
         )
     """)
+    # ── Provider/model registry ───────────────────────────────────────────
+    # Replaces the flat .dead_models.json file. Three concerns:
+    #   providers       — provider-level status (auth dead, key rotation hash)
+    #   models          — model-level status (404, cause, TTL expiry)
+    #   registry_events — append-only audit trail (mark_dead/revive/probe)
+    # Reads from packages/fatih_hoca/registry.py via src/infra/registry_store.
+    # Writes from caller (404/auth), discovery (revive), telegram (/revive),
+    # orchestrator boot probe.
+    #
+    # status='dead' AND (expires_at IS NULL OR expires_at > now) = effectively
+    # dead. Per-cause TTL stored explicitly on the row (not derived) so policy
+    # tweaks don't retroactively shift live entries.
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS providers (
+            name        TEXT PRIMARY KEY,
+            status      TEXT NOT NULL DEFAULT 'active',
+            cause       TEXT,
+            marked_at   TIMESTAMP,
+            revived_at  TIMESTAMP,
+            key_hash    TEXT
+        )
+    """)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS models (
+            litellm_name    TEXT PRIMARY KEY,
+            provider        TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'active',
+            cause           TEXT,
+            marked_at       TIMESTAMP,
+            revived_at      TIMESTAMP,
+            expires_at      TIMESTAMP,
+            source          TEXT,
+            first_seen_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS registry_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            scope           TEXT NOT NULL,
+            target          TEXT NOT NULL,
+            event           TEXT NOT NULL,
+            cause           TEXT,
+            actor           TEXT,
+            payload_json    TEXT
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_registry_events_target_ts "
+        "ON registry_events(target, timestamp DESC)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_models_status "
+        "ON models(status, provider)"
+    )
 
     await db.commit()
 

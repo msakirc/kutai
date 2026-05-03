@@ -224,6 +224,30 @@ class RateLimitState:
             return False
         return (time.time() - self._last_429_at) < self.POST_429_COOLDOWN_SECONDS
 
+    def _header_rpm_valid(self, now: float) -> bool:
+        """Provider header value is authoritative when the bucket window
+        it described hasn't elapsed yet. Past reset_at means the bucket
+        refilled; old `remaining` is stale. Without reset_at, fall back
+        to a 60s safety window matching the rpm bucket — after that
+        without confirmation, assume stale. RateLimitManager.record_request
+        decrements `_header_rpm_remaining` on each admission so the
+        projection stays accurate between provider responses, removing
+        the prior 5s freshness limit which made every burst ride
+        sliding-window estimates instead of provider's authoritative view."""
+        if self._header_rpm_remaining is None:
+            return False
+        if self._header_rpm_reset_at is not None:
+            return now < self._header_rpm_reset_at
+        return (now - self._last_header_update) < 60.0
+
+    def _header_tpm_valid(self, now: float) -> bool:
+        """Mirror of `_header_rpm_valid` for the token axis."""
+        if self._header_tpm_remaining is None:
+            return False
+        if self._header_tpm_reset_at is not None:
+            return now < self._header_tpm_reset_at
+        return (now - self._last_header_update) < 60.0
+
     @property
     def rpm_remaining(self) -> int | None:
         if self.rpm_limit <= 0:
@@ -234,10 +258,7 @@ class RateLimitState:
         if self.in_post_429_cooldown:
             return 0
         now = time.time()
-        if (
-            self._header_rpm_remaining is not None
-            and (now - self._last_header_update) < 5.0
-        ):
+        if self._header_rpm_valid(now):
             return int(self._header_rpm_remaining)
         return max(0, self.rpm_limit - self.current_rpm)
 
@@ -246,10 +267,7 @@ class RateLimitState:
         if self.tpm_limit <= 0:
             return None
         now = time.time()
-        if (
-            self._header_tpm_remaining is not None
-            and (now - self._last_header_update) < 5.0
-        ):
+        if self._header_tpm_valid(now):
             return int(self._header_tpm_remaining)
         return max(0, self.tpm_limit - self.current_tpm)
 
@@ -289,10 +307,12 @@ class RateLimitState:
                 return False
 
         now = time.time()
-        header_fresh = (now - self._last_header_update) < 5.0
 
-        # Use header-derived remaining when fresh
-        if header_fresh and self._header_rpm_remaining is not None:
+        # Use header-derived remaining when valid (within reset window).
+        # Local-decrement in record_request keeps `_header_rpm_remaining`
+        # accurate between responses, so the projection stays sharp
+        # without reverting to sliding-window math after 5 seconds.
+        if self._header_rpm_valid(now):
             rpm_ok = self._header_rpm_remaining > 1
         else:
             rpm_ok = self.rpm_headroom > 1
@@ -300,7 +320,7 @@ class RateLimitState:
         # Use >= so cold-start calls where headroom EQUALS the estimate are
         # admitted (e.g. qwen3-32b free tier tpm=6000, researcher estimate=6000).
         # Strict > made any tight-limit model unusable for the largest typical call.
-        if header_fresh and self._header_tpm_remaining is not None:
+        if self._header_tpm_valid(now):
             tpm_ok = self._header_tpm_remaining >= estimated_tokens
         else:
             tpm_ok = self.tpm_headroom >= estimated_tokens
@@ -642,6 +662,13 @@ class RateLimitManager:
         ran — by which time the burst had already committed many calls
         to the wall.
 
+        Per-minute (`_header_rpm_remaining`) is also decremented on each
+        admission so the projection stays accurate between provider
+        responses. Header from response is authoritative; we maintain it
+        until the next response replaces it. Replaced an earlier ghost-
+        timestamp backfill (reverted c02e3ee) — local decrement is the
+        symmetric counterpart to TPM reservation already in place.
+
         Reset window: 24h rolling from first call of the day. When
         rpd_reset_at falls in the past, both rpd_remaining and the
         reset clock are refreshed. Header-derived updates from
@@ -654,12 +681,26 @@ class RateLimitManager:
         model_state = self.model_limits.get(litellm_name)
         if model_state:
             model_state._request_timestamps.append(now)
+            self._decrement_header_rpm(model_state)
             self._tick_rpd(model_state, now)
 
         provider_state = self._provider_limits.get(provider)
         if provider_state:
             provider_state._request_timestamps.append(now)
+            self._decrement_header_rpm(provider_state)
             self._tick_rpd(provider_state, now)
+
+    @staticmethod
+    def _decrement_header_rpm(state) -> None:
+        """Locally project RPM consumption between provider responses.
+        Provider's response sets `_header_rpm_remaining` authoritatively
+        via update_from_snapshot; we decrement on each admission so the
+        next admission sees the projected value without waiting for the
+        next response. Floors at 0 — has_capacity reads the value via
+        the `rpm_remaining` property which gates admission appropriately.
+        Cap is the runtime guard; provider's next response is the truth."""
+        if state._header_rpm_remaining is not None and state._header_rpm_remaining > 0:
+            state._header_rpm_remaining -= 1
 
     @staticmethod
     def _next_utc_midnight(now: float) -> float:

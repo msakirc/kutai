@@ -63,6 +63,108 @@ def test_state_retry_after_zero_is_noop():
     assert state._header_rpm_remaining == 25  # untouched
 
 
+def test_record_request_decrements_header_rpm():
+    """Each admission decrements `_header_rpm_remaining` so subsequent
+    admissions see the projected value without waiting for next response.
+    Replaces the ghost-timestamp backfill (reverted c02e3ee) — symmetric
+    to TPM reservation already in place."""
+    mgr = RateLimitManager()
+    mgr.register_model("cerebras/llama", "cerebras", rpm=30, tpm=60_000)
+    state = mgr.model_limits["cerebras/llama"]
+    state._header_rpm_remaining = 5
+    state._header_rpm_reset_at = time.time() + 30.0
+    state._last_header_update = time.time()
+
+    mgr.record_request("cerebras/llama", "cerebras")
+    assert state._header_rpm_remaining == 4
+    mgr.record_request("cerebras/llama", "cerebras")
+    mgr.record_request("cerebras/llama", "cerebras")
+    assert state._header_rpm_remaining == 2
+
+
+def test_record_request_floors_at_zero():
+    """Local decrement must not go negative — has_capacity already gates
+    admission, but defensive against double-record."""
+    mgr = RateLimitManager()
+    mgr.register_model("cerebras/llama", "cerebras", rpm=30, tpm=60_000)
+    state = mgr.model_limits["cerebras/llama"]
+    state._header_rpm_remaining = 1
+    mgr.record_request("cerebras/llama", "cerebras")
+    assert state._header_rpm_remaining == 0
+    mgr.record_request("cerebras/llama", "cerebras")
+    assert state._header_rpm_remaining == 0
+
+
+def test_record_request_skipped_when_header_unset():
+    """Cold-start path: no header yet, no decrement. Sliding window via
+    `_request_timestamps.append` is the projection until first response."""
+    mgr = RateLimitManager()
+    mgr.register_model("cerebras/llama", "cerebras", rpm=30, tpm=60_000)
+    state = mgr.model_limits["cerebras/llama"]
+    assert state._header_rpm_remaining is None
+    mgr.record_request("cerebras/llama", "cerebras")
+    assert state._header_rpm_remaining is None
+    assert len(state._request_timestamps) == 1
+
+
+def test_record_request_decrements_provider_aggregate_too():
+    """Provider-aggregate state is auto-created by register_model and
+    is the parallel counter. Both per-model + provider-aggregate must
+    decrement so admission gates on the binding tier."""
+    mgr = RateLimitManager()
+    mgr.register_model(
+        "cerebras/llama", "cerebras", rpm=30, tpm=60_000,
+        provider_aggregate_rpm=60, provider_aggregate_tpm=120_000,
+    )
+    model_state = mgr.model_limits["cerebras/llama"]
+    prov_state = mgr._provider_limits["cerebras"]
+    model_state._header_rpm_remaining = 5
+    prov_state._header_rpm_remaining = 5
+    mgr.record_request("cerebras/llama", "cerebras")
+    assert model_state._header_rpm_remaining == 4
+    assert prov_state._header_rpm_remaining == 4
+
+
+def test_header_valid_until_reset_at():
+    """Freshness extends from old 5s window to the bucket's reset_at —
+    headers stay authoritative as long as the provider's bucket window
+    they describe is current."""
+    state = RateLimitState(rpm_limit=30, tpm_limit=60_000)
+    now = time.time()
+    state._header_rpm_remaining = 4
+    state._header_rpm_reset_at = now + 30.0
+    state._last_header_update = now - 50.0  # 50s old, would FAIL old 5s test
+    # Still valid because reset_at is in the future
+    assert state.rpm_remaining == 4
+
+
+def test_header_invalid_after_reset_at():
+    """Past reset_at means provider's bucket refreshed — old `remaining`
+    is stale, fall back to sliding window."""
+    state = RateLimitState(rpm_limit=30, tpm_limit=60_000)
+    now = time.time()
+    state._header_rpm_remaining = 4
+    state._header_rpm_reset_at = now - 1.0  # already past
+    state._last_header_update = now
+    # Falls back to sliding window — empty → full bucket
+    assert state.rpm_remaining == 30
+
+
+def test_header_60s_safety_window_when_no_reset_at():
+    """Cerebras success responses don't include reset values. Without
+    reset_at, fall back to a 60s safety window matching the rpm bucket."""
+    state = RateLimitState(rpm_limit=30, tpm_limit=60_000)
+    now = time.time()
+    state._header_rpm_remaining = 4
+    state._header_rpm_reset_at = None
+    # Within 60s — header valid
+    state._last_header_update = now - 30.0
+    assert state.rpm_remaining == 4
+    # Past 60s — stale, fall back
+    state._last_header_update = now - 65.0
+    assert state.rpm_remaining == 30
+
+
 def test_is_rpm_cooldown_returns_true_when_floor_active():
     """RateLimitManager.is_rpm_cooldown reads raw _header_* fields directly,
     bypassing the freshness-windowed rpm_remaining property. Required for

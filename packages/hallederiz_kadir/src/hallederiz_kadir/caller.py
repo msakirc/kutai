@@ -106,6 +106,36 @@ def _kdv_release_reservation(litellm_name, provider, reserved_tokens):
         pass
 
 
+def _kdv_begin_call(provider, litellm_name):
+    """Register a cloud in-flight handle with KDV's InFlightTracker.
+
+    The tracker pushes the count through to nerd_herd via the state-getter
+    configured at startup (see src/core/router.py:configure_in_flight_push).
+    Pressure signals (S1/S2/S3/S5/S7/S9) read `rl.in_flight` and subtract
+    from `remaining` when computing depletion. Selector then ranks against
+    effective_remaining so concurrent dispatch on the same provider during
+    burst fan-out gets damped without waiting for response headers to land.
+    Returns the handle (pass to _kdv_end_call) or None on failure."""
+    try:
+        from kuleden_donen_var import begin_call
+        return begin_call(provider, litellm_name)
+    except Exception:
+        return None
+
+
+def _kdv_end_call(handle):
+    """Release a cloud in-flight handle. Idempotent (second call no-ops via
+    the tracker's token filter). Tracker also has a 180s TTL safety net
+    for crashes that prevent a normal end_call."""
+    if handle is None:
+        return
+    try:
+        from kuleden_donen_var import end_call
+        end_call(handle)
+    except Exception:
+        pass
+
+
 def _kdv_record_failure(litellm_name, provider, reason):
     try:
         from src.core.router import get_kdv
@@ -489,6 +519,10 @@ async def call(
     # admission so the failure path can release it and the success path
     # can correct it to the actual usage. 0 for local calls.
     tpm_reservation: int = 0
+    # cloud_inflight tracks the RPM reservation handle for this call. Held
+    # from admission grant through response (or failure). Released in the
+    # finally block around execute_with_retry below.
+    cloud_inflight = None
     if not is_local:
         # KDV TPM gate sees this estimate. Old code: estimated_output_tokens
         # * 3 — a rough total = output * 3 multiplier. Wildly over-estimates
@@ -604,6 +638,16 @@ async def call(
             model.litellm_name, model.provider,
             estimated_tokens=tpm_reservation,
         )
+        # Cloud RPM reservation: register the in-flight handle so pressure
+        # signals see this call as currently-dispatched while waiting on
+        # the response. Without this, concurrent fan-out from beckman can
+        # admit N calls in <100ms before any response (and its rate-limit
+        # headers) lands; selector ranks each on stale `remaining` and the
+        # whole burst eats guaranteed 429s. With in_flight populated on
+        # the rpm cell, S1 effective_remaining = limit - in_flight - sliding
+        # damps further admissions naturally. end_call in the finally block
+        # below clears the handle on every exit path.
+        cloud_inflight = _kdv_begin_call(model.provider, model.litellm_name)
 
     # ── Local model manager reference (for health checks, speed tracking) ──
     local_manager = None
@@ -680,6 +724,10 @@ async def call(
                 local_manager.end_inference(inflight_gen)
             except Exception:
                 pass
+        # Release cloud RPM reservation regardless of outcome. The handle
+        # token de-duplication makes this idempotent if any caller above
+        # also fired end_call on a partial-result path.
+        _kdv_end_call(cloud_inflight)
 
     # ── Handle retry failure ──
     if isinstance(raw_result, CallError):

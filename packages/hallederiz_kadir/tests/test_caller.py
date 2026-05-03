@@ -102,6 +102,74 @@ def test_call_cloud_success(mock_litellm):
 
 
 @patch("hallederiz_kadir.caller.litellm")
+def test_call_cloud_begin_end_call_lifecycle(mock_litellm):
+    """Cloud success path must begin_call after admission grant and
+    end_call in the finally block. RPM in-flight reservation invariant —
+    handle is held only for the duration of the litellm POST."""
+    mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
+    model = _make_model_info(is_local=False, litellm_name="cerebras/llama-8b",
+                             name="llama-8b", location="cloud", provider="cerebras", api_base=None)
+    sentinel_handle = object()
+    begin_mock = MagicMock(return_value=sentinel_handle)
+    end_mock = MagicMock()
+    with patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False, "", False)), \
+         patch("hallederiz_kadir.caller._kdv_post_call"), \
+         patch("hallederiz_kadir.caller._kdv_begin_call", begin_mock), \
+         patch("hallederiz_kadir.caller._kdv_end_call", end_mock), \
+         patch("hallederiz_kadir.caller.litellm.completion_cost", return_value=0.001):
+        run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],
+                       tools=None, timeout=60.0, task="executor",
+                       needs_thinking=False, estimated_output_tokens=500))
+    begin_mock.assert_called_once_with("cerebras", "cerebras/llama-8b")
+    end_mock.assert_called_once_with(sentinel_handle)
+
+
+@patch("hallederiz_kadir.caller.litellm")
+def test_call_cloud_end_call_fires_on_failure(mock_litellm):
+    """end_call must fire even when the litellm call raises. Without
+    finally-block release, a crashing dispatch leaks the in-flight slot
+    until the 180s TTL prunes it — leaves selector seeing phantom load."""
+    mock_litellm.acompletion = AsyncMock(side_effect=asyncio.TimeoutError)
+    model = _make_model_info(is_local=False, litellm_name="cerebras/llama-8b",
+                             location="cloud", provider="cerebras", api_base=None)
+    sentinel_handle = object()
+    begin_mock = MagicMock(return_value=sentinel_handle)
+    end_mock = MagicMock()
+    with patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False, "", False)), \
+         patch("hallederiz_kadir.caller._kdv_record_failure"), \
+         patch("hallederiz_kadir.caller._kdv_begin_call", begin_mock), \
+         patch("hallederiz_kadir.caller._kdv_end_call", end_mock):
+        run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],
+                       tools=None, timeout=1.0, task="executor",
+                       needs_thinking=False, estimated_output_tokens=500))
+    begin_mock.assert_called_once()
+    end_mock.assert_called_once_with(sentinel_handle)
+
+
+@patch("hallederiz_kadir.caller.litellm")
+def test_call_local_skips_cloud_inflight(mock_litellm):
+    """Local calls go through DaLLaMa's begin_inference / end_inference,
+    not KDV's begin_call / end_call. Confirm the cloud helpers stay quiet
+    on local path so we don't double-wire concurrency tracking."""
+    resp = _make_litellm_response()
+    stream_mock = AsyncMock(return_value=resp)
+    begin_mock = MagicMock()
+    end_mock = MagicMock()
+    with patch("hallederiz_kadir.caller._get_dallama", return_value=None), \
+         patch("hallederiz_kadir.caller._stream_with_accumulator", stream_mock), \
+         patch("hallederiz_kadir.caller._kdv_begin_call", begin_mock), \
+         patch("hallederiz_kadir.caller._kdv_end_call", end_mock):
+        model = _make_model_info(is_local=True)
+        run_async(call(model=model, messages=[{"role": "user", "content": "hello"}],
+                       tools=None, timeout=60.0, task="executor",
+                       needs_thinking=False, estimated_output_tokens=500))
+    begin_mock.assert_not_called()
+    # end_call gets called once with None — the early-init sentinel.
+    # _kdv_end_call returns immediately on None; no leak risk.
+    end_mock.assert_called_once_with(None)
+
+
+@patch("hallederiz_kadir.caller.litellm")
 def test_call_timeout_returns_call_error(mock_litellm):
     """Timeout returns CallError with category='timeout'."""
     mock_litellm.acompletion = AsyncMock(side_effect=asyncio.TimeoutError)

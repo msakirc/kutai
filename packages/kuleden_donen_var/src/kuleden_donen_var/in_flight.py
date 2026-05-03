@@ -48,8 +48,16 @@ class InFlightTracker:
         total = 0
         for model_name, model_state in state.models.items():
             n = self.count(provider, model_name)
+            # Populate both rpm and rpd in-flight counts. RPM is the burst-
+            # protection axis: pressure signals (S1/S5/S7/S9) subtract
+            # in_flight from `remaining` so concurrent dispatch fan-out is
+            # visible to the selector before response headers land. RPD
+            # carries the same number — daily-axis signals also benefit
+            # (a long-running call eats one slot of the daily budget).
+            model_state.limits.rpm.in_flight = n
             model_state.limits.rpd.in_flight = n
             total += n
+        state.limits.rpm.in_flight = total
         state.limits.rpd.in_flight = total
         self._nerd_herd.push_cloud_state(state)
 

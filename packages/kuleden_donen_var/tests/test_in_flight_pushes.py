@@ -67,6 +67,67 @@ def test_push_noop_when_state_getter_returns_none():
     assert not nh.push_cloud_state.called
 
 
+def test_begin_call_pushes_rpm_in_flight():
+    """RPM cell must carry in_flight count too — pressure signals
+    (S1/S5/S7/S9) read it for burst-protection projection. Without this,
+    rpm.in_flight stays 0 and concurrent dispatch is invisible to the
+    selector until response headers land. RPD-only was incomplete."""
+    nh = MagicMock()
+    state = CloudProviderState(
+        provider="cerebras",
+        models={
+            "cerebras/llama3.1-8b": CloudModelState(
+                model_id="cerebras/llama3.1-8b",
+                limits=RateLimitMatrix(
+                    rpm=RateLimit(limit=30, remaining=25),
+                    rpd=RateLimit(limit=14400, remaining=14000),
+                ),
+            ),
+        },
+        limits=RateLimitMatrix(
+            rpm=RateLimit(limit=30, remaining=25),
+            rpd=RateLimit(limit=14400, remaining=14000),
+        ),
+    )
+    t = InFlightTracker(nerd_herd=nh, state_getter=lambda p: state)
+    t.begin_call("cerebras", "cerebras/llama3.1-8b")
+
+    pushed = nh.push_cloud_state.call_args[0][0]
+    model_state = pushed.models["cerebras/llama3.1-8b"]
+    assert model_state.limits.rpm.in_flight == 1
+    assert model_state.limits.rpd.in_flight == 1
+    assert pushed.limits.rpm.in_flight == 1
+    assert pushed.limits.rpd.in_flight == 1
+
+
+def test_concurrent_dispatch_rpm_in_flight_grows():
+    """Three concurrent begin_calls should leave rpm.in_flight=3 until
+    end_call fires. Mirrors the fan-out scenario this signal protects."""
+    nh = MagicMock()
+    state = CloudProviderState(
+        provider="cerebras",
+        models={
+            "cerebras/qwen": CloudModelState(
+                model_id="cerebras/qwen",
+                limits=RateLimitMatrix(rpm=RateLimit(limit=30, remaining=27)),
+            ),
+        },
+        limits=RateLimitMatrix(rpm=RateLimit(limit=30, remaining=27)),
+    )
+    t = InFlightTracker(nerd_herd=nh, state_getter=lambda p: state)
+    h1 = t.begin_call("cerebras", "cerebras/qwen")
+    h2 = t.begin_call("cerebras", "cerebras/qwen")
+    h3 = t.begin_call("cerebras", "cerebras/qwen")
+
+    pushed = nh.push_cloud_state.call_args[0][0]
+    assert pushed.models["cerebras/qwen"].limits.rpm.in_flight == 3
+    assert pushed.limits.rpm.in_flight == 3
+
+    t.end_call(h2)
+    pushed = nh.push_cloud_state.call_args[0][0]
+    assert pushed.models["cerebras/qwen"].limits.rpm.in_flight == 2
+
+
 def test_provider_level_in_flight_sums_models():
     nh = MagicMock()
     state = CloudProviderState(

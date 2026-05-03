@@ -51,22 +51,28 @@ def _make_kdv(models, model_util=None, provider_util=None, daily_exhausted=None)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestQueueProfile(unittest.TestCase):
+    """Tests for QueueProfile + QuotaPlanner.
+
+    QueueProfile schema collapsed into nerd_herd.types on 2026-04-29:
+    capability counts that used to be flat ints (needs_vision_count,
+    needs_thinking_count, cloud_only_count, needs_tools_count) now live
+    as keys in by_capability ("vision" | "thinking" | "cloud_only" |
+    "function_calling"); max_difficulty is derived from
+    max(by_difficulty.keys()); total_tasks → total_ready_count.
+    """
 
     def test_queue_profile_dataclass(self):
         from fatih_hoca.requirements import QueueProfile
         qp = QueueProfile()
-        self.assertEqual(qp.total_tasks, 0)
-        self.assertEqual(qp.max_difficulty, 0)
-        self.assertEqual(qp.needs_vision_count, 0)
-        self.assertEqual(qp.needs_tools_count, 0)
-        self.assertEqual(qp.needs_thinking_count, 0)
+        self.assertEqual(qp.total_ready_count, 0)
         self.assertEqual(qp.hard_tasks_count, 0)
-        self.assertEqual(qp.cloud_only_count, 0)
+        self.assertEqual(qp.by_difficulty, {})
+        self.assertEqual(qp.by_capability, {})
 
     def test_set_queue_profile_updates_max_difficulty(self):
         from fatih_hoca.requirements import QuotaPlanner, QueueProfile
         qp = QuotaPlanner()
-        profile = QueueProfile(total_tasks=5, max_difficulty=9)
+        profile = QueueProfile(total_ready_count=5, by_difficulty={9: 1, 4: 4})
         qp.set_queue_profile(profile)
         self.assertEqual(qp._max_upcoming_difficulty, 9)
 
@@ -78,10 +84,9 @@ class TestQueueProfile(unittest.TestCase):
         qp._paid_reset_in = {"gemini": 3600.0}
 
         profile = QueueProfile(
-            total_tasks=5,
-            max_difficulty=5,
-            cloud_only_count=3,
-            needs_vision_count=3,
+            total_ready_count=5,
+            by_difficulty={5: 5},
+            by_capability={"cloud_only": 3, "vision": 3},
         )
         qp.set_queue_profile(profile)
         threshold = qp.recalculate()
@@ -96,9 +101,9 @@ class TestQueueProfile(unittest.TestCase):
         qp._paid_reset_in = {"gemini": 3600.0}
 
         profile = QueueProfile(
-            total_tasks=4,
-            max_difficulty=5,
-            needs_thinking_count=3,
+            total_ready_count=4,
+            by_difficulty={5: 4},
+            by_capability={"thinking": 3},
         )
         qp.set_queue_profile(profile)
         threshold = qp.recalculate()
@@ -111,7 +116,7 @@ class TestQueueProfile(unittest.TestCase):
         qp._paid_utilization = {"gemini": 10.0}
         qp._paid_reset_in = {"gemini": 3600.0}
 
-        profile = QueueProfile(total_tasks=3, max_difficulty=4)
+        profile = QueueProfile(total_ready_count=3, by_difficulty={4: 3})
         qp.set_queue_profile(profile)
         threshold = qp.recalculate()
         # Low utilization, no 429s → threshold should be 3
@@ -122,9 +127,9 @@ class TestQueueProfile(unittest.TestCase):
         from fatih_hoca.requirements import QuotaPlanner, QueueProfile
         qp = QuotaPlanner()
         qp.set_queue_profile(QueueProfile(
-            total_tasks=10, cloud_only_count=2,
-            needs_vision_count=2, needs_thinking_count=1,
+            total_ready_count=10,
             hard_tasks_count=3,
+            by_capability={"cloud_only": 2, "vision": 2, "thinking": 1},
         ))
         status = qp.get_status()
         self.assertIn("queue_profile", status)

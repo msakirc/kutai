@@ -248,47 +248,11 @@ class TestJSONExtraction(unittest.TestCase):
             self._extract('<think>I need to think about this carefully...</think>')
 
 
-# ---------------------------------------------------------------------------
-# 6. CRON PARSER — verify scheduled tasks fire correctly
-# ---------------------------------------------------------------------------
-class TestCronParser(unittest.TestCase):
-    """Test the cron parser handles all formats correctly."""
-
-    def _next(self, cron, after):
-        from src.core.orchestrator import Orchestrator
-        o = Orchestrator.__new__(Orchestrator)
-        return o._compute_next_run(cron, after)
-
-    def test_comma_hours_picks_next(self):
-        """'0 9,11,13,15,17,19,21 * * *' at 9:30 → 11:00"""
-        result = self._next("0 9,11,13,15,17,19,21 * * *", datetime(2026, 3, 25, 9, 30))
-        self.assertEqual(result.hour, 11)
-        self.assertEqual(result.minute, 0)
-
-    def test_comma_hours_wraps_to_next_day(self):
-        """'0 9,11,13,15,17,19,21 * * *' at 21:30 → next day 9:00"""
-        result = self._next("0 9,11,13,15,17,19,21 * * *", datetime(2026, 3, 25, 21, 30))
-        self.assertEqual(result.day, 26)
-        self.assertEqual(result.hour, 9)
-
-    def test_every_hour(self):
-        """'0 * * * *' at 9:30 → 10:00"""
-        result = self._next("0 * * * *", datetime(2026, 3, 25, 9, 30))
-        self.assertEqual(result.hour, 10)
-        self.assertEqual(result.minute, 0)
-
-    def test_daily(self):
-        """'30 14 * * *' at 15:00 → next day 14:30"""
-        result = self._next("30 14 * * *", datetime(2026, 3, 25, 15, 0))
-        self.assertEqual(result.day, 26)
-        self.assertEqual(result.hour, 14)
-
-    def test_never_returns_none(self):
-        """Valid cron should never return None."""
-        crons = ["0 * * * *", "0 9 * * *", "0 9,11 * * *", "30 14 * * *"]
-        for cron in crons:
-            result = self._next(cron, datetime(2026, 3, 25, 12, 0))
-            self.assertIsNotNone(result, f"'{cron}' returned None")
+# Old TestCronParser removed: Orchestrator._compute_next_run was deleted
+# when scheduled-task handling moved into general_beckman.cron, which now
+# delegates parsing to the croniter library. Library tests cover correctness;
+# the same hand-rolled cases still live in tests/test_todo.py for the todo
+# scheduler's local helper.
 
 
 # ---------------------------------------------------------------------------

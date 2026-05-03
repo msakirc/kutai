@@ -451,6 +451,39 @@ def test_select_rejects_cloud_with_circuit_breaker_open():
     assert result is None
 
 
+def test_select_rejects_cloud_with_rpm_cooldown():
+    """Per-model rpm_cooldown is set when KDV records a Retry-After /
+    x-ratelimit-reset floor with remaining=0. Selector eligibility must
+    reject — otherwise after the 5s header freshness expires, KDV's
+    rpm_remaining property reverts to sliding-window math, the model
+    looks free, selector picks it, and the next call eats a guaranteed
+    429. Same shape as daily_exhausted, per-minute axis."""
+    from nerd_herd.types import CloudModelState
+    cloud = _make_model(
+        "claude",
+        location="cloud",
+        provider="anthropic",
+        litellm_name="anthropic/claude",
+    )
+    snap = SystemSnapshot(vram_available_mb=8192)
+    snap.cloud["anthropic"] = CloudProviderState(
+        provider="anthropic",
+        models={
+            "anthropic/claude": CloudModelState(
+                model_id="anthropic/claude",
+                rpm_cooldown=True,
+            ),
+        },
+    )
+    nh = MagicMock()
+    nh.snapshot.return_value = snap
+
+    reg = _make_registry(cloud)
+    sel = Selector(registry=reg, nerd_herd=nh)
+    result = sel.select(task="coder", difficulty=5)
+    assert result is None
+
+
 def test_select_accepts_cloud_with_circuit_breaker_below_threshold():
     cloud = _make_model(
         "claude",

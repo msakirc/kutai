@@ -512,6 +512,19 @@ class RateLimitState:
                 if v is not None:
                     setattr(self, attr, v)
 
+        # `Retry-After` header is the provider's authoritative "do not call
+        # before T" hint. Treat it as an rpm-bucket floor: force remaining=0
+        # and raise reset_at to max(existing, now+retry_after). Stricter
+        # signals win — a bucket reset_at = 5s does not override a provider
+        # retry-after of 30s. This matters for degraded 429s where bucket
+        # headers are absent or stale (Cerebras 429 with retry-after=12s but
+        # no x-ratelimit-reset-* fields, observed during burst spikes).
+        if snap.retry_after_seconds is not None and snap.retry_after_seconds > 0:
+            floor = now + snap.retry_after_seconds
+            if self._header_rpm_reset_at is None or floor > self._header_rpm_reset_at:
+                self._header_rpm_reset_at = floor
+            self._header_rpm_remaining = 0
+
 
 class RateLimitManager:
     """
@@ -758,6 +771,26 @@ class RateLimitManager:
         if state.rpd_remaining is not None and state.rpd_remaining <= 0:
             if state.rpd_reset_at and time.time() < state.rpd_reset_at:
                 return True
+        return False
+
+    def is_rpm_cooldown(self, litellm_name: str) -> bool:
+        """True iff a provider Retry-After / x-ratelimit-reset has installed
+        a future floor on rpm with remaining=0. Reads raw `_header_*` fields,
+        not the freshness-windowed `rpm_remaining` property — retry-after
+        values can exceed the 5s freshness window, after which the property
+        falls back to sliding-window math and the cooldown floor would
+        become invisible to the selector. Authoritative cooldown signal,
+        siblings `is_daily_exhausted`."""
+        state = self.model_limits.get(litellm_name)
+        if not state:
+            return False
+        if (
+            state._header_rpm_remaining is not None
+            and state._header_rpm_remaining <= 0
+            and state._header_rpm_reset_at is not None
+            and state._header_rpm_reset_at > time.time()
+        ):
+            return True
         return False
 
     def get_status(self) -> dict:

@@ -6,6 +6,30 @@ from typing import Callable, Awaitable
 from .types import CallError
 
 
+def _retry_after_seconds(headers: dict | None) -> float | None:
+    """Read RFC 7231 `Retry-After` from a (possibly None) header dict.
+    Tolerates litellm's lowercased keys and the `llm_provider-` prefix."""
+    if not headers:
+        return None
+    for k, v in headers.items():
+        kl = str(k).lower()
+        if kl == "retry-after" or kl == "llm_provider-retry-after":
+            from kuleden_donen_var.header_parser import _parse_retry_after
+            return _parse_retry_after(v)
+    return None
+
+
+def _backoff_for_429(attempt: int, headers: dict | None) -> float:
+    """Choose sleep duration before retrying a 429. Prefers the provider's
+    Retry-After hint over fixed exponential backoff, clamped to [1, 60]
+    seconds — under 1s thrashes, over 60s exceeds typical retry budget and
+    the call should fail to the next-model fallback path instead."""
+    hint = _retry_after_seconds(headers)
+    if hint is not None and hint > 0:
+        return max(1.0, min(60.0, hint))
+    return float((attempt + 1) * 5)
+
+
 def _extract_status_code(exc) -> int | None:
     """Pull HTTP status off a LiteLLM exception. Tries the common shapes:
     e.status_code, e.response.status_code, e.response.status. Returns
@@ -242,7 +266,7 @@ async def execute_with_retry(
                 break  # provider says id doesn't exist; same id won't resurrect
             if last_status_code == 429:
                 if attempt < max_retries - 1:
-                    await asyncio.sleep((attempt + 1) * 5)
+                    await asyncio.sleep(_backoff_for_429(attempt, last_headers))
                     continue
                 break
 
@@ -275,7 +299,7 @@ async def execute_with_retry(
             ))
             if is_rate_limit:
                 if attempt < max_retries - 1:
-                    await asyncio.sleep((attempt + 1) * 5)
+                    await asyncio.sleep(_backoff_for_429(attempt, last_headers))
                     continue
                 break
 

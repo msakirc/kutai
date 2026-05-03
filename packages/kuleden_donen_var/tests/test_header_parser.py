@@ -164,6 +164,134 @@ def test_cerebras_daily_limits():
     assert snap.rpd_remaining == 950
 
 
+def test_cerebras_full_axis_set():
+    """Cerebras success responses expose minute + hour + day buckets on both
+    request and token axes. Hour bucket has no tracker field; minute + day
+    must populate rpm/tpm/rpd/tpd. Live header sample (no reset values)."""
+    headers = {
+        "x-ratelimit-remaining-requests-minute": "29",
+        "x-ratelimit-remaining-requests-hour":   "899",
+        "x-ratelimit-remaining-requests-day":    "14399",
+        "x-ratelimit-remaining-tokens-minute":   "59995",
+        "x-ratelimit-remaining-tokens-hour":     "999995",
+        "x-ratelimit-remaining-tokens-day":      "999995",
+        "x-ratelimit-limit-requests-minute":     "30",
+        "x-ratelimit-limit-requests-hour":       "900",
+        "x-ratelimit-limit-requests-day":        "14400",
+        "x-ratelimit-limit-tokens-minute":       "60000",
+        "x-ratelimit-limit-tokens-hour":         "1000000",
+        "x-ratelimit-limit-tokens-day":          "1000000",
+    }
+    snap = parse_rate_limit_headers("cerebras", headers)
+    assert snap is not None
+    assert snap.rpm_limit == 30
+    assert snap.rpm_remaining == 29
+    assert snap.tpm_limit == 60_000
+    assert snap.tpm_remaining == 59_995
+    assert snap.rpd_limit == 14_400
+    assert snap.rpd_remaining == 14_399
+    assert snap.tpd_limit == 1_000_000
+    assert snap.tpd_remaining == 999_995
+
+
+def test_retry_after_numeric_seconds():
+    """RFC 7231 delta-seconds form — most LLM APIs use this."""
+    snap = parse_rate_limit_headers("cerebras", {"retry-after": "12"})
+    assert snap is not None
+    assert snap.retry_after_seconds == 12.0
+
+
+def test_retry_after_float_seconds():
+    snap = parse_rate_limit_headers("cerebras", {"retry-after": "12.5"})
+    assert snap is not None
+    assert snap.retry_after_seconds == 12.5
+
+
+def test_retry_after_negative_clamped_to_zero():
+    snap = parse_rate_limit_headers("cerebras", {"retry-after": "-3"})
+    assert snap is not None
+    assert snap.retry_after_seconds == 0.0
+
+
+def test_retry_after_case_insensitive():
+    snap = parse_rate_limit_headers("cerebras", {"Retry-After": "5"})
+    assert snap is not None
+    assert snap.retry_after_seconds == 5.0
+
+
+def test_retry_after_litellm_prefix_stripped():
+    """LiteLLM wraps provider headers under `llm_provider-` — central
+    parser strips this prefix before dispatch, so retry-after works
+    via the prefixed key too."""
+    snap = parse_rate_limit_headers("cerebras", {"llm_provider-retry-after": "8"})
+    assert snap is not None
+    assert snap.retry_after_seconds == 8.0
+
+
+def test_retry_after_only_still_returns_snapshot():
+    """When Retry-After is the ONLY rate-limit signal, the snapshot must
+    survive — has_any_data() includes retry_after_seconds. This covers
+    degraded 429s where x-ratelimit-* headers are absent."""
+    snap = parse_rate_limit_headers("groq", {"retry-after": "30"})
+    assert snap is not None
+    assert snap.retry_after_seconds == 30.0
+
+
+def test_retry_after_alongside_bucket_headers():
+    """Both signals coexist — retry-after fills its dedicated field
+    without disturbing bucket parsing."""
+    snap = parse_rate_limit_headers("cerebras", {
+        "retry-after": "7",
+        "x-ratelimit-limit-requests-minute": "30",
+        "x-ratelimit-remaining-requests-minute": "0",
+    })
+    assert snap is not None
+    assert snap.retry_after_seconds == 7.0
+    assert snap.rpm_limit == 30
+    assert snap.rpm_remaining == 0
+
+
+def test_retry_after_imf_fixdate():
+    """Defensive: RFC 7231 also permits HTTP-date format. Compute
+    seconds-from-now relative to a future date."""
+    import time as _t
+    future = _t.gmtime(_t.time() + 60)
+    fixdate = _t.strftime("%a, %d %b %Y %H:%M:%S GMT", future)
+    snap = parse_rate_limit_headers("cerebras", {"retry-after": fixdate})
+    assert snap is not None
+    # Allow a little wall-clock drift between header gen and parse.
+    assert 50.0 <= snap.retry_after_seconds <= 70.0
+
+
+def test_retry_after_malformed_returns_none():
+    """Garbage value drops the field but bucket parsing still wins."""
+    snap = parse_rate_limit_headers("cerebras", {
+        "retry-after": "soon",
+        "x-ratelimit-limit-requests-minute": "30",
+    })
+    assert snap is not None
+    assert snap.retry_after_seconds is None
+    assert snap.rpm_limit == 30
+
+
+def test_cerebras_429_with_reset_seconds():
+    """On 429, Cerebras emits the same headers plus reset values as float
+    seconds. Parser must coerce them to absolute reset timestamps."""
+    headers = {
+        "x-ratelimit-limit-requests-minute":     "30",
+        "x-ratelimit-remaining-requests-minute": "0",
+        "x-ratelimit-reset-requests-minute":     "12.5",
+        "x-ratelimit-limit-tokens-minute":       "60000",
+        "x-ratelimit-remaining-tokens-minute":   "0",
+        "x-ratelimit-reset-tokens-minute":       "12.5",
+    }
+    snap = parse_rate_limit_headers("cerebras", headers)
+    assert snap is not None
+    assert snap.rpm_remaining == 0
+    assert snap.rpm_reset_at is not None
+    assert snap.tpm_reset_at is not None
+
+
 def test_llm_provider_prefix_stripped():
     headers = {
         "llm_provider-x-ratelimit-limit-requests": "15",

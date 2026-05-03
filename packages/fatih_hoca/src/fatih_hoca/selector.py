@@ -502,6 +502,20 @@ class Selector:
                     mstate, "daily_exhausted", False
                 ):
                     return f"daily_exhausted({model.provider})"
+                # Per-model rpm cooldown: KDV recorded a Retry-After /
+                # x-ratelimit-reset floor with remaining=0. Without this
+                # gate the model stays eligible after the 5s header
+                # freshness window expires (rpm_remaining property reverts
+                # to sliding-window math, exposes fake capacity). Selector
+                # picks it; KDV.pre_call refuses; retry recursion cycles
+                # through the same provider's other ids; pool exhausts.
+                # Same failure mode as daily_exhausted, just on the
+                # per-minute axis. Production hardening 2026-05-03 after
+                # retry-after wiring.
+                if mstate is not None and getattr(
+                    mstate, "rpm_cooldown", False
+                ):
+                    return f"rpm_cooldown({model.provider})"
 
         # Local inference allowed check — use snapshot.vram_available_mb > 0
         if model.is_local:

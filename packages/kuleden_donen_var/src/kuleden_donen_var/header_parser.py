@@ -54,6 +54,14 @@ class RateLimitSnapshot:
     otpd_remaining: int | None = None
     otpd_reset_at: float | None = None
 
+    # HTTP `Retry-After` header (RFC 7231). Authoritative provider hint —
+    # "don't issue another request to this model before N seconds from now".
+    # Stricter than bucket reset_at fields (which describe bucket recovery,
+    # not the caller's permission to retry). Populated in seconds-from-now;
+    # update_from_snapshot raises a floor on rpm_reset_at so admission gate
+    # honors it without conflating buckets.
+    retry_after_seconds: float | None = None
+
     def has_any_data(self) -> bool:
         return any(v is not None for v in [
             self.rpm_limit, self.rpm_remaining,
@@ -64,6 +72,7 @@ class RateLimitSnapshot:
             self.itpd_limit, self.itpd_remaining,
             self.otpm_limit, self.otpm_remaining,
             self.otpd_limit, self.otpd_remaining,
+            self.retry_after_seconds,
         ])
 
 
@@ -150,12 +159,49 @@ def parse_rate_limit_headers(
     parser = _PROVIDER_PARSERS.get(provider, _parse_openai_style)
     snap = parser(h)
 
+    # `Retry-After` is provider-agnostic per RFC 7231 — every cloud (groq,
+    # cerebras, openai, anthropic) returns it on 429. Parse centrally so
+    # provider parsers stay focused on bucket-shape headers.
+    retry_after = _parse_retry_after(h.get("retry-after", ""))
+    if retry_after is not None:
+        if snap is None:
+            snap = RateLimitSnapshot()
+        snap.retry_after_seconds = retry_after
+
     if snap and snap.has_any_data():
         return snap
     return None
 
 
 # ─── Reset time parsing helpers ─────────────────────────────────────────────
+
+def _parse_retry_after(value: str) -> float | None:
+    """Parse RFC 7231 `Retry-After` header. Two legal forms:
+        delta-seconds:  "5", "12.5", "120"
+        HTTP-date:      "Wed, 21 Oct 2026 07:28:00 GMT"
+    Returns seconds-from-now (>= 0) or None if absent/malformed.
+    JSON LLM APIs use delta-seconds in practice; the IMF-fixdate branch
+    is defensive and rarely exercised.
+    """
+    if not value:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        n = float(s)
+        return max(0.0, n)
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(s)
+        if dt is None:
+            return None
+        return max(0.0, dt.timestamp() - time.time())
+    except (ValueError, TypeError):
+        return None
+
 
 def _parse_reset_duration(value: str) -> float | None:
     """
@@ -292,17 +338,27 @@ def _parse_anthropic(h: dict) -> RateLimitSnapshot:
 
 def _parse_cerebras(h: dict) -> RateLimitSnapshot:
     """
-    Parse Cerebras headers with daily request + per-minute token limits.
-    Format: x-ratelimit-{limit,remaining,reset}-{requests-day,tokens-minute}
-    Reset values are float seconds.
+    Parse Cerebras rate-limit headers. The API exposes four bucket families
+    (minute/hour/day) on two axes (requests/tokens). KDV tracks rpm/tpm/rpd/tpd
+    only — the hour bucket has no field and is dropped (the day bucket alone
+    is enough to gate admission). Reset headers are not emitted on success
+    responses; on 429 they appear as float seconds, parsed via
+    `_parse_reset_duration`. Format:
+        x-ratelimit-{limit,remaining,reset}-{requests,tokens}-{minute,day}
     """
     return RateLimitSnapshot(
+        rpm_limit=_safe_int(h.get("x-ratelimit-limit-requests-minute")),
+        rpm_remaining=_safe_int(h.get("x-ratelimit-remaining-requests-minute")),
+        rpm_reset_at=_parse_reset_duration(h.get("x-ratelimit-reset-requests-minute", "")),
         tpm_limit=_safe_int(h.get("x-ratelimit-limit-tokens-minute")),
         tpm_remaining=_safe_int(h.get("x-ratelimit-remaining-tokens-minute")),
         tpm_reset_at=_parse_reset_duration(h.get("x-ratelimit-reset-tokens-minute", "")),
         rpd_limit=_safe_int(h.get("x-ratelimit-limit-requests-day")),
         rpd_remaining=_safe_int(h.get("x-ratelimit-remaining-requests-day")),
         rpd_reset_at=_parse_reset_duration(h.get("x-ratelimit-reset-requests-day", "")),
+        tpd_limit=_safe_int(h.get("x-ratelimit-limit-tokens-day")),
+        tpd_remaining=_safe_int(h.get("x-ratelimit-remaining-tokens-day")),
+        tpd_reset_at=_parse_reset_duration(h.get("x-ratelimit-reset-tokens-day", "")),
     )
 
 

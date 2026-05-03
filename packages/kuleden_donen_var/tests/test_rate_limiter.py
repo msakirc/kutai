@@ -26,6 +26,92 @@ def test_state_utilization_initially_zero():
     assert state.utilization_pct() == 0.0
 
 
+def test_state_retry_after_raises_rpm_reset_floor():
+    """Provider Retry-After header sets a hard 'do not call before T'
+    floor on _header_rpm_reset_at, also forcing remaining=0. Stricter
+    signal wins — a 5s bucket reset cannot override a 30s retry-after."""
+    state = RateLimitState(rpm_limit=30, tpm_limit=100000)
+    state._header_rpm_reset_at = time.time() + 5.0
+    state._header_rpm_remaining = 25
+    snap = RateLimitSnapshot(retry_after_seconds=30.0)
+    state.update_from_snapshot(snap)
+    assert state._header_rpm_remaining == 0
+    # Must have moved to ~now+30s, not stuck at now+5s
+    assert state._header_rpm_reset_at >= time.time() + 25.0
+
+
+def test_state_retry_after_does_not_lower_existing_floor():
+    """When existing reset_at is later than now+retry_after, keep it.
+    The bucket may legitimately recover later than the provider hint."""
+    state = RateLimitState(rpm_limit=30, tpm_limit=100000)
+    far_future = time.time() + 120.0
+    state._header_rpm_reset_at = far_future
+    snap = RateLimitSnapshot(retry_after_seconds=10.0)
+    state.update_from_snapshot(snap)
+    assert state._header_rpm_reset_at == far_future
+    assert state._header_rpm_remaining == 0  # still forced to 0
+
+
+def test_state_retry_after_zero_is_noop():
+    """retry_after_seconds=0 is a degenerate hint (provider says 'now ok'
+    after a 429 — uncommon but possible). Treat as no signal: don't
+    install a floor at exactly `now`, don't stomp remaining."""
+    state = RateLimitState(rpm_limit=30, tpm_limit=100000)
+    state._header_rpm_remaining = 25
+    snap = RateLimitSnapshot(retry_after_seconds=0.0)
+    state.update_from_snapshot(snap)
+    assert state._header_rpm_remaining == 25  # untouched
+
+
+def test_is_rpm_cooldown_returns_true_when_floor_active():
+    """RateLimitManager.is_rpm_cooldown reads raw _header_* fields directly,
+    bypassing the freshness-windowed rpm_remaining property. Required for
+    retry-after horizons longer than 5s (most cases)."""
+    mgr = RateLimitManager()
+    mgr.register_model("cerebras/llama-8b", "cerebras", rpm=30, tpm=60_000)
+    state = mgr.model_limits["cerebras/llama-8b"]
+    state._header_rpm_remaining = 0
+    state._header_rpm_reset_at = time.time() + 30.0
+    assert mgr.is_rpm_cooldown("cerebras/llama-8b") is True
+
+
+def test_is_rpm_cooldown_false_when_floor_passed():
+    mgr = RateLimitManager()
+    mgr.register_model("cerebras/llama-8b", "cerebras", rpm=30, tpm=60_000)
+    state = mgr.model_limits["cerebras/llama-8b"]
+    state._header_rpm_remaining = 0
+    state._header_rpm_reset_at = time.time() - 1.0  # already past
+    assert mgr.is_rpm_cooldown("cerebras/llama-8b") is False
+
+
+def test_is_rpm_cooldown_false_when_remaining_positive():
+    mgr = RateLimitManager()
+    mgr.register_model("cerebras/llama-8b", "cerebras", rpm=30, tpm=60_000)
+    state = mgr.model_limits["cerebras/llama-8b"]
+    state._header_rpm_remaining = 5
+    state._header_rpm_reset_at = time.time() + 30.0
+    assert mgr.is_rpm_cooldown("cerebras/llama-8b") is False
+
+
+def test_is_rpm_cooldown_false_for_unknown_model():
+    mgr = RateLimitManager()
+    assert mgr.is_rpm_cooldown("nonexistent/model") is False
+
+
+def test_is_rpm_cooldown_survives_freshness_window_expiry():
+    """The whole point of bypassing rpm_remaining property: cooldown must
+    persist past the 5s freshness window. Set _last_header_update far
+    enough in the past that the property would fall back to sliding
+    window — is_rpm_cooldown still returns True via raw field read."""
+    mgr = RateLimitManager()
+    mgr.register_model("cerebras/llama-8b", "cerebras", rpm=30, tpm=60_000)
+    state = mgr.model_limits["cerebras/llama-8b"]
+    state._header_rpm_remaining = 0
+    state._header_rpm_reset_at = time.time() + 30.0
+    state._last_header_update = time.time() - 60.0  # well past 5s freshness
+    assert mgr.is_rpm_cooldown("cerebras/llama-8b") is True
+
+
 def test_state_record_tokens():
     state = RateLimitState(rpm_limit=30, tpm_limit=100000)
     state.record_tokens(50000)

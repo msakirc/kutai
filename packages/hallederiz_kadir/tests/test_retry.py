@@ -3,8 +3,51 @@ import sys, os, asyncio
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from unittest.mock import AsyncMock
-from hallederiz_kadir.retry import classify_error, execute_with_retry
+from hallederiz_kadir.retry import (
+    classify_error, execute_with_retry,
+    _backoff_for_429, _retry_after_seconds,
+)
 from hallederiz_kadir.types import CallError
+
+
+def test_backoff_for_429_uses_retry_after_when_present():
+    """Provider hint wins over fixed exponential."""
+    assert _backoff_for_429(0, {"retry-after": "12"}) == 12.0
+    assert _backoff_for_429(2, {"retry-after": "3"}) == 3.0
+
+
+def test_backoff_for_429_clamps_to_one_second_floor():
+    """Sub-1s retry-after thrashes the loop; floor at 1.0."""
+    assert _backoff_for_429(0, {"retry-after": "0.1"}) == 1.0
+    assert _backoff_for_429(0, {"retry-after": "0"}) == 5.0  # 0 falls back
+
+
+def test_backoff_for_429_clamps_to_sixty_second_ceiling():
+    """Provider asking for >60s exceeds retry budget; cap and let the
+    call fail to next-model fallback."""
+    assert _backoff_for_429(0, {"retry-after": "300"}) == 60.0
+    assert _backoff_for_429(0, {"retry-after": "120"}) == 60.0
+
+
+def test_backoff_for_429_falls_back_to_exponential():
+    """No retry-after → (attempt+1)*5 progression."""
+    assert _backoff_for_429(0, None) == 5.0
+    assert _backoff_for_429(1, {}) == 10.0
+    assert _backoff_for_429(2, {"x-other": "noise"}) == 15.0
+
+
+def test_backoff_for_429_handles_malformed_retry_after():
+    """Garbage value falls through to exponential."""
+    assert _backoff_for_429(0, {"retry-after": "soon"}) == 5.0
+
+
+def test_retry_after_seconds_case_insensitive_and_prefixed():
+    """LiteLLM keys may carry `llm_provider-` prefix or odd casing."""
+    assert _retry_after_seconds({"Retry-After": "9"}) == 9.0
+    assert _retry_after_seconds({"llm_provider-retry-after": "11"}) == 11.0
+    assert _retry_after_seconds(None) is None
+    assert _retry_after_seconds({}) is None
+
 
 
 def test_classify_by_status_code_outranks_text():

@@ -531,3 +531,70 @@ async def test_init_unchanged_key_no_revive(monkeypatch, tmp_path):
     )
     # Probe re-confirmed auth fail; provider stays dead.
     assert fatih_hoca._registry.is_provider_dead("groq") is True
+
+
+# ── Source provenance pre-population ────────────────────────────────────
+
+
+def test_load_yaml_pre_registers_models_with_source_yaml(tmp_path):
+    """load_yaml must pre-populate the kill-switch registry so /dead
+    rows on yaml-declared models show source='yaml' (vs the runtime
+    UPSERT default of 'runtime' on a never-pre-registered id)."""
+    from src.infra import registry_store
+    nerd_herd = MagicMock()
+    nerd_herd.snapshot.return_value = SystemSnapshot()
+
+    yaml_content = (
+        "cloud:\n"
+        "  yaml-only:\n"
+        "    litellm_name: anthropic/claude-3-5-haiku-20241022\n"
+    )
+    yaml_file = tmp_path / "models.yaml"
+    yaml_file.write_text(yaml_content)
+
+    fatih_hoca.init(catalog_path=str(yaml_file), nerd_herd=nerd_herd)
+    conn = registry_store._get_conn()
+    row = conn.execute(
+        "SELECT source FROM models WHERE litellm_name=?",
+        ("anthropic/claude-3-5-haiku-20241022",),
+    ).fetchone()
+    assert row is not None, "yaml-loaded cloud model must be registered"
+    assert row["source"] == "yaml"
+
+
+@pytest.mark.asyncio
+async def test_discovery_pre_registers_models_with_source_discovery(
+    monkeypatch, tmp_path,
+):
+    """register_cloud_from_discovered must pre-populate the kill-switch
+    registry with source='discovery' so /dead distinguishes catalog
+    entries from discovery-only entries."""
+    from fatih_hoca.cloud.types import DiscoveredModel, ProviderResult
+    from src.infra import registry_store
+
+    fake_results = {
+        "openai": ProviderResult(
+            provider="openai", status="ok", auth_ok=True,
+            models=[DiscoveredModel(
+                litellm_name="openai/gpt-4o", raw_id="gpt-4o",
+                context_length=128000,
+            )],
+        ),
+    }
+
+    async def _fake_refresh(api_keys):
+        return fake_results
+    monkeypatch.setattr(fatih_hoca, "_run_cloud_discovery", _fake_refresh)
+
+    fatih_hoca.init(
+        api_keys={"openai": "k"},
+        cloud_cache_dir=str(tmp_path / "cache"),
+        cloud_alert_state_path=str(tmp_path / "throttle.json"),
+    )
+    conn = registry_store._get_conn()
+    row = conn.execute(
+        "SELECT source FROM models WHERE litellm_name=?",
+        ("openai/gpt-4o",),
+    ).fetchone()
+    assert row is not None, "discovered cloud model must be registered"
+    assert row["source"] == "discovery"

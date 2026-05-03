@@ -1055,6 +1055,18 @@ def register_cloud_from_discovered(
     if discovered.sampling_defaults and not model.sampling_overrides:
         model.sampling_overrides = {"default": dict(discovered.sampling_defaults)}
     registry.register(model)
+    # Pre-populate the kill-switch registry so /dead can show provenance
+    # (source='discovery') instead of the runtime UPSERT default of
+    # 'runtime'. INSERT OR IGNORE — won't overwrite an existing row's
+    # source if mark_dead got there first (acceptable: runtime evidence
+    # is more authoritative than a passive listing).
+    try:
+        from src.infra import registry_store
+        registry_store.register_model(
+            model.litellm_name, model.provider, source="discovery",
+        )
+    except Exception as e:
+        logger.debug("register_model in kill-switch failed: %s", e)
     return model
 
 
@@ -1451,6 +1463,17 @@ class ModelRegistry:
             )
             self.register(model)
             loaded.append(model)
+            # Pre-populate the kill-switch registry so /dead shows
+            # source='yaml' on rows that originated from the catalog
+            # (vs source='runtime' from a 404 mark_dead on a never-
+            # pre-registered id). INSERT OR IGNORE — first source wins.
+            try:
+                from src.infra import registry_store
+                registry_store.register_model(
+                    litellm_name, config_provider, source="yaml",
+                )
+            except Exception as e:
+                logger.debug("register_model in kill-switch failed: %s", e)
 
         # Apply YAML capability + sampling overrides
         for model_name, model_overrides in overrides.items():

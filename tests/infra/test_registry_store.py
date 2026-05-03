@@ -32,6 +32,53 @@ def test_register_then_mark_dead():
     assert rs.is_dead("gemini/foo") is True
 
 
+def test_register_model_records_source():
+    """register_model writes the source label so /dead can show
+    provenance ('yaml' | 'discovery' | 'runtime' | 'gguf')."""
+    rs.register_model("gemini/foo", "gemini", source="yaml")
+    conn = rs._get_conn()
+    row = conn.execute(
+        "SELECT source FROM models WHERE litellm_name=?", ("gemini/foo",)
+    ).fetchone()
+    assert row["source"] == "yaml"
+
+
+def test_register_model_first_source_wins():
+    """register_model is INSERT OR IGNORE — repeated calls don't overwrite
+    the first source. Lets pre-population (yaml) survive a later
+    discovery-based re-register without source flicker."""
+    rs.register_model("gemini/foo", "gemini", source="yaml")
+    rs.register_model("gemini/foo", "gemini", source="discovery")
+    conn = rs._get_conn()
+    row = conn.execute(
+        "SELECT source FROM models WHERE litellm_name=?", ("gemini/foo",)
+    ).fetchone()
+    assert row["source"] == "yaml"
+
+
+def test_mark_dead_after_yaml_register_preserves_source():
+    """A 404 mark_dead on a model that was pre-registered with source='yaml'
+    must NOT downgrade source to 'runtime' on the UPSERT. Catalog provenance
+    is more useful for forensics than the runtime label."""
+    rs.register_model("gemini/foo", "gemini", source="yaml")
+    rs.mark_dead("gemini/foo", cause="404_permanent")
+    conn = rs._get_conn()
+    row = conn.execute(
+        "SELECT source, status FROM models WHERE litellm_name=?",
+        ("gemini/foo",),
+    ).fetchone()
+    assert row["source"] == "yaml"
+    assert row["status"] == "dead"
+
+
+def test_register_model_skips_empty():
+    rs.register_model("", "gemini", source="yaml")  # no-op
+    rs.register_model("openrouter/x", "", source="yaml")  # no-op
+    conn = rs._get_conn()
+    rows = conn.execute("SELECT COUNT(*) AS n FROM models").fetchone()
+    assert rows["n"] == 0
+
+
 def test_mark_dead_without_register():
     """mark_dead must work even if model never registered — caller can hit
     a 404 on a never-pre-registered id."""

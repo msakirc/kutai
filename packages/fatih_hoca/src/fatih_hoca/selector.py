@@ -110,6 +110,17 @@ class Selector:
                         category=e.category, model=e.model,
                         provider=e.provider, is_local=e.is_local,
                         started_at=e.started_at,
+                        # Preserve admission-time token reservation —
+                        # pressure_for subtracts this from effective tpm
+                        # to back-pressure parallel admissions. Without
+                        # this projection, est_tokens=0 propagates and
+                        # 5+ cloud admissions in the same window each
+                        # see fresh tpm headroom and overshoot the
+                        # shared bucket. Field exists on _InFlightEntry
+                        # (set by Beckman.reserve_task and dispatcher's
+                        # begin_call) but was being dropped at this
+                        # type-conversion boundary.
+                        est_tokens=int(getattr(e, "est_tokens", 0) or 0),
                     )
                     for e in _local_ifs
                 ]

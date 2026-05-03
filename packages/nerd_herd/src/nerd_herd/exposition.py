@@ -179,6 +179,7 @@ class MetricsServer:
                     provider=str(c.get("provider", "")),
                     is_local=bool(c.get("is_local", False)),
                     started_at=float(c.get("started_at", 0.0)),
+                    est_tokens=int(c.get("est_tokens", 0) or 0),
                 ))
             except Exception:
                 continue

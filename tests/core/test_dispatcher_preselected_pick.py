@@ -63,7 +63,7 @@ async def test_preselected_pick_skips_first_hoca_call():
                       new=AsyncMock(return_value=_fake_call_result())), \
          patch("src.infra.pick_log.write_pick_log_row", new=AsyncMock()):
         d = LLMDispatcher()
-        await d.request(
+        await d._do_dispatch(
             category=CallCategory.MAIN_WORK,
             task="coder",
             difficulty=7,
@@ -86,7 +86,7 @@ async def test_no_preselected_pick_calls_hoca_normally():
                       new=AsyncMock(return_value=_fake_call_result())), \
          patch("src.infra.pick_log.write_pick_log_row", new=AsyncMock()):
         d = LLMDispatcher()
-        await d.request(
+        await d._do_dispatch(
             category=CallCategory.MAIN_WORK,
             task="coder",
             difficulty=7,

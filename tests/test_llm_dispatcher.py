@@ -151,7 +151,7 @@ class TestRequestHappyPath:
         with _patch_select(pick), \
              _patch_call(result_obj), \
              _patch_call_result_class(FakeCallResult):
-            result = await dispatcher.request(
+            result = await dispatcher._do_dispatch(
                 category=CallCategory.MAIN_WORK,
                 task="coder",
                 messages=[{"role": "user", "content": "write code"}],
@@ -170,7 +170,7 @@ class TestRequestHappyPath:
         with _patch_select(pick), \
              _patch_call(result_obj), \
              _patch_call_result_class(FakeCallResult):
-            result = await dispatcher.request(
+            result = await dispatcher._do_dispatch(
                 category=CallCategory.MAIN_WORK,
                 messages=[{"role": "user", "content": "do it"}],
             )
@@ -191,7 +191,7 @@ class TestRequestHappyPath:
         with _patch_select(pick), \
              _patch_call(result_obj), \
              _patch_call_result_class(FakeCallResult):
-            result = await dispatcher.request(
+            result = await dispatcher._do_dispatch(
                 category=CallCategory.OVERHEAD,
                 task="router",
                 messages=[{"role": "user", "content": "classify"}],
@@ -210,7 +210,7 @@ class TestRequestHappyPath:
         with _patch_select(pick), \
              _patch_call(result_obj), \
              _patch_call_result_class(FakeCallResult):
-            result = await dispatcher.request(
+            result = await dispatcher._do_dispatch(
                 category=CallCategory.MAIN_WORK,
                 messages=[],
             )
@@ -228,7 +228,7 @@ class TestRequestHappyPath:
         with _patch_select(pick), \
              _patch_call(result_obj), \
              _patch_call_result_class(FakeCallResult):
-            result = await dispatcher.request(
+            result = await dispatcher._do_dispatch(
                 category=CallCategory.MAIN_WORK,
                 messages=[],
             )
@@ -251,7 +251,7 @@ class TestRequestNoModel:
 
         with _patch_select(None):
             with pytest.raises(ModelCallFailed):
-                await dispatcher.request(
+                await dispatcher._do_dispatch(
                     category=CallCategory.MAIN_WORK,
                     task="coder",
                     messages=[],
@@ -265,7 +265,7 @@ class TestRequestNoModel:
 
         with _patch_select(None):
             with pytest.raises(RuntimeError, match="OVERHEAD call failed"):
-                await dispatcher.request(
+                await dispatcher._do_dispatch(
                     category=CallCategory.OVERHEAD,
                     task="router",
                     messages=[],
@@ -280,7 +280,7 @@ class TestRequestNoModel:
 
         with _patch_select(None):
             with pytest.raises(ModelCallFailed) as exc_info:
-                await dispatcher.request(
+                await dispatcher._do_dispatch(
                     category=CallCategory.MAIN_WORK,
                     task="my-task",
                     messages=[],
@@ -317,7 +317,7 @@ class TestRequestRetry:
              patch("hallederiz_kadir.call", new=AsyncMock(side_effect=fake_call)), \
              _patch_call_result_class(FakeCallResult), \
              patch("hallederiz_kadir.CallError", FakeCallError):
-            result = await dispatcher.request(
+            result = await dispatcher._do_dispatch(
                 category=CallCategory.MAIN_WORK,
                 messages=[],
             )
@@ -346,7 +346,7 @@ class TestRequestRetry:
              _patch_call_result_class(FakeCallResult), \
              patch("hallederiz_kadir.CallError", FakeCallError):
             with pytest.raises(ModelCallFailed):
-                await dispatcher.request(
+                await dispatcher._do_dispatch(
                     category=CallCategory.MAIN_WORK,
                     messages=[],
                 )
@@ -378,7 +378,7 @@ class TestRequestMaxRetries:
              _patch_call_result_class(FakeCallResult), \
              patch("hallederiz_kadir.CallError", FakeCallError):
             with pytest.raises(ModelCallFailed):
-                await dispatcher.request(
+                await dispatcher._do_dispatch(
                     category=CallCategory.MAIN_WORK,
                     messages=[],
                 )
@@ -399,7 +399,7 @@ class TestRequestMaxRetries:
              _patch_call_result_class(FakeCallResult), \
              patch("hallederiz_kadir.CallError", FakeCallError):
             with pytest.raises(RuntimeError, match="OVERHEAD call failed"):
-                await dispatcher.request(
+                await dispatcher._do_dispatch(
                     category=CallCategory.OVERHEAD,
                     messages=[],
                 )
@@ -429,7 +429,7 @@ class TestNeedsThinkingOverhead:
         with patch("fatih_hoca.select", side_effect=fake_select), \
              _patch_call(result_obj), \
              _patch_call_result_class(FakeCallResult):
-            await dispatcher.request(
+            await dispatcher._do_dispatch(
                 category=CallCategory.OVERHEAD,
                 messages=[],
                 needs_thinking=True,  # even if caller passes True, should be overridden
@@ -455,7 +455,7 @@ class TestNeedsThinkingOverhead:
         with patch("fatih_hoca.select", side_effect=fake_select), \
              _patch_call(result_obj), \
              _patch_call_result_class(FakeCallResult):
-            await dispatcher.request(
+            await dispatcher._do_dispatch(
                 category=CallCategory.MAIN_WORK,
                 messages=[],
             )
@@ -489,7 +489,7 @@ class TestNeedsFunctionCalling:
         with patch("fatih_hoca.select", side_effect=fake_select), \
              _patch_call(result_obj), \
              _patch_call_result_class(FakeCallResult):
-            await dispatcher.request(
+            await dispatcher._do_dispatch(
                 category=CallCategory.MAIN_WORK,
                 messages=[],
                 tools=tools,
@@ -515,7 +515,7 @@ class TestNeedsFunctionCalling:
         with patch("fatih_hoca.select", side_effect=fake_select), \
              _patch_call(result_obj), \
              _patch_call_result_class(FakeCallResult):
-            await dispatcher.request(
+            await dispatcher._do_dispatch(
                 category=CallCategory.MAIN_WORK,
                 messages=[],
             )
@@ -548,8 +548,8 @@ class TestGetStats:
         with _patch_select(pick), \
              _patch_call(result_obj), \
              _patch_call_result_class(FakeCallResult):
-            await dispatcher.request(CallCategory.MAIN_WORK, messages=[])
-            await dispatcher.request(CallCategory.MAIN_WORK, messages=[])
+            await dispatcher._do_dispatch(CallCategory.MAIN_WORK, messages=[])
+            await dispatcher._do_dispatch(CallCategory.MAIN_WORK, messages=[])
 
         stats = dispatcher.get_stats()
         assert stats["total_calls"] == 2
@@ -566,9 +566,9 @@ class TestGetStats:
         with _patch_select(pick), \
              _patch_call(result_obj), \
              _patch_call_result_class(FakeCallResult):
-            await dispatcher.request(CallCategory.MAIN_WORK, messages=[])
-            await dispatcher.request(CallCategory.MAIN_WORK, messages=[])
-            await dispatcher.request(CallCategory.OVERHEAD, messages=[])
+            await dispatcher._do_dispatch(CallCategory.MAIN_WORK, messages=[])
+            await dispatcher._do_dispatch(CallCategory.MAIN_WORK, messages=[])
+            await dispatcher._do_dispatch(CallCategory.OVERHEAD, messages=[])
 
         stats = dispatcher.get_stats()
         assert stats["total_calls"] == 3
@@ -586,9 +586,9 @@ class TestGetStats:
              _patch_call(result_obj), \
              _patch_call_result_class(FakeCallResult):
             # 1 overhead out of 3 total = 33.3%
-            await dispatcher.request(CallCategory.MAIN_WORK, messages=[])
-            await dispatcher.request(CallCategory.MAIN_WORK, messages=[])
-            await dispatcher.request(CallCategory.OVERHEAD, messages=[])
+            await dispatcher._do_dispatch(CallCategory.MAIN_WORK, messages=[])
+            await dispatcher._do_dispatch(CallCategory.MAIN_WORK, messages=[])
+            await dispatcher._do_dispatch(CallCategory.OVERHEAD, messages=[])
 
         stats = dispatcher.get_stats()
         assert "33.3%" in stats["overhead_pct"]
@@ -603,11 +603,11 @@ class TestGetStats:
 
         with _patch_select(None):
             try:
-                await dispatcher.request(CallCategory.MAIN_WORK, messages=[])
+                await dispatcher._do_dispatch(CallCategory.MAIN_WORK, messages=[])
             except ModelCallFailed:
                 pass
             try:
-                await dispatcher.request(CallCategory.OVERHEAD, messages=[])
+                await dispatcher._do_dispatch(CallCategory.OVERHEAD, messages=[])
             except RuntimeError:
                 pass
 
@@ -672,7 +672,7 @@ class TestLocalModelLoad:
         with _patch_select(pick), \
              patch.object(dispatcher, "_ensure_local_model", AsyncMock(return_value=(False, False))):
             with pytest.raises(ModelCallFailed):
-                await dispatcher.request(
+                await dispatcher._do_dispatch(
                     category=CallCategory.MAIN_WORK,
                     messages=[],
                 )
@@ -691,7 +691,7 @@ class TestLocalModelLoad:
         with _patch_select(pick), \
              patch.object(dispatcher, "_ensure_local_model", AsyncMock(return_value=(False, False))):
             with pytest.raises(RuntimeError, match="OVERHEAD call failed"):
-                await dispatcher.request(
+                await dispatcher._do_dispatch(
                     category=CallCategory.OVERHEAD,
                     messages=[],
                 )
@@ -713,7 +713,7 @@ class TestLocalModelLoad:
              _patch_call(result_obj), \
              _patch_call_result_class(FakeCallResult), \
              patch.object(dispatcher, "_ensure_local_model", mock_ensure):
-            await dispatcher.request(
+            await dispatcher._do_dispatch(
                 category=CallCategory.MAIN_WORK,
                 messages=[],
             )
@@ -832,7 +832,7 @@ class TestRequestNoneFromHocaContract:
         dispatcher = _fresh_dispatcher()
         with _patch_select(None):
             with pytest.raises(ModelCallFailed):
-                await dispatcher.request(
+                await dispatcher._do_dispatch(
                     category=CallCategory.MAIN_WORK,
                     task="coder",
                     messages=[],
@@ -845,7 +845,7 @@ class TestRequestNoneFromHocaContract:
         dispatcher = _fresh_dispatcher()
         with _patch_select(None):
             with pytest.raises(RuntimeError, match="OVERHEAD call failed"):
-                await dispatcher.request(
+                await dispatcher._do_dispatch(
                     category=CallCategory.OVERHEAD,
                     task="router",
                     messages=[],

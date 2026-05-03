@@ -1,0 +1,22 @@
+# TODO: Integration smoke test for dispatcher alias via beckman → pump → dispatch route.
+#
+# What's missing to wire this up:
+#   1. The orchestrator pump (run_loop) needs a real asyncio event loop running
+#      concurrently with the test. In unit tests we have a single event loop and
+#      no background pump processing tasks.
+#   2. beckman.enqueue(await_inline=True) registers a Future in _inline_waiters
+#      and awaits it. The Future is resolved only when on_task_finished() is called
+#      by the pump after executing the task. Without a running pump, the Future
+#      never resolves and the test deadlocks.
+#
+# To wire this correctly:
+#   - Start a minimal pump loop via asyncio.create_task(orchestrator.run_loop())
+#   - Mock dispatcher.dispatch() to return a fake result
+#   - Enqueue a raw_dispatch task via dispatcher.request()
+#   - Verify dispatcher.dispatch() was called with the right spec
+#   - Cancel the pump loop after verification
+#
+# Deferred because setting up the pump requires a fully wired orchestrator
+# (TelegramInterface, beckman DB, nerd_herd) which is integration-level overhead.
+# The unit tests in test_dispatcher_alias_compat.py cover the contract
+# (request→enqueue→TaskResult→response) via a mocked beckman.enqueue.

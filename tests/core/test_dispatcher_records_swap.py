@@ -32,7 +32,7 @@ async def test_dispatcher_records_swap_after_swap(monkeypatch):
         d = LLMDispatcher()
         # Arrange: ensure_local_model returns True + reports swap_happened=True
         d._ensure_local_model = AsyncMock(return_value=(True, True))
-        await d.request(
+        await d._do_dispatch(
             category=CallCategory.MAIN_WORK,
             task="coder", difficulty=5, messages=[], tools=None,
         )

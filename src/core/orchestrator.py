@@ -246,6 +246,29 @@ class Orchestrator:
                         "result": json.dumps(r.result),
                     }
                 return {"status": "failed", "error": r.error or "mechanical failed"}
+            # ── raw_dispatch sentinel: LLM call routed via beckman.enqueue
+            # alias (dispatcher.request → beckman.enqueue → pump → here).
+            # These tasks have context.llm_call.raw_dispatch == True and no
+            # matching agent class — send them straight to dispatcher.dispatch().
+            try:
+                _ctx_raw_rd = task.get("context") or "{}"
+                _ctx_rd = json.loads(_ctx_raw_rd) if isinstance(_ctx_raw_rd, str) else _ctx_raw_rd
+                if isinstance(_ctx_rd, str):
+                    _ctx_rd = json.loads(_ctx_rd)
+                _llm_call_rd = _ctx_rd.get("llm_call") if isinstance(_ctx_rd, dict) else None
+                _is_raw = isinstance(_llm_call_rd, dict) and _llm_call_rd.get("raw_dispatch") is True
+            except Exception:
+                _is_raw = False
+            if _is_raw:
+                from src.core.llm_dispatcher import get_dispatcher
+                _dispatch_result = await get_dispatcher().dispatch(
+                    {"context": _ctx_rd, "kind": task.get("kind", "main_work")}
+                )
+                return {
+                    "status": "completed",
+                    "result": json.dumps(_dispatch_result) if not isinstance(_dispatch_result, str) else _dispatch_result,
+                    **{k: v for k, v in _dispatch_result.items() if k != "result"},
+                }
             if agent_type == "shopping_pipeline_v2":
                 from src.workflows.shopping.pipeline_v2 import ShoppingPipelineV2
                 return await ShoppingPipelineV2().run(task)

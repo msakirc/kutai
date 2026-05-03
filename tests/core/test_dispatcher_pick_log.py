@@ -72,7 +72,7 @@ async def test_dispatcher_writes_pick_log_on_success():
          ), \
          patch("src.infra.pick_log.write_pick_log_row", new=fake_write):
         d = LLMDispatcher()
-        result = await d.request(
+        result = await d._do_dispatch(
             category=CallCategory.MAIN_WORK,
             task="coder",
             difficulty=7,
@@ -116,7 +116,7 @@ async def test_dispatcher_writes_pick_log_on_failure():
          patch("src.infra.pick_log.write_pick_log_row", new=fake_write):
         d = LLMDispatcher()
         with pytest.raises(ModelCallFailed):
-            await d.request(
+            await d._do_dispatch(
                 category=CallCategory.MAIN_WORK,
                 task="coder",
                 difficulty=7,
@@ -151,7 +151,7 @@ async def test_dispatcher_writes_pick_log_on_raw_exception():
          patch("src.infra.pick_log.write_pick_log_row", new=fake_write):
         d = LLMDispatcher()
         with pytest.raises(RuntimeError, match="boom"):
-            await d.request(
+            await d._do_dispatch(
                 category=CallCategory.MAIN_WORK,
                 task="coder",
                 difficulty=7,

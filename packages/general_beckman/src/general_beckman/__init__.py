@@ -3,13 +3,44 @@
 Public API (everything else is internal):
   - next_task() -> Task | None
   - on_task_finished(task_id, result) -> None
-  - enqueue(spec) -> int
+  - enqueue(spec, *, parent_id, await_inline, on_complete, next_task_spec) -> int | TaskResult
+  - resolve_inline(task_id, result) -> None
 """
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
 from general_beckman.types import Task, AgentResult
 
-__all__ = ["next_task", "on_task_finished", "enqueue", "on_model_swap", "Task", "AgentResult"]
+__all__ = [
+    "next_task", "on_task_finished", "enqueue", "on_model_swap",
+    "resolve_inline", "Task", "AgentResult", "TaskResult",
+    "INLINE_TIMEOUT", "_inline_waiters",
+]
+
+
+@dataclass
+class TaskResult:
+    """Minimal result envelope returned by await_inline enqueue."""
+    status: str
+    result: dict | None
+    error: str | None
+
+
+# Timeout (seconds) for await_inline futures. Monkeypatchable in tests.
+INLINE_TIMEOUT: float = 600.0
+
+# task_id → asyncio.Future[TaskResult] for inline waiters
+_inline_waiters: dict[int, asyncio.Future] = {}
+
+
+def resolve_inline(task_id: int, result: "TaskResult") -> None:
+    """Resolve an await_inline waiter. Called from terminal hook (Task 3) or tests."""
+    fut = _inline_waiters.pop(task_id, None)
+    if fut is not None and not fut.done():
+        fut.set_result(result)
 
 
 # Admission-fingerprint cache. When the input state (in_flight + loaded model
@@ -631,13 +662,82 @@ async def _send_step_progress(task: dict, status: str, result: dict) -> None:
     await tg.send_notification(msg)
 
 
-async def enqueue(spec: dict) -> int:
-    """Single external write path for user-/bot-initiated tasks."""
+async def enqueue(
+    spec: dict,
+    *,
+    parent_id: int | None = None,
+    await_inline: bool = False,
+    on_complete: str | None = None,
+    next_task_spec: dict | None = None,
+) -> "int | TaskResult":
+    """Single external write path for all Beckman tasks.
+
+    Parameters
+    ----------
+    spec:
+        Task creation kwargs (passed through to add_task). ``spec["kind"]``
+        defaults to ``"main_work"`` if absent.
+    parent_id:
+        ID of a parent task — stored in tasks.parent_task_id.
+    await_inline:
+        Block until the task reaches a terminal state (resolved via
+        ``resolve_inline``).  Returns a ``TaskResult``.
+    on_complete:
+        Name of a registered continuation handler (see continuations.py).
+        Stored inside ``spec["context"]["beckman"]["on_complete"]``.
+    next_task_spec:
+        Spec dict for a follow-up task to enqueue when this task reaches
+        a terminal state.  Stored inside context["beckman"]["next_task_spec"].
+    """
+    import json as _json
     from src.infra.db import add_task
     from general_beckman.queue_profile_push import build_and_push
-    task_id = await add_task(**spec)
+
+    spec = dict(spec)  # shallow copy — don't mutate caller's dict
+
+    # ── kind ──────────────────────────────────────────────────────────────
+    kind = spec.pop("kind", "main_work")
+
+    # ── parent_id ─────────────────────────────────────────────────────────
+    if parent_id is not None:
+        spec["parent_task_id"] = parent_id
+
+    # ── continuation envelope ─────────────────────────────────────────────
+    if on_complete is not None or next_task_spec is not None:
+        raw_ctx = spec.get("context")
+        if raw_ctx is None:
+            ctx: dict = {}
+        elif isinstance(raw_ctx, str):
+            try:
+                ctx = _json.loads(raw_ctx)
+            except Exception:
+                ctx = {}
+        else:
+            ctx = dict(raw_ctx)
+
+        beckman_sub: dict = dict(ctx.get("beckman") or {})
+        if on_complete is not None:
+            beckman_sub["on_complete"] = on_complete
+        if next_task_spec is not None:
+            beckman_sub["next_task_spec"] = next_task_spec
+        ctx["beckman"] = beckman_sub
+        spec["context"] = ctx  # add_task will json.dumps() it
+
+    task_id = await add_task(**spec, kind=kind)
     await build_and_push()
-    return task_id
+
+    if not await_inline:
+        return task_id
+
+    # ── inline-wait path ───────────────────────────────────────────────────
+    loop = asyncio.get_event_loop()
+    fut: asyncio.Future[TaskResult] = loop.create_future()
+    _inline_waiters[task_id] = fut
+    try:
+        return await asyncio.wait_for(asyncio.shield(fut), timeout=INLINE_TIMEOUT)
+    except asyncio.TimeoutError:
+        _inline_waiters.pop(task_id, None)
+        raise
 
 
 async def on_model_swap(old_model: str | None, new_model: str | None) -> None:

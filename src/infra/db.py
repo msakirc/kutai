@@ -1194,7 +1194,8 @@ async def find_duplicate_task(task_hash: str) -> dict | None:
 
 async def add_task(title, description, mission_id=None, parent_task_id=None,
                    agent_type="executor", tier="auto", priority=5,
-                   requires_approval=False, depends_on=None, context=None):
+                   requires_approval=False, depends_on=None, context=None,
+                   kind="main_work"):
     """Atomic dedup + insert.
 
     Uses an isolated connection (connect_aux) for the BEGIN/COMMIT
@@ -1262,12 +1263,12 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
                 """INSERT INTO tasks
                    (mission_id, parent_task_id, title, description, agent_type,
                     tier, priority, requires_approval, depends_on, context,
-                    task_hash)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    task_hash, kind)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (mission_id, parent_task_id, title, description, agent_type,
                  tier, priority, requires_approval,
                  json.dumps(depends_on or []), json.dumps(context or {}),
-                 task_hash)
+                 task_hash, kind)
             )
             row_id = cursor.lastrowid
             if db._conn.in_transaction:

@@ -3,6 +3,8 @@
 import pytest
 from fatih_hoca.registry import ModelInfo, ModelRegistry
 
+# registry_store isolation fixture lives in conftest.py (autouse).
+
 
 # ─── ModelInfo properties ────────────────────────────────────────────────────
 
@@ -428,45 +430,46 @@ def test_registry_mark_dead_safe_with_unknown_id():
     assert registry.is_dead("") is False
 
 
-def test_registry_mark_dead_ttl_expires_id_back_to_alive():
-    """Production 2026-05-02: openrouter free-tier "No endpoints found"
-    404s often transient (upstream rotation). Permanent mark_dead burned
-    all 33 ids until manual file deletion. TTL gives them a chance to
-    self-heal — after expiry, is_dead returns False and the next call
-    can re-test the id."""
+def test_registry_mark_dead_with_explicit_cause():
+    """mark_dead accepts an optional cause; registry_store enforces TTL
+    per CAUSE_POLICY (404_transient → 5min, 404_permanent → 24h, auth →
+    no expiry)."""
+    from fatih_hoca.registry import ModelRegistry
+    from src.infra import registry_store
+    registry = ModelRegistry()
+    registry.mark_dead("openrouter/foo", cause="404_transient")
+    assert registry.is_dead("openrouter/foo") is True
+    assert registry_store.get_model_cause("openrouter/foo") == "404_transient"
+
+
+def test_registry_provider_dead_eligibility():
+    """Provider-level mark replaces the legacy per-model mass-mark loop —
+    one row, selector excludes every model on the provider via
+    is_provider_dead. cause='auth' has no TTL."""
     from fatih_hoca.registry import ModelRegistry
     registry = ModelRegistry()
-    # Force a tiny TTL for the test.
-    registry._DEAD_TTL_SECONDS = 0.05  # 50ms
-    registry.mark_dead("openrouter/test-id")
-    assert registry.is_dead("openrouter/test-id") is True
-    import time
-    time.sleep(0.1)
-    # After TTL, is_dead returns False AND drops the entry.
-    assert registry.is_dead("openrouter/test-id") is False
+    assert registry.is_provider_dead("openrouter") is False
+    registry.mark_provider_dead("openrouter", cause="auth")
+    assert registry.is_provider_dead("openrouter") is True
+    registry.revive_provider("openrouter", actor="user")
+    assert registry.is_provider_dead("openrouter") is False
 
 
-def test_registry_mark_dead_persistence_legacy_list_format():
-    """Earlier versions persisted dead set as a list. New format is a
-    dict mapping id → expiration ts. Loader must accept both — list
-    entries get a fresh TTL applied so they expire normally."""
+def test_registry_mark_dead_ttl_expires(monkeypatch):
+    """TTL-driven auto-revive: 404_transient (5min TTL) lets a model
+    self-heal without operator action."""
     from fatih_hoca.registry import ModelRegistry
-    import json
-    import tempfile
-    import pathlib
+    from src.infra import registry_store
+    import time as _t
 
-    tmpdir = tempfile.mkdtemp()
-    try:
-        # Create a registry pinned at a temp dead-file location.
-        registry = ModelRegistry()
-        legacy_path = pathlib.Path(tmpdir) / ".dead_models.json"
-        legacy_path.write_text(json.dumps(["openrouter/legacy-1", "openrouter/legacy-2"]))
-        # Reload via _load_dead_persisted with a custom file path.
-        registry._DEAD_FILE = legacy_path
-        registry._dead_models = {}
-        registry._load_dead_persisted()
-        assert registry.is_dead("openrouter/legacy-1") is True
-        assert registry.is_dead("openrouter/legacy-2") is True
-    finally:
-        import shutil
-        shutil.rmtree(tmpdir, ignore_errors=True)
+    registry = ModelRegistry()
+    registry.mark_dead("openrouter/x", cause="404_transient")
+    assert registry.is_dead("openrouter/x") is True
+
+    # Fast-forward time past the 5min TTL via the same _freeze_time
+    # technique used in tests/infra/test_registry_store.py.
+    fake_epoch = _t.time() + 600
+    iso = _t.strftime("%Y-%m-%d %H:%M:%S", _t.gmtime(fake_epoch))
+    monkeypatch.setattr(registry_store, "_now_iso", lambda: iso)
+    monkeypatch.setattr(registry_store.time, "time", lambda: fake_epoch)
+    assert registry.is_dead("openrouter/x") is False

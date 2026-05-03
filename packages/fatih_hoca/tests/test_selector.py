@@ -484,6 +484,34 @@ def test_select_rejects_cloud_with_rpm_cooldown():
     assert result is None
 
 
+def test_select_rejects_cloud_with_provider_dead():
+    """Provider-level dead replaces the legacy per-model mass-mark loop:
+    a single mark_provider_dead row excludes every cloud model on the
+    provider via the eligibility gate. cause='auth' has no TTL —
+    operator must /revive after fixing credentials."""
+    cloud = _make_model(
+        "claude",
+        location="cloud",
+        provider="anthropic",
+        litellm_name="anthropic/claude",
+    )
+    snap = SystemSnapshot(vram_available_mb=8192)
+    nh = MagicMock()
+    nh.snapshot.return_value = snap
+
+    reg = _make_registry(cloud)
+    reg.mark_provider_dead("anthropic", cause="auth", actor="caller")
+    sel = Selector(registry=reg, nerd_herd=nh)
+    result = sel.select(task="coder", difficulty=5)
+    assert result is None
+
+    # After /revive the same model is eligible again.
+    reg.revive_provider("anthropic", actor="user")
+    result = sel.select(task="coder", difficulty=5)
+    assert result is not None
+    assert result.model.litellm_name == "anthropic/claude"
+
+
 def test_select_accepts_cloud_with_circuit_breaker_below_threshold():
     cloud = _make_model(
         "claude",

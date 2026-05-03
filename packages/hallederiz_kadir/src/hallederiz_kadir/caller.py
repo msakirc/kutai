@@ -838,17 +838,31 @@ async def call(
                     m in _msg_lc for m in _transient_404_markers
                 )
                 if _is_transient_routing:
+                    # Mark dead with short-TTL cause so the model is
+                    # excluded for a few minutes (CAUSE_POLICY:
+                    # 404_transient → 5min) but auto-revives without
+                    # operator action when the upstream rotation
+                    # completes. Reliability pressure (S10) still ranks
+                    # it down naturally on top of the gate.
+                    try:
+                        from src.models.model_registry import get_registry
+                        get_registry().mark_dead(
+                            model.litellm_name, cause="404_transient",
+                        )
+                    except Exception:
+                        pass
                     _get_logger().warning(
-                        "404 looks transient (routing/rotation) on %s — "
-                        "skipping mark_dead, leaving to reliability "
-                        "pressure: %s",
+                        "404 transient (routing/rotation) on %s — "
+                        "marked dead with 5min TTL: %s",
                         model.litellm_name,
                         (raw_result.message or "")[:200],
                     )
                 else:
                     try:
                         from src.models.model_registry import get_registry
-                        get_registry().mark_dead(model.litellm_name)
+                        get_registry().mark_dead(
+                            model.litellm_name, cause="404_permanent",
+                        )
                     except Exception:
                         pass
             # auth_failure: provider-level credential / billing / key-cap
@@ -891,19 +905,22 @@ async def call(
                         model.provider, raw_result.message[:200],
                     )
                 else:
+                    # Provider-level dead — single row replaces the
+                    # legacy per-model loop (was 30+ marks for one bad
+                    # key). Selector now checks is_provider_dead at
+                    # eligibility, excluding every cloud model on this
+                    # provider in one gate. cause='auth' has no TTL —
+                    # operator must fix the key + /revive (or restart,
+                    # which re-runs discovery + auth probe).
                     try:
                         from src.models.model_registry import get_registry
-                        reg = get_registry()
-                        dead_count = 0
-                        for m in reg.all_models():
-                            if (not m.is_local
-                                    and getattr(m, "provider", "") == model.provider):
-                                reg.mark_dead(m.litellm_name)
-                                dead_count += 1
+                        get_registry().mark_provider_dead(
+                            model.provider, cause="auth", actor="caller",
+                        )
                         _get_logger().warning(
-                            "auth_failure on %s — marked %d models dead "
-                            "(provider-wide, until restart): %s",
-                            model.provider, dead_count, raw_result.message[:200],
+                            "auth_failure on %s — provider marked dead "
+                            "(use /revive after fixing creds): %s",
+                            model.provider, raw_result.message[:200],
                         )
                     except Exception:
                         pass

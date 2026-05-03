@@ -373,9 +373,16 @@ class Selector:
             return "excluded"
 
         # Runtime dead-model set: 404'd at call-time, provider retired the id.
-        # Same id won't resurrect — exclude until restart or rediscovery.
+        # Same id won't resurrect until rediscovery or per-cause TTL expiry.
         if self._registry.is_dead(name) or self._registry.is_dead(model.litellm_name):
             return "model_not_found"
+
+        # Provider-level dead (auth failure, key cap). Replaces the
+        # legacy per-model mass-mark loop — single row excludes every
+        # cloud model on the affected provider until operator /revive.
+        if (not model.is_local
+                and self._registry.is_provider_dead(model.provider)):
+            return f"provider_dead({model.provider})"
 
         # local_only — reject cloud models
         if reqs.local_only and not model.is_local:

@@ -1848,6 +1848,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("trace", self.cmd_trace))
         self.app.add_handler(CommandHandler("logs", self.cmd_logs))
         self.app.add_handler(CommandHandler("bench_picks", self.cmd_bench_picks))
+        self.app.add_handler(CommandHandler("revive", self.cmd_revive))
+        self.app.add_handler(CommandHandler("dead", self.cmd_dead))
         self.app.add_handler(CallbackQueryHandler(
             self._handle_variant_choice, pattern=r"^(vc|variant_choice):"
         ))
@@ -2196,6 +2198,78 @@ class TelegramInterface:
             f"📊 *Model picks — last 7 days*\n```\n{body}\n```{footer}",
             parse_mode="Markdown",
         )
+
+    async def cmd_dead(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List currently-dead models in the SQLite registry. Diagnostic
+        sibling of /revive — operator can see what /revive would target."""
+        from src.infra import registry_store
+        rows = registry_store.list_dead()
+        if not rows:
+            await self._reply(update, "No models marked dead.")
+            return
+        lines = [f"💀 {len(rows)} dead model(s):"]
+        for r in rows[:30]:
+            ttl = r["expires_at"] or "never (manual /revive)"
+            lines.append(f"  • {r['litellm_name']} — {r['cause']} → {ttl}")
+        if len(rows) > 30:
+            lines.append(f"  … (+{len(rows) - 30} more)")
+        await self._reply(update, "\n".join(lines))
+
+    async def cmd_revive(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Revive a dead model or provider.
+
+        Usage:
+          /revive                    — list current dead models/providers
+          /revive <litellm_name>     — revive single model
+          /revive provider <name>    — revive provider (releases all its models)
+        """
+        from src.infra import registry_store
+        args = context.args or []
+        if not args:
+            dead_models = registry_store.list_dead()
+            lines = []
+            if dead_models:
+                lines.append(f"💀 {len(dead_models)} dead model(s):")
+                for r in dead_models[:20]:
+                    lines.append(f"  • {r['litellm_name']} ({r['cause']})")
+                if len(dead_models) > 20:
+                    lines.append(f"  … (+{len(dead_models) - 20} more)")
+            else:
+                lines.append("No models marked dead.")
+            lines.append("")
+            lines.append("Usage:")
+            lines.append("  /revive <litellm_name>")
+            lines.append("  /revive provider <name>")
+            await self._reply(update, "\n".join(lines))
+            return
+
+        # Provider form: /revive provider <name>
+        if args[0].lower() == "provider":
+            if len(args) < 2:
+                await self._reply(update, "Usage: /revive provider <name>")
+                return
+            provider = args[1]
+            was_dead = registry_store.is_provider_dead(provider)
+            registry_store.revive_provider(provider, actor="user")
+            if was_dead:
+                await self._reply(update, f"✅ Revived provider: {provider}")
+            else:
+                await self._reply(update, f"Provider {provider} was not dead.")
+            return
+
+        # Model form: /revive <litellm_name>
+        identifier = args[0]
+        was_dead = registry_store.is_dead(identifier)
+        registry_store.revive(identifier, actor="user")
+        if was_dead:
+            await self._reply(update, f"✅ Revived model: {identifier}")
+        else:
+            await self._reply(
+                update,
+                f"Model {identifier} was not dead. "
+                f"(Use exact litellm_name; for provider, use "
+                f"`/revive provider {identifier}`)",
+            )
 
     async def cmd_digest(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if self.orchestrator:

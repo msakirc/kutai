@@ -43,7 +43,17 @@ logger = get_logger("infra.registry_store")
 CAUSE_POLICY: dict[str, dict] = {
     "auth":          {"ttl_seconds": None,  "manual_revive": True},
     "manual":        {"ttl_seconds": None,  "manual_revive": True},
-    "404_permanent": {"ttl_seconds": 86400, "manual_revive": False},
+    # 404_permanent flipped to manual_revive=True (2026-05-03): runtime
+    # call returned `code=model_not_found` from the provider — that's an
+    # account/access-level signal, stronger than discovery's "id appears
+    # in /v1/models" listing. Without manual_revive the discovery loop
+    # cycled revive→call→404→re-mark-dead every refresh on cerebras's
+    # gpt-oss-120b and zai-glm-4.7 (free tier lists them but rejects
+    # inference). 24h TTL is unchanged — auto-revive still fires when
+    # the cause window elapses, so a one-off bad 404 still recovers
+    # without operator action; only the discovery-driven early revive
+    # is suppressed.
+    "404_permanent": {"ttl_seconds": 86400, "manual_revive": True},
     "404_transient": {"ttl_seconds": 300,   "manual_revive": False},
     "server_error":  {"ttl_seconds": 600,   "manual_revive": False},
 }
@@ -303,15 +313,37 @@ def _auto_revive(conn: sqlite3.Connection, litellm_name: str) -> None:
 
 def revive(litellm_name: str, actor: str = "auto") -> None:
     """Mark a model alive. Called by discovery refresh on /v1/models hit
-    or by operator /revive command. Idempotent — no-op if already active."""
+    or by operator /revive command. Idempotent — no-op if already active.
+
+    Honors CAUSE_POLICY[cause].manual_revive: when True (auth, manual,
+    404_permanent), an `actor=auto` revive (typically discovery) is
+    refused — only `actor=manual` (operator /revive) overrides. Lets
+    the runtime call's 404 evidence outweigh discovery's weaker
+    "appears in /v1/models" hint until the TTL elapses naturally.
+    """
     if not litellm_name:
         return
     conn = _get_conn()
     row = conn.execute(
-        "SELECT status FROM models WHERE litellm_name = ?",
+        "SELECT status, cause FROM models WHERE litellm_name = ?",
         (litellm_name,),
     ).fetchone()
     if row is None or row["status"] == "active":
+        return
+    cause = row["cause"]
+    policy = CAUSE_POLICY.get(cause or "", {})
+    # actor=="auto" is reserved for unattended sources (discovery refresh,
+    # TTL expiry sweeps). manual_revive=True blocks those — only an
+    # operator-initiated revive (any non-"auto" actor: telegram passes
+    # "user", direct CLI passes "manual") overrides. Lets the runtime
+    # call's 404_permanent evidence outweigh discovery's weaker /v1/models
+    # listing until the 24h TTL elapses naturally.
+    if policy.get("manual_revive", False) and actor == "auto":
+        logger.debug(
+            "registry: revive(%s) ignored — cause=%s requires non-auto actor "
+            "(got actor=auto); operator /revive overrides",
+            litellm_name, cause,
+        )
         return
     conn.execute(
         "UPDATE models SET status='active', revived_at=?, cause=NULL, "
@@ -423,6 +455,16 @@ def is_provider_dead(provider: str) -> bool:
         (provider,),
     ).fetchone()
     return row is not None and row["status"] == "dead"
+
+
+def list_dead_providers() -> list[dict]:
+    """All currently-dead providers. Used by /dead Telegram command."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT name, cause, marked_at FROM providers WHERE status='dead' "
+        "ORDER BY marked_at DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def revive_provider(provider: str, actor: str = "auto") -> None:

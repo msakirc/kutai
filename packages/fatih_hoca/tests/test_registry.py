@@ -409,8 +409,11 @@ def test_registry_mark_dead_excludes_by_either_key():
     name = "gemini/gemini-2.5-flash-preview-05-20"
     assert registry.is_dead(name) is False
 
-    # Mark dead by litellm_name → name lookup also matches
-    registry.mark_dead(name)
+    # Mark dead by litellm_name → name lookup also matches.
+    # Use 404_transient (revivable by auto actors) since the test exercises
+    # both keys after revive — 404_permanent now requires actor != "auto"
+    # by policy and would block the auto-default revive call.
+    registry.mark_dead(name, cause="404_transient")
     assert registry.is_dead(name) is True
 
     # Revive clears both keys

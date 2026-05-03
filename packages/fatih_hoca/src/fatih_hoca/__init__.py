@@ -250,6 +250,64 @@ def init(
                         provider, getattr(dm, "litellm_name", "?"), e,
                     )
 
+        # ── Provider-level registry: key rotation + auth probe ────────
+        # Discovery IS the auth probe. Use its results to:
+        #   1. Detect API key rotation across restarts (hash compare).
+        #      Mismatch → revive any auth-cause provider-dead state so
+        #      the new key gets a clean evaluation by the probe below.
+        #   2. Mark/revive provider rows from auth_ok signal. Replaces
+        #      the old per-model mass-mark loop that ran from caller.py
+        #      on the first runtime auth failure (Step 5b shipped that
+        #      transition; this closes the boot-probe loop so an
+        #      operator who FIXES creds and restarts doesn't carry
+        #      stale auth dead state across reboot).
+        from src.infra import registry_store as _rs
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+        for _provider, _key in api_keys.items():
+            _new_hash = _rs.hash_key(_key)
+            _old_hash = _rs.get_provider_key_hash(_provider)
+            if _old_hash and _new_hash and _new_hash != _old_hash:
+                # Key rotated since last persisted hash. Revive provider
+                # so this boot's probe re-evaluates from a clean slate.
+                # actor!='auto' bypasses revive_provider's manual_revive
+                # gate (provider revive doesn't currently gate, but stay
+                # explicit for symmetry with the model-level path).
+                _registry.revive_provider(_provider, actor="key_rotation")
+                _log.info(
+                    "registry: key rotation detected on %s — auto-revived",
+                    _provider,
+                )
+            if _new_hash:
+                _rs.register_provider(_provider, key_hash=_new_hash)
+        for _provider, _result in discovery_results.items():
+            if not _result.auth_ok:
+                # Boot probe failed auth. Single provider row excludes
+                # every cloud model on this provider via selector's
+                # is_provider_dead gate. cause='auth' has no TTL —
+                # operator must fix creds + /restart (which re-runs
+                # discovery and clears the row on success below).
+                _registry.mark_provider_dead(
+                    _provider, cause="auth", actor="discovery_probe",
+                )
+                _log.warning(
+                    "registry: discovery auth_ok=False on %s — "
+                    "provider marked dead (status=%s)",
+                    _provider, _result.status,
+                )
+            elif _registry.is_provider_dead(_provider):
+                # Probe succeeded; provider was previously marked dead
+                # (e.g. earlier auth failure, then operator fixed creds
+                # without /revive). Auto-revive — discovery's positive
+                # signal beats stale auth lockout.
+                _registry.revive_provider(
+                    _provider, actor="discovery_probe",
+                )
+                _log.info(
+                    "registry: discovery probe ok on %s — auto-revived",
+                    _provider,
+                )
+
         # ── Revive previously-dead ids that re-appeared in discovery ──
         # The runtime 404 hook (registry.mark_dead) is the AUTHORITATIVE
         # signal for "this id no longer responds." Cross-check used to
@@ -268,8 +326,10 @@ def init(
         # is telling us the id is back. Combined with the runtime hook,
         # the only way an id stays dead is if it actually returned 404
         # from a live call AND has not since been re-published.
-        import logging as _logging
-        _log = _logging.getLogger(__name__)
+        # NOTE: the model-level revive() now honors CAUSE_POLICY's
+        # manual_revive flag — for 404_permanent (manual_revive=True),
+        # discovery's actor='auto' default is refused (cerebras gpt-oss-
+        # 120b cycle fix). Operator /revive overrides via actor='user'.
         for provider, result in discovery_results.items():
             if not result.auth_ok or result.status != "ok":
                 continue

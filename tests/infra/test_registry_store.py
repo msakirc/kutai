@@ -42,11 +42,46 @@ def test_mark_dead_without_register():
     assert cause == "404_permanent"
 
 
-def test_revive_clears_dead():
-    rs.mark_dead("gemini/x", cause="404_permanent")
-    assert rs.is_dead("gemini/x") is True
-    rs.revive("gemini/x", actor="discovery")
-    assert rs.is_dead("gemini/x") is False
+def test_revive_clears_dead_for_transient_cause():
+    """Transient causes (404_transient, server_error) accept any actor —
+    discovery's auto-revive is the expected upstream-recovery path."""
+    rs.mark_dead("openrouter/x", cause="404_transient")
+    assert rs.is_dead("openrouter/x") is True
+    rs.revive("openrouter/x", actor="discovery")
+    assert rs.is_dead("openrouter/x") is False
+
+
+def test_revive_404_permanent_blocks_auto_actor():
+    """404_permanent now blocks actor='auto'. Discovery cannot cycle
+    revive→call→404→re-mark-dead on a model the runtime call already
+    proved unreachable (cerebras gpt-oss-120b: lists in /v1/models but
+    rejects on /v1/chat/completions). 24h TTL still auto-revives."""
+    rs.mark_dead("cerebras/gpt-oss-120b", cause="404_permanent")
+    assert rs.is_dead("cerebras/gpt-oss-120b") is True
+    rs.revive("cerebras/gpt-oss-120b")  # actor defaults to "auto"
+    assert rs.is_dead("cerebras/gpt-oss-120b") is True
+
+
+def test_revive_404_permanent_allows_operator_actor():
+    """Operator /revive command (actor='user' from telegram, 'manual'
+    from CLI) overrides manual_revive policy — escape hatch when
+    operator knows access was restored."""
+    rs.mark_dead("cerebras/gpt-oss-120b", cause="404_permanent")
+    rs.revive("cerebras/gpt-oss-120b", actor="user")
+    assert rs.is_dead("cerebras/gpt-oss-120b") is False
+    rs.mark_dead("cerebras/zai-glm-4.7", cause="404_permanent")
+    rs.revive("cerebras/zai-glm-4.7", actor="manual")
+    assert rs.is_dead("cerebras/zai-glm-4.7") is False
+
+
+def test_revive_auth_blocks_auto_actor():
+    """Auth cause (no TTL, manual_revive=True) — bad key needs operator
+    intervention. Discovery seeing the model in /v1/models doesn't fix
+    the credentials."""
+    rs.mark_dead("openrouter/x", cause="auth")
+    assert rs.is_dead("openrouter/x") is True
+    rs.revive("openrouter/x")  # auto
+    assert rs.is_dead("openrouter/x") is True
 
 
 def test_revive_unknown_is_noop():

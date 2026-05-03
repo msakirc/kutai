@@ -2200,19 +2200,32 @@ class TelegramInterface:
         )
 
     async def cmd_dead(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """List currently-dead models in the SQLite registry. Diagnostic
-        sibling of /revive — operator can see what /revive would target."""
+        """List currently-dead providers + models in the SQLite registry.
+        Diagnostic sibling of /revive — operator can see what /revive
+        would target."""
         from src.infra import registry_store
-        rows = registry_store.list_dead()
-        if not rows:
-            await self._reply(update, "No models marked dead.")
+        providers = registry_store.list_dead_providers()
+        models = registry_store.list_dead()
+        if not providers and not models:
+            await self._reply(update, "No providers or models marked dead.")
             return
-        lines = [f"💀 {len(rows)} dead model(s):"]
-        for r in rows[:30]:
-            ttl = r["expires_at"] or "never (manual /revive)"
-            lines.append(f"  • {r['litellm_name']} — {r['cause']} → {ttl}")
-        if len(rows) > 30:
-            lines.append(f"  … (+{len(rows) - 30} more)")
+        lines: list[str] = []
+        if providers:
+            lines.append(f"🔥 {len(providers)} dead provider(s):")
+            for p in providers:
+                lines.append(
+                    f"  • {p['name']} — {p['cause']} (since {p['marked_at']})"
+                )
+            lines.append("")
+        if models:
+            lines.append(f"💀 {len(models)} dead model(s):")
+            for r in models[:30]:
+                ttl = r["expires_at"] or "never (manual /revive)"
+                lines.append(
+                    f"  • {r['litellm_name']} — {r['cause']} → {ttl}"
+                )
+            if len(models) > 30:
+                lines.append(f"  … (+{len(models) - 30} more)")
         await self._reply(update, "\n".join(lines))
 
     async def cmd_revive(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

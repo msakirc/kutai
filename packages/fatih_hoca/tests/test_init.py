@@ -381,8 +381,12 @@ async def test_init_revives_previously_dead_id_when_back_in_discovery(
         cloud_alert_state_path=str(tmp_path / "throttle.json"),
     )
 
-    # Mark gpt-4o dead, then re-run init — should revive.
-    fatih_hoca._registry.mark_dead("openai/gpt-4o")
+    # Mark gpt-4o dead with a TRANSIENT cause (e.g. upstream rotation
+    # blip), then re-run init — discovery should revive on /v1/models hit.
+    # 404_permanent is intentionally NOT revivable by discovery
+    # (manual_revive=True since 2026-05-03) — operator must /revive to
+    # override the runtime call's evidence; otherwise 24h TTL handles it.
+    fatih_hoca._registry.mark_dead("openai/gpt-4o", cause="404_transient")
     assert fatih_hoca._registry.is_dead("openai/gpt-4o")
 
     fatih_hoca.init(
@@ -391,5 +395,139 @@ async def test_init_revives_previously_dead_id_when_back_in_discovery(
         cloud_alert_state_path=str(tmp_path / "throttle.json"),
     )
     assert not fatih_hoca._registry.is_dead("openai/gpt-4o"), (
-        "id present in fresh discovery must be revived"
+        "transient-dead id present in fresh discovery must be revived"
     )
+
+
+# ── Boot probe + key rotation (5b.2) ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_init_boot_probe_marks_provider_dead_on_auth_fail(
+    monkeypatch, tmp_path,
+):
+    """Discovery's auth_ok=False at boot must mark the provider dead in
+    the SQLite registry — selector then excludes every cloud model on
+    that provider via the is_provider_dead gate."""
+    from fatih_hoca.cloud.types import ProviderResult
+    import fatih_hoca
+
+    async def _fake_refresh(api_keys):
+        return {
+            "groq": ProviderResult(
+                provider="groq", status="auth_fail",
+                auth_ok=False, error="401 unauthorized",
+            ),
+        }
+    monkeypatch.setattr(fatih_hoca, "_run_cloud_discovery", _fake_refresh)
+
+    fatih_hoca.init(
+        api_keys={"groq": "bad-key"},
+        cloud_cache_dir=str(tmp_path / "cache"),
+        cloud_alert_state_path=str(tmp_path / "throttle.json"),
+    )
+    assert fatih_hoca._registry.is_provider_dead("groq") is True
+
+
+@pytest.mark.asyncio
+async def test_init_boot_probe_revives_provider_when_auth_recovers(
+    monkeypatch, tmp_path,
+):
+    """If a provider was previously marked dead (e.g. earlier auth
+    failure) but discovery's boot probe now succeeds, auto-revive —
+    discovery's positive signal beats stale lockout."""
+    from fatih_hoca.cloud.types import ProviderResult
+    from src.infra import registry_store
+    import fatih_hoca
+
+    # Pre-seed the provider as dead.
+    registry_store.mark_provider_dead("groq", cause="auth", actor="test_setup")
+    assert registry_store.is_provider_dead("groq") is True
+
+    async def _fake_refresh(api_keys):
+        return {
+            "groq": ProviderResult(
+                provider="groq", status="ok", auth_ok=True, models=[],
+            ),
+        }
+    monkeypatch.setattr(fatih_hoca, "_run_cloud_discovery", _fake_refresh)
+
+    fatih_hoca.init(
+        api_keys={"groq": "good-key"},
+        cloud_cache_dir=str(tmp_path / "cache"),
+        cloud_alert_state_path=str(tmp_path / "throttle.json"),
+    )
+    assert fatih_hoca._registry.is_provider_dead("groq") is False
+
+
+@pytest.mark.asyncio
+async def test_init_key_rotation_revives_provider(monkeypatch, tmp_path):
+    """If the boot's api_keys hash differs from the persisted hash, the
+    provider is auto-revived so the new key gets evaluated fresh by the
+    discovery probe — operator scenario: auth lockout, fix key, restart,
+    new key should NOT inherit the old key's dead state."""
+    from fatih_hoca.cloud.types import ProviderResult
+    from src.infra import registry_store
+    import fatih_hoca
+
+    # Pre-seed: persisted hash matches OLD key + provider currently dead.
+    old_key = "old-bad-key"
+    new_key = "new-good-key"
+    registry_store.register_provider(
+        "groq", key_hash=registry_store.hash_key(old_key),
+    )
+    registry_store.mark_provider_dead("groq", cause="auth", actor="test_setup")
+
+    # Simulate "restart with new key, but discovery still failing"
+    # (e.g. probe hits a transient network issue). Key rotation alone
+    # must revive the provider, independent of probe outcome.
+    async def _fake_refresh(api_keys):
+        return {
+            "groq": ProviderResult(
+                provider="groq", status="server_error",
+                auth_ok=True, models=[], error="upstream timeout",
+            ),
+        }
+    monkeypatch.setattr(fatih_hoca, "_run_cloud_discovery", _fake_refresh)
+
+    fatih_hoca.init(
+        api_keys={"groq": new_key},
+        cloud_cache_dir=str(tmp_path / "cache"),
+        cloud_alert_state_path=str(tmp_path / "throttle.json"),
+    )
+    # Provider revived by key-rotation path; new hash persisted.
+    assert fatih_hoca._registry.is_provider_dead("groq") is False
+    assert (registry_store.get_provider_key_hash("groq")
+            == registry_store.hash_key(new_key))
+
+
+@pytest.mark.asyncio
+async def test_init_unchanged_key_no_revive(monkeypatch, tmp_path):
+    """Same key across restarts — no rotation event, persisted dead
+    state survives if probe still fails."""
+    from fatih_hoca.cloud.types import ProviderResult
+    from src.infra import registry_store
+    import fatih_hoca
+
+    same_key = "same-key"
+    registry_store.register_provider(
+        "groq", key_hash=registry_store.hash_key(same_key),
+    )
+    registry_store.mark_provider_dead("groq", cause="auth", actor="test_setup")
+
+    async def _fake_refresh(api_keys):
+        return {
+            "groq": ProviderResult(
+                provider="groq", status="auth_fail",
+                auth_ok=False, error="401",
+            ),
+        }
+    monkeypatch.setattr(fatih_hoca, "_run_cloud_discovery", _fake_refresh)
+
+    fatih_hoca.init(
+        api_keys={"groq": same_key},
+        cloud_cache_dir=str(tmp_path / "cache"),
+        cloud_alert_state_path=str(tmp_path / "throttle.json"),
+    )
+    # Probe re-confirmed auth fail; provider stays dead.
+    assert fatih_hoca._registry.is_provider_dead("groq") is True

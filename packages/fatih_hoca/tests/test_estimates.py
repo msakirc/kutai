@@ -27,9 +27,11 @@ def test_avg_iterations_by_agent_seeded_from_telemetry():
 
 def test_agent_requirements_calibrated_to_p90():
     from fatih_hoca.requirements import AGENT_REQUIREMENTS
-    # Telemetry showed analyst p90 = 25k tokens; old default 3k under-reserves 8x
+    # 2026-05-03 telemetry audit: prior values were 5-44x over actual p90,
+    # over-reserving KDV TPM and over-projecting pool pressure. New floor:
+    # at least 1k output (covers minimal completions + safety margin).
     analyst = AGENT_REQUIREMENTS["analyst"]
-    assert analyst.estimated_output_tokens >= 15_000  # at least p75
+    assert analyst.estimated_output_tokens >= 1_000
 
 
 import asyncio
@@ -56,7 +58,8 @@ def test_estimate_for_falls_back_to_agent_requirements():
     from fatih_hoca.estimates import estimate_for
     task = FakeTask("analyst")
     e = estimate_for(task, btable={})
-    assert e.out_tokens >= 15_000
+    # Post 2026-05-03 audit: analyst output rebalanced from 25k → 2.5k.
+    assert e.out_tokens >= 1_000
 
 
 def test_estimate_for_uses_btable_when_samples_sufficient():

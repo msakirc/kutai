@@ -324,9 +324,11 @@ class Selector:
             best.model.name, best.score, min_time, load_time, task,
         )
 
-        # Pick telemetry — structured log only. DB persistence is now the
-        # dispatcher's job (fires post-iteration with real outcome). This
-        # keeps select() pure.
+        # Pick telemetry — structured log + Pick fields the dispatcher
+        # persists into model_pick_log. select() stays pure (no DB
+        # writes); the dispatcher fires the actual row post-iteration
+        # with the real outcome.
+        top_summary = ""
         try:
             effective_task = reqs.effective_task or task
             top_n = min(len(scored), 5)
@@ -343,7 +345,13 @@ class Selector:
         except Exception as e:
             logger.debug("pick telemetry log failed: %s", e)
 
-        return Pick(model=best.model, min_time_seconds=min_time, estimated_load_seconds=load_time)
+        return Pick(
+            model=best.model,
+            min_time_seconds=min_time,
+            estimated_load_seconds=load_time,
+            score=float(best.score),
+            top_summary=top_summary,
+        )
 
     # ─── Eligibility Check (Layer 1) ─────────────────────────────────────────
 

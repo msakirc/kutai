@@ -493,7 +493,16 @@ class LLMDispatcher:
             db_path = os.getenv("DB_PATH") or "kutai.db"
             model = getattr(pick, "model", None)
             picked_model = getattr(model, "name", "") if model is not None else ""
-            picked_score = float(getattr(pick, "composite", 0.0) or 0.0)
+            # Read score from Pick.score (populated by selector). The
+            # legacy `composite` attribute never existed on Pick — every
+            # row was getting picked_score=0.0 silently. Now persists
+            # ScoredModel.score from the post-utilization rank step.
+            picked_score = float(getattr(pick, "score", 0.0) or 0.0)
+            # Top-5 candidate summary from the same select() invocation.
+            # Persists into model_pick_log.snapshot_summary so offline
+            # analysis can see runner-up scores alongside the winner —
+            # diagnoses "did we have a clear winner or a near-tie?"
+            snapshot_summary = str(getattr(pick, "top_summary", "") or "")
             task_name = task or category.value
             cat_value = category.value if isinstance(category, CallCategory) else str(category)
 
@@ -505,6 +514,7 @@ class LLMDispatcher:
                 category=cat_value,
                 success=success,
                 error_category=error_category,
+                snapshot_summary=snapshot_summary,
                 provider=("local" if getattr(model, "is_local", False) else (getattr(model, "provider", "local") or "local")),
                 agent_type=agent_type,
                 difficulty=difficulty,

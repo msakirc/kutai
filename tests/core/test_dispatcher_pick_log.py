@@ -25,11 +25,13 @@ def _fake_model(name: str = "claude-sonnet-4-6"):
     )
 
 
-def _fake_pick(model, composite: float = 0.65):
+def _fake_pick(model, composite: float = 0.65,
+               top_summary: str = "claude-sonnet-4-6=8.4, gpt-4o=7.2"):
     return SimpleNamespace(
         model=model,
         composite=composite,
         score=composite,
+        top_summary=top_summary,
         min_time_seconds=8.0,
         estimated_load_seconds=0.0,
     )
@@ -84,6 +86,13 @@ async def test_dispatcher_writes_pick_log_on_success():
     assert writes[0]["success"] is True
     assert writes[0]["task_name"] == "coder"
     assert writes[0]["category"] == "main_work"
+    # Score from Pick.score (post-utilization composite). Pre-2026-05-04
+    # the dispatcher read pick.composite which never existed on Pick →
+    # picked_score=0.0 every row, silent observability hole.
+    assert writes[0]["picked_score"] == pytest.approx(0.65)
+    # Top-N candidate summary from select() lands as snapshot_summary
+    # so offline analysis can see runner-up scores.
+    assert writes[0]["snapshot_summary"] == "claude-sonnet-4-6=8.4, gpt-4o=7.2"
 
 
 @pytest.mark.asyncio

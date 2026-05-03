@@ -10,6 +10,19 @@ class Pick:
     model: object  # ModelInfo — typed loosely here, fully typed in __init__
     min_time_seconds: float
     estimated_load_seconds: float = 0.0  # 0 if already loaded, else expected swap time
+    # Composite score from ranking layer (post-utilization adjust). 0.0
+    # default keeps tests/legacy callers working. Source: ScoredModel.score
+    # at the moment select() picks the winner. The dispatcher persists
+    # this into model_pick_log.picked_score so offline analysis can
+    # correlate "what we picked" with "how confident we were".
+    score: float = 0.0
+    # Top-N candidate summary, one line. Format:
+    #   "model1=8.4, model2=7.2, ..." up to 5 entries.
+    # Persists into model_pick_log.snapshot_summary so offline analysis
+    # can see what *else* was on the table when each pick fired (e.g.
+    # "did the runner-up score nearly as high?"). Empty when select()
+    # didn't compute alternatives (eligibility-only path).
+    top_summary: str = ""
 
 
 @dataclass

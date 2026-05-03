@@ -61,16 +61,30 @@ async def _refresh_cloud_subsystem() -> dict[str, Any]:
     fatih_hoca.discovery_results = results
 
     # Re-register discovered models (in-place updates if already present).
+    # Discovery → revive: each rediscovered model triggers a revive(actor="auto").
+    # registry_store.revive honors CAUSE_POLICY[cause].manual_revive — for
+    # 404_permanent / auth / manual the auto revive is refused (operator must
+    # /revive); for transient causes (timeout, 502, network) the model is
+    # brought back. Idempotent — no-op when status is already active.
     registered = 0
+    revived_models = 0
     for provider, result in results.items():
         if not result.auth_ok:
             continue
         for dm in result.models:
             try:
-                fatih_hoca.registry.register_cloud_from_discovered(
+                model = fatih_hoca.registry.register_cloud_from_discovered(
                     fatih_hoca._registry, provider, dm,
                 )
                 registered += 1
+                if model is not None:
+                    try:
+                        fatih_hoca._registry.revive(model.litellm_name, actor="auto")
+                        revived_models += 1
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug(
+                            "revive(%s) failed: %s", model.litellm_name, e,
+                        )
             except Exception as e:  # noqa: BLE001
                 logger.warning("register_cloud_from_discovered failed for %s/%s: %s",
                                provider, getattr(dm, "litellm_name", "?"), e)
@@ -83,12 +97,22 @@ async def _refresh_cloud_subsystem() -> dict[str, Any]:
 
     # Cross-package bridge: tell KDV which providers are currently enabled.
     # Idempotent — first call sets the timestamp, repeats are no-ops.
+    # Same loop also revives provider-level dead state at the registry layer:
+    # provider-dead has no TTL by design (auth/manual cause), so a fresh
+    # auth_ok=True probe is the only signal that flips it back. revive_provider
+    # is idempotent (no-op when already active).
     try:
         from src.core.router import get_kdv
         kdv = get_kdv()
         for provider, result in results.items():
             if result.auth_ok:
                 kdv.mark_provider_enabled(provider)
+                try:
+                    fatih_hoca._registry.revive_provider(provider, actor="auto")
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(
+                        "revive_provider(%s) failed: %s", provider, e,
+                    )
     except Exception as e:  # noqa: BLE001
         logger.warning("KDV mark_provider_enabled wireup failed: %s", e)
 
@@ -117,10 +141,12 @@ async def _refresh_cloud_subsystem() -> dict[str, Any]:
         "providers_probed": len(results),
         "providers_ok": sum(1 for r in results.values() if r.auth_ok),
         "models_registered": registered,
+        "models_revive_attempts": revived_models,
     }
     logger.info(
-        "cloud_refresh: probed=%d ok=%d registered=%d",
-        summary["providers_probed"], summary["providers_ok"], summary["models_registered"],
+        "cloud_refresh: probed=%d ok=%d registered=%d revive_attempts=%d",
+        summary["providers_probed"], summary["providers_ok"],
+        summary["models_registered"], summary["models_revive_attempts"],
     )
     return summary
 

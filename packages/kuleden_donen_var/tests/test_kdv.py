@@ -451,6 +451,84 @@ def test_canary_failure_during_burst_re_locks_provider(kdv_with_model):
     assert r2.reason == "canary_in_flight"
 
 
+# -- provider_prior_rate (Step 6, 2026-05-04) --
+
+
+def test_provider_prior_returns_none_when_no_data(kdv_with_model):
+    """Cold start: no outcomes anywhere → prior is None (caller falls
+    back to neutral)."""
+    assert kdv_with_model.provider_prior_rate("groq") is None
+
+
+def test_provider_prior_returns_none_when_below_min_samples(kdv_with_model):
+    """Below min_samples, prior is None — under-sampled aggregate is
+    not yet trustworthy."""
+    kdv_with_model.post_call("groq/llama-8b", "groq", headers={},
+                             token_count=10)
+    assert kdv_with_model.provider_prior_rate("groq", min_samples=3) is None
+
+
+def test_provider_prior_aggregates_across_siblings(kdv):
+    """Aggregate counts every sibling's outcomes inside the window."""
+    kdv.register("groq/m1", "groq", rpm=30, tpm=131072)
+    kdv.register("groq/m2", "groq", rpm=30, tpm=131072)
+    # 4 successes on m1, 4 failures on m2 → aggregate 0.5.
+    for _ in range(4):
+        kdv.post_call("groq/m1", "groq", headers={}, token_count=10)
+    for _ in range(4):
+        kdv.record_failure("groq/m2", "groq", "server_error")
+    rate = kdv.provider_prior_rate("groq", min_samples=3)
+    assert rate == pytest.approx(0.5, abs=0.01)
+
+
+def test_provider_prior_window_filters_old_entries(kdv_with_model):
+    """Outcomes older than window_secs do NOT contribute — recent
+    behavior is what matters for the prior."""
+    from collections import deque
+    now = time.time()
+    dq = deque(maxlen=kdv_with_model._OUTCOME_MAX_LEN)
+    for _ in range(10):
+        dq.append((now - 1000.0, False))  # outside 300s window
+    for _ in range(4):
+        dq.append((now - 10.0, True))     # inside window
+    kdv_with_model._outcomes["groq/llama-8b"] = dq
+
+    rate = kdv_with_model.provider_prior_rate(
+        "groq", window_secs=300.0, min_samples=3,
+    )
+    # Only the 4 fresh successes count → 1.0.
+    assert rate == pytest.approx(1.0, abs=0.01)
+
+
+def test_provider_prior_member_ids_overrides_provider_lookup(kdv):
+    """Caller can pass an explicit member set — used by the adapter to
+    aggregate openrouter by sub-vendor instead of by provider."""
+    kdv.register("openrouter/anthropic/claude:free", "openrouter",
+                 rpm=30, tpm=131072)
+    kdv.register("openrouter/tencent/hy3:free", "openrouter",
+                 rpm=30, tpm=131072)
+    # anthropic side: all good. tencent side: all bad.
+    for _ in range(4):
+        kdv.post_call("openrouter/anthropic/claude:free", "openrouter",
+                      headers={}, token_count=10)
+    for _ in range(4):
+        kdv.record_failure("openrouter/tencent/hy3:free", "openrouter",
+                           "server_error")
+
+    anthropic_rate = kdv.provider_prior_rate(
+        "openrouter",
+        member_ids={"openrouter/anthropic/claude:free"},
+        min_samples=3,
+    )
+    tencent_rate = kdv.provider_prior_rate(
+        "openrouter",
+        member_ids={"openrouter/tencent/hy3:free"},
+        min_samples=3,
+    )
+    assert anthropic_rate == pytest.approx(1.0, abs=0.01)
+    assert tencent_rate == pytest.approx(0.0, abs=0.01)
+
+
 # -- snapshot_state / restore_state: outcomes window (Step 5c) --
 
 

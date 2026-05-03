@@ -67,3 +67,50 @@ def test_s10_rate_window_boundary():
     """At MIN_SAMPLES exactly, signal activates."""
     # samples_n=5 (== MIN_SAMPLES), rate=0.0 → -1.0
     assert s10_failure(success_rate=0.0, samples_n=5) == pytest.approx(-1.0, abs=0.01)
+
+
+# ── Provider prior fallback (Step 6, 2026-05-04) ─────────────────────
+
+
+def test_s10_prior_fallback_when_own_samples_insufficient():
+    """Below MIN_SAMPLES of own data, provider_prior_rate carries the
+    signal — closes the cold-start gap for new / revived ids."""
+    # Own data: empty. Prior says provider is broken.
+    assert s10_failure(
+        success_rate=1.0, samples_n=0, provider_prior_rate=0.20,
+    ) == pytest.approx(-1.0, abs=0.01)
+
+
+def test_s10_prior_ignored_when_own_samples_sufficient():
+    """Don't blend, don't double-count: own data >= MIN_SAMPLES wins.
+    Even when prior is broken, healthy own data dominates."""
+    val = s10_failure(
+        success_rate=1.0, samples_n=10, provider_prior_rate=0.0,
+    )
+    assert val == 0.0
+
+
+def test_s10_prior_healthy_neutralizes_cold_start():
+    """A healthy provider prior keeps a fresh model's signal at 0,
+    not the old behavior where samples_n=0 always returned 0
+    regardless of context."""
+    assert s10_failure(
+        success_rate=1.0, samples_n=2, provider_prior_rate=0.99,
+    ) == 0.0
+
+
+def test_s10_prior_none_fallback_to_neutral():
+    """When prior is None (provider also lacks samples), signal stays
+    at 0 — no opinion anywhere."""
+    assert s10_failure(
+        success_rate=1.0, samples_n=2, provider_prior_rate=None,
+    ) == 0.0
+
+
+def test_s10_prior_streak_worst_wins():
+    """Streak counter still composes worst-wins with the prior path."""
+    val = s10_failure(
+        success_rate=1.0, samples_n=0, provider_prior_rate=1.0,
+        consecutive_failures=5,
+    )
+    assert val == pytest.approx(-0.5, abs=0.01)

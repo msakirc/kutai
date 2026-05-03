@@ -142,6 +142,15 @@ class CloudModelState:
     # → ranks top → fails → ❌). Now: empty history → S10=0 (neutral),
     # provider-prior carries the signal until samples accumulate.
     recent_samples_n: int = 0
+    # Provider-level success-rate prior, aggregated across siblings on
+    # the same provider (or openrouter sub-vendor key — see adapter
+    # _prior_key). S10 reads this as a fallback when the model's own
+    # samples_n is below MIN_SAMPLES: under-sampled models otherwise
+    # get a 0 (neutral) signal, leaving freshly-revived ids and brand-
+    # new ids rank-blind during their warm-up window. Provider prior
+    # carries the signal in that gap. None means "not enough data
+    # across the aggregated set either" — S10 still returns 0.
+    provider_prior_rate: float | None = None
     # KDV's daily-exhausted state for the per-model rpd cell. True when
     # KDV.pre_call would refuse with daily_exhausted reason — i.e. the
     # provider has signaled the model has hit its daily quota and won't
@@ -359,6 +368,10 @@ class SystemSnapshot:
                 ),
                 samples_n=(
                     getattr(model_state, "recent_samples_n", 0) if model_state else 0
+                ),
+                provider_prior_rate=(
+                    getattr(model_state, "provider_prior_rate", None)
+                    if model_state else None
                 ),
                 consecutive_failures=consecutive_failures,
             ),

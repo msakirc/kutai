@@ -453,6 +453,68 @@ class KuledenDonenVar:
         ok = sum(1 for _, s in dq if s)
         return ok / len(dq)
 
+    def provider_prior_rate(
+        self,
+        provider: str,
+        *,
+        member_ids: set[str] | None = None,
+        window_secs: float = 300.0,
+        min_samples: int = 3,
+    ) -> float | None:
+        """Aggregate success rate across siblings on ``provider``.
+
+        S10 returns 0 (neutral) when a model has fewer than MIN_SAMPLES
+        of its own outcomes — under-sampled models get no opinion. New /
+        revived models stay rank-blind in that gap. Provider prior fills
+        it: aggregate the last ``window_secs`` of outcomes across all
+        models on the provider; when total observations cross
+        ``min_samples``, return the success fraction. Caller (S10) uses
+        this as a fallback whenever own samples are insufficient.
+
+        Returns None when fewer than ``min_samples`` observations are
+        available across the aggregated set — caller falls back to 0
+        (no opinion) rather than treating "no data" as either healthy
+        or broken.
+
+        Args:
+            provider: provider key. Used to look up member ids when
+                ``member_ids`` is None.
+            member_ids: explicit set of model_ids to aggregate over.
+                Lets the caller group by something other than provider
+                (e.g. openrouter sub-vendor key — per-vendor failure
+                modes diverge enough that aggregating across all
+                openrouter ids would smear the signal).
+            window_secs: lookback horizon. 5min default — short enough
+                to track minute-scale provider degradation, long enough
+                that a single failure doesn't dominate.
+            min_samples: minimum observations across the aggregated set
+                before the prior is meaningful. Default 3 — lower than
+                per-model MIN_SAMPLES because a provider's noise floor
+                aggregates across multiple endpoints.
+        """
+        ids = (
+            member_ids if member_ids is not None
+            else self._providers.get(provider, set())
+        )
+        if not ids:
+            return None
+        cutoff = time.time() - window_secs
+        total = 0
+        ok = 0
+        for mid in ids:
+            dq = self._outcomes.get(mid)
+            if not dq:
+                continue
+            for ts, success in dq:
+                if ts < cutoff:
+                    continue
+                total += 1
+                if success:
+                    ok += 1
+        if total < min_samples:
+            return None
+        return ok / total
+
     def recent_samples_n(self, model_id: str) -> int:
         """Count of outcome entries currently in the rolling window for
         ``model_id``, after age trimming. Source for S10's min-samples

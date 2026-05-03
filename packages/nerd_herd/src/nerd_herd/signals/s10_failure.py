@@ -14,16 +14,25 @@ returns a continuous negative scalar that flows through OTHER_BUCKET
 worst-wins and M3 difficulty weights. The reliability multiplier in
 ranking.py is deleted — single source of truth.
 
-Signal shape:
-    samples_n  < MIN_SAMPLES → 0.0 (no data, neutral — provider-prior
-                                   carries the signal until data lands)
-    success_rate >= 0.95     → 0.0 (healthy)
-    success_rate <= 0.20     → -1.0 (broken)
-    else                     → linear interp from -0.0 at 0.95 to -1.0
-                               at 0.20
+Step 6 (2026-05-04): provider_prior_rate is consumed as a fallback
+when the model's own samples are below MIN_SAMPLES. Filled by the
+adapter from KDV.provider_prior_rate, with openrouter aggregated by
+sub-vendor (per-vendor failure modes diverge too much to share a
+single openrouter aggregate).
+
+Signal shape (priority order):
+    samples_n  >= MIN_SAMPLES  → use own success_rate (curve below)
+    provider_prior_rate set    → use prior (same curve)
+    else                       → 0.0 (no data anywhere, no opinion)
+
+Curve:
+    rate >= 0.95 → 0.0 (healthy)
+    rate <= 0.20 → -1.0 (broken)
+    else         → linear interp
 
 User design 2026-05-03: "S12 = nothing different from S10. Wire S10
-properly with rate, delete the multiplier."
+properly with rate, delete the multiplier." Provider prior added
+2026-05-04 to close the cold-start gap.
 """
 from __future__ import annotations
 
@@ -33,10 +42,20 @@ HEALTHY_THRESHOLD = 0.95
 BROKEN_THRESHOLD = 0.20
 
 
+def _curve(rate: float) -> float:
+    if rate >= HEALTHY_THRESHOLD:
+        return 0.0
+    if rate <= BROKEN_THRESHOLD:
+        return -1.0
+    span = HEALTHY_THRESHOLD - BROKEN_THRESHOLD
+    return -((HEALTHY_THRESHOLD - rate) / span)
+
+
 def s10_failure(
     *,
     success_rate: float = 1.0,
     samples_n: int = 0,
+    provider_prior_rate: float | None = None,
     consecutive_failures: int = 0,
 ) -> float:
     """Per-model reliability scalar in [-1, 0].
@@ -45,7 +64,13 @@ def s10_failure(
         success_rate: rolling rate from KDV outcome window. Ignored
             when samples_n < MIN_SAMPLES.
         samples_n: count of outcomes in the rolling window. Below
-            MIN_SAMPLES, signal returns 0 (no opinion).
+            MIN_SAMPLES, falls back to provider_prior_rate if set.
+        provider_prior_rate: aggregate success rate across the model's
+            siblings on the same provider (or openrouter sub-vendor),
+            from KDV.provider_prior_rate. Used ONLY when own samples
+            are insufficient — when own data is good, prior is ignored
+            (don't blend, don't double-count). None means the prior
+            also lacks enough data → fall to neutral.
         consecutive_failures: legacy per-provider streak counter,
             kept as a fallback for callers that haven't migrated to
             success_rate plumbing. Steps -0.2 / -0.5 like the old
@@ -57,14 +82,9 @@ def s10_failure(
     """
     rate_signal = 0.0
     if samples_n >= MIN_SAMPLES:
-        if success_rate >= HEALTHY_THRESHOLD:
-            rate_signal = 0.0
-        elif success_rate <= BROKEN_THRESHOLD:
-            rate_signal = -1.0
-        else:
-            # Linear interp from (HEALTHY, 0) to (BROKEN, -1)
-            span = HEALTHY_THRESHOLD - BROKEN_THRESHOLD
-            rate_signal = -((HEALTHY_THRESHOLD - success_rate) / span)
+        rate_signal = _curve(success_rate)
+    elif provider_prior_rate is not None:
+        rate_signal = _curve(provider_prior_rate)
 
     streak_signal = 0.0
     if consecutive_failures > 0:

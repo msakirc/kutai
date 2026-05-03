@@ -204,3 +204,57 @@ def test_adapter_forwards_groq_daily_headers_end_to_end(kdv):
     assert m.limits.rpd.remaining == 95_000
     assert m.limits.tpd.limit == 10_000_000
     assert m.limits.tpd.remaining == 9_500_000
+
+
+# ── provider_prior_rate plumbing (Step 6) ─────────────────────────────
+
+
+def test_adapter_plumbs_provider_prior_rate(kdv):
+    """A model on a provider with sibling outcomes gets a non-None
+    provider_prior_rate on its CloudModelState — S10 reads this as
+    fallback when own samples are insufficient."""
+    kdv.register("groq/m1", "groq", rpm=30, tpm=131072)
+    kdv.register("groq/m2", "groq", rpm=30, tpm=131072)
+    # Build sibling history. m1 has plenty of own data; m2 has none.
+    for _ in range(4):
+        kdv.post_call("groq/m1", "groq", headers={}, token_count=10)
+    state = build_cloud_provider_state(kdv, "groq")
+    # Both models share the same provider-level prior (4/4 = 1.0).
+    assert state.models["groq/m1"].provider_prior_rate == pytest.approx(1.0)
+    assert state.models["groq/m2"].provider_prior_rate == pytest.approx(1.0)
+
+
+def test_adapter_provider_prior_none_when_below_min(kdv):
+    """No outcomes anywhere on provider → prior is None on every model."""
+    kdv.register("groq/m1", "groq", rpm=30, tpm=131072)
+    state = build_cloud_provider_state(kdv, "groq")
+    assert state.models["groq/m1"].provider_prior_rate is None
+
+
+def test_adapter_openrouter_splits_prior_by_subvendor(kdv):
+    """Openrouter's per-vendor failure modes are different enough that
+    aggregating across all openrouter ids would smear the signal — the
+    adapter must split priors by sub-vendor (path[1] of litellm_name).
+    A broken tencent vendor must NOT lift anthropic's prior."""
+    kdv.register("openrouter/anthropic/claude:free", "openrouter",
+                 rpm=30, tpm=131072)
+    kdv.register("openrouter/anthropic/sonnet:free", "openrouter",
+                 rpm=30, tpm=131072)
+    kdv.register("openrouter/tencent/hy3:free", "openrouter",
+                 rpm=30, tpm=131072)
+    # anthropic side: 4 successes. tencent side: 4 failures.
+    for _ in range(4):
+        kdv.post_call("openrouter/anthropic/claude:free", "openrouter",
+                      headers={}, token_count=10)
+    for _ in range(4):
+        kdv.record_failure("openrouter/tencent/hy3:free", "openrouter",
+                           "server_error")
+
+    state = build_cloud_provider_state(kdv, "openrouter")
+    # Both anthropic models share the anthropic prior (1.0); tencent gets 0.0.
+    claude = state.models["openrouter/anthropic/claude:free"].provider_prior_rate
+    sonnet = state.models["openrouter/anthropic/sonnet:free"].provider_prior_rate
+    tencent = state.models["openrouter/tencent/hy3:free"].provider_prior_rate
+    assert claude == pytest.approx(1.0)
+    assert sonnet == pytest.approx(1.0)
+    assert tencent == pytest.approx(0.0)

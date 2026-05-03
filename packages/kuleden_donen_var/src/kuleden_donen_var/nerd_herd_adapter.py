@@ -23,6 +23,48 @@ _ADAPTER_AXES = (
 )
 
 
+def _prior_key(provider: str, model_id: str) -> str | None:
+    """Identifier for provider_prior aggregation.
+
+    Openrouter is structurally an aggregator, not a provider — per-id
+    failure modes vary wildly across upstream vendors (anthropic vs
+    tencent vs meta-llama backends behave very differently when reached
+    via openrouter). Aggregating across all openrouter ids would smear
+    the signal and let one healthy vendor's prior cover for another
+    vendor's broken endpoint. Split the prior by sub-vendor, parsed from
+    the litellm_name path: ``openrouter/<vendor>/<model>:free`` →
+    ``"openrouter::<vendor>"``.
+
+    Other providers aggregate at provider level. Returns None when the
+    model has no usable grouping key (shouldn't happen for registered
+    ids, but be defensive).
+    """
+    if provider == "openrouter":
+        parts = model_id.split("/")
+        if len(parts) >= 3:
+            return f"openrouter::{parts[1]}"
+        return None
+    return provider
+
+
+def _build_prior_groups(
+    provider: str,
+    model_ids: set[str],
+) -> dict[str, set[str]]:
+    """Group ``model_ids`` by their _prior_key for aggregation.
+
+    For non-openrouter providers, this is a single group keyed on the
+    provider name. For openrouter, one group per sub-vendor.
+    """
+    groups: dict[str, set[str]] = {}
+    for mid in model_ids:
+        key = _prior_key(provider, mid)
+        if key is None:
+            continue
+        groups.setdefault(key, set()).add(mid)
+    return groups
+
+
 def _rl(state, axis: str):
     """Build a RateLimit for axis from KDV state. Empty if state lacks the axis."""
     from nerd_herd.types import RateLimit
@@ -87,6 +129,22 @@ def build_cloud_provider_state(
         return m
 
     prov_state = kdv._rate_limiter._provider_limits.get(provider)
+
+    # Pre-compute provider-prior groups + their aggregate rates once
+    # per build (each model in a group reads the same value). For
+    # non-openrouter providers there's a single group; for openrouter,
+    # one per sub-vendor — failure modes diverge enough that smearing
+    # across all openrouter ids would hide vendor-specific outages.
+    prior_groups = _build_prior_groups(provider, set(model_ids))
+    prior_by_key: dict[str, float | None] = {}
+    for key, members in prior_groups.items():
+        try:
+            prior_by_key[key] = kdv.provider_prior_rate(
+                provider, member_ids=members,
+            )
+        except Exception:
+            prior_by_key[key] = None
+
     models = {}
     for mid in model_ids:
         mstate = kdv._rate_limiter.model_limits.get(mid)
@@ -128,10 +186,20 @@ def build_cloud_provider_state(
             rpm_cool = bool(kdv._rate_limiter.is_rpm_cooldown(mid))
         except Exception:
             rpm_cool = False
+        # Provider-level success-rate prior, looked up via the same
+        # grouping key the adapter used to compute the aggregate. S10
+        # uses this only when the model's own samples are below
+        # MIN_SAMPLES — fills the cold-start gap for new / revived ids.
+        prior_key_for_mid = _prior_key(provider, mid)
+        provider_prior = (
+            prior_by_key.get(prior_key_for_mid) if prior_key_for_mid else None
+        )
+
         models[mid] = CloudModelState(
             model_id=mid, limits=matrix,
             recent_success_rate=success_rate,
             recent_samples_n=samples_n,
+            provider_prior_rate=provider_prior,
             daily_exhausted=daily_out,
             rpm_cooldown=rpm_cool,
         )

@@ -49,7 +49,13 @@ class KuledenDonenVar:
         from collections import deque
         self._outcomes: dict[str, deque] = {}
         self._OUTCOME_MAX_LEN = 30
-        self._OUTCOME_MAX_AGE_SECONDS = 3600.0
+        # 24h window so failure history survives mark_dead TTL expiry (1h).
+        # Pre-2026-05-03: window matched mark_dead TTL → revival cycle
+        # (dead-mark expires → empty history → recent_success_rate=1.0 →
+        # ranks top → fails → re-dies). Decoupling lets revived models
+        # carry their failure record forward and rank low until enough
+        # fresh successes dilute the rate.
+        self._OUTCOME_MAX_AGE_SECONDS = 86400.0
         self._OUTCOME_MIN_SAMPLES = 5
         # Per-provider canary state. Cold start (or post-day-reset, or
         # post-breaker-reset) we don't actually know the provider's

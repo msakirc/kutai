@@ -11,9 +11,39 @@ import sys
 import os
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _make_kdv(models, model_util=None, provider_util=None, daily_exhausted=None):
+    """Build a KDV-shaped mock matching what router.select_model reads."""
+    model_util = model_util or {}
+    provider_util = provider_util or {}
+    daily_exhausted = daily_exhausted or set()
+    by_provider: dict = {}
+    for m in models:
+        if getattr(m, "is_local", False):
+            continue
+        by_provider.setdefault(m.provider, []).append(m)
+    status = {}
+    for provider, ms_list in by_provider.items():
+        prov_models = {
+            m.litellm_name: SimpleNamespace(
+                utilization_pct=model_util.get(m.litellm_name, 0),
+                daily_exhausted=m.litellm_name in daily_exhausted,
+            )
+            for m in ms_list
+        }
+        status[provider] = SimpleNamespace(
+            utilization_pct=provider_util.get(provider, 0),
+            circuit_breaker_open=False,
+            models=prov_models,
+        )
+    kdv = MagicMock()
+    kdv.status = status
+    return kdv
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -149,24 +179,23 @@ def _run_select_with_util(models, model_util_map, provider_util_map=None,
 
     reg = MagicMock()
     reg.models = {m.name: m for m in models}
+    reg.is_demoted.return_value = False
 
     def _fake_score(*a, **kw):
         return 3.5
 
-    mock_rl = MagicMock()
-    mock_rl.get_utilization.side_effect = lambda n: model_util_map.get(n, 0)
-    mock_rl.get_provider_utilization.side_effect = lambda p: (
-        (provider_util_map or {}).get(p, 0)
-    )
-    mock_rl.is_daily_exhausted.side_effect = lambda n: (
-        n in (daily_exhausted_set or set())
+    mock_kdv = _make_kdv(
+        models,
+        model_util=model_util_map,
+        provider_util=provider_util_map,
+        daily_exhausted=daily_exhausted_set,
     )
 
     reqs = ModelRequirements(task="assistant", difficulty=5)
 
     with patch("src.core.router.get_registry", return_value=reg), \
          patch("src.core.router.score_model_for_task", side_effect=_fake_score), \
-         patch("src.core.router.get_rate_limit_manager", return_value=mock_rl), \
+         patch("src.core.router.get_kdv", return_value=mock_kdv), \
          patch("src.core.router.get_quota_planner") as mock_qp, \
          patch("src.infra.load_manager.is_local_inference_allowed", return_value=True), \
          patch("src.infra.load_manager.get_vram_budget_fraction", return_value=1.0), \

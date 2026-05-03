@@ -1020,6 +1020,17 @@ async def init_db():
         except Exception:
             pass  # already exists
 
+    # Migration: add kind column for sub-task admission (Beckman Phase 1)
+    if "kind" not in columns:
+        try:
+            await db.execute(
+                "ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'main_work'"
+            )
+            await db.commit()
+            logger.info("Added kind column to tasks table")
+        except Exception as e:
+            logger.debug(f"kind column migration skipped: {e}")
+
     # ── Performance indexes on common query patterns ──
     _indexes = [
         ("idx_tasks_status", "tasks", "status"),

@@ -6,6 +6,8 @@ with no limit set — those cells stay invisible to signal consumers.
 """
 from __future__ import annotations
 
+import logging
+import time as _time
 from typing import TYPE_CHECKING, Callable
 
 from nerd_herd.signals.s10_failure import MIN_SAMPLES as S10_MIN_SAMPLES
@@ -14,6 +16,18 @@ if TYPE_CHECKING:
     from nerd_herd.types import CloudProviderState
 
     from .kdv import KuledenDonenVar
+
+
+_logger = logging.getLogger(__name__)
+
+# Per-prior-key throttle for "stuck cold" warnings: log at most once
+# per ``_STUCK_COLD_LOG_INTERVAL`` seconds for each (provider, key). The
+# adapter rebuilds CloudProviderState on every selector tick — without
+# the throttle the log line would fire dozens of times per minute for
+# the same provider and drown out signal. Module-level state is fine:
+# adapter is a single-process singleton path.
+_STUCK_COLD_LOG_INTERVAL = 60.0
+_stuck_cold_last_log: dict[str, float] = {}
 
 
 # Axes the adapter forwards. Matches RateLimitMatrix field names.
@@ -146,6 +160,40 @@ def build_cloud_provider_state(
             )
         except Exception:
             prior_by_key[key] = None
+
+        # Stuck-cold detection: prior is None despite at least one
+        # member having data. Means individual members each have <
+        # MIN_SAMPLES while the aggregate is also under MIN_PROVIDER_
+        # SAMPLES (3 by default). This is the failure mode where S10
+        # stays at 0 indefinitely — every model in the group looks
+        # "neutral" to the ranker even when the provider is failing
+        # silently. Worth flagging.
+        #
+        # Don't log when NO member has data — that's a genuine cold
+        # start, expected and benign. Throttle per (provider, key) so
+        # selector-tick frequency doesn't drown the WARN stream.
+        if prior_by_key[key] is None:
+            try:
+                any_with_data = any(
+                    (kdv._outcomes.get(m) and len(kdv._outcomes[m]) > 0)
+                    for m in members
+                )
+                if any_with_data:
+                    throttle_key = f"{provider}::{key}"
+                    now = _time.time()
+                    last = _stuck_cold_last_log.get(throttle_key, 0.0)
+                    if now - last >= _STUCK_COLD_LOG_INTERVAL:
+                        _stuck_cold_last_log[throttle_key] = now
+                        _logger.warning(
+                            "provider_prior_rate stuck cold: "
+                            "provider=%s key=%s members=%d — at least one "
+                            "model has outcomes but aggregate is below "
+                            "min_samples; S10 will stay neutral until "
+                            "data accumulates",
+                            provider, key, len(members),
+                        )
+            except Exception:
+                pass
 
     models = {}
     for mid in model_ids:

@@ -260,6 +260,66 @@ def test_adapter_openrouter_splits_prior_by_subvendor(kdv):
     assert tencent == pytest.approx(0.0)
 
 
+def test_adapter_logs_stuck_cold_when_aggregate_below_min(kdv, caplog):
+    """When provider_prior_rate is None despite at least one member
+    having data, adapter must emit a WARN. Captures the failure mode
+    where every model in the group has < MIN_SAMPLES of its own AND
+    the aggregate is also below MIN_PROVIDER_SAMPLES — S10 stays
+    neutral indefinitely without this log to alert on."""
+    import logging
+    kdv.register("groq/m1", "groq", rpm=30, tpm=131072)
+    kdv.register("groq/m2", "groq", rpm=30, tpm=131072)
+    # Only one outcome on m1. Aggregate is 1, below MIN_PROVIDER_SAMPLES=3.
+    kdv.post_call("groq/m1", "groq", headers={}, token_count=10)
+
+    # Reset throttle so the test gets a fresh window.
+    from kuleden_donen_var import nerd_herd_adapter as _adapter
+    _adapter._stuck_cold_last_log.clear()
+
+    with caplog.at_level(logging.WARNING, logger=_adapter.__name__):
+        build_cloud_provider_state(kdv, "groq")
+
+    assert any("stuck cold" in r.message for r in caplog.records), \
+        f"expected stuck-cold warning, got: {[r.message for r in caplog.records]}"
+
+
+def test_adapter_no_stuck_cold_log_when_truly_cold(kdv, caplog):
+    """When NO member on a provider has any outcomes, the prior is
+    legitimately None — that's a cold start, not a stuck-cold
+    scenario. No warning should fire."""
+    import logging
+    kdv.register("groq/m1", "groq", rpm=30, tpm=131072)
+    # Don't post any calls.
+
+    from kuleden_donen_var import nerd_herd_adapter as _adapter
+    _adapter._stuck_cold_last_log.clear()
+
+    with caplog.at_level(logging.WARNING, logger=_adapter.__name__):
+        build_cloud_provider_state(kdv, "groq")
+
+    assert not any("stuck cold" in r.message for r in caplog.records)
+
+
+def test_adapter_stuck_cold_log_throttled(kdv, caplog):
+    """Subsequent build() calls within the throttle window must NOT
+    re-emit the warning — selector ticks fire dozens of times per
+    minute, an unthrottled log would drown the WARN stream."""
+    import logging
+    kdv.register("groq/m1", "groq", rpm=30, tpm=131072)
+    kdv.post_call("groq/m1", "groq", headers={}, token_count=10)
+
+    from kuleden_donen_var import nerd_herd_adapter as _adapter
+    _adapter._stuck_cold_last_log.clear()
+
+    with caplog.at_level(logging.WARNING, logger=_adapter.__name__):
+        build_cloud_provider_state(kdv, "groq")
+        build_cloud_provider_state(kdv, "groq")
+        build_cloud_provider_state(kdv, "groq")
+
+    stuck_cold_records = [r for r in caplog.records if "stuck cold" in r.message]
+    assert len(stuck_cold_records) == 1
+
+
 def test_adapter_openrouter_two_segment_id_gets_no_prior(kdv):
     """Openrouter id with only 2 path segments (no sub-vendor) returns
     None from _prior_key — the model gets prior=None forever AND is

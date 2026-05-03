@@ -62,6 +62,19 @@ async def save(kdv, db_path: str) -> None:
         now,
     ))
 
+    # Orphan GC: drop scoped rows whose scope_key is no longer present
+    # in the live snapshot. Without this, deregistering a model (e.g.
+    # YAML drop, mark_dead at the registry layer) leaves a stale row in
+    # kdv_state forever, growing unboundedly. We GC the per-id scopes
+    # (model / provider / breaker / outcomes); the "meta" scope has the
+    # single fixed key "global" so doesn't need pruning.
+    live_keys: dict[str, set[str]] = {
+        "model": set(snap.get("models", {}).keys()),
+        "provider": set(snap.get("providers", {}).keys()),
+        "breaker": set(snap.get("breakers", {}).keys()),
+        "outcomes": set(snap.get("outcomes", {}).keys()),
+    }
+
     try:
         from src.infra.db import connect_aux
         async with connect_aux(db_path, _label="kdv_save") as db:
@@ -73,6 +86,21 @@ async def save(kdv, db_path: str) -> None:
                 "last_persisted=excluded.last_persisted",
                 rows,
             )
+            for scope, keys in live_keys.items():
+                if keys:
+                    placeholders = ",".join("?" * len(keys))
+                    await db.execute(
+                        f"DELETE FROM kdv_state WHERE scope=? AND "
+                        f"scope_key NOT IN ({placeholders})",
+                        (scope, *keys),
+                    )
+                else:
+                    # Empty scope this round: nuke any leftover rows so
+                    # a model that was unregistered between saves still
+                    # gets cleaned up.
+                    await db.execute(
+                        "DELETE FROM kdv_state WHERE scope=?", (scope,),
+                    )
             await db.commit()
     except Exception as e:  # noqa: BLE001 — telemetry must never propagate
         logger.warning("kdv state save failed: %s", e)

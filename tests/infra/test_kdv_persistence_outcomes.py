@@ -106,3 +106,70 @@ def test_load_sync_drops_stale_outcomes_rows(db_path):
     assert report["outcomes"] == 0
     assert report["skipped_stale"] >= 1
     assert dst.recent_samples_n("groq/llama-8b") == 0
+
+
+def test_save_gcs_orphan_outcomes_rows(db_path):
+    """Models that were registered + had outcomes but later got
+    deregistered (yaml drop, etc.) leave their kdv_state row behind.
+    save() must GC: if a scope_key is no longer in the live snapshot,
+    delete its row instead of letting it persist forever."""
+    # Round 1: register two models, accumulate outcomes, save.
+    src = KuledenDonenVar(KuledenConfig())
+    src.register("groq/keep", "groq", rpm=30, tpm=131072)
+    src.register("groq/drop", "groq", rpm=30, tpm=131072)
+    for _ in range(3):
+        src.post_call("groq/keep", "groq", headers={}, token_count=10)
+        src.post_call("groq/drop", "groq", headers={}, token_count=10)
+
+    asyncio.run(kdv_persistence.save(src, db_path))
+
+    # Confirm both outcomes rows landed.
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT scope_key FROM kdv_state WHERE scope='outcomes' "
+            "ORDER BY scope_key"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert sorted(r[0] for r in rows) == ["groq/drop", "groq/keep"]
+
+    # Round 2: simulate the "drop" model being deregistered. Drop its
+    # outcomes from KDV and resave. GC must purge the orphan row.
+    src._outcomes.pop("groq/drop", None)
+    src._rate_limiter.model_limits.pop("groq/drop", None)
+    src._providers["groq"].discard("groq/drop")
+
+    asyncio.run(kdv_persistence.save(src, db_path))
+
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT scope_key FROM kdv_state WHERE scope='outcomes'"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert [r[0] for r in rows] == ["groq/keep"]
+
+
+def test_save_purges_all_outcomes_when_kdv_clears(db_path):
+    """If KDV's outcome dict is empty, save must wipe the scope from
+    DB rather than leaving stale rows."""
+    src = KuledenDonenVar(KuledenConfig())
+    src.register("groq/m1", "groq", rpm=30, tpm=131072)
+    for _ in range(3):
+        src.post_call("groq/m1", "groq", headers={}, token_count=10)
+    asyncio.run(kdv_persistence.save(src, db_path))
+
+    # Clear all outcomes (simulate full deregister) and save again.
+    src._outcomes.clear()
+    asyncio.run(kdv_persistence.save(src, db_path))
+
+    conn = sqlite3.connect(db_path)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM kdv_state WHERE scope='outcomes'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert n == 0

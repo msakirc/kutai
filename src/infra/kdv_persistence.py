@@ -6,7 +6,8 @@ records to the ``kdv_state`` table.
 
 Persistence model:
 - One row per (scope, scope_key) where scope ∈ {"model","provider","breaker",
-  "meta"}; scope_key is the litellm_name, provider name, or "global".
+  "outcomes","meta"}; scope_key is the litellm_name, provider name, or
+  "global".
 - snapshot_json is the JSON-encoded dict from the corresponding snapshot_state().
 - last_persisted is unix epoch; loader treats rows older than ``stale_hours``
   as stale and skips them. Default 24h — long enough to survive
@@ -14,7 +15,8 @@ Persistence model:
   drifted into nonsense.
 
 The loader also restores ``enabled_at`` and ``call_count`` (kept under
-the "meta" scope as a single dict-row).
+the "meta" scope as a single dict-row), plus the per-model rolling
+outcome window under the "outcomes" scope (Step 5c, 2026-05-04).
 """
 from __future__ import annotations
 
@@ -48,6 +50,8 @@ async def save(kdv, db_path: str) -> None:
         rows.append(("provider", prov, json.dumps(prov_snap), now))
     for prov, cb_snap in snap.get("breakers", {}).items():
         rows.append(("breaker", prov, json.dumps(cb_snap), now))
+    for mid, entries in snap.get("outcomes", {}).items():
+        rows.append(("outcomes", mid, json.dumps(entries), now))
     rows.append((
         "meta", "global",
         json.dumps({
@@ -81,11 +85,12 @@ async def load(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> 
     "breakers": N, "skipped_stale": N}``. Never raises — if the table is
     missing or DB is unavailable, returns zeros.
     """
-    report = {"models": 0, "providers": 0, "breakers": 0, "meta": 0,
-              "skipped_stale": 0}
+    report = {"models": 0, "providers": 0, "breakers": 0, "outcomes": 0,
+              "meta": 0, "skipped_stale": 0}
     cutoff = time.time() - stale_hours * 3600.0
 
-    snap_for_kdv: dict = {"models": {}, "providers": {}, "breakers": {}}
+    snap_for_kdv: dict = {"models": {}, "providers": {}, "breakers": {},
+                          "outcomes": {}}
     enabled_at: dict = {}
     call_count: dict = {}
     attempt_count: dict = {}
@@ -115,6 +120,9 @@ async def load(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> 
                     elif scope == "breaker":
                         snap_for_kdv["breakers"][scope_key] = decoded
                         report["breakers"] += 1
+                    elif scope == "outcomes":
+                        snap_for_kdv["outcomes"][scope_key] = decoded
+                        report["outcomes"] += 1
                     elif scope == "meta":
                         enabled_at = dict(decoded.get("enabled_at", {}))
                         call_count = dict(decoded.get("call_count", {}))
@@ -134,12 +142,13 @@ async def load(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> 
         logger.warning("kdv restore_state failed: %s", e)
         return report
 
-    if report["models"] or report["providers"] or report["breakers"]:
+    if (report["models"] or report["providers"] or report["breakers"]
+            or report["outcomes"]):
         logger.info(
             "kdv state restored: models=%d providers=%d breakers=%d "
-            "meta=%d stale_skipped=%d",
+            "outcomes=%d meta=%d stale_skipped=%d",
             report["models"], report["providers"], report["breakers"],
-            report["meta"], report["skipped_stale"],
+            report["outcomes"], report["meta"], report["skipped_stale"],
         )
     return report
 
@@ -150,10 +159,11 @@ def load_sync(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> d
     Uses stdlib sqlite3 so it works whether or not an event loop is
     running. Reads only — never writes. Mirrors ``load()`` semantics.
     """
-    report = {"models": 0, "providers": 0, "breakers": 0, "meta": 0,
-              "skipped_stale": 0}
+    report = {"models": 0, "providers": 0, "breakers": 0, "outcomes": 0,
+              "meta": 0, "skipped_stale": 0}
     cutoff = time.time() - stale_hours * 3600.0
-    snap_for_kdv: dict = {"models": {}, "providers": {}, "breakers": {}}
+    snap_for_kdv: dict = {"models": {}, "providers": {}, "breakers": {},
+                          "outcomes": {}}
     enabled_at: dict = {}
     call_count: dict = {}
     attempt_count: dict = {}
@@ -184,6 +194,9 @@ def load_sync(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> d
                 elif scope == "breaker":
                     snap_for_kdv["breakers"][scope_key] = decoded
                     report["breakers"] += 1
+                elif scope == "outcomes":
+                    snap_for_kdv["outcomes"][scope_key] = decoded
+                    report["outcomes"] += 1
                 elif scope == "meta":
                     enabled_at = dict(decoded.get("enabled_at", {}))
                     call_count = dict(decoded.get("call_count", {}))
@@ -205,11 +218,12 @@ def load_sync(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> d
         logger.warning("kdv restore_state failed: %s", e)
         return report
 
-    if report["models"] or report["providers"] or report["breakers"]:
+    if (report["models"] or report["providers"] or report["breakers"]
+            or report["outcomes"]):
         logger.info(
             "kdv state restored (sync): models=%d providers=%d breakers=%d "
-            "meta=%d stale_skipped=%d",
+            "outcomes=%d meta=%d stale_skipped=%d",
             report["models"], report["providers"], report["breakers"],
-            report["meta"], report["skipped_stale"],
+            report["outcomes"], report["meta"], report["skipped_stale"],
         )
     return report

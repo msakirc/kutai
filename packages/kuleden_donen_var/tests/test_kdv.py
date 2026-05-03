@@ -449,3 +449,103 @@ def test_canary_failure_during_burst_re_locks_provider(kdv_with_model):
     r2 = kdv_with_model.pre_call("groq/llama-8b", "groq", estimated_tokens=10)
     assert r2.allowed is False
     assert r2.reason == "canary_in_flight"
+
+
+# -- snapshot_state / restore_state: outcomes window (Step 5c) --
+
+
+def test_snapshot_includes_outcomes(kdv_with_model):
+    """snapshot_state captures the per-model _outcomes deque so the
+    24h reliability window survives process restart."""
+    for _ in range(4):
+        kdv_with_model.post_call("groq/llama-8b", "groq", headers={},
+                                 token_count=10)
+    kdv_with_model.record_failure("groq/llama-8b", "groq", "server_error")
+
+    snap = kdv_with_model.snapshot_state()
+    assert "outcomes" in snap
+    assert "groq/llama-8b" in snap["outcomes"]
+    entries = snap["outcomes"]["groq/llama-8b"]
+    assert len(entries) == 5
+    # JSON-safe shape: list of [ts:float, success:bool] pairs.
+    for ts, success in entries:
+        assert isinstance(ts, float)
+        assert isinstance(success, bool)
+    assert sum(1 for _, s in entries if s) == 4
+
+
+def test_restore_outcomes_round_trip(kdv_with_model):
+    """restore_state(snapshot_state()) preserves recent_success_rate
+    on a fresh KDV instance — the cold-start gap is the whole point of
+    this persistence path."""
+    # Build a >MIN_SAMPLES window so the rate is meaningful (not the
+    # 1.0 no-data sentinel).
+    for _ in range(7):
+        kdv_with_model.post_call("groq/llama-8b", "groq", headers={},
+                                 token_count=10)
+    for _ in range(3):
+        kdv_with_model.record_failure("groq/llama-8b", "groq", "server_error")
+    pre = kdv_with_model.recent_success_rate("groq/llama-8b")
+    pre_n = kdv_with_model.recent_samples_n("groq/llama-8b")
+    assert pre_n == 10
+    assert 0.65 < pre < 0.75
+
+    snap = kdv_with_model.snapshot_state()
+
+    # Fresh instance, register the same model so restore can match.
+    fresh = KuledenDonenVar(KuledenConfig())
+    fresh.register("groq/llama-8b", "groq", rpm=30, tpm=131072)
+    fresh.restore_state(snap)
+
+    assert fresh.recent_samples_n("groq/llama-8b") == pre_n
+    assert fresh.recent_success_rate("groq/llama-8b") == pytest.approx(pre)
+
+
+def test_restore_outcomes_drops_aged_entries(kdv_with_model):
+    """Entries older than _OUTCOME_MAX_AGE_SECONDS are filtered on
+    restore — a snapshot from yesterday shouldn't resurrect verdicts
+    that have aged past the rolling window."""
+    now = time.time()
+    aged = now - kdv_with_model._OUTCOME_MAX_AGE_SECONDS - 60.0  # 1m past cutoff
+    fresh_ts = now - 30.0  # well within window
+
+    # Hand-crafted snap with mixed-age entries.
+    snap = {
+        "outcomes": {
+            "groq/llama-8b": [
+                [aged, True], [aged, False], [aged, True],  # all stale
+                [fresh_ts, True], [fresh_ts, False],         # both kept
+            ],
+        },
+    }
+
+    fresh = KuledenDonenVar(KuledenConfig())
+    fresh.register("groq/llama-8b", "groq", rpm=30, tpm=131072)
+    fresh.restore_state(snap)
+
+    # Only the 2 fresh entries should land. recent_samples_n returns 2,
+    # which is below MIN_SAMPLES — recent_success_rate falls back to 1.0.
+    assert fresh.recent_samples_n("groq/llama-8b") == 2
+
+
+def test_restore_outcomes_handles_malformed_entries(kdv_with_model):
+    """Garbage in the snapshot (wrong shape, non-numeric ts) is silently
+    skipped — restore must never raise, persistence is best-effort."""
+    now = time.time()
+    snap = {
+        "outcomes": {
+            "groq/llama-8b": [
+                [now - 10, True],          # good
+                ["not-a-float", False],    # bad ts
+                [now - 5],                 # missing success
+                None,                      # not even a list
+                [now - 1, True],           # good
+            ],
+        },
+    }
+
+    fresh = KuledenDonenVar(KuledenConfig())
+    fresh.register("groq/llama-8b", "groq", rpm=30, tpm=131072)
+    fresh.restore_state(snap)  # must not raise
+
+    assert fresh.recent_samples_n("groq/llama-8b") == 2

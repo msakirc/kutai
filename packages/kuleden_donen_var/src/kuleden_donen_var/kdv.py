@@ -593,9 +593,14 @@ class KuledenDonenVar:
     #     "enabled_at":     {provider: float},
     #     "call_count":     {provider: int},   # successes
     #     "attempt_count":  {provider: int},   # successes + failures
+    #     "outcomes":       {model_id: [[ts, success_bool], ...], ...}
     #   }
     # Per-minute counters (_request_timestamps, _token_log) are intentionally
     # NOT persisted — see RateLimitState._PERSISTED_FIELDS.
+    # The outcome window IS persisted: it's a 24h rolling reliability signal
+    # for selector S10, and the cold-start gap (5+ samples needed before the
+    # signal becomes non-neutral) is the limiting factor on its usefulness
+    # without persistence.
     def snapshot_state(self) -> dict:
         return {
             "models": {
@@ -613,6 +618,10 @@ class KuledenDonenVar:
             "enabled_at": dict(self._provider_enabled_at),
             "call_count": dict(self._provider_call_count),
             "attempt_count": dict(self._provider_attempt_count),
+            "outcomes": {
+                mid: [[ts, bool(s)] for ts, s in dq]
+                for mid, dq in self._outcomes.items()
+            },
         }
 
     def restore_state(self, snap: dict) -> None:
@@ -642,3 +651,21 @@ class KuledenDonenVar:
             self._provider_attempt_count[prov] = (
                 self._provider_attempt_count.get(prov, 0) + int(count)
             )
+        # Outcome window: filter aged entries on the way in so a snapshot
+        # written long before this restart doesn't resurrect verdicts past
+        # _OUTCOME_MAX_AGE_SECONDS. Save-side keeps everything verbatim; the
+        # loader decides what's stale.
+        from collections import deque
+        cutoff = time.time() - self._OUTCOME_MAX_AGE_SECONDS
+        for mid, entries in snap.get("outcomes", {}).items():
+            dq = deque(maxlen=self._OUTCOME_MAX_LEN)
+            for entry in entries or []:
+                try:
+                    ts, success = float(entry[0]), bool(entry[1])
+                except (TypeError, ValueError, IndexError):
+                    continue
+                if ts < cutoff:
+                    continue
+                dq.append((ts, success))
+            if dq:
+                self._outcomes[mid] = dq

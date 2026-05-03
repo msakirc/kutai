@@ -36,12 +36,18 @@ async def run_rollup(db_path: str | None = None) -> int:
     db_path = db_path or os.environ.get("DB_PATH", "kutai.db")
     from src.infra.db import connect_aux
     async with connect_aux(db_path, _label="btable_rollup_read") as db:
+        # Streaming completion_tokens are reliable now that include_usage=True
+        # is wired into the streaming accumulator (see hallederiz_kadir/caller.py).
+        # Filtering them out dropped ~95% of telemetry. Filter zero-out rows
+        # instead — Ollama and older OpenRouter routes don't expose usage and
+        # land 0/0/0, which would skew p50/p90 toward zero.
         async with db.execute(
             f"""SELECT agent_type, workflow_step_id, workflow_phase,
                        prompt_tokens, completion_tokens, iteration_n
                 FROM model_call_tokens
                 WHERE timestamp > datetime('now', '-{WINDOW_DAYS} days')
-                  AND is_streaming = 0
+                  AND completion_tokens > 0
+                  AND prompt_tokens > 0
                   AND agent_type IS NOT NULL
                   AND workflow_step_id IS NOT NULL
                   AND workflow_phase IS NOT NULL"""

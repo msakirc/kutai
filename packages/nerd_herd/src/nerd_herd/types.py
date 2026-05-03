@@ -306,27 +306,24 @@ class SystemSnapshot:
         now = _time.time()
         reset_in = max(0.0, (rpd_cell.reset_at - now)) if rpd_cell.reset_at else 0.0
 
-        # Total in-flight count for the model's pool
+        # In-flight count + projected tokens. Filter by provider, NOT by
+        # model id — the matrix cells often carry provider-AGGREGATE limits
+        # (gemini free-tier rpm/tpm are per-API-key, shared across every
+        # gemini model id on that key). Pre-fix this counted only same-id
+        # in_flight, so 5 different gemini ids admitted in the same tick
+        # each saw full rpm/tpm headroom and overshot the shared bucket.
+        # Per-model-only limits (rpd / tpd) over-subtract slightly under
+        # this rule — that's the safe direction (fewer admissions, no
+        # overshoot). The 2026-05-02 14:44 cascade and 2026-05-03 ❌ flood
+        # both traced to the same-id filter.
         in_flight_n = sum(
             1 for c in self.in_flight_calls
-            if not c.is_local and c.provider == provider and c.model == getattr(model, "name", "")
+            if not c.is_local and c.provider == provider
         )
-
-        # Sum of admission-time token reservations for this same model
-        # across all currently-in-flight tasks. Beckman writes
-        # InFlightCall.est_tokens at reserve_task; this lets pool
-        # pressure deduct projected consumption BEFORE each task's
-        # actual call lands at KDV.record_attempt. Without this,
-        # several admissions in the same 15s window all see fresh
-        # tpm_remaining (KDV's reservation only fires at call-time)
-        # and overshoot — the admission→call gap was the proximate
-        # cause of the 2026-05-02 14:44 saturation cascade.
         in_flight_est_tokens = sum(
             int(getattr(c, "est_tokens", 0) or 0)
             for c in self.in_flight_calls
-            if not c.is_local
-            and c.provider == provider
-            and c.model == getattr(model, "name", "")
+            if not c.is_local and c.provider == provider
         )
 
         # Build an "effective" matrix that subtracts in-flight reservations

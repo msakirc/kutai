@@ -546,6 +546,34 @@ async def on_task_finished(task_id: int, result: dict) -> None:
     actions = rewrite_actions(task, task_ctx, actions)
     await apply_actions(task, actions)
 
+    # ── Continuation hooks ────────────────────────────────────────────────
+    # Dispatch on_complete handler, chain next_task_spec, and resolve any
+    # await_inline waiter — all three are independent (do all that apply).
+    try:
+        import json as _json
+        _beckman_sub = (task_ctx or {}).get("beckman") or {}
+
+        _on_complete = _beckman_sub.get("on_complete")
+        if _on_complete:
+            from general_beckman.continuations import dispatch_on_complete
+            _cont_result = dict(result or {})
+            asyncio.create_task(dispatch_on_complete(_on_complete, task_id, _cont_result))
+
+        _next_spec = _beckman_sub.get("next_task_spec")
+        if _next_spec and isinstance(_next_spec, dict):
+            asyncio.create_task(enqueue(_next_spec, parent_id=task_id))
+
+        if task_id in _inline_waiters:
+            _status = (result or {}).get("status", "completed")
+            _tr = TaskResult(
+                status=_status,
+                result=(result or {}).get("result"),
+                error=(result or {}).get("error"),
+            )
+            resolve_inline(task_id, _tr)
+    except Exception as _ce:
+        log.debug("continuation hook failed", task_id=task_id, error=str(_ce))
+
     # Progress ping: terse per-step notification for workflow-step tasks so
     # the user sees a mission moving forward rather than 2+ minutes of
     # silence. Bookkeeping tasks (mechanical / grader / artifact_summarizer)

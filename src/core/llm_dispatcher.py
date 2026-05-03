@@ -164,6 +164,18 @@ class LLMDispatcher:
             # Iteration 0: reuse Beckman's admission-time Hoca query.
             pick = preselected_pick
         else:
+            # Mid-task urgency bump: when failures is non-empty we're in
+            # retry recursion — task is already in flight, work is
+            # accumulated, losing it costs more than admitting a fresh
+            # task on the same constrained pool. Bump urgency +0.1 so the
+            # admission threshold relaxes and a struggling ReAct loop
+            # can finish. Caller-supplied urgency wins; bump is a floor.
+            # User design 2026-05-03: "mid task urgency of the task can
+            # be a little higher than pre dispatch urgency to help react
+            # loops finish".
+            if failures:
+                _u = float(kwargs.get("urgency", 0.5)) + 0.1
+                kwargs["urgency"] = min(1.0, _u)
             pick = fatih_hoca.select(
                 task=task,
                 agent_type=agent_type,
@@ -177,6 +189,40 @@ class LLMDispatcher:
 
         if pick is None:
             task_desc = task or agent_type or category.value
+            # Forensics: pool drained mid-task. Pressure model failed to
+            # predict that retry recursion would find no candidates. This
+            # is a "serious crime" per user design 2026-05-03 — the task
+            # admitted on iteration 0 with a valid pick, accumulated
+            # failures, and now the eligibility/scoring pipeline returns
+            # nothing. Capture context for offline tuning rather than
+            # reactively tightening admission knobs.
+            try:
+                from src.infra.admission_forensics import record_admission_violation
+                _t_id_forensic = (
+                    _task_obj_kw.get("id") if isinstance(_task_obj_kw, dict) else None
+                )
+                _t_agent_forensic = (
+                    _task_obj_kw.get("agent_type") if isinstance(_task_obj_kw, dict) else None
+                )
+                await record_admission_violation(
+                    site="dispatcher_pool_empty",
+                    phase=category.value,
+                    task_id=_t_id_forensic,
+                    call_category=category.value,
+                    agent_type=_t_agent_forensic or "",
+                    difficulty=difficulty,
+                    reason="no_candidates",
+                    error_category="availability",
+                    error_message=f"No model candidates after {len(failures)} failure(s)",
+                    extra={
+                        "failures_count": len(failures),
+                        "failure_models": [getattr(f, "model", "") for f in failures[:10]],
+                        "is_overhead": is_overhead,
+                        "iteration_n": _iteration_n_kw,
+                    },
+                )
+            except Exception:
+                pass
             if is_overhead:
                 raise RuntimeError(
                     f"OVERHEAD call failed: no model candidates available. "

@@ -719,6 +719,54 @@ async def init_db():
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_pick_log_model ON model_pick_log(picked_model, timestamp DESC)"
     )
+    # ── Admission violations (Q1 forensics) ──────────────────────────────
+    # Captures every "Beckman admitted, KDV/dispatcher rejected" event.
+    # Three sites:
+    #   1. caller.py KDV pre_call refusal post-admission (rate_limit, canary,
+    #      circuit_breaker, daily_exhausted) — admission_time gate failed
+    #   2. dispatcher.py pick is None during retry recursion — pool drained
+    #      mid-task, pressure model failed to predict
+    #   3. caller.py daily_exhausted at call-time — selector eligibility
+    #      missed it
+    # Forensic trail for offline pressure-model tuning. NOT for live
+    # decisions; consumers query this table to identify saturation patterns,
+    # not to gate admission.
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS admission_violations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            site TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            task_id INTEGER,
+            call_category TEXT,
+            agent_type TEXT,
+            difficulty INTEGER,
+            model TEXT,
+            provider TEXT,
+            reason TEXT,
+            wait_seconds REAL,
+            scope TEXT,
+            error_category TEXT,
+            error_message TEXT,
+            in_flight_n INTEGER,
+            queue_total INTEGER,
+            queue_hard INTEGER,
+            snapshot_summary TEXT,
+            extra_json TEXT
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_admission_viol_ts "
+        "ON admission_violations(timestamp DESC)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_admission_viol_model "
+        "ON admission_violations(model, timestamp DESC)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_admission_viol_site "
+        "ON admission_violations(site, timestamp DESC)"
+    )
     # ── KDV (kuleden_donen_var) persistent state ─────────────────────────
     # One row per (scope, scope_key). scope ∈ {"model","provider","breaker"}.
     # snapshot_json holds the dict from RateLimitState/CircuitBreaker

@@ -520,6 +520,24 @@ async def call(
             # killed the whole task — production triage 2026-05-01:
             # "All models failed: Daily limit exhausted for gemini/X"
             # short-circuited before any other candidate was tried.
+            try:
+                from src.infra.admission_forensics import record_admission_violation
+                _t_id_forensic = task_obj.get("id") if isinstance(task_obj, dict) else None
+                _t_agent_forensic = task_obj.get("agent_type") if isinstance(task_obj, dict) else None
+                await record_admission_violation(
+                    site="daily_exhausted_at_call",
+                    phase=call_category,
+                    task_id=_t_id_forensic,
+                    call_category=call_category,
+                    agent_type=_t_agent_forensic or "",
+                    model=model.name,
+                    provider=model.provider,
+                    reason="daily_exhausted",
+                    error_category="daily_exhausted",
+                    error_message=f"Daily limit exhausted for {model.name}",
+                )
+            except Exception:
+                pass
             return CallError(category="daily_exhausted",
                            message=f"Daily limit exhausted for {model.name}",
                            retryable=True)
@@ -533,6 +551,28 @@ async def call(
                 "kdv refusal | model=%s reason=%s scope=%s wait=%.1fs",
                 model.name, why or "rate_limit", scope, wait_secs,
             )
+            # Forensics: Beckman admitted, KDV rejected. The pressure model
+            # didn't predict this. Capture full context for offline tuning
+            # rather than reactively tightening admission knobs.
+            try:
+                from src.infra.admission_forensics import record_admission_violation
+                _t_id_forensic = task_obj.get("id") if isinstance(task_obj, dict) else None
+                _t_agent_forensic = task_obj.get("agent_type") if isinstance(task_obj, dict) else None
+                await record_admission_violation(
+                    site="kdv_pre_call_refusal",
+                    phase=call_category,
+                    task_id=_t_id_forensic,
+                    call_category=call_category,
+                    agent_type=_t_agent_forensic or "",
+                    model=model.name,
+                    provider=model.provider,
+                    reason=why or "rate_limit",
+                    wait_seconds=wait_secs,
+                    scope=scope,
+                    error_category="rate_limited",
+                )
+            except Exception:
+                pass
             # Bounded wait: orchestrator's no-progress watchdog kills tasks
             # at 300s. Daily-quota reset can be 86400s; even minute-window
             # waits stack up. Cap inline sleep at 90s — anything longer

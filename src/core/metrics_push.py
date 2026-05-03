@@ -38,29 +38,50 @@ async def push_metrics(task: dict, result: dict | None) -> None:
 # ── Subroutines ──────────────────────────────────────────────────────────────
 
 async def _push_model_stats(task: dict, result: dict | None) -> None:
+    """Record task-outcome signal for model_stats aggregation.
+
+    Failures matter as much as successes for selector scoring — without
+    them success_rate stays pinned at 1.0 and grading_perf_score collapses
+    to a constant. We accept any terminal status, classify success vs
+    failure via the result.status, and route through ``record_model_call``
+    (the rich aggregator that updates avg_grade / success_rate /
+    total_calls). The previously-used ``update_model_stats`` writes to a
+    different schema and silently no-ops against the live model_stats
+    table, which is why every row shows success_rate=1.00 — the per-LLM
+    call writes from base.py never see failures.
+    """
     if result is None:
         return
     status = result.get("status", "")
-    if status not in ("completed", "ungraded"):
+    if status not in ("completed", "ungraded", "failed", "timed_out", "dlq"):
         return
     model = result.get("model") or ""
     if not model:
         return
     try:
-        from src.infra.db import update_model_stats
+        from src.infra.db import record_model_call
         agent_type = task.get("agent_type", "executor")
-        grade = result.get("grade", 3.0)
-        cost = result.get("cost", 0.0)
-        # latency_ms: use iterations as a rough proxy (iterations * avg_ms),
-        # matching the original _handle_complete logic.
+        # success: completed/ungraded count as success (task finished —
+        # ungraded means the grader couldn't run, not that work failed).
+        # failed/timed_out/dlq count as failure.
+        success = status in ("completed", "ungraded")
+        cost = float(result.get("cost", 0.0) or 0.0)
+        # latency proxy: iterations × avg_ms. record_model_call expects
+        # seconds, not ms — convert explicitly.
         iterations = result.get("iterations") or 1
-        latency_ms = int(iterations * 2000)
-        await update_model_stats(
+        latency_seconds = float(iterations) * 2.0
+        # grade: only pass when the result actually carries it. With
+        # grade=None record_model_call leaves avg_grade untouched. Most
+        # call sites today don't propagate the grader verdict — fixing
+        # that is a separate concern (see grading.py result wireup).
+        raw_grade = result.get("grade")
+        grade = float(raw_grade) if isinstance(raw_grade, (int, float)) else None
+        await record_model_call(
             model=model,
             agent_type=agent_type,
-            success=True,
+            success=success,
             cost=cost,
-            latency_ms=latency_ms,
+            latency=latency_seconds,
             grade=grade,
         )
     except ImportError:

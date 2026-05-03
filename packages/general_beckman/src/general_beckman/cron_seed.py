@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 from src.infra.logging_config import get_logger
 
@@ -69,6 +70,24 @@ INTERNAL_CADENCES: list[dict] = [
         "description": "Aggregate model_call_tokens into step_token_stats percentiles (14-day window)",
         "interval_seconds": 3600,  # hourly
         "payload": {"_marker": "btable_rollup"},
+    },
+    {
+        "title": "monitoring_check",
+        "description": "URL uptime and GitHub repo poll; alerts via notify_user sub-tasks",
+        "interval_seconds": int(os.getenv("MONITOR_INTERVAL", "300")),
+        "payload": {"_executor": "monitoring_check"},
+    },
+    {
+        "title": "vector_maint_wal",
+        "description": "ChromaDB WAL checkpoint to release write-ahead log bloat",
+        "interval_seconds": 1800,
+        "payload": {"_executor": "vector_maint_wal"},
+    },
+    {
+        "title": "vector_maint_snapshot",
+        "description": "ChromaDB directory snapshot for crash recovery (daily)",
+        "interval_seconds": 86400,
+        "payload": {"_executor": "vector_maint_snapshot"},
     },
 ]
 

@@ -106,4 +106,28 @@ async def run(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "monitoring_check":
+        from salako.executors.monitoring_check import run as monitoring_check_run
+        try:
+            res = await monitoring_check_run(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "vector_maint_wal":
+        from salako.executors.vector_maint import run_wal
+        try:
+            res = await run_wal(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "vector_maint_snapshot":
+        from salako.executors.vector_maint import run_snapshot
+        try:
+            res = await run_snapshot(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

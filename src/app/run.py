@@ -432,17 +432,8 @@ async def main():
         _log.warning("API server not started", reason=str(exc))
         api_task = None
 
-    # Phase 14.3: Start monitoring loop in background
-    monitor_task = None
-    try:
-        from src.infra.monitoring import run_monitoring_loop
-        monitor_task = asyncio.create_task(
-            run_monitoring_loop(),
-            name="monitoring_loop",
-        )
-        _log.info("Monitoring loop started")
-    except Exception as exc:
-        _log.debug("Monitoring loop not started", reason=str(exc))
+    # Phase 14.3: Monitoring is now a cron-seeded mechanical task routed via
+    # salako monitoring_check executor — no background loop needed here.
 
     # Phase 3: Connect to NerdHerd sidecar (managed by Yaşar Usta)
     try:
@@ -680,8 +671,6 @@ async def main():
         # warning the handoff flagged (item L).
         if api_task and not api_task.done():
             api_task.cancel()
-        if monitor_task and not monitor_task.done():
-            monitor_task.cancel()
         if _snapshot_task and not _snapshot_task.done():
             _snapshot_task.cancel()
         if _vector_maint_task and not _vector_maint_task.done():

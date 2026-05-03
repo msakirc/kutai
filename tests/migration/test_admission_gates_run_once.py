@@ -15,6 +15,30 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
+@pytest.fixture(autouse=True)
+async def _reset_db_singleton():
+    """Drop the module-level cached aiosqlite connection between tests.
+
+    Without this, tests that share the pytest session inherit whichever
+    DB_PATH the first test opened — monkeypatch.setenv on later tests
+    has no effect because the singleton is already bound.
+    """
+    import src.infra.db as _dbmod
+    if _dbmod._db_connection is not None:
+        try:
+            await _dbmod._db_connection.close()
+        except Exception:
+            pass
+    _dbmod._db_connection = None
+    yield
+    if _dbmod._db_connection is not None:
+        try:
+            await _dbmod._db_connection.close()
+        except Exception:
+            pass
+    _dbmod._db_connection = None
+
+
 # ── helpers ────────────────────────────────────────────────────────────────
 
 def _make_pick(model_name="test-model", is_local=False):
@@ -72,7 +96,8 @@ def _make_task(task_id=999, agent_type="main_work", pick=None, context_extra=Non
 @pytest.mark.asyncio
 async def test_fatih_hoca_select_called_only_in_beckman(tmp_path, monkeypatch):
     """When a task carries preselected_pick, dispatcher must NOT call fatih_hoca.select again."""
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    import src.infra.db as _dbmod
+    monkeypatch.setattr(_dbmod, "DB_PATH", str(tmp_path / "test.db"))
 
     pick = _make_pick("cloud-model")
     select_call_count = {"n": 0}
@@ -141,7 +166,8 @@ async def test_fatih_hoca_select_called_only_in_beckman(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_dispatcher_dispatch_receives_selected_model_in_spec(tmp_path, monkeypatch):
     """Beckman writes selected_model into llm_call; dispatch() uses it instead of re-selecting."""
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    import src.infra.db as _dbmod
+    monkeypatch.setattr(_dbmod, "DB_PATH", str(tmp_path / "test.db"))
 
     pick = _make_pick("known-model-xyz")
 
@@ -200,7 +226,8 @@ async def test_dispatcher_dispatch_receives_selected_model_in_spec(tmp_path, mon
 @pytest.mark.asyncio
 async def test_in_flight_slot_reserved_before_dispatch(tmp_path, monkeypatch):
     """reserve_task must have been called (by Beckman) before dispatcher.dispatch fires."""
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    import src.infra.db as _dbmod
+    monkeypatch.setattr(_dbmod, "DB_PATH", str(tmp_path / "test.db"))
 
     pick = _make_pick("slot-test-model")
     events = []
@@ -269,7 +296,8 @@ async def test_dispatcher_passes_zero_est_tokens_to_begin_call(tmp_path, monkeyp
     """After Task 5, dispatcher no longer computes est_tokens for begin_call.
     It passes 0; begin_call's max(prior, 0) keeps the Beckman-reserved value.
     """
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    import src.infra.db as _dbmod
+    monkeypatch.setattr(_dbmod, "DB_PATH", str(tmp_path / "test.db"))
 
     pick = _make_pick("est-test-model")
     captured_est = {"value": None}
@@ -336,7 +364,8 @@ async def test_dispatcher_passes_zero_est_tokens_to_begin_call(tmp_path, monkeyp
 @pytest.mark.asyncio
 async def test_beckman_writes_selected_model_to_task(tmp_path, monkeypatch):
     """next_task() must set task['context']['llm_call']['selected_model'] = pick.model.name."""
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    import src.infra.db as _dbmod
+    monkeypatch.setattr(_dbmod, "DB_PATH", str(tmp_path / "test.db"))
 
     import json
     from src.infra.db import init_db, add_task

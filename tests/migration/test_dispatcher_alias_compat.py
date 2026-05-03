@@ -12,7 +12,8 @@ from unittest.mock import patch
 @pytest.mark.asyncio
 async def test_request_alias_routes_through_beckman_enqueue(tmp_path, monkeypatch):
     """request() must call beckman.enqueue with await_inline=True and return mapped response."""
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    import src.infra.db as _dbmod
+    monkeypatch.setattr(_dbmod, "DB_PATH", str(tmp_path / "test.db"))
     from src.infra.db import init_db
     await init_db()
 
@@ -47,7 +48,8 @@ async def test_request_alias_routes_through_beckman_enqueue(tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_request_main_work_category_maps_to_main_work_kind(tmp_path, monkeypatch):
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    import src.infra.db as _dbmod
+    monkeypatch.setattr(_dbmod, "DB_PATH", str(tmp_path / "test.db"))
     from src.infra.db import init_db
     await init_db()
     captured = {}
@@ -66,7 +68,8 @@ async def test_request_main_work_category_maps_to_main_work_kind(tmp_path, monke
 @pytest.mark.asyncio
 async def test_request_propagates_error_on_failure(tmp_path, monkeypatch):
     """When TaskResult.status == 'failed', request() should raise ModelCallFailed."""
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    import src.infra.db as _dbmod
+    monkeypatch.setattr(_dbmod, "DB_PATH", str(tmp_path / "test.db"))
     from src.infra.db import init_db
     await init_db()
 
@@ -84,7 +87,8 @@ async def test_request_propagates_error_on_failure(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_request_kwargs_embedded_in_context(tmp_path, monkeypatch):
     """Ensure key kwargs are preserved inside context.llm_call."""
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    import src.infra.db as _dbmod
+    monkeypatch.setattr(_dbmod, "DB_PATH", str(tmp_path / "test.db"))
     from src.infra.db import init_db
     await init_db()
 
@@ -129,7 +133,8 @@ async def test_request_kwargs_embedded_in_context(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_request_title_derives_from_task_kwarg(tmp_path, monkeypatch):
     """spec.title should be derived from task kwarg."""
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    import src.infra.db as _dbmod
+    monkeypatch.setattr(_dbmod, "DB_PATH", str(tmp_path / "test.db"))
     from src.infra.db import init_db
     await init_db()
 
@@ -154,7 +159,8 @@ async def test_request_title_derives_from_task_kwarg(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_overhead_failure_raises_runtime_error(tmp_path, monkeypatch):
     """OVERHEAD failure should also raise (ModelCallFailed or RuntimeError)."""
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    import src.infra.db as _dbmod
+    monkeypatch.setattr(_dbmod, "DB_PATH", str(tmp_path / "test.db"))
     from src.infra.db import init_db
     await init_db()
 

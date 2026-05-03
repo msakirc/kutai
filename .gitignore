@@ -18,6 +18,16 @@ data/*.db
 data/*.db-shm
 data/*.db-wal
 
+# Production SQLite at repo root (path overridden via DB_PATH env)
+/kutai.db
+/kutai.db-shm
+/kutai.db-wal
+
+# Legacy dead-models JSON state (migrated to SQLite registry, Step 5b)
+# .archived kept as 1-week rollback safety net by operator; never commit
+.dead_models.json
+.dead_models.json.*
+
 # Build / packaging artifacts
 *.egg-info/
 dist/

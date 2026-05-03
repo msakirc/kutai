@@ -190,31 +190,12 @@ def _apply_utilization_layer(
         # gate needed.
         sm.urgency = scalar
 
-        # Reliability multiplier: per-model rolling success rate from KDV
-        # (plumbed through CloudProviderState.models[mid].recent_success_rate
-        # by the kuleden_donen_var/nerd_herd_adapter). Floored at 0.1 so
-        # a fully-broken model can still be picked in true zero-alternative
-        # situations rather than disappearing — pool-pressure stays as
-        # the only kill switch. Floor matches the design: "we should not
-        # dispatch a task for likely fail models with questionable
-        # pressure" — flaky models drop in rank but stay eligible.
-        # No-op when prov_state or model entry missing (success_rate
-        # defaults to 1.0 → multiplier is 1.0, no rank change).
-        reliability = 1.0
-        if prov_state is not None:
-            mstate = getattr(prov_state, "models", {}).get(
-                getattr(sm.model, "litellm_name", ""),
-            ) or getattr(prov_state, "models", {}).get(
-                getattr(sm.model, "name", ""),
-            )
-            if mstate is not None:
-                reliability = max(0.1, float(
-                    getattr(mstate, "recent_success_rate", 1.0)
-                ))
-        if reliability < 1.0:
-            sm.score *= reliability
-            sm.composite_score = sm.score
-            sm.reasons.append(f"reliability={reliability:.2f}")
+        # Reliability is now a pressure signal (S10_failure) instead of a
+        # post-composite multiplier. The signal flows through
+        # OTHER_BUCKET worst-wins + M3 difficulty weights, naturally
+        # down-weighting flaky models without the prior 0.1 floor that
+        # let fully-broken models stay competitive. Single source of
+        # truth = S10. (2026-05-03 deletion of reliability multiplier)
 
         if scalar == 0.0:
             continue

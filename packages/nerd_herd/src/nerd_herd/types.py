@@ -127,15 +127,21 @@ class CloudModelState:
     model_id: str = ""
     utilization_pct: float = 0.0
     limits: RateLimitMatrix = field(default_factory=RateLimitMatrix)
-    # Rolling success rate over the last ~30 calls / 1h. 1.0 == perfect
-    # or no-data (don't penalize unknowns). Lower values flow through
-    # ranking as a continuous score multiplier — flaky models drop in
-    # rank but stay eligible. Production 2026-05-02 design decision:
-    # "we should not dispatch a task for likely fail models with
-    # questionable pressure" — reliability becomes a pressure signal,
-    # not a binary kill-switch. Source: kuleden_donen_var.KuledenDonenVar
-    # rolling outcome window via the nerd_herd_adapter.
+    # Rolling success rate over the last ~30 calls / 24h. 1.0 == perfect
+    # or no-data. Source: kuleden_donen_var rolling outcome window via
+    # nerd_herd_adapter. Read by S10_failure pressure signal — flaky
+    # models contribute a negative scalar through OTHER_BUCKET, ranking
+    # naturally down-weights them. Replaced the prior post-composite
+    # multiplier in ranking.py with a real signal (2026-05-03).
     recent_success_rate: float = 1.0
+    # Sample count in the rolling outcome window. S10 uses this to
+    # gate its signal: below min_samples (default 5) the signal is 0
+    # (no data, no opinion). Without this, freshly-revived models
+    # default to 1.0 success_rate and rank as if perfectly reliable,
+    # producing the revival cycle (mark_dead expires → empty history
+    # → ranks top → fails → ❌). Now: empty history → S10=0 (neutral),
+    # provider-prior carries the signal until samples accumulate.
+    recent_samples_n: int = 0
     # KDV's daily-exhausted state for the per-model rpd cell. True when
     # KDV.pre_call would refuse with daily_exhausted reason — i.e. the
     # provider has signaled the model has hit its daily quota and won't
@@ -147,6 +153,15 @@ class CloudModelState:
     # selector kept admitting tasks on gemini ids that KDV.pre_call
     # would refuse — the two views of capacity diverged.
     daily_exhausted: bool = False
+    # Per-minute cooldown installed by an RFC 7231 Retry-After header (or
+    # x-ratelimit-reset-* on a 429). True when the provider has explicitly
+    # told KDV "do not call this model before T" and T is still in the
+    # future. Selector eligibility must reject — otherwise after the 5s
+    # freshness window expires, KDV's rpm_remaining property reverts to
+    # sliding-window math, surfacing fake capacity, and the next call
+    # eats a guaranteed 429. Source: kuleden_donen_var.RateLimitManager
+    # .is_rpm_cooldown() — reads raw `_header_rpm_reset_at` field directly.
+    rpm_cooldown: bool = False
 
 
 @dataclass
@@ -338,7 +353,15 @@ class SystemSnapshot:
             "S9": s9_perishability(model, local=self.local, vram_avail_mb=self.vram_available_mb,
                                    matrix=matrix, task_difficulty=task_difficulty, now=now,
                                    in_flight_calls=self.in_flight_calls),
-            "S10": s10_failure(consecutive_failures=consecutive_failures),
+            "S10": s10_failure(
+                success_rate=(
+                    model_state.recent_success_rate if model_state else 1.0
+                ),
+                samples_n=(
+                    getattr(model_state, "recent_samples_n", 0) if model_state else 0
+                ),
+                consecutive_failures=consecutive_failures,
+            ),
             "S11": s11_cost(est_call_cost=est_call_cost,
                             daily_cost_remaining=(matrix.cpd.remaining or 0.0)),
         }

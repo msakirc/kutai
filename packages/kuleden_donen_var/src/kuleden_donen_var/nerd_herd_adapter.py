@@ -96,15 +96,19 @@ def build_cloud_provider_state(
             matrix = _worst_of(mstate, prov_state)
         else:
             matrix = _matrix(mstate)
-        # Reliability signal: rolling success rate over recent calls.
-        # 1.0 when no data — selector treats as fully reliable,
-        # consistent with KDV's recent_success_rate semantics. Flaky
-        # models surface here and feed the ranking layer's reliability
-        # multiplier.
+        # Reliability signal: rolling success rate + sample count
+        # plumbed for the S10_failure pressure signal. samples_n gates
+        # the signal — below min_samples (default 5) S10 returns 0 (no
+        # data, no opinion), preventing freshly-revived models from
+        # ranking as "perfectly reliable" on an empty window.
         try:
             success_rate = float(kdv.recent_success_rate(mid))
         except Exception:
             success_rate = 1.0
+        try:
+            samples_n = int(kdv.recent_samples_n(mid))
+        except Exception:
+            samples_n = 0
         # Daily-exhausted: surface KDV's per-model rpd-exhausted state
         # so selector eligibility can reject before ranking. Pre-this,
         # selector saw stale rpd_remaining (providers like gemini don't
@@ -114,10 +118,22 @@ def build_cloud_provider_state(
             daily_out = bool(kdv._rate_limiter.is_daily_exhausted(mid))
         except Exception:
             daily_out = False
+        # Surface KDV's rpm cooldown (Retry-After / x-ratelimit-reset
+        # floor with remaining=0) so selector eligibility can reject
+        # before ranking. Reads raw _header_* fields under the hood —
+        # bypasses the 5s freshness window that gates the public
+        # rpm_remaining property, since retry-after horizons routinely
+        # exceed it.
+        try:
+            rpm_cool = bool(kdv._rate_limiter.is_rpm_cooldown(mid))
+        except Exception:
+            rpm_cool = False
         models[mid] = CloudModelState(
             model_id=mid, limits=matrix,
             recent_success_rate=success_rate,
+            recent_samples_n=samples_n,
             daily_exhausted=daily_out,
+            rpm_cooldown=rpm_cool,
         )
 
     cb = kdv._circuit_breakers.get(provider)

@@ -453,6 +453,22 @@ class KuledenDonenVar:
         ok = sum(1 for _, s in dq if s)
         return ok / len(dq)
 
+    def recent_samples_n(self, model_id: str) -> int:
+        """Count of outcome entries currently in the rolling window for
+        ``model_id``, after age trimming. Source for S10's min-samples
+        gate — when below threshold, the signal returns 0 (neutral).
+        Without exposing this, S10 had to rely on success_rate=1.0 as a
+        no-data sentinel, which collided with "100% success" actual
+        data."""
+        dq = self._outcomes.get(model_id)
+        if not dq:
+            return 0
+        import time as _time
+        cutoff = _time.time() - self._OUTCOME_MAX_AGE_SECONDS
+        while dq and dq[0][0] < cutoff:
+            dq.popleft()
+        return len(dq)
+
     def record_failure(
         self,
         model_id: str,

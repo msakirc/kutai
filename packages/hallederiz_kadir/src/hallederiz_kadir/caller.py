@@ -183,6 +183,34 @@ def _check_quality(content):
     return (True, "")
 
 
+def _extract_reasoning_tokens(raw_result) -> int:
+    """Pull reasoning token count from a litellm response.
+
+    Two locations: top-level ``usage.reasoning_tokens`` (older litellm
+    field, deepseek path) and ``usage.completion_tokens_details.reasoning_tokens``
+    (OpenAI spec — groq, cerebras, gemini thinking variants). First hit wins.
+    """
+    usage = getattr(raw_result, "usage", None)
+    if usage is None:
+        return 0
+    top = getattr(usage, "reasoning_tokens", None)
+    if top:
+        try:
+            return int(top)
+        except (TypeError, ValueError):
+            pass
+    details = getattr(usage, "completion_tokens_details", None)
+    if details is None:
+        return 0
+    nested = getattr(details, "reasoning_tokens", None)
+    if nested is None and isinstance(details, dict):
+        nested = details.get("reasoning_tokens")
+    try:
+        return int(nested or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 # ─── Streaming ─────────────────────────────────────────────────────────────
 
 async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
@@ -1036,7 +1064,11 @@ async def call(
             # exposed usage (Ollama path, or older OpenRouter routing).
             prompt_tokens=(raw_result.usage.prompt_tokens or 0) if getattr(raw_result, "usage", None) else 0,
             completion_tokens=(raw_result.usage.completion_tokens or 0) if getattr(raw_result, "usage", None) else 0,
-            reasoning_tokens=getattr(raw_result.usage, "reasoning_tokens", 0) if getattr(raw_result, "usage", None) else 0,
+            # Reasoning tokens may live at usage.reasoning_tokens (older
+            # litellm field) OR usage.completion_tokens_details.reasoning_tokens
+            # (OpenAI spec; populated by groq, cerebras, deepseek, gemini
+            # thinking variants). Check both — first hit wins, defaults to 0.
+            reasoning_tokens=_extract_reasoning_tokens(raw_result),
             total_tokens=total_tokens,
             duration_ms=int(call_latency * 1000),
             iteration_n=int(iteration_n or 0),

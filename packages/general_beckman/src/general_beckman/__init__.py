@@ -676,17 +676,6 @@ async def _send_step_progress(task: dict, status: str, result: dict) -> None:
             return
         if status in ("needs_clarification", "failed") and live_status == "completed":
             return
-        # Suppress ❌ on transient retries. Beckman's apply layer rewrites
-        # availability / rate_limit / timeout failures back to status=
-        # "pending" (with next_retry_at) — only a true DLQ leaves the row
-        # as status="failed". Without this, the user sees ❌ for every
-        # retry attempt during a saturation cascade (production 2026-05-03:
-        # ~50 ❌ pings in 2 minutes after a single capacity dip), even
-        # though the work IS being retried. Live status is the source of
-        # truth — if Beckman put the task back in queue, the workflow
-        # is still progressing.
-        if status == "failed" and live_status != "failed":
-            return
     from src.app.telegram_bot import get_telegram
     tg = get_telegram()
     if tg is None:

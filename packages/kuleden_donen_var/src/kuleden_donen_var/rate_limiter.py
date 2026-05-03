@@ -42,6 +42,15 @@ class RateLimitState:
     _header_tpm_reset_at: float | None = field(default=None, repr=False)
     _limits_discovered: bool = field(default=False, repr=False)
     _last_header_update: float = field(default=0.0, repr=False)
+    # One-shot flag: True after the cold-start backfill in
+    # update_from_snapshot has reconciled local sliding-window count with
+    # the provider's authoritative remaining. Without this guard, a bucket
+    # that legitimately re-saturates mid-runtime (record_attempt brings
+    # current_rpm up to provider's view) would be repeatedly backfilled
+    # against itself. Backfill must only fire on first authoritative
+    # snapshot — i.e. immediately after restart when local state is empty
+    # but provider's 60s window still remembers prior process's burn.
+    _backfilled: bool = field(default=False, repr=False)
 
     # Daily limits (Cerebras, SambaNova, Gemini)
     rpd_limit: int | None = field(default=None, repr=False)
@@ -524,6 +533,64 @@ class RateLimitState:
             if self._header_rpm_reset_at is None or floor > self._header_rpm_reset_at:
                 self._header_rpm_reset_at = floor
             self._header_rpm_remaining = 0
+
+        # Cold-start backfill: provider's 60s window survives our restart;
+        # KDV's local _request_timestamps does not. Without reconciliation,
+        # subsequent admissions admit on stale local count (often 0) while
+        # the provider rejects on its remembered burn from the prior
+        # process. Production cause of the 2026-05-03 cerebras 08:54 burst:
+        # 11 fresh admissions in 2s, all 429'd because Cerebras's window
+        # already counted ~25 calls from before restart. With backfill, the
+        # first response's `remaining` lands here, we synthesize the gap of
+        # ghost timestamps so current_rpm reflects provider's view, and the
+        # admission gate immediately starts denying further calls until the
+        # bucket actually clears. Once-per-state guarded by _backfilled —
+        # mid-runtime re-saturation comes through record_attempt and must
+        # NOT be reconciled this way (would double-count its own slots).
+        if not self._backfilled:
+            backfilled_any = False
+            if snap.rpm_limit is not None and snap.rpm_remaining is not None:
+                consumed_provider = max(0, snap.rpm_limit - snap.rpm_remaining)
+                local_count = len(self._request_timestamps)
+                gap = consumed_provider - local_count
+                if gap > 0:
+                    # Place each ghost so it ages out of the 60s window
+                    # exactly when the provider's bucket clears. With
+                    # reset_at known: ghost_ts = now - (60 - reset_in). When
+                    # now+reset_in arrives, age = 60s, _cleanup drops it.
+                    # Without reset_at: default reset_in = 30s (mid-window).
+                    # Cerebras success responses don't include reset, so
+                    # most cases fall here.
+                    reset_in = 30.0
+                    if snap.rpm_reset_at is not None:
+                        reset_in = max(1.0, snap.rpm_reset_at - now)
+                    ghost_ts = now - (60.0 - reset_in)
+                    self._request_timestamps.extend([ghost_ts] * gap)
+                    logger.info(
+                        f"Cold-start RPM backfill: provider {consumed_provider}/"
+                        f"{snap.rpm_limit} consumed, local had {local_count}; "
+                        f"added {gap} ghost(s) at age {60.0 - reset_in:.0f}s."
+                    )
+                backfilled_any = True
+            if snap.tpm_limit is not None and snap.tpm_remaining is not None:
+                consumed_tpm = max(0, snap.tpm_limit - snap.tpm_remaining)
+                local_tpm = sum(c for _, c in self._token_log)
+                tpm_gap = consumed_tpm - local_tpm
+                if tpm_gap > 0:
+                    tpm_reset_in = 30.0
+                    if snap.tpm_reset_at is not None:
+                        tpm_reset_in = max(1.0, snap.tpm_reset_at - now)
+                    tpm_ghost_ts = now - (60.0 - tpm_reset_in)
+                    self._token_log.append((tpm_ghost_ts, tpm_gap))
+                    logger.info(
+                        f"Cold-start TPM backfill: provider "
+                        f"{consumed_tpm}/{snap.tpm_limit} consumed, local had "
+                        f"{local_tpm}; ghosted {tpm_gap} tokens at age "
+                        f"{60.0 - tpm_reset_in:.0f}s."
+                    )
+                backfilled_any = True
+            if backfilled_any:
+                self._backfilled = True
 
 
 class RateLimitManager:

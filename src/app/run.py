@@ -597,15 +597,14 @@ async def main():
     # to the metadata segment" on every subsequent op. The sync chroma calls
     # then block the event loop > 120s, tripping Yaşar Usta's heartbeat
     # watchdog and causing kill-restart loops (2026-04-27 incident).
-    # Pre-flight probe heals corrupt collections BEFORE serving traffic;
-    # background loop runs WAL-checkpoint + daily snapshot for prevention.
-    _vector_maint_task = None
+    # Pre-flight probe heals corrupt collections BEFORE serving traffic.
+    # WAL-checkpoint + daily snapshot are now cron-seeded mechanical tasks
+    # routed through salako vector_maint_wal / vector_maint_snapshot executors
+    # (wrapped in run_in_executor so they never block the event loop).
     try:
         from src.memory.vector_store import (
             init_store as _vs_init,
             integrity_probe as _vs_probe,
-            wal_checkpoint as _vs_wal,
-            snapshot_chroma as _vs_snapshot,
         )
         if await _vs_init():
             _probe = await _vs_probe()
@@ -615,35 +614,6 @@ async def main():
             else:
                 _log.info("Vector store pre-flight ok",
                           collections=len(_probe))
-
-            async def _vector_maint_loop():
-                # WAL checkpoint every 30 min, snapshot every 24h.
-                wal_every = 1800
-                snap_every = 86400
-                last_snap = 0.0
-                # Snapshot on first iteration if there's no recent backup.
-                try:
-                    await _vs_snapshot(keep=3)
-                    last_snap = time.time()
-                except Exception:
-                    pass
-                while True:
-                    try:
-                        await asyncio.sleep(wal_every)
-                        await _vs_wal()
-                        if time.time() - last_snap >= snap_every:
-                            dst = await _vs_snapshot(keep=3)
-                            if dst:
-                                last_snap = time.time()
-                                _log.info("Chroma snapshot taken", path=dst)
-                    except asyncio.CancelledError:
-                        break
-                    except Exception as _e:
-                        _log.debug(f"vector maint tick failed: {_e!r}")
-
-            _vector_maint_task = asyncio.create_task(
-                _vector_maint_loop(), name="vector_maint"
-            )
     except Exception as _exc:
         _log.warning(f"Vector store pre-flight skipped: {_exc!r}")
 
@@ -673,8 +643,6 @@ async def main():
             api_task.cancel()
         if _snapshot_task and not _snapshot_task.done():
             _snapshot_task.cancel()
-        if _vector_maint_task and not _vector_maint_task.done():
-            _vector_maint_task.cancel()
         if _nerd_herd:
             try:
                 await _nerd_herd.close()

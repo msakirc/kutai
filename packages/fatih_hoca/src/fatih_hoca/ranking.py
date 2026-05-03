@@ -70,27 +70,20 @@ def _build_failure_index(failures: list[Failure]) -> dict[str, list[Failure]]:
     return idx
 
 
-def _provider_from_litellm(litellm_name: str) -> str:
-    """Extract provider prefix from 'provider/model' litellm_name."""
-    if "/" in litellm_name:
-        return litellm_name.split("/")[0]
-    return ""
-
-
 def _failure_penalty(
     model: ModelInfo,
     failure_idx: dict[str, list[Failure]],
-    all_failures: list[Failure],
-    snapshot: SystemSnapshot,
 ) -> tuple[float, bool, list[str]]:
     """
     Compute a multiplier (0-1) and exclusion flag for failure adaptation.
 
-    Rate-limit policy (narrowed 2026-04-17):
-    - Per-model 429 → penalize ONLY that litellm_name (0.3×).
-    - Provider-wide penalty (0.3× on siblings) applies ONLY when
-      snapshot.cloud[provider].consecutive_failures >= 3. This prevents
-      a single-model quota hit from poisoning healthy siblings.
+    Per-model 429 → penalize ONLY that litellm_name (0.3×). The provider-
+    wide sibling-poison branch on `consecutive_failures >= 3` was removed
+    2026-05-04 — `CloudProviderState.consecutive_failures` has no live
+    writer in cloud paths (only api_reliability table writes it for free-
+    API tracking), so the gate could never fire in production. KDV's
+    circuit breaker plus S10's per-model rolling rate already cover the
+    "provider is failing" case; sibling poison was vestigial.
 
     Returns (multiplier, exclude, reasons).
     """
@@ -115,25 +108,6 @@ def _failure_penalty(
         elif f.reason == "rate_limit":
             multiplier = min(multiplier, 0.3)
             reasons.append("fail_rate_limit")
-
-    # Provider-wide rate-limit penalty: ONLY when the circuit breaker trips
-    # (consecutive_failures >= 3). Otherwise a single model's 429 does not
-    # poison its siblings.
-    model_provider = model.provider
-    if model_provider and getattr(model, "location", None) == "cloud":
-        prov_state = snapshot.cloud.get(model_provider) if snapshot else None
-        consec = getattr(prov_state, "consecutive_failures", 0) if prov_state else 0
-        if consec >= 3:
-            for failure in all_failures:
-                if failure.reason != "rate_limit":
-                    continue
-                if failure.model == model.litellm_name:
-                    continue  # already counted as direct
-                fp = _provider_from_litellm(failure.model)
-                if fp == model_provider:
-                    multiplier = min(multiplier, 0.3)
-                    reasons.append(f"fail_provider_rate_limit({model_provider},consec={consec})")
-                    break
 
     return multiplier, exclude, reasons
 
@@ -168,7 +142,11 @@ def _apply_utilization_layer(
         # btable empty-dict cold-start; populated by Beckman rollup cron (Task 26)
         estimates = estimate_for(task_proxy, btable={},
                                  model_is_thinking=getattr(sm.model, "is_thinking", False))
-        prov_state = snapshot.cloud.get(getattr(sm.model, "provider", ""))
+        # consecutive_failures left at 0: the per-provider streak field
+        # has no live writer in cloud paths (api_reliability writes it
+        # only for free-API tracking). S10's per-model rolling rate +
+        # provider prior carry the reliability signal — the legacy
+        # streak fallback is vestigial. (2026-05-04 cleanup)
         breakdown = snapshot.pressure_for(
             sm.model,
             task_difficulty=task_difficulty,
@@ -178,9 +156,6 @@ def _apply_utilization_layer(
             est_call_cost=getattr(sm.model, "estimated_cost",
                                   lambda *_: 0.0)(estimates.in_tokens, estimates.out_tokens),
             cap_needed=CAP_NEEDED_BY_DIFFICULTY.get(task_difficulty, 5.0),
-            consecutive_failures=(
-                getattr(prov_state, "consecutive_failures", 0) if prov_state else 0
-            ),
         )
         scalar = breakdown.scalar
         # Reuse `urgency` column for pressure scalar — telemetry schema continuity.
@@ -254,7 +229,7 @@ def rank_candidates(
         reasons: list[str] = []
 
         # ── Failure adaptation: exclude or penalize failed models ──
-        fail_mult, fail_exclude, fail_reasons = _failure_penalty(model, failure_idx, failures, snapshot)
+        fail_mult, fail_exclude, fail_reasons = _failure_penalty(model, failure_idx)
         if fail_exclude:
             logger.debug(
                 "model excluded by failure adaptation: model=%s reasons=%s",

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable
 
+from nerd_herd.signals.s10_failure import MIN_SAMPLES as S10_MIN_SAMPLES
+
 if TYPE_CHECKING:
     from nerd_herd.types import CloudProviderState
 
@@ -156,17 +158,29 @@ def build_cloud_provider_state(
             matrix = _matrix(mstate)
         # Reliability signal: rolling success rate + sample count
         # plumbed for the S10_failure pressure signal. samples_n gates
-        # the signal — below min_samples (default 5) S10 returns 0 (no
-        # data, no opinion), preventing freshly-revived models from
-        # ranking as "perfectly reliable" on an empty window.
-        try:
-            success_rate = float(kdv.recent_success_rate(mid))
-        except Exception:
-            success_rate = 1.0
+        # the signal — below MIN_SAMPLES (imported from s10_failure)
+        # S10 returns 0 (no data, no opinion), preventing freshly-
+        # revived models from ranking as "perfectly reliable" on an
+        # empty window.
+        #
+        # The adapter ALSO gates success_rate at the same threshold so
+        # downstream consumers don't see KDV's no-data sentinel
+        # (`recent_success_rate(mid)` returns 1.0 when samples < 5,
+        # which would lie if anyone ever read it without consulting
+        # samples_n). When below MIN_SAMPLES, leave success_rate at
+        # its CloudModelState default. Both sides import the same
+        # MIN_SAMPLES so the threshold can't drift between layers.
         try:
             samples_n = int(kdv.recent_samples_n(mid))
         except Exception:
             samples_n = 0
+        if samples_n >= S10_MIN_SAMPLES:
+            try:
+                success_rate = float(kdv.recent_success_rate(mid))
+            except Exception:
+                success_rate = 1.0
+        else:
+            success_rate = 1.0  # ignored by S10; matches CloudModelState default
         # Daily-exhausted: surface KDV's per-model rpd-exhausted state
         # so selector eligibility can reject before ranking. Pre-this,
         # selector saw stale rpd_remaining (providers like gemini don't

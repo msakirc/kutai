@@ -258,3 +258,26 @@ def test_adapter_openrouter_splits_prior_by_subvendor(kdv):
     assert claude == pytest.approx(1.0)
     assert sonnet == pytest.approx(1.0)
     assert tencent == pytest.approx(0.0)
+
+
+def test_adapter_openrouter_two_segment_id_gets_no_prior(kdv):
+    """Openrouter id with only 2 path segments (no sub-vendor) returns
+    None from _prior_key — the model gets prior=None forever AND is
+    excluded from any other openrouter group's aggregate. Documents
+    the conservative choice: rather than fall back to an
+    "openrouter::all" bucket that would smear failure modes across
+    vendors, leave the malformed id rank-blind. Real openrouter ids
+    have 3+ segments so this only fires for misregistered entries."""
+    kdv.register("openrouter/claude-3", "openrouter", rpm=30, tpm=131072)
+    kdv.register("openrouter/anthropic/claude:free", "openrouter",
+                 rpm=30, tpm=131072)
+    # Sibling under proper sub-vendor key has plenty of data.
+    for _ in range(4):
+        kdv.post_call("openrouter/anthropic/claude:free", "openrouter",
+                      headers={}, token_count=10)
+
+    state = build_cloud_provider_state(kdv, "openrouter")
+    bad = state.models["openrouter/claude-3"].provider_prior_rate
+    good = state.models["openrouter/anthropic/claude:free"].provider_prior_rate
+    assert bad is None
+    assert good == pytest.approx(1.0)

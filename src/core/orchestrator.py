@@ -261,8 +261,16 @@ class Orchestrator:
                 _is_raw = False
             if _is_raw:
                 from src.core.llm_dispatcher import get_dispatcher
+                # Forward the in-memory preselected_pick that Beckman attached at
+                # admission so dispatcher.dispatch() can skip re-selection.
+                # Admission gates (fatih_hoca.select, pool_pressure, reserve_task)
+                # already ran in Beckman; dispatcher is pure call-execution here.
                 _dispatch_result = await get_dispatcher().dispatch(
-                    {"context": _ctx_rd, "kind": task.get("kind", "main_work")}
+                    {
+                        "context": _ctx_rd,
+                        "kind": task.get("kind", "main_work"),
+                        "preselected_pick": task.get("preselected_pick"),
+                    }
                 )
                 return {
                     "status": "completed",

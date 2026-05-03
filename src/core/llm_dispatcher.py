@@ -428,22 +428,15 @@ class LLMDispatcher:
         except Exception:
             pass
 
-        # est_tokens for in_flight slot — closes admission→call gap on
-        # paths that didn't go through Beckman.reserve_task (overhead
-        # calls, hooks, telegram-driven, classifiers, shopping). Same
-        # formula caller.py uses for KDV.record_attempt's TPM
-        # reservation, so pool_pressure's in_flight overlay matches the
-        # real reservation that lands a few hundred ms later. When
-        # caller didn't supply estimates, falls back to 0 — no worse
-        # than today.
-        _est_in = int(kwargs.get("estimated_input_tokens", 0) or 0)
-        _est_out = int(kwargs.get("estimated_output_tokens", 0) or 0)
-        if _est_in > 0:
-            _call_est_tokens = _est_in + _est_out + 256
-        elif _est_out > 0:
-            _call_est_tokens = _est_out * 3
-        else:
-            _call_est_tokens = 0
+        # est_tokens for in_flight begin_call: Beckman's reserve_task already set
+        # the projection for admitted tasks via fatih_hoca.estimates.estimate_for.
+        # begin_call's max(prior_est, passed) logic preserves the Beckman value
+        # regardless of what we pass here.  Pass 0 — do not recompute.
+        # (Phase 5 cleanup: est_tokens shim deleted from dispatcher. Pre-2026-05-04
+        # this computed _est_in + _est_out + 256 locally and overlapped with
+        # reserve_task's projection. All callers now route through Beckman so
+        # the local shim is dead code.)
+        _call_est_tokens = 0
 
         _call_id = await _begin_call(
             category=category.value,
@@ -641,8 +634,11 @@ class LLMDispatcher:
         ``context.llm_call.raw_dispatch == True``.  Re-hydrates the spec
         into _do_dispatch() kwargs and returns the legacy response dict.
 
-        This keeps all select/load/call/retry logic inside _do_dispatch —
-        nothing moves in this task.
+        Admission gates (fatih_hoca.select, in_flight.reserve_task, pool_pressure)
+        have already run in Beckman's next_task(). This method is pure call-execution:
+        load → hallederiz_kadir → retry. The Beckman-selected model is forwarded via
+        spec["preselected_pick"] (in-memory Pick object) + spec.context.llm_call.selected_model
+        (DB-serialised name for logging). Dispatcher must NOT re-select.
         """
         llm_call = spec.get("context", {}).get("llm_call", {}) if isinstance(spec.get("context"), dict) else {}
         if not isinstance(llm_call, dict):
@@ -654,6 +650,15 @@ class LLMDispatcher:
         except ValueError:
             category = CallCategory.MAIN_WORK
 
+        # Recover the in-memory Pick object that Beckman attached at admission.
+        # The orchestrator passes it through spec["preselected_pick"] so the
+        # serialisation round-trip (Pick → DB → spec) is avoided. When the Pick
+        # is absent (fallback / test path), _do_dispatch will call fatih_hoca.select
+        # as before.
+        # Admission already gated this in Beckman (pool_pressure + fatih_hoca.select
+        # + in_flight.reserve_task). Dispatcher must not repeat those gates.
+        preselected_pick = spec.get("preselected_pick")
+
         return await self._do_dispatch(
             category=category,
             task=llm_call.get("task") or "",
@@ -662,7 +667,7 @@ class LLMDispatcher:
             messages=llm_call.get("messages") or [],
             tools=llm_call.get("tools"),
             failures=llm_call.get("failures") or [],
-            preselected_pick=None,  # not serialisable; re-select
+            preselected_pick=preselected_pick,
             prefer_speed=llm_call.get("prefer_speed"),
             prefer_local=llm_call.get("prefer_local"),
             needs_json_mode=llm_call.get("needs_json_mode"),

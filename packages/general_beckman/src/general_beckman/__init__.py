@@ -445,6 +445,22 @@ async def next_task():
         )
         task["preselected_pick"] = pick
         task["status"] = "processing"
+
+        # Write selected_model into the in-memory context so the orchestrator
+        # can forward it to dispatcher.dispatch() without a DB round-trip.
+        # dispatcher.dispatch() reads it back as preselected_pick → skip re-select.
+        # Only raw_dispatch tasks (LLM calls enqueued via dispatcher.request) need
+        # this; agent tasks never reach dispatcher.dispatch().
+        try:
+            import json as _json
+            _ctx_raw = task.get("context") or "{}"
+            _ctx_d = _json.loads(_ctx_raw) if isinstance(_ctx_raw, str) else dict(_ctx_raw or {})
+            _llm_call = _ctx_d.get("llm_call") if isinstance(_ctx_d, dict) else None
+            if isinstance(_llm_call, dict) and _llm_call.get("raw_dispatch"):
+                _llm_call["selected_model"] = pick.model.name
+                task["context"] = _json.dumps(_ctx_d)
+        except Exception as _e:
+            _log.debug(f"admission: selected_model inject failed #{task['id']}: {_e}")
         _last_admission_fp = fp
         _last_admission_admitted = True
         return task

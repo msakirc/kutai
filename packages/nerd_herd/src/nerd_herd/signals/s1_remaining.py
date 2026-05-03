@@ -11,12 +11,19 @@ Fold:
 """
 from __future__ import annotations
 
-import math
-
 from nerd_herd.types import RateLimit, RateLimitMatrix
 
 
 # Profile-driven thresholds
+#
+# Signal contract (2026-05-03 separation):
+#   S1 = STOCK    — how much capacity remains (frac of limit)
+#   S9 = TIMING   — how soon what's left will vanish (proximity to reset)
+# Pre-2026-05-03 S1 also baked in time_decay for time_bucketed pools,
+# duplicating S9's job. Now S1 is purely stock-based; abundance arm
+# returns frac × abundance_max (proportional). S9 alone owns timing.
+# combine.py composes S1+ and S9+ via noisy-OR so reinforcement when
+# both fire is preserved.
 PROFILE_PARAMS: dict[str, dict[str, float]] = {
     # per_call (paid cloud, pay-per-token): conservation-only. Positive
     # abundance lives exclusively in S9 right-tool-perishability for hard
@@ -27,7 +34,7 @@ PROFILE_PARAMS: dict[str, dict[str, float]] = {
     # S9 = right-tool).
     "per_call":      {"depletion_threshold": 0.15, "depletion_max": -1.0,
                       "abundance_mode": "flat", "abundance_max": 0.0,
-                      "time_scale_secs": 86400.0, "exhausted_neutral": False},
+                      "exhausted_neutral": False},
     # time_bucketed (free cloud, periodic reset): when remaining=0 we
     # MUST fire negative — pre-2026-04-30 production triage showed
     # exhausted_neutral=True silently zeroed S1 when daily quota hit 0,
@@ -35,9 +42,11 @@ PROFILE_PARAMS: dict[str, dict[str, float]] = {
     # KDV.pre_call's daily_exhausted gate, task DLQ'd. Returning -1.0
     # via depletion_max (frac=0 < depletion_threshold=0.30 → intensity=1
     # → depletion_max applied) makes selector route to peers naturally.
+    # Abundance arm is "proportional" (frac × abundance_max) so S1 carries
+    # only the stock signal — timing is now S9's job exclusively.
     "time_bucketed": {"depletion_threshold": 0.30, "depletion_max": -1.0,
-                      "abundance_mode": "time_decay", "abundance_max": 1.0,
-                      "time_scale_secs": 86400.0, "exhausted_neutral": False},
+                      "abundance_mode": "proportional", "abundance_max": 1.0,
+                      "exhausted_neutral": False},
 }
 
 
@@ -59,11 +68,10 @@ def _cell_pressure(rl: RateLimit, *, reset_in_secs: float, profile: str) -> floa
         return _clamp(p["depletion_max"] * intensity, -1.0, 0.0)
 
     # Abundance arm
-    if p["abundance_mode"] == "time_decay":
-        if rl.reset_at and rl.reset_at > 0:
-            time_weight = math.exp(-max(0.0, reset_in_secs) / p["time_scale_secs"])
-            return _clamp(frac * time_weight * p["abundance_max"], 0.0, 1.0)
-        return 0.0
+    if p["abundance_mode"] == "proportional":
+        # Pure stock: returns frac of capacity, no timing component.
+        # S9 owns timing.
+        return _clamp(frac * p["abundance_max"], 0.0, 1.0)
     elif p["abundance_mode"] == "flat":
         return _clamp(p["abundance_max"], 0.0, 1.0)
     return 0.0

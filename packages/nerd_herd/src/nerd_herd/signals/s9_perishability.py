@@ -15,6 +15,12 @@ from nerd_herd.types import LocalModelState, RateLimitMatrix
 
 LOCAL_IDLE_SAT_SECS = 60.0
 LOCAL_IDLE_MAX = 0.5
+# Proximity window for free-cloud quota perishability. Inside the window
+# (reset is imminent), unused quota is wasted at next reset. Outside,
+# stock signal (S1) carries; no urgency boost from S9.
+# 1h chosen so the signal sharpens meaningfully — at 30min to reset
+# proximity = 0.5, at 6min it's 0.9.
+FREE_CLOUD_PROXIMITY_WINDOW_SECS = 3600.0
 # Local serial-only: llama-server runs --parallel 1 and the GPU hosts at
 # most one model. ANY in-flight local task means a second local admission
 # would either queue behind the first or trigger a swap. Both outcomes
@@ -91,24 +97,36 @@ def s9_perishability(
         return COLD_LOCAL_NO_VRAM
 
     # ── Cloud branches ─────────────────────────────────────────────
-    # Find the strongest perishability cell across populated request-axis cells
-    strongest = 0.0
+    # Free cloud: pure timing signal. "How soon will what's left vanish."
+    # - existence check: at least one cell has remaining > 0 (nothing to
+    #   waste = nothing to flush)
+    # - proximity: 1.0 at reset, falling linearly to 0.0 at WINDOW seconds
+    #   away. Sharper than the prior exp-decay over 24h (0.96 at 1h-out
+    #   was barely a signal; now 0.0 past 1h, full inside).
+    # - frac dropped: stock is S1's job. S1 abundance + S9 proximity
+    #   reinforce via combine.py's noisy-OR when both fire.
+    # - amount-weight dropped: small remaining quota near reset is still
+    #   worth flushing; magnitude lives in S1.
+    # User design 2026-05-03: signal contract — S9 = timing only.
     if getattr(model, "is_free", False):
+        has_remaining = False
+        soonest_reset = None
         for _, rl in matrix.request_cells():
             if rl.limit is None or rl.limit <= 0:
                 continue
             effective = max(0, (rl.remaining or 0) - rl.in_flight)
-            frac = effective / rl.limit
-            if frac < FLUSH_THRESHOLD:
+            if effective <= 0:
                 continue
             if rl.reset_at is None or rl.reset_at <= ts:
                 continue
-            secs_to_reset = max(0.0, rl.reset_at - ts)
-            time_weight = math.exp(-secs_to_reset / TIME_DECAY_SCALE_SECS)
-            v = _clamp(frac * time_weight, 0.0, 1.0)
-            if v > strongest:
-                strongest = v
-        return strongest
+            has_remaining = True
+            secs = rl.reset_at - ts
+            if soonest_reset is None or secs < soonest_reset:
+                soonest_reset = secs
+        if not has_remaining or soonest_reset is None:
+            return 0.0
+        proximity = 1.0 - min(1.0, soonest_reset / FREE_CLOUD_PROXIMITY_WINDOW_SECS)
+        return _clamp(proximity, 0.0, 1.0)
 
     # Paid cloud — right-tool boost when budget remains AND task is hard.
     # Earlier this gated on frac>=FLUSH_THRESHOLD copied from the free

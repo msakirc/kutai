@@ -34,9 +34,10 @@ def test_abundance_fires_with_no_significant_negative():
             "S7": 0, "S9": 0.4, "S10": 0, "S11": 0}
     weights = {k: 1.0 for k in sigs}
     breakdown = combine_signals(signals=sigs, weights=weights)
-    # queue_neg=-0.1; weighted=-0.07 (>-0.2). Abundance fires: max(S1, S9) = 0.6
-    assert breakdown.positive_total == pytest.approx(0.6, abs=0.05)
-    assert breakdown.scalar > 0.4
+    # queue_neg=-0.1; weighted=-0.07 (>-0.2). Abundance fires via noisy-OR:
+    # 1 - (1-0.6)*(1-0.4) = 1 - 0.24 = 0.76
+    assert breakdown.positive_total == pytest.approx(0.76, abs=0.01)
+    assert breakdown.scalar > 0.6
 
 
 def test_scalar_clipped():
@@ -119,15 +120,44 @@ def test_abundance_only_s1_and_s9_contribute_positive():
     assert br.scalar == 0.0
 
 
-def test_abundance_picks_max_of_s1_s9():
-    """When both S1 and S9 are positive, the larger one wins (not sum,
-    not avg). Prevents double-counting two manifestations of the
-    same 'this model has spare capacity' signal."""
+def test_abundance_noisy_or_combines_s1_s9():
+    """When both S1 and S9 are positive, noisy-OR combines them:
+    1 - (1-S1)(1-S9). Single strong signal preserved exactly; both
+    moderate compose without max-discarding the weaker one. Prior
+    max() semantic discarded reinforcement when stock + timing both
+    fired (see s1/s9 separation 2026-05-03)."""
     sigs = {"S1": 0.3, "S2": 0, "S3": 0, "S4": 0, "S5": 0, "S6": 0,
             "S7": 0, "S9": 0.8, "S10": 0, "S11": 0}
     weights = {k: 1.0 for k in sigs}
     br = combine_signals(signals=sigs, weights=weights)
-    assert br.positive_total == pytest.approx(0.8, abs=0.001)
+    # 1 - (1-0.3)*(1-0.8) = 1 - 0.14 = 0.86
+    assert br.positive_total == pytest.approx(0.86, abs=0.01)
+
+
+def test_abundance_noisy_or_strong_signal_preserved():
+    """Single strong signal alone passes through ~unchanged. Locks
+    the noisy-OR property that s1=0.9, s9=0 → 0.9 (not inflated)."""
+    sigs = {"S1": 0.9, "S2": 0, "S3": 0, "S4": 0, "S5": 0, "S6": 0,
+            "S7": 0, "S9": 0.0, "S10": 0, "S11": 0}
+    weights = {k: 1.0 for k in sigs}
+    br = combine_signals(signals=sigs, weights=weights)
+    # 1 - (1-0.9)*(1-0) = 0.9
+    assert br.positive_total == pytest.approx(0.9, abs=0.001)
+
+
+def test_abundance_noisy_or_clamps_oversized_weighted_input():
+    """Weighted positive can exceed 1.0 (M3 weight=1.5 × signal=0.9 =
+    1.35). Noisy-OR formula needs inputs in [0,1] or it overshoots.
+    The clamp inside combine.py guarantees bounded output."""
+    sigs = {"S1": 0.9, "S2": 0, "S3": 0, "S4": 0, "S5": 0, "S6": 0,
+            "S7": 0, "S9": 0.9, "S10": 0, "S11": 0}
+    weights = {k: 1.0 for k in sigs}
+    weights["S1"] = 1.5
+    weights["S9"] = 1.5
+    br = combine_signals(signals=sigs, weights=weights)
+    # Weighted: S1=1.35, S9=1.35; clamped to 1.0 each;
+    # noisy-OR: 1 - 0*0 = 1.0
+    assert br.positive_total == pytest.approx(1.0, abs=0.001)
 
 
 # ── Weights propagate ───────────────────────────────────────────────────

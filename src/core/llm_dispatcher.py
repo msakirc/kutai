@@ -260,12 +260,30 @@ class LLMDispatcher:
         except Exception:
             pass
 
+        # est_tokens for in_flight slot — closes admission→call gap on
+        # paths that didn't go through Beckman.reserve_task (overhead
+        # calls, hooks, telegram-driven, classifiers, shopping). Same
+        # formula caller.py uses for KDV.record_attempt's TPM
+        # reservation, so pool_pressure's in_flight overlay matches the
+        # real reservation that lands a few hundred ms later. When
+        # caller didn't supply estimates, falls back to 0 — no worse
+        # than today.
+        _est_in = int(kwargs.get("estimated_input_tokens", 0) or 0)
+        _est_out = int(kwargs.get("estimated_output_tokens", 0) or 0)
+        if _est_in > 0:
+            _call_est_tokens = _est_in + _est_out + 256
+        elif _est_out > 0:
+            _call_est_tokens = _est_out * 3
+        else:
+            _call_est_tokens = 0
+
         _call_id = await _begin_call(
             category=category.value,
             model_name=model.name,
             provider=model.provider,
             is_local=model.is_local,
             task_id=_active_task_id,
+            est_tokens=_call_est_tokens,
         )
         try:
             # Load local model if needed. Previously tried to pass a

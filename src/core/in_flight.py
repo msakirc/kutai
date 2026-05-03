@@ -202,6 +202,7 @@ async def begin_call(
     provider: str,
     is_local: bool,
     task_id: int | None,
+    est_tokens: int = 0,
 ) -> str:
     """Register an in-flight call. Returns call_id for end_call pairing.
 
@@ -212,6 +213,17 @@ async def begin_call(
 
     Standalone calls (task_id is None) get a fresh uuid entry. They live
     only for the duration of the single call and are removed by ``end_call``.
+
+    ``est_tokens`` carries the projected token consumption for this call
+    so pool-pressure consumers can subtract from effective rpm/tpm in
+    ``pressure_for`` — closing the admission→call gap for paths that
+    didn't go through Beckman's ``reserve_task`` (overhead calls,
+    workflow hooks, telegram-driven dispatches, shopping pipeline,
+    classifiers). Pre-2026-05-04: standalone calls always wrote 0,
+    leaving 5+ concurrent admissions on the same provider racing for
+    fresh budget. Beckman task path keeps its higher reserved value if
+    one exists (max(prior, passed)) — never downgraded by a per-call
+    estimate.
     """
     if task_id is not None:
         call_id = f"task-{task_id}"
@@ -219,9 +231,13 @@ async def begin_call(
         # the projected-cost reservation survives the upsert. Mid-task
         # model swaps (retry / re-select) don't have a fresh estimate
         # at this layer; keeping the admission-time figure is the best
-        # available approximation.
+        # available approximation. When the dispatcher passes a non-zero
+        # est_tokens (e.g. workflow hooks setting up an OVERHEAD call
+        # inside a parent task that didn't reserve), take max — never
+        # shrink below an existing Beckman reservation.
         prior = _task_slots.get(task_id)
         prior_est = int(getattr(prior, "est_tokens", 0)) if prior else 0
+        chosen_est = max(prior_est, int(est_tokens or 0))
         _task_slots[task_id] = _InFlightEntry(
             call_id=call_id,
             task_id=task_id,
@@ -230,7 +246,7 @@ async def begin_call(
             provider=provider,
             is_local=is_local,
             started_at=time.time(),
-            est_tokens=prior_est,
+            est_tokens=chosen_est,
         )
         if not is_local:
             _recent_cloud[task_id] = (provider, model_name, time.time())
@@ -248,6 +264,7 @@ async def begin_call(
             provider=provider,
             is_local=is_local,
             started_at=time.time(),
+            est_tokens=int(est_tokens or 0),
         )
     await _push()
     return call_id

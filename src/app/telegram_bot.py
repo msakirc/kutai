@@ -88,6 +88,49 @@ def _friendly_error(error: str) -> str:
         return "Internal error. Will retry on restart."
     return "Interrupted. Will retry on restart."
 
+
+async def _enqueue_inline_chat(
+    *,
+    title: str,
+    description: str,
+    agent_type: str,
+    kind: str,
+    llm_call_kwargs: dict,
+    parent_id: int | None = None,
+) -> dict:
+    """Enqueue an LLM call as a Beckman task with await_inline=True.
+
+    Returns the dispatcher response dict (same shape today's
+    dispatcher.request returns), so callers can do
+    `response.get("content", ...)` unchanged.
+    """
+    import general_beckman
+    spec = {
+        "title": title,
+        "description": description,
+        "agent_type": agent_type,
+        "kind": kind,
+        "context": {
+            "llm_call": {
+                "raw_dispatch": True,
+                **llm_call_kwargs,
+            },
+        },
+    }
+    tr = await general_beckman.enqueue(spec, parent_id=parent_id, await_inline=True)
+    if tr.status == "failed":
+        from src.core.router import ModelCallFailed
+        raise ModelCallFailed(tr.error or "call failed", error_category="availability")
+    res = tr.result
+    if isinstance(res, str):
+        import json
+        try:
+            res = json.loads(res)
+        except Exception:
+            res = {"content": res}
+    return res or {}
+
+
 # ─── Product/App Detection ────────────────────────────────────────────────
 _PRODUCT_KEYWORDS = [
     "build ", "create ", "make ", "develop ", "design ",
@@ -4141,18 +4184,23 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     context="; ".join(context_parts) if context_parts else "none",
                 ),
             }]
-            from ..core.llm_dispatcher import get_dispatcher, CallCategory
-            response = await get_dispatcher().request(
-                CallCategory.OVERHEAD,
-                task="router",
+            response = await _enqueue_inline_chat(
+                title="telegram-classifier",
+                description=f"Classify telegram message: {text[:80]!r}",
                 agent_type="classifier",
-                difficulty=2,
-                messages=messages,
-                prefer_speed=True,
-                needs_json_mode=True,
-                priority=2,
-                estimated_input_tokens=300,
-                estimated_output_tokens=50,
+                kind="classifier",
+                llm_call_kwargs={
+                    "task": "router",
+                    "agent_type": "classifier",
+                    "difficulty": 2,
+                    "messages": messages,
+                    "prefer_speed": True,
+                    "needs_json_mode": True,
+                    "priority": 2,
+                    "estimated_input_tokens": 300,
+                    "estimated_output_tokens": 50,
+                    "call_category": "overhead",
+                },
             )
             from ..core.task_classifier import _extract_json
             raw = response.get("content", "").strip()

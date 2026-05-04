@@ -356,7 +356,13 @@ class LLMDispatcher:
             # be a little higher than pre dispatch urgency to help react
             # loops finish".
             if failures:
-                _u = float(kwargs.get("urgency", 0.5)) + 0.1
+                # `.get(key, default)` returns the default ONLY when the
+                # key is missing. When the rehydrated spec or upstream
+                # caller set urgency=None explicitly (preserved by the
+                # spec-strip rule that keeps required keys regardless of
+                # value), `.get` returns None and float(None) raises.
+                # Fall through to 0.5 when the value is also None.
+                _u = float(kwargs.get("urgency") or 0.5) + 0.1
                 kwargs["urgency"] = min(1.0, _u)
             pick = fatih_hoca.select(
                 task=task,
@@ -691,7 +697,7 @@ class LLMDispatcher:
             response_format=llm_call.get("response_format"),
             estimated_input_tokens=llm_call.get("estimated_input_tokens") or 0,
             estimated_output_tokens=llm_call.get("estimated_output_tokens") or 0,
-            urgency=llm_call.get("urgency"),
+            urgency=llm_call.get("urgency") or 0.5,
         )
 
     @staticmethod

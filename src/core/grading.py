@@ -255,7 +255,7 @@ async def grade_task(task: dict) -> GradeResult:
         RuntimeError: grading call failed (AvailabilityError equivalent)
     """
     import json
-    from src.core.llm_dispatcher import get_dispatcher, CallCategory
+    # dispatcher import retained for backward compat with other callers in this module
 
     ctx = task.get("context", "{}")
     if isinstance(ctx, str):
@@ -277,7 +277,11 @@ async def grade_task(task: dict) -> GradeResult:
     if _grade_cq.is_degenerate:
         return GradeResult(passed=False, raw=f"auto-fail: {_grade_cq.summary}")
 
-    dispatcher = get_dispatcher()
+    import general_beckman
+    import time as _time
+    import uuid as _uuid
+    from src.core.llm_dispatcher import _task_result_to_request_response
+
     messages = [
         {"role": "system", "content": GRADING_SYSTEM},
         {
@@ -295,6 +299,8 @@ async def grade_task(task: dict) -> GradeResult:
         },
     ]
 
+    graded_task_id = task.get("id")
+
     # Try with current exclusion list, then one retry with the grader model
     # that failed added to exclusions. Thinking-model reasoning leaks cannot
     # be fixed by server reload (swap cost >> retry cost).
@@ -302,20 +308,46 @@ async def grade_task(task: dict) -> GradeResult:
     last_raw = ""
     last_grader: str = ""
     for attempt in (0, 1):
-        response = await dispatcher.request(
-            CallCategory.OVERHEAD,
-            task="reviewer",
-            difficulty=3,
-            messages=messages,
-            priority=1,
-            estimated_input_tokens=800,
-            # Thinking-capable models burn budget on visible reasoning before
-            # reaching VERDICT. 600 leaves headroom for preamble + 10 fields.
-            estimated_output_tokens=600,
-            prefer_speed=True,
-            exclude_models=exclusions,
-            task_obj=task,
+        _suffix = f"{_time.monotonic_ns() % 1_000_000:06d}-{_uuid.uuid4().hex[:6]}"
+        spec = {
+            "title": f"grader:task#{graded_task_id}:{_suffix}",
+            "description": "Grading review of task output",
+            "agent_type": "reviewer",
+            "kind": "overhead",
+            "priority": 1,
+            "context": {
+                "llm_call": {
+                    "raw_dispatch": True,
+                    "call_category": "overhead",
+                    "task": "reviewer",
+                    "agent_type": "reviewer",
+                    "difficulty": 3,
+                    "messages": messages,
+                    "failures": [],
+                    "estimated_input_tokens": 800,
+                    "estimated_output_tokens": 600,
+                    "prefer_speed": True,
+                    "exclude_models": exclusions,
+                },
+            },
+        }
+        task_result = await general_beckman.enqueue(
+            spec,
+            parent_id=graded_task_id,
+            await_inline=True,
         )
+
+        if task_result.status == "failed":
+            logger.warning(
+                f"grader enqueue failed attempt={attempt}: {task_result.error}",
+                task_id=graded_task_id,
+            )
+            return GradeResult(
+                passed=False,
+                raw=f"auto-fail: grader call failed ({task_result.error})",
+            )
+
+        response = _task_result_to_request_response(task_result)
 
         raw_content = response.get("content", "")
         if isinstance(raw_content, list):

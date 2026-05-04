@@ -43,13 +43,31 @@ from ..infra.logging_config import get_logger
 from ..models.models import validate_action, validate_tool_args, validate_task_output
 from ..tools import TOOL_REGISTRY, execute_tool
 
-from .guards import MAX_FORMAT_CORRECTIONS, MAX_SUB_CORRECTIONS
-from .parsing import unwrap_final_answer
+from .checkpoint import (
+    safe_log_conversation, save_checkpoint, tool_idempotency_key,
+)
+from .context import build_system_prompt
+from .escalation import escalate_requirements, trim_for_escalation
+from .guards import (
+    MAX_FORMAT_CORRECTIONS, MAX_SUB_CORRECTIONS,
+    check_sub_iter_guards, get_search_depth,
+)
+from .parsing import parse_action, parse_function_call, unwrap_final_answer
+from .reflection import self_reflect
 from .tools import (
     CACHEABLE_READ_TOOLS, SIDE_EFFECT_TOOLS,
     TOOL_FAILURE_ESCALATION_THRESHOLD, TOOL_SCHEMAS_BY_NAME,
-    partition_tool_calls,
+    build_litellm_tools, check_tool_permission, partition_tool_calls,
 )
+from .validation import validate_final_answer
+from .window import (
+    context_window_for, count_tokens, prune_tool_results, trim_if_needed,
+)
+
+
+async def safe_log_conversation_p(profile, task_id, role, content, model, cost):
+    """Wrapper that pulls profile.name into the logger call."""
+    await safe_log_conversation(task_id, role, content, model, cost, profile.name)
 
 logger = get_logger("runtime.react")
 
@@ -152,7 +170,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                     f"{'salvaged' if cleaned else 'discarded'}"
                 )
     else:
-        system_prompt = profile._build_full_system_prompt(task)
+        system_prompt = build_system_prompt(profile, task)
         context = await profile._build_context(task)
 
         logger.info(
@@ -182,7 +200,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
     model_escalated = False
 
     _progress_last_sent = time.time()
-    _search_depth = profile._get_search_depth(task)
+    _search_depth = get_search_depth(task)
     _suppress_guards = _task_ctx.get("suppress_guards", False)
 
     # Dynamic iteration budget (retry boost from exhaustion handler)
@@ -318,7 +336,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
         while sub_corrections <= MAX_SUB_CORRECTIONS:
             # ── Update token estimates ──
             estimation_model = used_model if used_model != "unknown" else "gpt-4o-mini"
-            reqs.estimated_input_tokens = profile._count_tokens(
+            reqs.estimated_input_tokens = count_tokens(
                 messages, estimation_model
             )
             reqs.estimated_output_tokens = min(
@@ -331,8 +349,8 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             # prompts otherwise — we prefer to drop oldest tool output
             # visibly and log it.
             try:
-                _ctx_win = profile._get_context_window(estimation_model, reqs)
-                messages = profile._prune_tool_results_to_fit(
+                _ctx_win = context_window_for(estimation_model, reqs)
+                messages = prune_tool_results(
                     messages,
                     ctx_window=_ctx_win,
                     estimated_output_tokens=reqs.estimated_output_tokens,
@@ -342,7 +360,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 logger.debug(f"[Task #{task_id}] prune skipped: {_prune_exc}")
 
             # ── Trim context ── (now accepts reqs directly)
-            messages = profile._trim_messages_if_needed(
+            messages = trim_if_needed(
                 messages, estimation_model, reqs,
             )
 
@@ -387,7 +405,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 _exclude: set[str] = set()
                 if "read_file" in iter_tool_calls_seen:
                     _exclude.add("read_file")
-                litellm_tools = profile._build_litellm_tools(exclude=_exclude)
+                litellm_tools = build_litellm_tools(profile.allowed_tools, exclude=_exclude)
             if litellm_tools:
                 reqs.needs_function_calling = True
 
@@ -480,7 +498,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 continue  # retry same iteration
             empty_response_count = 0  # reset on non-empty
 
-            await profile._safe_log(
+            await safe_log_conversation_p(profile, 
                 task_id, "assistant", content, used_model, step_cost
             )
 
@@ -488,9 +506,9 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             fc_tool_calls = response.get("tool_calls")
             parsed = None
             if fc_tool_calls:
-                parsed = profile._parse_function_call_response(fc_tool_calls)
+                parsed = parse_function_call(fc_tool_calls)
             if parsed is None:
-                parsed = profile._parse_agent_response(content)
+                parsed = parse_action(content)
 
             # ── FORMAT CORRECTION (sub-iteration) ──
             if parsed is None:
@@ -549,7 +567,8 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 logger.warning(f"[Task #{task_id}] Action validation warning: {exc}")
 
             # ── SUB-ITERATION GUARD CHECK ──
-            correction = profile._check_sub_iteration_guards(
+            correction = check_sub_iter_guards(
+                profile=profile,
                 parsed=parsed,
                 iteration=iteration,
                 tools_used=tools_used,
@@ -564,7 +583,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                     f"[Task #{task_id}] [{correction.guard_name}] "
                     f"sub-correction {sub_corrections + 1}/{MAX_SUB_CORRECTIONS}"
                 )
-                await profile._safe_log(
+                await safe_log_conversation_p(profile, 
                     task_id, "system",
                     f"[{correction.guard_name}] sub-correction",
                     None, 0,
@@ -582,7 +601,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                     result = json.dumps(result, ensure_ascii=False, indent=2)
 
                 if not custom_validation_retried and sub_corrections < MAX_SUB_CORRECTIONS:
-                    validation_error = profile._validate_response(result, task)
+                    validation_error = validate_final_answer(result, task)
                     if validation_error:
                         custom_validation_retried = True
                         sub_corrections += 1
@@ -609,7 +628,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             break  # No guard/correction fired → proceed to action handling
 
         # Save checkpoint after inner loop completes
-        await profile._save_checkpoint(
+        await save_checkpoint(
             task_id, iteration + 1, messages, total_cost,
             used_model, reqs, tools_used,
             custom_validation_retried or task_type_validation_retried,
@@ -699,7 +718,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             # Self-reflection
             if profile.enable_self_reflection:
                 try:
-                    reflection = await profile._self_reflect(
+                    reflection = await self_reflect(
                         task, result, reqs, used_model,
                     )
                     if reflection and reflection.get("verdict") == "fix":
@@ -767,7 +786,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                         "role": "user",
                         "content": f"Tool Result ({tool_name}):\n{tool_output}",
                     })
-                    await profile._save_checkpoint(
+                    await save_checkpoint(
                         task_id, iteration + 1, messages, total_cost,
                         used_model, reqs, tools_used,
                         custom_validation_retried or task_type_validation_retried,
@@ -784,7 +803,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                     f"❌ Tool '{tool_name}' not available. "
                     f"Allowed: {profile.allowed_tools}"
                 )
-            elif not profile._check_tool_permission(tool_name):
+            elif not check_tool_permission(profile.name, tool_name):
                 tool_output = (
                     f"🚫 Tool '{tool_name}' not permitted for agent "
                     f"type '{profile.name}' (security policy)."
@@ -812,7 +831,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                         )
                         messages.append({"role": "assistant", "content": content})
                         messages.append({"role": "user", "content": tool_output})
-                        await profile._save_checkpoint(
+                        await save_checkpoint(
                             task_id, iteration + 1, messages, total_cost,
                             used_model, reqs, tools_used,
                             custom_validation_retried or task_type_validation_retried,
@@ -820,7 +839,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                         )
                         continue
 
-                idem_key = profile._tool_idempotency_key(tool_name, tool_args)
+                idem_key = tool_idempotency_key(tool_name, tool_args)
 
                 # Check caches: side-effect idempotency OR read-only result cache
                 cached = None
@@ -846,7 +865,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                         # Build task hints for context-aware tools
                         _hints = {
                             "agent_type": profile.name,
-                            "search_depth": profile._get_search_depth(task),
+                            "search_depth": get_search_depth(task),
                             "shopping_sub_intent": task.get("shopping_sub_intent"),
                             "workspace_path": _task_ctx.get("workspace_path", ""),
                         }
@@ -949,7 +968,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 and iteration >= TOOL_FAILURE_ESCALATION_THRESHOLD
             ):
                 old_tier = reqs.difficulty
-                reqs = profile._escalate_requirements(reqs)
+                reqs = escalate_requirements(reqs)
                 new_tier = reqs.difficulty
                 if new_tier != old_tier:
                     logger.warning(
@@ -958,14 +977,14 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                         f"{consecutive_tool_failures} consecutive failures"
                     )
                     model_escalated = True
-                    await profile._safe_log(
+                    await safe_log_conversation_p(profile, 
                         task_id, "system",
                         f"[escalation] Upgraded quality after "
                         f"{consecutive_tool_failures} failures",
                         None, 0,
                     )
                     # Reset context for the better model
-                    messages = profile._trim_for_escalation(
+                    messages = trim_for_escalation(
                         messages, iteration, effective_max_iterations,
                     )
 
@@ -986,12 +1005,12 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             messages.append({"role": "assistant", "content": content})
             messages.append({"role": "user", "content": recovery_guidance})
 
-            await profile._safe_log(
+            await safe_log_conversation_p(profile, 
                 task_id, "tool",
                 f"[{tool_name}] {tool_output[:2000]}",
                 None, 0,
             )
-            await profile._save_checkpoint(
+            await save_checkpoint(
                 task_id, iteration + 1, messages, total_cost,
                 used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
                 completed_tool_ops, format_corrections,
@@ -1015,7 +1034,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
 
                 if profile.allowed_tools is not None and t_name not in profile.allowed_tools:
                     validated.append((t_name, t_args, f"❌ Tool '{t_name}' not available."))
-                elif not profile._check_tool_permission(t_name):
+                elif not check_tool_permission(profile.name, t_name):
                     validated.append((t_name, t_args, f"🚫 Tool '{t_name}' not permitted."))
                 elif t_name not in TOOL_REGISTRY:
                     validated.append((t_name, t_args, f"❌ Unknown tool '{t_name}'."))
@@ -1114,13 +1133,13 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
 
                 # Cache results
                 if t_name in SIDE_EFFECT_TOOLS:
-                    idem_key = profile._tool_idempotency_key(t_name, t_args)
+                    idem_key = tool_idempotency_key(t_name, t_args)
                     completed_tool_ops[idem_key] = t_output
                     _to_remove = [k for k in completed_tool_ops if k.startswith("rc:")]
                     for k in _to_remove:
                         del completed_tool_ops[k]
                 elif t_name in CACHEABLE_READ_TOOLS:
-                    idem_key = profile._tool_idempotency_key(t_name, t_args)
+                    idem_key = tool_idempotency_key(t_name, t_args)
                     completed_tool_ops[f"rc:{idem_key}"] = t_output
 
             # Build combined result message
@@ -1158,12 +1177,12 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             messages.append({"role": "assistant", "content": content})
             messages.append({"role": "user", "content": combined})
 
-            await profile._safe_log(
+            await safe_log_conversation_p(profile, 
                 task_id, "tool",
                 f"[multi:{len(results)} tools] {', '.join(n for n, _, _ in results)}",
                 None, 0,
             )
-            await profile._save_checkpoint(
+            await save_checkpoint(
                 task_id, iteration + 1, messages, total_cost,
                 used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
                 completed_tool_ops, format_corrections,
@@ -1216,7 +1235,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                     f"{'LAST ITERATION — you MUST respond with final_answer now. Do NOT call any more tools.' if iteration + 2 >= effective_max_iterations else 'Continue working.'} Iteration {iteration + 2}/{effective_max_iterations}."
                 ),
             })
-            await profile._save_checkpoint(
+            await save_checkpoint(
                 task_id, iteration + 1, messages, total_cost,
                 used_model, reqs, tools_used,
                 custom_validation_retried or task_type_validation_retried,
@@ -1257,7 +1276,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 f"```"
             ),
         })
-        await profile._save_checkpoint(
+        await save_checkpoint(
             task_id, iteration + 1, messages, total_cost,
             used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
             completed_tool_ops, format_corrections,
@@ -1274,7 +1293,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                     f"[Task #{task_id}] Saved {len(partial)} chars of "
                     f"partial LLM output from interrupted generation"
                 )
-            await profile._save_checkpoint(
+            await save_checkpoint(
                 task_id, iteration, messages, total_cost,
                 used_model, reqs, tools_used,
                 False, completed_tool_ops, format_corrections,
@@ -1308,7 +1327,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
     # Try to parse as JSON and extract "result" field — the LLM often
     # wraps its answer in {"action": "final_answer", "result": "..."}
     if last_assistant:
-        parsed_final = profile._parse_agent_response(last_assistant)
+        parsed_final = parse_action(last_assistant)
         if parsed_final and parsed_final.get("result"):
             last_assistant = parsed_final["result"]
         elif '"result"' in last_assistant and '"final_answer"' in last_assistant:

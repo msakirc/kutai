@@ -1,17 +1,20 @@
 # agents/base.py
-"""
-Base agent with iterative ReAct loop:
-  Think → Act (tool or respond) → Observe → Think again
+"""BaseAgent — profile interface for the runtime.
+
+Phase A.11 cutover (2026-05-04). Most of the original 4092-LOC class moved
+to src/runtime/. This file is now ~600 LOC and shrinking — three method
+bodies still live here (_build_model_requirements, _build_context wrapper,
+_maybe_constrained_emit), they relocate in phases A.12 + A.13.
+
+Subclasses override ``get_system_prompt`` and customize attributes
+(allowed_tools, max_iterations, execution_pattern, enable_self_reflection,
+min_confidence, can_create_subtasks). The runtime treats subclasses as
+duck-typed Profile objects.
 """
 from __future__ import annotations
 
-import asyncio
-import dataclasses
-from dataclasses import dataclass
-import hashlib
+import copy
 import json
-import re
-import time
 from typing import Callable
 
 from ..collaboration.blackboard import get_or_create_blackboard, \
@@ -20,32 +23,15 @@ from ..context.onboarding import get_project_profile_for_task, \
     format_project_profile
 from ..memory.preferences import get_user_preferences, format_preferences
 from ..memory.rag import retrieve_context
-from ..models.model_registry import get_registry
 from fatih_hoca.requirements import ModelRequirements
-from ..core.router import select_model
-from ..infra.db import (
-    log_conversation,
-    store_memory,
-    recall_memory,
-    get_completed_dependency_results,
-    save_task_checkpoint,
-    load_task_checkpoint,
-    clear_task_checkpoint,
-    record_model_call,
-    update_task,
-    record_cost,
-)
-from ..tools import TOOL_REGISTRY, TOOL_SCHEMAS, get_tool_descriptions, execute_tool
-from ..app.config import MAX_AGENT_ITERATIONS, MAX_TOOL_OUTPUT_LENGTH
-from ..models.models import validate_action, validate_tool_args, validate_task_output
+from ..infra.db import recall_memory, update_task
+from ..app.config import MAX_AGENT_ITERATIONS
 from ..infra.logging_config import get_logger
-import litellm as _litellm
 
 logger = get_logger("agents.base")
 
 
-# Phase A.4: tool VM helpers extracted to src/runtime/tools.py.
-# Re-export constants and free function for callsite stability.
+# Re-exports for backward-compat callsites that imported these from base.py.
 from src.runtime.tools import (  # noqa: F401
     SIDE_EFFECT_TOOLS,
     CACHEABLE_READ_TOOLS,
@@ -53,17 +39,11 @@ from src.runtime.tools import (  # noqa: F401
     partition_tool_calls as _partition_tool_calls,
     TOOL_SCHEMAS_BY_NAME as _TOOL_SCHEMAS_BY_NAME,
 )
-
-# Phase A.6: guards extracted to src/runtime/guards.py.
-# Re-export constants and dataclass for callsite stability.
 from src.runtime.guards import (  # noqa: F401
     GuardCorrection,
     MAX_SUB_CORRECTIONS,
     MAX_FORMAT_CORRECTIONS,
 )
-
-# Phase A.1: parsing extracted to src/runtime/parsing.py.
-# BaseAgent re-exports for callsite stability.
 from src.runtime.parsing import unwrap_final_answer as _unwrap_final_answer  # noqa: F401
 
 
@@ -149,89 +129,6 @@ class BaseAgent:
     # ------------------------------------------------------------------ #
     #  Tool-description block                                             #
     # ------------------------------------------------------------------ #
-    def _get_available_tools_prompt(self) -> str:
-        """Build the tools section appended to the system prompt.
-
-        Phase A.5: delegates to src.runtime.context.get_available_tools_prompt.
-        """
-        from src.runtime.context import get_available_tools_prompt
-        return get_available_tools_prompt(self)
-
-    # ------------------------------------------------------------------ #
-    #  Full system prompt assembly                                        #
-    # ------------------------------------------------------------------ #
-    def _build_full_system_prompt(self, task: dict) -> str:
-        """Compose system prompt.
-
-        Phase A.5: delegates to src.runtime.context.build_system_prompt.
-        Kept sync — original was sync and callers don't await it.
-        """
-        from src.runtime.context import build_system_prompt
-        return build_system_prompt(self, task)
-
-    def _is_action_task(self, task: dict) -> bool:
-        """Delegate to guards module. See src/runtime/guards.py."""
-        from src.runtime.guards import is_action_task
-        return is_action_task(task)
-
-    @staticmethod
-    def _get_search_depth(task: dict) -> str:
-        """Delegate to guards module. See src/runtime/guards.py."""
-        from src.runtime.guards import get_search_depth
-        return get_search_depth(task)
-
-    # ------------------------------------------------------------------ #
-    #  Sub-iteration guards                                                #
-    # ------------------------------------------------------------------ #
-
-    def _check_sub_iteration_guards(
-        self,
-        parsed: dict,
-        iteration: int,
-        tools_used: bool,
-        tools_used_names: set[str],
-        task: dict,
-        search_depth: str,
-        suppress_guards: bool,
-    ) -> GuardCorrection | None:
-        """Delegate to guards module. See src/runtime/guards.py."""
-        from src.runtime.guards import check_sub_iter_guards
-        return check_sub_iter_guards(
-            parsed,
-            profile=self,
-            iteration=iteration,
-            tools_used=tools_used,
-            tools_used_names=tools_used_names,
-            task=task,
-            search_depth=search_depth,
-            suppress_guards=suppress_guards,
-        )
-
-    # ------------------------------------------------------------------ #
-    #  Tier helpers                                                       #
-    # ------------------------------------------------------------------ #
-
-    def _check_tool_permission(self, tool_name: str) -> bool:
-        """Check if this agent is permitted to use tool_name (Phase 8.1).
-
-        Phase A.4: delegates to src.runtime.tools.check_tool_permission.
-        """
-        from src.runtime.tools import check_tool_permission
-        return check_tool_permission(self.name, tool_name)
-
-    def _trim_for_escalation(
-        self, messages: list[dict], iteration: int, max_iterations: int,
-    ) -> list[dict]:
-        from src.runtime.escalation import trim_for_escalation
-        return trim_for_escalation(messages, iteration, max_iterations)
-
-    def _escalate_requirements(self, reqs: ModelRequirements) -> ModelRequirements:
-        from src.runtime.escalation import escalate_requirements
-        return escalate_requirements(reqs)
-
-    # ------------------------------------------------------------------ #
-    #  Context builder (DB + inline fallback)                             #
-    # ------------------------------------------------------------------ #
     async def _build_context(self, task: dict) -> str:
         """Assemble the user message with task info and policy-gated context layers.
 
@@ -277,156 +174,10 @@ class BaseAgent:
     # (Phase A.5: original ~540-LOC _build_context body moved to
     #  src/runtime/context.py::build_user_context. Edit there, not here.)
 
-    def _truncate_to_tokens(self, text: str, max_tokens: int) -> str:
-        """Rough truncation: ~4 chars per token.
-
-        Phase A.5: delegates to src.runtime.context.truncate_to_tokens.
-        """
-        from src.runtime.context import truncate_to_tokens
-        return truncate_to_tokens(text, max_tokens)
-
-    async def _fetch_deps(self, task: dict, max_tokens: int) -> str:
-        """Fetch dependency results, truncated to budget.
-
-        Phase A.5: delegates to src.runtime.context.fetch_deps.
-        """
-        from src.runtime.context import fetch_deps
-        return await fetch_deps(self, task, max_tokens)
-
-    def _format_prior_steps(self, task_context: dict, max_tokens: int) -> str:
-        """Format inline prior steps, truncated to budget.
-
-        Phase A.5: delegates to src.runtime.context.format_prior_steps.
-        """
-        from src.runtime.context import format_prior_steps
-        return format_prior_steps(task_context, max_tokens)
-
-    def _format_conversation(self, task_context: dict, max_tokens: int) -> str:
-        """Format recent conversation + summaries, truncated to budget.
-
-        Phase A.5: delegates to src.runtime.context.format_conversation.
-        """
-        from src.runtime.context import format_conversation
-        return format_conversation(task_context, max_tokens)
-
-    # ------------------------------------------------------------------ #
-    #  JSON parsing & normalisation                                       #
-    # ------------------------------------------------------------------ #
-    # Phase A.1: parsing extracted to src/runtime/parsing.py.
-    # Method delegates kept for callsite compat (self._parse_agent_response).
-    def _parse_agent_response(self, content: str) -> dict | None:
-        from src.runtime.parsing import parse_action
-        return parse_action(content)
-
-    @staticmethod
-    def _try_parse_json(text: str) -> dict | None:
-        from src.runtime.parsing import _try_parse_json
-        return _try_parse_json(text)
-
-    @staticmethod
-    def _normalize_action(parsed: dict) -> dict | None:
-        from src.runtime.parsing import _normalize_action
-        return _normalize_action(parsed)
-
-    # ------------------------------------------------------------------ #
-    #  Context window management                                          #
-    # ------------------------------------------------------------------ #
-    def _count_tokens(self, messages: list[dict], model: str) -> int:
-        """Estimate token count for a message list."""
-        from src.runtime.window import count_tokens
-        return count_tokens(messages, model)
-
-    def _get_context_window(self, model: str, tier_or_reqs=None) -> int:
-        """Return the context window size for a model."""
-        from src.runtime.window import context_window_for
-        return context_window_for(model, tier_or_reqs)
-
-    def _trim_messages_if_needed(
-        self, messages: list[dict], model: str, tier_or_reqs=None,
-    ) -> list[dict]:
-        """
-        If the conversation exceeds 80% of context, compress older exchanges.
-        Accepts tier string or ModelRequirements for compat.
-        """
-        from src.runtime.window import trim_if_needed
-        return trim_if_needed(messages, model, tier_or_reqs)
-
-    def _prune_tool_results_to_fit(
-        self,
-        messages: list[dict],
-        ctx_window: int,
-        estimated_output_tokens: int,
-        task_id: int | str = "?",
-    ) -> list[dict]:
-        """
-        Cheap char/3 prompt-size guard that runs BEFORE the heavier
-        :meth:`_trim_messages_if_needed` compression.  If the current prompt
-        estimate exceeds ``ctx_window - estimated_output_tokens``, drop the
-        oldest *tool-result* exchanges (assistant+user pair where the user
-        message is a tool result) until we fit.  System prompt (index 0),
-        initial user context (index 1), and the most recent exchange
-        (last 2 messages) are always preserved.
-
-        Logs ``[Task #X] Pruned N oldest tool results to fit context`` once
-        per call when pruning happened.
-        """
-        from src.runtime.window import prune_tool_results
-        return prune_tool_results(messages, ctx_window, estimated_output_tokens, task_id)
-
-    # ------------------------------------------------------------------ #
-    #  Function calling support                                            #
-    # ------------------------------------------------------------------ #
-    def _build_litellm_tools(
-        self, exclude: set[str] | None = None,
-    ) -> list[dict] | None:
-        """Build filtered tool schemas for LiteLLM function calling.
-
-        exclude: tool names to strip from the schema list (e.g. ``read_file``
-        once the agent has already read a file this task — discourages the
-        LLM from re-reading content already present in the blackboard).
-
-        Phase A.4: delegates to src.runtime.tools.build_litellm_tools.
-        """
-        from src.runtime.tools import build_litellm_tools
-        return build_litellm_tools(self.allowed_tools, exclude)
-
-    @staticmethod
-    def _parse_function_call_response(tool_calls: list[dict]) -> dict | None:
-        # Phase A.1: parsing extracted to src/runtime/parsing.py.
-        from src.runtime.parsing import parse_function_call
-        return parse_function_call(tool_calls)
-
-    # ------------------------------------------------------------------ #
-    #  Output validation                                                   #
-    # ------------------------------------------------------------------ #
-    def _validate_response(self, result: str, task: dict) -> str | None:
-        """Validate a final_answer result. Delegates to src.runtime.validation."""
-        from src.runtime.validation import validate_final_answer
-        return validate_final_answer(result, task)
-
-    # ------------------------------------------------------------------ #
-    #  Main execution loop                                                #
-    # ------------------------------------------------------------------ #
-    # ── Phase 4.6: Progress streaming callback ──
-    progress_callback: Callable | None = None
-
-    # Phase 13.1: Cached prompt override from DB (set per-execution)
-    _prompt_version_override: str | None = None
-
     async def execute(self, task: dict, progress_callback: Callable | None = None) -> dict:
         """Drive one task to completion. Phase A.10: delegates to src.runtime.execute."""
         from src.runtime import execute as _runtime_execute
         return await _runtime_execute(self, task, progress_callback)
-    async def _execute_react_loop(self, task: dict) -> dict:
-        """ReAct multi-call loop. Phase A.8: delegates to src.runtime.react.run.
-
-        Profile attrs (self.allowed_tools, self.max_iterations, etc.) and
-        delegate methods (self._build_full_system_prompt, self._build_context,
-        self._count_tokens, etc. — already extracted in phases A.1-A.7) are
-        consumed by react.run via duck-typed profile interface.
-        """
-        from src.runtime.react import run as _react_run
-        return await _react_run(self, task)
     async def _build_model_requirements(
         self, task: dict, task_ctx: dict,
     ) -> ModelRequirements:
@@ -815,77 +566,4 @@ class BaseAgent:
         new_result["result"] = emitted
         new_result["constrained_emit_applied"] = True
         return new_result
-
-    async def execute_single_shot(self, task: dict) -> dict:
-        """Single LLM call. Phase A.9: delegates to src.runtime.single_shot.run."""
-        from src.runtime.single_shot import run as _ss_run
-        return await _ss_run(self, task)
-    async def _self_reflect(
-        self, task: dict, result: str,
-        tier_or_reqs=None, used_model: str = "",
-    ) -> dict | None:
-        """Review own output for errors. Accepts tier string or ModelRequirements."""
-        from src.runtime.reflection import self_reflect
-        return await self_reflect(task, result, tier_or_reqs, used_model)
-
-    # ------------------------------------------------------------------ #
-    #  Idempotency helpers                                                #
-    # ------------------------------------------------------------------ #
-    @staticmethod
-    def _tool_idempotency_key(tool_name: str, tool_args: dict) -> str:
-        """Compute a short hash key for a tool call's identity.
-
-        Used to skip re-execution of side-effect tools (write_file, shell,
-        git_commit, etc.) when resuming from a checkpoint.
-        """
-        # Phase A.7c: delegates to src/runtime/checkpoint.tool_idempotency_key
-        from src.runtime.checkpoint import tool_idempotency_key
-        return tool_idempotency_key(tool_name, tool_args)
-
-    # ------------------------------------------------------------------ #
-    #  Checkpointing helpers                                              #
-    # ------------------------------------------------------------------ #
-    async def _save_checkpoint(
-        self,
-        task_id,
-        next_iteration: int,
-        messages: list[dict],
-        total_cost: float,
-        used_model: str,
-        reqs: ModelRequirements,
-        tools_used: bool,
-        validation_retried: bool,
-        completed_tool_ops: dict[str, str] | None = None,
-        format_corrections: int = 0,
-        tools_used_names: set[str] | None = None,
-    ) -> None:
-        """Persist agent loop state so execution can resume after a crash."""
-        # Phase A.7c: delegates to src/runtime/checkpoint.save_checkpoint
-        from src.runtime.checkpoint import save_checkpoint
-        return await save_checkpoint(
-            task_id, next_iteration, messages, total_cost, used_model, reqs,
-            tools_used, validation_retried, completed_tool_ops, format_corrections,
-            tools_used_names,
-        )
-
-    async def _clear_checkpoint_safe(self, task_id) -> None:
-        """Clear checkpoint on successful completion — never raises."""
-        # Phase A.7c: delegates to src/runtime/checkpoint.clear_checkpoint_safe
-        from src.runtime.checkpoint import clear_checkpoint_safe
-        return await clear_checkpoint_safe(task_id)
-
-    # ------------------------------------------------------------------ #
-    #  Internal helpers                                                   #
-    # ------------------------------------------------------------------ #
-    async def _safe_log(
-        self,
-        task_id,
-        role: str,
-        content: str,
-        model: str | None,
-        cost: float,
-    ) -> None:
-        """Fire-and-forget conversation log — never breaks the loop."""
-        # Phase A.7c: delegates to src/runtime/checkpoint.safe_log_conversation
-        from src.runtime.checkpoint import safe_log_conversation
-        return await safe_log_conversation(task_id, role, content, model, cost, self.name)
+

@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 
 from ..infra.logging_config import get_logger
+from .context import build_system_prompt
+from .parsing import parse_action
 
 logger = get_logger("runtime.single_shot")
 
@@ -27,7 +29,7 @@ async def run(profile, task: dict) -> dict:
     # Build requirements using the same method as react loop
     reqs = await profile._build_model_requirements(task, _ss_ctx)
 
-    system_prompt = profile._build_full_system_prompt(task)
+    system_prompt = build_system_prompt(profile, task)
     context = await profile._build_context(task)
     messages = [
         {"role": "system", "content": system_prompt},
@@ -78,7 +80,7 @@ async def run(profile, task: dict) -> dict:
     used_model = response.get("model", "unknown")
     cost = response.get("cost", 0)
 
-    parsed = profile._parse_agent_response(content)
+    parsed = parse_action(content)
     if parsed is None:
         parsed = {"action": "final_answer", "result": content}
 

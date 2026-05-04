@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.agents.base import BaseAgent
+from src.workflows.engine.constrained_emit import maybe_apply
 
 
 class _FakeAgent(BaseAgent):
@@ -45,7 +46,7 @@ _MARKDOWN_SCHEMA = {"doc": {"type": "markdown"}}
 async def test_passes_through_non_completed_result():
     agent = _FakeAgent()
     result = {"status": "failed", "result": "boom", "error": "x"}
-    out = await agent._maybe_constrained_emit(_wf_task(_OBJECT_SCHEMA), result)
+    out = await maybe_apply(_wf_task(_OBJECT_SCHEMA), result)
     assert out is result
 
 
@@ -53,7 +54,7 @@ async def test_passes_through_non_completed_result():
 async def test_passes_through_empty_draft():
     agent = _FakeAgent()
     result = {"status": "completed", "result": "   "}
-    out = await agent._maybe_constrained_emit(_wf_task(_OBJECT_SCHEMA), result)
+    out = await maybe_apply(_wf_task(_OBJECT_SCHEMA), result)
     assert out is result
 
 
@@ -62,7 +63,7 @@ async def test_passes_through_non_workflow_task():
     agent = _FakeAgent()
     task = {"id": 1, "context": json.dumps({"artifact_schema": _OBJECT_SCHEMA})}
     result = {"status": "completed", "result": '{"a":1,"b":2}'}
-    out = await agent._maybe_constrained_emit(task, result)
+    out = await maybe_apply(task, result)
     assert out is result
 
 
@@ -70,7 +71,7 @@ async def test_passes_through_non_workflow_task():
 async def test_passes_through_markdown_schema():
     agent = _FakeAgent()
     result = {"status": "completed", "result": "# title\n\nbody"}
-    out = await agent._maybe_constrained_emit(_wf_task(_MARKDOWN_SCHEMA), result)
+    out = await maybe_apply(_wf_task(_MARKDOWN_SCHEMA), result)
     assert out is result
 
 
@@ -82,7 +83,7 @@ async def test_passes_through_when_no_schema():
         "context": json.dumps({"is_workflow_step": True}),
     }
     result = {"status": "completed", "result": "x"}
-    out = await agent._maybe_constrained_emit(task, result)
+    out = await maybe_apply(task, result)
     assert out is result
 
 
@@ -96,7 +97,7 @@ async def test_dispatch_failure_keeps_draft():
         "src.core.llm_dispatcher.get_dispatcher",
         return_value=fake_dispatcher,
     ):
-        out = await agent._maybe_constrained_emit(
+        out = await maybe_apply(
             _wf_task(_OBJECT_SCHEMA), result,
         )
     assert out["result"] == "draft text"
@@ -113,7 +114,7 @@ async def test_empty_emit_keeps_draft():
         "src.core.llm_dispatcher.get_dispatcher",
         return_value=fake_dispatcher,
     ):
-        out = await agent._maybe_constrained_emit(
+        out = await maybe_apply(
             _wf_task(_OBJECT_SCHEMA), result,
         )
     assert out["result"] == "draft text"
@@ -132,7 +133,7 @@ async def test_non_json_emit_keeps_draft():
         "src.core.llm_dispatcher.get_dispatcher",
         return_value=fake_dispatcher,
     ):
-        out = await agent._maybe_constrained_emit(
+        out = await maybe_apply(
             _wf_task(_OBJECT_SCHEMA), result,
         )
     assert out["result"] == "draft text"
@@ -151,7 +152,7 @@ async def test_valid_emit_replaces_draft():
         "src.core.llm_dispatcher.get_dispatcher",
         return_value=fake_dispatcher,
     ):
-        out = await agent._maybe_constrained_emit(
+        out = await maybe_apply(
             _wf_task(_OBJECT_SCHEMA), result,
         )
     assert out["result"] == valid_emit
@@ -174,7 +175,7 @@ async def test_dispatch_called_with_json_schema_response_format():
         "src.core.llm_dispatcher.get_dispatcher",
         return_value=fake_dispatcher,
     ):
-        await agent._maybe_constrained_emit(_wf_task(_OBJECT_SCHEMA), result)
+        await maybe_apply(_wf_task(_OBJECT_SCHEMA), result)
 
     call_kwargs = fake_dispatcher.request.call_args.kwargs
     rf = call_kwargs.get("response_format")
@@ -223,7 +224,7 @@ async def test_skip_emit_when_draft_already_parses_with_all_keys():
         "src.core.llm_dispatcher.get_dispatcher",
         return_value=fake_dispatcher,
     ):
-        out = await agent._maybe_constrained_emit(task, result)
+        out = await maybe_apply(task, result)
     # Dispatcher MUST NOT have been called — skipped because draft is clean.
     assert fake_dispatcher.request.call_count == 0
     assert out["result"] == draft
@@ -260,7 +261,7 @@ async def test_emit_still_fires_when_draft_missing_keys():
         "src.core.llm_dispatcher.get_dispatcher",
         return_value=fake_dispatcher,
     ):
-        out = await agent._maybe_constrained_emit(task, result)
+        out = await maybe_apply(task, result)
     # Emit fired because key was missing.
     assert fake_dispatcher.request.call_count == 1
     assert out.get("constrained_emit_applied") is True
@@ -288,7 +289,7 @@ async def test_emit_still_fires_when_draft_is_prose():
         "src.core.llm_dispatcher.get_dispatcher",
         return_value=fake_dispatcher,
     ):
-        await agent._maybe_constrained_emit(task, result)
+        await maybe_apply(task, result)
     assert fake_dispatcher.request.call_count == 1
 
 
@@ -305,7 +306,7 @@ async def test_array_schema_translates_correctly_at_call():
         "src.core.llm_dispatcher.get_dispatcher",
         return_value=fake_dispatcher,
     ):
-        await agent._maybe_constrained_emit(_wf_task(_ARRAY_SCHEMA), result)
+        await maybe_apply(_wf_task(_ARRAY_SCHEMA), result)
     rf = fake_dispatcher.request.call_args.kwargs["response_format"]
     assert rf["json_schema"]["schema"]["type"] == "array"
     assert rf["json_schema"]["schema"]["minItems"] == 1

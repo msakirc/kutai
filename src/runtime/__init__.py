@@ -83,9 +83,12 @@ async def execute(profile, task: dict, progress_callback: Callable | None = None
         # the draft result is a non-empty completion, run a single-shot
         # fix-up call with response_format:json_schema so required
         # fields can't be silently dropped. Skips markdown/string
-        # schemas and non-completed results.
+        # schemas and non-completed results. Phase A.12: lives in
+        # workflow_engine — not a runtime concern. Runtime invokes it
+        # as the final post-execution step.
         try:
-            _result = await profile._maybe_constrained_emit(task, _result)
+            from src.workflows.engine.constrained_emit import maybe_apply
+            _result = await maybe_apply(task, _result)
         except Exception as _emit_exc:
             logger.warning(
                 f"[Task #{task.get('id','?')}] constrained_emit raised: "

@@ -104,6 +104,7 @@ yazbunu @ git+https://github.com/msakirc/yazbunu.git
 -e ./packages/salako
 -e ./packages/general_beckman
 -e ./packages/workflow_engine
+-e ./packages/coulson
 
 # Test dependencies
 pytest-aiohttp>=1.0.0

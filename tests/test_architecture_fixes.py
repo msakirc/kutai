@@ -150,7 +150,8 @@ class TestPromptInjectionDefense(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Phase A.5: build_system_prompt moved from BaseAgent to runtime.context.
-        cls.source = _read_source("src/runtime/context.py")
+        # Phase B (2026-05-04): runtime relocated to packages/coulson/.
+        cls.source = _read_source("packages/coulson/src/coulson/context.py")
 
     def test_system_prompt_contains_security_suffix(self):
         """build_system_prompt must contain the injection defense."""

@@ -4,8 +4,17 @@ from __future__ import annotations
 from salako.actions import Action
 from salako.workspace_snapshot import snapshot_workspace
 from salako.git_commit import auto_commit
+from salako.verify_artifacts import verify_artifacts
+from salako.run_cmd import run_cmd
 
-__all__ = ["Action", "run", "snapshot_workspace", "auto_commit"]
+__all__ = [
+    "Action",
+    "run",
+    "snapshot_workspace",
+    "auto_commit",
+    "verify_artifacts",
+    "run_cmd",
+]
 
 
 async def run(task: dict) -> Action:
@@ -34,8 +43,71 @@ async def run(task: dict) -> Action:
         return Action(status="completed", result=snap)
 
     if action == "git_commit":
-        await auto_commit(task, payload.get("result") or {})
-        return Action(status="completed")
+        commit_info = await auto_commit(task, payload.get("result") or {})
+        # Backwards-compatible default: empty diff is OK (no-op success).
+        # Opt-in: when payload.require_diff is true, an empty diff is a
+        # hard failure — surfaces the "step claimed file changes but
+        # nothing actually changed" pattern observed in mission 57.
+        if payload.get("require_diff") and (commit_info or {}).get("empty"):
+            return Action(
+                status="failed",
+                error="empty diff: require_diff was set but nothing was committed",
+                result=commit_info or {},
+            )
+        if (commit_info or {}).get("error"):
+            # Best-effort path: keep prior behaviour (don't fail the task)
+            # unless require_diff is set and we got nothing.
+            return Action(status="completed", result=commit_info or {})
+        return Action(status="completed", result=commit_info or {})
+
+    if action == "verify_artifacts":
+        from salako.verify_artifacts import verify_artifacts as _verify
+        try:
+            res = await _verify(
+                mission_id=task.get("mission_id"),
+                paths=payload.get("paths") or [],
+                min_bytes=int(payload.get("min_bytes", 1)),
+                compile_check=bool(payload.get("compile_check", False)),
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("all_ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"verify_artifacts: missing={res.get('missing')} "
+                        f"failed={res.get('failed')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "run_cmd":
+        from salako.run_cmd import run_cmd as _run_cmd
+        try:
+            res = await _run_cmd(
+                mission_id=task.get("mission_id"),
+                cmd=payload.get("cmd") or [],
+                cwd=payload.get("cwd"),
+                timeout_s=float(payload.get("timeout_s", 60.0)),
+                env=payload.get("env"),
+                require_exit_zero=bool(payload.get("require_exit_zero", False)),
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"run_cmd: exit={res.get('exit')} "
+                        f"timed_out={res.get('timed_out')} "
+                        f"err={res.get('error') or ''}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
 
     if action == "clarify":
         from salako.clarify import clarify

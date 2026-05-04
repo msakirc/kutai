@@ -44,6 +44,7 @@ async def test_run_git_commit_happy_path():
         "payload": {"action": "git_commit", "result": {"ok": True}},
     }
     with patch("salako.auto_commit", new_callable=AsyncMock) as mock_commit:
+        mock_commit.return_value = {"committed": True, "empty": False, "message": "Task #3"}
         action = await salako.run(task)
     assert action.status == "completed"
     mock_commit.assert_awaited_once()

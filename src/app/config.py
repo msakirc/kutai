@@ -69,6 +69,12 @@ MAX_TOOL_OUTPUT_LENGTH = 4000
 MAX_CONTEXT_CHAIN_LENGTH = 12000
 
 MAX_CONCURRENT_MISSIONS = int(os.getenv("MAX_CONCURRENT_GOALS", "3"))
+
+# Hard cap on features expanded from implementation_backlog in phase 8.
+# Mission 57 generated 56 features from a 1-entry backlog because the
+# loop expander had no bound and accepted whatever the agent emitted.
+# Caller can override via env for unusual missions.
+MAX_FEATURES_PER_MISSION = int(os.getenv("MAX_FEATURES_PER_MISSION", "30"))
 PROJECTS_CONFIG_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "projects.json"
 )

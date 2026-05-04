@@ -1856,17 +1856,84 @@ async def _trigger_template_expansion(mission_id: int, backlog_text: str) -> Non
     dependent feature won't start until the last task of its prerequisite
     feature completes.  After all features are expanded, inserts a
     cross-feature integration test step.
+
+    Bounded by ``MAX_FEATURES_PER_MISSION`` (config). Mission 57 ran 56
+    features off a 1-entry backlog because nothing here capped or deduped
+    the iteration. The schema validator at [8.0] now blocks bad backlogs
+    upstream; this is defence-in-depth for the path between approval and
+    expansion.
     """
     import json as _json
+    from src.app.config import MAX_FEATURES_PER_MISSION
 
     try:
         features = _json.loads(backlog_text)
         if not isinstance(features, list):
-            logger.debug("[Workflow Hook] implementation_backlog is not a list")
+            logger.warning(
+                f"[Workflow Hook] implementation_backlog for mission #{mission_id} "
+                f"is not a list (got {type(features).__name__}); skipping expansion"
+            )
             return
     except (ValueError, TypeError):
-        logger.debug("[Workflow Hook] Could not parse implementation_backlog as JSON")
+        logger.warning(
+            f"[Workflow Hook] Could not parse implementation_backlog as JSON "
+            f"for mission #{mission_id}; skipping expansion"
+        )
         return
+
+    if not features:
+        logger.warning(
+            f"[Workflow Hook] implementation_backlog for mission #{mission_id} "
+            f"is empty — halting feature expansion (no features to build)"
+        )
+        return
+
+    # ── Defensive normalize: dedup by feature_id, keep first occurrence ──
+    # Schema validator at [8.0] enforces unique_by upstream and the F-NNN
+    # pattern; this layer is defence-in-depth. We dedup but do NOT reject
+    # by id-pattern — legacy missions and tests use other id shapes, and
+    # the expander is the wrong place to reintroduce a stricter contract.
+    seen_fids: set[str] = set()
+    deduped: list[dict] = []
+    skipped_dup = 0
+    skipped_no_id = 0
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+        fid = feature.get("id") or feature.get("feature_id")
+        if not isinstance(fid, str) or not fid.strip():
+            skipped_no_id += 1
+            continue
+        if fid in seen_fids:
+            skipped_dup += 1
+            continue
+        seen_fids.add(fid)
+        deduped.append(feature)
+
+    if skipped_dup or skipped_no_id:
+        logger.warning(
+            f"[Workflow Hook] mission #{mission_id} backlog: skipped "
+            f"{skipped_dup} duplicate fid(s) and {skipped_no_id} missing-id entry/entries"
+        )
+
+    # ── Hard cap ──
+    if len(deduped) > MAX_FEATURES_PER_MISSION:
+        logger.warning(
+            f"[Workflow Hook] mission #{mission_id} backlog has {len(deduped)} "
+            f"features; capping to MAX_FEATURES_PER_MISSION="
+            f"{MAX_FEATURES_PER_MISSION}. Drop count: "
+            f"{len(deduped) - MAX_FEATURES_PER_MISSION}"
+        )
+        deduped = deduped[:MAX_FEATURES_PER_MISSION]
+
+    if not deduped:
+        logger.warning(
+            f"[Workflow Hook] mission #{mission_id}: no usable features after "
+            f"dedup/validation — halting expansion"
+        )
+        return
+
+    features = deduped
 
     try:
         from .loader import load_workflow

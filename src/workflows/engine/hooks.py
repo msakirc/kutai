@@ -571,6 +571,93 @@ async def _check_truthy_evidence(
     return None
 
 
+async def resolve_dynamic_constraints(
+    schema: dict,
+    mission_id: int | str | None,
+) -> dict:
+    """Resolve dynamic constraints inside a schema against upstream artifacts.
+
+    Currently supports:
+
+    - ``min_items_from``: ``{"artifact": "<name>"[, "path": "a.b"][, "floor": int]}``
+      — replaces ``min_items`` with the upstream artifact's item count
+      (parsed JSON array, optionally drilled into via dot-separated
+      ``path``). Failures degrade to ``floor`` (default 1) so a missing
+      upstream doesn't silently pass tiny backlogs.
+
+    Returns a deep copy of ``schema`` with resolved literal constraints. Safe
+    to call with ``mission_id=None`` — the function becomes a no-op (the
+    floor takes over).
+    """
+    import json as _json
+    import copy as _copy
+
+    if not isinstance(schema, dict) or not schema:
+        return schema
+
+    resolved = _copy.deepcopy(schema)
+
+    store = None
+    if mission_id is not None:
+        try:
+            store = get_artifact_store()
+        except Exception:
+            store = None
+
+    async def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if node.get("type") == "array" and "min_items_from" in node:
+                spec = node.get("min_items_from") or {}
+                upstream_name = spec.get("artifact") if isinstance(spec, dict) else None
+                inner_path = spec.get("path") if isinstance(spec, dict) else None
+                floor = int(spec.get("floor", 1)) if isinstance(spec, dict) else 1
+                resolved_count: int | None = None
+                if upstream_name and store is not None and mission_id is not None:
+                    try:
+                        raw = await store.retrieve(mission_id, upstream_name)
+                        if raw:
+                            try:
+                                parsed = _json.loads(raw)
+                                # Drill into a dot-path (e.g. "mvp_feature_list")
+                                # so the schema author can point at a list nested
+                                # in an upstream object artifact.
+                                if isinstance(inner_path, str) and inner_path:
+                                    cursor: Any = parsed
+                                    for part in inner_path.split("."):
+                                        if isinstance(cursor, dict):
+                                            cursor = cursor.get(part)
+                                        else:
+                                            cursor = None
+                                            break
+                                    parsed = cursor
+                                if isinstance(parsed, list):
+                                    resolved_count = len(parsed)
+                            except (ValueError, TypeError):
+                                pass
+                    except Exception as e:
+                        logger.debug(
+                            f"resolve_dynamic_constraints: lookup of "
+                            f"{upstream_name!r} failed: {e}"
+                        )
+                effective = max(resolved_count or 0, floor)
+                # Take the larger of any explicit min_items already on the rule
+                # and the upstream-derived count. Authors who wrote both want
+                # the stricter of the two.
+                existing = int(node.get("min_items") or 0)
+                node["min_items"] = max(effective, existing)
+                # Drop the source key so downstream consumers (translator,
+                # checklist) see only the canonical literal.
+                node.pop("min_items_from", None)
+            for v in node.values():
+                await _walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                await _walk(v)
+
+    await _walk(resolved)
+    return resolved
+
+
 def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str]:
     """Validate an artifact output against its schema definition.
 
@@ -1346,7 +1433,17 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
                 f"a step that requires schema {list(artifact_schema.keys())}"
             )
         else:
-            is_valid, error_msg = validate_artifact_schema(output_value, artifact_schema)
+            # Resolve any dynamic constraints (e.g. min_items_from) against
+            # upstream artifacts before validating. No-op for static schemas.
+            try:
+                _eff_schema = await resolve_dynamic_constraints(
+                    artifact_schema,
+                    task.get("mission_id") or ctx.get("mission_id"),
+                )
+            except Exception as _e:
+                logger.debug(f"[Workflow Hook] dynamic-constraint resolution skipped: {_e}")
+                _eff_schema = artifact_schema
+            is_valid, error_msg = validate_artifact_schema(output_value, _eff_schema)
         if is_valid and os.environ.get("LAZY_TRUE_EVIDENCE_CHECK") == "1":
             # Lazy-true detection: agent claimed a verification flag is true
             # but the audit_log shows no actual verification command ran.

@@ -4964,17 +4964,19 @@
       "output_artifacts": [
         "implementation_backlog"
       ],
-      "instruction": "Initialize the executable implementation backlog. Transform sprint_plans into a flat, ordered list of features to implement. Each entry: feature_id, feature_name, epic_id, sprint_id, user_story_ids, depends_on_features, status (pending/in_progress/completed/blocked), template_ref ('feature_implementation_template'). Order respecting dependencies and sprint assignments.",
-      "done_when": "implementation_backlog exists as an ordered list of features, each referencing the implementation template.",
+      "instruction": "Initialize the executable implementation backlog. Transform sprint_plans into a flat, ordered list of features to implement. The backlog MUST cover EVERY feature from mvp_scope.mvp_feature_list — do not collapse, deduplicate, or drop entries. Each backlog entry: feature_id (matching pattern F-NNN, e.g. F-001), feature_name (the human-readable name from mvp_scope, min 3 chars), epic_id, sprint_id, user_story_ids, depends_on_features, status (pending/in_progress/completed/blocked), template_ref ('feature_implementation_template'). Order respecting dependencies and sprint assignments. feature_id values MUST be unique across the backlog.",
+      "done_when": "implementation_backlog exists as an ordered list of features covering every mvp_feature_list entry, each referencing the implementation template, with unique F-NNN ids.",
       "artifact_schema": {
         "implementation_backlog": {
           "type": "array",
-          "min_items": 1,
+          "min_items": 5,
+          "min_items_from": {"artifact": "mvp_scope", "path": "mvp_feature_list", "floor": 5},
+          "unique_by": "feature_id",
           "items": {
             "type": "object",
             "fields": {
-              "feature_id": {},
-              "feature_name": {},
+              "feature_id": {"type": "string", "pattern": "^F-\\d{2,3}$"},
+              "feature_name": {"type": "string", "min_length": 3},
               "epic_id": {},
               "sprint_id": {},
               "status": {},

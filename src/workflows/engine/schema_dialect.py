@@ -182,6 +182,32 @@ def validate_value(rule: dict, value: Any, path: str = "") -> Optional[str]:
         if isinstance(max_items, int) and len(value) > max_items:
             return (f"{path or '<root>'}: {len(value)} items, "
                     f"max {max_items}")
+        # ``unique_by``: enforce uniqueness across items by a field name (for
+        # object items) or ``"."`` for scalar items. Catches the mission-57
+        # pattern where the agent re-emits the same logical row under
+        # different feature_ids.
+        unique_by = rule.get("unique_by")
+        if isinstance(unique_by, str) and unique_by:
+            seen: dict[Any, int] = {}
+            for i, item in enumerate(value):
+                if unique_by == ".":
+                    key = item
+                elif isinstance(item, dict):
+                    key = item.get(unique_by)
+                else:
+                    key = None
+                if key is None:
+                    continue
+                try:
+                    hashable = key if isinstance(key, (str, int, float, bool, tuple)) else str(key)
+                except Exception:
+                    hashable = str(key)
+                if hashable in seen:
+                    return (
+                        f"{path or '<root>'}: duplicate {unique_by}={hashable!r} "
+                        f"at items [{seen[hashable]}] and [{i}]"
+                    )
+                seen[hashable] = i
         items_rule = rule.get("items")
         if isinstance(items_rule, dict):
             for i, item in enumerate(value):
@@ -199,6 +225,18 @@ def validate_value(rule: dict, value: Any, path: str = "") -> Optional[str]:
         min_length = int(rule.get("min_length") or 1)
         if len(value.strip()) < min_length:
             return f"{path or '<root>'}: string too short (min {min_length})"
+        pattern = rule.get("pattern")
+        if isinstance(pattern, str) and pattern:
+            import re as _re_pat
+            try:
+                if not _re_pat.match(pattern, value):
+                    return (
+                        f"{path or '<root>'}: value {value!r} does not match "
+                        f"pattern {pattern!r}"
+                    )
+            except _re_pat.error as e:
+                # Bad regex in schema — treat as schema author error, surface clearly.
+                return f"{path or '<root>'}: invalid pattern {pattern!r}: {e}"
         return None
 
     if rtype == "number":
@@ -291,7 +329,11 @@ def translate_rule(rule: dict) -> Optional[dict]:
         return out
 
     if rtype == "string":
-        return {"type": "string"}
+        out: dict[str, Any] = {"type": "string"}
+        pattern = rule.get("pattern")
+        if isinstance(pattern, str) and pattern:
+            out["pattern"] = pattern
+        return out
     if rtype == "number":
         return {"type": "number"}
     if rtype == "boolean":

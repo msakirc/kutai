@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 
+from fatih_hoca import requirements_for
 from ..infra.logging_config import get_logger
 from .context import build_system_prompt
 from .parsing import parse_action
@@ -27,7 +28,11 @@ async def run(profile, task: dict) -> dict:
         _ss_ctx = {}
 
     # Build requirements using the same method as react loop
-    reqs = await profile._build_model_requirements(task, _ss_ctx)
+    reqs = await requirements_for(
+        task, _ss_ctx,
+        agent_name=profile.name,
+        allowed_tools=profile.allowed_tools,
+    )
 
     system_prompt = build_system_prompt(profile, task)
     context = await profile._build_context(task)

@@ -4,12 +4,13 @@ from __future__ import annotations
 from fatih_hoca.types import Pick, Failure, SwapBudget
 from fatih_hoca.registry import ModelInfo, ModelRegistry
 from fatih_hoca.requirements import ModelRequirements, AGENT_REQUIREMENTS, CAPABILITY_TO_TASK
+from fatih_hoca.requirements_builder import requirements_for
 from fatih_hoca.capabilities import Cap, ALL_CAPABILITIES, TASK_PROFILES
 from fatih_hoca.ranking import ScoredModel
 from fatih_hoca.selector import Selector
 
 __all__ = [
-    "init", "select", "all_models",
+    "init", "select", "all_models", "requirements_for",
     "Pick", "Failure", "ModelInfo", "ModelRequirements", "ScoredModel",
     "AGENT_REQUIREMENTS", "CAPABILITY_TO_TASK",
     "Cap", "ALL_CAPABILITIES", "TASK_PROFILES",

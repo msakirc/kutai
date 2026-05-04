@@ -34,6 +34,7 @@ import json
 import time
 from typing import Callable
 
+from fatih_hoca import requirements_for
 from fatih_hoca.requirements import ModelRequirements
 from ..app.config import MAX_TOOL_OUTPUT_LENGTH
 from ..infra.db import (
@@ -87,7 +88,11 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             _task_ctx = {}
     if not isinstance(_task_ctx, dict):
         _task_ctx = {}
-    reqs = await profile._build_model_requirements(task, _task_ctx)
+    reqs = await requirements_for(
+        task, _task_ctx,
+        agent_name=profile.name,
+        allowed_tools=profile.allowed_tools,
+    )
     # Phase 9.2: Attach task_id for tracing in router
     reqs._task_id = int(task_id) if str(task_id).isdigit() else None
 
@@ -145,7 +150,11 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             )
         else:
             # Very old checkpoint or missing — build fresh
-            reqs = await profile._build_model_requirements(task, _task_ctx)
+            reqs = await requirements_for(
+        task, _task_ctx,
+        agent_name=profile.name,
+        allowed_tools=profile.allowed_tools,
+    )
 
         logger.info(
             f"[Task #{task_id}] Resuming from checkpoint "

@@ -226,7 +226,21 @@ class LLMDispatcher:
             **kwargs,
         )
 
-        result = await general_beckman.enqueue(spec, await_inline=True)
+        # Keep the PARENT task's heartbeat fresh while we wait on the child
+        # raw_dispatch task. dispatcher.request now blocks awaiting an
+        # inline-waiter future for an entire Beckman admission + dispatch
+        # cycle (queue → reserve → select → call → grade) — easily 60+s
+        # under cloud cooldowns or local swaps. The parent's no-progress
+        # watchdog only sees the dispatched task's heartbeat, and that
+        # task's contextvar id is the PARENT's, not the child's. Without
+        # this wrapper the parent goes 300s without a bump while the child
+        # is making real progress, the watchdog kills the runner, and the
+        # mission step lands as "task wedged" even though work was happening.
+        # Production 2026-05-04: 11+ wedged ❌ pings within 5 minutes after
+        # the dispatcher.request → enqueue alias landed.
+        from src.core import heartbeat as _hb
+        async with _hb.keepalive():
+            result = await general_beckman.enqueue(spec, await_inline=True)
 
         if result.status == "failed":
             err = result.error or "LLM call failed"

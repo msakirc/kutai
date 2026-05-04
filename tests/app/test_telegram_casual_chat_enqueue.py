@@ -8,6 +8,21 @@ import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 
 
+
+@pytest.fixture(autouse=True)
+async def _reset_db_singleton():
+    import src.infra.db as _dbmod
+    if _dbmod._db_connection is not None:
+        try: await _dbmod._db_connection.close()
+        except Exception: pass
+    _dbmod._db_connection = None
+    yield
+    if _dbmod._db_connection is not None:
+        try: await _dbmod._db_connection.close()
+        except Exception: pass
+    _dbmod._db_connection = None
+
+
 @pytest.mark.asyncio
 async def test_casual_chat_enqueues_with_kind_chat(tmp_path, monkeypatch):
     """_handle_casual must call beckman.enqueue with kind='chat'."""

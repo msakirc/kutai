@@ -8,6 +8,21 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
+
+@pytest.fixture(autouse=True)
+async def _reset_db_singleton():
+    import src.infra.db as _dbmod
+    if _dbmod._db_connection is not None:
+        try: await _dbmod._db_connection.close()
+        except Exception: pass
+    _dbmod._db_connection = None
+    yield
+    if _dbmod._db_connection is not None:
+        try: await _dbmod._db_connection.close()
+        except Exception: pass
+    _dbmod._db_connection = None
+
+
 @pytest.mark.asyncio
 async def test_grade_task_enqueues_with_overhead_kind(tmp_path, monkeypatch):
     """grade_task must enqueue with kind='overhead' and await_inline=True."""

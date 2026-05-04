@@ -295,11 +295,36 @@ async def init_store(persist_dir: str | None = None, embed_fn=None, dimension_fn
         expected_dim = _get_dimension_fn()()
         from src.memory.embeddings import EMBEDDING_MODEL
 
+        # Stub embedding function — refuses to embed (we always pass
+        # pre-computed embeddings via add_kwargs["embeddings"]). Skipping
+        # this argument lets chromadb attach DefaultEmbeddingFunction,
+        # which downloads + extracts ~/.cache/chroma/onnx_models/all-
+        # MiniLM-L6-v2/onnx.tar.gz on collection construction. Two
+        # python processes loading vector_store concurrently raced on
+        # the extraction site (Windows file lock: WinError 32 — "process
+        # cannot access the file because it is being used by another
+        # process"), corrupting the cache and blowing up the second
+        # process's init. Production 2026-05-04: orchestrator + parallel
+        # session both hit this. Stub never triggers any download.
+        from chromadb.api.types import EmbeddingFunction
+
+        class _RefuseEmbedFunction(EmbeddingFunction):
+            def __call__(self, input):
+                raise RuntimeError(
+                    "vector_store collections must receive pre-computed "
+                    "embeddings (see embed_and_store) — chromadb default "
+                    "ONNX path is intentionally disabled to keep the "
+                    ".cache/chroma extraction off the hot path."
+                )
+
+        _refuse_embed = _RefuseEmbedFunction()
+
         # Create or get collections with dimension tracking
         for name in COLLECTIONS:
             col = await asyncio.to_thread(
                 _client.get_or_create_collection,
                 name=name,
+                embedding_function=_refuse_embed,
                 metadata={
                     "hnsw:space": "cosine",
                     "embedding_model": EMBEDDING_MODEL,

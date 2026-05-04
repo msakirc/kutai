@@ -36,12 +36,21 @@ logger = get_logger("infra.registry_store")
 #   manual_revive=True → /revive command honored, auto-revive blocked
 #
 # Tuned defaults follow handoff guidance:
-#   auth/manual: never auto-expire (bad key needs operator action)
+#   manual: never auto-expire (operator-driven only)
+#   auth: 15min base TTL with adaptive backoff per remark (see
+#     _adaptive_ttl below). Pre-2026-05-04 was no-TTL + provider-wide,
+#     which let a single false-positive (one openrouter sub-vendor
+#     returning a transient credit/auth error) take 33 models offline
+#     until manual /revive. Per-call evidence is too noisy for the
+#     largest registry action — runtime auth marks now stay model-
+#     scoped; provider-wide auth state is owned exclusively by the
+#     boot discovery probe in fatih_hoca/__init__.py.
 #   404_permanent: 24h (Gemini *-preview-MM-DD slug retirements)
 #   404_transient: 5min (openrouter "no endpoints found" upstream rotations)
-#   server_error: 10min (transient backend; let circuit breaker handle short-cycle)
+#   server_error: 10min base TTL with adaptive backoff (transient backend
+#     that keeps failing through a TTL recycle deserves a longer cool-off)
 CAUSE_POLICY: dict[str, dict] = {
-    "auth":          {"ttl_seconds": None,  "manual_revive": True},
+    "auth":          {"ttl_seconds": 900,   "manual_revive": False},
     "manual":        {"ttl_seconds": None,  "manual_revive": True},
     # 404_permanent flipped to manual_revive=True (2026-05-03): runtime
     # call returned `code=model_not_found` from the provider — that's an
@@ -57,6 +66,20 @@ CAUSE_POLICY: dict[str, dict] = {
     "404_transient": {"ttl_seconds": 300,   "manual_revive": False},
     "server_error":  {"ttl_seconds": 600,   "manual_revive": False},
 }
+
+# Adaptive-TTL ladder (seconds). When a model is re-marked for an
+# adaptively-escalated cause inside _ADAPTIVE_TTL_WINDOW, the TTL
+# multiplies by 2 per prior mark in that window, capped at 4h. The
+# audit trail (registry_events) is the source of truth — no extra
+# column needed. Reset is implicit: once a model has stayed alive
+# past the lookback window, the next mark drops back to base TTL.
+#
+# Maps base_ttl → effective TTL after k prior marks (k>=0):
+#   auth (base 900):    15min, 30min, 1h, 2h, 4h, 4h, …
+#   server_error (600): 10min, 20min, 40min, 1h20, 2h40, 4h, …
+_ADAPTIVE_TTL_CAP = 14400          # 4h ceiling
+_ADAPTIVE_TTL_WINDOW = 14400       # 4h lookback
+_ADAPTIVE_CAUSES = {"auth", "server_error"}
 
 
 # ── Connection management ────────────────────────────────────────────────
@@ -177,14 +200,52 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
 
 
-def _expires_at_for(cause: str, marked_at_epoch: float) -> str | None:
-    policy = CAUSE_POLICY.get(cause, {})
-    ttl = policy.get("ttl_seconds")
+def _expires_at_for(cause: str, marked_at_epoch: float,
+                    ttl_override: int | None = None) -> str | None:
+    if ttl_override is not None:
+        ttl: int | None = ttl_override
+    else:
+        policy = CAUSE_POLICY.get(cause, {})
+        ttl = policy.get("ttl_seconds")
     if ttl is None:
         return None
     return time.strftime(
         "%Y-%m-%d %H:%M:%S", time.gmtime(marked_at_epoch + float(ttl))
     )
+
+
+def _adaptive_ttl(
+    conn: sqlite3.Connection,
+    litellm_name: str,
+    cause: str,
+    base_ttl: int,
+) -> int:
+    """Compute the effective TTL for this mark_dead call.
+
+    Counts mark_dead events for this litellm_name with the same cause
+    inside ``_ADAPTIVE_TTL_WINDOW``. With k prior marks, the new TTL
+    is ``base_ttl * 2**k`` capped at ``_ADAPTIVE_TTL_CAP``. First mark
+    in a window stays at base TTL; sustained failures escalate.
+
+    Why per-cause: a model that auth-fails AND server-errors in the
+    same window is two distinct symptoms; don't conflate them.
+    """
+    if cause not in _ADAPTIVE_CAUSES:
+        return base_ttl
+    cutoff_iso = time.strftime(
+        "%Y-%m-%d %H:%M:%S",
+        time.gmtime(time.time() - _ADAPTIVE_TTL_WINDOW),
+    )
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM registry_events "
+        "WHERE scope = 'model' AND target = ? AND event = 'mark_dead' "
+        "AND cause = ? AND timestamp > ?",
+        (litellm_name, cause, cutoff_iso),
+    ).fetchone()
+    prior_marks = int(row["n"]) if row else 0
+    multiplier = 1 << prior_marks  # 2**prior_marks; clamped by cap
+    effective = base_ttl * multiplier
+    return min(effective, _ADAPTIVE_TTL_CAP)
 
 
 # ── Audit log ────────────────────────────────────────────────────────────
@@ -244,8 +305,19 @@ def mark_dead(
         cause = "404_permanent"
     now_epoch = time.time()
     now_iso = _now_iso()
-    expires_at = _expires_at_for(cause, now_epoch)
     conn = _get_conn()
+    # Adaptive-TTL causes (auth, server_error) escalate on remark inside
+    # the lookback window — sustained failures stay out longer, single
+    # false positives heal at base TTL. No column added; audit trail
+    # via registry_events is the source of truth.
+    base_ttl = CAUSE_POLICY[cause].get("ttl_seconds")
+    if base_ttl is not None and cause in _ADAPTIVE_CAUSES:
+        effective_ttl: int | None = _adaptive_ttl(
+            conn, litellm_name, cause, int(base_ttl),
+        )
+    else:
+        effective_ttl = base_ttl
+    expires_at = _expires_at_for(cause, now_epoch, ttl_override=effective_ttl)
     # Provider field required on the row. If model unknown to registry,
     # derive provider from the litellm_name's first path segment — it's
     # the same convention used everywhere else in the codebase

@@ -903,28 +903,32 @@ async def call(
                         )
                     except Exception:
                         pass
-            # auth_failure: provider-level credential / billing / key-cap
-            # issue. Production triage 2026-04-30: OpenRouter key hit its
-            # account-level "Key limit exceeded" cap → every OR call 403'd
-            # with the same error → 123 fails / 0 successes in 6h. The
-            # error is provider-wide, not per-model, so mark_dead ALL
-            # registered models on this provider until process restart
-            # (which re-runs discovery and revalidates auth).
+            # auth_failure: per-call evidence is too noisy for provider-
+            # wide kill action (federated routing, sub-vendor outages,
+            # transient credit walls, gated-model 403s, body-parse
+            # heuristics, LiteLLM exception normalization). Pre-2026-05-04
+            # this path called mark_provider_dead with no TTL → a single
+            # false-positive (one openrouter sub-vendor returning a
+            # transient credit error) took 33 models offline until
+            # manual /revive. Provider-wide auth state is now owned
+            # exclusively by the boot discovery probe in
+            # fatih_hoca/__init__.py, which hits /v1/models directly
+            # (clean auth signal, no per-model gating, no sub-vendor
+            # variance). Runtime stays per-model with adaptive TTL —
+            # see CAUSE_POLICY['auth']: 15min base, escalates 2x per
+            # remark within 4h window, capped at 4h.
             #
-            # 2026-05-02 quota-misclassification guard:
+            # 2026-05-02 quota-misclassification guard kept verbatim:
             # Gemini's free-tier RESOURCE_EXHAUSTED comes back as
             # litellm.BadRequestError (status_code 400) with body text
             # mentioning "billing" / "plan" — classify_error's text
             # fallback hits the "billing" branch before the "429"/
             # "resource_exhausted" branch in some payload shapes, so
             # category lands on auth_failure for what is really a
-            # transient daily quota. Mass-mark-dead in that case wipes
-            # all 16 gemini ids until restart even though credentials
-            # are valid and quota will reset within hours. Inspect the
-            # message body for quota markers and skip the mass-mark
-            # when found — let the per-model dead-mark above handle
-            # the single failed call, KDV's daily-exhausted tracker
-            # handle the cooldown.
+            # transient daily quota. Skip the auth mark when the body
+            # looks quota-shaped — KDV's rate-limit / daily-exhausted
+            # tracker already handles the cooldown via the
+            # _kdv_record_failure call below.
             if raw_result.category == "auth_failure":
                 msg_lc = (raw_result.message or "").lower()
                 _quota_markers = (
@@ -939,26 +943,19 @@ async def call(
                 if is_quota_shaped:
                     _get_logger().warning(
                         "auth_failure on %s LOOKS LIKE QUOTA — skipping "
-                        "provider-wide mark_dead, treating as transient: %s",
-                        model.provider, raw_result.message[:200],
+                        "auth mark, treating as transient: %s",
+                        model.litellm_name, raw_result.message[:200],
                     )
                 else:
-                    # Provider-level dead — single row replaces the
-                    # legacy per-model loop (was 30+ marks for one bad
-                    # key). Selector now checks is_provider_dead at
-                    # eligibility, excluding every cloud model on this
-                    # provider in one gate. cause='auth' has no TTL —
-                    # operator must fix the key + /revive (or restart,
-                    # which re-runs discovery + auth probe).
                     try:
                         from src.models.model_registry import get_registry
-                        get_registry().mark_provider_dead(
-                            model.provider, cause="auth", actor="caller",
+                        get_registry().mark_dead(
+                            model.litellm_name, cause="auth", actor="caller",
                         )
                         _get_logger().warning(
-                            "auth_failure on %s — provider marked dead "
-                            "(use /revive after fixing creds): %s",
-                            model.provider, raw_result.message[:200],
+                            "auth_failure on %s — model marked dead with "
+                            "adaptive TTL (provider state untouched): %s",
+                            model.litellm_name, raw_result.message[:200],
                         )
                     except Exception:
                         pass

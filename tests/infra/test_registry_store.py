@@ -121,14 +121,26 @@ def test_revive_404_permanent_allows_operator_actor():
     assert rs.is_dead("cerebras/zai-glm-4.7") is False
 
 
-def test_revive_auth_blocks_auto_actor():
-    """Auth cause (no TTL, manual_revive=True) — bad key needs operator
-    intervention. Discovery seeing the model in /v1/models doesn't fix
-    the credentials."""
+def test_revive_auth_allows_auto_actor():
+    """Auth cause (2026-05-04: ttl=15min base, manual_revive=False).
+    Per-call evidence is too noisy for provider-wide action; runtime
+    auth marks now stay model-scoped with adaptive TTL. Auto-revive
+    must succeed — boot probe in fatih_hoca/__init__.py is the only
+    authoritative path that kills provider-wide on bad creds."""
     rs.mark_dead("openrouter/x", cause="auth")
     assert rs.is_dead("openrouter/x") is True
     rs.revive("openrouter/x")  # auto
-    assert rs.is_dead("openrouter/x") is True
+    assert rs.is_dead("openrouter/x") is False
+
+
+def test_manual_cause_still_blocks_auto_actor():
+    """'manual' cause keeps no-TTL + manual_revive=True — that's the
+    operator-driven path (/dead via Telegram) where auto-revive
+    shouldn't override the human."""
+    rs.mark_dead("openrouter/y", cause="manual")
+    assert rs.is_dead("openrouter/y") is True
+    rs.revive("openrouter/y")  # auto
+    assert rs.is_dead("openrouter/y") is True
 
 
 def test_revive_unknown_is_noop():
@@ -293,3 +305,101 @@ def test_repeated_get_conn_idempotent_schema():
     # Re-open same path
     # _isolated_db fixture already pointed us at this DB; reopen is fine
     assert rs.is_dead("a/x") is True
+
+
+# ── Adaptive TTL on auth / server_error ─────────────────────────────────
+
+
+def _expires_epoch(litellm_name: str) -> float:
+    """Read expires_at as epoch seconds for a dead model row.
+
+    Stored timestamps are UTC (registry_store._now_iso uses gmtime),
+    so we use calendar.timegm to convert back without local-tz drift
+    poisoning the assertion math.
+    """
+    import calendar
+    conn = rs._get_conn()
+    row = conn.execute(
+        "SELECT expires_at FROM models WHERE litellm_name = ?",
+        (litellm_name,),
+    ).fetchone()
+    assert row is not None
+    assert row["expires_at"] is not None
+    return float(calendar.timegm(
+        time.strptime(row["expires_at"], "%Y-%m-%d %H:%M:%S")
+    ))
+
+
+def test_auth_first_mark_uses_base_ttl():
+    """First auth mark in a fresh window: base TTL = 15min (900s)."""
+    before = time.time()
+    rs.mark_dead("openrouter/some/m1", cause="auth")
+    expires = _expires_epoch("openrouter/some/m1")
+    # marked_at is gmtime; mktime above interprets as local — both sides
+    # share the same conversion so the relative delta is what matters.
+    delta = expires - before  # normalize tz offset
+    assert 850 < delta < 950, f"expected ~900s, got {delta}"
+
+
+def test_auth_second_mark_doubles_ttl():
+    """Second mark inside the lookback window: 15min base × 2 = 30min."""
+    rs.mark_dead("openrouter/some/m1", cause="auth")
+    rs.mark_dead("openrouter/some/m1", cause="auth")  # remark
+    before = time.time()
+    expires = _expires_epoch("openrouter/some/m1")
+    delta = expires - before
+    assert 1700 < delta < 1900, f"expected ~1800s, got {delta}"
+
+
+def test_auth_escalation_caps_at_4h():
+    """Many remarks must cap at _ADAPTIVE_TTL_CAP (4h = 14400s)."""
+    for _ in range(10):  # 2^9 = 512x is well past the cap
+        rs.mark_dead("openrouter/some/m1", cause="auth")
+    before = time.time()
+    expires = _expires_epoch("openrouter/some/m1")
+    delta = expires - before
+    assert 14000 < delta < 14500, f"expected ~14400s cap, got {delta}"
+
+
+def test_server_error_also_adaptive():
+    """server_error has 600s base; second mark = 1200s."""
+    rs.mark_dead("groq/m", cause="server_error")
+    rs.mark_dead("groq/m", cause="server_error")
+    before = time.time()
+    expires = _expires_epoch("groq/m")
+    delta = expires - before
+    assert 1100 < delta < 1300, f"expected ~1200s, got {delta}"
+
+
+def test_404_permanent_not_adaptive():
+    """Non-adaptive causes (404_permanent / 404_transient) keep base TTL
+    regardless of remarks — they aren't symptoms of escalating health
+    problems, just stable verdicts about the id."""
+    rs.mark_dead("a/x", cause="404_transient")  # 300s
+    rs.mark_dead("a/x", cause="404_transient")  # remark, but not adaptive
+    before = time.time()
+    expires = _expires_epoch("a/x")
+    delta = expires - before
+    assert 250 < delta < 350, f"expected ~300s base (no escalation), got {delta}"
+
+
+def test_adaptive_per_cause_separate_ladders():
+    """A model that auth-fails AND server-errors in the same window
+    has independent counters per cause — don't conflate distinct
+    failure shapes."""
+    rs.mark_dead("groq/m", cause="auth")          # auth count = 1
+    rs.mark_dead("groq/m", cause="server_error")  # server_error count = 1
+    rs.mark_dead("groq/m", cause="auth")          # auth count = 2 → 30min
+    before = time.time()
+    expires = _expires_epoch("groq/m")
+    delta = expires - before
+    # Auth ladder, second prior mark in window (count=1) → base*2 = 1800s
+    assert 1700 < delta < 1900, f"expected ~1800s for auth 2nd, got {delta}"
+
+
+def test_auth_no_longer_manual_revive():
+    """Step 5b had cause=auth as manual_revive=True (no auto-expiry).
+    The 2026-05-04 fix gave it a TTL; manual_revive must now be False
+    so an expired row auto-revives like other transient causes."""
+    assert rs.CAUSE_POLICY["auth"]["manual_revive"] is False
+    assert rs.CAUSE_POLICY["auth"]["ttl_seconds"] == 900

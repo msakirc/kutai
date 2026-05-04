@@ -245,6 +245,43 @@ async def classify_task(title: str, description: str) -> TaskClassification:
 
 # ─── LLM-Based Classification ─────────────────────────────────────────────
 
+async def _enqueue_inline_classifier(
+    *,
+    title: str,
+    description: str,
+    llm_call_kwargs: dict,
+) -> dict:
+    """Enqueue a classifier LLM call as a Beckman task with await_inline=True.
+
+    Returns the dispatcher response dict so callers can do
+    `response.get("content", ...)` unchanged.
+    """
+    import general_beckman
+    spec = {
+        "title": title,
+        "description": description,
+        "agent_type": "classifier",
+        "kind": "classifier",
+        "context": {
+            "llm_call": {
+                "raw_dispatch": True,
+                **llm_call_kwargs,
+            },
+        },
+    }
+    tr = await general_beckman.enqueue(spec, parent_id=None, await_inline=True)
+    if tr.status == "failed":
+        from src.core.router import ModelCallFailed
+        raise ModelCallFailed(tr.error or "call failed", error_category="availability")
+    res = tr.result
+    if isinstance(res, str):
+        try:
+            res = json.loads(res)
+        except Exception:
+            res = {"content": res}
+    return res or {}
+
+
 async def _classify_with_llm(title: str, description: str) -> TaskClassification:
     """Classify using the standard router — just another LLM call."""
     messages = [{
@@ -254,18 +291,21 @@ async def _classify_with_llm(title: str, description: str) -> TaskClassification
         ),
     }]
 
-    from src.core.llm_dispatcher import get_dispatcher, CallCategory
-    response = await get_dispatcher().request(
-        CallCategory.OVERHEAD,
-        task="router",
-        agent_type="classifier",
-        difficulty=3,
-        messages=messages,
-        prefer_speed=True,
-        needs_json_mode=True,
-        priority=3,
-        estimated_input_tokens=500,
-        estimated_output_tokens=200,
+    response = await _enqueue_inline_classifier(
+        title="task-classifier",
+        description=f"Classify task: {title[:80]!r}",
+        llm_call_kwargs={
+            "task": "router",
+            "agent_type": "classifier",
+            "difficulty": 3,
+            "messages": messages,
+            "prefer_speed": True,
+            "needs_json_mode": True,
+            "priority": 3,
+            "estimated_input_tokens": 500,
+            "estimated_output_tokens": 200,
+            "call_category": "overhead",
+        },
     )
 
     raw = response.get("content", "").strip()

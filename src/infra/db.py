@@ -17,6 +17,16 @@ logger = get_logger("infra.db")
 # same connection, and a single writer avoids contention.
 
 _db_connection: aiosqlite.Connection | None = None
+# Path the cached connection was opened against. When the module-level
+# DB_PATH gets monkeypatched (test setup) without manually clearing the
+# cache, get_db() would silently return the stale connection pointing at
+# whatever DB the previous test or runtime opened — leaking writes into
+# production. Tracking the path lets get_db / init_db detect the
+# mismatch and rebuild the connection. Production 2026-05-04: stray test
+# row #10325 ("llm_call:coder:000001-abcdef" / "code this") landed in
+# kutai.db because test_beckman_writes_selected_model_to_task changed
+# DB_PATH but get_db handed back the cached production connection.
+_db_connection_path: str | None = None
 # Global lock guarding explicit BEGIN/COMMIT regions. aiosqlite serialises
 # individual SQL statements via its worker thread, but transactions span
 # multiple awaits — if coroutine A is between its BEGIN and COMMIT, any
@@ -46,10 +56,23 @@ async def get_db() -> aiosqlite.Connection:
     AND acquire ``_tx_lock``. Plain ``await db.commit()`` after a series
     of inserts is now a no-op; the inserts auto-committed individually.
     """
-    global _db_connection
+    global _db_connection, _db_connection_path
+    # Detect DB_PATH override (typically a test that monkeypatched the
+    # module-level DB_PATH after a prior caller already opened the
+    # singleton). Close the stale connection so the next aiosqlite.connect
+    # opens against the new path. Without this, writes silently leak into
+    # whatever DB the cached connection happens to point at.
+    if _db_connection is not None and _db_connection_path != DB_PATH:
+        try:
+            await _db_connection.close()
+        except Exception:
+            pass
+        _db_connection = None
+        _db_connection_path = None
     if _db_connection is None:
         _db_connection = await aiosqlite.connect(DB_PATH, isolation_level=None)
         _db_connection.row_factory = aiosqlite.Row
+        _db_connection_path = DB_PATH
         # Enable WAL for concurrent reads + better write performance
         await _db_connection.execute("PRAGMA journal_mode=WAL")
         await _db_connection.execute("PRAGMA synchronous=NORMAL")
@@ -65,7 +88,7 @@ async def close_db(checkpoint: bool = True) -> None:
                     stop). If False, skip it (for restarts — next instance
                     will use WAL mode anyway).
     """
-    global _db_connection
+    global _db_connection, _db_connection_path
     if _db_connection is not None:
         if checkpoint:
             try:
@@ -74,6 +97,7 @@ async def close_db(checkpoint: bool = True) -> None:
                 pass
         await _db_connection.close()
         _db_connection = None
+        _db_connection_path = None
         logger.info("Database connection closed", checkpoint=checkpoint)
 
 

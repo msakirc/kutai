@@ -7,7 +7,17 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.agents.base import BaseAgent
+from src.runtime.guards import get_search_depth as _get_search_depth_fn
+
+
+class _BaseAgentShim:
+    """Static-method-style shim so existing test calls keep working."""
+    @staticmethod
+    def _get_search_depth(task):
+        return _get_search_depth_fn(task)
+
+
+BaseAgent = _BaseAgentShim
 
 
 class TestGetSearchDepth(unittest.TestCase):

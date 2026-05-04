@@ -37,7 +37,6 @@ from src.runtime.tools import (  # noqa: F401
     CACHEABLE_READ_TOOLS,
     TOOL_FAILURE_ESCALATION_THRESHOLD,
     partition_tool_calls as _partition_tool_calls,
-    TOOL_SCHEMAS_BY_NAME as _TOOL_SCHEMAS_BY_NAME,
 )
 from src.runtime.guards import (  # noqa: F401
     GuardCorrection,

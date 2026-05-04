@@ -1,17 +1,22 @@
-"""Tests for parallel tool execution (multi_tool_call)."""
-from src.agents.base import BaseAgent, _partition_tool_calls
+"""Tests for parallel tool execution (multi_tool_call).
+
+Phase A.11: BaseAgent methods moved to src.runtime.parsing. These tests
+exercise the runtime-level functions directly.
+"""
+from src.agents.base import _partition_tool_calls
+from src.runtime.parsing import parse_function_call, _normalize_action
 
 
 class TestParseMultiToolCall:
     def test_single_unchanged(self):
-        r = BaseAgent._parse_function_call_response([
+        r = parse_function_call([
             {"name": "read_file", "arguments": {"filepath": "a.py"}}
         ])
         assert r["action"] == "tool_call"
         assert r["tool"] == "read_file"
 
     def test_multiple_returns_multi(self):
-        r = BaseAgent._parse_function_call_response([
+        r = parse_function_call([
             {"name": "read_file", "arguments": {"filepath": "a.py"}},
             {"name": "read_file", "arguments": {"filepath": "b.py"}},
         ])
@@ -19,23 +24,23 @@ class TestParseMultiToolCall:
         assert len(r["tools"]) == 2
 
     def test_final_answer_still_works(self):
-        r = BaseAgent._parse_function_call_response([
+        r = parse_function_call([
             {"name": "final_answer", "arguments": {"result": "done"}}
         ])
         assert r["action"] == "final_answer"
 
     def test_multi_with_final_answer_first(self):
-        r = BaseAgent._parse_function_call_response([
+        r = parse_function_call([
             {"name": "final_answer", "arguments": {"result": "done"}},
             {"name": "read_file", "arguments": {"filepath": "a.py"}},
         ])
         assert r["action"] == "final_answer"
 
     def test_empty_returns_none(self):
-        assert BaseAgent._parse_function_call_response([]) is None
+        assert parse_function_call([]) is None
 
     def test_multi_filters_pseudo_tools(self):
-        r = BaseAgent._parse_function_call_response([
+        r = parse_function_call([
             {"name": "read_file", "arguments": {"filepath": "a.py"}},
             {"name": "clarify", "arguments": {"question": "what?"}},
             {"name": "shell", "arguments": {"command": "ls"}},
@@ -45,7 +50,7 @@ class TestParseMultiToolCall:
 
     def test_multi_collapses_to_single(self):
         """If after filtering only 1 tool remains, return tool_call."""
-        r = BaseAgent._parse_function_call_response([
+        r = parse_function_call([
             {"name": "read_file", "arguments": {"filepath": "a.py"}},
             {"name": "final_answer", "arguments": {"result": "x"}},
         ])
@@ -56,7 +61,7 @@ class TestParseMultiToolCall:
 class TestNormalizeMultiTool:
     def test_passthrough(self):
         parsed = {"action": "multi_tool_call", "tools": [{"tool": "x", "args": {}}]}
-        r = BaseAgent._normalize_action(parsed)
+        r = _normalize_action(parsed)
         assert r is not None
         assert r["action"] == "multi_tool_call"
 
@@ -66,7 +71,7 @@ class TestNormalizeMultiTool:
             {"tool": "file_tree", "args": {"path": "/tmp"}},
         ]
         parsed = {"action": "multi_tool_call", "tools": tools}
-        r = BaseAgent._normalize_action(parsed)
+        r = _normalize_action(parsed)
         assert r["tools"] == tools
 
 

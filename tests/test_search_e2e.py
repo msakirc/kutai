@@ -124,9 +124,9 @@ class TestSearchResponseParsing(unittest.TestCase):
     """Verify the agent parser handles all response formats from search tasks."""
 
     def _parse(self, content):
-        from src.agents.researcher import ResearcherAgent
-        agent = ResearcherAgent()
-        return agent._parse_agent_response(content)
+        # Phase A.1: parsing moved to src.runtime.parsing.
+        from src.runtime.parsing import parse_action
+        return parse_action(content)
 
     # ── Clean responses ──
 

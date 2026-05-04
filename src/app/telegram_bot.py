@@ -4614,22 +4614,27 @@ Or: {{"type": "task", "confidence": 0.8}}"""
     async def _handle_casual(self, text: str, update: Update):
         """Handle casual messages with a quick LLM response (no task creation)."""
         try:
-            from ..core.llm_dispatcher import get_dispatcher, CallCategory
-            response = await get_dispatcher().request(
-                CallCategory.OVERHEAD,
-                task="assistant",
+            response = await _enqueue_inline_chat(
+                title="telegram-casual-chat",
+                description=f"Casual chat reply: {text[:80]!r}",
                 agent_type="assistant",
-                difficulty=2,
-                messages=[{"role": "user", "content": text}],
-                prefer_speed=True,
-                priority=1,
-                estimated_input_tokens=100,
-                estimated_output_tokens=100,
+                kind="chat",
+                llm_call_kwargs={
+                    "task": "assistant",
+                    "agent_type": "assistant",
+                    "difficulty": 2,
+                    "messages": [{"role": "user", "content": text}],
+                    "prefer_speed": True,
+                    "priority": 1,
+                    "estimated_input_tokens": 100,
+                    "estimated_output_tokens": 100,
+                    "call_category": "overhead",
+                },
             )
             reply = response.get("content", "Hey! How can I help?")
-            await self._reply(update,reply[:1000])
+            await self._reply(update, reply[:1000])
         except Exception:
-            await self._reply(update,"Hey! Send me a task or mission to work on.")
+            await self._reply(update, "Hey! Send me a task or mission to work on.")
 
     async def _handle_load_control(self, text: str, update: Update):
         """Handle natural language GPU load control."""

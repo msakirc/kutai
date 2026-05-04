@@ -298,7 +298,7 @@ async def init_db():
             error TEXT,
             context JSON DEFAULT '{}',
             worker_attempts INTEGER DEFAULT 0,
-            max_worker_attempts INTEGER DEFAULT 10,
+            max_worker_attempts INTEGER DEFAULT 15,
             grade_attempts INTEGER DEFAULT 0,
             max_grade_attempts INTEGER DEFAULT 3,
             next_retry_at TIMESTAMP,
@@ -966,7 +966,7 @@ async def init_db():
     if "worker_attempts" not in columns and "attempts" not in columns:
         for col_sql in [
             "ALTER TABLE tasks ADD COLUMN worker_attempts INTEGER DEFAULT 0",
-            "ALTER TABLE tasks ADD COLUMN max_worker_attempts INTEGER DEFAULT 10",
+            "ALTER TABLE tasks ADD COLUMN max_worker_attempts INTEGER DEFAULT 15",
             "ALTER TABLE tasks ADD COLUMN grade_attempts INTEGER DEFAULT 0",
             "ALTER TABLE tasks ADD COLUMN max_grade_attempts INTEGER DEFAULT 3",
             "ALTER TABLE tasks ADD COLUMN next_retry_at TIMESTAMP",

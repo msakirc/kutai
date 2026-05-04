@@ -91,12 +91,12 @@ class RetryContext:
         if "max_worker_attempts" in task:
             max_worker_attempts = task["max_worker_attempts"]
         else:
-            max_worker_attempts = task.get("max_attempts", 6)
+            max_worker_attempts = task.get("max_attempts", 15)
 
         return cls(
             worker_attempts=worker_attempts or 0,
             infra_resets=task.get("infra_resets", 0) or 0,
-            max_worker_attempts=max_worker_attempts or 6,
+            max_worker_attempts=max_worker_attempts or 15,
             grade_attempts=task.get("grade_attempts", 0) or 0,
             max_grade_attempts=task.get("max_grade_attempts", 3) or 3,
             next_retry_at=task.get("next_retry_at"),

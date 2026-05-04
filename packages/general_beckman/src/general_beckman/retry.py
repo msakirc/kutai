@@ -11,13 +11,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Union
 
-# Shared availability/transient backoff ladder. 10 entries cap at 1h.
-# attempts=1 (first failure) → idx=0 → immediate retry; attempts=2 → 10s;
-# ladder advances per worker_attempts. accelerate_retries (Beckman.on_
+# Shared availability/transient backoff ladder. 15 entries; the tail
+# (2h → 24h) lets daily_exhausted ride out a real quota-reset window
+# rather than DLQ'ing inside a 1h cap. accelerate_retries (Beckman.on_
 # model_swap / KDV capacity_restored events) wakes deferred tasks early
 # when capacity actually frees, so longer ladder steps are upper bounds
-# rather than typical waits.
-_BACKOFF_SECONDS = [0, 10, 30, 60, 120, 300, 600, 1200, 1800, 3600]
+# rather than typical waits — the long tail only affects the no-recovery
+# worst case.
+#
+# Cumulative wall-clock from att=1 to DLQ at att=15: ~2 days. Production
+# 2026-05-03: tasks DLQ'd in ~4min on a 10-step + max=6 combo because
+# total backoff bottomed out at 220s. Lengthening the ladder closes
+# that gap; the larger fix (max_worker_attempts default 6→15) keeps
+# attempts in lockstep with the new ladder size.
+_BACKOFF_SECONDS = [
+    0, 10, 30, 60, 120,             # 0-4: minutes-scale
+    300, 600, 1200, 1800, 3600,     # 5-9: 5min-1h
+    7200, 14400, 28800, 43200,      # 10-13: 2h-12h
+    86400,                          # 14: 24h — past daily-quota reset
+]
 _MAX_BONUS = 2
 
 

@@ -261,7 +261,7 @@ async def _retry_or_dlq(task: dict, *, category: str, error: str) -> None:
     if fresh:
         task = fresh
     attempts = int(task.get("worker_attempts") or 0) + 1
-    max_attempts = int(task.get("max_worker_attempts") or 10)
+    max_attempts = int(task.get("max_worker_attempts") or 15)
     progress = _parse_progress(task)
     ctx = _parse_ctx(task)
     bonus_count = int(ctx.get("_bonus_count", 0))
@@ -705,7 +705,7 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         # the source through unbounded reruns (observed: 51 retries on
         # shopping_pipeline_v2 before manual kill, 2026-04-22).
         attempts = int(source.get("worker_attempts") or 0) + 1
-        max_attempts = int(source.get("max_worker_attempts") or 6)
+        max_attempts = int(source.get("max_worker_attempts") or 15)
         # Extract the grader's human-readable text up front so the error
         # column is never a truncated dict repr. str(a.raw)[:500] used to
         # leave unterminated braces that _humanize_error couldn't parse,

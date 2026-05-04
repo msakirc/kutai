@@ -291,7 +291,7 @@ async def next_task():
         # Mechanical tasks have no attempt cap — skip the check for them.
         # (Handoff item A.)
         attempts = int(task.get("worker_attempts") or 0)
-        max_att = int(task.get("max_worker_attempts") or 6)
+        max_att = int(task.get("max_worker_attempts") or 15)
         if (
             task.get("agent_type") != "mechanical"
             and max_att > 0

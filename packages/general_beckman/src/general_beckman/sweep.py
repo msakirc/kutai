@@ -400,12 +400,12 @@ async def sweep_queue() -> None:
                   error_category, mission_id
            FROM tasks
            WHERE status = 'pending'
-             AND worker_attempts >= COALESCE(max_worker_attempts, 10)"""
+             AND worker_attempts >= COALESCE(max_worker_attempts, 15)"""
     )
     overcap = [dict(row) for row in await cursor_overcap.fetchall()]
     for task in overcap:
         attempts = int(task.get("worker_attempts") or 0)
-        max_att = int(task.get("max_worker_attempts") or 10)
+        max_att = int(task.get("max_worker_attempts") or 15)
         category = task.get("error_category") or "worker"
         logger.warning(
             f"[Sweep] Task #{task['id']} pending past cap "

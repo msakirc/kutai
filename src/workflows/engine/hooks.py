@@ -19,7 +19,10 @@ logger = get_logger("workflows.engine.hooks")
 
 async def _llm_summarize(text: str, artifact_name: str) -> str | None:
     """Summarize a large artifact using the LLM (OVERHEAD call)."""
-    from ...core.llm_dispatcher import get_dispatcher, CallCategory
+    import general_beckman
+    import time as _time
+    import uuid as _uuid
+    from ...core.llm_dispatcher import _task_result_to_request_response
 
     max_input = 16000
     truncated_text = text[:max_input]
@@ -43,16 +46,51 @@ async def _llm_summarize(text: str, artifact_name: str) -> str | None:
         },
     ]
 
-    response = await get_dispatcher().request(
-        CallCategory.OVERHEAD,
-        task="summarizer",
-        difficulty=2,
-        messages=messages,
-        prefer_speed=True,
-        prefer_local=True,
-        estimated_input_tokens=min(len(text) // 4, 4000),
-        estimated_output_tokens=500,
+    # Resolve parent_id from the orchestrator's per-task ContextVar.
+    # _llm_summarize is always called from within a running task's execution
+    # context, so current_task_id is set by the orchestrator at dispatch time.
+    _parent_id = None
+    try:
+        from ...core.heartbeat import current_task_id as _ctid
+        _parent_id = _ctid.get()
+    except Exception:
+        pass
+
+    _suffix = f"{_time.monotonic_ns() % 1_000_000:06d}-{_uuid.uuid4().hex[:6]}"
+    spec = {
+        "title": f"summarizer:{artifact_name}:{_suffix}",
+        "description": f"LLM summarization of artifact '{artifact_name}'",
+        "agent_type": "summarizer",
+        "kind": "overhead",
+        "context": {
+            "llm_call": {
+                "raw_dispatch": True,
+                "call_category": "overhead",
+                "task": "summarizer",
+                "agent_type": "summarizer",
+                "difficulty": 2,
+                "messages": messages,
+                "failures": [],
+                "prefer_speed": True,
+                "prefer_local": True,
+                "estimated_input_tokens": min(len(text) // 4, 4000),
+                "estimated_output_tokens": 500,
+            },
+        },
+    }
+    task_result = await general_beckman.enqueue(
+        spec,
+        parent_id=_parent_id,
+        await_inline=True,
     )
+
+    if task_result.status == "failed":
+        logger.warning(
+            f"[LLM Summary] enqueue failed for '{artifact_name}': {task_result.error}"
+        )
+        return None
+
+    response = _task_result_to_request_response(task_result)
     summary = response.get("content", "").strip()
     if summary and len(summary) > 50:
         from dogru_mu_samet import assess as cq_assess

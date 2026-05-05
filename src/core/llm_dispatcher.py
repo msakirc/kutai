@@ -293,7 +293,6 @@ class LLMDispatcher:
         import fatih_hoca
         import hallederiz_kadir
         from src.core.router import ModelCallFailed
-        from fatih_hoca.types import Failure
 
         self._total_calls += 1
         is_overhead = category == CallCategory.OVERHEAD
@@ -302,7 +301,6 @@ class LLMDispatcher:
 
         messages = messages or []
         failures = failures or []
-        max_recursion = 5
 
         needs_thinking = kwargs.pop("needs_thinking", not is_overhead)
         if is_overhead:
@@ -454,45 +452,20 @@ class LLMDispatcher:
 
         # CallError path — primitive already recorded the pick failure (or
         # skipped recording for loading-stage failures, matching the prior
-        # contract). Decide raise vs retry-recurse.
-        last_error = result.message
-        last_category = result.category
-
-        if not result.retryable or len(failures) >= max_recursion:
-            task_desc = task or agent_type or category.value
-            if is_overhead:
-                raise RuntimeError(
-                    f"OVERHEAD call failed: {last_error}. Task: {task_desc}"
-                )
-            raise ModelCallFailed(
-                call_id=task_desc,
-                last_error=last_error,
-                error_category=last_category,
+        # contract). Phase C.3: dispatcher no longer retries internally.
+        # MAIN_WORK retries live in coulson.react's transport-retry loop;
+        # OVERHEAD retries live in Beckman lifecycle's availability-retry
+        # path (shared backoff ladder, 10-attempt cap). Single retry
+        # surface — dispatcher just surfaces the failure.
+        task_desc = task or agent_type or category.value
+        if is_overhead:
+            raise RuntimeError(
+                f"OVERHEAD call failed: {result.message}. Task: {task_desc}"
             )
-
-        # Build failure record.
-        new_failure = Failure(
-            model=model.litellm_name,
-            reason=last_category,
-            latency=None,
-        )
-
-        return await self._do_dispatch(
-            category=category,
-            task=task,
-            agent_type=agent_type,
-            difficulty=difficulty,
-            messages=messages,
-            tools=tools,
-            failures=failures + [new_failure],
-            preselected_pick=None,
-            needs_thinking=needs_thinking,
-            needs_function_calling=needs_function_calling,
-            min_context=_min_context_kw,
-            task_obj=_task_obj_kw,
-            iteration_n=_iteration_n_kw,
-            response_format=_response_format_kw,
-            **kwargs,
+        raise ModelCallFailed(
+            call_id=task_desc,
+            last_error=result.message,
+            error_category=result.category,
         )
 
     async def dispatch(self, spec: dict) -> dict:

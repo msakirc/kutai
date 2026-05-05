@@ -35,6 +35,23 @@ TOOL_INJECTION_THRESHOLD = 0.7
 TOOL_INJECTION_MIN_COUNT = 5
 STRATEGY_RELEVANCE_MIN_OVERLAP = 0.25  # min keyword overlap to allow merge
 
+# Defense-in-depth: any skill description matching this pattern is grader prose
+# leak / template echo / chain-of-thought, not a usable skill description.
+# Mirrors src/core/grading._POLLUTION_RE so direct add_skill() callers can't
+# inject garbage that bypasses the parser sanitizer.
+import re as _re_pollution
+_DESC_POLLUTION_RE = _re_pollution.compile(
+    r"(?:"
+    r"\bone line\b|comma-separated list"
+    r"|\b(?:STRATEGY|TOOLS|PREFERENCE|INSIGHT|SITUATION)\s*:"
+    r"|^\s*\*|\bWait,|I am evaluating"
+    r"|looking at the .{0,40}(?:prompt|result|output|task)"
+    r"|Task Context\s*:|Observation\s*:"
+    r")",
+    _re_pollution.IGNORECASE | _re_pollution.MULTILINE,
+)
+_DESC_MAX_LEN = 400
+
 
 # ─── Stopwords for keyword overlap (Turkish + English) ──────────────────────
 
@@ -246,6 +263,17 @@ async def add_skill(
     source_task_id: int = 0,
 ) -> str | None:
     """Create or merge a skill. Returns skill name used (may differ if merged)."""
+    # Reject grader-prose leakage at the gate. Falls through silently — caller
+    # already treats add_skill failure as best-effort.
+    if not description or len(description) > _DESC_MAX_LEN or _DESC_POLLUTION_RE.search(description):
+        logger.info(f"add_skill rejected: polluted description for {name}: {description[:80]!r}")
+        return None
+    if strategy_summary and (
+        len(strategy_summary) > _DESC_MAX_LEN
+        or _DESC_POLLUTION_RE.search(strategy_summary)
+    ):
+        logger.info(f"add_skill: dropping polluted strategy_summary for {name}")
+        strategy_summary = ""
     strategy = {
         "summary": strategy_summary or description,
         "tool_template": tool_template or "",

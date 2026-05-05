@@ -140,6 +140,39 @@ def _is_none_value(val: str) -> bool:
     return normalized in _NONE_VARIANTS or normalized.startswith("no ")
 
 
+# Pollution markers — grader-prose echoes / template leak / chain-of-thought.
+# A SITUATION/STRATEGY value matching any of these is a parse failure, not data.
+_POLLUTION_RE = re.compile(
+    r"(?:"
+    r"\bone line\b"                       # echo of prompt template
+    r"|comma-separated list"              # template hint copied verbatim
+    r"|\b(?:STRATEGY|TOOLS|PREFERENCE|INSIGHT|SITUATION)\s*:"  # multi-field swallow
+    r"|^\s*\*"                            # bullet leak
+    r"|\bWait,"                           # CoT marker
+    r"|I am evaluating"                   # CoT marker
+    r"|looking at the .{0,40}(?:prompt|result|output|task)"
+    r"|Task Context\s*:"                  # CoT marker
+    r"|Observation\s*:"                   # CoT marker
+    r")",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _sanitize_field(value: str, max_len: int = 400) -> str:
+    """Drop the value if it looks like grader prose / CoT leak instead of a clean line.
+
+    Returns "" on rejection, original (trimmed) value otherwise.
+    """
+    if not value:
+        return ""
+    v = value.strip()
+    if len(v) > max_len:
+        return ""
+    if _POLLUTION_RE.search(v):
+        return ""
+    return v
+
+
 def _parse_text_field(text: str, key: str) -> str:
     """Extract a free-text value for a given key from grader output.
 
@@ -182,16 +215,19 @@ def parse_grade_response(raw: str) -> GradeResult:
     coherent = _parse_yes_no(raw, "COHERENT")
 
     # Skill extraction fields (optional — never block grading)
-    situation = _parse_text_field(raw, "SITUATION")
-    strategy = _parse_text_field(raw, "STRATEGY")
+    situation = _sanitize_field(_parse_text_field(raw, "SITUATION"))
+    strategy = _sanitize_field(_parse_text_field(raw, "STRATEGY"))
     tools_raw = _parse_text_field(raw, "TOOLS")
+    # Reject tools list if it swallowed multiple fields.
+    if tools_raw and _POLLUTION_RE.search(tools_raw):
+        tools_raw = ""
     tools = [t.strip() for t in tools_raw.split(",") if t.strip()] if tools_raw else []
 
     # Piggybacked learning fields (optional)
-    preference = _parse_text_field(raw, "PREFERENCE")
+    preference = _sanitize_field(_parse_text_field(raw, "PREFERENCE"))
     if _is_none_value(preference):
         preference = ""
-    insight = _parse_text_field(raw, "INSIGHT")
+    insight = _sanitize_field(_parse_text_field(raw, "INSIGHT"))
     if _is_none_value(insight):
         insight = ""
 

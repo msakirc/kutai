@@ -53,6 +53,40 @@ _DESC_POLLUTION_RE = _re_pollution.compile(
 _DESC_MAX_LEN = 400
 
 
+def _real_tool_names() -> set[str]:
+    """Return the set of registered runtime tool names. Cached after first call.
+
+    Imported lazily because src.tools imports a lot of heavyweight modules.
+    """
+    cached = getattr(_real_tool_names, "_cache", None)
+    if cached is not None:
+        return cached
+    try:
+        from src.tools import TOOL_REGISTRY
+        names = set(TOOL_REGISTRY.keys())
+    except Exception as exc:
+        logger.debug(f"_real_tool_names: registry unavailable: {exc}")
+        names = set()
+    _real_tool_names._cache = names  # type: ignore[attr-defined]
+    return names
+
+
+def _filter_real_tools(tools: list[str]) -> list[str]:
+    """Keep only tool names that map to a registered runtime tool.
+
+    Grader-extracted ``tools_used`` lists frequently contain tech-stack names
+    (Tailwind CSS, GitHub Actions, Storybook) instead of real callable tools.
+    Injecting those into the agent prompt as ``Tools: ...`` invites
+    hallucinated tool calls. Filter at extract and render time.
+    """
+    if not tools:
+        return []
+    real = _real_tool_names()
+    if not real:
+        return list(tools)  # registry import failed — pass through
+    return [t for t in tools if t in real]
+
+
 # ─── Stopwords for keyword overlap (Turkish + English) ──────────────────────
 
 _STOPWORDS = frozenset({
@@ -274,10 +308,11 @@ async def add_skill(
     ):
         logger.info(f"add_skill: dropping polluted strategy_summary for {name}")
         strategy_summary = ""
+    filtered_tools = _filter_real_tools(tools_used or [])
     strategy = {
         "summary": strategy_summary or description,
         "tool_template": tool_template or "",
-        "tools_used": tools_used or [],
+        "tools_used": filtered_tools,
         "avg_iterations": avg_iterations,
         "source_grade": source_grade,
         "source_task_id": source_task_id,
@@ -412,7 +447,7 @@ def format_skill_verbose(skill: dict) -> str:
 
     best = _best_strategy(skill)
     summary = best.get("summary", desc) if best else desc
-    tools = best.get("tools_used", []) if best else []
+    tools = _filter_real_tools(best.get("tools_used", []) if best else [])
     tool_template = best.get("tool_template", "") if best else ""
 
     lines = [
@@ -442,7 +477,7 @@ def format_skill_compact(skill: dict) -> str:
 
     best = _best_strategy(skill)
     summary = best.get("summary", skill.get("description", "")) if best else skill.get("description", "")
-    tools = best.get("tools_used", []) if best else []
+    tools = _filter_real_tools(best.get("tools_used", []) if best else [])
     tools_str = ", ".join(tools) if tools else "none"
 
     return f"- {name}: {summary} (tools: {tools_str}, {rate:.0f}% success)"
@@ -480,7 +515,7 @@ def get_tools_to_inject(skills: list[dict]) -> list[str]:
         if rate >= TOOL_INJECTION_THRESHOLD and count >= TOOL_INJECTION_MIN_COUNT:
             best = _best_strategy(skill)
             if best and best.get("tools_used"):
-                tools.update(best["tools_used"])
+                tools.update(_filter_real_tools(best["tools_used"]))
     return list(tools)
 
 

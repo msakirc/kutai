@@ -1,5 +1,57 @@
-"""Coverage for new dialect rules: string `pattern`, array `unique_by`."""
+"""Coverage for new dialect rules: string `pattern`, string `equals`/`one_of`, array `unique_by`."""
 from src.workflows.engine.schema_dialect import validate_value, translate_rule
+
+
+# ── String equals / one_of ───────────────────────────────────────────────
+
+class TestStringEquals:
+    def test_single_value_pass(self):
+        rule = {"type": "string", "equals": "pass"}
+        assert validate_value(rule, "pass") is None
+
+    def test_single_value_fail(self):
+        rule = {"type": "string", "equals": "pass"}
+        err = validate_value(rule, "fail")
+        assert err is not None
+        assert "VERDICT" in err
+        assert "pass" in err
+
+    def test_list_accepts_any_listed_value(self):
+        rule = {"type": "string", "equals": ["pass", "needs_minor_fixes"]}
+        assert validate_value(rule, "pass") is None
+        assert validate_value(rule, "needs_minor_fixes") is None
+        err = validate_value(rule, "changes_requested")
+        assert err is not None
+
+    def test_one_of_synonym(self):
+        rule = {"type": "string", "one_of": ["yes", "no"]}
+        assert validate_value(rule, "yes") is None
+        err = validate_value(rule, "maybe")
+        assert err is not None
+
+    def test_equals_does_not_translate_to_json_schema_enum(self):
+        # Same anti-fabrication rationale as boolean.equals — equals is a
+        # post-emit validator gate, not a decode-time constraint.
+        rule = {"type": "string", "equals": "pass"}
+        out = translate_rule(rule)
+        assert out == {"type": "string"}
+        assert "enum" not in (out or {})
+
+    def test_combined_with_pattern_both_apply(self):
+        rule = {"type": "string", "pattern": r"^[a-z_]+$", "equals": ["pass", "fail"]}
+        # Pattern matches AND equals matches → ok
+        assert validate_value(rule, "pass") is None
+        # Pattern matches but equals fails → reject
+        err = validate_value(rule, "yes")
+        assert err is not None and "VERDICT" in err
+
+    def test_min_length_runs_before_equals(self):
+        rule = {"type": "string", "min_length": 1, "equals": "pass"}
+        # Empty fails min_length first
+        assert validate_value(rule, "") is not None
+
+
+# ── Existing rules below ─────────────────────────────────────────────────
 
 
 # ── String pattern ───────────────────────────────────────────────────────

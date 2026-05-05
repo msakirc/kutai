@@ -225,6 +225,36 @@ def validate_value(rule: dict, value: Any, path: str = "") -> Optional[str]:
         min_length = int(rule.get("min_length") or 1)
         if len(value.strip()) < min_length:
             return f"{path or '<root>'}: string too short (min {min_length})"
+        # ``equals`` constraint: workflow review steps emit a verdict field
+        # (``verdict: 'pass'`` / ``go_no_go: 'yes'`` etc.). Listing acceptable
+        # values in the schema turns the verdict into a real gate — failure
+        # values reject through the normal grader retry → DLQ pipeline,
+        # blocking downstream depends_on. Accepts a single string OR a list
+        # of acceptable values; ``one_of`` is a synonym. Same idea as the
+        # boolean.equals rule above, didactic message included so the agent
+        # doesn't just flip the value on retry.
+        allowed = rule.get("equals")
+        if allowed is None:
+            allowed = rule.get("one_of")
+        if allowed is not None:
+            if isinstance(allowed, str):
+                allowed_set = {allowed}
+            elif isinstance(allowed, (list, tuple)):
+                allowed_set = {str(a) for a in allowed if isinstance(a, (str, int, float, bool))}
+            else:
+                allowed_set = set()
+            if allowed_set and value not in allowed_set:
+                # Two-line rejection — first line is the bare delta so retry
+                # context can sound it out; second line steers the agent
+                # away from token-flipping.
+                return (
+                    f"{path or '<root>'}: value {value!r} not in allowed set "
+                    f"{sorted(allowed_set)} — this is a VERDICT field. "
+                    f"Do NOT just change the token; verify the underlying "
+                    f"work passes (run the review again, fix the issues, "
+                    f"or report a real blocker). Accept-on-fail flips waste "
+                    f"retries and ship broken downstream work."
+                )
         pattern = rule.get("pattern")
         if isinstance(pattern, str) and pattern:
             import re as _re_pat
@@ -333,6 +363,11 @@ def translate_rule(rule: dict) -> Optional[dict]:
         pattern = rule.get("pattern")
         if isinstance(pattern, str) and pattern:
             out["pattern"] = pattern
+        # NOTE: ``equals`` / ``one_of`` are intentionally NOT translated to
+        # JSON Schema ``enum``. Same reasoning as boolean.equals — forcing
+        # the token at decode time made small models fabricate the success
+        # value without doing the underlying review. ``equals`` stays a
+        # post-emit validator constraint only.
         return out
     if rtype == "number":
         return {"type": "number"}

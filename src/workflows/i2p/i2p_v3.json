@@ -1463,10 +1463,10 @@
       "artifact_schema": {
         "research_review_result": {
           "type": "object",
-          "required_fields": [
-            "verdict",
-            "issues"
-          ]
+          "fields": {
+            "verdict": {"type": "string", "equals": ["pass"]},
+            "issues": {}
+          }
         }
       },
       "context": {}
@@ -1496,11 +1496,11 @@
       "artifact_schema": {
         "go_no_go_decision": {
           "type": "object",
-          "required_fields": [
-            "scores",
-            "weighted_score",
-            "recommendation"
-          ]
+          "fields": {
+            "scores": {},
+            "weighted_score": {},
+            "recommendation": {"type": "string", "equals": ["Go", "go"]}
+          }
         }
       },
       "context": {
@@ -2533,10 +2533,10 @@
       "artifact_schema": {
         "requirements_review_result": {
           "type": "object",
-          "required_fields": [
-            "status",
-            "issues"
-          ]
+          "fields": {
+            "status": {"type": "string", "equals": ["pass"]},
+            "issues": {}
+          }
         }
       }
     },
@@ -3326,11 +3326,11 @@
       "artifact_schema": {
         "architecture_review_result": {
           "type": "object",
-          "required_fields": [
-            "status",
-            "issues",
-            "security_findings"
-          ]
+          "fields": {
+            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "issues": {},
+            "security_findings": {}
+          }
         }
       },
       "context": {}
@@ -3562,10 +3562,10 @@
       "artifact_schema": {
         "wireframe_review_result": {
           "type": "object",
-          "required_fields": [
-            "status",
-            "issues"
-          ]
+          "fields": {
+            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "issues": {}
+          }
         }
       },
       "context": {}
@@ -3764,10 +3764,10 @@
       "artifact_schema": {
         "design_review_result": {
           "type": "object",
-          "required_fields": [
-            "status",
-            "issues"
-          ]
+          "fields": {
+            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "issues": {}
+          }
         }
       },
       "context": {}
@@ -4151,10 +4151,10 @@
       "artifact_schema": {
         "project_plan_review_result": {
           "type": "object",
-          "required_fields": [
-            "status",
-            "issues"
-          ]
+          "fields": {
+            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "issues": {}
+          }
         }
       },
       "context": {}
@@ -4894,10 +4894,10 @@
       "artifact_schema": {
         "sprint_0_review_result": {
           "type": "object",
-          "required_fields": [
-            "status",
-            "issues"
-          ]
+          "fields": {
+            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "issues": {}
+          }
         }
       },
       "context": {}
@@ -6478,11 +6478,11 @@
       "artifact_schema": {
         "legal_review_result": {
           "type": "object",
-          "required_fields": [
-            "status",
-            "issues",
-            "requires_legal_counsel"
-          ]
+          "fields": {
+            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "issues": {},
+            "requires_legal_counsel": {}
+          }
         }
       },
       "context": {}
@@ -7222,10 +7222,10 @@
       "artifact_schema": {
         "checklist_review": {
           "type": "object",
-          "required_fields": [
-            "status",
-            "issues"
-          ]
+          "fields": {
+            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "issues": {}
+          }
         }
       },
       "context": {}

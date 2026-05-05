@@ -71,13 +71,77 @@ def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
         # fall through to existing logic which won't emit MissionAdvance because
         # agent_type in the skip list.
 
+    # Rule 0b: mechanical post-hook completion → synthesise PostHookVerdict.
+    # Mechanical executors (salako) don't emit a posthook_verdict field —
+    # their result is shaped by the salako verb (verify_artifacts returns
+    # {verified, missing, failed, all_ok}). Detect this via context fields
+    # ``source_task_id`` + ``posthook_kind`` placed by
+    # _posthook_agent_and_payload, and translate Complete -> PostHookVerdict.
+    # The orchestrator wraps salako.run's Action.result into
+    # ``{"status": "completed", "result": json.dumps(action.result)}`` —
+    # so a.raw["result"] arrives as a JSON string we have to parse here.
+    if (
+        isinstance(a, Complete)
+        and task.get("agent_type") == "mechanical"
+        and task_ctx.get("source_task_id") is not None
+        and task_ctx.get("posthook_kind")
+    ):
+        import json as _json_rw
+        raw = a.raw if isinstance(a.raw, dict) else {}
+        inner = raw.get("result")
+        if isinstance(inner, str):
+            try:
+                inner = _json_rw.loads(inner)
+            except (ValueError, TypeError):
+                inner = {}
+        if not isinstance(inner, dict):
+            inner = {}
+        passed = bool(inner.get("all_ok"))
+        return [
+            a,
+            PostHookVerdict(
+                source_task_id=int(task_ctx["source_task_id"]),
+                kind=str(task_ctx["posthook_kind"]),
+                passed=passed,
+                raw=inner,
+            ),
+        ]
+
+    # Rule 0c: mechanical post-hook FAILED (e.g. salako returned status=failed,
+    # such as "no paths supplied" or workspace resolution error). Surfaces
+    # as Failed action; we still want a PostHookVerdict with passed=False so
+    # the source advances down the retry-with-feedback path rather than
+    # waiting on a verdict that will never arrive. The Failed action remains
+    # in the action list so the verifier task itself goes through normal DLQ
+    # / retry handling.
+    if (
+        isinstance(a, Failed)
+        and task.get("agent_type") == "mechanical"
+        and task_ctx.get("source_task_id") is not None
+        and task_ctx.get("posthook_kind")
+    ):
+        return [
+            a,
+            PostHookVerdict(
+                source_task_id=int(task_ctx["source_task_id"]),
+                kind=str(task_ctx["posthook_kind"]),
+                passed=False,
+                raw={"error": a.error, "missing": [], "failed": []},
+            ),
+        ]
+
     # Rule 1: mission-task clean completion → emit MissionAdvance (unless
     # bookkeeping) and RequestPostHook (unless policy says no).
     payload_action = (task_ctx.get("payload") or {}).get("action")
     agent_type = task.get("agent_type", "")
+    is_posthook_task = (
+        task_ctx.get("source_task_id") is not None
+        and bool(task_ctx.get("posthook_kind"))
+    )
     is_bookkeeping = (
         payload_action == "workflow_advance"
         or agent_type in {"grader", "artifact_summarizer"}
+        or is_posthook_task  # mechanical/reviewer posthook tasks shouldn't recurse
     )
 
     if isinstance(a, Complete) and task.get("mission_id") and not is_bookkeeping:

@@ -140,6 +140,19 @@ def expand_steps_to_tasks(
         if artifact_schema and isinstance(artifact_schema, dict):
             context["artifact_schema"] = artifact_schema
 
+        # Files this step is supposed to write under the mission workspace.
+        # Consumed by the verify_artifacts post-hook (mechanical) which checks
+        # each path exists, is non-empty, and (for known extensions) parses.
+        produces = step.get("produces")
+        if produces and isinstance(produces, list):
+            context["produces"] = [p for p in produces if isinstance(p, str) and p.strip()]
+
+        # Post-hooks declared on the step. Combined with the default ["grade"]
+        # (or [] when policy excludes it) by determine_posthooks.
+        post_hooks = step.get("post_hooks")
+        if post_hooks and isinstance(post_hooks, list):
+            context["post_hooks"] = [k for k in post_hooks if isinstance(k, str) and k.strip()]
+
         skip_when = step.get("skip_when")
         if skip_when:
             if isinstance(skip_when, list):
@@ -313,6 +326,25 @@ def expand_template(
                 }
             else:
                 step["artifact_schema"] = dict(raw_schema)
+
+        # Per-feature path interpolation: a template step may declare
+        # produces with placeholders like "{feature_id}/x.py". Substitute
+        # the params dict (feature_id, feature_name, etc.) so each feature
+        # instance gets its own concrete path list.
+        if "produces" in tpl_step and isinstance(tpl_step["produces"], list):
+            substituted = []
+            for p in tpl_step["produces"]:
+                if not isinstance(p, str):
+                    continue
+                try:
+                    substituted.append(p.format(**(params or {})))
+                except (KeyError, IndexError):
+                    # Missing placeholder — keep raw, validator will catch.
+                    substituted.append(p)
+            step["produces"] = substituted
+
+        if "post_hooks" in tpl_step and isinstance(tpl_step["post_hooks"], list):
+            step["post_hooks"] = list(tpl_step["post_hooks"])
 
         expanded.append(step)
 

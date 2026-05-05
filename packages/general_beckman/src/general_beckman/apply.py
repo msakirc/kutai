@@ -329,11 +329,18 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
         )
     except Exception as exc:
         logger.warning("DLQ write failed", task_id=task["id"], error=str(exc))
-    # Post-hook DLQ cascade: a grader/summarizer task exhausting its
-    # retries means the source task can no longer advance through the
-    # verdict path. Synthesise the terminal outcome instead of leaving
-    # the source stuck in 'ungraded' forever.
-    if task.get("agent_type") in ("grader", "artifact_summarizer"):
+    # Post-hook DLQ cascade: a posthook task exhausting its retries means
+    # the source task can no longer advance through the verdict path.
+    # Synthesise the terminal outcome instead of leaving the source stuck
+    # in 'ungraded' forever. Detected by ctx.source_task_id presence
+    # rather than agent_type, so mechanical posthooks (verify_artifacts)
+    # cascade without listing every agent_type that might run a posthook.
+    _ctx_for_cascade = _parse_ctx(task)
+    if (
+        task.get("agent_type") in ("grader", "artifact_summarizer")
+        or (_ctx_for_cascade.get("source_task_id") is not None
+            and _ctx_for_cascade.get("posthook_kind"))
+    ):
         try:
             await _posthook_dlq_cascade(task, error)
         except Exception as exc:
@@ -600,6 +607,28 @@ async def _posthook_dlq_cascade(task: dict, error: str) -> None:
                        source_id=source_id, grader_task_id=task["id"])
         return
 
+    posthook_kind = ctx.get("posthook_kind")
+    if posthook_kind == "verify_artifacts":
+        # Mechanical verifier itself DLQ'd (e.g. workspace permission denied,
+        # not a missing-files outcome which would have completed normally).
+        # Source can't advance — mark failed so depends_on cascade blocks
+        # downstream rather than leaving it stuck in 'ungraded'.
+        source_ctx["_pending_posthooks"] = [
+            k for k in (source_ctx.get("_pending_posthooks") or [])
+            if k != "verify_artifacts"
+        ]
+        source_ctx["_verify_dlq_reason"] = error[:300]
+        await update_task(
+            source_id,
+            status="failed",
+            error=f"verify_artifacts DLQ: {error[:400]}",
+            failed_in_phase="verify",
+            context=_json.dumps(source_ctx),
+        )
+        logger.warning("verify_artifacts DLQ cascaded source to failed",
+                       source_id=source_id, verifier_task_id=task["id"])
+        return
+
     if agent_type == "artifact_summarizer":
         artifact_name = ctx.get("artifact_name") or ""
         kind = f"summary:{artifact_name}"
@@ -666,7 +695,138 @@ def _posthook_agent_and_payload(
             "source_task_id": a.source_task_id,
             "artifact_name": artifact_name,
         })
+    if a.kind == "verify_artifacts":
+        # Mechanical post-hook: salako resolves declared ``produces`` paths
+        # under the mission workspace, checks file exists + non-empty +
+        # optional compile/parse. Failure → source retries with feedback.
+        produces = list(source_ctx.get("produces") or [])
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "verify_artifacts",
+            "executor": "mechanical",
+            "payload": {
+                "action": "verify_artifacts",
+                "paths": produces,
+                "min_bytes": 1,
+                "compile_check": True,
+            },
+        })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
+
+
+async def _apply_verify_artifacts_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Apply a verify_artifacts post-hook verdict back to the source task.
+
+    Pass: drop the kind from pending; if no other post-hooks remain, mark
+    source completed.
+    Fail: retry source with the verifier's missing/failed paths in
+    ``_schema_error`` so the agent's next prompt sees what was missing.
+    Honors worker attempt cap + bonus-progress budget the same way the
+    grade-fail path does, but does NOT bump model exclusions — missing
+    files are an agent-behaviour failure, not a model-quality one.
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    if verdict.passed:
+        new_pending = [k for k in pending if k != "verify_artifacts"]
+        ctx["_pending_posthooks"] = new_pending
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, verdict.raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", verdict.raw or {})
+            except Exception:
+                pass
+        else:
+            await update_task(
+                verdict.source_task_id, context=_json.dumps(ctx),
+            )
+        return
+
+    # Fail path: retry source with the verifier's findings as feedback.
+    raw = verdict.raw or {}
+    missing = raw.get("missing") or []
+    failed = raw.get("failed") or []
+    error_str = (
+        f"verify_artifacts: {len(missing)} missing path(s), "
+        f"{len(failed)} failed check(s). "
+        f"missing={missing[:8]} failed={failed[:8]}"
+    )[:500]
+
+    attempts = int(source.get("worker_attempts") or 0) + 1
+    max_attempts = int(source.get("max_worker_attempts") or 15)
+    ctx["_pending_posthooks"] = []
+
+    feedback = (
+        "Files you said you wrote are missing or empty. "
+        f"missing={missing}; failed={failed}. "
+        "On retry: actually call the write_file tool for each declared path. "
+        "Do not just emit JSON describing the file."
+    )
+
+    if attempts >= max_attempts:
+        from general_beckman.retry import _MAX_BONUS
+        bonus_count = int(ctx.get("_bonus_count", 0))
+        progress = _parse_progress(source)
+        can_bonus = (
+            progress is not None
+            and progress >= 0.5
+            and bonus_count < _MAX_BONUS
+        )
+        if can_bonus:
+            ctx["_bonus_count"] = bonus_count + 1
+            max_attempts += 1
+            ctx["_schema_error"] = feedback
+            prev_output = source.get("result") or ""
+            if isinstance(prev_output, str) and prev_output.strip():
+                ctx["_prev_output"] = prev_output[:6000]
+            _stamp_retry_feedback(ctx, attempts)
+            await update_task(
+                verdict.source_task_id,
+                status="pending",
+                worker_attempts=attempts,
+                max_worker_attempts=max_attempts,
+                error=error_str,
+                error_category="quality",
+                next_retry_at=None,
+                context=_json.dumps(ctx),
+            )
+            return
+        await _dlq_write(
+            source, error=error_str or "verify_artifacts gate exhausted",
+            category="quality", attempts=attempts,
+        )
+        return
+
+    ctx["_schema_error"] = feedback
+    prev_output = source.get("result") or ""
+    if isinstance(prev_output, str) and prev_output.strip():
+        ctx["_prev_output"] = prev_output[:6000]
+    _stamp_retry_feedback(ctx, attempts)
+    await update_task(
+        verdict.source_task_id,
+        status="pending",
+        worker_attempts=attempts,
+        error=error_str,
+        error_category="quality",
+        next_retry_at=None,
+        context=_json.dumps(ctx),
+    )
 
 
 def _posthook_title(a: RequestPostHook, source: dict) -> str:
@@ -675,6 +835,8 @@ def _posthook_title(a: RequestPostHook, source: dict) -> str:
     if a.kind.startswith("summary:"):
         name = a.kind.split(":", 1)[1]
         return f"Summarize '{name}' for #{a.source_task_id}"
+    if a.kind == "verify_artifacts":
+        return f"Verify artifacts for #{a.source_task_id}"
     return f"Posthook {a.kind} for #{a.source_task_id}"
 
 
@@ -818,6 +980,12 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
             error_category="quality",
             next_retry_at=None,
             context=_json.dumps(ctx),
+        )
+        return
+
+    if a.kind == "verify_artifacts":
+        await _apply_verify_artifacts_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=a,
         )
         return
 

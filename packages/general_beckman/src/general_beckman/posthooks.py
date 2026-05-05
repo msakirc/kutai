@@ -37,12 +37,35 @@ def determine_posthooks(
 ) -> list[str]:
     """Return the list of post-hook kinds to spawn immediately.
 
-    Summary is NOT in the immediately-spawned list — it's deferred until
-    the grade task passes (see apply._apply_posthook_verdict).
+    Default policy returns ``["grade"]`` for non-excluded agent types.
+    Steps may declare additional kinds via ``post_hooks`` in ctx (e.g.
+    ``["verify_artifacts"]`` for build steps that should grounds-check
+    declared ``produces`` paths against the workspace). Summary is NOT
+    in the immediately-spawned list — deferred until grade passes (see
+    ``apply._apply_posthook_verdict``).
     """
     agent_type = task.get("agent_type", "")
     if agent_type in _NO_POSTHOOKS_AGENT_TYPES:
         return []
-    if task_ctx.get("requires_grading") is False:
-        return []
-    return ["grade"]
+
+    kinds: list[str] = []
+    if task_ctx.get("requires_grading") is not False:
+        kinds.append("grade")
+
+    # Extra kinds declared on the step. Filter to known kinds so a typo
+    # doesn't spawn a task with no agent handler.
+    extra = task_ctx.get("post_hooks") or []
+    if isinstance(extra, list):
+        for k in extra:
+            if not isinstance(k, str) or not k.strip():
+                continue
+            if k in _KNOWN_EXTRA_KINDS and k not in kinds:
+                kinds.append(k)
+    return kinds
+
+
+# Kinds that may appear in a step's ``post_hooks`` list. Each must have a
+# matching branch in apply._posthook_agent_and_payload + apply._apply_posthook_verdict.
+_KNOWN_EXTRA_KINDS: frozenset[str] = frozenset({
+    "verify_artifacts",
+})

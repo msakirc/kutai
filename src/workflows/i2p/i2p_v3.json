@@ -5659,15 +5659,30 @@
       "output_artifacts": [
         "owasp_audit_result"
       ],
-      "instruction": "Conduct a systematic OWASP Top 10 security audit. Review the codebase and running application against each category: Injection, Broken Authentication, Sensitive Data Exposure, XXE, Broken Access Control, Security Misconfiguration, XSS, Insecure Deserialization, Vulnerable Components, Insufficient Logging. For each category, document: risk level, evidence found, and remediation steps.",
-      "done_when": "owasp_audit_result exists.",
+      "instruction": "Conduct a systematic OWASP Top 10 security audit. Review the codebase and running application against each category: Injection, Broken Authentication, Sensitive Data Exposure, XXE, Broken Access Control, Security Misconfiguration, XSS, Insecure Deserialization, Vulnerable Components, Insufficient Logging. For each category, document: risk level, evidence found, and remediation steps. Emit `findings` as an array of {category, severity (critical|high|medium|low|info), description, remediation}; entries at severity critical or high block the gate until resolved (fix the code or document a real mitigation — do NOT just downgrade severity).",
+      "done_when": "owasp_audit_result exists with no critical/high findings outstanding.",
       "artifact_schema": {
         "owasp_audit_result": {
           "type": "object",
-          "required_fields": [
-            "categories",
-            "critical_findings"
-          ]
+          "fields": {
+            "categories": {},
+            "findings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "fields": {
+                  "category":    {"type": "string"},
+                  "severity":    {"type": "string", "equals": ["critical", "high", "medium", "low", "info"]},
+                  "description": {"type": "string"},
+                  "remediation": {"type": "string"}
+                }
+              },
+              "blockers": {
+                "field": "severity",
+                "levels": ["critical", "high"]
+              }
+            }
+          }
         }
       },
       "context": {}
@@ -5834,22 +5849,52 @@
         "encryption_verification_result",
         "logging_security_result"
       ],
-      "instruction": "Verify encryption: all data in transit uses TLS 1.2+, sensitive data at rest is encrypted, database connections use SSL, encryption keys stored securely, key rotation exists. Review logging security: passwords and tokens never logged, PII masked, log injection prevented, log files have appropriate permissions, error logs don't expose internals.",
-      "done_when": "encryption_verification_result and logging_security_result exist.",
+      "instruction": "Verify encryption: all data in transit uses TLS 1.2+, sensitive data at rest is encrypted, database connections use SSL, encryption keys stored securely, key rotation exists. Review logging security: passwords and tokens never logged, PII masked, log injection prevented, log files have appropriate permissions, error logs don't expose internals. Emit `findings` for each artifact as an array of {check, severity (critical|high|medium|low|info), description, remediation}; entries at severity critical or high block the gate until resolved (fix the underlying issue or document a real mitigation — do NOT just downgrade severity).",
+      "done_when": "encryption_verification_result and logging_security_result exist with no critical/high findings outstanding.",
       "artifact_schema": {
         "encryption_verification_result": {
           "type": "object",
-          "required_fields": [
-            "checks",
-            "findings"
-          ]
+          "fields": {
+            "checks": {},
+            "findings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "fields": {
+                  "check":       {"type": "string"},
+                  "severity":    {"type": "string", "equals": ["critical", "high", "medium", "low", "info"]},
+                  "description": {"type": "string"},
+                  "remediation": {"type": "string"}
+                }
+              },
+              "blockers": {
+                "field": "severity",
+                "levels": ["critical", "high"]
+              }
+            }
+          }
         },
         "logging_security_result": {
           "type": "object",
-          "required_fields": [
-            "checks",
-            "findings"
-          ]
+          "fields": {
+            "checks": {},
+            "findings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "fields": {
+                  "check":       {"type": "string"},
+                  "severity":    {"type": "string", "equals": ["critical", "high", "medium", "low", "info"]},
+                  "description": {"type": "string"},
+                  "remediation": {"type": "string"}
+                }
+              },
+              "blockers": {
+                "field": "severity",
+                "levels": ["critical", "high"]
+              }
+            }
+          }
         }
       },
       "context": {}

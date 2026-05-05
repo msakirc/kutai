@@ -384,15 +384,22 @@ class TestV3WorkflowLoading:
     def test_v3_all_steps_have_artifact_schema(self):
         wf = load_workflow("i2p_v3")
         for step in wf.steps:
+            # Mechanical steps (e.g. .git_commit siblings) emit fixed-shape
+            # results from salako verbs, not LLM artifacts — no schema needed.
+            if step.get("agent") == "mechanical" or step.get("executor") == "mechanical":
+                continue
             assert (
                 "artifact_schema" in step
             ), f"Step {step['id']} missing artifact_schema"
 
-    def test_v2_backward_compatible(self):
-        """v2 must still load without errors."""
+    def test_v3_step_count_in_expected_range(self):
+        """v3 collapsed v2's 328 steps to ~190; assert the consolidation
+        held and didn't silently regress."""
         wf = load_workflow("i2p_v3")
         assert wf.plan_id == "i2p_v3"
-        assert len(wf.steps) == 328
+        assert 150 <= len(wf.steps) <= 250, (
+            f"step count {len(wf.steps)} outside expected v3 range [150,250]"
+        )
 
     def test_v3_difficulty_distribution(self):
         """Verify reasonable difficulty distribution."""

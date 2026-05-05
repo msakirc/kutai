@@ -208,6 +208,33 @@ def validate_value(rule: dict, value: Any, path: str = "") -> Optional[str]:
                         f"at items [{seen[hashable]}] and [{i}]"
                     )
                 seen[hashable] = i
+        # ``blockers``: severity-aware gate for findings arrays (OWASP audit,
+        # encryption review). Reject the artifact if any item's
+        # ``field`` value matches one of ``levels``. Lets a security review
+        # ship findings of all severities (instead of forcing zero-finding
+        # output) but blocks a passing verdict while critical/high entries
+        # still exist. Same anti-fabrication framing as ``equals`` —
+        # rejection message tells the agent to resolve, not downgrade.
+        blockers = rule.get("blockers")
+        if isinstance(blockers, dict):
+            bfield = blockers.get("field")
+            blevels = blockers.get("levels")
+            if isinstance(bfield, str) and isinstance(blevels, list) and blevels:
+                levels_set = {str(x).lower() for x in blevels if isinstance(x, (str, int))}
+                for i, item in enumerate(value):
+                    if not isinstance(item, dict):
+                        continue
+                    sev = item.get(bfield)
+                    if isinstance(sev, str) and sev.lower() in levels_set:
+                        return (
+                            f"{path or '<root>'}[{i}]: BLOCKER — "
+                            f"{bfield}={sev!r} matches blocker levels "
+                            f"{sorted(levels_set)}. Resolve the underlying "
+                            f"issue (fix the code, add the missing control, "
+                            f"or document a real mitigation). Do NOT just "
+                            f"downgrade severity or delete the entry — that "
+                            f"ships an unaudited risk to production."
+                        )
         items_rule = rule.get("items")
         if isinstance(items_rule, dict):
             for i, item in enumerate(value):

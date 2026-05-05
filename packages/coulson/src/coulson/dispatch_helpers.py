@@ -1,0 +1,133 @@
+"""Per-iter Hoca selection + result mapping for the ReAct loop.
+
+Phase C.2b — coulson owns the per-iter Pick and the inner
+transport-retry loop, calling ``dispatcher.execute(pick, messages, ...)``
+directly instead of routing through the legacy
+``dispatcher.request → beckman.enqueue`` per-iter sub-tasking. Single
+retry surface inside coulson; dispatcher becomes a one-attempt primitive.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import fatih_hoca
+from fatih_hoca.types import Failure, Pick
+
+from src.infra.logging_config import get_logger
+
+logger = get_logger("coulson.dispatch")
+
+
+def pick_for_iter(
+    *,
+    reqs: Any,
+    task: dict,
+    failures: list[Failure],
+    iteration: int,
+    remaining_budget: float,
+) -> Pick | None:
+    """Select the model for the current ReAct iteration.
+
+    Iter 0 with no accumulated failures reuses ``task.preselected_pick``
+    (set by Beckman admission) when present. Otherwise — including all
+    later iters and any transport-failure retry within an iter — calls
+    ``fatih_hoca.select`` fresh with the current ``failures`` list so
+    Hoca's failure-adaptation can exclude flaky models.
+
+    Mid-task urgency bump (+0.1, capped at 1.0) when failures present —
+    mirrors the policy from the dispatcher's pre-C.2 retry recursion
+    (user design 2026-05-03: "mid task urgency of the task can be a
+    little higher than pre dispatch urgency to help react loops finish").
+    """
+    if iteration == 0 and not failures:
+        pre = task.get("preselected_pick")
+        if pre is not None:
+            return pre
+
+    urgency = 0.5
+    if failures:
+        urgency = min(1.0, urgency + 0.1)
+
+    return fatih_hoca.select(
+        task=reqs.effective_task or reqs.primary_capability,
+        agent_type=reqs.agent_type,
+        difficulty=reqs.difficulty,
+        needs_thinking=reqs.needs_thinking,
+        needs_function_calling=reqs.needs_function_calling,
+        needs_vision=reqs.needs_vision,
+        local_only=reqs.local_only,
+        prefer_speed=reqs.prefer_speed,
+        prefer_quality=reqs.prefer_quality,
+        prefer_local=reqs.prefer_local,
+        estimated_input_tokens=reqs.estimated_input_tokens,
+        estimated_output_tokens=reqs.estimated_output_tokens,
+        priority=reqs.priority,
+        exclude_models=list(reqs.exclude_models or []),
+        remaining_budget=remaining_budget,
+        failures=failures,
+        call_category="main_work",
+        urgency=urgency,
+    )
+
+
+def result_to_response_dict(result: Any, model: Any) -> dict:
+    """Map a ``hallederiz_kadir.CallResult`` to the legacy response dict.
+
+    Same shape that ``LLMDispatcher._result_to_dict`` produced when the
+    react loop went through ``dispatcher.request``. Kept here so coulson
+    is the only owner of the ReAct call shape.
+    """
+    return {
+        "content": result.content,
+        "model": result.model,
+        "model_name": result.model_name,
+        "cost": result.cost,
+        "usage": result.usage,
+        "tool_calls": result.tool_calls,
+        "latency": result.latency,
+        "thinking": result.thinking,
+        "is_local": result.is_local,
+        "ran_on": "local" if result.is_local else result.provider,
+        "provider": result.provider,
+        "task": result.task,
+        "capability_score": 0.0,
+        "difficulty": 5,
+    }
+
+
+async def record_pool_empty_forensics(
+    *,
+    task: dict,
+    failures: list[Failure],
+    difficulty: int,
+    iteration_n: int,
+) -> None:
+    """Pool drained mid-task — capture context for offline tuning.
+
+    Ported from ``LLMDispatcher._do_dispatch``'s pool-empty branch. The
+    pressure model failed to predict that retry would find no candidates
+    after the initial pick admitted; record what was on the table.
+    """
+    try:
+        from src.infra.admission_forensics import record_admission_violation
+        t_id = task.get("id") if isinstance(task, dict) else None
+        t_agent = task.get("agent_type") if isinstance(task, dict) else None
+        await record_admission_violation(
+            site="coulson_pool_empty",
+            phase="main_work",
+            task_id=t_id,
+            call_category="main_work",
+            agent_type=t_agent or "",
+            difficulty=difficulty,
+            reason="no_candidates",
+            error_category="availability",
+            error_message=f"No model candidates after {len(failures)} failure(s)",
+            extra={
+                "failures_count": len(failures),
+                "failure_models": [getattr(f, "model", "") for f in failures[:10]],
+                "is_overhead": False,
+                "iteration_n": iteration_n,
+            },
+        )
+    except Exception:
+        pass

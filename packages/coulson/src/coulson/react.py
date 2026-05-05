@@ -48,6 +48,9 @@ from .checkpoint import (
     safe_log_conversation, save_checkpoint, tool_idempotency_key,
 )
 from .context import build_system_prompt
+from .dispatch_helpers import (
+    pick_for_iter, record_pool_empty_forensics, result_to_response_dict,
+)
 from .escalation import escalate_requirements, trim_for_escalation
 from .guards import (
     MAX_FORMAT_CORRECTIONS, MAX_SUB_CORRECTIONS,
@@ -226,6 +229,13 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
     guard_burns = 0
     useful_iterations = 0
     empty_response_count = 0
+
+    # Per-iter transport-failure accumulator. Phase C.2b: coulson owns the
+    # failures list, passes to ``fatih_hoca.select`` on retry so failure-
+    # adaptive scoring can exclude flaky models. Reset every outer iter —
+    # transport-retry budget is per-iter, not per-task.
+    from fatih_hoca.types import Failure as _Failure
+    transport_failures: list[_Failure] = []
 
     # Per-task cumulative tool-call tracker. Used to dynamically strip tools
     # like read_file once the agent has already invoked them — prevents
@@ -419,37 +429,91 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 reqs.needs_function_calling = True
 
             # ── Call LLM ──
+            # Phase C.2b: coulson owns per-iter Hoca selection + transport-
+            # retry. Single retry surface lives here, not in dispatcher.
+            #   * pick_for_iter reuses task.preselected_pick on iter 0 with
+            #     no failures; otherwise calls fatih_hoca.select fresh.
+            #   * dispatcher.execute is the one-attempt primitive — no
+            #     selection, no retry inside it.
+            #   * On retryable CallError we append a Failure, re-select,
+            #     and try again up to MAX_TRANSPORT_ATTEMPTS times within
+            #     the same outer iter (no outer-budget burn).
+            #   * Non-retryable / loading failures raise ModelCallFailed
+            #     immediately — orchestrator routes through availability-
+            #     retry path.
+            # Reset per-iter failures — transport budget is per-iter.
+            transport_failures.clear()
             profile._partial_content = ""
+
+            from src.core.llm_dispatcher import get_dispatcher, CallCategory
+            from src.core.router import ModelCallFailed
+            from src.core import heartbeat as _hb_call
+            import hallederiz_kadir as _hk
+
+            MAX_TRANSPORT_ATTEMPTS = 3
+            response = None
             try:
-                from src.core.llm_dispatcher import get_dispatcher, CallCategory
-                response = await get_dispatcher().request(
-                    CallCategory.MAIN_WORK,
-                    task=reqs.effective_task or reqs.primary_capability,
-                    agent_type=reqs.agent_type,
-                    difficulty=reqs.difficulty,
-                    messages=messages,
-                    tools=litellm_tools,
-                    needs_thinking=reqs.needs_thinking,
-                    needs_function_calling=reqs.needs_function_calling,
-                    needs_vision=reqs.needs_vision,
-                    local_only=reqs.local_only,
-                    prefer_speed=reqs.prefer_speed,
-                    prefer_quality=reqs.prefer_quality,
-                    prefer_local=reqs.prefer_local,
-                    estimated_input_tokens=reqs.estimated_input_tokens,
-                    estimated_output_tokens=reqs.estimated_output_tokens,
-                    min_context=reqs.effective_context_needed,
-                    priority=reqs.priority,
-                    exclude_models=reqs.exclude_models or [],
-                    remaining_budget=max(0.0, _remaining),
-                    preselected_pick=task.get("preselected_pick") if iteration == 0 else None,
-                    task_obj=task,
-                    iteration_n=iteration,
-                )
+                async with _hb_call.keepalive():
+                    for transport_attempt in range(MAX_TRANSPORT_ATTEMPTS + 1):
+                        pick = pick_for_iter(
+                            reqs=reqs,
+                            task=task,
+                            failures=transport_failures,
+                            iteration=iteration,
+                            remaining_budget=max(0.0, _remaining),
+                        )
+                        if pick is None:
+                            await record_pool_empty_forensics(
+                                task=task,
+                                failures=transport_failures,
+                                difficulty=reqs.difficulty,
+                                iteration_n=iteration,
+                            )
+                            raise ModelCallFailed(
+                                call_id=reqs.effective_task or reqs.primary_capability,
+                                last_error="No model candidates available",
+                                error_category="availability",
+                            )
+
+                        result = await get_dispatcher().execute(
+                            pick=pick,
+                            messages=messages,
+                            category=CallCategory.MAIN_WORK,
+                            task=reqs.effective_task or reqs.primary_capability,
+                            agent_type=reqs.agent_type,
+                            difficulty=reqs.difficulty,
+                            tools=litellm_tools,
+                            needs_thinking=reqs.needs_thinking,
+                            min_context=reqs.effective_context_needed,
+                            response_format=None,
+                            task_obj=task,
+                            iteration_n=iteration,
+                            estimated_input_tokens=reqs.estimated_input_tokens,
+                            estimated_output_tokens=reqs.estimated_output_tokens,
+                        )
+
+                        if isinstance(result, _hk.CallResult):
+                            response = result_to_response_dict(result, pick.model)
+                            break
+
+                        # CallError — record + decide retry
+                        transport_failures.append(_Failure(
+                            model=pick.model.litellm_name,
+                            reason=result.category,
+                            latency=None,
+                        ))
+                        if not result.retryable or transport_attempt >= MAX_TRANSPORT_ATTEMPTS:
+                            raise ModelCallFailed(
+                                call_id=reqs.effective_task or reqs.primary_capability,
+                                last_error=result.message,
+                                error_category=result.category,
+                            )
+                        logger.debug(
+                            f"[Task #{task_id}] transport retry "
+                            f"{transport_attempt + 1}/{MAX_TRANSPORT_ATTEMPTS} "
+                            f"after {result.category}: {result.message[:80]}"
+                        )
             except Exception as exc:
-                # Let ModelCallFailed propagate — the orchestrator handles
-                # it as an availability failure with backoff + wake signals.
-                from src.core.router import ModelCallFailed
                 _NON_RETRYABLE = (ModelCallFailed, AttributeError, TypeError,
                                   ImportError, NameError, KeyError)
                 if isinstance(exc, _NON_RETRYABLE):
@@ -464,6 +528,11 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                     "iterations": iteration,
                     "difficulty": reqs.difficulty,
                 }
+
+            if response is None:
+                raise RuntimeError(
+                    f"[Task #{task_id}] dispatcher loop exited without response"
+                )
 
             content    = response.get("content", "")
             used_model = response.get("model", used_model)

@@ -64,13 +64,28 @@ class TestRecordModelCallUnified(unittest.TestCase):
         self.assertAlmostEqual(get_counter(f"latency_sum:{model}"), 150.0)
         self.assertEqual(get_counter(f"tokens:{model}"), 100.0)
 
-    def test_db_record_model_call_calls_metrics_internally(self):
-        """db.record_model_call source should call track_model_call_metrics."""
+    def test_db_record_model_call_does_not_emit_metrics(self):
+        """db.record_model_call must NOT call track_model_call_metrics.
+
+        Phase C.5 (2026-05-05): hallederiz_kadir.caller is the single
+        in-memory metric emitter. db.record_model_call is pure DB
+        persistence into the model_stats table. The prior contract
+        (db.record_model_call ALSO emitting in-memory metrics) inflated
+        Prometheus counters ~2.5× because every ReAct iter went through
+        both hallederiz (caller-side emit) and react.py (record_model_call
+        post-success). Audit:
+        ``docs/handoff/2026-05-04-record-model-call-audit.md``.
+        """
         source = _read_source("src/infra/db.py")
-        self.assertIn(
+        # Find record_model_call body — bounded by next async/sync def.
+        start = source.find("async def record_model_call")
+        next_def = source.find("\nasync def ", start + 1)
+        body = source[start:next_def] if next_def != -1 else source[start:]
+        self.assertNotIn(
             "track_model_call_metrics",
-            source,
-            "db.py record_model_call must call track_model_call_metrics internally",
+            body,
+            "record_model_call must not emit in-memory metrics; "
+            "hallederiz_kadir.caller is the single emitter.",
         )
 
 # ─── 2. Graceful Shutdown Flag ───────────────────────────────────────────────

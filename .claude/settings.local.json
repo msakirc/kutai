@@ -372,7 +372,12 @@
       "Bash(powershell -NoProfile -Command ':*)",
       "Bash(powershell -NoProfile -Command \"irm https://claude.ai/install.ps1 | iex\")",
       "Bash(powershell -NoProfile -Command \"[Environment]::GetEnvironmentVariable\\('PATH', 'User'\\)\")",
-      "Bash(\"C:\\\\Users\\\\sakir\\\\.local\\\\bin\\\\claude.exe\" --version)"
+      "Bash(\"C:\\\\Users\\\\sakir\\\\.local\\\\bin\\\\claude.exe\" --version)",
+      "Bash(claude --version)",
+      "Bash(powershell -Command '$env:PATH')",
+      "Bash(powershell -Command '[Environment]::SetEnvironmentVariable\\(\"PATH\", $env:PATH + \";C:\\\\Users\\\\sakir\\\\ai\\\\util\", \"User\"\\)')",
+      "Bash(where claude *)",
+      "Bash(npm config *)"
     ]
   }
 }

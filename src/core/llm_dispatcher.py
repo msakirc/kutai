@@ -432,183 +432,31 @@ class LLMDispatcher:
         # gate here.
         model = pick.model
 
-        # Register in-flight BEFORE swap + any other awaits.
-        # Rationale: swap can take 10-30s. Without early registration, the
-        # next Beckman tick (~3s cadence) reads an empty in-flight list
-        # and admits a second local task onto a GPU that's mid-swap.
-        # Registering here also means retry recursion updates the list to
-        # whatever new model Hoca picks, so mid-task model switches stay
-        # accurate. task_id flows via the heartbeat contextvar; the
-        # finally-block at the end of the call removes the entry along
-        # every exit path (load failure, call failure, success).
-        _active_task_id = None
-        try:
-            from src.core.heartbeat import current_task_id as _ctid
-            _active_task_id = _ctid.get()
-        except Exception:
-            pass
-
-        # est_tokens for in_flight begin_call: Beckman's reserve_task already set
-        # the projection for admitted tasks via fatih_hoca.estimates.estimate_for.
-        # begin_call's max(prior_est, passed) logic preserves the Beckman value
-        # regardless of what we pass here.  Pass 0 — do not recompute.
-        # (Phase 5 cleanup: est_tokens shim deleted from dispatcher. Pre-2026-05-04
-        # this computed _est_in + _est_out + 256 locally and overlapped with
-        # reserve_task's projection. All callers now route through Beckman so
-        # the local shim is dead code.)
-        _call_est_tokens = 0
-
-        _call_id = await _begin_call(
-            category=category.value,
-            model_name=model.name,
-            provider=model.provider,
-            is_local=model.is_local,
-            task_id=_active_task_id,
-            est_tokens=_call_est_tokens,
+        result = await self._execute_attempt(
+            pick=pick,
+            messages=messages,
+            category=category,
+            task=task,
+            agent_type=agent_type,
+            difficulty=difficulty,
+            tools=tools,
+            needs_thinking=needs_thinking,
+            min_context=_min_context_kw,
+            response_format=_response_format_kw,
+            task_obj=_task_obj_kw,
+            iteration_n=_iteration_n_kw,
+            estimated_input_tokens=int(kwargs.get("estimated_input_tokens", 0) or 0),
+            estimated_output_tokens=int(kwargs.get("estimated_output_tokens", 0) or 0),
         )
-        try:
-            # Load local model if needed. Previously tried to pass a
-            # prompt-derived required_ctx here (commit adb3d7c) — on an 8 GB
-            # GPU that bumped context_length high enough to OOM the compute
-            # buffer at warmup, regressing a working setup. Revert to letting
-            # local_model_manager.ensure_model compute ctx from LIVE VRAM.
-            # Prompts that exceed the allocated ctx get truncated by
-            # llama-server — less catastrophic than every load failing. If
-            # truncation becomes a real problem, address it with smarter
-            # message-history pruning at the agent layer (drop oldest
-            # tool results) rather than forcing VRAM blowups.
-            if model.is_local and getattr(model, "location", "") != "ollama":
-                is_thinking = model.thinking_model and needs_thinking
-                # Caller (agent) passes min_context=reqs.effective_context_needed.
-                # Plumbed to ensure_local_model so calculate_dynamic_context's
-                # floor bumps ctx up to task need — otherwise ctx collapses to
-                # the 4096 safe-minimum on tight VRAM and litellm rejects any
-                # larger prompt with "exceeds the available context size".
-                _min_ctx = _min_context_kw
-                if _min_ctx <= 0:
-                    # Legacy/standalone callers without a ModelRequirements
-                    # object — derive the same formula reqs.effective_context_needed
-                    # uses, so behaviour matches whether caller plumbs min_context
-                    # explicitly or not.
-                    _in = int(kwargs.get("estimated_input_tokens", 0) or 0)
-                    _out = int(kwargs.get("estimated_output_tokens", 0) or 0)
-                    if _in or _out:
-                        _min_ctx = int((_in + _out) * 1.3) + 512
-                # Record swap intent BEFORE ensure_model so the budget
-                # reflects ATTEMPTED swaps, not just successful ones. Old
-                # path recorded only after ok=True + swap_happened=True;
-                # a load timeout / circuit-break still cost a process
-                # kill on the prior model but didn't decrement the budget,
-                # letting the next swap through immediately. Production
-                # triage 2026-05-01: 96% force-kill rate (2058/2133 stops)
-                # despite swap-budget gate — undercount was the cause.
-                #
-                # Pre-determine swap intent: not-loaded → swap will happen.
-                _swap_intended = (model.is_local and not model.is_loaded)
-                if _swap_intended:
-                    import nerd_herd as _nerd_herd
-                    _nerd_herd.record_swap(model.name)
-                # Local model swap can take 30+s and waits behind any
-                # in-flight call on the previous model — no per-step bump
-                # inside ensure_model. Background-pump heartbeats so the
-                # 300s watchdog doesn't kill the task during a slow swap.
-                from src.core import heartbeat as _hb_ka
-                async with _hb_ka.keepalive():
-                    ok, swap_happened = await self._ensure_local_model(
-                        model, needs_thinking=is_thinking,
-                        load_timeout=pick.estimated_load_seconds or 0.0,
-                        estimated_context=_min_ctx,
-                    )
-                if not ok:
-                    task_desc = task or agent_type or category.value
-                    if is_overhead:
-                        raise RuntimeError(
-                            f"OVERHEAD call failed: local model load failed. "
-                            f"Task: {task_desc}"
-                        )
-                    raise ModelCallFailed(
-                        call_id=task_desc,
-                        last_error=f"Failed to load local model {model.name}",
-                        error_category="loading",
-                    )
-
-            _messages = self._prepare_messages(messages, model)
-            # Per-call hard cap: cost-runaway protection for cloud only. Local
-            # has no wall-clock cap — stream-inactivity watchdog inside
-            # hallederiz_kadir handles hung-call detection. The earlier
-            # min_time-as-timeout coupling was wrong: min_time is a scoring
-            # estimate, not a kill threshold.
-            timeout = 600.0 if not model.is_local else 0.0  # 0 = no outer cap
-
-            # Heartbeat the orchestrator's no-progress watchdog at call entry.
-            # task_id flows via contextvar, no plumbing needed.
-            try:
-                from src.core import heartbeat as _hb
-                _hb.bump()
-            except Exception:
-                pass
-
-            try:
-                # Cloud non-streaming calls block awaiting litellm.acompletion
-                # — no per-token bump like local streaming gives. With timeout
-                # of 600s a slow cloud call would starve the 300s watchdog.
-                # Background-pump heartbeats around every cloud call. (Local
-                # streaming already bumps every 5s from inside the accumulator,
-                # so the keepalive is mostly a no-op there but cheap to leave
-                # uniform.)
-                from src.core import heartbeat as _hb_ka
-                async with _hb_ka.keepalive():
-                    result = await hallederiz_kadir.call(
-                        model=model,
-                        messages=_messages,
-                        tools=tools,
-                        timeout=timeout,
-                        task=task or category.value,
-                        needs_thinking=needs_thinking,
-                        estimated_input_tokens=kwargs.get("estimated_input_tokens", 0),
-                        estimated_output_tokens=kwargs.get("estimated_output_tokens", 0),
-                        response_format=_response_format_kw,
-                        task_obj=_task_obj_kw,
-                        iteration_n=_iteration_n_kw,
-                        call_category=category.value,
-                    )
-            except Exception as exc:
-                # hallederiz_kadir wraps known failures as CallError. A raw
-                # exception here is a bug in hallederiz — but we still want
-                # the pick recorded so telemetry reflects the failure.
-                logger.exception(
-                    "hallederiz_kadir.call raised raw exception | "
-                    f"model={model.name} task={task or category.value}"
-                )
-                await self._record_pick(
-                    pick=pick, task=task, category=category,
-                    success=False, error_category="raw_exception",
-                    agent_type=agent_type, difficulty=difficulty,
-                )
-                raise
-        finally:
-            await _end_call(_call_id)
 
         if isinstance(result, hallederiz_kadir.CallResult):
-            await self._record_pick(
-                pick=pick, task=task, category=category,
-                success=True, error_category="",
-                agent_type=agent_type, difficulty=difficulty,
-            )
             return self._result_to_dict(result, model)
 
-        # CallError path
+        # CallError path — primitive already recorded the pick failure (or
+        # skipped recording for loading-stage failures, matching the prior
+        # contract). Decide raise vs retry-recurse.
         last_error = result.message
         last_category = result.category
-        logger.debug(
-            f"{category.value} candidate failed | model={model.name} "
-            f"category={result.category} error={result.message[:80]}"
-        )
-        await self._record_pick(
-            pick=pick, task=task, category=category,
-            success=False, error_category=last_category,
-            agent_type=agent_type, difficulty=difficulty,
-        )
 
         if not result.retryable or len(failures) >= max_recursion:
             task_desc = task or agent_type or category.value
@@ -724,6 +572,167 @@ class LLMDispatcher:
         # vs the classic 4 ratio — truncation is costlier than over-
         # allocating a few hundred MB of KV).
         return max(0, total_chars // 3)
+
+    async def _execute_attempt(
+        self,
+        *,
+        pick: Any,
+        messages: list[dict],
+        category: CallCategory,
+        task: str,
+        agent_type: str,
+        difficulty: int,
+        tools: list[dict] | None,
+        needs_thinking: bool,
+        min_context: int,
+        response_format: Any,
+        task_obj: Any,
+        iteration_n: int,
+        estimated_input_tokens: int,
+        estimated_output_tokens: int,
+    ) -> Any:
+        """One attempt against `pick`. No selection. No retry.
+
+        Phase C.1 primitive — extracted from _do_dispatch's per-attempt body.
+        Returns ``hallederiz_kadir.CallResult`` on success or
+        ``hallederiz_kadir.CallError`` on a load/transport failure. The
+        caller (today: _do_dispatch's retry recursion; future Phase C.2:
+        coulson.react per-iter) decides whether to raise, retry on the
+        same pick, or re-select via Hoca.
+
+        Behavior preserved from the original inline body:
+          * in_flight begin_call before any await (Beckman tick visibility)
+          * swap intent recorded BEFORE ensure_model (budget reflects
+            attempted swaps, not just successful ones)
+          * heartbeat keepalive around swap + call (300s watchdog)
+          * record_pick fires for success and for hallederiz CallError;
+            skipped for local-load failures (which raise CallError(loading)
+            without ever attempting the call)
+          * record_pick fires for raw-exception path before re-raising
+          * end_call always fires in finally
+        """
+        import hallederiz_kadir
+
+        model = pick.model
+
+        # Register in-flight BEFORE swap + any other awaits.
+        # Rationale: swap can take 10-30s. Without early registration, the
+        # next Beckman tick (~3s cadence) reads an empty in-flight list
+        # and admits a second local task onto a GPU that's mid-swap.
+        _active_task_id = None
+        try:
+            from src.core.heartbeat import current_task_id as _ctid
+            _active_task_id = _ctid.get()
+        except Exception:
+            pass
+
+        # est_tokens for begin_call: Beckman's reserve_task already set the
+        # projection at admission. begin_call's max(prior_est, passed)
+        # preserves the Beckman value regardless of what we pass here.
+        _call_id = await _begin_call(
+            category=category.value,
+            model_name=model.name,
+            provider=model.provider,
+            is_local=model.is_local,
+            task_id=_active_task_id,
+            est_tokens=0,
+        )
+
+        result: Any = None
+        try:
+            # Local model load
+            if model.is_local and getattr(model, "location", "") != "ollama":
+                is_thinking = model.thinking_model and needs_thinking
+                _min_ctx = min_context
+                if _min_ctx <= 0 and (estimated_input_tokens or estimated_output_tokens):
+                    _min_ctx = int((estimated_input_tokens + estimated_output_tokens) * 1.3) + 512
+                # Record swap intent BEFORE ensure_model so the budget
+                # reflects ATTEMPTED swaps, not just successful ones
+                # (production triage 2026-05-01: 96% force-kill rate
+                # despite swap-budget gate — undercount was the cause).
+                _swap_intended = (model.is_local and not model.is_loaded)
+                if _swap_intended:
+                    import nerd_herd as _nerd_herd
+                    _nerd_herd.record_swap(model.name)
+                from src.core import heartbeat as _hb_ka
+                async with _hb_ka.keepalive():
+                    ok, _swap_happened = await self._ensure_local_model(
+                        model, needs_thinking=is_thinking,
+                        load_timeout=pick.estimated_load_seconds or 0.0,
+                        estimated_context=_min_ctx,
+                    )
+                if not ok:
+                    # Loading failure — return non-retryable CallError.
+                    # No record_pick (matches prior raise-before-record
+                    # contract: loading failures don't pollute pick_log).
+                    return hallederiz_kadir.CallError(
+                        category="loading",
+                        message=f"Failed to load local model {model.name}",
+                        retryable=False,
+                    )
+
+            _messages = self._prepare_messages(messages, model)
+            # Per-call hard cap: cost-runaway protection for cloud only.
+            # Local has no wall-clock cap — stream-inactivity watchdog
+            # inside hallederiz_kadir handles hung-call detection.
+            timeout = 600.0 if not model.is_local else 0.0
+
+            try:
+                from src.core import heartbeat as _hb
+                _hb.bump()
+            except Exception:
+                pass
+
+            try:
+                from src.core import heartbeat as _hb_ka
+                async with _hb_ka.keepalive():
+                    result = await hallederiz_kadir.call(
+                        model=model,
+                        messages=_messages,
+                        tools=tools,
+                        timeout=timeout,
+                        task=task or category.value,
+                        needs_thinking=needs_thinking,
+                        estimated_input_tokens=estimated_input_tokens,
+                        estimated_output_tokens=estimated_output_tokens,
+                        response_format=response_format,
+                        task_obj=task_obj,
+                        iteration_n=iteration_n,
+                        call_category=category.value,
+                    )
+            except Exception:
+                logger.exception(
+                    "hallederiz_kadir.call raised raw exception | "
+                    f"model={model.name} task={task or category.value}"
+                )
+                await self._record_pick(
+                    pick=pick, task=task, category=category,
+                    success=False, error_category="raw_exception",
+                    agent_type=agent_type, difficulty=difficulty,
+                )
+                raise
+        finally:
+            await _end_call(_call_id)
+
+        if isinstance(result, hallederiz_kadir.CallResult):
+            await self._record_pick(
+                pick=pick, task=task, category=category,
+                success=True, error_category="",
+                agent_type=agent_type, difficulty=difficulty,
+            )
+        else:
+            # hallederiz CallError
+            logger.debug(
+                f"{category.value} candidate failed | model={model.name} "
+                f"category={result.category} error={result.message[:80]}"
+            )
+            await self._record_pick(
+                pick=pick, task=task, category=category,
+                success=False, error_category=result.category,
+                agent_type=agent_type, difficulty=difficulty,
+            )
+
+        return result
 
     async def _record_pick(
         self,

@@ -432,7 +432,7 @@ class LLMDispatcher:
         # gate here.
         model = pick.model
 
-        result = await self._execute_attempt(
+        result = await self.execute(
             pick=pick,
             messages=messages,
             category=category,
@@ -573,7 +573,7 @@ class LLMDispatcher:
         # allocating a few hundred MB of KV).
         return max(0, total_chars // 3)
 
-    async def _execute_attempt(
+    async def execute(
         self,
         *,
         pick: Any,
@@ -593,12 +593,14 @@ class LLMDispatcher:
     ) -> Any:
         """One attempt against `pick`. No selection. No retry.
 
-        Phase C.1 primitive — extracted from _do_dispatch's per-attempt body.
+        Phase C primitive — the public entry that runtime/coulson will call
+        per-iter once the per-iter Hoca selection lands in coulson.react
+        (C.2b). Today only `_do_dispatch` calls it.
+
         Returns ``hallederiz_kadir.CallResult`` on success or
         ``hallederiz_kadir.CallError`` on a load/transport failure. The
-        caller (today: _do_dispatch's retry recursion; future Phase C.2:
-        coulson.react per-iter) decides whether to raise, retry on the
-        same pick, or re-select via Hoca.
+        caller decides whether to raise, retry on the same pick, or
+        re-select via Hoca.
 
         Behavior preserved from the original inline body:
           * in_flight begin_call before any await (Beckman tick visibility)

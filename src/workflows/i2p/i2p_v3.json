@@ -4228,6 +4228,12 @@
         "formatter_config",
         "precommit_config"
       ],
+      "produces": [
+        ".pre-commit-config.yaml"
+      ],
+      "post_hooks": [
+        "verify_artifacts"
+      ],
       "instruction": "Set up code formatting (Prettier/Black/rustfmt), linting (ESLint/Pylint/clippy), and pre-commit hooks (husky/pre-commit). Configure all tools with project-appropriate rules. Set up editor configuration files (.vscode/settings.json, .editorconfig). Ensure pre-commit hooks run formatter and linter.",
       "done_when": "linter_config, formatter_config, and precommit_config exist and pre-commit hooks run correctly.",
       "artifact_schema": {
@@ -4281,6 +4287,12 @@
       ],
       "output_artifacts": [
         "backend_scaffold"
+      ],
+      "produces": [
+        "backend/.env.example"
+      ],
+      "post_hooks": [
+        "verify_artifacts"
       ],
       "context": {
         "estimated_output_tokens": 6000
@@ -4396,6 +4408,12 @@
       "output_artifacts": [
         "frontend_scaffold"
       ],
+      "produces": [
+        "frontend/package.json"
+      ],
+      "post_hooks": [
+        "verify_artifacts"
+      ],
       "context": {
         "estimated_output_tokens": 6000
       },
@@ -4506,6 +4524,13 @@
       "output_artifacts": [
         "docker_compose_config"
       ],
+      "produces": [
+        "Dockerfile",
+        "docker-compose.yml"
+      ],
+      "post_hooks": [
+        "verify_artifacts"
+      ],
       "instruction": "Create Docker setup: backend Dockerfile (multi-stage build), frontend Dockerfile (multi-stage build), docker-compose.yml with all services (backend, frontend, database, cache if needed). Configure volumes, networking, environment variables, and health checks. Verify the full stack starts and runs with docker-compose up.",
       "done_when": "docker_compose_config exists and docker-compose up works.",
       "artifact_schema": {
@@ -4546,6 +4571,12 @@
         "ci_config",
         "cd_staging_config",
         "cd_production_config"
+      ],
+      "produces": [
+        ".github/workflows/ci.yml"
+      ],
+      "post_hooks": [
+        "verify_artifacts"
       ],
       "context": {
         "estimated_output_tokens": 5000
@@ -4604,6 +4635,13 @@
         "design_tokens_code",
         "layout_components"
       ],
+      "produces": [
+        "frontend/src/styles/tokens.css"
+      ],
+      "post_hooks": [
+        "verify_artifacts",
+        "code_review"
+      ],
       "instruction": "Implement design tokens as CSS variables/theme configuration and the base layout system. Convert all design tokens to code (CSS custom properties, Tailwind theme, or styled-system). Implement the app shell layout, responsive grid system, and base navigation components. Verify all tokens render correctly at all breakpoints.",
       "done_when": "design_tokens_code and layout_components exist with verified rendering.",
       "artifact_schema": {
@@ -4651,6 +4689,13 @@
       "output_artifacts": [
         "primitive_components_code"
       ],
+      "produces": [
+        "frontend/src/components/ui/Button.tsx"
+      ],
+      "post_hooks": [
+        "verify_artifacts",
+        "code_review"
+      ],
       "instruction": "Implement all primitive components from component_spec_primitives: Button, Input, Textarea, Select, Checkbox, Radio, Toggle, Label, Badge, Avatar, Icon, Divider, Spinner, Skeleton, Link, Tag. Each with all variants, sizes, states, and accessibility attributes. Use design tokens for all styling.",
       "done_when": "primitive_components_code exists with all primitives implemented.",
       "artifact_schema": {
@@ -4691,6 +4736,13 @@
       ],
       "output_artifacts": [
         "composite_components_code"
+      ],
+      "produces": [
+        "frontend/src/components/ui/Card.tsx"
+      ],
+      "post_hooks": [
+        "verify_artifacts",
+        "code_review"
       ],
       "instruction": "Implement all composite components from component_spec_composite: Card, Modal, Toast, Alert, Dropdown, Tooltip, Popover, Tabs, Accordion, Table, Pagination, Breadcrumb, EmptyState, Sidebar, Navbar, Footer. Compose from primitive components. Include animations per interaction_spec.",
       "done_when": "composite_components_code exists with all composites implemented.",
@@ -7149,11 +7201,11 @@
       "artifact_schema": {
         "launch_go_no_go": {
           "type": "object",
-          "required_fields": [
-            "checklist",
-            "approved",
-            "launch_date"
-          ]
+          "fields": {
+            "checklist": {},
+            "approved": {"type": "boolean", "equals": true},
+            "launch_date": {}
+          }
         }
       },
       "context": {}

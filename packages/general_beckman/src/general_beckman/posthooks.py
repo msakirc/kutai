@@ -29,6 +29,10 @@ _NO_POSTHOOKS_AGENT_TYPES: frozenset[str] = frozenset({
     "grader",
     "artifact_summarizer",
     "reviewer",
+    # CodeReviewerAgent runs as a post-hook over a build step's output.
+    # Spawning a grader on it would be judge-of-judge — same reasoning
+    # as for "reviewer" above. Its verdict IS the gate.
+    "code_reviewer",
 })
 
 
@@ -68,4 +72,5 @@ def determine_posthooks(
 # matching branch in apply._posthook_agent_and_payload + apply._apply_posthook_verdict.
 _KNOWN_EXTRA_KINDS: frozenset[str] = frozenset({
     "verify_artifacts",
+    "code_review",
 })

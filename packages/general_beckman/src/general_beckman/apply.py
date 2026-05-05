@@ -608,6 +608,27 @@ async def _posthook_dlq_cascade(task: dict, error: str) -> None:
         return
 
     posthook_kind = ctx.get("posthook_kind")
+    if posthook_kind == "code_review":
+        # Code reviewer task itself DLQ'd (e.g. all reviewer models failed,
+        # not a fail-verdict outcome which would have completed normally).
+        # Source can't advance — mark failed so depends_on cascade blocks
+        # downstream rather than leaving it stuck in 'ungraded'.
+        source_ctx["_pending_posthooks"] = [
+            k for k in (source_ctx.get("_pending_posthooks") or [])
+            if k != "code_review"
+        ]
+        source_ctx["_review_dlq_reason"] = error[:300]
+        await update_task(
+            source_id,
+            status="failed",
+            error=f"code_review DLQ: {error[:400]}",
+            failed_in_phase="code_review",
+            context=_json.dumps(source_ctx),
+        )
+        logger.warning("code_review DLQ cascaded source to failed",
+                       source_id=source_id, reviewer_task_id=task["id"])
+        return
+
     if posthook_kind == "verify_artifacts":
         # Mechanical verifier itself DLQ'd (e.g. workspace permission denied,
         # not a missing-files outcome which would have completed normally).
@@ -710,6 +731,18 @@ def _posthook_agent_and_payload(
                 "min_bytes": 1,
                 "compile_check": True,
             },
+        })
+    if a.kind == "code_review":
+        # LLM post-hook: a code-review-flavoured reviewer judges the source's
+        # emitted code. Its verdict (PASS/FAIL) drives the same retry-with-
+        # feedback path as verify_artifacts. Issue list is fed back via
+        # _schema_error so the source's next attempt sees what to fix.
+        produces = list(source_ctx.get("produces") or [])
+        return ("code_reviewer", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "code_review",
+            "produces": produces,
+            "review_excluded_models": list(source_ctx.get("review_excluded_models") or []),
         })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
 
@@ -829,6 +862,120 @@ async def _apply_verify_artifacts_verdict(
     )
 
 
+async def _apply_code_review_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Apply a code_review post-hook verdict back to the source task.
+
+    Pass: drop the kind from pending; if no other post-hooks remain, mark
+    source completed.
+    Fail: retry source with the reviewer's issues list as feedback. Honors
+    worker attempt cap + bonus-progress budget. Bumps the review-side
+    exclusion list (so the same reviewer model isn't rerun on the same
+    output) but does NOT add to ctx.failed_models — code style / coverage
+    feedback is reviewer-judgment, not a model-quality verdict on the
+    coder. The next coder attempt may still legitimately use the same
+    coder model with the issues list as steering.
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    if verdict.passed:
+        new_pending = [k for k in pending if k != "code_review"]
+        ctx["_pending_posthooks"] = new_pending
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, verdict.raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", verdict.raw or {})
+            except Exception:
+                pass
+        else:
+            await update_task(
+                verdict.source_task_id, context=_json.dumps(ctx),
+            )
+        return
+
+    # Fail path
+    raw = verdict.raw or {}
+    issues = raw.get("issues") or []
+    error_str = (
+        f"code_review: {len(issues)} issue(s) found. "
+        f"first: {(issues[0] if issues else '<no detail>')}"
+    )[:500]
+
+    attempts = int(source.get("worker_attempts") or 0) + 1
+    max_attempts = int(source.get("max_worker_attempts") or 15)
+    ctx["_pending_posthooks"] = []
+
+    bullet_block = "\n".join(f"- {i}" for i in issues[:30]) or "- (no detail provided)"
+    feedback = (
+        "Code review rejected your output. Fix these issues on retry, "
+        "then re-emit:\n" + bullet_block
+    )
+
+    if attempts >= max_attempts:
+        from general_beckman.retry import _MAX_BONUS
+        bonus_count = int(ctx.get("_bonus_count", 0))
+        progress = _parse_progress(source)
+        can_bonus = (
+            progress is not None
+            and progress >= 0.5
+            and bonus_count < _MAX_BONUS
+        )
+        if can_bonus:
+            ctx["_bonus_count"] = bonus_count + 1
+            max_attempts += 1
+            ctx["_schema_error"] = feedback
+            prev_output = source.get("result") or ""
+            if isinstance(prev_output, str) and prev_output.strip():
+                ctx["_prev_output"] = prev_output[:6000]
+            _stamp_retry_feedback(ctx, attempts)
+            await update_task(
+                verdict.source_task_id,
+                status="pending",
+                worker_attempts=attempts,
+                max_worker_attempts=max_attempts,
+                error=error_str,
+                error_category="quality",
+                next_retry_at=None,
+                context=_json.dumps(ctx),
+            )
+            return
+        await _dlq_write(
+            source, error=error_str or "code review gate exhausted",
+            category="quality", attempts=attempts,
+        )
+        return
+
+    ctx["_schema_error"] = feedback
+    prev_output = source.get("result") or ""
+    if isinstance(prev_output, str) and prev_output.strip():
+        ctx["_prev_output"] = prev_output[:6000]
+    _stamp_retry_feedback(ctx, attempts)
+    await update_task(
+        verdict.source_task_id,
+        status="pending",
+        worker_attempts=attempts,
+        error=error_str,
+        error_category="quality",
+        next_retry_at=None,
+        context=_json.dumps(ctx),
+    )
+
+
 def _posthook_title(a: RequestPostHook, source: dict) -> str:
     if a.kind == "grade":
         return f"Grade task #{a.source_task_id}"
@@ -837,6 +984,8 @@ def _posthook_title(a: RequestPostHook, source: dict) -> str:
         return f"Summarize '{name}' for #{a.source_task_id}"
     if a.kind == "verify_artifacts":
         return f"Verify artifacts for #{a.source_task_id}"
+    if a.kind == "code_review":
+        return f"Code review for #{a.source_task_id}"
     return f"Posthook {a.kind} for #{a.source_task_id}"
 
 
@@ -985,6 +1134,12 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
 
     if a.kind == "verify_artifacts":
         await _apply_verify_artifacts_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    if a.kind == "code_review":
+        await _apply_code_review_verdict(
             source=source, ctx=ctx, pending=pending, verdict=a,
         )
         return

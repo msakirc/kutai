@@ -49,11 +49,12 @@ def rewrite_actions(
 
 
 def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
-    # Rule 0: post-hook task (grader/artifact_summarizer) completion
-    # → translate its posthook_verdict payload into a PostHookVerdict action.
-    # Bookkeeping tasks never fire MissionAdvance or RequestPostHook.
+    # Rule 0: post-hook task (grader/artifact_summarizer/code_reviewer)
+    # completion → translate its posthook_verdict payload into a
+    # PostHookVerdict action. Bookkeeping tasks never fire MissionAdvance
+    # or RequestPostHook.
     if isinstance(a, Complete) and task.get("agent_type") in (
-        "grader", "artifact_summarizer",
+        "grader", "artifact_summarizer", "code_reviewer",
     ):
         raw = a.raw or {}
         verdict_payload = raw.get("posthook_verdict") if isinstance(raw, dict) else None
@@ -140,7 +141,7 @@ def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
     )
     is_bookkeeping = (
         payload_action == "workflow_advance"
-        or agent_type in {"grader", "artifact_summarizer"}
+        or agent_type in {"grader", "artifact_summarizer", "code_reviewer"}
         or is_posthook_task  # mechanical/reviewer posthook tasks shouldn't recurse
     )
 

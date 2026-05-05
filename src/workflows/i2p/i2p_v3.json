@@ -8253,9 +8253,15 @@
             "read_file"
           ],
           "condition": "Only if feature_impl_plan includes db_migration",
-          "instruction": "Create a reversible database migration for this feature. Add tables, columns, indexes, or constraints as specified in the feature_impl_plan and database_schema. Run the migration locally. Verify the schema matches expectations. Verify rollback works cleanly.",
+          "instruction": "Create a reversible database migration for this feature. Add tables, columns, indexes, or constraints as specified in the feature_impl_plan and database_schema. Run the migration locally. Verify the schema matches expectations. Verify rollback works cleanly. REQUIRED OUTPUT PATH (write the migration here, exact path): migrations/versions/{feature_id}_initial.py",
           "output_artifacts": [
             "migration_file"
+          ],
+          "produces": [
+            "migrations/versions/{feature_id}_initial.py"
+          ],
+          "post_hooks": [
+            "verify_artifacts"
           ],
           "artifact_schema": {
             "migration_file": {
@@ -8283,9 +8289,17 @@
             "codebase_map",
             "get_function"
           ],
-          "instruction": "Implement backend for this feature: data model (fields, validation, types, relations), business logic service layer (enforce business rules, throw typed AppErrors), and any feature-specific middleware (file upload, rate limiting, feature flags). Follow patterns from implementation_context.",
+          "instruction": "Implement backend for this feature: data model (fields, validation, types, relations), business logic service layer (enforce business rules, throw typed AppErrors), and any feature-specific middleware (file upload, rate limiting, feature flags). Follow patterns from implementation_context. REQUIRED OUTPUT PATHS (write actual files at exactly these paths via the write_file tool): backend/app/models/{feature_id}.py, backend/app/services/{feature_id}_service.py.",
           "output_artifacts": [
             "backend_service_files"
+          ],
+          "produces": [
+            "backend/app/models/{feature_id}.py",
+            "backend/app/services/{feature_id}_service.py"
+          ],
+          "post_hooks": [
+            "verify_artifacts",
+            "code_review"
           ],
           "artifact_schema": {
             "backend_service_files": {
@@ -8312,9 +8326,16 @@
             "query_codebase",
             "get_function"
           ],
-          "instruction": "Implement API endpoints per openapi_spec: route handlers with middleware, request validation, response formatting, error handling. Each endpoint must check auth, validate input, call service, return proper response format.",
+          "instruction": "Implement API endpoints per openapi_spec: route handlers with middleware, request validation, response formatting, error handling. Each endpoint must check auth, validate input, call service, return proper response format. REQUIRED OUTPUT PATH (write the router via write_file at exactly this path): backend/app/routes/{feature_id}.py.",
           "output_artifacts": [
             "route_files"
+          ],
+          "produces": [
+            "backend/app/routes/{feature_id}.py"
+          ],
+          "post_hooks": [
+            "verify_artifacts",
+            "code_review"
           ],
           "artifact_schema": {
             "route_files": {
@@ -8339,9 +8360,15 @@
             "query_codebase",
             "get_function"
           ],
-          "instruction": "Write unit tests for service layer: happy path, validation failures, auth failures, business rules, edge cases. Target >90% branch coverage. Write integration tests for API endpoints with real test database: success, auth, validation, not found, pagination, filtering. Run all tests and verify they pass.",
+          "instruction": "Write unit tests for service layer: happy path, validation failures, auth failures, business rules, edge cases. Target >90% branch coverage. Write integration tests for API endpoints with real test database: success, auth, validation, not found, pagination, filtering. Run all tests and verify they pass. REQUIRED OUTPUT PATH (write tests via write_file at exactly this path): backend/tests/test_{feature_id}.py.",
           "output_artifacts": [
             "backend_test_files"
+          ],
+          "produces": [
+            "backend/tests/test_{feature_id}.py"
+          ],
+          "post_hooks": [
+            "verify_artifacts"
           ],
           "artifact_schema": {
             "backend_test_files": {
@@ -8368,9 +8395,18 @@
             "query_codebase"
           ],
           "condition": "Only if feature_impl_plan.needs_frontend is true",
-          "instruction": "Set up frontend for this feature: TypeScript types (API response/request, form, state, component props), API client functions using base client, and state management (query hooks, mutation hooks with optimistic updates and cache invalidation). Follow patterns from implementation_context.",
+          "instruction": "Set up frontend for this feature: TypeScript types (API response/request, form, state, component props), API client functions using base client, and state management (query hooks, mutation hooks with optimistic updates and cache invalidation). Follow patterns from implementation_context. REQUIRED OUTPUT PATHS (write actual files via write_file at exactly these paths): frontend/src/types/{feature_id}.ts, frontend/src/api/{feature_id}.ts, frontend/src/state/{feature_id}.ts.",
           "output_artifacts": [
             "frontend_state_files"
+          ],
+          "produces": [
+            "frontend/src/types/{feature_id}.ts",
+            "frontend/src/api/{feature_id}.ts",
+            "frontend/src/state/{feature_id}.ts"
+          ],
+          "post_hooks": [
+            "verify_artifacts",
+            "code_review"
           ],
           "artifact_schema": {
             "frontend_state_files": {
@@ -8397,9 +8433,16 @@
             "query_codebase"
           ],
           "condition": "Only if feature_impl_plan.needs_frontend is true",
-          "instruction": "Implement feature-specific UI components per screen_specifications using design system components and tokens. Include responsive behavior per responsive_spec at all breakpoints. Implement accessibility per accessibility_spec: headings, ARIA, keyboard nav, focus order. Implement forms with validation, error display, submit handling if applicable. Implement loading (Skeleton), error (inline + toast), and empty states.",
+          "instruction": "Implement feature-specific UI components per screen_specifications using design system components and tokens. Include responsive behavior per responsive_spec at all breakpoints. Implement accessibility per accessibility_spec: headings, ARIA, keyboard nav, focus order. Implement forms with validation, error display, submit handling if applicable. Implement loading (Skeleton), error (inline + toast), and empty states. REQUIRED OUTPUT PATH (write the components index via write_file at exactly this path): frontend/src/components/{feature_id}/index.tsx.",
           "output_artifacts": [
             "frontend_component_files"
+          ],
+          "produces": [
+            "frontend/src/components/{feature_id}/index.tsx"
+          ],
+          "post_hooks": [
+            "verify_artifacts",
+            "code_review"
           ],
           "artifact_schema": {
             "frontend_component_files": {
@@ -8426,9 +8469,16 @@
             "query_codebase"
           ],
           "condition": "Only if feature_impl_plan.needs_frontend is true",
-          "instruction": "Assemble pages: compose components, wire data bindings, action handlers, conditional rendering, route parameters. Implement all page states: loading, error, empty, success. Connect to routes per information_architecture.",
+          "instruction": "Assemble pages: compose components, wire data bindings, action handlers, conditional rendering, route parameters. Implement all page states: loading, error, empty, success. Connect to routes per information_architecture. REQUIRED OUTPUT PATH (write the page via write_file at exactly this path): frontend/src/app/{feature_id}/page.tsx.",
           "output_artifacts": [
             "frontend_page_files"
+          ],
+          "produces": [
+            "frontend/src/app/{feature_id}/page.tsx"
+          ],
+          "post_hooks": [
+            "verify_artifacts",
+            "code_review"
           ],
           "artifact_schema": {
             "frontend_page_files": {
@@ -8452,9 +8502,15 @@
             "coverage"
           ],
           "condition": "Only if feature_impl_plan.needs_frontend is true",
-          "instruction": "Write frontend unit tests for utilities, hooks, state management. Write component tests: render, interaction, conditional rendering, accessibility, page states (loading/error/empty). Run all tests and verify they pass.",
+          "instruction": "Write frontend unit tests for utilities, hooks, state management. Write component tests: render, interaction, conditional rendering, accessibility, page states (loading/error/empty). Run all tests and verify they pass. REQUIRED OUTPUT PATH (write the test file via write_file at exactly this path): frontend/src/__tests__/{feature_id}.test.tsx.",
           "output_artifacts": [
             "frontend_test_files"
+          ],
+          "produces": [
+            "frontend/src/__tests__/{feature_id}.test.tsx"
+          ],
+          "post_hooks": [
+            "verify_artifacts"
           ],
           "artifact_schema": {
             "frontend_test_files": {
@@ -8477,9 +8533,15 @@
             "write_file",
             "read_file"
           ],
-          "instruction": "Write E2E tests covering: happy path CRUD flow, error handling, auth integration. Each test should simulate a complete user flow. Tests should run in under 30 seconds each. Use the project's E2E framework.",
+          "instruction": "Write E2E tests covering: happy path CRUD flow, error handling, auth integration. Each test should simulate a complete user flow. Tests should run in under 30 seconds each. Use the project's E2E framework. REQUIRED OUTPUT PATH (write the spec file via write_file at exactly this path): e2e/{feature_id}.spec.ts.",
           "output_artifacts": [
             "e2e_test_files"
+          ],
+          "produces": [
+            "e2e/{feature_id}.spec.ts"
+          ],
+          "post_hooks": [
+            "verify_artifacts"
           ],
           "artifact_schema": {
             "e2e_test_files": {

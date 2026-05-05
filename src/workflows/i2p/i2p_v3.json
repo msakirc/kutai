@@ -4816,6 +4816,7 @@
       "id": "7.13",
       "phase": "phase_7",
       "name": "staging_environment",
+      "needs_real_tools": true,
       "agent": "executor",
       "difficulty": "medium",
       "tools_hint": [
@@ -4828,7 +4829,7 @@
         "7.7",
         "7.8"
       ],
-      "may_need_clarification": false,
+      "may_need_clarification": true,
       "input_artifacts": [
         "tech_stack_decision",
         "system_architecture"
@@ -4837,7 +4838,7 @@
         "staging_environment",
         "staging_deployment_verified"
       ],
-      "instruction": "Provision staging environment and deploy the scaffolded application. Verify health checks pass, database migrations run, and the application is accessible. Test the CD pipeline by triggering a deployment.",
+      "instruction": "[NEEDS-REAL-TOOLS] Requires real deploy adapters (Vercel/Railway/Fly/Render/etc.) the agent does not currently have. Until those adapters land in salako, do NOT autonomously execute this step — surface a needs_clarification asking the human operator to provision and report back, then record their answer as the artifact. Provision staging environment and deploy the scaffolded application. Verify health checks pass, database migrations run, and the application is accessible. Test the CD pipeline by triggering a deployment.",
       "done_when": "staging_environment and staging_deployment_verified exist.",
       "artifact_schema": {
         "staging_environment": {
@@ -5329,6 +5330,7 @@
       "id": "9.4",
       "phase": "phase_9",
       "name": "e2e_test_suite",
+      "needs_real_tools": true,
       "agent": "test_generator",
       "difficulty": "medium",
       "tools_hint": [
@@ -5339,7 +5341,7 @@
       "depends_on": [
         "9.2"
       ],
-      "may_need_clarification": false,
+      "may_need_clarification": true,
       "input_artifacts": [
         "coverage_report",
         "user_stories_refined_summary"
@@ -5347,7 +5349,7 @@
       "output_artifacts": [
         "e2e_test_suite"
       ],
-      "instruction": "Review existing E2E tests against functional requirements. Write missing E2E tests for user flows without coverage. Each test should simulate a complete user flow from entry to completion, including UI interactions, API calls, and database state verification. Use the project's E2E framework (Playwright, Cypress, or equivalent).",
+      "instruction": "[NEEDS-REAL-TOOLS] E2E execution requires a real browser-driver adapter (e.g. salako.run_pytest pointing at a live staging URL, or a Playwright runner). Until that adapter lands, the agent can author the test files but cannot truthfully claim 'flows passed'. Write the suite, but emit `flows_covered` as the count of authored test cases — never claim execution results unless the runner returned exit 0 in audit_log. Review existing E2E tests against functional requirements. Write missing E2E tests for user flows without coverage. Each test should simulate a complete user flow from entry to completion, including UI interactions, API calls, and database state verification. Use the project's E2E framework (Playwright, Cypress, or equivalent).",
       "done_when": "e2e_test_suite exists with comprehensive E2E coverage.",
       "artifact_schema": {
         "e2e_test_suite": {
@@ -6602,6 +6604,7 @@
       "id": "13.1",
       "phase": "phase_13",
       "name": "production_infrastructure",
+      "needs_real_tools": true,
       "agent": "executor",
       "difficulty": "hard",
       "tools_hint": [
@@ -6615,7 +6618,7 @@
         "9.11",
         "11.5"
       ],
-      "may_need_clarification": false,
+      "may_need_clarification": true,
       "input_artifacts": [
         "scalability_plan",
         "nfr_scalability",
@@ -6629,7 +6632,7 @@
         "production_database",
         "production_cache"
       ],
-      "instruction": "Provision all production infrastructure. Compute: instances or container orchestration, networking, load balancing, environment variables. Database: managed instance, automated backups, read replicas if needed, encryption at rest, connection pooling. Cache: managed cache service, appropriate memory allocation, encryption in transit, eviction policy.",
+      "instruction": "[NEEDS-REAL-TOOLS] Production provisioning requires real cloud-provider adapters (AWS/GCP/Azure/Vercel/Railway/Supabase/etc.) the agent does not currently have. Do NOT autonomously execute — surface a needs_clarification asking the human operator to provision and report back, then record their answer as the artifact. Provision all production infrastructure. Compute: instances or container orchestration, networking, load balancing, environment variables. Database: managed instance, automated backups, read replicas if needed, encryption at rest, connection pooling. Cache: managed cache service, appropriate memory allocation, encryption in transit, eviction policy.",
       "done_when": "production_compute, production_database, and production_cache exist.",
       "artifact_schema": {
         "production_compute": {
@@ -6719,6 +6722,7 @@
       "id": "13.3",
       "phase": "phase_13",
       "name": "monitoring_setup",
+      "needs_real_tools": true,
       "agent": "executor",
       "difficulty": "medium",
       "tools_hint": [
@@ -6729,7 +6733,7 @@
       "depends_on": [
         "13.1"
       ],
-      "may_need_clarification": false,
+      "may_need_clarification": true,
       "input_artifacts": [
         "observability_strategy",
         "nfr_availability",
@@ -6744,7 +6748,7 @@
         "alert_rules",
         "operational_dashboard"
       ],
-      "instruction": "Set up complete monitoring stack. APM: request tracing, distributed tracing, performance baselines. Infrastructure monitoring: CPU, memory, disk, network, database metrics, cache metrics. Error tracking: unhandled exceptions, source maps, alert thresholds. Log aggregation: structured log parsing, retention policies, saved searches. Uptime monitoring: synthetic checks every 1-5 minutes. Alert rules: error rate, response time degradation, resource exhaustion, certificate expiration. Build operational dashboard combining all metrics.",
+      "instruction": "[NEEDS-REAL-TOOLS] Monitoring provisioning requires real APM/observability adapters (Datadog/Sentry/New Relic/Grafana Cloud/etc.) the agent does not currently have. Do NOT autonomously execute — surface a needs_clarification asking the human operator to wire up the monitoring stack and report back. Set up complete monitoring stack. APM: request tracing, distributed tracing, performance baselines. Infrastructure monitoring: CPU, memory, disk, network, database metrics, cache metrics. Error tracking: unhandled exceptions, source maps, alert thresholds. Log aggregation: structured log parsing, retention policies, saved searches. Uptime monitoring: synthetic checks every 1-5 minutes. Alert rules: error rate, response time degradation, resource exhaustion, certificate expiration. Build operational dashboard combining all metrics.",
       "done_when": "All monitoring artifacts exist with verified functionality.",
       "artifact_schema": {
         "apm_setup": {
@@ -7120,6 +7124,7 @@
       "id": "13.11",
       "phase": "phase_13",
       "name": "social_preview_test",
+      "needs_real_tools": true,
       "agent": "executor",
       "difficulty": "easy",
       "tools_hint": [
@@ -7129,7 +7134,7 @@
       "depends_on": [
         "13.10"
       ],
-      "may_need_clarification": false,
+      "may_need_clarification": true,
       "skip_when": [
         "mvp_only",
         "no_public_web"
@@ -7140,7 +7145,7 @@
       "output_artifacts": [
         "social_preview_results"
       ],
-      "instruction": "Test social media sharing previews on Facebook, Twitter, LinkedIn. Verify OG tags render correctly, images are correct size, titles/descriptions are compelling.",
+      "instruction": "[NEEDS-REAL-TOOLS] Social preview verification requires real platform debugger APIs (Facebook Sharing Debugger, Twitter Card Validator, LinkedIn Post Inspector) which the agent does not currently have. Do NOT autonomously claim 'pass' — surface a needs_clarification asking the human operator to run the validators and paste results. Test social media sharing previews on Facebook, Twitter, LinkedIn. Verify OG tags render correctly, images are correct size, titles/descriptions are compelling.",
       "done_when": "social_preview_results exists.",
       "artifact_schema": {
         "social_preview_results": {
@@ -8695,6 +8700,7 @@
         {
           "template_step_id": "feat.13",
           "name": "staging_deploy",
+          "needs_real_tools": true,
           "agent": "executor",
           "difficulty": "easy",
           "tools_hint": [
@@ -8702,7 +8708,7 @@
             "git_commit",
             "git_branch"
           ],
-          "instruction": "Merge feature branch, wait for CI/CD, verify deployment succeeds and health check passes on staging.",
+          "instruction": "[NEEDS-REAL-TOOLS] Per-feature staging deploy requires a real CD trigger + health-check adapter (e.g. salako.run_cmd against the CI provider, plus an http_request with retry against the staging URL). Until those land, do NOT claim 'health_check_passed' — surface a needs_clarification with the merge commit SHA and ask the operator to confirm. Merge feature branch, wait for CI/CD, verify deployment succeeds and health check passes on staging.",
           "output_artifacts": [
             "staging_deployment_result"
           ],
@@ -8719,6 +8725,7 @@
         {
           "template_step_id": "feat.14",
           "name": "staging_validation",
+          "needs_real_tools": true,
           "agent": "executor",
           "difficulty": "medium",
           "tools_hint": [
@@ -8726,7 +8733,7 @@
             "read_file",
             "http_request"
           ],
-          "instruction": "Validate the feature on staging: run smoke tests (navigate, perform core action, verify persistence, test error case, test auth), visually verify at desktop and mobile breakpoints. Compare against screen_specifications. If visual issues found, fix them using design tokens and re-verify.",
+          "instruction": "[NEEDS-REAL-TOOLS] Staging validation requires a real browser-driver adapter (Playwright/Puppeteer + screenshot diff) the agent does not currently have. Until that lands, do NOT claim 'smoke_tests_passed' or 'visual_check_passed' — surface a needs_clarification with the staging URL and ask the operator to walk the smoke flow + report results. Validate the feature on staging: run smoke tests (navigate, perform core action, verify persistence, test error case, test auth), visually verify at desktop and mobile breakpoints. Compare against screen_specifications. If visual issues found, fix them using design tokens and re-verify.",
           "output_artifacts": [
             "staging_validation_result"
           ],

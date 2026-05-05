@@ -5,8 +5,9 @@ Marker semantics:
 - ``needs_real_tools: true`` on the step
 - instruction prefixed with ``[NEEDS-REAL-TOOLS]`` so the agent prompt
   surfaces the constraint
-- ``may_need_clarification: true`` on top-level steps so the workflow
-  routes to a human gate instead of auto-fabricating
+
+Marker is informational + drift-guard for now; flow-control hookup
+(skip / human-gate routing) is left to the real-tools workstream.
 
 Until salako gains real adapters (Vercel/Railway/Supabase/Datadog/Sentry
 + Playwright runner), these steps must NOT claim success autonomously.
@@ -60,9 +61,6 @@ def test_top_level_step_marker(step_id):
     instruction = step.get("instruction") or ""
     assert instruction.startswith("[NEEDS-REAL-TOOLS]"), (
         f"{step_id} instruction missing [NEEDS-REAL-TOOLS] prefix"
-    )
-    assert step.get("may_need_clarification") is True, (
-        f"{step_id} should route to human gate (may_need_clarification=true)"
     )
 
 

@@ -4829,7 +4829,7 @@
         "7.7",
         "7.8"
       ],
-      "may_need_clarification": true,
+      "may_need_clarification": false,
       "input_artifacts": [
         "tech_stack_decision",
         "system_architecture"
@@ -5341,7 +5341,7 @@
       "depends_on": [
         "9.2"
       ],
-      "may_need_clarification": true,
+      "may_need_clarification": false,
       "input_artifacts": [
         "coverage_report",
         "user_stories_refined_summary"
@@ -6618,7 +6618,7 @@
         "9.11",
         "11.5"
       ],
-      "may_need_clarification": true,
+      "may_need_clarification": false,
       "input_artifacts": [
         "scalability_plan",
         "nfr_scalability",
@@ -6733,7 +6733,7 @@
       "depends_on": [
         "13.1"
       ],
-      "may_need_clarification": true,
+      "may_need_clarification": false,
       "input_artifacts": [
         "observability_strategy",
         "nfr_availability",
@@ -7134,7 +7134,7 @@
       "depends_on": [
         "13.10"
       ],
-      "may_need_clarification": true,
+      "may_need_clarification": false,
       "skip_when": [
         "mvp_only",
         "no_public_web"

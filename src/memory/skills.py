@@ -373,9 +373,60 @@ async def add_skill(
 
 # ─── Injection ───────────────────────────────────────────────────────────────
 
-async def find_relevant_skills(task_text: str, limit: int = 5) -> list[dict]:
-    """Find skills matching task via vector search, ranked by similarity + success rate."""
+_STEP_ID_RE = _re_pollution.compile(r"\[(\d+(?:\.\d+)?[a-z]?)\]")
+
+
+async def _step_id_fast_path(task_text: str) -> list[dict]:
+    """Direct lookup for workflow-step skills by step ID (e.g. [5.7], [1.10]).
+
+    Workflow tasks have titles like ``[5.7] component_specs``. Vector search
+    against generic step descriptions drifts to siblings — direct name match
+    is deterministic and 100% precise when the step skill exists.
+
+    Returns a list of skill dicts (may be empty) with synthesized
+    ``_match_score=1.0`` and ``_similarity=1.0`` so downstream ranking treats
+    them as max-confidence.
+    """
+    m = _STEP_ID_RE.search(task_text or "")
+    if not m:
+        return []
+    step_id = m.group(1)
+    pattern = f"auto:%:[{step_id}]%"
     try:
+        conn = await get_db()
+        async with conn.execute(
+            "SELECT name, description, skill_type, strategies, "
+            "injection_count, injection_success "
+            "FROM skills WHERE name LIKE ? ORDER BY injection_count DESC LIMIT 3",
+            (pattern,),
+        ) as cur:
+            cur.row_factory = __import__("aiosqlite").Row
+            rows = await cur.fetchall()
+    except Exception as exc:
+        logger.debug(f"step-id fast-path lookup failed: {exc}")
+        return []
+    out = []
+    for row in rows or []:
+        skill = dict(row)
+        skill["_match_score"] = 1.0
+        skill["_similarity"] = 1.0
+        out.append(skill)
+    return out
+
+
+async def find_relevant_skills(task_text: str, limit: int = 5) -> list[dict]:
+    """Find skills matching task via vector search, ranked by similarity + success rate.
+
+    Workflow tasks (titles containing ``[X.Y]`` step IDs) take a deterministic
+    fast-path — direct name lookup wins over vector drift to sibling steps.
+    """
+    try:
+        # Step-ID fast path for workflow tasks. Skips vector search entirely
+        # when an exact step skill exists; otherwise falls through.
+        fast = await _step_id_fast_path(task_text)
+        if fast:
+            return fast[:limit]
+
         vector_matches = await _vector_search_skills(task_text, top_k=limit * 2)
         if not vector_matches:
             return []

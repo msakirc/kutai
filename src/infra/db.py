@@ -313,6 +313,7 @@ async def init_db():
             title TEXT NOT NULL,
             description TEXT,
             agent_type TEXT DEFAULT 'executor',
+            runner TEXT NOT NULL DEFAULT 'react',
             status TEXT DEFAULT 'pending',
             tier TEXT DEFAULT 'auto',
             priority INTEGER DEFAULT 5,
@@ -1055,6 +1056,34 @@ async def init_db():
         except Exception as e:
             logger.debug(f"kind column migration skipped: {e}")
 
+    # Migration: add runner column for orchestrator lane dispatch
+    # (Phase D — runtime extraction, 2026-05-05). Three lanes:
+    #   'mechanical' — salako sub-tasks (no LLM)
+    #   'direct'     — single-call OVERHEAD (graders, structured_emit, classifier)
+    #   'react'      — multi-call ReAct loop with tools (default)
+    # Backfill matches what the orchestrator's lane decision derives today:
+    # mechanical wins if agent_type='mechanical'; else 'direct' for overhead
+    # kind; else 'react'. After D.3 the orchestrator dispatches by runner
+    # column directly instead of inferring from agent_type/kind.
+    if "runner" not in columns:
+        try:
+            await db.execute(
+                "ALTER TABLE tasks ADD COLUMN runner TEXT NOT NULL DEFAULT 'react'"
+            )
+            await db.execute("""
+                UPDATE tasks
+                SET runner = CASE
+                    WHEN agent_type = 'mechanical' THEN 'mechanical'
+                    WHEN kind = 'overhead' THEN 'direct'
+                    ELSE 'react'
+                END
+                WHERE runner IS NULL OR runner = 'react'
+            """)
+            await db.commit()
+            logger.info("Added runner column to tasks table + backfilled")
+        except Exception as e:
+            logger.debug(f"runner column migration skipped: {e}")
+
     # ── Performance indexes on common query patterns ──
     _indexes = [
         ("idx_tasks_status", "tasks", "status"),
@@ -1231,7 +1260,7 @@ async def find_duplicate_task(task_hash: str) -> dict | None:
 async def add_task(title, description, mission_id=None, parent_task_id=None,
                    agent_type="executor", tier="auto", priority=5,
                    requires_approval=False, depends_on=None, context=None,
-                   kind="main_work"):
+                   kind="main_work", runner=None):
     """Atomic dedup + insert.
 
     Uses an isolated connection (connect_aux) for the BEGIN/COMMIT
@@ -1242,6 +1271,18 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
     ("cannot rollback - no transaction is active").
     """
     task_hash = compute_task_hash(title, description, agent_type, mission_id, parent_task_id)
+
+    # Phase D — orchestrator dispatches by ``runner``. Producers can pass it
+    # explicitly; otherwise derive from agent_type/kind matching the
+    # backfill rule applied at migration time so behaviour matches for
+    # legacy callers.
+    if runner is None:
+        if agent_type == "mechanical":
+            runner = "mechanical"
+        elif kind == "overhead":
+            runner = "direct"
+        else:
+            runner = "react"
 
     async with connect_aux(DB_PATH, _label="add_task") as db:
         db.row_factory = aiosqlite.Row
@@ -1299,12 +1340,12 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
                 """INSERT INTO tasks
                    (mission_id, parent_task_id, title, description, agent_type,
                     tier, priority, requires_approval, depends_on, context,
-                    task_hash, kind)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    task_hash, kind, runner)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (mission_id, parent_task_id, title, description, agent_type,
                  tier, priority, requires_approval,
                  json.dumps(depends_on or []), json.dumps(context or {}),
-                 task_hash, kind)
+                 task_hash, kind, runner)
             )
             row_id = cursor.lastrowid
             if db._conn.in_transaction:
@@ -1777,17 +1818,25 @@ async def add_subtasks_atomically(
                     created_ids.append(-1)
                     continue
 
+                # Phase D — orchestrator dispatches by runner. Producers
+                # may pass it explicitly via st["runner"]; otherwise derive
+                # from agent_type (mechanical lane is the only special-case
+                # — sub-tasks default to react).
+                runner = st.get("runner") or (
+                    "mechanical" if agent_type == "mechanical" else "react"
+                )
+
                 cursor = await db.execute(
                     """INSERT INTO tasks
                        (mission_id, parent_task_id, title, description, agent_type,
                         tier, priority, requires_approval, depends_on, context,
-                        task_hash)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
+                        task_hash, runner)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)""",
                     (mission_id, parent_task_id, title, description, agent_type,
                      st.get("tier", "auto"), st.get("priority", 5),
                      json.dumps(st.get("depends_on", [])),
                      json.dumps(st.get("context", {})),
-                     task_hash)
+                     task_hash, runner)
                 )
                 created_ids.append(cursor.lastrowid)
 
@@ -1870,17 +1919,23 @@ async def insert_tasks_atomically(
                     created_ids.append(-1)
                     continue
 
+                # Phase D — orchestrator dispatches by runner. Producer
+                # may pass it explicitly; otherwise derive from agent_type.
+                runner = t.get("runner") or (
+                    "mechanical" if agent_type == "mechanical" else "react"
+                )
+
                 cursor = await db.execute(
                     """INSERT INTO tasks
                        (mission_id, parent_task_id, title, description, agent_type,
                         tier, priority, requires_approval, depends_on, context,
-                        task_hash)
-                       VALUES (?, NULL, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
+                        task_hash, runner)
+                       VALUES (?, NULL, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)""",
                     (mission_id, title, description, agent_type,
                      t.get("tier", "auto"), t.get("priority", 5),
                      json.dumps(t.get("depends_on", [])),
                      json.dumps(t.get("context", {})),
-                     task_hash)
+                     task_hash, runner)
                 )
                 created_ids.append(cursor.lastrowid)
 

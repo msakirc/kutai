@@ -191,10 +191,17 @@ def expand_steps_to_tasks(
             if "payload" in step:
                 context["payload"] = step["payload"]
 
+        # Phase D — orchestrator dispatches by task.runner.
+        # Mechanical steps run salako (no LLM); everything else is a
+        # ReAct-loop agent. Workflow JSON does not currently emit
+        # single-call OVERHEAD steps, so 'direct' is unused here.
+        _runner = "mechanical" if context.get("executor") == "mechanical" else "react"
+
         task = {
             "title": f"[{step_id}] {step['name']}",
             "description": step.get("instruction", ""),
             "agent_type": map_agent_type(agent_name),
+            "runner": _runner,
             "mission_id": mission_id,
             "depends_on_steps": list(step.get("depends_on", [])),
             "context": context,

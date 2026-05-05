@@ -119,6 +119,10 @@ def _request_kwargs_to_spec(category: "CallCategory", **kwargs) -> dict:
         "description": description,
         "agent_type": agent_type or kind,
         "kind": kind,
+        # Phase D — single-call dispatcher.request → Beckman.enqueue path
+        # is always a direct lane (no ReAct loop, no tools). Orchestrator
+        # pump dispatches by task.runner.
+        "runner": "direct",
         "priority": priority,
         "context": {"llm_call": llm_call},
     }

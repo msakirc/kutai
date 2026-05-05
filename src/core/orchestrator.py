@@ -157,7 +157,11 @@ class Orchestrator:
                     "_skipped": True,
                 }
 
-            is_mech = (task.get("executor") == "mechanical"
+            # Phase D — orchestrator dispatches by task.runner. Legacy
+            # rows (pre-D backfill) and ad-hoc context shapes still
+            # checked as fallback so we don't regress old missions.
+            is_mech = (task.get("runner") == "mechanical"
+                       or task.get("executor") == "mechanical"
                        or ctx.get("executor") == "mechanical"
                        or agent_type == "mechanical")
             if is_mech:
@@ -334,7 +338,8 @@ class Orchestrator:
         # the needs_clarification result through result_router, which would
         # spawn another RequestClarification → infinite clarify tasks. Skip.
         if isinstance(result, dict) and result.get("status") == "needs_clarification" \
-                and (task.get("executor") == "mechanical"
+                and (task.get("runner") == "mechanical"
+                     or task.get("executor") == "mechanical"
                      or (parse_context(task) or {}).get("executor") == "mechanical"
                      or agent_type == "mechanical"):
             logger.info(

@@ -14,11 +14,13 @@ import pytest
 from src.workflows.engine.loader import load_workflow
 
 
-# step_id -> (path fragments expected in produces, expected post_hooks)
+# step_id -> (path fragments expected somewhere in produces, expected post_hooks)
 PHASE7_WIRED = {
     "7.2":  ([".pre-commit-config.yaml"],            ["verify_artifacts"]),
     "7.3":  (["backend/.env.example"],               ["verify_artifacts"]),
+    "7.4":  (["migrations/"],                        ["verify_artifacts"]),
     "7.5":  (["frontend/package.json"],              ["verify_artifacts"]),
+    "7.6":  (["backend/", "frontend/"],              ["verify_artifacts"]),
     "7.7":  (["Dockerfile", "docker-compose.yml"],   ["verify_artifacts"]),
     "7.8":  ([".github/workflows/ci.yml"],           ["verify_artifacts"]),
     "7.9":  (["frontend/src/styles/tokens.css"],     ["verify_artifacts", "code_review"]),
@@ -26,8 +28,9 @@ PHASE7_WIRED = {
     "7.11": (["frontend/src/components/ui/"],        ["verify_artifacts", "code_review"]),
 }
 
-# Skipped intentionally: too stack-variant for a single canonical path.
-PHASE7_DEFERRED = {"7.4", "7.6"}
+# Phase-7 wiring complete (was 8 of 10; 7.4/7.6 moved to PHASE7_WIRED via
+# any_of + glob support in salako.verify_artifacts).
+PHASE7_DEFERRED: set[str] = set()
 
 
 def _step(step_id: str) -> dict:
@@ -37,6 +40,21 @@ def _step(step_id: str) -> dict:
     return s
 
 
+def _flatten_produces(produces) -> list[str]:
+    """Collect every string anywhere in produces (top-level or nested any_of
+    list). Lets the fragment matcher look inside any_of alternatives without
+    knowing the entry's shape up front."""
+    out: list[str] = []
+    for entry in produces or []:
+        if isinstance(entry, str):
+            out.append(entry)
+        elif isinstance(entry, list):
+            for alt in entry:
+                if isinstance(alt, str):
+                    out.append(alt)
+    return out
+
+
 @pytest.mark.parametrize("step_id,fragments,hooks", [
     (sid, frags, hks) for sid, (frags, hks) in PHASE7_WIRED.items()
 ])
@@ -44,8 +62,9 @@ def test_phase7_step_declares_produces_and_post_hooks(step_id, fragments, hooks)
     step = _step(step_id)
     produces = step.get("produces") or []
     assert produces, f"{step_id} missing produces"
+    flat = _flatten_produces(produces)
     for frag in fragments:
-        assert any(frag in p for p in produces), (
+        assert any(frag in p for p in flat), (
             f"{step_id} produces {produces} missing fragment {frag!r}"
         )
     assert step.get("post_hooks") == hooks, (
@@ -53,14 +72,9 @@ def test_phase7_step_declares_produces_and_post_hooks(step_id, fragments, hooks)
     )
 
 
-@pytest.mark.parametrize("step_id", sorted(PHASE7_DEFERRED))
-def test_phase7_deferred_steps_have_no_produces(step_id):
-    """Stack-variant scaffolds left unwired by design — tracked here so
-    follow-up work that wires them can drop the entry from PHASE7_DEFERRED."""
-    step = _step(step_id)
-    assert "produces" not in step, (
-        f"{step_id} now has produces — move it from PHASE7_DEFERRED to PHASE7_WIRED"
-    )
+def test_phase7_deferred_set_empty():
+    """All Phase-7 candidates from the handoff are now wired."""
+    assert PHASE7_DEFERRED == set()
 
 
 def test_launch_go_no_go_gates_on_approved():

@@ -11,6 +11,7 @@ this" against the filesystem.
 from __future__ import annotations
 
 import asyncio
+import glob as _glob_mod
 import hashlib
 import json
 import os
@@ -46,6 +47,33 @@ def _resolve_under(workspace_root: str, rel_path: str) -> str | None:
     if not (joined_real == root_real or joined_real.startswith(root_real + os.sep)):
         return None
     return joined_real
+
+
+def _is_glob(p: str) -> bool:
+    return any(c in p for c in "*?[")
+
+
+def _glob_under(workspace_root: str, pattern: str) -> list[str]:
+    """Expand glob pattern under workspace_root. Returns absolute file paths.
+
+    Stack-variant scaffolds (7.4 db, 7.6 test infra) declare patterns like
+    ``migrations/**/*`` rather than canonical paths, so the same step can
+    verify alembic / prisma / drizzle output without per-stack branches.
+    Refuses absolute patterns and excludes directories + traversal escapes.
+    """
+    if not isinstance(pattern, str) or not pattern or os.path.isabs(pattern):
+        return []
+    full_pattern = os.path.join(workspace_root, pattern)
+    root_real = os.path.realpath(workspace_root)
+    out: list[str] = []
+    for hit in _glob_mod.glob(full_pattern, recursive=True):
+        if not os.path.isfile(hit):
+            continue
+        hit_real = os.path.realpath(hit)
+        if not (hit_real == root_real or hit_real.startswith(root_real + os.sep)):
+            continue
+        out.append(hit_real)
+    return out
 
 
 async def _compile_check_one(abs_path: str) -> str | None:
@@ -143,33 +171,85 @@ async def verify_artifacts(
     missing: list[str] = []
     failed: list[dict[str, str]] = []
 
-    for rel in paths:
-        abs_path = _resolve_under(workspace_path, rel)
-        if abs_path is None:
-            failed.append({"path": rel, "reason": "path rejected (absolute or traversal)"})
-            continue
-        if not os.path.isfile(abs_path):
-            missing.append(rel)
-            continue
+    async def _check_file(display: str, abs_path: str) -> bool:
+        """Verify one resolved file. Appends to verified/failed. Returns ok."""
         try:
             size = os.path.getsize(abs_path)
         except OSError as e:
-            failed.append({"path": rel, "reason": f"stat failed: {e}"})
-            continue
+            failed.append({"path": display, "reason": f"stat failed: {e}"})
+            return False
         if size < min_bytes:
-            failed.append({"path": rel, "reason": f"size {size} < min_bytes {min_bytes}"})
-            continue
+            failed.append({"path": display, "reason": f"size {size} < min_bytes {min_bytes}"})
+            return False
         if compile_check:
             err = await _compile_check_one(abs_path)
             if err is not None:
-                failed.append({"path": rel, "reason": f"compile check: {err}"})
-                continue
+                failed.append({"path": display, "reason": f"compile check: {err}"})
+                return False
         try:
             sha = _sha256_of(abs_path)
         except OSError as e:
-            failed.append({"path": rel, "reason": f"hash failed: {e}"})
+            failed.append({"path": display, "reason": f"hash failed: {e}"})
+            return False
+        verified.append({"path": display, "bytes": size, "sha256": sha})
+        return True
+
+    async def _verify_string(rel: str) -> None:
+        """Single string entry: glob expansion if pattern, else literal."""
+        if _is_glob(rel):
+            matches = _glob_under(workspace_path, rel)
+            if not matches:
+                missing.append(rel)
+                return
+            for abs_path in matches:
+                display = f"{rel} -> {os.path.relpath(abs_path, workspace_path)}"
+                await _check_file(display, abs_path)
+            return
+        abs_path = _resolve_under(workspace_path, rel)
+        if abs_path is None:
+            failed.append({"path": rel, "reason": "path rejected (absolute or traversal)"})
+            return
+        if not os.path.isfile(abs_path):
+            missing.append(rel)
+            return
+        await _check_file(rel, abs_path)
+
+    for entry in paths:
+        # any_of semantic: nested list satisfies the slot if ANY alternative
+        # has at least one file. Used by stack-variant scaffolds where the
+        # exact path depends on framework choice (pytest conftest vs jest
+        # config vs vitest config). First alternative that matches wins.
+        if isinstance(entry, list):
+            satisfied = False
+            tried: list[str] = []
+            for alt in entry:
+                if not isinstance(alt, str) or not alt:
+                    continue
+                tried.append(alt)
+                if _is_glob(alt):
+                    matches = _glob_under(workspace_path, alt)
+                    if not matches:
+                        continue
+                    for abs_path in matches:
+                        display = f"any_of[{alt}] -> {os.path.relpath(abs_path, workspace_path)}"
+                        await _check_file(display, abs_path)
+                    satisfied = True
+                    break
+                abs_path = _resolve_under(workspace_path, alt)
+                if abs_path is None:
+                    continue  # rejected silently — try next alternative
+                if not os.path.isfile(abs_path):
+                    continue
+                await _check_file(f"any_of[{alt}]", abs_path)
+                satisfied = True
+                break
+            if not satisfied:
+                missing.append(f"any_of[{', '.join(tried)}]")
             continue
-        verified.append({"path": rel, "bytes": size, "sha256": sha})
+        if isinstance(entry, str):
+            await _verify_string(entry)
+            continue
+        failed.append({"path": str(entry), "reason": f"unsupported path entry type {type(entry).__name__}"})
 
     all_ok = not missing and not failed
     return {

@@ -4354,6 +4354,13 @@
         "migration_system",
         "seed_script"
       ],
+      "produces": [
+        ["migrations/**/*.py", "prisma/schema.prisma", "drizzle.config.ts", "drizzle.config.js"],
+        ["scripts/seed.py", "scripts/seed.ts", "prisma/seed.ts", "backend/seed.py"]
+      ],
+      "post_hooks": [
+        "verify_artifacts"
+      ],
       "context": {
         "estimated_output_tokens": 6000
       },
@@ -4472,6 +4479,13 @@
       "output_artifacts": [
         "backend_test_config",
         "frontend_test_config"
+      ],
+      "produces": [
+        ["backend/tests/conftest.py", "backend/pytest.ini", "backend/pyproject.toml", "backend/jest.config.js", "backend/jest.config.ts", "backend/vitest.config.js", "backend/vitest.config.ts"],
+        ["frontend/vitest.config.ts", "frontend/vitest.config.js", "frontend/jest.config.ts", "frontend/jest.config.js"]
+      ],
+      "post_hooks": [
+        "verify_artifacts"
       ],
       "context": {
         "estimated_output_tokens": 5000

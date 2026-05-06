@@ -34,6 +34,18 @@ def map_agent_type(agent_name: str) -> str:
     return AGENT_MAP.get(agent_name, agent_name)
 
 
+def _is_valid_produces_entry(entry) -> bool:
+    """A produces slot is either a non-empty string (literal/glob) or a
+    non-empty list of non-empty strings (any_of alternatives)."""
+    if isinstance(entry, str):
+        return bool(entry.strip())
+    if isinstance(entry, list):
+        return bool(entry) and all(
+            isinstance(x, str) and x.strip() for x in entry
+        )
+    return False
+
+
 def filter_steps_for_context(
     steps: list[dict],
     has_existing_codebase: bool = False,
@@ -143,9 +155,14 @@ def expand_steps_to_tasks(
         # Files this step is supposed to write under the mission workspace.
         # Consumed by the verify_artifacts post-hook (mechanical) which checks
         # each path exists, is non-empty, and (for known extensions) parses.
+        # Entries may be:
+        #   - string: literal path or glob (``*``/``?``/``[]``)
+        #   - list of strings: ``any_of`` slot — at least one must match
         produces = step.get("produces")
         if produces and isinstance(produces, list):
-            context["produces"] = [p for p in produces if isinstance(p, str) and p.strip()]
+            context["produces"] = [
+                p for p in produces if _is_valid_produces_entry(p)
+            ]
 
         # Post-hooks declared on the step. Combined with the default ["grade"]
         # (or [] when policy excludes it) by determine_posthooks.
@@ -330,17 +347,27 @@ def expand_template(
         # Per-feature path interpolation: a template step may declare
         # produces with placeholders like "{feature_id}/x.py". Substitute
         # the params dict (feature_id, feature_name, etc.) so each feature
-        # instance gets its own concrete path list.
+        # instance gets its own concrete path list. Preserves the any_of
+        # nested-list shape — substitute inside each alternative.
         if "produces" in tpl_step and isinstance(tpl_step["produces"], list):
             substituted = []
             for p in tpl_step["produces"]:
-                if not isinstance(p, str):
-                    continue
-                try:
-                    substituted.append(p.format(**(params or {})))
-                except (KeyError, IndexError):
-                    # Missing placeholder — keep raw, validator will catch.
-                    substituted.append(p)
+                if isinstance(p, str):
+                    try:
+                        substituted.append(p.format(**(params or {})))
+                    except (KeyError, IndexError):
+                        substituted.append(p)
+                elif isinstance(p, list):
+                    sub_alts: list[str] = []
+                    for alt in p:
+                        if not isinstance(alt, str):
+                            continue
+                        try:
+                            sub_alts.append(alt.format(**(params or {})))
+                        except (KeyError, IndexError):
+                            sub_alts.append(alt)
+                    if sub_alts:
+                        substituted.append(sub_alts)
             step["produces"] = substituted
 
         if "post_hooks" in tpl_step and isinstance(tpl_step["post_hooks"], list):

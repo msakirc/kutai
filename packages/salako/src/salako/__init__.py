@@ -60,6 +60,31 @@ async def run(task: dict) -> Action:
             return Action(status="completed", result=commit_info or {})
         return Action(status="completed", result=commit_info or {})
 
+    if action == "check_grounding":
+        # Layer 2 of G: declarative match between source task's tool_calls
+        # audit log and the workflow step's declared `produces` paths.
+        # Pass = every produces slot has a matching successful write call.
+        # Fail = at least one produces slot was never written; source
+        # retries with the missing paths in the feedback message.
+        from salako.check_grounding import check_grounding as _ground
+        try:
+            res = _ground(
+                tool_calls=payload.get("tool_calls") or [],
+                produces=payload.get("produces") or [],
+            )
+            if not res.get("passed"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"check_grounding: missing={res.get('missing')} "
+                        f"written={res.get('written')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "verify_artifacts":
         from salako.verify_artifacts import verify_artifacts as _verify
         try:

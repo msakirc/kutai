@@ -73,4 +73,5 @@ def determine_posthooks(
 _KNOWN_EXTRA_KINDS: frozenset[str] = frozenset({
     "verify_artifacts",
     "code_review",
+    "grounding",
 })

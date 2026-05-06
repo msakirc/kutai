@@ -140,7 +140,9 @@ def test_expanded_to_tasks_carries_produces_and_post_hooks_in_ctx():
         ctx = json.loads(ctx)
     assert "produces" in ctx
     assert "F-001" in ctx["produces"][0]
-    assert ctx.get("post_hooks") == ["verify_artifacts", "code_review"]
+    # Auto-wire prepends "grounding" because the step declares produces;
+    # see expander.expand_steps_to_tasks (Layer 2 of G).
+    assert ctx.get("post_hooks") == ["grounding", "verify_artifacts", "code_review"]
 
 
 def test_design_only_steps_unchanged():

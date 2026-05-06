@@ -732,6 +732,25 @@ def _posthook_agent_and_payload(
                 "compile_check": True,
             },
         })
+    if a.kind == "grounding":
+        # Mechanical post-hook: salako matches the source task's tool_calls
+        # audit log against declared ``produces`` paths. Pass = at least one
+        # successful write_file call per produces slot. Fail = the agent
+        # narrated completion without ever calling write_file. Floor for
+        # the L1 sub-iter grounding guard — catches anything that escaped
+        # in-loop (suppress_guards path, exhausted sub-iter budget).
+        produces = list(source_ctx.get("produces") or [])
+        tool_calls = list(source_ctx.get("tool_calls") or [])
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "grounding",
+            "executor": "mechanical",
+            "payload": {
+                "action": "check_grounding",
+                "produces": produces,
+                "tool_calls": tool_calls,
+            },
+        })
     if a.kind == "code_review":
         # LLM post-hook: a code-review-flavoured reviewer judges the source's
         # emitted code. Its verdict (PASS/FAIL) drives the same retry-with-
@@ -745,6 +764,123 @@ def _posthook_agent_and_payload(
             "review_excluded_models": list(source_ctx.get("review_excluded_models") or []),
         })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
+
+
+async def _apply_grounding_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Apply a grounding post-hook verdict.
+
+    Layer 2 of G: catches narration-as-completion that escaped the L1
+    sub-iter guard (suppress_guards path, exhausted sub-iter budget).
+
+    Pass: drop ``grounding`` from pending; if no other post-hooks remain,
+    mark source completed.
+    Fail: retry source with the ungrounded paths in ``_schema_error`` so
+    the agent's next prompt sees what was never written. Honors worker
+    attempt cap + bonus-progress budget the same way verify_artifacts
+    does. Does NOT bump model exclusions — narration is an agent-behaviour
+    failure, not a model-quality verdict.
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    if verdict.passed:
+        new_pending = [k for k in pending if k != "grounding"]
+        ctx["_pending_posthooks"] = new_pending
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, verdict.raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", verdict.raw or {})
+            except Exception:
+                pass
+        else:
+            await update_task(
+                verdict.source_task_id, context=_json.dumps(ctx),
+            )
+        return
+
+    raw = verdict.raw or {}
+    missing = raw.get("missing") or []
+    written = raw.get("written") or []
+    error_str = (
+        f"check_grounding: {len(missing)} produces slot(s) ungrounded. "
+        f"missing={missing[:8]} written={written[:8]}"
+    )[:500]
+
+    attempts = int(source.get("worker_attempts") or 0) + 1
+    max_attempts = int(source.get("max_worker_attempts") or 15)
+    ctx["_pending_posthooks"] = []
+
+    feedback = (
+        "You declared this task done but never called write_file (or "
+        "edit_file/patch_file) for the path(s) you were supposed to "
+        f"produce. ungrounded={missing}; you wrote={written}. "
+        "On retry: actually call the write_file tool for each declared "
+        "path before final_answer. Do NOT just narrate the file contents."
+    )
+
+    if attempts >= max_attempts:
+        from general_beckman.retry import _MAX_BONUS
+        bonus_count = int(ctx.get("_bonus_count", 0))
+        progress = _parse_progress(source)
+        can_bonus = (
+            progress is not None
+            and progress >= 0.5
+            and bonus_count < _MAX_BONUS
+        )
+        if can_bonus:
+            ctx["_bonus_count"] = bonus_count + 1
+            max_attempts += 1
+            ctx["_schema_error"] = feedback
+            prev_output = source.get("result") or ""
+            if isinstance(prev_output, str) and prev_output.strip():
+                ctx["_prev_output"] = prev_output[:6000]
+            _stamp_retry_feedback(ctx, attempts)
+            await update_task(
+                verdict.source_task_id,
+                status="pending",
+                worker_attempts=attempts,
+                max_worker_attempts=max_attempts,
+                error=error_str,
+                error_category="quality",
+                next_retry_at=None,
+                context=_json.dumps(ctx),
+            )
+            return
+        await _dlq_write(
+            source, error=error_str or "grounding gate exhausted",
+            category="quality", attempts=attempts,
+        )
+        return
+
+    ctx["_schema_error"] = feedback
+    prev_output = source.get("result") or ""
+    if isinstance(prev_output, str) and prev_output.strip():
+        ctx["_prev_output"] = prev_output[:6000]
+    _stamp_retry_feedback(ctx, attempts)
+    await update_task(
+        verdict.source_task_id,
+        status="pending",
+        worker_attempts=attempts,
+        error=error_str,
+        error_category="quality",
+        next_retry_at=None,
+        context=_json.dumps(ctx),
+    )
 
 
 async def _apply_verify_artifacts_verdict(
@@ -986,6 +1122,8 @@ def _posthook_title(a: RequestPostHook, source: dict) -> str:
         return f"Verify artifacts for #{a.source_task_id}"
     if a.kind == "code_review":
         return f"Code review for #{a.source_task_id}"
+    if a.kind == "grounding":
+        return f"Grounding check for #{a.source_task_id}"
     return f"Posthook {a.kind} for #{a.source_task_id}"
 
 
@@ -1134,6 +1272,12 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
 
     if a.kind == "verify_artifacts":
         await _apply_verify_artifacts_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    if a.kind == "grounding":
+        await _apply_grounding_verdict(
             source=source, ctx=ctx, pending=pending, verdict=a,
         )
         return

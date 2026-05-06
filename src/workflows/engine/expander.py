@@ -170,6 +170,16 @@ def expand_steps_to_tasks(
         if post_hooks and isinstance(post_hooks, list):
             context["post_hooks"] = [k for k in post_hooks if isinstance(k, str) and k.strip()]
 
+        # Auto-wire grounding (L2 of G): any step with declared produces
+        # gets a grounding post-hook prepended (runs before verify_artifacts
+        # so a "never wrote anything" agent fails on the cheaper check
+        # before salako bothers walking the workspace). Idempotent — skipped
+        # when explicitly listed already.
+        if context.get("produces"):
+            existing = list(context.get("post_hooks") or [])
+            if "grounding" not in existing:
+                context["post_hooks"] = ["grounding"] + existing
+
         skip_when = step.get("skip_when")
         if skip_when:
             if isinstance(skip_when, list):

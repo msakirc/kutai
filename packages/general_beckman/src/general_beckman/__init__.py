@@ -508,8 +508,17 @@ async def on_task_finished(task_id: int, result: dict) -> None:
         or ""
     )
     _status = (result or {}).get("status") or "completed"
+    # Persist tool_calls audit log into ctx so the grounding post-hook can
+    # read it without going back to the runtime checkpoint. on_task_finished
+    # is the join point: coulson returns ``tool_calls`` in result; ctx is
+    # the surface every later step (apply, _posthook_agent_and_payload)
+    # already reads.
+    _ctx_changed = False
+    _tool_calls = (result or {}).get("tool_calls")
+    if isinstance(_tool_calls, list) and task_ctx.get("tool_calls") != _tool_calls:
+        task_ctx["tool_calls"] = _tool_calls
+        _ctx_changed = True
     if _model:
-        _ctx_changed = False
         if task_ctx.get("generating_model") != _model:
             task_ctx["generating_model"] = _model
             _ctx_changed = True
@@ -529,16 +538,16 @@ async def on_task_finished(task_id: int, result: dict) -> None:
                     model=_model,
                     failed_count=len(_failed),
                 )
-        if _ctx_changed:
-            try:
-                from src.infra.db import update_task as _ut
-                import json as _json
-                await _ut(task_id, context=_json.dumps(task_ctx))
-                # Refresh local task dict so downstream route_result
-                # / apply_actions see the persisted state.
-                task["context"] = _json.dumps(task_ctx)
-            except Exception as e:
-                log.warning("failed_model persist failed", task_id=task_id, error=str(e))
+    if _ctx_changed:
+        try:
+            from src.infra.db import update_task as _ut
+            import json as _json
+            await _ut(task_id, context=_json.dumps(task_ctx))
+            # Refresh local task dict so downstream route_result
+            # / apply_actions see the persisted state.
+            task["context"] = _json.dumps(task_ctx)
+        except Exception as e:
+            log.warning("ctx persist failed", task_id=task_id, error=str(e))
 
     # Workflow-step post-hook runs synchronously before routing — stores
     # artifacts and may flip status (degenerate output, schema validation,

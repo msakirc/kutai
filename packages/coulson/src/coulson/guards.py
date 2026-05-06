@@ -6,6 +6,8 @@ Guards fire *inside* a single outer iteration (sub-iteration guards):
   - blocked_clarification: agent tried to clarify but it's suppressed
   - hallucination: agent answered without using any tools on an action task
   - search_required: task needs web search but agent answered without it
+  - grounding: agent answered without writing files it declared in
+                workflow ``produces``
 
 Public API
 ----------
@@ -15,7 +17,8 @@ MAX_FORMAT_CORRECTIONS — budget for JSON format corrections within one iter
 DATA_FETCH_TOOLS  — frozenset of tools that satisfy the data-fetch requirement
 is_action_task(task)   — heuristic: does the task need real tool execution?
 get_search_depth(task) — extract classification.search_depth from task.context
-check_sub_iter_guards(...)  — run all three guards, return first match or None
+check_sub_iter_guards(...)  — run all four guards, return first match or None
+check_grounding_sub_iter(...) — declarative produces vs tool_calls check
 """
 from __future__ import annotations
 
@@ -24,6 +27,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from src.tools import TOOL_REGISTRY
+
+from .grounding import (
+    build_grounding_message,
+    extract_written_paths,
+    unmatched_produces,
+)
 
 if TYPE_CHECKING:
     pass  # profile is duck-typed; no import needed
@@ -145,6 +154,7 @@ def check_sub_iter_guards(
     task: dict,
     search_depth: str,
     suppress_guards: bool,
+    tool_calls: list[dict] | None = None,
 ) -> GuardCorrection | None:
     """Check Category-A guards that should not burn an outer iteration.
 
@@ -222,6 +232,21 @@ def check_sub_iter_guards(
             ),
         )
 
+    # 2b. Grounding guard (workflow steps with declared produces).
+    # Fires when the agent emits final_answer but never called write_file
+    # for any of the paths it was supposed to produce. Path-aware
+    # complement to the heuristic hallucination guard above. Skipped if
+    # the runtime didn't pass a tool_calls log (legacy callers).
+    if tool_calls is not None:
+        grounding_correction = check_grounding_sub_iter(
+            parsed=parsed,
+            task=task,
+            tool_calls=tool_calls,
+            suppress_guards=False,  # already gated by caller
+        )
+        if grounding_correction is not None:
+            return grounding_correction
+
     # 3. Search-required guard
     _WEB_TOOLS = {"web_search", "smart_search", "api_call", "http_request"}
     _has_web_search = (
@@ -258,3 +283,65 @@ def check_sub_iter_guards(
         )
 
     return None
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Grounding guard (declarative; uses tool_calls + workflow produces)
+# ────────────────────────────────────────────────────────────────────────────
+
+def _produces_from_task(task: dict) -> list:
+    """Pull workflow ``produces`` out of task.context, decoding json string
+    form if needed. Returns [] when missing or malformed."""
+    ctx = task.get("context") or {}
+    if isinstance(ctx, str):
+        try:
+            ctx = json.loads(ctx)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    produces = ctx.get("produces")
+    return produces if isinstance(produces, list) else []
+
+
+def check_grounding_sub_iter(
+    parsed: dict,
+    *,
+    task: dict,
+    tool_calls: list[dict],
+    suppress_guards: bool = False,
+) -> GuardCorrection | None:
+    """Path-aware grounding guard.
+
+    Fires when ALL of:
+      - guards not suppressed
+      - parsed action is final_answer
+      - workflow step declares a non-empty ``produces`` list in context
+      - none of the produces entries match a successful write-tool call
+        in ``tool_calls``
+
+    Returns a ``GuardCorrection`` with a path-specific retry message that
+    spells out which paths are missing and gives a concrete write_file
+    example. Caller honors MAX_SUB_CORRECTIONS budget like the existing
+    sub-iter guards.
+
+    Mechanical agents and zero-produces tasks are no-ops by virtue of
+    the produces empty-check.
+    """
+    if suppress_guards:
+        return None
+    if parsed.get("action", "final_answer") != "final_answer":
+        return None
+    produces = _produces_from_task(task)
+    if not produces:
+        return None
+    written = extract_written_paths(tool_calls or [])
+    missing = unmatched_produces(produces, written)
+    if not missing:
+        return None
+    return GuardCorrection(
+        guard_name="grounding",
+        message=build_grounding_message(
+            missing=missing,
+            written=written,
+            task_title=task.get("title", ""),
+        ),
+    )

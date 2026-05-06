@@ -722,6 +722,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 task=task,
                 search_depth=_search_depth,
                 suppress_guards=_suppress_guards,
+                tool_calls=tool_calls,
             )
             if correction and sub_corrections < MAX_SUB_CORRECTIONS:
                 guard_burns += 1

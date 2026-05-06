@@ -467,41 +467,49 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
         except Exception:
             pass
 
-        # Skill extraction — uses verdict fields when available, mechanical fallback otherwise
-        iterations = ctx.get("iterations", 1) or 1
-        tools_used = ctx.get("tools_used_names", [])
-        if iterations >= 2 and tools_used:
-            try:
-                from src.memory.skills import add_skill
-                agent_type = task.get("agent_type", "executor")
-                title = task.get("title", "")
-
-                skill_name = f"auto:{agent_type}:{title[:40]}"
-
-                if verdict.situation:
-                    # Rich extraction from grader output
-                    await add_skill(
-                        name=skill_name,
-                        description=verdict.situation,
-                        strategy_summary=verdict.strategy or f"Used {', '.join(tools_used[:5])}",
-                        tools_used=verdict.tools or sorted(tools_used),
-                        avg_iterations=iterations,
-                        source_grade="great",
-                        source_task_id=task_id,
+        # Workflow-step exemplar capture (replaces old grader-prose skill mint).
+        # If the task title carries a [X.Y] step id, store the result + tool
+        # sequence under (workflow, step_id, agent_type). Future runs of the
+        # same step retrieve worked examples directly. Non-workflow tasks no
+        # longer auto-mint skills — those are now seeds-only.
+        try:
+            from src.memory.workflow_exemplars import (
+                extract_step_id, capture_exemplar,
+            )
+            agent_type = task.get("agent_type", "executor")
+            title = task.get("title", "")
+            step_id = extract_step_id(title)
+            if step_id:
+                # Look up workflow name from mission, if present.
+                workflow_name = None
+                mission_id = task.get("mission_id")
+                if mission_id:
+                    try:
+                        from src.infra.db import get_db
+                        db = await get_db()
+                        async with db.execute(
+                            "SELECT workflow FROM missions WHERE id=?",
+                            (mission_id,),
+                        ) as cur:
+                            row = await cur.fetchone()
+                            if row:
+                                workflow_name = row[0]
+                    except Exception:
+                        pass
+                result_text = task.get("result", "") or ""
+                quality = task.get("quality_score") or 1.0
+                if result_text and len(str(result_text).strip()) >= 50:
+                    await capture_exemplar(
+                        workflow=workflow_name,
+                        step_id=step_id,
+                        agent_type=agent_type,
+                        result=str(result_text),
+                        quality_score=float(quality),
+                        task_id=task_id,
+                        mission_id=mission_id,
                     )
-                else:
-                    # Mechanical fallback — still better than nothing
-                    await add_skill(
-                        name=skill_name,
-                        description=f"Task: {title[:100]}. Agent: {agent_type}.",
-                        strategy_summary=f"Used {', '.join(sorted(tools_used)[:5])} in {iterations} iterations",
-                        tools_used=sorted(tools_used),
-                        avg_iterations=iterations,
-                        source_grade="great",
-                        source_task_id=task_id,
-                    )
-            except Exception as e:
-                logger.debug(f"skill extraction failed: {e}")
+        except Exception as e:
+            logger.debug(f"workflow exemplar capture failed: {e}")
 
         # Telegram notification for non-silent tasks
         try:

@@ -883,44 +883,90 @@ async def build_user_context(
             logger.debug(f"Blackboard failed: {exc}")
 
     if "skills" in policy and not _high_retry:
+        # Workflow-step path: if the task title carries a [X.Y] step id,
+        # inject prior worked exemplars (top-N by quality) for the exact
+        # (workflow, step_id, agent_type) key. Bypass vector skill match
+        # entirely for workflow tasks — they got noise from cross-step
+        # similarity in the old path.
         try:
-            from src.memory.skills import (
-                find_relevant_skills, format_skills_for_prompt,
-                get_tools_to_inject, record_injection,
+            from src.memory.workflow_exemplars import (
+                extract_step_id, lookup_exemplars, format_exemplars_for_prompt,
             )
-            task_text = f"{task.get('title', '')} {task.get('description', '')}"
-            budget = budgets.get("skills", 800)
-            relevant_skills = await find_relevant_skills(task_text, limit=3)
-            if relevant_skills:
-                skills_block = format_skills_for_prompt(relevant_skills, budget)
-                if skills_block:
-                    parts.append(skills_block)
+            _step_id = extract_step_id(task.get("title", ""))
+        except Exception:
+            _step_id = None
+        if _step_id:
+            try:
+                _wf_name = ""
+                if mission_id:
+                    try:
+                        from src.infra.db import get_db
+                        _db = await get_db()
+                        async with _db.execute(
+                            "SELECT workflow FROM missions WHERE id=?",
+                            (mission_id,),
+                        ) as _cur:
+                            _row = await _cur.fetchone()
+                            if _row:
+                                _wf_name = _row[0] or ""
+                    except Exception:
+                        pass
+                exemplars = await lookup_exemplars(
+                    workflow=_wf_name,
+                    step_id=_step_id,
+                    agent_type=profile.name,
+                )
+                if exemplars:
+                    block = format_exemplars_for_prompt(
+                        exemplars,
+                        step_id=_step_id,
+                        max_chars=budgets.get("skills", 2400),
+                    )
+                    if block:
+                        parts.append(block)
+                        logger.info(
+                            "Workflow exemplars injected: step=%s agent=%s n=%d",
+                            _step_id, profile.name, len(exemplars),
+                        )
+            except Exception as exc:
+                logger.debug("Workflow exemplar injection failed: %s", exc)
 
-                extra_tools = get_tools_to_inject(relevant_skills)
-                if extra_tools:
-                    # BUG FIX: Do NOT mutate profile.allowed_tools here.
-                    # The original code did ``self.allowed_tools.append(tool)``
-                    # which permanently mutated the class attribute shared
-                    # across all instances and calls. Instead, collect the
-                    # tools and return them — the caller applies them to a
-                    # per-execution mutable copy.
-                    for tool in extra_tools:
-                        if tool not in _injected_skills_tools:
-                            _injected_skills_tools.append(tool)
-                            logger.info("Skill-injected tool (deferred to caller): %s", tool)
+        # Free-text path: vector skill match for non-workflow tasks. Seeds
+        # and any future capability primitives live here. Workflow tasks skip
+        # this path — exemplar lookup above is authoritative for them.
+        if not _step_id:
+            try:
+                from src.memory.skills import (
+                    find_relevant_skills, format_skills_for_prompt,
+                    get_tools_to_inject, record_injection,
+                )
+                task_text = f"{task.get('title', '')} {task.get('description', '')}"
+                budget = budgets.get("skills", 800)
+                relevant_skills = await find_relevant_skills(task_text, limit=3)
+                if relevant_skills:
+                    skills_block = format_skills_for_prompt(relevant_skills, budget)
+                    if skills_block:
+                        parts.append(skills_block)
 
-                skill_names = [s["name"] for s in relevant_skills]
-                await record_injection(skill_names)
-                try:
-                    _ctx = json.loads(task.get("context", "{}"))
-                    _ctx["injected_skills"] = skill_names
-                    task["context"] = json.dumps(_ctx)
-                except Exception:
-                    pass
+                    extra_tools = get_tools_to_inject(relevant_skills)
+                    if extra_tools:
+                        for tool in extra_tools:
+                            if tool not in _injected_skills_tools:
+                                _injected_skills_tools.append(tool)
+                                logger.info("Skill-injected tool (deferred to caller): %s", tool)
 
-                logger.info("Skills injected: %s", skill_names)
-        except Exception as exc:
-            logger.debug("Skill injection failed: %s", exc)
+                    skill_names = [s["name"] for s in relevant_skills]
+                    await record_injection(skill_names)
+                    try:
+                        _ctx = json.loads(task.get("context", "{}"))
+                        _ctx["injected_skills"] = skill_names
+                        task["context"] = json.dumps(_ctx)
+                    except Exception:
+                        pass
+
+                    logger.info("Skills injected: %s", skill_names)
+            except Exception as exc:
+                logger.debug("Skill injection failed: %s", exc)
 
     if "api" in policy:
         try:

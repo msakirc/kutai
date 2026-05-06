@@ -36,8 +36,16 @@ async def save_checkpoint(
     completed_tool_ops: dict[str, str] | None = None,
     format_corrections: int = 0,
     tools_used_names: set[str] | None = None,
+    tool_calls: list[dict] | None = None,
 ) -> None:
-    """Persist agent loop state so execution can resume after a crash."""
+    """Persist agent loop state so execution can resume after a crash.
+
+    ``tool_calls`` is a per-execution audit list (richer than
+    ``tools_used_names`` which is a name-only set). Each entry is
+    ``{name, args, ok}``. Used by the grounding guard to verify the
+    agent actually called write_file (or other declared tools) for the
+    paths it claimed to produce.
+    """
     if task_id == "?":
         return
     try:
@@ -49,6 +57,7 @@ async def save_checkpoint(
             "reqs": dataclasses.asdict(reqs),
             "tools_used": tools_used,
             "tools_used_names": list(tools_used_names or []),
+            "tool_calls": list(tool_calls or []),
             "validation_retried": validation_retried,
             "format_corrections": format_corrections,
             "completed_tool_ops": completed_tool_ops or {},

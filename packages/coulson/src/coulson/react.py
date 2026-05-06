@@ -76,6 +76,72 @@ async def safe_log_conversation_p(profile, task_id, role, content, model, cost):
 logger = get_logger("runtime.react")
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# Tool-call audit helpers
+# ────────────────────────────────────────────────────────────────────────────
+
+# Tokens that mark a tool execution as failed in the recovery message.
+# Mirrors the agent-visible failure detection at the tool_failed checkpoint.
+_TOOL_FAIL_PREFIXES: tuple[str, ...] = ("❌", "\U0001f6ab")  # ❌ 🚫
+
+
+def _tool_output_ok(output: str) -> bool:
+    """Heuristic: did the tool execution succeed?
+
+    Matches the agent-visible failure detection used in the recovery
+    branch — keep this in sync with that block. Used by the tool-call
+    audit log so the grounding guard knows which write_file invocations
+    really landed on disk vs blew up.
+    """
+    if not isinstance(output, str):
+        return False
+    if output.startswith(_TOOL_FAIL_PREFIXES):
+        return False
+    if "command not found" in output:
+        return False
+    if "No such file" in output:
+        return False
+    if "exit code" in output and "exit code 0" not in output:
+        return False
+    return True
+
+
+def _truncate_args(args: dict, max_chars: int = 200) -> dict:
+    """Cap long arg values so checkpoint state stays bounded.
+
+    write_file emits ``content`` strings that can be 50+ KB. The grounding
+    guard only needs path-shaped fields (``path``, ``filepath``, ``file``)
+    which are short. Truncate everything else past ``max_chars`` so a
+    chatty tool log doesn't bloat the checkpoint.
+    """
+    out: dict = {}
+    if not isinstance(args, dict):
+        return out
+    for k, v in args.items():
+        if isinstance(v, str) and len(v) > max_chars:
+            out[k] = v[:max_chars] + f"...[{len(v)} chars]"
+        else:
+            out[k] = v
+    return out
+
+
+def _record_tool_call(
+    tool_calls: list[dict],
+    *,
+    name: str,
+    args: dict,
+    output: str,
+) -> None:
+    """Append a per-execution audit entry. No-op on empty tool name."""
+    if not name:
+        return
+    tool_calls.append({
+        "name": name,
+        "args": _truncate_args(args),
+        "ok": _tool_output_ok(output),
+    })
+
+
 async def run(profile, task: dict, progress_callback: Callable | None = None) -> dict:
     """ReAct loop with requirements-based model selection."""
     _start_time = time.time()
@@ -132,6 +198,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
         used_model = checkpoint.get("used_model", "unknown")
         tools_used = checkpoint.get("tools_used", False)
         tools_used_names: set[str] = set(checkpoint.get("tools_used_names", []))
+        tool_calls: list[dict] = list(checkpoint.get("tool_calls", []))
         _compat_retried = checkpoint.get("validation_retried", False)
         custom_validation_retried = _compat_retried
         task_type_validation_retried = _compat_retried
@@ -203,6 +270,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
         used_model = "unknown"
         tools_used = False
         tools_used_names: set[str] = set()
+        tool_calls: list[dict] = []
         custom_validation_retried = False
         task_type_validation_retried = False
         format_corrections = 0
@@ -712,6 +780,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             custom_validation_retried or task_type_validation_retried,
             completed_tool_ops, format_corrections,
             tools_used_names,
+            tool_calls=tool_calls,
         )
 
         action_type = parsed.get("action", "final_answer")
@@ -830,6 +899,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 "difficulty":       reqs.difficulty,
                 "iterations":       iteration + 1,
                 "tools_used_names": sorted(tools_used_names),
+                "tool_calls":       list(tool_calls),
                 "generating_model": used_model,  # surfaced for post-hook scheduling
             }
 
@@ -870,6 +940,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                         custom_validation_retried or task_type_validation_retried,
                         completed_tool_ops, format_corrections,
                         tools_used_names,
+                        tool_calls=tool_calls,
                     )
                     continue
 
@@ -914,6 +985,8 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                             used_model, reqs, tools_used,
                             custom_validation_retried or task_type_validation_retried,
                             completed_tool_ops, format_corrections,
+                            tools_used_names,
+                            tool_calls=tool_calls,
                         )
                         continue
 
@@ -961,6 +1034,17 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                         )
                     except Exception as exc:
                         tool_output = f"❌ Tool execution error: {exc}"
+
+                    # Tool-call audit: per-execution record for the grounding
+                    # guard. Cache hits are NOT recorded here — the original
+                    # execution that populated the cache already produced an
+                    # entry, persisted via the prior checkpoint.
+                    _record_tool_call(
+                        tool_calls,
+                        name=tool_name,
+                        args=tool_args,
+                        output=tool_output,
+                    )
 
                     # Phase 8.4: Audit log tool execution
                     try:
@@ -1092,6 +1176,8 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 task_id, iteration + 1, messages, total_cost,
                 used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
                 completed_tool_ops, format_corrections,
+                tools_used_names,
+                tool_calls=tool_calls,
             )
             continue
 
@@ -1187,6 +1273,16 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
 
             # Audit, metrics, caching per tool result
             for t_name, t_args, t_output in results:
+                # Tool-call audit (grounding guard). Multi-tool path doesn't
+                # consult the per-op cache, so every result is a fresh
+                # execution that needs recording.
+                _record_tool_call(
+                    tool_calls,
+                    name=t_name,
+                    args=t_args,
+                    output=t_output,
+                )
+
                 # Audit log
                 try:
                     from src.infra.audit import audit, ACTOR_AGENT, ACTION_TOOL_EXEC
@@ -1255,7 +1351,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             messages.append({"role": "assistant", "content": content})
             messages.append({"role": "user", "content": combined})
 
-            await safe_log_conversation_p(profile, 
+            await safe_log_conversation_p(profile,
                 task_id, "tool",
                 f"[multi:{len(results)} tools] {', '.join(n for n, _, _ in results)}",
                 None, 0,
@@ -1264,6 +1360,8 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 task_id, iteration + 1, messages, total_cost,
                 used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
                 completed_tool_ops, format_corrections,
+                tools_used_names,
+                tool_calls=tool_calls,
             )
             continue
 
@@ -1318,6 +1416,8 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 used_model, reqs, tools_used,
                 custom_validation_retried or task_type_validation_retried,
                 completed_tool_ops, format_corrections,
+                tools_used_names,
+                tool_calls=tool_calls,
             )
             continue
 
@@ -1358,6 +1458,8 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             task_id, iteration + 1, messages, total_cost,
             used_model, reqs, tools_used, custom_validation_retried or task_type_validation_retried,
             completed_tool_ops, format_corrections,
+            tools_used_names,
+            tool_calls=tool_calls,
         )
 
     except asyncio.CancelledError:
@@ -1376,6 +1478,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 used_model, reqs, tools_used,
                 False, completed_tool_ops, format_corrections,
                 tools_used_names,
+                tool_calls=tool_calls,
             )
             logger.info(
                 f"[Task #{task_id}] Timeout checkpoint saved at iteration {iteration}"

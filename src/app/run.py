@@ -47,6 +47,8 @@ init_logging(
         "vecihi": "vecihi.jsonl",
         # kuleden_donen_var uses logging.getLogger(__name__) → "kuleden_donen_var.*"
         "kuleden_donen_var": "kuleden_donen_var.jsonl",
+        # RAG retrieval telemetry → its own file for drift analysis
+        "kutai.memory.rag": "rag.jsonl",
     },
 )
 _log = get_logger("app.run")

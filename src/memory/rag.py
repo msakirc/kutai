@@ -16,7 +16,10 @@ import logging
 import time
 from typing import Optional
 
+from src.infra.logging_config import get_logger
+
 logger = logging.getLogger(__name__)
+_rag_log = get_logger("memory.rag")
 
 # --- Lazy imports for extraction readiness --------------------------------
 _vs_is_ready = None
@@ -386,6 +389,7 @@ async def retrieve_context(
         Empty string if nothing relevant found.
     """
     _load_deps()
+    t_start = time.time()
     if not _vs_is_ready():
         return ""
 
@@ -395,6 +399,8 @@ async def retrieve_context(
 
     if not query_text.strip():
         return ""
+
+    task_id = task.get("id") or task.get("task_id") or ""
 
     # Phase F: Dynamic budget scaling to model context window
     budget = max_tokens or _compute_rag_budget(
@@ -409,13 +415,20 @@ async def retrieve_context(
     top_k = RAG_CONFIG["top_k_per_collection"]
 
     all_raw_results = []
+    raw_counts_by_collection: dict[str, int] = {}
+    query_errors: dict[str, str] = {}
     for q in queries:
         for col_name in collections_to_query:
             try:
                 results = await _vs_query(text=q, collection=col_name, top_k=top_k)
+                for _r in results:
+                    _r["_collection"] = col_name
                 all_raw_results.extend(results)
-            except Exception:
-                pass
+                raw_counts_by_collection[col_name] = (
+                    raw_counts_by_collection.get(col_name, 0) + len(results)
+                )
+            except Exception as e:
+                query_errors[col_name] = repr(e)[:120]
 
     # Deduplicate by ID (multiple queries may return same docs)
     seen_ids: set[str] = set()
@@ -437,6 +450,30 @@ async def retrieve_context(
     deduped = _deduplicate(all_results, threshold=RAG_CONFIG["dedup_threshold"])
 
     if not deduped:
+        try:
+            _rag_log.info(
+                "rag_hit",
+                task_id=str(task_id),
+                agent_type=agent_type or "",
+                model_name=model_name or "",
+                query=query_text[:200],
+                queries=len(queries),
+                collections=collections_to_query,
+                raw_counts=raw_counts_by_collection,
+                raw_total=len(all_raw),
+                ranked=len(all_results),
+                deduped=0,
+                injected=0,
+                budget=budget,
+                tokens_used=0,
+                sections=[],
+                top_hits=[],
+                errors=query_errors,
+                duration_ms=int((time.time() - t_start) * 1000),
+                empty_reason="no_survivors",
+            )
+        except Exception:
+            pass
         return ""
 
     # ── 5. Format within token budget ──
@@ -552,6 +589,50 @@ async def retrieve_context(
 
         if len(lines) > 1:
             sections.append("\n".join(lines))
+
+    try:
+        top_hits = []
+        for r in deduped[:5]:
+            meta = r.get("metadata", {}) or {}
+            top_hits.append({
+                "id": str(r.get("id", ""))[:64],
+                "collection": r.get("_collection", ""),
+                "type": meta.get("type", ""),
+                "data_type": meta.get("data_type", ""),
+                "distance": round(float(r.get("distance", 1.0)), 4),
+                "score": round(float(r.get("_score", 0.0)), 4),
+                "rerank": round(float(r.get("_rerank_score", 0.0)), 4) if "_rerank_score" in r else None,
+                "preview": (r.get("text", "") or "")[:160],
+            })
+        _rag_log.info(
+            "rag_hit",
+            task_id=str(task_id),
+            agent_type=agent_type or "",
+            model_name=model_name or "",
+            query=query_text[:200],
+            queries=len(queries),
+            collections=collections_to_query,
+            raw_counts=raw_counts_by_collection,
+            raw_total=len(all_raw),
+            ranked=len(all_results),
+            deduped=len(deduped),
+            section_counts={
+                "errors": len(error_items),
+                "episodic": len(episodic_items),
+                "semantic": len(semantic_items),
+                "shopping": len(shopping_items),
+                "web": len(web_items),
+            },
+            sections=[s.split("\n", 1)[0] for s in sections],
+            budget=budget,
+            tokens_used=total_tokens,
+            top_hits=top_hits,
+            errors=query_errors,
+            duration_ms=int((time.time() - t_start) * 1000),
+            injected=bool(sections),
+        )
+    except Exception:
+        pass
 
     if not sections:
         return ""

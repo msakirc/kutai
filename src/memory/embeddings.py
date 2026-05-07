@@ -77,7 +77,13 @@ def clear_cache() -> None:
 # ─── sentence-transformers (CPU) ────────────────────────────────────────────
 
 _st_model = None
-_st_load_attempted = False
+# Unix timestamp of last load attempt that failed. None = never attempted
+# or succeeded. Replaces the prior boolean latch which silently disabled
+# embeddings until process restart on any load error. With a TTL the
+# next call after the window retries — transient causes (brief disk
+# contention, slow first-time hub fetch) recover automatically.
+_st_last_failed_load: float | None = None
+_ST_LOAD_RETRY_TTL = 300.0  # seconds
 
 
 def _preprocess_e5(text: str, is_query: bool = True) -> str:
@@ -86,35 +92,60 @@ def _preprocess_e5(text: str, is_query: bool = True) -> str:
     return prefix + text
 
 
+def _try_load_st_model() -> bool:
+    """Load sentence-transformers if not already loaded. Returns True on
+    success. Honors _ST_LOAD_RETRY_TTL so a transient load failure does
+    not permanently disable embeddings."""
+    global _st_model, _st_last_failed_load
+    if _st_model is not None:
+        return True
+    import time as _t
+    if _st_last_failed_load is not None:
+        if _t.time() - _st_last_failed_load < _ST_LOAD_RETRY_TTL:
+            return False
+    try:
+        from sentence_transformers import SentenceTransformer
+
+        # Pin to CPU — per CLAUDE.md embedding must not contend with
+        # llama-server for GPU. Default device='cuda' caused access
+        # violations (0xC0000005) when llama-server was holding VRAM
+        # (2026-04-22 mission 45 crash).
+        _st_model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
+        _st_last_failed_load = None
+        logger.info(f"Loaded sentence-transformers {EMBEDDING_MODEL}")
+        return True
+    except Exception as e:
+        _st_last_failed_load = _t.time()
+        # WARNING (was DEBUG): production triage 2026-05-07 found
+        # vector_store upserts silently dropping rows because the load
+        # error never surfaced in default-level logs. Include exception
+        # class so disk / network / version errors are distinguishable.
+        logger.warning(
+            f"sentence-transformers load failed "
+            f"({type(e).__name__}: {e}). Embeddings disabled for "
+            f"{int(_ST_LOAD_RETRY_TTL)}s; auto-retry after.",
+            exc_info=True,
+        )
+        return False
+
+
 def _get_st_embedding(
     text: str, is_query: bool = True
 ) -> Optional[list[float]]:
     """Get embedding from sentence-transformers (CPU, synchronous)."""
-    global _st_model, _st_load_attempted
-    if _st_load_attempted and _st_model is None:
+    if not _try_load_st_model():
         return None
-
-    if _st_model is None:
-        _st_load_attempted = True
-        try:
-            from sentence_transformers import SentenceTransformer
-
-            # Pin to CPU — per CLAUDE.md embedding must not contend with
-            # llama-server for GPU. Default device='cuda' caused access
-            # violations (0xC0000005) when llama-server was holding VRAM
-            # (2026-04-22 mission 45 crash).
-            _st_model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
-            logger.info(f"Loaded sentence-transformers {EMBEDDING_MODEL}")
-        except Exception as e:
-            logger.debug(f"sentence-transformers not available: {e}")
-            return None
 
     try:
         processed = _preprocess_e5(text, is_query=is_query)
         vec = _st_model.encode(processed, show_progress_bar=False)
         return vec.tolist()
     except Exception as e:
-        logger.debug(f"sentence-transformers encode failed: {e}")
+        logger.warning(
+            f"sentence-transformers encode failed "
+            f"({type(e).__name__}: {e})",
+            exc_info=True,
+        )
         return None
 
 
@@ -122,24 +153,8 @@ def _get_st_embeddings_batch(
     texts: list[str], is_query: bool = True
 ) -> list[Optional[list[float]]]:
     """Batch embedding via sentence-transformers."""
-    global _st_model, _st_load_attempted
-    if _st_load_attempted and _st_model is None:
+    if not _try_load_st_model():
         return [None] * len(texts)
-
-    if _st_model is None:
-        _st_load_attempted = True
-        try:
-            from sentence_transformers import SentenceTransformer
-
-            # Pin to CPU — per CLAUDE.md embedding must not contend with
-            # llama-server for GPU. Default device='cuda' caused access
-            # violations (0xC0000005) when llama-server was holding VRAM
-            # (2026-04-22 mission 45 crash).
-            _st_model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
-            logger.info(f"Loaded sentence-transformers {EMBEDDING_MODEL}")
-        except Exception as e:
-            logger.debug(f"sentence-transformers not available: {e}")
-            return [None] * len(texts)
 
     try:
         processed = [_preprocess_e5(t, is_query=is_query) for t in texts]
@@ -150,7 +165,11 @@ def _get_st_embeddings_batch(
         )
         return [v.tolist() for v in vecs]
     except Exception as e:
-        logger.debug(f"sentence-transformers batch encode failed: {e}")
+        logger.warning(
+            f"sentence-transformers batch encode failed "
+            f"({type(e).__name__}: {e})",
+            exc_info=True,
+        )
         return [None] * len(texts)
 
 

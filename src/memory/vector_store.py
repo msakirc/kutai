@@ -157,14 +157,42 @@ def _rescue_and_rebuild_sync(collection: str) -> tuple[bool, int, int]:
     if not ids:
         return (True, 0, 0)
 
-    try:
-        kwargs = {"ids": ids, "documents": docs, "metadatas": metas}
-        if any(e is not None for e in embs):
-            kwargs["embeddings"] = embs
-        fresh.upsert(**kwargs)
-        logger.info(
-            f"Tier 1 rescue rebuilt '{collection}' with {len(ids)} rows preserved"
+    # Filter to rows that actually have a non-None embedding. Mixed
+    # None/real entries fed to upsert make chromadb invoke the
+    # collection's embedding_function (our _RefuseEmbedFunction) on the
+    # None slots, raising "must receive pre-computed embeddings". A row
+    # without a vector is unsearchable in a vector store anyway, so drop
+    # it during rebuild rather than poison the recovery.
+    keep_idx = [i for i, e in enumerate(embs) if e is not None]
+    dropped = len(ids) - len(keep_idx)
+    if not keep_idx:
+        logger.warning(
+            f"Tier 1 rescue: '{collection}' had {len(ids)} rows but "
+            f"none with embeddings — collection now empty"
         )
+        return (True, 0, 0)
+    ids = [ids[i] for i in keep_idx]
+    docs = [docs[i] for i in keep_idx]
+    metas = [metas[i] for i in keep_idx]
+    embs = [embs[i] for i in keep_idx]
+
+    try:
+        kwargs = {
+            "ids": ids,
+            "documents": docs,
+            "metadatas": metas,
+            "embeddings": embs,
+        }
+        fresh.upsert(**kwargs)
+        if dropped:
+            logger.info(
+                f"Tier 1 rescue rebuilt '{collection}' with {len(ids)} "
+                f"rows preserved ({dropped} dropped — no embedding)"
+            )
+        else:
+            logger.info(
+                f"Tier 1 rescue rebuilt '{collection}' with {len(ids)} rows preserved"
+            )
         return (True, len(ids), 0)
     except Exception as e:
         logger.error(

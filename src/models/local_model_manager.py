@@ -159,23 +159,6 @@ class LocalModelManager:
             self.runtime_state = None
             self._thinking_enabled = False
             self._vision_enabled = False
-            # Sync registry's ModelInfo.is_loaded with reality. Without
-            # this the dispatcher's load step (`if not model.is_loaded`)
-            # short-circuits, sends the request to the dead llama-server
-            # port, and gets `OpenAIException - Connection error`. Found
-            # 2026-05-07: 5 minutes after IdleUnload, every overhead
-            # task picking the formerly-loaded model failed at the
-            # connection layer and the model never got reloaded.
-            try:
-                from src.models.model_registry import get_registry
-                _reg = get_registry()
-                for _m in _reg.all_models():
-                    if _m.location == "local" and _m.is_loaded:
-                        _reg.mark_unloaded(_m.name)
-            except Exception:
-                logger.exception(
-                    "Failed to clear registry is_loaded on idle unload"
-                )
             logger.info("Idle unload: cleared model state")
             self._push_to_nerd_herd(None)
             return

@@ -407,6 +407,19 @@ async def embed_and_store(
 
     # Get embedding (as passage, not query)
     embedding = await _get_embed_fn()(text, is_query=False)
+    if embedding is None:
+        # No vector → no similarity recall. Pre-2026-05-07 the upsert
+        # still went through with documents+metadata only; chromadb 1.5+
+        # then invoked the collection's embedding_function (our
+        # _RefuseEmbedFunction) on the doc to fill in the vector,
+        # raising the "must receive pre-computed embeddings" guard. The
+        # row would have been unsearchable anyway, so skip cleanly here.
+        logger.warning(
+            f"Skip store in '{collection}': embedder returned None "
+            f"(sentence-transformers failed to load or encode). "
+            f"Doc {len(text)} chars dropped."
+        )
+        return None
 
     # Clean metadata — ChromaDB only allows str/int/float/bool values
     clean_meta = {}

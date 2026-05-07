@@ -786,8 +786,21 @@ class LLMDispatcher:
             and needs_thinking
             and not manager._thinking_enabled
         )
+        # Source of truth = DaLLaMa, not registry. ModelInfo.is_loaded is
+        # set by mark_loaded/mark_unloaded which only fire on swap paths;
+        # IdleUnloader stops llama-server without touching registry, so
+        # the flag goes stale True. Reading manager.current_model +
+        # manager.is_loaded asks DaLLaMa directly: is THIS model
+        # actually serving on the port right now? If not, force a
+        # reload (DaLLaMa relaunches llama-server). Production triage
+        # 2026-05-07: 5 minutes of OpenAIException Connection error
+        # on Qwen3.5-9B because is_loaded was stale True after idle
+        # unload and dispatcher kept skipping ensure_model.
+        this_actually_loaded = (
+            manager.is_loaded and manager.current_model == model.name
+        )
         needs_reload = (
-            not model.is_loaded
+            not this_actually_loaded
             or needs_thinking_reload
             or (needs_vision_load and not manager._vision_enabled)
         )

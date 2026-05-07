@@ -758,6 +758,11 @@ class TestEnsureLocalModelContract:
         fake_manager = MagicMock()
         fake_manager._thinking_enabled = False
         fake_manager._vision_enabled = False
+        # DaLLaMa is the source of truth: dispatcher consults
+        # manager.is_loaded + manager.current_model, not the registry's
+        # ModelInfo.is_loaded flag.
+        fake_manager.is_loaded = True
+        fake_manager.current_model = model.name
 
         with patch("src.models.local_model_manager.get_local_manager",
                    return_value=fake_manager):
@@ -804,6 +809,7 @@ class TestEnsureLocalModelContract:
         fake_manager = MagicMock()
         fake_manager._thinking_enabled = False
         fake_manager._vision_enabled = False
+        fake_manager.is_loaded = False
         fake_manager.current_model = "doomed"
 
         async def _fake_ensure_model(name, **kw):

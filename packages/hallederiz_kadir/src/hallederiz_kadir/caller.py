@@ -36,6 +36,60 @@ logging.getLogger("LiteLLM Proxy").setLevel(logging.WARNING)
 # calls capped to 120s).
 
 
+def _gemini_sanitize_schema(schema):
+    """Recursively rewrite a JSON Schema dict for Gemini compatibility.
+
+    Gemini accepts type-unions only when each branch is fully formed:
+    `array` requires `items`, `object` requires `properties` /
+    `additionalProperties`. Our permissive `_LEAF_VALUE_SCHEMA` emits
+    `{"type": ["string","number","boolean","array","object","null"]}`
+    which Gemini translates internally to `any_of: [...]` with a bare
+    array branch -> `any_of[3].items: missing field` (4+ production
+    incidents 2026-05-07, mission 67 steps 0.2, 0.3, 5.x, 9.x). Big
+    schemas with this leaf trip the state-machine cap before validation
+    even runs ("too many states for serving").
+
+    Strategy: when a `type` key is a list, drop "array" and "object"
+    entries (we can't reliably synthesize valid items/properties without
+    knowing intended content), keep the scalar branches. Collapse to a
+    single string when the list becomes empty as a last-resort fallback
+    so the field still parses. Recurses through properties, items,
+    any_of/one_of/all_of, $defs, definitions.
+    """
+    if isinstance(schema, list):
+        return [_gemini_sanitize_schema(s) for s in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out: dict = {}
+    for k, v in schema.items():
+        if k == "type" and isinstance(v, list):
+            kept = [t for t in v if t not in ("array", "object")]
+            if not kept:
+                kept = ["string"]
+            v = kept[0] if len(kept) == 1 else kept
+        elif isinstance(v, (dict, list)):
+            v = _gemini_sanitize_schema(v)
+        out[k] = v
+    return out
+
+
+def _gemini_sanitize_response_format(response_format: dict) -> dict:
+    """Apply schema sanitization to the json_schema payload."""
+    if not isinstance(response_format, dict):
+        return response_format
+    js = response_format.get("json_schema")
+    if not isinstance(js, dict):
+        return response_format
+    inner = js.get("schema")
+    if not isinstance(inner, dict):
+        return response_format
+    new_inner = _gemini_sanitize_schema(inner)
+    return {
+        **response_format,
+        "json_schema": {**js, "schema": new_inner},
+    }
+
+
 # ─── Lazy singleton accessors ──────────────────────────────────────────────
 
 def _get_logger():
@@ -545,6 +599,18 @@ async def call(
             response_format.get("type") == "json_schema"
             and getattr(model, "supports_json_schema", False)
         ):
+            # Gemini's schema validator rejects type-unions that include
+            # "array"/"object" without an accompanying items/properties
+            # field. Our _LEAF_VALUE_SCHEMA emits exactly such a union
+            # for legacy item_fields entries (translates to
+            # `any_of[3].items: missing field` on Gemini's side) and big
+            # schemas trip the "too many states" state-cap before
+            # validation. Sanitize the schema for Gemini specifically;
+            # other providers accept the full union as-is.
+            if model.provider == "gemini":
+                response_format = _gemini_sanitize_response_format(
+                    response_format
+                )
             completion_kwargs["response_format"] = response_format
         elif model.supports_json_mode:
             # Capability gap — drop schema, keep json_object so the model

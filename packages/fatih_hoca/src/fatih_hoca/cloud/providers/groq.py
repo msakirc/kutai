@@ -46,6 +46,26 @@ _NO_TOOLS_RAW_IDS = frozenset({
 # dashboard (https://console.groq.com/settings/limits) as of 2026-04-28.
 # Keys match raw_id (no "groq/" prefix). KDV reads these to gate admission.
 # Update this table when the dashboard changes or the account moves tiers.
+# Per-request input-token caps for Groq free-tier ids whose single-request
+# limit is below their advertised context_window. Hitting the cap returns
+# HTTP 413 `request_too_large`. Selector reads max_input_tokens to skip the
+# model when the prepared prompt already exceeds it (saves the call + the
+# context_overflow failure record). Empirical caps from production triage
+# 2026-05-06: planner spec_review (~8K tokens) hits 413 on compound-mini.
+# `tpm` doubles as a sanity floor — single-request input cannot exceed
+# tokens-per-minute by definition, so the cap is min(documented, tpm).
+_FREE_TIER_MAX_INPUT_TOKENS: dict[str, int] = {
+    "groq/compound":                             6_000,
+    "groq/compound-mini":                        6_000,
+    "openai/gpt-oss-120b":                       8_000,
+    "openai/gpt-oss-20b":                        8_000,
+    "openai/gpt-oss-safeguard-20b":              8_000,
+    "llama-3.1-8b-instant":                      6_000,
+    "llama-3.3-70b-versatile":                   12_000,
+    "qwen/qwen3-32b":                            6_000,
+    "allam-2-7b":                                6_000,
+}
+
 _FREE_TIER_RATE_LIMITS: dict[str, dict[str, int]] = {
     "allam-2-7b":                                {"rpm": 30, "tpm": 6_000,  "rpd": 7_000,   "tpd": 500_000},
     "groq/compound":                             {"rpm": 30, "tpm": 70_000, "rpd": 250},
@@ -107,6 +127,7 @@ class GroqAdapter:
                 active=True,
                 context_length=entry.get("context_window"),
                 max_output_tokens=entry.get("max_completion_tokens"),
+                max_input_tokens=_FREE_TIER_MAX_INPUT_TOKENS.get(raw_id),
                 rate_limit_rpm=limits.get("rpm"),
                 rate_limit_tpm=limits.get("tpm"),
                 rate_limit_rpd=limits.get("rpd"),

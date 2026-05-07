@@ -27,6 +27,14 @@ class DiscoveredModel:
     output_modality: str = "text"
     context_length: int | None = None
     max_output_tokens: int | None = None
+    # Per-request input-token cap, distinct from context_length. Some
+    # provider tiers gate single-request input below the model's full
+    # context window — Groq free-tier compound/compound-mini accept
+    # ~131K context but reject single requests over ~6-12K with
+    # HTTP 413 `request_too_large`. None = no known cap (use
+    # context_length as the ceiling). Adapter populates from a
+    # provider-specific table when the cap is documented.
+    max_input_tokens: int | None = None
     cost_per_1k_input: float | None = None
     cost_per_1k_output: float | None = None
     rate_limit_rpm: int | None = None

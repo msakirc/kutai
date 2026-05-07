@@ -67,7 +67,17 @@ def _classify_by_status(status_code: int | None, error_lc: str) -> str | None:
         # providers return for context-overflow before the model sees the
         # request. Disambiguate via text — "context" hint stays useful
         # since 422 also covers schema/validation failures.
-        if "context" in error_lc or "exceeds" in error_lc:
+        # Groq free-tier per-request token cap returns 413 with body
+        # `{"code":"request_too_large","message":"Request Entity Too Large"}`
+        # — neither "context" nor "exceeds" present. Match on the Groq
+        # signals so selector down-ranks the model instead of generic
+        # retry on the same id.
+        if (
+            "context" in error_lc
+            or "exceeds" in error_lc
+            or "entity too large" in error_lc
+            or "request_too_large" in error_lc
+        ):
             return "context_overflow"
         return None
     if status_code == 429:
@@ -171,6 +181,8 @@ def classify_error(error: str, status_code: int | None = None) -> str:
         or "please reduce the length of the messages" in e
         or "maximum context length" in e
         or "request too large for model" in e  # tpm-style overflow
+        or "entity too large" in e             # Groq 413 free-tier cap
+        or "request_too_large" in e            # Groq error code
     ):
         return "context_overflow"
     # Groq's "model does not support JSON output" — non-retryable on

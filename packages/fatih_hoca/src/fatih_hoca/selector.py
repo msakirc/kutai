@@ -450,6 +450,20 @@ class Selector:
             if est_cost > reqs.max_cost:
                 return f"cost({est_cost:.4f}>{reqs.max_cost:.4f})"
 
+        # Per-request input-token cap (hard). Some cloud tiers gate the
+        # single-request input below the advertised context_window —
+        # e.g. Groq free-tier compound/compound-mini accept context=131K
+        # but reject single requests over ~6K with HTTP 413
+        # `request_too_large`. Provider-side enforced; no slack possible.
+        # Production triage 2026-05-06: planner spec_review (~8K tokens)
+        # repeatedly picked groq/compound-mini, hit 413, retry classifier
+        # mapped to `unknown`, selector re-picked, exhausted attempts.
+        max_in = getattr(model, "max_input_tokens", None)
+        if (max_in is not None
+                and reqs.estimated_input_tokens > 0
+                and reqs.estimated_input_tokens > max_in):
+            return f"per_request_too_large(est={reqs.estimated_input_tokens}>cap={max_in})"
+
         # Per-call TPM hard filter. Cloud models with a TPM ceiling that
         # cannot fit a single call are STRUCTURALLY ineligible — the
         # provider will 429 with "Request too large for model" regardless

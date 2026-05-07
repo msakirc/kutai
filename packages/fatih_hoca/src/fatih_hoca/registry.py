@@ -57,6 +57,11 @@ class ModelInfo:
     capabilities: dict[str, float] = field(default_factory=dict)  # 14-dimension scores, 0.0-10.0
     context_length: int = 8192
     max_tokens: int = 4096
+    # Per-request input-token cap, distinct from context_length. None
+    # means "no known cap, use context_length". Populated only for
+    # provider tiers whose single-request input is gated below the
+    # advertised window (e.g. Groq free-tier compound models).
+    max_input_tokens: int | None = None
     supports_function_calling: bool = False
     supports_json_mode: bool = False
     # Strict ``response_format: json_schema`` (token-level constrained
@@ -1016,6 +1021,8 @@ def register_cloud_from_discovered(
         detected["context_length"] = discovered.context_length
     if discovered.max_output_tokens is not None:
         detected["max_tokens"] = discovered.max_output_tokens
+    if getattr(discovered, "max_input_tokens", None) is not None:
+        detected["max_input_tokens"] = discovered.max_input_tokens
     if discovered.cost_per_1k_input is not None:
         detected["cost_per_1k_input"] = discovered.cost_per_1k_input
     if discovered.cost_per_1k_output is not None:
@@ -1039,6 +1046,7 @@ def register_cloud_from_discovered(
         capabilities=detected["capabilities"],
         context_length=detected["context_length"],
         max_tokens=detected["max_tokens"],
+        max_input_tokens=detected.get("max_input_tokens"),
         supports_function_calling=detected.get("supports_function_calling", True),
         supports_json_mode=detected.get("supports_json_mode", True),
         supports_json_schema=detected.get("supports_json_schema", False),

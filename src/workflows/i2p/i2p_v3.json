@@ -5330,7 +5330,6 @@
       "id": "9.4",
       "phase": "phase_9",
       "name": "e2e_test_suite",
-      "needs_real_tools": true,
       "agent": "test_generator",
       "difficulty": "medium",
       "tools_hint": [
@@ -5349,8 +5348,8 @@
       "output_artifacts": [
         "e2e_test_suite"
       ],
-      "instruction": "[NEEDS-REAL-TOOLS] E2E execution requires a real browser-driver adapter (e.g. salako.run_pytest pointing at a live staging URL, or a Playwright runner). Until that adapter lands, the agent can author the test files but cannot truthfully claim 'flows passed'. Write the suite, but emit `flows_covered` as the count of authored test cases — never claim execution results unless the runner returned exit 0 in audit_log. Review existing E2E tests against functional requirements. Write missing E2E tests for user flows without coverage. Each test should simulate a complete user flow from entry to completion, including UI interactions, API calls, and database state verification. Use the project's E2E framework (Playwright, Cypress, or equivalent).",
-      "done_when": "e2e_test_suite exists with comprehensive E2E coverage.",
+      "instruction": "Author E2E test files only. Do NOT claim execution results — a sibling mechanical step (9.4a) runs the suite via salako.run_pytest and emits the actual pass/fail. Review existing E2E tests against functional requirements. Write missing E2E tests for user flows without coverage. Each test should simulate a complete user flow from entry to completion, including UI interactions, API calls, and database state verification. Use the project's E2E framework (Playwright, Cypress, or equivalent). Emit `test_files` (list of paths under `e2e/`) and `flows_covered` (count of authored test cases). Do NOT emit `flows_passed` — that's the runner's job.",
+      "done_when": "e2e_test_suite exists with authored test files.",
       "artifact_schema": {
         "e2e_test_suite": {
           "type": "object",
@@ -5361,6 +5360,45 @@
         }
       },
       "context": {}
+    },
+    {
+      "id": "9.4a",
+      "phase": "phase_9",
+      "name": "e2e_test_run",
+      "agent": "mechanical",
+      "depends_on": [
+        "9.4"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "e2e_test_suite"
+      ],
+      "output_artifacts": [
+        "e2e_test_run_result"
+      ],
+      "instruction": "Mechanical: run the authored E2E suite via salako.run_pytest against the e2e/ directory. Pass requires pytest exit 0, total > 0, failed == 0, errors == 0. A green exit on zero-collected counts as failure (silent skip).",
+      "done_when": "e2e_test_run_result.ok is true.",
+      "payload": {
+        "action": "run_pytest",
+        "target": [
+          "e2e/"
+        ],
+        "timeout_s": 900
+      },
+      "artifact_schema": {
+        "e2e_test_run_result": {
+          "type": "object",
+          "required_fields": [
+            "ok",
+            "passed",
+            "failed",
+            "total"
+          ]
+        }
+      },
+      "context": {
+        "requires_grading": false
+      }
     },
     {
       "id": "9.5",
@@ -7124,13 +7162,7 @@
       "id": "13.11",
       "phase": "phase_13",
       "name": "social_preview_test",
-      "needs_real_tools": true,
-      "agent": "executor",
-      "difficulty": "easy",
-      "tools_hint": [
-        "shell",
-        "http_request"
-      ],
+      "agent": "mechanical",
       "depends_on": [
         "13.10"
       ],
@@ -7145,8 +7177,13 @@
       "output_artifacts": [
         "social_preview_results"
       ],
-      "instruction": "[NEEDS-REAL-TOOLS] Social preview verification requires real platform debugger APIs (Facebook Sharing Debugger, Twitter Card Validator, LinkedIn Post Inspector) which the agent does not currently have. Do NOT autonomously claim 'pass' — surface a needs_clarification asking the human operator to run the validators and paste results. Test social media sharing previews on Facebook, Twitter, LinkedIn. Verify OG tags render correctly, images are correct size, titles/descriptions are compelling.",
-      "done_when": "social_preview_results exists.",
+      "instruction": "Mechanical: fetch each URL listed in seo_implementation and verify the served HTML exposes Open Graph + Twitter Card meta tags, plus that og:image is reachable. This is a necessary but not sufficient gate for social rendering — Facebook/Twitter/LinkedIn debuggers may still reject (size/length/UA quirks). Pass means every required tag is present and og:image HEAD returns 2xx for every URL.",
+      "done_when": "social_preview_results.pass_fail == 'pass'.",
+      "payload": {
+        "action": "social_preview_check",
+        "artifact": "seo_implementation",
+        "check_image": true
+      },
       "artifact_schema": {
         "social_preview_results": {
           "type": "object",
@@ -7156,7 +7193,9 @@
           ]
         }
       },
-      "context": {}
+      "context": {
+        "requires_grading": false
+      }
     },
     {
       "id": "13.12",
@@ -8725,24 +8764,25 @@
         {
           "template_step_id": "feat.14",
           "name": "staging_validation",
-          "needs_real_tools": true,
-          "agent": "executor",
-          "difficulty": "medium",
-          "tools_hint": [
-            "shell",
-            "read_file",
-            "http_request"
+          "agent": "mechanical",
+          "instruction": "Mechanical: HTTP-check the staging URL emitted by feat.13 staging_deploy. Reads the per-feature staging_deployment_result artifact, pulls the `url` field, runs salako.http_check with retry/backoff (5 attempts). Pass requires the final response to be 2xx. Visual / multi-breakpoint / interactive smoke checks are NOT covered here — they need a Playwright adapter that hasn't landed. The artifact_schema reflects this honestly: only smoke_tests_passed is asserted.",
+          "input_artifacts": [
+            "staging_deployment_result"
           ],
-          "instruction": "[NEEDS-REAL-TOOLS] Staging validation requires a real browser-driver adapter (Playwright/Puppeteer + screenshot diff) the agent does not currently have. Until that lands, do NOT claim 'smoke_tests_passed' or 'visual_check_passed' — surface a needs_clarification with the staging URL and ask the operator to walk the smoke flow + report results. Validate the feature on staging: run smoke tests (navigate, perform core action, verify persistence, test error case, test auth), visually verify at desktop and mobile breakpoints. Compare against screen_specifications. If visual issues found, fix them using design tokens and re-verify.",
           "output_artifacts": [
             "staging_validation_result"
           ],
+          "payload": {
+            "action": "staging_smoke_check",
+            "artifact": "{feature_id}__staging_deployment_result",
+            "method": "GET",
+            "max_attempts": 5
+          },
           "artifact_schema": {
             "staging_validation_result": {
               "type": "object",
               "required_fields": [
-                "smoke_tests_passed",
-                "visual_check_passed"
+                "smoke_tests_passed"
               ]
             }
           }

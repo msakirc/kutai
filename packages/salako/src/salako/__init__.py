@@ -6,6 +6,9 @@ from salako.workspace_snapshot import snapshot_workspace
 from salako.git_commit import auto_commit
 from salako.verify_artifacts import verify_artifacts
 from salako.run_cmd import run_cmd
+from salako.run_pytest import run_pytest
+from salako.parse_og_tags import parse_og_tags
+from salako.http_check import http_check
 
 __all__ = [
     "Action",
@@ -14,6 +17,9 @@ __all__ = [
     "auto_commit",
     "verify_artifacts",
     "run_cmd",
+    "run_pytest",
+    "parse_og_tags",
+    "http_check",
 ]
 
 
@@ -134,6 +140,90 @@ async def run(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "run_pytest":
+        from salako.run_pytest import run_pytest as _run_pytest
+        try:
+            res = await _run_pytest(
+                mission_id=task.get("mission_id"),
+                target=payload.get("target"),
+                cwd=payload.get("cwd"),
+                timeout_s=float(payload.get("timeout_s", 600.0)),
+                extra_args=payload.get("extra_args"),
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"run_pytest: passed={res.get('passed')} "
+                        f"failed={res.get('failed')} errors={res.get('errors')} "
+                        f"total={res.get('total')} exit={res.get('exit')} "
+                        f"timed_out={res.get('timed_out')} "
+                        f"err={res.get('error') or ''}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "parse_og_tags":
+        from salako.parse_og_tags import parse_og_tags as _parse_og
+        try:
+            res = await _parse_og(
+                url=payload.get("url") or "",
+                timeout_s=float(payload.get("timeout_s", 15.0)),
+                check_image=bool(payload.get("check_image", True)),
+                required=payload.get("required"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"parse_og_tags: status={res.get('status')} "
+                        f"missing={res.get('missing')} "
+                        f"errors={res.get('errors')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "http_check":
+        from salako.http_check import http_check as _http_check
+        try:
+            es = payload.get("expect_status") or (200, 299)
+            if isinstance(es, list) and len(es) == 2 and all(
+                isinstance(x, int) for x in es
+            ) and payload.get("expect_status_as_range", True):
+                # JSON can't carry tuples; default-interpret 2-int list as a range.
+                es = (int(es[0]), int(es[1]))
+            res = await _http_check(
+                url=payload.get("url") or "",
+                method=str(payload.get("method", "GET")),
+                timeout_s=float(payload.get("timeout_s", 15.0)),
+                max_attempts=int(payload.get("max_attempts", 5)),
+                backoff_base_s=float(payload.get("backoff_base_s", 1.0)),
+                backoff_cap_s=float(payload.get("backoff_cap_s", 8.0)),
+                expect_status=es,
+                expect_body_contains=payload.get("expect_body_contains"),
+                headers=payload.get("headers"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"http_check: status={res.get('final_status')} "
+                        f"attempts={res.get('attempts')} "
+                        f"err={res.get('final_error') or ''}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "clarify":
         from salako.clarify import clarify
         try:
@@ -207,6 +297,34 @@ async def run(task: dict) -> Action:
         from salako.executors.monitoring_check import run as monitoring_check_run
         try:
             res = await monitoring_check_run(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "social_preview_check":
+        from salako.executors.social_preview_check import run as social_preview_run
+        try:
+            res = await social_preview_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"social_preview_check: {res.get('error') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "staging_smoke_check":
+        from salako.executors.staging_smoke_check import run as staging_smoke_run
+        try:
+            res = await staging_smoke_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"staging_smoke_check: {res.get('error') or 'failed'}",
+                    result=res,
+                )
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

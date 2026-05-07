@@ -20,18 +20,22 @@ from src.workflows.engine.loader import load_workflow
 
 
 # Top-level steps from the 2026-05-05 handoff.
+# 9.4 (e2e_test_suite) and 13.11 (social_preview_test) were unblocked by
+# Phase 1 of the real-tools workstream (2026-05-05) — 9.4 paired with a
+# mechanical 9.4a runner via salako.run_pytest, 13.11 swapped to
+# salako.social_preview_check (parse_og_tags + image HEAD).
 TOP_LEVEL_NEEDS_REAL_TOOLS = [
-    "7.13",   # staging_environment
-    "9.4",    # e2e_test_suite
-    "13.1",   # production_infrastructure
-    "13.3",   # monitoring_setup
-    "13.11",  # social_preview_test
+    "7.13",   # staging_environment   — needs vendor provision API
+    "13.1",   # production_infrastructure — needs vendor deploy API
+    "13.3",   # monitoring_setup      — needs Sentry/UptimeRobot adapters
 ]
 
 # Template steps (feature_implementation_template).
+# feat.14 (staging_validation) unblocked Phase 1 via salako.staging_smoke_check
+# (http_check on the per-feature staging URL). feat.13 still needs a real CD
+# trigger — visual / multi-breakpoint smoke remains deferred.
 TEMPLATE_NEEDS_REAL_TOOLS = [
-    "staging_deploy",      # feat.13
-    "staging_validation",  # feat.14
+    "staging_deploy",      # feat.13 — needs CD trigger + image-diff runner
 ]
 
 

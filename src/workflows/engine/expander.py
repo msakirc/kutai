@@ -254,6 +254,29 @@ def expand_steps_to_tasks(
     return tasks
 
 
+def _substitute_payload(payload: dict, params: dict) -> dict:
+    """Recursively str.format every string value in ``payload`` against
+    ``params``. Lists/dicts walked; non-string leaves passed through. A
+    KeyError/IndexError on an unmatched placeholder leaves the value as-is
+    so a typo doesn't crash expansion (validator catches downstream)."""
+    def _sub_str(s: str) -> str:
+        try:
+            return s.format(**(params or {}))
+        except (KeyError, IndexError):
+            return s
+
+    def _walk(v):
+        if isinstance(v, str):
+            return _sub_str(v)
+        if isinstance(v, list):
+            return [_walk(item) for item in v]
+        if isinstance(v, dict):
+            return {k: _walk(item) for k, item in v.items()}
+        return v
+
+    return _walk(payload)
+
+
 def expand_template(
     template: dict,
     params: dict,
@@ -382,6 +405,27 @@ def expand_template(
 
         if "post_hooks" in tpl_step and isinstance(tpl_step["post_hooks"], list):
             step["post_hooks"] = list(tpl_step["post_hooks"])
+
+        # Mechanical-step payload: template instances need the payload
+        # propagated AND parameter-substituted (so e.g. an artifact name
+        # baked into the payload as "{feature_id}__staging_deployment_result"
+        # resolves to the per-feature concrete name). Without this,
+        # per-feature mechanical steps would either lose their action or
+        # share an unsubstituted artifact name across all features.
+        if "payload" in tpl_step and isinstance(tpl_step["payload"], dict):
+            step["payload"] = _substitute_payload(tpl_step["payload"], params)
+
+        # `done_when` and `done_when_or` may reference artifact-prefixed
+        # outputs in templates — keep them in line with the prefix scheme.
+        # We don't rewrite the strings here (no canonical parser); just
+        # propagate as-is so the downstream gate sees them.
+        if "done_when" in tpl_step:
+            step["done_when"] = tpl_step["done_when"]
+
+        # needs_real_tools marker (drift-guard): propagate for templates that
+        # still have a NEEDS-REAL-TOOLS dependency we haven't unblocked yet.
+        if tpl_step.get("needs_real_tools"):
+            step["needs_real_tools"] = True
 
         expanded.append(step)
 

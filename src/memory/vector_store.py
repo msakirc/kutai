@@ -309,6 +309,16 @@ async def init_store(persist_dir: str | None = None, embed_fn=None, dimension_fn
         from chromadb.api.types import EmbeddingFunction
 
         class _RefuseEmbedFunction(EmbeddingFunction):
+            # name() must match what chromadb persists on existing
+            # collections ("default") so get_or_create_collection does not
+            # raise "embedding function already exists ... new vs persisted"
+            # on chroma >=1.5. We never actually invoke __call__ because
+            # every write path passes pre-computed embeddings via
+            # add_kwargs["embeddings"]; the raise below is a guard.
+            @staticmethod
+            def name() -> str:
+                return "default"
+
             def __call__(self, input):
                 raise RuntimeError(
                     "vector_store collections must receive pre-computed "

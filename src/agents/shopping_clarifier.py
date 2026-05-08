@@ -68,6 +68,7 @@ class ShoppingClarifierAgent(BaseAgent):
             "## CRITICAL\n"
             "- Do NOT invent answers to your own questions\n"
             "- Do NOT hallucinate product data\n"
+            "- Always return a valid JSON action — never return plain text.\n"
             "- If the query has a brand AND model number → Path A (skip)\n"
             "- If unsure → Path A (skip). Better to search than to ask."
         )

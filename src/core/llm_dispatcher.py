@@ -169,6 +169,32 @@ def _task_result_to_request_response(result: "TaskResult") -> dict:
 from src.core.router import ModelCallFailed  # noqa: E402
 
 
+# ─── Budget helper ───────────────────────────────────────────────────────────
+
+async def _remaining_budget(mission_id: int | None) -> float | None:
+    """Return max(0, ceiling - spent) for the given mission, or None if uncapped.
+
+    Returns None when:
+      * mission_id is None (standalone call, no mission context)
+      * mission row not found
+      * cost_ceiling_usd is NULL (no ceiling set)
+    """
+    if mission_id is None:
+        return None
+    from src.infra.db import get_db
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT cost_ceiling_usd, spent_usd FROM missions WHERE id = ?",
+        (mission_id,),
+    )
+    row = await cur.fetchone()
+    if not row or row[0] is None:
+        return None
+    ceiling = float(row[0])
+    spent = float(row[1] or 0.0)
+    return max(0.0, ceiling - spent)
+
+
 class LLMDispatcher:
     """Centralized LLM call coordinator.
 
@@ -273,6 +299,7 @@ class LLMDispatcher:
         tools: list[dict] | None = None,
         failures: list | None = None,
         preselected_pick: Any = None,
+        mission_id: int | None = None,
         **kwargs,
     ) -> dict:
         """Route an LLM call through the dispatcher.
@@ -366,6 +393,7 @@ class LLMDispatcher:
                 # Fall through to 0.5 when the value is also None.
                 _u = float(kwargs.get("urgency") or 0.5) + 0.1
                 kwargs["urgency"] = min(1.0, _u)
+            remaining = await _remaining_budget(mission_id)
             pick = fatih_hoca.select(
                 task=task,
                 agent_type=agent_type,
@@ -374,7 +402,32 @@ class LLMDispatcher:
                 needs_function_calling=needs_function_calling,
                 failures=failures,
                 call_category=category.value,
+                remaining_budget_usd=remaining,
                 **kwargs,
+            )
+
+        # Handle SelectionFailure before the None / Pick path.
+        # Budget failures pause the mission so the operator can top-up.
+        # Other reasons surface as a plain RuntimeError / ModelCallFailed.
+        from fatih_hoca import SelectionFailure
+        if isinstance(pick, SelectionFailure):
+            if pick.reason == "budget" and mission_id is not None:
+                from general_beckman.lifecycle_events import emit_pause
+                await emit_pause(
+                    mission_id,
+                    reason="no_model_fits_budget",
+                    triggered_by="auto:budget",
+                )
+            task_desc = task or agent_type or category.value
+            if is_overhead:
+                raise RuntimeError(
+                    f"OVERHEAD call failed — selection failed: {pick.reason}: {pick.detail}. "
+                    f"Task: {task_desc}"
+                )
+            raise ModelCallFailed(
+                call_id=task_desc,
+                last_error=f"selection failed: {pick.reason}: {pick.detail}",
+                error_category="budget" if pick.reason == "budget" else "availability",
             )
 
         if pick is None:

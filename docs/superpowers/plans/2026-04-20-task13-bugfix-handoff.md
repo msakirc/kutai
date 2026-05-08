@@ -22,7 +22,7 @@ Session-end handoff for whoever picks this up next. Task 13 (Beckman simplificat
 
 ### BUG 1-4: malformed mechanical-task `context` shape (7 call sites)
 
-**Symptom:** Every mechanical task Beckman spawned (`MissionAdvance → workflow_advance`, `RequestClarification → salako.clarify`, DLQ notify, cron-fired todo_reminder / daily_digest / api_discovery, nerd_herd health alert, sweep escalation) would hit dispatch, salako.run would return `Action(status="failed", error="unknown mechanical action: None")`, and the task row would land in `failed` — then retry-loop through the queue until DLQ. Missions would fail to progress. Clarifications would never reach Telegram. DLQ alerts would never fire.
+**Symptom:** Every mechanical task Beckman spawned (`MissionAdvance → workflow_advance`, `RequestClarification → mr_roboto.clarify`, DLQ notify, cron-fired todo_reminder / daily_digest / api_discovery, nerd_herd health alert, sweep escalation) would hit dispatch, mr_roboto.run would return `Action(status="failed", error="unknown mechanical action: None")`, and the task row would land in `failed` — then retry-loop through the queue until DLQ. Missions would fail to progress. Clarifications would never reach Telegram. DLQ alerts would never fire.
 
 **Root cause:** The workflow engine's canonical shape (verified by `tests/workflows/test_mechanical_step_materializes_with_executor_tag.py`) is:
 
@@ -33,7 +33,7 @@ context = {
 }
 ```
 
-The orchestrator's `_dispatch` does `t["payload"] = ctx["payload"]` and salako routes on `payload["action"]`. Task 2/5/7 subagents stored the payload fields flat at the top of `context` (no nested `payload` dict), and sometimes used `executor=<name>` instead of `action=<name>`. Both mistakes combined to make every spawned mechanical task unrouteable.
+The orchestrator's `_dispatch` does `t["payload"] = ctx["payload"]` and mr_roboto routes on `payload["action"]`. Task 2/5/7 subagents stored the payload fields flat at the top of `context` (no nested `payload` dict), and sometimes used `executor=<name>` instead of `action=<name>`. Both mistakes combined to make every spawned mechanical task unrouteable.
 
 **Fix (1 commit):**
 
@@ -72,7 +72,7 @@ tests/test_beckman_retry.py                5 tests
 tests/test_beckman_apply.py                4 tests  (2 updated)
 tests/test_beckman_next_task.py            3 tests
 tests/test_beckman_on_task_finished.py     4 tests  (2 updated)
-tests/test_salako_workflow_advance.py      2 tests
+tests/test_mr_roboto_workflow_advance.py      2 tests
 tests/test_workflow_engine_advance.py      4 tests
 tests/test_mechanical_context_shape.py     3 tests  (NEW)
 ```
@@ -87,7 +87,7 @@ DB_PATH="$PWD/worktree_test.db" \
     tests/test_beckman_cron_seed.py tests/test_beckman_rewrite.py \
     tests/test_beckman_retry.py tests/test_beckman_apply.py \
     tests/test_beckman_next_task.py tests/test_beckman_on_task_finished.py \
-    tests/test_salako_workflow_advance.py tests/test_workflow_engine_advance.py \
+    tests/test_mr_roboto_workflow_advance.py tests/test_workflow_engine_advance.py \
     tests/test_mechanical_context_shape.py -v
 rm -f worktree_test.db
 ```
@@ -100,7 +100,7 @@ rm -f worktree_test.db
 2. Manual smoke per the spec success criteria:
    - `/task echo hello` — task spawns, dispatches, completes, Telegram reply
    - `/shop coffee beans` — shopping mission runs through `MissionAdvance` spawns `workflow_advance` tasks; scraping runs
-   - A mission phase that emits a clarification — should produce a `salako.clarify` task that sends the Telegram question
+   - A mission phase that emits a clarification — should produce a `mr_roboto.clarify` task that sends the Telegram question
    - DLQ retry of an already-failed task — should generate a DLQ notify message in Telegram
    - Wait ~5 minutes after startup and check `scheduled_tasks` table: `beckman_sweep` and `nerd_herd_health_alert` markers should have `next_run` advanced once
 
@@ -108,7 +108,7 @@ rm -f worktree_test.db
 
 Carried over from the Task 13 final review, mostly unchanged:
 
-1. **Salako executors for cron markers** — `todo_reminder`, `daily_digest`, `api_discovery`. The cron rows now correctly dispatch with the right shape, but the executor implementations don't exist in `packages/salako/`. They'll fall through to salako's "unknown action" branch until built. Each deserves a proper brainstorm (what's in the digest? how does LLM-driven todo reminder work?). `_parse_todo_suggestions` parser is recoverable from `86dea8c^:packages/general_beckman/.../scheduled_jobs.py`.
+1. **Mr. Roboto executors for cron markers** — `todo_reminder`, `daily_digest`, `api_discovery`. The cron rows now correctly dispatch with the right shape, but the executor implementations don't exist in `packages/mr_roboto/`. They'll fall through to mr_roboto's "unknown action" branch until built. Each deserves a proper brainstorm (what's in the digest? how does LLM-driven todo reminder work?). `_parse_todo_suggestions` parser is recoverable from `86dea8c^:packages/general_beckman/.../scheduled_jobs.py`.
 
 2. **Advance_recipe extraction** — `packages/workflow_engine/src/workflow_engine/advance.py` catches `ImportError` on `src.workflows.engine.recipe.advance_recipe`. The Task 6 subagent read `_handle_complete` end-to-end and found zero phase-progression logic there — `post_execute_workflow_step` in `src/workflows/engine/hooks.py` handles phase completion via `_check_phase_completion`. So missions should progress correctly without `advance_recipe`. **Verify this empirically during smoke-test**: start a mission, watch phase transitions happen. If phases never advance to N+1, then extraction is needed.
 
@@ -118,7 +118,7 @@ Carried over from the Task 13 final review, mostly unchanged:
 
 5. **Seed race** — `cron_seed` now has an `asyncio.Lock`. No change needed.
 
-6. **`_parse_todo_suggestions` test** (removed from `tests/test_todo.py`) — resurrect from git history if/when the `todo_reminder` salako executor is built.
+6. **`_parse_todo_suggestions` test** (removed from `tests/test_todo.py`) — resurrect from git history if/when the `todo_reminder` mr_roboto executor is built.
 
 ## Key files for the next session
 
@@ -143,4 +143,4 @@ Carried over from the Task 13 final review, mostly unchanged:
 
 This session: Task 13 executed via subagents → merged → deep review → five bugs caught → all fixed → regression guard added → 33/33 tests green → this handoff written.
 
-Next session: verify the bug-fix commit with the user, smoke-test KutAI, and optionally pick up one of the salako reminder executor builds (each is its own brainstorm + spec + plan cycle).
+Next session: verify the bug-fix commit with the user, smoke-test KutAI, and optionally pick up one of the mr_roboto reminder executor builds (each is its own brainstorm + spec + plan cycle).

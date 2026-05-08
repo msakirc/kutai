@@ -4838,7 +4838,7 @@
         "staging_environment",
         "staging_deployment_verified"
       ],
-      "instruction": "[NEEDS-REAL-TOOLS] Requires real deploy adapters (Vercel/Railway/Fly/Render/etc.) the agent does not currently have. Until those adapters land in salako, do NOT autonomously execute this step — surface a needs_clarification asking the human operator to provision and report back, then record their answer as the artifact. Provision staging environment and deploy the scaffolded application. Verify health checks pass, database migrations run, and the application is accessible. Test the CD pipeline by triggering a deployment.",
+      "instruction": "[NEEDS-REAL-TOOLS] Requires real deploy adapters (Vercel/Railway/Fly/Render/etc.) the agent does not currently have. Until those adapters land in mr_roboto, do NOT autonomously execute this step — surface a needs_clarification asking the human operator to provision and report back, then record their answer as the artifact. Provision staging environment and deploy the scaffolded application. Verify health checks pass, database migrations run, and the application is accessible. Test the CD pipeline by triggering a deployment.",
       "done_when": "staging_environment and staging_deployment_verified exist.",
       "artifact_schema": {
         "staging_environment": {
@@ -5348,7 +5348,7 @@
       "output_artifacts": [
         "e2e_test_suite"
       ],
-      "instruction": "Author E2E test files only. Do NOT claim execution results — a sibling mechanical step (9.4a) runs the suite via salako.run_pytest and emits the actual pass/fail. Review existing E2E tests against functional requirements. Write missing E2E tests for user flows without coverage. Each test should simulate a complete user flow from entry to completion, including UI interactions, API calls, and database state verification. Use the project's E2E framework (Playwright, Cypress, or equivalent). Emit `test_files` (list of paths under `e2e/`) and `flows_covered` (count of authored test cases). Do NOT emit `flows_passed` — that's the runner's job.",
+      "instruction": "Author E2E test files only. Do NOT claim execution results — a sibling mechanical step (9.4a) runs the suite via mr_roboto.run_pytest and emits the actual pass/fail. Review existing E2E tests against functional requirements. Write missing E2E tests for user flows without coverage. Each test should simulate a complete user flow from entry to completion, including UI interactions, API calls, and database state verification. Use the project's E2E framework (Playwright, Cypress, or equivalent). Emit `test_files` (list of paths under `e2e/`) and `flows_covered` (count of authored test cases). Do NOT emit `flows_passed` — that's the runner's job.",
       "done_when": "e2e_test_suite exists with authored test files.",
       "artifact_schema": {
         "e2e_test_suite": {
@@ -5376,7 +5376,7 @@
       "output_artifacts": [
         "e2e_test_run_result"
       ],
-      "instruction": "Mechanical: run the authored E2E suite via salako.run_pytest against the e2e/ directory. Pass requires pytest exit 0, total > 0, failed == 0, errors == 0. A green exit on zero-collected counts as failure (silent skip).",
+      "instruction": "Mechanical: run the authored E2E suite via mr_roboto.run_pytest against the e2e/ directory. Pass requires pytest exit 0, total > 0, failed == 0, errors == 0. A green exit on zero-collected counts as failure (silent skip).",
       "done_when": "e2e_test_run_result.ok is true.",
       "payload": {
         "action": "run_pytest",
@@ -8747,7 +8747,7 @@
             "git_commit",
             "git_branch"
           ],
-          "instruction": "[NEEDS-REAL-TOOLS] Per-feature staging deploy requires a real CD trigger + health-check adapter (e.g. salako.run_cmd against the CI provider, plus an http_request with retry against the staging URL). Until those land, do NOT claim 'health_check_passed' — surface a needs_clarification with the merge commit SHA and ask the operator to confirm. Merge feature branch, wait for CI/CD, verify deployment succeeds and health check passes on staging.",
+          "instruction": "[NEEDS-REAL-TOOLS] Per-feature staging deploy requires a real CD trigger + health-check adapter (e.g. mr_roboto.run_cmd against the CI provider, plus an http_request with retry against the staging URL). Until those land, do NOT claim 'health_check_passed' — surface a needs_clarification with the merge commit SHA and ask the operator to confirm. Merge feature branch, wait for CI/CD, verify deployment succeeds and health check passes on staging.",
           "output_artifacts": [
             "staging_deployment_result"
           ],
@@ -8765,7 +8765,7 @@
           "template_step_id": "feat.14",
           "name": "staging_validation",
           "agent": "mechanical",
-          "instruction": "Mechanical: HTTP-check the staging URL emitted by feat.13 staging_deploy. Reads the per-feature staging_deployment_result artifact, pulls the `url` field, runs salako.http_check with retry/backoff (5 attempts). Pass requires the final response to be 2xx. Visual / multi-breakpoint / interactive smoke checks are NOT covered here — they need a Playwright adapter that hasn't landed. The artifact_schema reflects this honestly: only smoke_tests_passed is asserted.",
+          "instruction": "Mechanical: HTTP-check the staging URL emitted by feat.13 staging_deploy. Reads the per-feature staging_deployment_result artifact, pulls the `url` field, runs mr_roboto.http_check with retry/backoff (5 attempts). Pass requires the final response to be 2xx. Visual / multi-breakpoint / interactive smoke checks are NOT covered here — they need a Playwright adapter that hasn't landed. The artifact_schema reflects this honestly: only smoke_tests_passed is asserted.",
           "input_artifacts": [
             "staging_deployment_result"
           ],

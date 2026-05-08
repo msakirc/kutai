@@ -12,7 +12,7 @@ from .router import ModelCallFailed
 from .task_context import parse_context
 from .context_injection import inject_chain_context
 from .startup_recovery import startup_recovery
-import salako
+import mr_roboto
 from ..agents import get_agent
 from ..tools.workspace import get_mission_workspace, get_mission_workspace_relative
 from ..tools.git_ops import ensure_git_repo, create_mission_branch
@@ -49,7 +49,7 @@ class Orchestrator:
     # ─── Dispatch ────────────────────────────────────────────────────────
 
     async def _dispatch(self, task: dict) -> None:
-        """Inject context → run agent/salako → on_task_finished → push_metrics."""
+        """Inject context → run agent/mr_roboto → on_task_finished → push_metrics."""
         import general_beckman
         task_id = task["id"]
         agent_type = task.get("agent_type", "executor")
@@ -173,7 +173,7 @@ class Orchestrator:
                 # {"executor": "<action>", ...} instead of
                 # {"executor": "mechanical", "payload": {"action": ...}}.
                 # Existing DB rows with the old shape dispatch here with
-                # no payload and salako returns `unknown mechanical
+                # no payload and mr_roboto returns `unknown mechanical
                 # action: None`. Promote ctx.executor to payload.action
                 # at runtime so we don't have to migrate rows.
                 if "payload" not in t:
@@ -235,14 +235,14 @@ class Orchestrator:
                         logger.debug(
                             f"legacy mechanical rescue failed #{task.get('id','?')}: {_e}"
                         )
-                r = await salako.run(t)
+                r = await mr_roboto.run(t)
                 if r.status == "completed":
                     return {"status": "completed", "result": json.dumps(r.result)}
                 if r.status == "needs_clarification":
                     # Mechanical executor asked the user something
                     # (variant_choice keyboard) and set the task to
                     # waiting_human. Return the same status upstream so
-                    # beckman's router leaves the row where salako put
+                    # beckman's router leaves the row where mr_roboto put
                     # it — no "completed" flip that would advance the
                     # mission past a user-gated step.
                     return {
@@ -331,7 +331,7 @@ class Orchestrator:
             logger.exception("dispatch failed task #%s: %s", task_id, e)
 
         # Mechanical clarify (variant_choice keyboard) self-manages state:
-        # salako.clarify already called update_task(status="waiting_human")
+        # mr_roboto.clarify already called update_task(status="waiting_human")
         # after successfully sending the keyboard, and the user's tap writes
         # clarify_choice + flips the task to completed via
         # _resume_mission_at_step. Running on_task_finished here would route

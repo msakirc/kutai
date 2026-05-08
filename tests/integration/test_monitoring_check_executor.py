@@ -1,4 +1,4 @@
-"""Integration test for the monitoring_check salako executor.
+"""Integration test for the monitoring_check mr_roboto executor.
 
 Verifies:
 - URL failure enqueues a notify_user sub-task with correct parent_task_id
@@ -65,8 +65,8 @@ class TestMonitoringCheckExecutor:
                     mock_tg = MagicMock()
                     mock_tg.send_notification = AsyncMock()
 
-                    with patch("salako.notify_user.get_telegram", return_value=mock_tg):
-                        from salako.executors.monitoring_check import run as exec_run
+                    with patch("mr_roboto.notify_user.get_telegram", return_value=mock_tg):
+                        from mr_roboto.executors.monitoring_check import run as exec_run
                         result = await exec_run(task)
 
             assert result["urls_checked"] == 1
@@ -115,7 +115,7 @@ class TestMonitoringCheckExecutor:
             task = {"id": parent_id, "payload": {"action": "monitoring_check"}}
 
             with patch.dict(os.environ, {"MONITOR_URLS": "", "MONITOR_GITHUB_REPOS": ""}):
-                from salako.executors.monitoring_check import run as exec_run
+                from mr_roboto.executors.monitoring_check import run as exec_run
                 result = await exec_run(task)
 
             assert result["alerts"] == 0
@@ -157,7 +157,7 @@ class TestMonitoringCheckExecutor:
                 "MONITOR_GITHUB_REPOS": "",
             }):
                 with patch("src.infra.monitoring.check_url_uptime", side_effect=fake_up):
-                    from salako.executors.monitoring_check import run as exec_run
+                    from mr_roboto.executors.monitoring_check import run as exec_run
                     result = await exec_run(task)
 
             assert result["alerts"] >= 1

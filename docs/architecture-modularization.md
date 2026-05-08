@@ -15,7 +15,7 @@ Telegram / API
        │
   General Beckman ─── task queue, eligibility, look-ahead, lifecycle
        │
-  LLM Dispatcher ─── ask, load, call, retry    (or Salako, for mechanical)
+  LLM Dispatcher ─── ask, load, call, retry    (or Mr. Roboto, for mechanical)
        │
   ┌────┼──────────────┐
   │    │              │
@@ -30,7 +30,7 @@ Nerd Herd         │           llama-server
            (GPU sem)  (cloud capacity)
 ```
 
-**Orchestrator** drains `beckman.next_task()` to saturation, dispatches each via `salako.run()` (mechanical) or `llm_dispatcher.request()` (LLM), invokes `beckman.on_task_finished()` on return, ticks `beckman.tick()` every 3s. Does NOT select tasks, does NOT select models, does NOT own lifecycle handlers. Post-Task-13 target: ~200 lines.
+**Orchestrator** drains `beckman.next_task()` to saturation, dispatches each via `mr_roboto.run()` (mechanical) or `llm_dispatcher.request()` (LLM), invokes `beckman.on_task_finished()` on return, ticks `beckman.tick()` every 3s. Does NOT select tasks, does NOT select models, does NOT own lifecycle handlers. Post-Task-13 target: ~200 lines.
 
 **General Beckman** is the task master — owns the queue, eligibility/priority filters, lane classification (mechanical / cloud_llm / local_llm), queue look-ahead against cloud quota, watchdog + scheduled-jobs ticks, and post-execution lifecycle (`on_task_finished` drains `result_router` and runs per-action handlers). Consumes `nerd_herd.snapshot()` for capacity state. Runs *before* Fatih Hoca per dispatch. See `docs/superpowers/specs/2026-04-18-phase2b-general-beckman-design.md`.
 
@@ -78,8 +78,8 @@ Agent needs LLM call
 | **kuleden_donen_var** | Cloud provider capacity tracker: rate limits, quotas, circuit breakers | `packages/kuleden_donen_var/` | Stable v0.1.0 | None |
 | **hallederiz_kadir** | LLM call execution hub: litellm, streaming, retries, quality | `packages/hallederiz_kadir/` | New v0.1.0 | litellm |
 | **fatih_hoca** | Model manager: scoring, selection, swap budget, failure adaptation | `packages/fatih_hoca/` | Stable v0.1.0 | nerd_herd |
-| **salako** | Mechanical dispatcher: non-LLM executors (workspace snapshot, git auto-commit, clarify, notify_user) | `packages/salako/` | Stable v0.1.0 | None |
-| **general_beckman** | Task master: queue, eligibility, lane classification, quota look-ahead, lifecycle drain, watchdog + scheduled-job ticks | `packages/general_beckman/` | New v0.1.0 (transitional — main-loop rewrite pending Task 13 follow-up) | nerd_herd, salako |
+| **mr_roboto** | Mechanical dispatcher: non-LLM executors (workspace snapshot, git auto-commit, clarify, notify_user) | `packages/mr_roboto/` | Stable v0.1.0 | None |
+| **general_beckman** | Task master: queue, eligibility, lane classification, quota look-ahead, lifecycle drain, watchdog + scheduled-job ticks | `packages/general_beckman/` | New v0.1.0 (transitional — main-loop rewrite pending Task 13 follow-up) | nerd_herd, mr_roboto |
 
 All packages: `packages/<name>/`, src layout, editable install via requirements.txt. Original module becomes a thin shim preserving all import paths.
 
@@ -330,9 +330,9 @@ Shims use the `sys.modules[__name__] = _pkg` aliasing pattern so `patch("src.cor
 **New modules in the package:**
 - `general_beckman/queue.py` — eligibility filter + lane classification (mechanical / cloud_llm / local_llm).
 - `general_beckman/lookahead.py` — holds back cloud-heavy tasks when projected demand exceeds quota remaining (reinstates the look-ahead lost during the earlier `quota_planner` extraction).
-- `general_beckman/lifecycle.py` — `on_task_finished` drain + `handle_clarification` rewritten to emit a mechanical salako `clarify` task instead of calling Telegram directly.
+- `general_beckman/lifecycle.py` — `on_task_finished` drain + `handle_clarification` rewritten to emit a mechanical mr_roboto `clarify` task instead of calling Telegram directly.
 
-**Salako gained two new mechanical executors (Tasks 1 + 2):**
+**Mr. Roboto gained two new mechanical executors (Tasks 1 + 2):**
 - `clarify` — sends a clarification prompt via Telegram and marks the task `waiting_human`.
 - `notify_user` — plain-status Telegram send for meaningful notifications.
 
@@ -355,14 +355,14 @@ Task 13 of the Phase 2b plan called for a wholesale rewrite of the main loop to 
 - **Beckman runs *before* Fatih Hoca per dispatch**, not after. Beckman answers "which tasks to release, given capacity?"; Fatih Hoca answers "for this released task, which model?". They consume the same `nerd_herd.snapshot()` but ask different questions.
 - **No artificial parallelism cap.** Capacity sources bound dispatch naturally: llama-server is 1-slot (physical), `kdv` tracks cloud rate limits, `beckman.lookahead` holds back cloud-heavy tasks against quota remaining, mechanical is unbounded. Early drafts proposed an env-flag cap-at-1 per lane; this was removed — the authoritative capacity math is the only cap that should exist.
 - **Capacity short-circuits via `nerd_herd`, not via dispatcher.** `kdv` already registers cloud-provider state to `nerd_herd`; beckman reads the same snapshot Fatih Hoca does. Capacity data never detours through `llm_dispatcher` / `orchestrator` as a message, matching the modularization principle that data flows directly producer→consumer.
-- **Notifications split.** Meaningful notifications (mission complete, DLQ alerts, rejections) go through a `salako.notify_user` mechanical task — they get a DB row and survive restart. Ephemeral progress chatter (scraping progress, iteration counters) stays as direct `get_telegram().send_message(...)` at call sites. A DB row per heartbeat is the anti-pattern being avoided.
-- **Clarification reuses the existing tool pipeline, not a new Decision type.** Agents already emit `{"action": "clarify", "question": "..."}` via the `clarify` tool; `result_router` already maps that to a `RequestClarification` action; `lifecycle.handle_clarification` now emits a `salako.clarify` mechanical task that does the Telegram send. No parallel `RequestApproval` type was introduced. The original `approval_fn` callback path (Telegram yes/no) was dead in production and deleted.
-- **No `Dispatch(task)` wrapper.** Beckman's output reduces to "a task to run." `agent_type == "mechanical"` routes to salako; anything else routes to `llm_dispatcher`. The wrapper would have been ceremony with no consumers.
+- **Notifications split.** Meaningful notifications (mission complete, DLQ alerts, rejections) go through a `mr_roboto.notify_user` mechanical task — they get a DB row and survive restart. Ephemeral progress chatter (scraping progress, iteration counters) stays as direct `get_telegram().send_message(...)` at call sites. A DB row per heartbeat is the anti-pattern being avoided.
+- **Clarification reuses the existing tool pipeline, not a new Decision type.** Agents already emit `{"action": "clarify", "question": "..."}` via the `clarify` tool; `result_router` already maps that to a `RequestClarification` action; `lifecycle.handle_clarification` now emits a `mr_roboto.clarify` mechanical task that does the Telegram send. No parallel `RequestApproval` type was introduced. The original `approval_fn` callback path (Telegram yes/no) was dead in production and deleted.
+- **No `Dispatch(task)` wrapper.** Beckman's output reduces to "a task to run." `agent_type == "mechanical"` routes to mr_roboto; anything else routes to `llm_dispatcher`. The wrapper would have been ceremony with no consumers.
 
 **Follow-ups (out of scope for Phase 2b initial landing, now completed in Task 13):**
 - Main-loop rewrite — completed. See Phase 2b — Task 13 below.
 - `kdv` cloud rate-limit state persistence — currently in-memory only; lost on restart.
-- Full Telegram module extraction (outbound runs through salako executors; inbound reply routing still in `telegram_bot.py`).
+- Full Telegram module extraction (outbound runs through mr_roboto executors; inbound reply routing still in `telegram_bot.py`).
 - Progress-chatter standardization — many sites still call `self.telegram.send_message` directly.
 
 ---
@@ -380,10 +380,10 @@ timeouts. All `_handle_*` lifecycle methods are removed; their logic is split:
   timeout) → `general_beckman.sweep`, fired by the internal "sweep" cron
   marker every ~5min
 - workflow-step post-hook + artifact capture + next-phase emission →
-  `packages/workflow_engine/` via a thin `salako.workflow_advance` executor
+  `packages/workflow_engine/` via a thin `mr_roboto.workflow_advance` executor
 - resource health (GPU, KDV, credentials) → `nerd_herd.health_summary`,
   alerts dispatched via a `nerd_herd_health` cron marker that spawns
-  `salako.notify_user` tasks
+  `mr_roboto.notify_user` tasks
 
 Beckman's public API is exactly 3 methods: `next_task`, `on_task_finished`,
 `enqueue`. Lanes, swap-aware batch deferral, and model-affinity reordering

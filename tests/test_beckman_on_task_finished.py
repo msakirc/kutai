@@ -2,8 +2,8 @@
 
 Verifies the new route_result -> rewrite_actions -> apply_actions flow:
 - completed result marks task completed
-- mission task completion spawns a salako workflow_advance mechanical task
-- clarification spawns a salako clarify mechanical task
+- mission task completion spawns a mr_roboto workflow_advance mechanical task
+- clarification spawns a mr_roboto clarify mechanical task
 - silent task + clarify request -> rewrite turns into Failed, retry path
   leaves the task in 'pending' (first retry).
 """
@@ -89,7 +89,7 @@ async def test_mission_task_complete_spawns_workflow_advance_and_grader(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_clarify_spawns_salako_clarify_task(tmp_path, monkeypatch):
+async def test_clarify_spawns_mr_roboto_clarify_task(tmp_path, monkeypatch):
     await _fresh_db(tmp_path, monkeypatch)
     try:
         tid = await add_task(title="t", description="", agent_type="coder")

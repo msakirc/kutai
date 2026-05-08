@@ -44,7 +44,7 @@ shipped through eleven commits across Phase 1, 2, 5, and 4 (partial).
 | `89445b8` | 2.4 | refactor(dispatcher): request() becomes alias over beckman.enqueue(await_inline=True) |
 | `e777580` | (parallel user fix) | fix(pool_pressure): count provider-wide in_flight, not same-model only |
 | `3d73992` | 5.14 | refactor(monitoring): cron-seeded monitoring_check, alerts via notify_user sub-tasks |
-| `7030841` | 5.15 | refactor(memory): cron-seeded vector_maint via salako, fixes event-loop wedge |
+| `7030841` | 5.15 | refactor(memory): cron-seeded vector_maint via mr_roboto, fixes event-loop wedge |
 | `34e6d61` | 2.5 | refactor(beckman): admission owns pool_pressure + fatih_hoca.select + KDV.pre_call + in_flight |
 | `f72013e` | 2.5-fixup | test(migration): use setattr DB_PATH not setenv for isolation |
 | `e2c0f4c` | 2.5-fixup | fix(in_flight): est_tokens propagation through type-conversion boundaries |
@@ -117,7 +117,7 @@ Pending:
 
 `monitoring_check` (5min URL/GitHub poll) and `vector_maint_wal` (30min) +
 `vector_maint_snapshot` (24h) now run as cron-seeded mechanical tasks via
-salako executors. The old `asyncio.create_task` background loops in
+mr_roboto executors. The old `asyncio.create_task` background loops in
 `src/infra/monitoring.py` and `src/app/run.py` are deleted. Vector maint
 also fixes the mission 46 incident's 120s sync I/O event-loop wedge by
 delegating to ChromaDB's `asyncio.to_thread` paths.
@@ -217,7 +217,7 @@ Both indexed in `MEMORY.md`.
 - Don't ship Phase 6 cleanup until Phase 4 is fully landed AND stable
   for ≥1 week. The alias path is the safety net during transition.
 - Don't run pytest without `timeout` prefix.
-- Don't run pytest without `.venv/Scripts/python -m pytest` (salako
+- Don't run pytest without `.venv/Scripts/python -m pytest` (mr_roboto
   not in conftest's `_PACKAGE_SRCS`).
 - Don't use `monkeypatch.setenv("DB_PATH", ...)` — silently fails when
   module's already imported. Use `monkeypatch.setattr(_db_mod, "DB_PATH",
@@ -258,8 +258,8 @@ Created:
 - `tests/workflows/engine/test_hooks_enqueue.py`
 - `tests/tools/test_vision_enqueue.py`
 - `packages/general_beckman/src/general_beckman/continuations.py`
-- `packages/salako/src/salako/executors/monitoring_check.py`
-- `packages/salako/src/salako/executors/vector_maint.py`
+- `packages/mr_roboto/src/mr_roboto/executors/monitoring_check.py`
+- `packages/mr_roboto/src/mr_roboto/executors/vector_maint.py`
 
 Modified (significant):
 - `src/infra/db.py` — `tasks.kind` column add
@@ -270,7 +270,7 @@ Modified (significant):
 - `src/core/orchestrator.py:262-279` — raw_dispatch sentinel branch
 - `packages/general_beckman/src/general_beckman/cron_seed.py` — new
   cron markers (monitoring_check, vector_maint_wal/snapshot)
-- `packages/salako/src/salako/__init__.py` — executor registration
+- `packages/mr_roboto/src/mr_roboto/__init__.py` — executor registration
 - `src/infra/monitoring.py` — `run_monitoring_loop` deleted
 - `src/app/run.py` — `_vector_maint_loop` deleted
 - `src/core/grading.py:305` — site 5 migration

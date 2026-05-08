@@ -1,5 +1,5 @@
 """Coverage: NEEDS-REAL-TOOLS marker on i2p_v3 steps that fundamentally
-require deploy/infra/observability adapters salako does not yet have.
+require deploy/infra/observability adapters mr_roboto does not yet have.
 
 Marker semantics:
 - ``needs_real_tools: true`` on the step
@@ -9,7 +9,7 @@ Marker semantics:
 Marker is informational + drift-guard for now; flow-control hookup
 (skip / human-gate routing) is left to the real-tools workstream.
 
-Until salako gains real adapters (Vercel/Railway/Supabase/Datadog/Sentry
+Until mr_roboto gains real adapters (Vercel/Railway/Supabase/Datadog/Sentry
 + Playwright runner), these steps must NOT claim success autonomously.
 """
 from __future__ import annotations
@@ -22,8 +22,8 @@ from src.workflows.engine.loader import load_workflow
 # Top-level steps from the 2026-05-05 handoff.
 # 9.4 (e2e_test_suite) and 13.11 (social_preview_test) were unblocked by
 # Phase 1 of the real-tools workstream (2026-05-05) — 9.4 paired with a
-# mechanical 9.4a runner via salako.run_pytest, 13.11 swapped to
-# salako.social_preview_check (parse_og_tags + image HEAD).
+# mechanical 9.4a runner via mr_roboto.run_pytest, 13.11 swapped to
+# mr_roboto.social_preview_check (parse_og_tags + image HEAD).
 TOP_LEVEL_NEEDS_REAL_TOOLS = [
     "7.13",   # staging_environment   — needs vendor provision API
     "13.1",   # production_infrastructure — needs vendor deploy API
@@ -31,7 +31,7 @@ TOP_LEVEL_NEEDS_REAL_TOOLS = [
 ]
 
 # Template steps (feature_implementation_template).
-# feat.14 (staging_validation) unblocked Phase 1 via salako.staging_smoke_check
+# feat.14 (staging_validation) unblocked Phase 1 via mr_roboto.staging_smoke_check
 # (http_check on the per-feature staging URL). feat.13 still needs a real CD
 # trigger — visual / multi-breakpoint smoke remains deferred.
 TEMPLATE_NEEDS_REAL_TOOLS = [

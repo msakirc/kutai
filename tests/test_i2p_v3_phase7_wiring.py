@@ -29,7 +29,7 @@ PHASE7_WIRED = {
 }
 
 # Phase-7 wiring complete (was 8 of 10; 7.4/7.6 moved to PHASE7_WIRED via
-# any_of + glob support in salako.verify_artifacts).
+# any_of + glob support in mr_roboto.verify_artifacts).
 PHASE7_DEFERRED: set[str] = set()
 
 

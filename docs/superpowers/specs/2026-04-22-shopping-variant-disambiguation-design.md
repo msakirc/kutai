@@ -52,7 +52,7 @@ user query
                              └─ step_variant_gate  ← new; pure code
                                   │  one survivor  → synthesize + format
                                   │  >1 survivors → emit NeedsClarification
-                                  └─ clarify (salako mechanical executor)
+                                  └─ clarify (mr_roboto mechanical executor)
                                        │  Telegram inline keyboard:
                                        │     [variant₁] … [variantₙ] [Compare all]
                                        │  user tap → _pending_action resume

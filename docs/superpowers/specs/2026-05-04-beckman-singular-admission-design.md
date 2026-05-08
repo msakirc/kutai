@@ -7,7 +7,7 @@
 - `docs/superpowers/specs/2026-04-18-phase2b-general-beckman-design.md` (Beckman as task master)
 - `docs/superpowers/specs/2026-04-29-pool-pressure-utilization-equilibrium-design.md` (admission pressure model)
 
-**Touchpoints:** `packages/general_beckman/`, `src/core/llm_dispatcher.py`, `src/core/orchestrator.py`, `src/agents/base.py`, `src/core/grading.py`, `src/workflows/engine/hooks.py`, `src/tools/vision.py`, `src/app/telegram_bot.py`, `src/core/task_classifier.py`, `src/shopping/intelligence/_llm.py`, `src/workflows/shopping/labels.py`, `src/workflows/shopping/pipeline_v2.py`, `src/infra/monitoring.py`, `src/app/run.py`, `packages/salako/`, `src/infra/db.py`
+**Touchpoints:** `packages/general_beckman/`, `src/core/llm_dispatcher.py`, `src/core/orchestrator.py`, `src/agents/base.py`, `src/core/grading.py`, `src/workflows/engine/hooks.py`, `src/tools/vision.py`, `src/app/telegram_bot.py`, `src/core/task_classifier.py`, `src/shopping/intelligence/_llm.py`, `src/workflows/shopping/labels.py`, `src/workflows/shopping/pipeline_v2.py`, `src/infra/monitoring.py`, `src/app/run.py`, `packages/mr_roboto/`, `src/infra/db.py`
 
 ---
 
@@ -43,7 +43,7 @@ These are independent throughput improvements. This spec changes admission topol
 | **Caller (any code that wants LLM/mechanical work done)** | Builds `TaskSpec`, calls `beckman.enqueue(spec, parent_id=…, await_inline=False)`, returns. Never imports dispatcher. Never calls KDV. Never touches in_flight. |
 | **Beckman pump** | Reads `next_task()` per tick. Per task: runs admission (eligibility + pool_pressure + KDV.pre_call + fatih_hoca.select via `next_task()`'s existing path), reserves slot, fires dispatcher. |
 | **Dispatcher (`llm_dispatcher.py`)** | Beckman's LLM worker. Receives a Beckman-admitted task. Owns: DaLLaMa load, KDV pre_call hook (provider-side), nerd_herd state push, HaLLederiz Kadir invocation, in-attempt retry loop, mid-attempt model switch via fatih_hoca, return result to Beckman. **Not a public surface.** |
-| **Salako (`packages/salako/`)** | Beckman's mechanical worker. Receives `agent_type="mechanical"` admitted tasks. Routes to executor (workspace_snapshot, git_commit, clarify, notify_user, monitoring_check, vector_maint_*). |
+| **Mr. Roboto (`packages/mr_roboto/`)** | Beckman's mechanical worker. Receives `agent_type="mechanical"` admitted tasks. Routes to executor (workspace_snapshot, git_commit, clarify, notify_user, monitoring_check, vector_maint_*). |
 | **Cron (`packages/general_beckman/cron.py`)** | Beckman's clock. Fires due markers from `scheduled_tasks` into the queue as concrete mechanical tasks. |
 
 ### 3.2 Single enqueue contract
@@ -105,7 +105,7 @@ async def enqueue(
 | `chat` | Telegram direct user conversation | new |
 | `classifier` | Pre-task message classifier | new |
 | `tool_call` | Agent tool dispatch (vision, etc.) | new |
-| `mechanical` | Salako-routed (existing `agent_type="mechanical"` consolidates here) | new |
+| `mechanical` | Mr. Roboto-routed (existing `agent_type="mechanical"` consolidates here) | new |
 
 `kind` distinguishes accounting & DLQ visibility. All kinds share the same admission lifecycle — pool_pressure check, fatih_hoca.select (LLM kinds only), in_flight registration, worker_attempts, DLQ-on-exhaust.
 
@@ -191,14 +191,14 @@ Two background loops gain Beckman cron entries:
 **`monitoring_check` — replaces `src/infra/monitoring.py:run_monitoring_loop`**
 
 - Cron seed in `cron_seed.py`: every 300s (env-overridable to keep `MONITOR_INTERVAL` semantics)
-- Salako executor `monitoring_check`: hits MONITOR_URLS + MONITOR_GITHUB_REPOS, returns alert payload
-- On alert detection, salako enqueues per-target `notify_user` mechanical sub-tasks (parent_id = monitoring_check task)
+- Mr. Roboto executor `monitoring_check`: hits MONITOR_URLS + MONITOR_GITHUB_REPOS, returns alert payload
+- On alert detection, mr_roboto enqueues per-target `notify_user` mechanical sub-tasks (parent_id = monitoring_check task)
 - Direct `tg.send_notification` calls inside monitoring loop deleted
 
 **`vector_maint_wal` + `vector_maint_snapshot` — replaces `src/app/run.py:_vector_maint_loop`**
 
 - Cron seeds: `vector_maint_wal` every 1800s, `vector_maint_snapshot` every 86400s
-- Salako executors wrap ChromaDB ops in `loop.run_in_executor(...)` so pump's event loop is not blocked (this also fixes mission 46 incident where 120s sync I/O wedged dispatch)
+- Mr. Roboto executors wrap ChromaDB ops in `loop.run_in_executor(...)` so pump's event loop is not blocked (this also fixes mission 46 incident where 120s sync I/O wedged dispatch)
 - `_vector_maint_loop` deleted
 
 Both join existing cron-seeded jobs (sweep, price_watch, kdv_persist, cloud_refresh, todo_reminder, nerd_herd_health, hoca_benchmark, btable_rollup) — no new mechanism.
@@ -269,7 +269,7 @@ Ship-able increments. Each step shippable; system stays runnable.
 6. **Migrate sites 1-7 (agent + grader + hooks + vision)**: LLM overhead → enqueue kind=overhead with parent_id. Dispatcher request() alias still used internally during transition.
 7. **Migrate sites 8-10 (telegram + classifier)**: enqueue kind=chat/classifier with await_inline=True. Direct path.
 8. **Migrate sites 11-14 (shopping)**: enqueue kind=overhead with continuation chain. Pipeline stages restructured to next_task_spec chains.
-9. **Mechanical migration**: cron seeds for `monitoring_check`, `vector_maint_wal`, `vector_maint_snapshot`. Salako executors. Old loops deleted.
+9. **Mechanical migration**: cron seeds for `monitoring_check`, `vector_maint_wal`, `vector_maint_snapshot`. Mr. Roboto executors. Old loops deleted.
 10. **Residue cleanup** (§5): delete dispatcher.request() alias, delete current_task_id contextvar, delete est_tokens shim from `5f7f905`, delete dispatcher's pool_pressure/KDV.pre_call calls (now Beckman's job).
 
 ## 5. Residue cleanup (final step)
@@ -294,7 +294,7 @@ After all callsites migrated:
 - **Telegram await_inline + 3s pump latency**: telegram chat reply now eats up to 3s admission delay on top of LLM call. Total user-perceived latency rises. Acceptable per scope, but flag for measurement post-ship.
 - **Workflow hook self-blocking**: post-execute hooks that fire continuation tasks must not await them in the parent workflow's dispatch context. on_complete pattern, not await_inline.
 - **Old `enqueue()` callers**: 4-5 places call `general_beckman.enqueue({...})` today (Telegram bot commands, mission planner, mission completion). Their signature widens; existing callsites stay valid because new params are kwargs with defaults.
-- **`agent_type="mechanical"` vs `kind="mechanical"`**: today salako's branch is `agent_type == "mechanical"`. After migration, `kind="mechanical"` is the source of truth, `agent_type` becomes informational (which executor). Consolidate.
+- **`agent_type="mechanical"` vs `kind="mechanical"`**: today mr_roboto's branch is `agent_type == "mechanical"`. After migration, `kind="mechanical"` is the source of truth, `agent_type` becomes informational (which executor). Consolidate.
 
 ## 7. Open questions
 
@@ -309,7 +309,7 @@ After all callsites migrated:
 - New integration: agent ReAct round-trip with grader as overhead sub-task. Verify checkpoint→resume.
 - New integration: telegram chat with await_inline. Verify ≤ 4s end-to-end on idle pump.
 - New integration: shopping pipeline 3-stage chain via next_task_spec. Verify all stages run, parent_id wired.
-- New integration: monitoring_check cron fires; salako executor enqueues notify_user sub-task on simulated alert.
+- New integration: monitoring_check cron fires; mr_roboto executor enqueues notify_user sub-task on simulated alert.
 - Stateful sim: `packages/fatih_hoca/tests/sim/run_scenarios.py` — verify pool_pressure with overhead admissions doesn't starve main_work.
 - DLQ visibility test: induce 5x grader failures, verify parent task surfaces with grader sub-task chain in `/dlq`.
 - Migration safety: run with old dispatcher.request() alias for one cycle, verify behavior identical.

@@ -1911,7 +1911,7 @@ If matches outside historical docstrings, fix or remove them.
 - [ ] **Step 4: Run tests**
 
 ```bash
-DB_PATH="$PWD/worktree_test.db" timeout 60 .venv/Scripts/python.exe -m pytest tests/test_beckman_posthooks.py tests/test_beckman_on_task_finished.py tests/test_beckman_rewrite.py tests/test_beckman_apply.py tests/test_grader_agent.py tests/test_artifact_summarizer_agent.py tests/test_workflow_engine_advance.py tests/test_salako_workflow_advance.py tests/test_mechanical_context_shape.py -v
+DB_PATH="$PWD/worktree_test.db" timeout 60 .venv/Scripts/python.exe -m pytest tests/test_beckman_posthooks.py tests/test_beckman_on_task_finished.py tests/test_beckman_rewrite.py tests/test_beckman_apply.py tests/test_grader_agent.py tests/test_artifact_summarizer_agent.py tests/test_workflow_engine_advance.py tests/test_mr_roboto_workflow_advance.py tests/test_mechanical_context_shape.py -v
 rm -f worktree_test.db
 ```
 
@@ -2265,7 +2265,7 @@ DB_PATH="$PWD/worktree_test.db" timeout 120 .venv/Scripts/python.exe -m pytest \
     tests/test_beckman_apply.py \
     tests/test_beckman_next_task.py \
     tests/test_beckman_on_task_finished.py \
-    tests/test_salako_workflow_advance.py \
+    tests/test_mr_roboto_workflow_advance.py \
     tests/test_workflow_engine_advance.py \
     tests/test_mechanical_context_shape.py \
     tests/test_grader_agent.py \

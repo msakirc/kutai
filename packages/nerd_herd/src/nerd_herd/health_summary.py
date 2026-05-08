@@ -2,7 +2,7 @@
 
 Returns a structured dict describing the current resource health state.
 All telegram.send_notification calls are dropped — alerts reach Telegram
-via the nerd_herd_health_alert cron marker which spawns salako.notify_user.
+via the nerd_herd_health_alert cron marker which spawns mr_roboto.notify_user.
 """
 from __future__ import annotations
 

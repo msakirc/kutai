@@ -1,4 +1,4 @@
-"""Integration tests for the vector_maint salako executors.
+"""Integration tests for the vector_maint mr_roboto executors.
 
 Verifies:
 - vector_maint_wal calls wal_checkpoint and returns ok=True
@@ -39,7 +39,7 @@ class TestVectorMaintWal:
             # wal_checkpoint already uses asyncio.to_thread internally;
             # mock it at the module level to return True without touching disk.
             with patch("src.memory.vector_store.wal_checkpoint", new_callable=AsyncMock, return_value=True) as mock_wc:
-                from salako.executors.vector_maint import run_wal
+                from mr_roboto.executors.vector_maint import run_wal
                 result = await run_wal(task)
 
             mock_wc.assert_called_once()
@@ -57,7 +57,7 @@ class TestVectorMaintWal:
                 raise RuntimeError("chroma is borked")
 
             with patch("src.memory.vector_store.wal_checkpoint", side_effect=_raise):
-                from salako.executors.vector_maint import run_wal
+                from mr_roboto.executors.vector_maint import run_wal
                 result = await run_wal(task)
 
             assert result["ok"] is False
@@ -77,7 +77,7 @@ class TestVectorMaintSnapshot:
             fake_dst = "/tmp/chroma.bak.20260503-120000"
 
             with patch("src.memory.vector_store.snapshot_chroma", new_callable=AsyncMock, return_value=fake_dst) as mock_sc:
-                from salako.executors.vector_maint import run_snapshot
+                from mr_roboto.executors.vector_maint import run_snapshot
                 result = await run_snapshot(task)
 
             mock_sc.assert_called_once_with(keep=3)
@@ -95,7 +95,7 @@ class TestVectorMaintSnapshot:
                 raise OSError("disk full")
 
             with patch("src.memory.vector_store.snapshot_chroma", side_effect=_raise):
-                from salako.executors.vector_maint import run_snapshot
+                from mr_roboto.executors.vector_maint import run_snapshot
                 result = await run_snapshot(task)
 
             assert result["dst"] is None
@@ -110,7 +110,7 @@ class TestVectorMaintSnapshot:
             task = {"id": 2, "payload": {"action": "vector_maint_snapshot"}}
 
             with patch("src.memory.vector_store.snapshot_chroma", new_callable=AsyncMock, return_value=None):
-                from salako.executors.vector_maint import run_snapshot
+                from mr_roboto.executors.vector_maint import run_snapshot
                 result = await run_snapshot(task)
 
             assert result["dst"] is None
@@ -142,7 +142,7 @@ class TestVectorMaintNonBlocking:
 
             ticker_task = asyncio.create_task(ticker())
             with patch("src.memory.vector_store.wal_checkpoint", side_effect=slow_wal):
-                from salako.executors.vector_maint import run_wal
+                from mr_roboto.executors.vector_maint import run_wal
                 task = {"id": 1, "payload": {"action": "vector_maint_wal"}}
                 result = await run_wal(task)
             await ticker_task
@@ -175,7 +175,7 @@ class TestVectorMaintNonBlocking:
 
             ticker_task = asyncio.create_task(ticker())
             with patch("src.memory.vector_store.snapshot_chroma", side_effect=slow_snapshot):
-                from salako.executors.vector_maint import run_snapshot
+                from mr_roboto.executors.vector_maint import run_snapshot
                 task = {"id": 2, "payload": {"action": "vector_maint_snapshot"}}
                 result = await run_snapshot(task)
             await ticker_task

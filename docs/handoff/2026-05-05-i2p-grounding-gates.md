@@ -34,7 +34,7 @@ regressions in pre-existing suites.
 
 | # | SHA prefix | Title |
 |---|-----------|-------|
-| 1 | 41a6d59 | feat(salako): verify_artifacts + run_cmd verbs, git_commit require_diff |
+| 1 | 41a6d59 | feat(mr_roboto): verify_artifacts + run_cmd verbs, git_commit require_diff |
 | 2 | be60643 | feat(workflows): tighten implementation_backlog schema; pattern, unique_by, min_items_from |
 | 3 | (D)     | feat(workflows): bound feature-template expansion (cap, dedup, halt-on-empty) |
 | 4 | 8c7de28 | feat(posthook): verify_artifacts kind end-to-end |
@@ -49,8 +49,8 @@ reviews.)
 
 ## Architectural changes
 
-### Salako (mechanical executor) verbs
-New entries in `packages/salako/src/salako/`:
+### Mr. Roboto (mechanical executor) verbs
+New entries in `packages/mr_roboto/src/mr_roboto/`:
 
 - `verify_artifacts.py` — given `paths` declared on the source step,
   resolve each under the mission workspace (rejecting absolute /
@@ -65,7 +65,7 @@ New entries in `packages/salako/src/salako/`:
   is empty, returns `failed` so silent no-op commits surface as
   hard failures. Backwards compatible (default off).
 
-Routed via `salako.run({payload: {action: "verify_artifacts", ...}})`
+Routed via `mr_roboto.run({payload: {action: "verify_artifacts", ...}})`
 and friends.
 
 ### Workflow engine — schema dialect
@@ -127,7 +127,7 @@ and friends.
     PostHookVerdict (the agent emits `posthook_verdict` field same as
     grader).
   - Rule 0b (new): mechanical Complete with posthook ctx →
-    synthesise PostHookVerdict (parses JSON-stringified salako result;
+    synthesise PostHookVerdict (parses JSON-stringified mr_roboto result;
     `passed = result.all_ok`).
   - Rule 0c (new): mechanical Failed with posthook ctx → synthesise
     fail verdict.
@@ -232,7 +232,7 @@ Not wired (7), with reason:
 
 | Suite | New tests |
 |-------|----------:|
-| salako verbs | 36 |
+| mr_roboto verbs | 36 |
 | schema dialect (pattern, unique_by, equals, min_items_from) | 31 |
 | feature loop bound | 9 |
 | verify_artifacts post-hook | 18 |
@@ -243,14 +243,14 @@ Not wired (7), with reason:
 
 Pre-existing suites (`test_beckman_*`, `test_concurrency_and_cascade`,
 `test_feature_template_idempotency`, `test_expander_double_dot`,
-`test_reviewer_no_grade`, `test_schema_dialect`, salako legacy)
+`test_reviewer_no_grade`, `test_schema_dialect`, mr_roboto legacy)
 continue to pass: 100+ pre-existing tests intact.
 
 Two-pass run required (conftest collision between `tests/` and
 `packages/general_beckman/tests/`):
 ```
 pytest tests/ ...                     # 190 pass
-pytest packages/general_beckman/tests/ packages/salako/tests/...  # 75 pass
+pytest packages/general_beckman/tests/ packages/mr_roboto/tests/...  # 75 pass
 ```
 
 ## How mission 58 differs from mission 57
@@ -291,7 +291,7 @@ applying.
 Steps that fundamentally need MCP / API tools the agent doesn't have:
 
 - 7.13 staging_environment
-- 9.4  e2e_test_suite (could become real `salako.run_pytest`)
+- 9.4  e2e_test_suite (could become real `mr_roboto.run_pytest`)
 - 13.1 production_infrastructure
 - 13.3 monitoring_setup
 - 13.11 social_preview_test
@@ -379,9 +379,9 @@ pytest tests/test_i2p_v3_review_gates.py \
 # 190 passed
 
 pytest packages/general_beckman/tests/ \
-       packages/salako/tests/test_verify_artifacts.py \
-       packages/salako/tests/test_run_cmd.py \
-       packages/salako/tests/test_run.py \
-       packages/salako/tests/test_git_commit.py
+       packages/mr_roboto/tests/test_verify_artifacts.py \
+       packages/mr_roboto/tests/test_run_cmd.py \
+       packages/mr_roboto/tests/test_run.py \
+       packages/mr_roboto/tests/test_git_commit.py
 # 75 passed
 ```

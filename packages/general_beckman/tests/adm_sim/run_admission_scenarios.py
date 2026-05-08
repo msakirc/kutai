@@ -16,7 +16,7 @@ def _setup_paths():
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
     for pkg in (
         "fatih_hoca", "nerd_herd", "general_beckman",
-        "kuleden_donen_var", "dallama", "hallederiz_kadir", "salako",
+        "kuleden_donen_var", "dallama", "hallederiz_kadir", "mr_roboto",
     ):
         src = os.path.join(root, "packages", pkg, "src")
         if src not in sys.path:

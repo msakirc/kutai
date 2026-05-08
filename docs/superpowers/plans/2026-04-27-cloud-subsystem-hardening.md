@@ -53,7 +53,7 @@
 - `packages/fatih_hoca/src/fatih_hoca/benchmark_cloud_match.py` (new) — family-aware match logic
 - `src/models/benchmark/benchmark_fetcher.py:1252` — accept cloud-aware match overlay
 - `packages/general_beckman/src/general_beckman/cron_seed.py:19` — add `cloud_refresh` cadence
-- `packages/salako/src/salako/actions.py` — add `cloud_refresh` action handler
+- `packages/mr_roboto/src/mr_roboto/actions.py` — add `cloud_refresh` action handler
 - `packages/kuleden_donen_var/src/kuleden_donen_var/kdv.py` — `no_data_warnings()` method
 
 ---
@@ -70,7 +70,7 @@
 8. Boot wiring + `_available_providers`
 9. G3: `model_pick_log.provider` column + writer + caller
 10. G5: cloud benchmark match + validation artifact + approval gate
-11. Beckman cron entry + salako handler
+11. Beckman cron entry + mr_roboto handler
 12. KDV no-data warning
 13. Live discovery smoke (env-gated)
 
@@ -2714,12 +2714,12 @@ git commit -m "feat(cloud): family-aware bench match + approval-gated promotion 
 
 ---
 
-### Task 17: Beckman cron entry + salako handler
+### Task 17: Beckman cron entry + mr_roboto handler
 
 **Files:**
 - Modify: `packages/general_beckman/src/general_beckman/cron_seed.py:19`
-- Modify: `packages/salako/src/salako/actions.py`
-- Test: `packages/salako/tests/test_cloud_refresh_action.py` (new)
+- Modify: `packages/mr_roboto/src/mr_roboto/actions.py`
+- Test: `packages/mr_roboto/tests/test_cloud_refresh_action.py` (new)
 
 - [ ] **Step 1: Add cadence row**
 
@@ -2737,17 +2737,17 @@ In `packages/general_beckman/src/general_beckman/cron_seed.py:19`, append to `IN
 - [ ] **Step 2: Write the failing test for handler**
 
 ```python
-# packages/salako/tests/test_cloud_refresh_action.py
+# packages/mr_roboto/tests/test_cloud_refresh_action.py
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from salako.actions import handle_cloud_refresh
+from mr_roboto.actions import handle_cloud_refresh
 
 
 @pytest.mark.asyncio
 async def test_handle_cloud_refresh_invokes_discovery_and_match():
-    with patch("salako.actions._refresh_cloud_subsystem", new=AsyncMock(return_value={
+    with patch("mr_roboto.actions._refresh_cloud_subsystem", new=AsyncMock(return_value={
         "providers_probed": 3,
         "providers_ok": 2,
         "models_registered": 27,
@@ -2760,9 +2760,9 @@ async def test_handle_cloud_refresh_invokes_discovery_and_match():
 
 - [ ] **Step 3: Run → fail**
 
-- [ ] **Step 4: Implement `handle_cloud_refresh` in salako actions**
+- [ ] **Step 4: Implement `handle_cloud_refresh` in mr_roboto actions**
 
-Append to `packages/salako/src/salako/actions.py`:
+Append to `packages/mr_roboto/src/mr_roboto/actions.py`:
 
 ```python
 async def _refresh_cloud_subsystem() -> dict:
@@ -2804,17 +2804,17 @@ async def _refresh_cloud_subsystem() -> dict:
 
 
 async def handle_cloud_refresh(payload: dict) -> dict:
-    """Salako mechanical executor: scheduled cloud refresh."""
+    """Mr. Roboto mechanical executor: scheduled cloud refresh."""
     return await _refresh_cloud_subsystem()
 ```
 
-- [ ] **Step 5: Register handler in salako dispatch**
+- [ ] **Step 5: Register handler in mr_roboto dispatch**
 
-Find the action dispatch table in `packages/salako/src/salako/__init__.py` or `actions.py` (search for `_executor`). Add `"cloud_refresh": handle_cloud_refresh`.
+Find the action dispatch table in `packages/mr_roboto/src/mr_roboto/__init__.py` or `actions.py` (search for `_executor`). Add `"cloud_refresh": handle_cloud_refresh`.
 
 - [ ] **Step 6: Run → pass**
 
-Run: `pytest packages/salako/tests/test_cloud_refresh_action.py -v`
+Run: `pytest packages/mr_roboto/tests/test_cloud_refresh_action.py -v`
 
 - [ ] **Step 7: Verify cadence seeded on app start**
 
@@ -2824,8 +2824,8 @@ Expected: list contains `"cloud_refresh"`.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add packages/general_beckman/src/general_beckman/cron_seed.py packages/salako/src/salako/actions.py packages/salako/src/salako/__init__.py packages/salako/tests/test_cloud_refresh_action.py
-git commit -m "feat(cloud): 6h beckman cron + salako handler for cloud refresh"
+git add packages/general_beckman/src/general_beckman/cron_seed.py packages/mr_roboto/src/mr_roboto/actions.py packages/mr_roboto/src/mr_roboto/__init__.py packages/mr_roboto/tests/test_cloud_refresh_action.py
+git commit -m "feat(cloud): 6h beckman cron + mr_roboto handler for cloud refresh"
 ```
 
 ---
@@ -3078,7 +3078,7 @@ git commit -m "test(cloud): env-gated live /models smoke tests"
 
 - [ ] **Step 1: Run full unit test suite**
 
-Run: `timeout 120 pytest packages/fatih_hoca/tests/ tests/infra/ packages/kuleden_donen_var/tests/ packages/salako/tests/ -v`
+Run: `timeout 120 pytest packages/fatih_hoca/tests/ tests/infra/ packages/kuleden_donen_var/tests/ packages/mr_roboto/tests/ -v`
 Expected: all PASS.
 
 - [ ] **Step 2: Boot app once**
@@ -3131,7 +3131,7 @@ Spec coverage:
 | §G5 Cloud benchmarking + validation gate | 16, 19 (step 4 approval) |
 | Test plan | 2-12, 18, 19 |
 
-No placeholders found. Type consistency: `DiscoveredModel`/`ProviderResult` field names match across types.py, all adapters, discovery, registry helper, and tests. `register_cloud_from_discovered` signature matches its caller in `__init__.py` and salako handler.
+No placeholders found. Type consistency: `DiscoveredModel`/`ProviderResult` field names match across types.py, all adapters, discovery, registry helper, and tests. `register_cloud_from_discovered` signature matches its caller in `__init__.py` and mr_roboto handler.
 
 ---
 

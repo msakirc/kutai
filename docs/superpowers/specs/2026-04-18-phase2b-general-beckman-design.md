@@ -3,7 +3,7 @@
 **Date:** 2026-04-18
 **Status:** Design approved, ready for plan
 **Package:** `packages/general_beckman/`
-**Follows:** Plan A (in-tree untangle, merged), Plan B (salako package, merged)
+**Follows:** Plan A (in-tree untangle, merged), Plan B (mr_roboto package, merged)
 
 Named after General Beckman from *Chuck* — the NSA commander who hands out missions and approves action. This package owns the task queue and answers the question: **"what should we do next, and how many of it?"**
 
@@ -26,10 +26,10 @@ Target: `orchestrator.py` drops to ~200 lines of pure glue (LLM dispatch + mecha
 
 - **Model selection** — stays in `fatih_hoca`. Runs *after* beckman per dispatched task.
 - **LLM call execution** — stays in `hallederiz_kadir` via `llm_dispatcher`.
-- **Mechanical execution** — stays in `salako`.
+- **Mechanical execution** — stays in `mr_roboto`.
 - **System state aggregation** — stays in `nerd_herd`. Beckman consumes snapshots.
 - **Cloud rate tracking** — stays in `kdv` (registers to `nerd_herd`).
-- **Telegram I/O** — stays in `telegram_bot.py` for inbound parsing. Outbound messages route through salako's mechanical executors (new; see §6).
+- **Telegram I/O** — stays in `telegram_bot.py` for inbound parsing. Outbound messages route through mr_roboto's mechanical executors (new; see §6).
 
 ## 4. Core Interface
 
@@ -70,7 +70,7 @@ async def main_loop():
 
 async def _dispatch(task):
     if task["agent_type"] == "mechanical":
-        result = await salako.run(task)
+        result = await mr_roboto.run(task)
     else:
         result = await llm_dispatcher.request(task)
     await beckman.on_task_finished(task["id"], result)
@@ -81,7 +81,7 @@ No `_handle_*` methods. No `run_gates`. No `scheduled_jobs` loop. No watchdog th
 
 Note: `asyncio.create_task` is the *mechanism* for non-blocking dispatch. Actual parallelism is gated by beckman returning `None` once its policy cap is reached — see §14 for the initial cap-at-1-per-lane policy.
 
-## 6. Salako Gains Two Mechanical Executors
+## 6. Mr. Roboto Gains Two Mechanical Executors
 
 Existing: `workspace_snapshot`, `git_commit`.
 
@@ -89,7 +89,7 @@ New:
 - **`clarify`**: formats a clarification prompt from task payload, sends via `self.telegram.send_message`, stores pending state so user reply routes back as `user_clarification` in task_context. Replaces orchestrator's current `_handle_clarification` Telegram send.
 - **`notify_user`**: sends a plain status message via Telegram. Used for meaningful notifications (mission complete, DLQ alerts, rejections). Ephemeral progress chatter does **not** go through this — it calls `telegram.send_message` directly from wherever it originates.
 
-Beckman emits these as regular tasks (just with `agent_type="mechanical"` and `executor="clarify"` / `"notify_user"`). Orchestrator routes all mechanical tasks to salako identically.
+Beckman emits these as regular tasks (just with `agent_type="mechanical"` and `executor="clarify"` / `"notify_user"`). Orchestrator routes all mechanical tasks to mr_roboto identically.
 
 ## 7. Capacity Contract
 
@@ -102,7 +102,7 @@ Beckman emits these as regular tasks (just with `agent_type="mechanical"` and `e
 
 **Beckman does not receive events.** No subscription API on nerd herd. Pull-only.
 
-**Completion triggers** drive immediate re-draining: when `llm_dispatcher.request()` or `salako.run()` returns, the main loop continues to the next iteration immediately, which pulls from beckman until `None`. No explicit "slot freed" signal needed — capacity changes are reflected in the next snapshot.
+**Completion triggers** drive immediate re-draining: when `llm_dispatcher.request()` or `mr_roboto.run()` returns, the main loop continues to the next iteration immediately, which pulls from beckman until `None`. No explicit "slot freed" signal needed — capacity changes are reflected in the next snapshot.
 
 **Tick cadence: 3s**, matching slightly above the 2s nerd-herd cache. Trade-off: faster ticks (1–2s) give more reactive scheduled-job dispatch; slower ticks are fine because completion triggers handle the hot path.
 
@@ -171,7 +171,7 @@ Both read `nerd_herd.snapshot()`. Neither depends on the other.
 Flag but don't fix in Plan C:
 
 - **kdv state persistence**: cloud rate-limit state is in-memory only; lost on restart. Risk of quota overrun while relearning. File as separate fix.
-- **Telegram module extraction**: outbound goes through salako executors in Plan C, but inbound reply routing stays in `telegram_bot.py`. Full split is a future project.
+- **Telegram module extraction**: outbound goes through mr_roboto executors in Plan C, but inbound reply routing stays in `telegram_bot.py`. Full split is a future project.
 - **Progress chatter standardization**: ephemeral notifications (scraping progress, iteration counters) still call `self.telegram.send_message` directly from many sites. No unified API. Worth tidying later, not now.
 
 ## 13. Success Criteria

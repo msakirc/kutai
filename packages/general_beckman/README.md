@@ -41,7 +41,7 @@ That's the entire surface. No public classes, no registries, no pub/sub, no `tic
 | **Result handling** | Pure rewrite rules → DB actions | Callbacks / chains / groups | Return value / job status | Middleware chain |
 | **Retry policy** | Typed `decide_retry` + quality bonus | Celery retry, exponential | `retry()` + `max_retries` | `Retries` middleware |
 | **Cron** | Unified table (crontab + interval) | `celery beat` (separate process) | `rq-scheduler` | Periodic tasks |
-| **Deps** | sqlite + salako + nerd_herd | Redis/RabbitMQ + kombu + celery | Redis | Redis/RabbitMQ |
+| **Deps** | sqlite + mr_roboto + nerd_herd | Redis/RabbitMQ + kombu + celery | Redis | Redis/RabbitMQ |
 | **Mission/workflow awareness** | Yes, via `MissionAdvance` action | Via chains/groups | Via dependent jobs | Via groups |
 | **Queue hygiene** | Integrated sweep (stuck, dep cascade, escalation) | None (outside scope) | None | None |
 
@@ -51,7 +51,7 @@ Beckman is deliberately narrow: one SQLite DB, one async process, one pump. It d
 
 > **Orchestrator orchestrates. Beckman owns tasks. Hoca owns models. Nerd Herd owns utilization.**
 
-Beckman answers *"should I dispatch one more?"* via a single system-busy bit from `nerd_herd.snapshot()`. No lanes, no partitioning. Model-aware concerns (swap budget, loaded-model affinity) live per-call inside `fatih_hoca.select()`. Workflow engine lives in its own package and is invoked via a thin `salako.workflow_advance` mechanical executor — never imported from here.
+Beckman answers *"should I dispatch one more?"* via a single system-busy bit from `nerd_herd.snapshot()`. No lanes, no partitioning. Model-aware concerns (swap budget, loaded-model affinity) live per-call inside `fatih_hoca.select()`. Workflow engine lives in its own package and is invoked via a thin `mr_roboto.workflow_advance` mechanical executor — never imported from here.
 
 ## Features
 
@@ -78,13 +78,13 @@ Beckman answers *"should I dispatch one more?"* via a single system-busy bit fro
 - Pending tasks with all deps failed → cascade fail (unless any dep is in DLQ)
 - `waiting_subtasks` with all children terminal → mark complete/failed
 - Pending tasks with `next_retry_at` >1h overdue → clear the gate
-- `waiting_human` escalation tiers (4h nudge / 24h tier 1 / 48h tier 2 / 72h cancel) — notifications via `salako.notify_user` tasks
+- `waiting_human` escalation tiers (4h nudge / 24h tier 1 / 48h tier 2 / 72h cancel) — notifications via `mr_roboto.notify_user` tasks
 - Workflow-level timeout → pause mission
 
 ### Retry policy (`retry.decide_retry`)
 - Backoff table: `[0, 10, 30, 120, 600]` seconds — first retry immediate, subsequent back off
 - Exhausted (attempts ≥ max) → DLQ, unless category is `quality` AND progress ≥ 0.5 AND fewer than 2 bonus attempts granted (then one bonus, `bonus_used=True`)
-- DLQ writes to `dead_letter_tasks` table + spawn a `salako.notify_user` task with failure summary (no inline Telegram)
+- DLQ writes to `dead_letter_tasks` table + spawn a `mr_roboto.notify_user` task with failure summary (no inline Telegram)
 
 ## Install
 
@@ -92,7 +92,7 @@ Beckman answers *"should I dispatch one more?"* via a single system-busy bit fro
 pip install -e ./packages/general_beckman
 ```
 
-Requires `sqlite3`, `nerd_herd`, `salako` (listed in pyproject.toml).
+Requires `sqlite3`, `nerd_herd`, `mr_roboto` (listed in pyproject.toml).
 
 ## API
 
@@ -173,7 +173,7 @@ orchestrator.run_loop (3s cycle)
 ### Task flow — result handling
 
 ```
-orchestrator._dispatch runs the agent/salako, then:
+orchestrator._dispatch runs the agent/mr_roboto, then:
   beckman.on_task_finished(task_id, result)
     ├─ route_result(task, result)          — Action dataclasses
     ├─ rewrite_actions(task, ctx, actions) — pure policy:
@@ -184,10 +184,10 @@ orchestrator._dispatch runs the agent/salako, then:
     └─ apply_actions(task, actions)        — DB side-effects per action type
          ├─ Complete / CompleteWithReusedAnswer → update_task(status=completed)
          ├─ SpawnSubtasks → add_task × N + waiting_subtasks
-         ├─ RequestClarification → salako.clarify task
+         ├─ RequestClarification → mr_roboto.clarify task
          ├─ RequestReview → reviewer task (deduped)
          ├─ Exhausted / Failed → decide_retry → pending+backoff | DLQ+notify
-         └─ MissionAdvance → salako.workflow_advance task
+         └─ MissionAdvance → mr_roboto.workflow_advance task
 ```
 
 ### Mission progression (no workflow-engine imports)
@@ -198,10 +198,10 @@ coder task #500 completes (mission_id=M)
   → apply spawns mechanical task: {executor: workflow_advance, mission_id: M, ...}
 
 Next cycle:
-  orchestrator picks that task → salako.run(it)
-  → salako.workflow_advance delegates to workflow_engine.advance()
+  orchestrator picks that task → mr_roboto.run(it)
+  → mr_roboto.workflow_advance delegates to workflow_engine.advance()
   → advance() runs post_execute_workflow_step (artifact capture, phase check)
-  → returns subtasks for phase N+1 → salako envelope {status: needs_subtasks}
+  → returns subtasks for phase N+1 → mr_roboto envelope {status: needs_subtasks}
   → on_task_finished → apply spawns those as SpawnSubtasks → DB rows
 ```
 
@@ -211,9 +211,9 @@ Next cycle:
 - **Process management / llama-server** — that's `dallama`.
 - **Cloud rate-limit tracking** — that's `kuleden_donen_var`.
 - **Resource health checks** — that's `nerd_herd.health_summary`.
-- **Workflow recipe / phase computation** — that's `workflow_engine`, invoked via `salako.workflow_advance`.
+- **Workflow recipe / phase computation** — that's `workflow_engine`, invoked via `mr_roboto.workflow_advance`.
 - **Telemetry push** — that lives at the dispatch observation point in `src/core/metrics_push.py`.
-- **Telegram I/O** — all outbound messages go through `salako.clarify` / `salako.notify_user` mechanical tasks.
+- **Telegram I/O** — all outbound messages go through `mr_roboto.clarify` / `mr_roboto.notify_user` mechanical tasks.
 
 ## License
 
@@ -250,14 +250,14 @@ API yuzeyi bundan ibaret. Public class yok, registry yok, pub/sub yok, `tick()` 
 - **Uc metotluk dar yuzey** — Celery/RQ gibi full framework degil. Tek islemde, SQLite uzerinde, asenkron.
 - **Saf rewrite kurallari** — sonuc-islem mantigi pure function, test edilebilir, side effect'siz.
 - **Birlesik cron tablosu** — kullanici crontab ifadeleri ve dahili cadence'lar ayni `scheduled_tasks` tablosunda.
-- **Misyon farkindaligi** — misyon gorevi tamamlandiginda `MissionAdvance` aksiyonu uretir, `salako.workflow_advance` mechanical gorevi dogurur. Workflow engine'i import etmez.
+- **Misyon farkindaligi** — misyon gorevi tamamlandiginda `MissionAdvance` aksiyonu uretir, `mr_roboto.workflow_advance` mechanical gorevi dogurur. Workflow engine'i import etmez.
 - **Entegre kuyruk temizligi** — sikismis task'lar, cascade basarisizliklar, waiting_human tirmandirma, workflow timeout — hepsi dahili `sweep_queue` ile.
 
 ## Tasarim ilkesi
 
 > **Orchestrator orchestrate eder. Beckman gorevleri sahiplenir. Hoca modelleri bilir. Nerd Herd utilization'i bilir.**
 
-Beckman *"bir tane daha gonderebilir miyim?"* sorusunu `nerd_herd.snapshot()`'tan gelen tek bir busy biti ile cevaplar. Lane yok, bolmecesiz. Model-farkindali kaygilar (swap budget, yuklu model affinity) per-call olarak `fatih_hoca.select()` icinde yasar. Workflow engine kendi paketinde, thin bir `salako.workflow_advance` mekanik executor araciligiyla cagrilir — buraya hic import edilmez.
+Beckman *"bir tane daha gonderebilir miyim?"* sorusunu `nerd_herd.snapshot()`'tan gelen tek bir busy biti ile cevaplar. Lane yok, bolmecesiz. Model-farkindali kaygilar (swap budget, yuklu model affinity) per-call olarak `fatih_hoca.select()` icinde yasar. Workflow engine kendi paketinde, thin bir `mr_roboto.workflow_advance` mekanik executor araciligiyla cagrilir — buraya hic import edilmez.
 
 ## Ozellikler
 
@@ -284,13 +284,13 @@ Beckman *"bir tane daha gonderebilir miyim?"* sorusunu `nerd_herd.snapshot()`'ta
 - Tum bagimliliklari fail olmus bekleyen → cascade fail (bagimliliklardan biri DLQ'da ise ertelenir)
 - `waiting_subtasks`'ta tum cocuklari terminal olmus → complete/failed isaretle
 - `next_retry_at`'i 1 saatten fazla gecmis bekleyen → kapiyi sifirla
-- `waiting_human` tirmandirma kademeleri (4s dipnot / 24s kademe 1 / 48s kademe 2 / 72s iptal) — bildirim `salako.notify_user` gorevleri ile
+- `waiting_human` tirmandirma kademeleri (4s dipnot / 24s kademe 1 / 48s kademe 2 / 72s iptal) — bildirim `mr_roboto.notify_user` gorevleri ile
 - Workflow-seviye timeout → misyonu pause et
 
 ### Yeniden deneme policy'si (`retry.decide_retry`)
 - Backoff tablosu: `[0, 10, 30, 120, 600]` saniye — ilk deneme anlik, sonrakiler artar
 - Exhausted (denemeler >= max) → DLQ, **eger** kategori `quality` VE progress >= 0.5 VE 2'den az bonus verilmisse bir bonus deneme (`bonus_used=True`)
-- DLQ yazimi `dead_letter_tasks` tablosuna + `salako.notify_user` gorevi olustur (inline Telegram yok)
+- DLQ yazimi `dead_letter_tasks` tablosuna + `mr_roboto.notify_user` gorevi olustur (inline Telegram yok)
 
 ## Kurulum
 
@@ -298,7 +298,7 @@ Beckman *"bir tane daha gonderebilir miyim?"* sorusunu `nerd_herd.snapshot()`'ta
 pip install -e ./packages/general_beckman
 ```
 
-Bagimliliklar: `sqlite3`, `nerd_herd`, `salako` (pyproject.toml'da).
+Bagimliliklar: `sqlite3`, `nerd_herd`, `mr_roboto` (pyproject.toml'da).
 
 ## API
 
@@ -351,10 +351,10 @@ coder gorevi #500 tamamlandi (mission_id=M)
   -> apply mechanical gorev dogurur: {executor: workflow_advance, mission_id: M, ...}
 
 Sonraki cycle:
-  orchestrator o gorevi secer -> salako.run(it)
-  -> salako.workflow_advance, workflow_engine.advance() cagirir
+  orchestrator o gorevi secer -> mr_roboto.run(it)
+  -> mr_roboto.workflow_advance, workflow_engine.advance() cagirir
   -> advance() post_execute_workflow_step calistirir (artifact capture, phase check)
-  -> N+1 faz icin subtask'lar doner -> salako envelope {status: needs_subtasks}
+  -> N+1 faz icin subtask'lar doner -> mr_roboto envelope {status: needs_subtasks}
   -> on_task_finished -> apply bunlari SpawnSubtasks olarak DB satirlarina cevirir
 ```
 
@@ -364,9 +364,9 @@ Sonraki cycle:
 - **Process yonetimi / llama-server** — o `dallama`.
 - **Cloud rate-limit takibi** — o `kuleden_donen_var`.
 - **Kaynak saglik kontrolu** — o `nerd_herd.health_summary`.
-- **Workflow recipe / faz hesabi** — o `workflow_engine`, `salako.workflow_advance` ile cagrilir.
+- **Workflow recipe / faz hesabi** — o `workflow_engine`, `mr_roboto.workflow_advance` ile cagrilir.
 - **Telemetry push** — o dispatch gozlem noktasinda, `src/core/metrics_push.py`'da.
-- **Telegram I/O** — tum disariya mesajlar `salako.clarify` / `salako.notify_user` mechanical gorevleri uzerinden.
+- **Telegram I/O** — tum disariya mesajlar `mr_roboto.clarify` / `mr_roboto.notify_user` mechanical gorevleri uzerinden.
 
 ## Lisans
 

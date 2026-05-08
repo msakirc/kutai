@@ -17,7 +17,7 @@ has its own ops shape).
 - Phase 4 has `tech_stack_research_and_selection` (4.2) but it implicitly leans web.
 - All phase-7 frontend_* steps are web-shaped (Vite/Next, Vitest/Jest).
 - All template feat.7 frontend_components emit `.tsx` for React; no Expo / RN / Flutter shape.
-- No mobile tooling adapters in salako.
+- No mobile tooling adapters in mr_roboto.
 - No mobile visual review (depends on [04-build-visual-review.md](04-build-visual-review.md) device-screenshot mode).
 - No mobile-specific recipes.
 - No app-store submission flow.
@@ -39,7 +39,7 @@ has its own ops shape).
 - Deep linking: universal links + app links.
 - Offline-first: sync engine (PowerSync / WatermelonDB / custom).
 
-**C. Mobile tooling adapters (salako)**
+**C. Mobile tooling adapters (mr_roboto)**
 - `expo_cli` — `expo prebuild`, `expo run:ios`, `expo run:android`, `expo build` (EAS Build).
 - `ios_simulator` — `xcrun simctl` boot/shutdown/install/launch.
 - `android_emulator` — `adb` boot/install/launch.
@@ -86,7 +86,7 @@ has its own ops shape).
 - mobile_auth, mobile_nav, mobile_persistence, mobile_push, mobile_deep_links, mobile_offline_sync.
 - Each ships scaffold templates + tests + lessons.md per stack (Expo / RN / Flutter / native).
 
-### Phase C — Salako adapters
+### Phase C — Mr. Roboto adapters
 - Wrappers for expo_cli, xcrun simctl, adb, fastlane, EAS Build.
 - Structured output (JSON) so post-hook gates can act on build/test results.
 
@@ -136,7 +136,7 @@ When picking up this doc:
 1. Read 00-README + dependencies (02 + 03 + 04 + 06).
 2. Phase 4 i2p_v3.json: design + add target_platform conditional group + branched phase-7 step variants. Test the branching with a fixture mission.
 3. Phase B: pick recipe set, draft 6 mobile recipes following the recipe schema from 02.
-4. Phase C: scaffold salako adapter verbs; structured output schema; tests against sample fixtures.
+4. Phase C: scaffold mr_roboto adapter verbs; structured output schema; tests against sample fixtures.
 5. Phase D: detox + maestro adapters; mobile visual review extension.
 6. Phase E: TestFlight + Play internal upload flows; metadata + screenshots + rejection-handling.
 7. Resolve open questions or escalate.

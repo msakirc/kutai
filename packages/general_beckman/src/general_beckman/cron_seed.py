@@ -37,8 +37,8 @@ INTERNAL_CADENCES: list[dict] = [
         "payload": {"_executor": "todo_reminder"},
     },
     # daily_digest + api_discovery cadences intentionally omitted —
-    # their salako handlers were dropped in the Phase 2b Beckman refactor
-    # and never re-implemented. Re-add here once salako gains matching
+    # their mr_roboto handlers were dropped in the Phase 2b Beckman refactor
+    # and never re-implemented. Re-add here once mr_roboto gains matching
     # action handlers; until then, seeding them just fills DLQ with
     # `unknown mechanical action` rows every day.
     {

@@ -17,7 +17,7 @@ this doc shipping first.
 - G grounding: L1 sub-iter guard + L2 mechanical post-hook against produces declaration (commits e17a176 → 39e27fd, 2026-05-06).
 - Mechanical post-hook framework: verify_artifacts (file existence + min_bytes + parse) + code_review (LLM review with severity gate) + grounding (declarative produces vs tool_calls).
 - Schema dialect: `equals`, `pattern`, `unique_by`, `min_items_from`, `blockers: {field, levels}` for severity gates (shipped 2026-05-05).
-- Salako verbs: workspace_snapshot, git_commit, verify_artifacts, run_cmd, check_grounding, clarify, notify_user.
+- Mr. Roboto verbs: workspace_snapshot, git_commit, verify_artifacts, run_cmd, check_grounding, clarify, notify_user.
 - Coulson runtime owns multi-call orchestration; tool_calls audit log captured per execution.
 - Recipe library, mission-lessons memory, stack-aware prompts: not yet implemented.
 - Diff-shaped tools (patch_file, edit_file, apply_diff) exist but agent defaults to write_file (rewrites whole files even for surgical edits).
@@ -29,7 +29,7 @@ this doc shipping first.
 **A. Mechanical guardrails (no LLM, run code or contracts)**
 - **Imports vs declared deps.** Agent emits `from app.services.user import UserService`; no module exists; no requirements/package.json entry. Caught only at integration test time, after 4 features have piled on the broken one.
 - **Migration-applies-clean.** Migration files written, never run. Syntax errors / FK ordering / missing extensions caught at deploy.
-- **Test-running gate.** Tests written; never executed. `salako.run_pytest` / `run_jest` exists in plan but not wired as posthook.
+- **Test-running gate.** Tests written; never executed. `mr_roboto.run_pytest` / `run_jest` exists in plan but not wired as posthook.
 - **Cross-type sync.** Frontend types diverge from backend openapi. Mechanical: regenerate via `openapi-typescript`, diff against committed.
 - **Design-system enforcement.** Components reinvent styling instead of using primitives. Scan emitted JSX/TSX for raw color hex, inline styles, non-design-system imports.
 - **Forbidden-pattern lint.** No `console.log` in committed, no `time.sleep` in tests, no `assert True`. Custom-rules engine over ESLint/ruff/semgrep.
@@ -56,7 +56,7 @@ this doc shipping first.
 
 ### Mechanical guardrails — six new post-hook kinds
 
-Each is a salako verb + beckman posthook kind + auto-wire in expander.
+Each is a mr_roboto verb + beckman posthook kind + auto-wire in expander.
 Same pattern as verify_artifacts:
 
 | Kind | Verb | Triggers when | Verdict |
@@ -155,7 +155,7 @@ Planner gains `pick_recipe` action; expander instantiates recipe + per-feature p
 
 When picking up this doc:
 1. Read 00-README.md + 01-pre-code.md + this doc.
-2. Audit existing salako verbs + beckman post-hook plumbing; quote file refs.
+2. Audit existing mr_roboto verbs + beckman post-hook plumbing; quote file refs.
 3. For each of the six mechanical guardrails: write a phased plan (verb scaffold → posthook kind → auto-wire trigger → tests). Convert open questions to decisions.
 4. Recipe library v1: pick 5 recipes (validate or revise the auth/file_upload/search/pagination/audit_log set), draft the per-recipe directory structure, write one recipe end-to-end as the template for the rest.
 5. Memory layer: add the DB migration, write the auto-populate hooks (DLQ + post-hook fail), write the at-mission-start query + injection.

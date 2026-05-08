@@ -26,7 +26,7 @@ from coulson.grounding import (
     unmatched_produces,
 )
 from coulson.guards import check_grounding_sub_iter
-from salako.check_grounding import check_grounding
+from mr_roboto.check_grounding import check_grounding
 
 
 # ── The canonical bad pattern ────────────────────────────────────────────
@@ -215,7 +215,7 @@ class TestCrossLayerInvariants:
         ]
         # L1 path
         l1_written = extract_written_paths(calls)
-        # L2 path (via salako verb result with non-empty produces — empty
+        # L2 path (via mr_roboto verb result with non-empty produces — empty
         # produces short-circuits to vacuous-pass and skips the scan)
         l2_written = set(
             check_grounding(tool_calls=calls, produces=_PRODUCES)["written"]

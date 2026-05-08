@@ -5,7 +5,7 @@
 **Date:** 2026-04-19
 **Base branch:** `main`
 **Design spec:** `docs/superpowers/specs/2026-04-18-phase2b-general-beckman-design.md` (source of truth)
-**Predecessor plans:** Plan A (`2026-04-18-orchestrator-plan-a-in-tree.md`) + Plan B (`2026-04-18-phase2a-salako-package.md`) — both merged.
+**Predecessor plans:** Plan A (`2026-04-18-orchestrator-plan-a-in-tree.md`) + Plan B (`2026-04-18-phase2a-mr_roboto-package.md`) — both merged.
 
 **Goal:** Extract task-queue logic from `src/core/orchestrator.py` (currently 2,569 lines) into a new package `packages/general_beckman/`. End state: `orchestrator.py` ≤ 250 lines (target 200, hard cap 300). Named after General Beckman from *Chuck* — the NSA commander who hands out missions. This package answers: **"what should we do next, and how many of it?"**
 
@@ -20,12 +20,12 @@ Orchestrator.main_loop
       await asyncio.sleep(3)
 
 _dispatch(task):
-  if task["agent_type"] == "mechanical": result = await salako.run(task)
+  if task["agent_type"] == "mechanical": result = await mr_roboto.run(task)
   else:                                  result = await llm_dispatcher.request(task)
   await beckman.on_task_finished(task["id"], result)
 ```
 
-**Tech stack:** Python 3.10 async, setuptools editable install (matches `fatih_hoca` / `salako` / `nerd_herd`), existing pytest infra with `timeout` prefix.
+**Tech stack:** Python 3.10 async, setuptools editable install (matches `fatih_hoca` / `mr_roboto` / `nerd_herd`), existing pytest infra with `timeout` prefix.
 
 **Invariants to preserve:**
 
@@ -58,10 +58,10 @@ _dispatch(task):
 - `packages/general_beckman/tests/test_queue.py`
 - `packages/general_beckman/tests/test_lookahead.py`
 - `packages/general_beckman/tests/test_lifecycle.py`
-- `packages/salako/src/salako/clarify.py`
-- `packages/salako/src/salako/notify_user.py`
-- `packages/salako/tests/test_clarify.py`
-- `packages/salako/tests/test_notify_user.py`
+- `packages/mr_roboto/src/mr_roboto/clarify.py`
+- `packages/mr_roboto/src/mr_roboto/notify_user.py`
+- `packages/mr_roboto/tests/test_clarify.py`
+- `packages/mr_roboto/tests/test_notify_user.py`
 
 **Modified (become shims):**
 
@@ -70,7 +70,7 @@ _dispatch(task):
 - `src/core/result_guards.py` — re-export
 - `src/core/watchdog.py` — re-export
 - `src/app/scheduled_jobs.py` — re-export
-- `packages/salako/src/salako/__init__.py` — register new executors in `run()`
+- `packages/mr_roboto/src/mr_roboto/__init__.py` — register new executors in `run()`
 - `src/core/orchestrator.py` — massive shrink: delete `_handle_*`, delete gate call, main loop rewired
 
 **Deleted:**
@@ -82,19 +82,19 @@ _dispatch(task):
 
 ---
 
-## Task 1: Add `clarify` Mechanical Executor to Salako
+## Task 1: Add `clarify` Mechanical Executor to Mr. Roboto
 
 **Goal:** Add the `clarify` executor so beckman's `_handle_clarification` can emit it as a regular mechanical task instead of calling Telegram directly.
 
 **Files:**
 
-- Create `packages/salako/src/salako/clarify.py`
-- Create `packages/salako/tests/test_clarify.py`
-- Modify `packages/salako/src/salako/__init__.py` (lines 1–40) — register `"clarify"` action in `run()`
+- Create `packages/mr_roboto/src/mr_roboto/clarify.py`
+- Create `packages/mr_roboto/tests/test_clarify.py`
+- Modify `packages/mr_roboto/src/mr_roboto/__init__.py` (lines 1–40) — register `"clarify"` action in `run()`
 
 **Steps:**
 
-- [ ] **Step 1: Write failing tests first.** Create `packages/salako/tests/test_clarify.py`:
+- [ ] **Step 1: Write failing tests first.** Create `packages/mr_roboto/tests/test_clarify.py`:
   ```python
   import pytest
   from unittest.mock import AsyncMock, patch
@@ -111,9 +111,9 @@ _dispatch(task):
           },
       }
       fake_tg = AsyncMock()
-      with patch("salako.clarify.get_telegram", return_value=fake_tg), \
-           patch("salako.clarify.update_task", new=AsyncMock()) as ut:
-          from salako import run
+      with patch("mr_roboto.clarify.get_telegram", return_value=fake_tg), \
+           patch("mr_roboto.clarify.update_task", new=AsyncMock()) as ut:
+          from mr_roboto import run
           action = await run(task)
       assert action.status == "completed"
       fake_tg.request_clarification.assert_awaited_once_with(42, "Book a flight", "Which city?")
@@ -121,13 +121,13 @@ _dispatch(task):
 
   @pytest.mark.asyncio
   async def test_clarify_missing_question_fails():
-      from salako import run
+      from mr_roboto import run
       action = await run({"id": 1, "payload": {"action": "clarify"}})
       assert action.status == "failed"
       assert "question" in (action.error or "")
   ```
 
-- [ ] **Step 2: Implement** `packages/salako/src/salako/clarify.py`:
+- [ ] **Step 2: Implement** `packages/mr_roboto/src/mr_roboto/clarify.py`:
   ```python
   """Mechanical clarify executor: sends clarification prompt via Telegram."""
   from __future__ import annotations
@@ -155,10 +155,10 @@ _dispatch(task):
   ```
   And call `set_telegram(self)` from `TelegramInterface.__init__`.
 
-- [ ] **Step 3: Wire into `salako.run()`.** Edit `packages/salako/src/salako/__init__.py`, add between `git_commit` branch and the fallback:
+- [ ] **Step 3: Wire into `mr_roboto.run()`.** Edit `packages/mr_roboto/src/mr_roboto/__init__.py`, add between `git_commit` branch and the fallback:
   ```python
   if action == "clarify":
-      from salako.clarify import clarify
+      from mr_roboto.clarify import clarify
       try:
           res = await clarify(task)
           return Action(status="completed", result=res)
@@ -166,29 +166,29 @@ _dispatch(task):
           return Action(status="failed", error=str(e))
   ```
 
-- [ ] **Step 4: Verify.** `timeout 30 pytest packages/salako/tests/test_clarify.py -v` → all green.
+- [ ] **Step 4: Verify.** `timeout 30 pytest packages/mr_roboto/tests/test_clarify.py -v` → all green.
 
 - [ ] **Step 5: Commit.**
   ```
-  git add packages/salako/src/salako/clarify.py packages/salako/src/salako/__init__.py packages/salako/tests/test_clarify.py src/app/telegram_bot.py
-  git commit -m "feat(salako): add clarify mechanical executor"
+  git add packages/mr_roboto/src/mr_roboto/clarify.py packages/mr_roboto/src/mr_roboto/__init__.py packages/mr_roboto/tests/test_clarify.py src/app/telegram_bot.py
+  git commit -m "feat(mr_roboto): add clarify mechanical executor"
   ```
 
 ---
 
-## Task 2: Add `notify_user` Mechanical Executor to Salako
+## Task 2: Add `notify_user` Mechanical Executor to Mr. Roboto
 
 **Goal:** Plain-status Telegram send for meaningful notifications (mission complete, DLQ alerts, rejections). Parallels `clarify`.
 
 **Files:**
 
-- Create `packages/salako/src/salako/notify_user.py`
-- Create `packages/salako/tests/test_notify_user.py`
-- Modify `packages/salako/src/salako/__init__.py`
+- Create `packages/mr_roboto/src/mr_roboto/notify_user.py`
+- Create `packages/mr_roboto/tests/test_notify_user.py`
+- Modify `packages/mr_roboto/src/mr_roboto/__init__.py`
 
 **Steps:**
 
-- [ ] **Step 1: Write failing tests.** `packages/salako/tests/test_notify_user.py`:
+- [ ] **Step 1: Write failing tests.** `packages/mr_roboto/tests/test_notify_user.py`:
   ```python
   import pytest
   from unittest.mock import AsyncMock, patch
@@ -197,20 +197,20 @@ _dispatch(task):
   async def test_notify_user_sends_message():
       task = {"id": 7, "payload": {"action": "notify_user", "chat_id": 222, "text": "Mission done"}}
       fake_tg = AsyncMock()
-      with patch("salako.notify_user.get_telegram", return_value=fake_tg):
-          from salako import run
+      with patch("mr_roboto.notify_user.get_telegram", return_value=fake_tg):
+          from mr_roboto import run
           action = await run(task)
       assert action.status == "completed"
       fake_tg.send_message.assert_awaited_once_with(222, "Mission done")
 
   @pytest.mark.asyncio
   async def test_notify_user_missing_text_fails():
-      from salako import run
+      from mr_roboto import run
       action = await run({"id": 1, "payload": {"action": "notify_user", "chat_id": 1}})
       assert action.status == "failed"
   ```
 
-- [ ] **Step 2: Implement** `packages/salako/src/salako/notify_user.py`:
+- [ ] **Step 2: Implement** `packages/mr_roboto/src/mr_roboto/notify_user.py`:
   ```python
   """Mechanical notify_user executor: plain status Telegram send."""
   from __future__ import annotations
@@ -227,10 +227,10 @@ _dispatch(task):
       return {"sent": True}
   ```
 
-- [ ] **Step 3: Wire into `salako.run()`.** Add a third branch in `__init__.py`:
+- [ ] **Step 3: Wire into `mr_roboto.run()`.** Add a third branch in `__init__.py`:
   ```python
   if action == "notify_user":
-      from salako.notify_user import notify_user
+      from mr_roboto.notify_user import notify_user
       try:
           res = await notify_user(task)
           return Action(status="completed", result=res)
@@ -238,12 +238,12 @@ _dispatch(task):
           return Action(status="failed", error=str(e))
   ```
 
-- [ ] **Step 4: Verify.** `timeout 30 pytest packages/salako/tests/test_notify_user.py -v`.
+- [ ] **Step 4: Verify.** `timeout 30 pytest packages/mr_roboto/tests/test_notify_user.py -v`.
 
 - [ ] **Step 5: Commit.**
   ```
-  git add packages/salako/src/salako/notify_user.py packages/salako/src/salako/__init__.py packages/salako/tests/test_notify_user.py
-  git commit -m "feat(salako): add notify_user mechanical executor"
+  git add packages/mr_roboto/src/mr_roboto/notify_user.py packages/mr_roboto/src/mr_roboto/__init__.py packages/mr_roboto/tests/test_notify_user.py
+  git commit -m "feat(mr_roboto): add notify_user mechanical executor"
   ```
 
 ---
@@ -308,7 +308,7 @@ _dispatch(task):
 
 ## Task 4: Scaffold `packages/general_beckman/`
 
-**Goal:** Empty installable package with public-API stub and smoke test. Mirrors `salako` / `fatih_hoca` layout.
+**Goal:** Empty installable package with public-API stub and smoke test. Mirrors `mr_roboto` / `fatih_hoca` layout.
 
 **Files:**
 
@@ -333,7 +333,7 @@ _dispatch(task):
   version = "0.1.0"
   description = "Task master — task queue, lifecycle, look-ahead against cloud quota"
   requires-python = ">=3.10"
-  dependencies = ["nerd_herd", "salako"]
+  dependencies = ["nerd_herd", "mr_roboto"]
 
   [tool.setuptools.packages.find]
   where = ["src"]
@@ -393,7 +393,7 @@ _dispatch(task):
       assert await general_beckman.next_task() is None
   ```
 
-- [ ] **Step 5: `README.md`** — 1-paragraph summary + public API + test command. Mirrors `packages/salako/README.md`.
+- [ ] **Step 5: `README.md`** — 1-paragraph summary + public API + test command. Mirrors `packages/mr_roboto/README.md`.
 
 - [ ] **Step 6: Install + verify.**
   ```
@@ -572,7 +572,7 @@ _dispatch(task):
 
 ## Task 9: Move `_handle_*` Methods into `lifecycle.py`
 
-**Goal:** Relocate the 8 lifecycle handlers from `src/core/orchestrator.py` into `packages/general_beckman/src/general_beckman/lifecycle.py`. Convert `_handle_clarification` to emit a salako `clarify` task instead of calling Telegram directly. Build `on_task_finished(task_id, result)` as the drain entry point.
+**Goal:** Relocate the 8 lifecycle handlers from `src/core/orchestrator.py` into `packages/general_beckman/src/general_beckman/lifecycle.py`. Convert `_handle_clarification` to emit a mr_roboto `clarify` task instead of calling Telegram directly. Build `on_task_finished(task_id, result)` as the drain entry point.
 
 **Current handler locations in orchestrator.py (exact line numbers):**
 
@@ -610,7 +610,7 @@ _dispatch(task):
       ut.assert_awaited()
 
   @pytest.mark.asyncio
-  async def test_handle_clarification_emits_salako_task():
+  async def test_handle_clarification_emits_mr_roboto_task():
       """No direct telegram call — emits mechanical task with action='clarify'."""
       from general_beckman.lifecycle import handle_clarification
       task = {"id": 5, "title": "plan trip", "mission_id": 2, "chat_id": 99}
@@ -1000,7 +1000,7 @@ _dispatch(task):
   ```python
   import asyncio
   import general_beckman as beckman
-  import salako
+  import mr_roboto
   from src.core.llm_dispatcher import LLMDispatcher
 
   class Orchestrator:
@@ -1021,7 +1021,7 @@ _dispatch(task):
           task_id = task["id"]
           try:
               if task.get("agent_type") == "mechanical":
-                  result = await salako.run(task)
+                  result = await mr_roboto.run(task)
                   result_dict = {"status": result.status, **result.result, "error": result.error}
               else:
                   result_dict = await self.llm.request(task)
@@ -1061,16 +1061,16 @@ _dispatch(task):
 
 **Files:**
 
-- Modify root install script (locate via `grep -rn 'pip install -e packages/salako\|pip install -e packages/fatih_hoca' .` — typically `install.ps1`, `setup.sh`, or `requirements-dev.txt`)
+- Modify root install script (locate via `grep -rn 'pip install -e packages/mr_roboto\|pip install -e packages/fatih_hoca' .` — typically `install.ps1`, `setup.sh`, or `requirements-dev.txt`)
 - Modify `CLAUDE.md` package-boundaries section
 - Modify `docs/architecture-modularization.md` — append Phase 2b section
 - Modify `MEMORY.md` — append Phase 2b project note
 
 **Steps:**
 
-- [ ] **Step 1: Locate install site.** `grep -rn 'pip install -e packages' . --include=*.ps1 --include=*.sh --include=*.txt --include=*.toml`. Add `pip install -e packages/general_beckman` next to existing salako / fatih_hoca lines.
+- [ ] **Step 1: Locate install site.** `grep -rn 'pip install -e packages' . --include=*.ps1 --include=*.sh --include=*.txt --include=*.toml`. Add `pip install -e packages/general_beckman` next to existing mr_roboto / fatih_hoca lines.
 
-- [ ] **Step 2: Update `CLAUDE.md`.** In the Architecture section (top of file), add a line after the Salako bullet:
+- [ ] **Step 2: Update `CLAUDE.md`.** In the Architecture section (top of file), add a line after the Mr. Roboto bullet:
   ```
   - **Task master**: `packages/general_beckman/` (General Beckman) — task queue, lifecycle, look-ahead against cloud quota. Public API: `next_task()`, `on_task_finished()`, `tick()`.
   ```
@@ -1101,12 +1101,12 @@ _dispatch(task):
 - [ ] **Step 7: Package tests green in isolation.**
   ```
   timeout 60 pytest packages/general_beckman/tests/ -v
-  timeout 30 pytest packages/salako/tests/ -v
+  timeout 30 pytest packages/mr_roboto/tests/ -v
   ```
 
 - [ ] **Step 8: Manual smoke (executor runs this — do not skip).** Start KutAI via `/restart` (Telegram) or `python kutai_wrapper.py`. Verify:
   - A simple `/task Write hello world` dispatches and completes.
-  - `/shop coffee machine` triggers clarification round-trip (beckman emits salako clarify task, user reply routes back to original task).
+  - `/shop coffee machine` triggers clarification round-trip (beckman emits mr_roboto clarify task, user reply routes back to original task).
   - Watchdog fires at least once within 90 seconds (check `logs/orchestrator.jsonl` for `check_stuck_tasks` entries).
   - Todo reminder tick fires within its cadence (or is confirmed to be throttled by `_LAST_RUN` state).
 
@@ -1125,7 +1125,7 @@ _dispatch(task):
 - [ ] `src/security/risk_assessor.py` and `src/core/task_gates.py` deleted.
 - [ ] No `approval_fn` / `request_approval` / `run_gates` references anywhere.
 - [ ] Shims in place: `src/core/task_context.py`, `src/core/result_router.py`, `src/core/result_guards.py`, `src/core/watchdog.py`, `src/app/scheduled_jobs.py`.
-- [ ] Salako has `clarify` + `notify_user` executors, both tested.
+- [ ] Mr. Roboto has `clarify` + `notify_user` executors, both tested.
 - [ ] Beckman public API `next_task / on_task_finished / tick` implemented + tested.
 - [ ] Full suite: no new failures touching orchestrator / beckman / result_* / watchdog / scheduled_jobs / lifecycle.
 - [ ] Manual smoke passes: dispatch + clarification + scheduled jobs.
@@ -1136,7 +1136,7 @@ _dispatch(task):
 From spec §12 and §14:
 
 - **kdv state persistence.** Cloud rate-limit state remains in-memory only; lost on restart. Separate fix.
-- **Full Telegram module extraction.** Outbound flows through salako `clarify` / `notify_user`, but inbound reply routing and ephemeral progress chatter still live in `src/app/telegram_bot.py`.
+- **Full Telegram module extraction.** Outbound flows through mr_roboto `clarify` / `notify_user`, but inbound reply routing and ephemeral progress chatter still live in `src/app/telegram_bot.py`.
 - **Progress chatter standardization.** Iteration counters and scraping progress still call `self.telegram.send_message` directly. Worth tidying later, not now.
 
 ## Key Risks

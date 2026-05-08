@@ -3,7 +3,7 @@
 Phase 14.2 — Proactive Monitoring
 
 Background checks: configured URLs (uptime), GitHub repos (new issues/PRs).
-Pure helper functions — invoked by the salako monitoring_check executor
+Pure helper functions — invoked by the mr_roboto monitoring_check executor
 (cron-seeded mechanical task). No background loop lives here any more.
 Configure URLs via MONITOR_URLS env var (comma-separated).
 Configure GitHub repos via MONITOR_GITHUB_REPOS env var (comma-separated, owner/repo format).

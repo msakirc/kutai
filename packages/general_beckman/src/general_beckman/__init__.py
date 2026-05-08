@@ -475,7 +475,7 @@ async def on_task_finished(task_id: int, result: dict) -> None:
 
     Pipeline: route_result -> rewrite_actions -> apply_actions.
     No delegation to Orchestrator. Mission-task completions produce a
-    MissionAdvance action which spawns a salako workflow_advance task.
+    MissionAdvance action which spawns a mr_roboto workflow_advance task.
     """
     from general_beckman.result_router import route_result
     from general_beckman.rewrite import rewrite_actions

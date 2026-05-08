@@ -190,7 +190,7 @@ Use `error_category` from the failed call as input.
 - **grading_perf_score source**: who writes `model_stats` table?
   Cadence? Stale data poisons Layer 2 perf score. Investigate when
   Layer 2 scoring shows weird picks.
-- **Mechanical tasks (salako) admission**: do they consume worker
+- **Mechanical tasks (mr_roboto) admission**: do they consume worker
   slots? Block real LLM work? Verify.
 
 ### Skip — `_failure_penalty` in ranking.py

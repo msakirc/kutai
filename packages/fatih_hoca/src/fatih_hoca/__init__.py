@@ -178,7 +178,7 @@ def init(
     alert_fn : callable, optional
         callable(provider: str, status: str, error: str | None). Called when
         discovery confirms a provider failure (after throttle check). Fatih
-        Hoca does NOT import telegram or salako — boot caller bridges here.
+        Hoca does NOT import telegram or mr_roboto — boot caller bridges here.
 
     Returns
     -------

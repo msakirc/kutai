@@ -145,12 +145,12 @@ from the artifact end.
 
 ### Phase E — Sandboxing
 - Docker template per mission.
-- Salako shell verbs route through container.
+- Mr. Roboto shell verbs route through container.
 - Resource limits + network policy.
 - Reset-to-green primitive: git-based + state snapshot.
 
 ### Phase F — Demo deliverable
-- Salako verb: `record_demo(scenario)` — playwright `--video on` + ffmpeg trim.
+- Mr. Roboto verb: `record_demo(scenario)` — playwright `--video on` + ffmpeg trim.
 - Mission template: final phase produces demo as named artifact.
 
 ### Phase G — Trust calibration loop

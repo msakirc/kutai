@@ -23,7 +23,7 @@ designed in an "agents own tasks" world. Today's architecture is task-centric:
 - Beckman owns admission + lifecycle
 - Dispatcher owns single LLM call execution + retry + mid-attempt swap
 - HaLLederiz Kadir owns transport (litellm + streaming + parsing)
-- Salako owns mechanical executors
+- Mr. Roboto owns mechanical executors
 - Orchestrator pump ties them together
 
 In that picture, **BaseAgent doesn't fit anywhere clean.** It's a fourth
@@ -288,7 +288,7 @@ Shipped 2026-05-04 (commits in order):
 | `190d9f5` | 1.3 | feat(beckman): on_complete + next_task_spec + inline-waiter terminal hook |
 | `89445b8` | 2.4 | refactor(dispatcher): request() becomes alias over beckman.enqueue(await_inline=True) |
 | `3d73992` | 5.14 | refactor(monitoring): cron-seeded monitoring_check, alerts via notify_user sub-tasks |
-| `7030841` | 5.15 | refactor(memory): cron-seeded vector_maint via salako, fixes event-loop wedge |
+| `7030841` | 5.15 | refactor(memory): cron-seeded vector_maint via mr_roboto, fixes event-loop wedge |
 | `34e6d61` | 2.5 | refactor(beckman): admission owns pool_pressure + fatih_hoca.select + KDV.pre_call + in_flight |
 | `f72013e` | 2.5-fixup | test(migration): use setattr DB_PATH not setenv for isolation |
 | `e2c0f4c` | 2.5-fixup | fix(in_flight): est_tokens propagation through type-conversion boundaries |
@@ -322,7 +322,7 @@ the kill unchanged.
 4. Workflow JSON references — keep `agent_type` field name or rename
    to `profile`? Cosmetic. Backward-compat suggests keep.
 5. Tool executor — module-level functions or a class with config?
-   Module-level functions match salako's executor pattern.
+   Module-level functions match mr_roboto's executor pattern.
 6. Migration safety net: dual-write (old agent path + new dispatcher
    path) for one cycle to compare outputs? Worth the complexity?
 

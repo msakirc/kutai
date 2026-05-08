@@ -106,7 +106,7 @@ loops. Here the signal is fuzzy, taste-laden, asymmetric.
 - Tracks engagement post-publish (basic metrics integration with [09-growth.md](09-growth.md)).
 
 ### Phase C — Demo + press kit
-- Salako verb: `generate_demo_video(scenario)` — playwright `--video on` per scenario.
+- Mr. Roboto verb: `generate_demo_video(scenario)` — playwright `--video on` per scenario.
 - Press kit assembly as a recipe (output: zip with one-pager / bios / images / logo / press releases).
 
 ### Phase D — Support tiering
@@ -159,7 +159,7 @@ When picking up this doc:
 1. Read 00-README + 01-pre-code (brand direction inputs) + 09-growth (metrics) + this doc.
 2. Phase A: marketing-site recipe + drafting flow + revision loop integration.
 3. Phase B: launch-channel templates × 5 (HN, PH, Twitter, LinkedIn, Reddit) + tracking integration.
-4. Phase C: demo video salako verb + press kit recipe.
+4. Phase C: demo video mr_roboto verb + press kit recipe.
 5. Phase D: support-tiering flow design; FAQ artifact + escalation pipeline.
 6. Phase E: investor update template + mention monitor as long-running mission.
 7. Phase F: CRM schema + reminder flow.

@@ -44,8 +44,8 @@ No `tick()`, no `sweep_queue()`, no `create_retry()` / `create_clarify()` / `cre
    - Pending tasks with all deps failed → cascade fail (unless any dep is in DLQ)
    - `waiting_subtasks` with all children terminal → mark complete/failed
    - Pending tasks with `next_retry_at` > 1h in past → clear the gate
-   - `waiting_human` escalation tiers (4h nudge / 24h tier 1 / 48h tier 2 / 72h cancel) — each tier *creates* a `salako.notify_user` task (Telegram sends no longer inline)
-   - Workflow-level timeouts → mission paused + `salako.notify_user` task
+   - `waiting_human` escalation tiers (4h nudge / 24h tier 1 / 48h tier 2 / 72h cancel) — each tier *creates* a `mr_roboto.notify_user` task (Telegram sends no longer inline)
+   - Workflow-level timeouts → mission paused + `mr_roboto.notify_user` task
 
 2. **Cron fire.** Reads due rows from the unified `scheduled_tasks` table (see below). For each due row, inserts a concrete task (the "payload" from the cron row becomes the new task's spec). Advances `next_run`.
 
@@ -92,8 +92,8 @@ Small dispatcher keyed by action type. Each branch inserts DB rows.
 |---|---|
 | `SubtaskEmission` | Child task rows with `parent_task_id` set |
 | `RetryRequest(category)` | New pending row with bumped attempt count (retry policy resolves: insert or DLQ-write) |
-| `ClarifyRequest` | `salako.clarify` mechanical task |
-| `NotifyUser` | `salako.notify_user` mechanical task |
+| `ClarifyRequest` | `mr_roboto.clarify` mechanical task |
+| `NotifyUser` | `mr_roboto.notify_user` mechanical task |
 | `MissionAdvance` | Single mechanical task of executor `workflow_advance` (see workflow section) |
 | `Grading` | Grader task (existing agent type) |
 | `Complete` / `CompleteWithReusedAnswer` | No new row; marks original complete |
@@ -107,7 +107,7 @@ Internal to Beckman. Shared helper replaces `_quality_retry_flow`:
 - Decides `terminal` / `immediate` / `delayed` based on attempt count, category, and bonus-attempt heuristic.
 - **Bonus-attempt heuristic** (quality retries with ≥ 50% assessed progress get +1 attempt, capped at 2) stays — it solves real DLQ-too-eagerly incidents — but gets **flagged for a sideways look** during migration. If the progress assessment (`_assess_timeout_progress`) is fragile or poorly covered, either harden it or drop the heuristic in a follow-up. Not a Task 13 blocker.
 - DLQ writes (to `dead_letter_tasks`) happen directly here. DLQ is record state, not new work — no DLQ task is spawned.
-- DLQ notification → spawn a `salako.notify_user` task. No inline Telegram send.
+- DLQ notification → spawn a `mr_roboto.notify_user` task. No inline Telegram send.
 
 ## Cron — unified table, interval or cron expression
 
@@ -152,7 +152,7 @@ for row in due_cron_rows():
 
 ## Workflow engine — its own package
 
-Workflow engine is its own domain (recipes, phases, artifact schemas, skip_when, step metadata). It does **not** live in Beckman, the orchestrator, or salako.
+Workflow engine is its own domain (recipes, phases, artifact schemas, skip_when, step metadata). It does **not** live in Beckman, the orchestrator, or mr_roboto.
 
 ### Home: `packages/workflow_engine/` (new, or promoted from `src/workflows/`)
 
@@ -166,9 +166,9 @@ workflow_engine.advance(mission_id, completed_task_id, result) -> AdvanceResult
 - post-hook status flip (from `guard_workflow_step_post_hook` / `guard_ungraded_post_hook` — **collapsed into one** hook since their logic is identical)
 - next-phase TaskSpecs
 
-### Invocation: via a salako executor
+### Invocation: via a mr_roboto executor
 
-Salako gains **one** executor: `workflow_advance`. It is a thin delegator — calls `workflow_engine.advance(...)` and shapes the result into the standard envelope Beckman's `result_router` understands (Actions: artifact capture = side-effect, status flip = the advance task's own status, next-phase specs = `SubtaskEmission`).
+Mr. Roboto gains **one** executor: `workflow_advance`. It is a thin delegator — calls `workflow_engine.advance(...)` and shapes the result into the standard envelope Beckman's `result_router` understands (Actions: artifact capture = side-effect, status flip = the advance task's own status, next-phase specs = `SubtaskEmission`).
 
 ### Flow
 
@@ -179,14 +179,14 @@ worker task #500 (agent=coder, mission=M) completes
      → _apply_actions inserts one mechanical task: {executor: "workflow_advance",
                                                     payload: {mission_id: M, completed: 500}}
 Next orchestrator cycle: beckman.next_task() returns that task.
-  → salako.run dispatches to workflow_advance executor
+  → mr_roboto.run dispatches to workflow_advance executor
      → calls workflow_engine.advance(M, 500, previous_result)
      → returns envelope with captured artifacts + status + subtask list
   → Orchestrator.dispatch → beckman.on_task_finished(advance_task_id, envelope)
      → Subtasks get inserted, or retry/clarify fires via the normal rule set
 ```
 
-No workflow-engine import appears in Beckman or salako core. Only the one executor in salako references it.
+No workflow-engine import appears in Beckman or mr_roboto core. Only the one executor in mr_roboto references it.
 
 ### Adding a new workflow
 
@@ -210,7 +210,7 @@ async def run_loop(self):
     await self._shutdown()
 
 async def _dispatch(self, task):
-    runner = salako.run if task["agent_type"] == "mechanical" else self.llm_dispatcher.request
+    runner = mr_roboto.run if task["agent_type"] == "mechanical" else self.llm_dispatcher.request
     try:
         result = await asyncio.wait_for(runner(task), timeout=self._timeout_for(task))
     except asyncio.TimeoutError:
@@ -228,7 +228,7 @@ What orchestrator does:
 
 What orchestrator does **not** do:
 - Cron bookkeeping, "if due" branches — gone (all in Beckman)
-- `_handle_*` methods — gone (logic redistributed to Beckman rules / workflow engine / salako)
+- `_handle_*` methods — gone (logic redistributed to Beckman rules / workflow engine / mr_roboto)
 - Separate plug-puller — the `asyncio.wait_for` at dispatch time pulls the plug. Orphaned "processing" rows from a crashed orchestrator are handled by Beckman's internal sweep.
 - Lane partitioning, affinity reordering, swap-aware deferral — moved to Hoca (per-call scope)
 
@@ -248,7 +248,7 @@ This means `_reorder_by_model_affinity` and `_should_defer_for_loaded_model` (cu
 Move to `nerd_herd.health_summary()`:
 - Returns a structured health report.
 - Called by `/status` Telegram command.
-- Optionally driven on a slow cadence from Beckman's internal cron (e.g. 10min marker row → `nerd_herd.check_and_alert()`) for serious-issue Telegram alerts. Alerts become `salako.notify_user` tasks seeded by that marker.
+- Optionally driven on a slow cadence from Beckman's internal cron (e.g. 10min marker row → `nerd_herd.check_and_alert()`) for serious-issue Telegram alerts. Alerts become `mr_roboto.notify_user` tasks seeded by that marker.
 
 No other subsystem pulls resource-health logic.
 
@@ -260,12 +260,12 @@ The eight handlers (~900 lines total) don't disappear — their logic moves:
 |---|---|
 | `_handle_availability_failure` | Hoca — already "model didn't become available"; becomes Hoca's internal retry-with-different-model decision. No dedicated handler needed. |
 | `_handle_unexpected_failure` | Beckman retry policy (`RetryRequest(category=unexpected)` → retry or DLQ with notify task) |
-| `_handle_complete` | Split: mission-progression logic → `workflow_engine.advance`. "Mission done" notification → `salako.notify_user` task Beckman creates. Parent-task rollup → Beckman sweep. |
+| `_handle_complete` | Split: mission-progression logic → `workflow_engine.advance`. "Mission done" notification → `mr_roboto.notify_user` task Beckman creates. Parent-task rollup → Beckman sweep. |
 | `_handle_subtasks` | Beckman's `SubtaskEmission` rule in `_apply_actions` |
-| `_handle_clarification` | Already routed to salako in Phase 2b — no further work |
+| `_handle_clarification` | Already routed to mr_roboto in Phase 2b — no further work |
 | `_handle_review` | Beckman's review-task dedup rule in `_apply_actions` |
 | `_handle_exhausted` | Beckman retry policy (`RetryRequest(category=exhausted)`) |
-| `_handle_failed` | Beckman retry policy + `salako.notify_user` task |
+| `_handle_failed` | Beckman retry policy + `mr_roboto.notify_user` task |
 
 After migration, no `_handle_*` methods exist on the orchestrator class. `lifecycle.py`'s `get_orchestrator()._handle_*` circular delegation is removed.
 
@@ -311,7 +311,7 @@ DELETED:
 - general_beckman/watchdog.py       # sweep → beckman/sweep.py; check_resources → nerd_herd
 - general_beckman/scheduled_jobs.py # scheduled_tasks is the registry now
 
-packages/salako/src/salako/
+packages/mr_roboto/src/mr_roboto/
 ├── … existing executors …
 └── workflow_advance.py         # new — thin delegator to workflow_engine.advance
 
@@ -349,5 +349,5 @@ src/core/
 ## Open questions intentionally deferred to the migration plan
 
 - **Strangler vs big-bang.** Whether to migrate handlers one-at-a-time behind a flag, or cut over in one PR. Informs the plan, not the spec.
-- **Workflow engine package extraction timing.** Could happen inside Task 13 or as a follow-up; if follow-up, salako's `workflow_advance` temporarily imports from `src/workflows/engine/`.
+- **Workflow engine package extraction timing.** Could happen inside Task 13 or as a follow-up; if follow-up, mr_roboto's `workflow_advance` temporarily imports from `src/workflows/engine/`.
 - **`_assess_timeout_progress` fate.** Leave in place (migrate as-is) or delete the heuristic (accept more DLQ noise). Decide during migration.

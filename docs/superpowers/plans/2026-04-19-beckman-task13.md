@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Complete Phase 2b Task 13 — consolidate orchestrator's `_handle_*` lifecycle handlers into Beckman's internal rule set, rewrite `Orchestrator.run_loop` as a ≤300-line dispatch pump against `beckman.next_task()` / `beckman.on_task_finished()`, and extract the workflow engine into its own package invoked via a thin `salako.workflow_advance` executor.
+**Goal:** Complete Phase 2b Task 13 — consolidate orchestrator's `_handle_*` lifecycle handlers into Beckman's internal rule set, rewrite `Orchestrator.run_loop` as a ≤300-line dispatch pump against `beckman.next_task()` / `beckman.on_task_finished()`, and extract the workflow engine into its own package invoked via a thin `mr_roboto.workflow_advance` executor.
 
 **Architecture:** Follow the approved spec at `docs/superpowers/specs/2026-04-19-beckman-simplification-design.md`. Beckman's public API reduces to three methods (`next_task`, `on_task_finished`, `enqueue`); all cron firing, queue hygiene, and result-driven task creation happens inside those entry points. Lanes are deleted; swap/affinity concerns move to Hoca at per-call scope; `result_guards.py` dissolves with per-guard re-homing.
 
@@ -10,7 +10,7 @@
 
 **Migration style:** User chose single-branch high-tolerance (ship it, smoke-test the spec's success criteria, `git revert` the merge commit if something serious breaks). Still: every commit should pass `timeout 120 rtk pytest tests/` cleanly so `git bisect` stays useful after merge.
 
-**Baseline:** 248 pre-existing test failures at parent commit `03a1def`. No new failures allowed in touched modules (`packages/general_beckman`, `packages/salako`, `src/core/`).
+**Baseline:** 248 pre-existing test failures at parent commit `03a1def`. No new failures allowed in touched modules (`packages/general_beckman`, `packages/mr_roboto`, `src/core/`).
 
 ---
 
@@ -735,7 +735,7 @@ Build the pure-logic modules that Task 3–6 will wire up. Nothing is imported f
 
 
   @pytest.mark.asyncio
-  async def test_clarification_spawns_salako_task(tmp_path, monkeypatch):
+  async def test_clarification_spawns_mr_roboto_task(tmp_path, monkeypatch):
       await _fresh_db(tmp_path, monkeypatch)
       tid = await add_task(title="t", description="", agent_type="coder", chat_id=42)
       await apply_actions(
@@ -794,7 +794,7 @@ Build the pure-logic modules that Task 3–6 will wire up. Nothing is imported f
 
   Every function returns None. Side-effects: insert rows, update task status.
   Retry / DLQ decisions come from `general_beckman.retry`. Clarify and notify
-  tasks are created as mechanical salako rows — salako executors do the
+  tasks are created as mechanical mr_roboto rows — mr_roboto executors do the
   actual Telegram I/O at dispatch time.
   """
   from __future__ import annotations
@@ -998,7 +998,7 @@ Build the pure-logic modules that Task 3–6 will wire up. Nothing is imported f
           )
       except Exception as exc:
           logger.warning("DLQ write failed", task_id=task["id"], error=str(exc))
-      # Telegram DLQ notification → mechanical salako task (no inline send).
+      # Telegram DLQ notification → mechanical mr_roboto task (no inline send).
       await add_task(
           title=f"Notify: DLQ task #{task['id']}",
           description="",
@@ -1048,7 +1048,7 @@ Build the pure-logic modules that Task 3–6 will wire up. Nothing is imported f
   Port the body of `packages/general_beckman/src/general_beckman/watchdog.py::check_stuck_tasks` (already-read in brainstorm). Create `packages/general_beckman/src/general_beckman/sweep.py`. The port:
 
   - Copy the whole `check_stuck_tasks` function body verbatim.
-  - Replace every `await telegram.send_notification(...)` call with a `salako.notify_user` task insertion using the same `_insert_notify_task` helper pattern as `apply._dlq_write`:
+  - Replace every `await telegram.send_notification(...)` call with a `mr_roboto.notify_user` task insertion using the same `_insert_notify_task` helper pattern as `apply._dlq_write`:
 
     ```python
     await add_task(
@@ -1687,16 +1687,16 @@ Lanes don't exist under the new model. Swap budget and affinity are per-call con
 
 ---
 
-## Task 5: Workflow engine package + `salako.workflow_advance` executor
+## Task 5: Workflow engine package + `mr_roboto.workflow_advance` executor
 
-Extract the workflow engine into its own package and expose a single `advance()` entry point. Add a thin salako executor that delegates to it. Not wired yet — Task 6 spawns `workflow_advance` tasks via the MissionAdvance action.
+Extract the workflow engine into its own package and expose a single `advance()` entry point. Add a thin mr_roboto executor that delegates to it. Not wired yet — Task 6 spawns `workflow_advance` tasks via the MissionAdvance action.
 
 **Files:**
 - Create: `packages/workflow_engine/` — new package, follows the `dallama/nerd_herd` layout (`pyproject.toml`, `src/workflow_engine/`, `tests/`)
 - Create: `packages/workflow_engine/src/workflow_engine/__init__.py` — re-exports `advance`
 - Create: `packages/workflow_engine/src/workflow_engine/advance.py` — single entry point
-- Create: `packages/salako/src/salako/workflow_advance.py`
-- Modify: `packages/salako/src/salako/actions.py` — register the new executor
+- Create: `packages/mr_roboto/src/mr_roboto/workflow_advance.py`
+- Modify: `packages/mr_roboto/src/mr_roboto/actions.py` — register the new executor
 - Modify: `requirements.txt` — add `packages/workflow_engine` editable install
 
 The existing `src/workflows/engine/` already has the required primitives (`hooks.py`, `pipeline_artifacts.py`, `post_execute_workflow_step`). Promote them by wrapping — NOT by moving — so this task is reversible.
@@ -1857,12 +1857,12 @@ The existing `src/workflows/engine/` already has the required primitives (`hooks
   pip install -e ./packages/workflow_engine
   ```
 
-- [ ] **Step 4: Implement the salako executor.**
+- [ ] **Step 4: Implement the mr_roboto executor.**
 
-  Create `packages/salako/src/salako/workflow_advance.py`:
+  Create `packages/mr_roboto/src/mr_roboto/workflow_advance.py`:
 
   ```python
-  """Salako executor: delegate mission advance to workflow_engine."""
+  """Mr. Roboto executor: delegate mission advance to workflow_engine."""
   from __future__ import annotations
 
 
@@ -1900,24 +1900,24 @@ The existing `src/workflows/engine/` already has the required primitives (`hooks
       return {"status": "completed", "result": "advance complete"}
   ```
 
-- [ ] **Step 5: Register the executor in salako's dispatcher.**
+- [ ] **Step 5: Register the executor in mr_roboto's dispatcher.**
 
-  Modify `packages/salako/src/salako/actions.py`. Find the existing executor-registry block (search for `clarify` or `notify_user` registration) and add `workflow_advance` following the same pattern. The dispatch shape is already established by `salako/__init__.py::run`; confirm with:
+  Modify `packages/mr_roboto/src/mr_roboto/actions.py`. Find the existing executor-registry block (search for `clarify` or `notify_user` registration) and add `workflow_advance` following the same pattern. The dispatch shape is already established by `mr_roboto/__init__.py::run`; confirm with:
 
   ```bash
-  rtk read packages/salako/src/salako/__init__.py
-  rtk read packages/salako/src/salako/actions.py
+  rtk read packages/mr_roboto/src/mr_roboto/__init__.py
+  rtk read packages/mr_roboto/src/mr_roboto/actions.py
   ```
 
   Add a line like `"workflow_advance": workflow_advance.run,` to whichever dict is used.
 
 - [ ] **Step 6: Smoke-test the executor.**
 
-  Create `tests/test_salako_workflow_advance.py`:
+  Create `tests/test_mr_roboto_workflow_advance.py`:
 
   ```python
   import pytest
-  from salako.workflow_advance import run
+  from mr_roboto.workflow_advance import run
 
 
   @pytest.mark.asyncio
@@ -1939,7 +1939,7 @@ The existing `src/workflows/engine/` already has the required primitives (`hooks
   Run:
 
   ```bash
-  timeout 30 rtk pytest tests/test_salako_workflow_advance.py -v
+  timeout 30 rtk pytest tests/test_mr_roboto_workflow_advance.py -v
   ```
 
 - [ ] **Step 7: Full suite.**
@@ -1951,13 +1951,13 @@ The existing `src/workflows/engine/` already has the required primitives (`hooks
 - [ ] **Step 8: Commit.**
 
   ```bash
-  rtk git add packages/workflow_engine/ packages/salako/src/salako/workflow_advance.py \
-              packages/salako/src/salako/actions.py requirements.txt \
-              tests/test_salako_workflow_advance.py
+  rtk git add packages/workflow_engine/ packages/mr_roboto/src/mr_roboto/workflow_advance.py \
+              packages/mr_roboto/src/mr_roboto/actions.py requirements.txt \
+              tests/test_mr_roboto_workflow_advance.py
   rtk git commit -m "$(cat <<'EOF'
-  feat: workflow_engine package + salako workflow_advance executor
+  feat: workflow_engine package + mr_roboto workflow_advance executor
 
-  Thin wrapper around src/workflows/engine primitives. Salako executor
+  Thin wrapper around src/workflows/engine primitives. Mr. Roboto executor
   delegates to workflow_engine.advance(). Not wired to task flow yet;
   Task 6 spawns workflow_advance tasks via the MissionAdvance action.
 
@@ -1970,7 +1970,7 @@ The existing `src/workflows/engine/` already has the required primitives (`hooks
 
 ## Task 6: Wire `on_task_finished` to rewrite + apply (delete the circular delegation)
 
-The risk peak. `on_task_finished` stops delegating to `orchestrator._handle_*` and instead routes through `rewrite_actions` → `apply_actions`. Mission-task completions produce a `MissionAdvance` action that spawns a `salako.workflow_advance` task instead of calling `_handle_complete` inline. `_handle_*` stubs remain in place so Task 7 can delete them separately.
+The risk peak. `on_task_finished` stops delegating to `orchestrator._handle_*` and instead routes through `rewrite_actions` → `apply_actions`. Mission-task completions produce a `MissionAdvance` action that spawns a `mr_roboto.workflow_advance` task instead of calling `_handle_complete` inline. `_handle_*` stubs remain in place so Task 7 can delete them separately.
 
 **Files:**
 - Modify: `packages/general_beckman/src/general_beckman/__init__.py` — `on_task_finished` rewritten
@@ -2024,7 +2024,7 @@ The risk peak. `on_task_finished` stops delegating to `orchestrator._handle_*` a
 
 
   @pytest.mark.asyncio
-  async def test_clarify_spawns_salako_clarify_task(tmp_path, monkeypatch):
+  async def test_clarify_spawns_mr_roboto_clarify_task(tmp_path, monkeypatch):
       await _fresh(tmp_path, monkeypatch)
       tid = await add_task(title="t", description="", agent_type="coder",
                            chat_id=42)
@@ -2136,7 +2136,7 @@ The risk peak. `on_task_finished` stops delegating to `orchestrator._handle_*` a
   refactor(beckman): on_task_finished uses rewrite + apply + MissionAdvance
 
   Drops the circular get_orchestrator()._handle_* delegation. Mission
-  task completions spawn a salako workflow_advance task instead of
+  task completions spawn a mr_roboto workflow_advance task instead of
   running _handle_complete inline. Recipe-advance logic extracted
   into workflow_engine.
 
@@ -2267,7 +2267,7 @@ Final main-loop collapse. Orchestrator's `run_loop` becomes a ≤30-line pump + 
   }
   ```
 
-  Drop all `telegram.send_notification` calls. The `beckman.cron._nerd_herd_health_alert` marker already spawns `salako.notify_user` tasks from `report["alerts"]`.
+  Drop all `telegram.send_notification` calls. The `beckman.cron._nerd_herd_health_alert` marker already spawns `mr_roboto.notify_user` tasks from `report["alerts"]`.
 
   Export from `packages/nerd_herd/src/nerd_herd/__init__.py`:
 
@@ -2328,11 +2328,11 @@ Final main-loop collapse. Orchestrator's `run_loop` becomes a ≤30-line pump + 
   ```python
   async def _dispatch(self, task: dict) -> None:
       import general_beckman
-      from packages.salako.src import salako  # or however salako is imported today
+      from packages.mr_roboto.src import mr_roboto  # or however mr_roboto is imported today
       try:
           if task.get("agent_type") == "mechanical":
               result = await asyncio.wait_for(
-                  salako.run(task), timeout=self._timeout_for(task),
+                  mr_roboto.run(task), timeout=self._timeout_for(task),
               )
           else:
               result = await asyncio.wait_for(
@@ -2392,7 +2392,7 @@ Final main-loop collapse. Orchestrator's `run_loop` becomes a ≤30-line pump + 
   pump + asyncio.create_task dispatch. _dispatch wraps the runner in
   wait_for(timeout=...) and calls beckman.on_task_finished on return.
   check_resources moved to nerd_herd.health_summary(); alerts reach
-  Telegram via the nerd_herd_health cron marker + salako notify_user.
+  Telegram via the nerd_herd_health cron marker + mr_roboto notify_user.
 
   Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
   EOF
@@ -2428,10 +2428,10 @@ Update architecture docs to reflect the shipped state; tidy lingering debris.
     timeout) → `general_beckman.sweep`, fired by the internal "sweep" cron
     marker every ~5min
   - workflow-step post-hook + artifact capture + next-phase emission →
-    `packages/workflow_engine/` via a thin `salako.workflow_advance` executor
+    `packages/workflow_engine/` via a thin `mr_roboto.workflow_advance` executor
   - resource health (GPU, KDV, credentials) → `nerd_herd.health_summary`,
     alerts dispatched via a `nerd_herd_health` cron marker that spawns
-    `salako.notify_user` tasks
+    `mr_roboto.notify_user` tasks
 
   Beckman's public API is exactly 3 methods: next_task, on_task_finished,
   enqueue. Lanes, swap-aware batch deferral, and model-affinity reordering
@@ -2521,7 +2521,7 @@ Run this checklist before handing back to the user.
    - Retry policy inside Beckman — Task 2
    - DLQ writes inside Beckman — Task 2
    - Cron table unification + seeder + markers — Tasks 1, 2, 3
-   - Workflow engine as package + salako executor — Task 5
+   - Workflow engine as package + mr_roboto executor — Task 5
    - Orchestrator shape ≤ 300 lines — Task 8
    - Hoca absorbs swap/affinity — Task 4
    - `result_guards.py` deleted with per-guard re-home — Task 7

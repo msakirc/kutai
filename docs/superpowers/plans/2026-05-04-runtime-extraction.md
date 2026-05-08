@@ -354,7 +354,7 @@ Add `runner` column to `tasks`. Default `react`. Migration fills existing rows: 
 
 ### D.2 — Producers set runner at task creation
 
-- `salako` mechanical executors: emit `runner=mechanical`
+- `mr_roboto` mechanical executors: emit `runner=mechanical`
 - `dispatcher.request` Beckman alias: emit `runner=direct`
 - Workflow expander: emit `runner=react` for agent steps
 - Orchestrator dispatches by `task.runner`

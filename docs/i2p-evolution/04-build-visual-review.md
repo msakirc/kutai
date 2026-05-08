@@ -7,7 +7,7 @@ from feedback loops. Real visual review needs nontrivial infra: place
 the subject in a known state, frame the screenshot, capture across
 breakpoints, diff against a reference, return structured issues. None
 of that infra exists. Treat as its own subproject because it does not
-fit the "wrap a CLI tool in a salako verb" pattern of other QA modalities.
+fit the "wrap a CLI tool in a mr_roboto verb" pattern of other QA modalities.
 
 ## Current state
 
@@ -62,7 +62,7 @@ fit the "wrap a CLI tool in a salako verb" pattern of other QA modalities.
 ## Proposed direction
 
 ### Phase A — Infrastructure (most work)
-- Salako verbs:
+- Mr. Roboto verbs:
   - `prime_state(scenario)` — log in, navigate, seed test data, wait for ready signal
   - `capture_screenshots(path, breakpoints)` — playwright-based, per-breakpoint
   - `extract_baseline(component_name)` — pull from Storybook story or design-token export
@@ -75,7 +75,7 @@ fit the "wrap a CLI tool in a salako verb" pattern of other QA modalities.
 - Output schema: structured findings array (component, kind, severity, description, expected, observed).
 
 ### Phase C — Posthook integration
-- New beckman posthook kind `visual_review` (mechanical, since the LLM call is wrapped inside the salako verb that returns structured findings — no "judge of judge").
+- New beckman posthook kind `visual_review` (mechanical, since the LLM call is wrapped inside the mr_roboto verb that returns structured findings — no "judge of judge").
 - Severity-gated via `blockers: {field: severity, levels: [critical, high]}`.
 - Auto-wire in expander on steps that emit frontend code.
 

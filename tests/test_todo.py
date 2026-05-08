@@ -345,7 +345,7 @@ class TestTodoTitleExtraction(unittest.TestCase):
 
 # TestSuggestionParser removed 2026-04-20 (Task 13 cleanup): the parser
 # `_parse_todo_suggestions` lived in the deleted `src/app/scheduled_jobs.py`
-# shim. Todo-reminder suggestions will be rebuilt as a `salako.todo_reminder`
+# shim. Todo-reminder suggestions will be rebuilt as a `mr_roboto.todo_reminder`
 # executor; the parser can be resurrected from git history
 # (86dea8c^:packages/general_beckman/.../scheduled_jobs.py) when that lands.
 

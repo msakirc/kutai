@@ -25,7 +25,7 @@ Derived from streaming `kutai.jsonl*` log files + `tasks` DB rows. Approximation
 
 ### Coverage gap — what's missing
 
-`BaseAgent.run` (`src/agents/base.py:2098`) is the *only* place that emits `[Task #N] System prompt/User context/Raw response (X chars)` lines. It only fires for **fresh starts** (not checkpoint resumes). Mechanical executor (`salako`), graders, `artifact_summarizer`, and `shopping_pipeline_v2` bypass `BaseAgent.run` entirely and emit no char data. Of 626 DB tasks, log-emitting agents only ran on the i2p ReAct path: **analyst, architect, writer, researcher, reviewer**. Other agent types (grader, mechanical, artifact_summarizer, etc.) are absent from this analysis.
+`BaseAgent.run` (`src/agents/base.py:2098`) is the *only* place that emits `[Task #N] System prompt/User context/Raw response (X chars)` lines. It only fires for **fresh starts** (not checkpoint resumes). Mechanical executor (`mr_roboto`), graders, `artifact_summarizer`, and `shopping_pipeline_v2` bypass `BaseAgent.run` entirely and emit no char data. Of 626 DB tasks, log-emitting agents only ran on the i2p ReAct path: **analyst, architect, writer, researcher, reviewer**. Other agent types (grader, mechanical, artifact_summarizer, etc.) are absent from this analysis.
 
 **Per-agent coverage in joined sample:**
 

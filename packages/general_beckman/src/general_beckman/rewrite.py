@@ -73,12 +73,12 @@ def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
         # agent_type in the skip list.
 
     # Rule 0b: mechanical post-hook completion → synthesise PostHookVerdict.
-    # Mechanical executors (salako) don't emit a posthook_verdict field —
-    # their result is shaped by the salako verb (verify_artifacts returns
+    # Mechanical executors (mr_roboto) don't emit a posthook_verdict field —
+    # their result is shaped by the mr_roboto verb (verify_artifacts returns
     # {verified, missing, failed, all_ok}). Detect this via context fields
     # ``source_task_id`` + ``posthook_kind`` placed by
     # _posthook_agent_and_payload, and translate Complete -> PostHookVerdict.
-    # The orchestrator wraps salako.run's Action.result into
+    # The orchestrator wraps mr_roboto.run's Action.result into
     # ``{"status": "completed", "result": json.dumps(action.result)}`` —
     # so a.raw["result"] arrives as a JSON string we have to parse here.
     if (
@@ -108,7 +108,7 @@ def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
             ),
         ]
 
-    # Rule 0c: mechanical post-hook FAILED (e.g. salako returned status=failed,
+    # Rule 0c: mechanical post-hook FAILED (e.g. mr_roboto returned status=failed,
     # such as "no paths supplied" or workspace resolution error). Surfaces
     # as Failed action; we still want a PostHookVerdict with passed=False so
     # the source advances down the retry-with-feedback path rather than

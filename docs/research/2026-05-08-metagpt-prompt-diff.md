@@ -7,7 +7,9 @@ All seven URLs resolved successfully (HTTP 200). No 404s, no redirects.
 | File fetched | Lines | Notes |
 |---|---|---|
 | `metagpt/actions/write_prd.py` | 325 | Orchestration logic only. Prompt nodes live in `write_prd_an.py`. Fetched both. |
+| `metagpt/actions/write_prd_an.py` | — | ActionNode definitions for PM pair. Fetched as `/tmp/mg/mg_pm_an.py`. All pair 1 excerpts verified against this file. |
 | `metagpt/actions/design_api.py` | 279 | Same pattern — prompt nodes in `design_api_an.py`. Fetched both. |
+| `metagpt/actions/design_api_an.py` | — | ActionNode definitions for Architect pair. Fetched as `/tmp/mg/mg_arch_an.py`. All pair 2 excerpts verified against this file. |
 | `metagpt/actions/write_code.py` | 228 | Contains `PROMPT_TEMPLATE` directly — 7 numbered coding rules inline. |
 | `metagpt/actions/write_test.py` | 70 | Contains `PROMPT_TEMPLATE` directly — 7 numbered QA rules + task framing. |
 | `metagpt/actions/run_code.py` | 173 | Contains `PROMPT_TEMPLATE` for code-run summarization + structured verdict section. |
@@ -61,15 +63,15 @@ ANYTHING_UNCLEAR = ActionNode(
 
 **3-5 wins to lift:**
 
-1. **Explicit clarification gate before planning.** MetaGPT's `ANYTHING_UNCLEAR` node forces the model to surface ambiguities before committing. KutAI planner has no equivalent — add a mandatory step: "Before producing subtasks, state any unclear requirements and your resolution assumption for each." This prevents silent misinterpretation.
+1. **[H] Explicit clarification gate before planning.** MetaGPT's `ANYTHING_UNCLEAR` node forces the model to surface ambiguities before committing. KutAI planner has no equivalent — add a mandatory step: "Before producing subtasks, state any unclear requirements and your resolution assumption for each." This prevents silent misinterpretation.
 
-2. **Priority taxonomy (P0/P1/P2) on subtasks.** MetaGPT's `REQUIREMENT_POOL` tags every requirement with P0/P1/P2. KutAI has a `priority` numeric field (0-10) but no label vocabulary, so downstream agents can't quickly distinguish must-have from nice-to-have. Add `"priority_label": "P0 | P1 | P2"` to the subtask schema alongside numeric priority.
+2. **[H] Priority taxonomy (P0/P1/P2) on subtasks.** MetaGPT's `REQUIREMENT_POOL` tags every requirement with P0/P1/P2. KutAI has a `priority` numeric field (0-10) but no label vocabulary, so downstream agents can't quickly distinguish must-have from nice-to-have. Add `"priority_label": "P0 | P1 | P2"` to the subtask schema alongside numeric priority.
 
-3. **User-story framing for the mission.** MetaGPT rewrites requirements as "As a X, I want Y" stories before decomposing. This isn't directly applicable to KutAI's Telegram-driven tasks, but the principle — restate what the *end-user outcome* should be before cutting tasks — is missing. Add: "Before listing subtasks, write one sentence stating the intended user outcome of this mission."
+3. **[M] User-story framing for the mission.** MetaGPT rewrites requirements as "As a X, I want Y" stories before decomposing. This isn't directly applicable to KutAI's Telegram-driven tasks, but the principle — restate what the *end-user outcome* should be before cutting tasks — is missing. Add: "Before listing subtasks, write one sentence stating the intended user outcome of this mission."
 
-4. **Competitive/context analysis step.** MetaGPT's `COMPETITIVE_ANALYSIS` node asks for 5-7 comparable existing solutions. For software planning, the equivalent is: "Check if the workspace already has code/files that partially address this mission before decomposing." KutAI does this (step 1 — file_tree), but the instruction doesn't say *what to look for* (partial implementations, relevant libraries, existing configs). Make it explicit.
+4. **[M] Competitive/context analysis step.** MetaGPT's `COMPETITIVE_ANALYSIS` node asks for 5-7 comparable existing solutions. For software planning, the equivalent is: "Check if the workspace already has code/files that partially address this mission before decomposing." KutAI does this (step 1 — file_tree), but the instruction doesn't say *what to look for* (partial implementations, relevant libraries, existing configs). Make it explicit.
 
-5. **Role primer with domain expertise claim.** MetaGPT's ProductManager role is declared with full experience context in the broader role system prompt (not in these action files, but the pattern is consistent across MetaGPT). KutAI's opener is "You are a senior technical project planner." — functional, but no domain-depth signal. Strengthen to: "You are a senior technical project planner with 10+ years decomposing software missions into executable subtasks. You have shipped multi-team projects and know how dependencies, parallelism, and scope-creep manifest in task graphs."
+5. **[L] Role primer with domain expertise claim.** `[LOW PRIORITY — SKIP IF PROMPT LENGTH MATTERS]` MetaGPT's ProductManager role is declared with full experience context in the broader role system prompt (not in these action files, but the pattern is consistent across MetaGPT). KutAI's opener is "You are a senior technical project planner." — functional, but no domain-depth signal. Strengthen to: "You are a senior technical project planner with 10+ years decomposing software missions into executable subtasks. You have shipped multi-team projects and know how dependencies, parallelism, and scope-creep manifest in task graphs."
 
 ---
 
@@ -120,15 +122,15 @@ ANYTHING_UNCLEAR = ActionNode(
 
 **3-5 wins to lift:**
 
-1. **Explicit "difficult points first" framing.** MetaGPT's `IMPLEMENTATION_APPROACH` demands that the architect call out *difficult points* before selecting frameworks. KutAI goes straight to file listing. Add a `## Hard Problems` section to `ARCHITECTURE.md`: "Before listing files, state the 1-3 technically difficult aspects of this task and your chosen approach for each." This catches risky assumptions early.
+1. **[H] Explicit "difficult points first" framing.** MetaGPT's `IMPLEMENTATION_APPROACH` demands that the architect call out *difficult points* before selecting frameworks. KutAI goes straight to file listing. Add a `## Hard Problems` section to `ARCHITECTURE.md`: "Before listing files, state the 1-3 technically difficult aspects of this task and your chosen approach for each." This catches risky assumptions early.
 
-2. **Interface contracts with type annotations required.** MetaGPT explicitly requires "type annotations, CLEARLY MARK the RELATIONSHIPS between classes, comply with PEP8 standards." KutAI's format asks for `def function_name(args) -> ReturnType` but doesn't demand relationship markers or type strictness. Strengthen: "Every interface definition MUST include full type annotations. Mark cross-file dependencies explicitly with `# depends on: path/to/file.py`."
+2. **[H] Interface contracts with type annotations required.** MetaGPT explicitly requires "type annotations, CLEARLY MARK the RELATIONSHIPS between classes, comply with PEP8 standards." KutAI's format asks for `def function_name(args) -> ReturnType` but doesn't demand relationship markers or type strictness. Strengthen: "Every interface definition MUST include full type annotations. Mark cross-file dependencies explicitly with `# depends on: path/to/file.py`."
 
-3. **Program call flow / sequence diagram.** MetaGPT always produces a `sequenceDiagram` for the key initialization and CRUD paths. KutAI produces no equivalent. Even a text-based call flow ("Request arrives → validator.check() → db.save() → notifier.send()") would catch integration mismatches before implementers start. Add an optional `## 5. Call Flow` section to the ARCHITECTURE.md template.
+3. **[M] Program call flow / sequence diagram.** MetaGPT always produces a `sequenceDiagram` for the key initialization and CRUD paths. KutAI produces no equivalent. Even a text-based call flow ("Request arrives → validator.check() → db.save() → notifier.send()") would catch integration mismatches before implementers start. Add an optional `## 5. Call Flow` section to the ARCHITECTURE.md template.
 
-4. **Clarification gate on ambiguity.** MetaGPT includes `ANYTHING_UNCLEAR` as a mandatory output section. KutAI architect has no analogous field — unclear specs get silently absorbed into design choices that later agents inherit. Add to the `final_answer` schema: `"open_questions": ["..."]` so the orchestrator can surface them.
+4. **[H] Clarification gate on ambiguity.** MetaGPT includes `ANYTHING_UNCLEAR` as a mandatory output section. KutAI architect has no analogous field — unclear specs get silently absorbed into design choices that later agents inherit. Add to the `final_answer` schema: `"open_questions": ["..."]` so the orchestrator can surface them.
 
-5. **Role primer with breadth signal.** KutAI: "You are a Principal Software Architect." MetaGPT's broader role context establishes the model as someone who has designed APIs, data stores, and call flows for production systems. Add: "You have designed production-grade APIs, data models, and service architectures across multiple languages and frameworks."
+5. **[L] Role primer with breadth signal.** KutAI: "You are a Principal Software Architect." MetaGPT's broader role context establishes the model as someone who has designed APIs, data stores, and call flows for production systems. Add: "You have designed production-grade APIs, data models, and service architectures across multiple languages and frameworks."
 
 ---
 

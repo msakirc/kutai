@@ -8,7 +8,7 @@
 
 **Out of scope (explicit):** wake-on-enqueue, multi-dispatch-per-tick drain, sub-process re-entry. Pump cadence stays at 3s poll, 1 task / iteration.
 
-**Tech Stack:** Python 3.10, aiosqlite WAL, litellm. Packages: `packages/general_beckman/`, `packages/salako/`, `src/core/`, `src/agents/`, `src/workflows/`, `src/app/`.
+**Tech Stack:** Python 3.10, aiosqlite WAL, litellm. Packages: `packages/general_beckman/`, `packages/mr_roboto/`, `src/core/`, `src/agents/`, `src/workflows/`, `src/app/`.
 
 **Reference spec:** `docs/superpowers/specs/2026-05-04-beckman-singular-admission-design.md`
 
@@ -25,8 +25,8 @@
 | Path | Responsibility |
 |---|---|
 | `packages/general_beckman/src/general_beckman/continuations.py` | `on_complete` handler registry + dispatch on task terminal |
-| `packages/salako/src/salako/executors/monitoring_check.py` | URL uptime + GitHub poll, emits `notify_user` sub-tasks |
-| `packages/salako/src/salako/executors/vector_maint.py` | ChromaDB WAL checkpoint + snapshot wrapped in `run_in_executor` |
+| `packages/mr_roboto/src/mr_roboto/executors/monitoring_check.py` | URL uptime + GitHub poll, emits `notify_user` sub-tasks |
+| `packages/mr_roboto/src/mr_roboto/executors/vector_maint.py` | ChromaDB WAL checkpoint + snapshot wrapped in `run_in_executor` |
 | `src/agents/checkpoint.py` | Agent state serialize/resume across enqueued sub-call awaits |
 
 ### Modified files
@@ -53,16 +53,16 @@
 | `src/shopping/intelligence/_llm.py:42` | Shopping helper → enqueue kind=overhead, parent_id=parent shopping task |
 | `src/workflows/shopping/labels.py:22` | Labeler → enqueue kind=overhead |
 | `src/workflows/shopping/pipeline_v2.py:363, 487` | Pipeline stages → enqueue kind=overhead, next_task_spec=stage+1 |
-| `src/infra/monitoring.py:134-142` | DELETE `run_monitoring_loop`; logic moves to salako executor |
+| `src/infra/monitoring.py:134-142` | DELETE `run_monitoring_loop`; logic moves to mr_roboto executor |
 | `src/app/run.py:439, 595, 628-655` | DELETE `_vector_maint_loop` and its `create_task`; keep snapshot_refresh (excluded by §3.7 of spec) |
-| `packages/salako/src/salako/__init__.py` | Register new executors |
+| `packages/mr_roboto/src/mr_roboto/__init__.py` | Register new executors |
 
 ### Deleted files
 
 | Path | Reason |
 |---|---|
-| `src/infra/monitoring.py` `run_monitoring_loop` (function only) | Replaced by salako `monitoring_check` executor |
-| `src/app/run.py` `_vector_maint_loop` (function only) | Replaced by salako `vector_maint_*` executors |
+| `src/infra/monitoring.py` `run_monitoring_loop` (function only) | Replaced by mr_roboto `monitoring_check` executor |
+| `src/app/run.py` `_vector_maint_loop` (function only) | Replaced by mr_roboto `vector_maint_*` executors |
 
 ### Test files
 
@@ -295,29 +295,29 @@ async def test_enqueue_await_inline_blocks_until_terminal():
 ### Task 14: Migrate `monitoring_check`
 
 **Files:**
-- New: `packages/salako/src/salako/executors/monitoring_check.py`
+- New: `packages/mr_roboto/src/mr_roboto/executors/monitoring_check.py`
 - Modify: `packages/general_beckman/src/general_beckman/cron_seed.py` (add marker)
 - Modify: `packages/general_beckman/src/general_beckman/cron.py` (wire marker)
 - Modify: `src/infra/monitoring.py` (delete `run_monitoring_loop`)
 - Modify: `src/app/run.py:439` (delete `create_task(run_monitoring_loop())`)
-- Modify: `packages/salako/src/salako/__init__.py` (register executor)
+- Modify: `packages/mr_roboto/src/mr_roboto/__init__.py` (register executor)
 - Test: `tests/integration/test_monitoring_check_executor.py` (new)
 
 - [ ] Cron seed: `monitoring_check` every 300s (env-overridable via existing `MONITOR_INTERVAL`).
-- [ ] Salako executor reads MONITOR_URLS + MONITOR_GITHUB_REPOS, performs checks, enqueues per-target `notify_user` mechanical sub-tasks (parent_id = monitoring_check task) when alert detected.
+- [ ] Mr. Roboto executor reads MONITOR_URLS + MONITOR_GITHUB_REPOS, performs checks, enqueues per-target `notify_user` mechanical sub-tasks (parent_id = monitoring_check task) when alert detected.
 - [ ] Test: simulate URL down + GitHub release; verify `notify_user` sub-tasks enqueued with correct payload; verify no direct `tg.send_notification` call remains.
 - [ ] **Commit**: `refactor(monitoring): cron-seeded monitoring_check, alerts via notify_user sub-tasks`
 
 ### Task 15: Migrate `vector_maint_*`
 
 **Files:**
-- New: `packages/salako/src/salako/executors/vector_maint.py`
+- New: `packages/mr_roboto/src/mr_roboto/executors/vector_maint.py`
 - Modify: cron_seed.py + cron.py (markers `vector_maint_wal` 1800s, `vector_maint_snapshot` 86400s)
 - Modify: `src/app/run.py:628-655` (delete `_vector_maint_loop` + `create_task`)
 - Test: `tests/integration/test_vector_maint_executor.py` (new)
 
-- [ ] Salako executor wraps ChromaDB ops in `loop.run_in_executor(...)` so pump's event loop is not blocked. Mission 46 incident regression test: simulate slow ChromaDB sync; verify pump continues dispatching during.
-- [ ] **Commit**: `refactor(memory): cron-seeded vector_maint via salako, fixes event-loop wedge`
+- [ ] Mr. Roboto executor wraps ChromaDB ops in `loop.run_in_executor(...)` so pump's event loop is not blocked. Mission 46 incident regression test: simulate slow ChromaDB sync; verify pump continues dispatching during.
+- [ ] **Commit**: `refactor(memory): cron-seeded vector_maint via mr_roboto, fixes event-loop wedge`
 
 ---
 
@@ -409,7 +409,7 @@ See spec §7. Plan does not block on them. Each can be addressed post-migration 
 ## Done criteria
 
 - All 16 LLM callsites enqueue, none call dispatcher directly
-- 2 mechanical loops migrated to cron + salako
+- 2 mechanical loops migrated to cron + mr_roboto
 - Dispatcher `request()` alias deleted
 - `current_task_id` ContextVar deleted
 - est_tokens shim from `5f7f905` deleted

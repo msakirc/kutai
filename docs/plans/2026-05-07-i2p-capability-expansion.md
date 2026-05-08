@@ -22,7 +22,7 @@ themes, themes ordered into shippable waves with dependencies.
 ## Themes (12 buckets)
 
 ### T1 — Mechanical guardrails (no LLM)
-Cheap post-hooks, big drift prevention. Each is a salako verb +
+Cheap post-hooks, big drift prevention. Each is a mr_roboto verb +
 posthook kind.
 - Imports vs declared deps (parse imports → diff against
   requirements.txt / package.json → fail or auto-add)
@@ -32,7 +32,7 @@ posthook kind.
   `time.sleep` in tests, no `assert True`)
 - Migration-applies-clean gate (sandbox DB → `alembic upgrade head` →
   assert no errors → teardown)
-- Test-running gate (`salako.run_pytest` / `run_jest` after every
+- Test-running gate (`mr_roboto.run_pytest` / `run_jest` after every
   test-emitting step)
 - Cross-type sync check (regenerate frontend types from openapi,
   diff against committed types)
@@ -143,7 +143,7 @@ Largest scope. Splits frontend phases into platform-aware variants.
 - New conditional group at phase 4: target_platform ∈ {web,
   mobile_native, mobile_cross_platform, both}
 - New tech stack options (Expo / RN, Flutter, native iOS+Android)
-- Mobile tooling adapters in salako: expo_cli, ios_simulator,
+- Mobile tooling adapters in mr_roboto: expo_cli, ios_simulator,
   android_emulator
 - Device-screenshot visual review (depends on T11)
 - Mobile e2e: detox / maestro instead of playwright
@@ -167,7 +167,7 @@ Ships:
 
 Dependencies: G grounding (shipped). No others.
 
-Estimate: 6 new salako verbs + 6 new beckman posthook kinds + i2p_v3
+Estimate: 6 new mr_roboto verbs + 6 new beckman posthook kinds + i2p_v3
 edits + tests. Mechanical in shape — same pattern as verify_artifacts
 × 6.
 
@@ -250,7 +250,7 @@ Estimate: dashboard is biggest piece; rest are wiring against
 existing Telegram + DB.
 
 ### Wave 5 — QA modalities (3 weeks)
-**Theme: T9** (excluding visual). Each post-hook is a salako verb +
+**Theme: T9** (excluding visual). Each post-hook is a mr_roboto verb +
 beckman kind, severity-aware via existing blockers rule.
 
 Ships:
@@ -271,7 +271,7 @@ modality is a wrapper around an existing tool.
 
 Ships:
 - Per-mission container runtime (Docker compose template; mission
-  workspace mounted; salako shell verbs route through it)
+  workspace mounted; mr_roboto shell verbs route through it)
 - Reset-to-green primitive (`/rollback_mission <id>` to last green
   commit)
 - End-of-mission video step (playwright `--video on`, attached as
@@ -280,7 +280,7 @@ Ships:
 Dependencies: Wave 1+ stable. Container infra is mostly ops work.
 
 Estimate: container scaffolding is the bulk; rollback uses git
-already; video is a salako verb wrapping playwright.
+already; video is a mr_roboto verb wrapping playwright.
 
 ### Wave 7 — Visual review subproject (4-6 weeks)
 **Theme: T11.** Standalone subproject; can run parallel to other
@@ -309,7 +309,7 @@ review (T11) and observability (T8).
 Ships:
 - target_platform conditional group at phase 4
 - Expo / RN / Flutter recipes added to T5 recipe library
-- Mobile tooling adapters in salako (expo_cli, ios_simulator,
+- Mobile tooling adapters in mr_roboto (expo_cli, ios_simulator,
   android_emulator)
 - Mobile e2e: detox / maestro adapters
 - Mobile visual review: device-screenshot mode

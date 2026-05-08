@@ -173,7 +173,7 @@ def expand_steps_to_tasks(
         # Auto-wire grounding (L2 of G): any step with declared produces
         # gets a grounding post-hook prepended (runs before verify_artifacts
         # so a "never wrote anything" agent fails on the cheaper check
-        # before salako bothers walking the workspace). Idempotent — skipped
+        # before mr_roboto bothers walking the workspace). Idempotent — skipped
         # when explicitly listed already.
         if context.get("produces"):
             existing = list(context.get("post_hooks") or [])
@@ -206,7 +206,7 @@ def expand_steps_to_tasks(
             for k, v in step_ctx.items():
                 context[k] = v
 
-        # Mechanical-executor steps (salako): propagate executor tag + payload
+        # Mechanical-executor steps (mr_roboto): propagate executor tag + payload
         # into context so the orchestrator can route them without an LLM call.
         agent_name = step.get("agent", "executor")
         if step.get("executor") == "mechanical" or agent_name == "mechanical":
@@ -215,7 +215,7 @@ def expand_steps_to_tasks(
             # `{"executor": "clarify", "kind": "variant_choice", ...}`),
             # translate it into the canonical _mechanical_context shape
             # BEFORE we overwrite context["executor"] below. Otherwise
-            # salako.run receives no `action` and fails with
+            # mr_roboto.run receives no `action` and fails with
             # `unknown mechanical action: None`.
             if (
                 "payload" not in step
@@ -232,7 +232,7 @@ def expand_steps_to_tasks(
                 context["payload"] = step["payload"]
 
         # Phase D — orchestrator dispatches by task.runner.
-        # Mechanical steps run salako (no LLM); everything else is a
+        # Mechanical steps run mr_roboto (no LLM); everything else is a
         # ReAct-loop agent. Workflow JSON does not currently emit
         # single-call OVERHEAD steps, so 'direct' is unused here.
         _runner = "mechanical" if context.get("executor") == "mechanical" else "react"

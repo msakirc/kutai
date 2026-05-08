@@ -2,7 +2,7 @@
 
 Layer 2 of G: catches narration-as-completion that escaped the L1
 sub-iter guard. Mechanical post-hook reads source task's tool_calls +
-produces from ctx, computes pass/fail via salako.check_grounding, applies
+produces from ctx, computes pass/fail via mr_roboto.check_grounding, applies
 verdict via beckman _apply_grounding_verdict.
 
 Auto-wired in expander: any step with declared produces gets "grounding"
@@ -15,11 +15,11 @@ import json
 import pytest
 
 
-# ── salako.check_grounding verb ──────────────────────────────────────────
+# ── mr_roboto.check_grounding verb ──────────────────────────────────────────
 
-class TestSalakoCheckGroundingVerb:
+class TestMr. RobotoCheckGroundingVerb:
     def test_pass_when_writes_match_produces(self):
-        from salako.check_grounding import check_grounding
+        from mr_roboto.check_grounding import check_grounding
         res = check_grounding(
             tool_calls=[
                 {"name": "write_file", "args": {"path": "x.py"}, "ok": True},
@@ -31,7 +31,7 @@ class TestSalakoCheckGroundingVerb:
         assert "x.py" in res["written"]
 
     def test_fail_when_no_writes(self):
-        from salako.check_grounding import check_grounding
+        from mr_roboto.check_grounding import check_grounding
         res = check_grounding(
             tool_calls=[
                 {"name": "read_file", "args": {"path": "x.py"}, "ok": True},
@@ -43,7 +43,7 @@ class TestSalakoCheckGroundingVerb:
         assert res["written"] == []
 
     def test_pass_with_any_of_alternative(self):
-        from salako.check_grounding import check_grounding
+        from mr_roboto.check_grounding import check_grounding
         res = check_grounding(
             tool_calls=[
                 {"name": "write_file", "args": {"path": "prisma/schema.prisma"}, "ok": True},
@@ -53,7 +53,7 @@ class TestSalakoCheckGroundingVerb:
         assert res["passed"] is True
 
     def test_pass_with_glob(self):
-        from salako.check_grounding import check_grounding
+        from mr_roboto.check_grounding import check_grounding
         res = check_grounding(
             tool_calls=[
                 {"name": "write_file", "args": {"path": "migrations/v/01.py"}, "ok": True},
@@ -63,12 +63,12 @@ class TestSalakoCheckGroundingVerb:
         assert res["passed"] is True
 
     def test_empty_produces_passes_vacuously(self):
-        from salako.check_grounding import check_grounding
+        from mr_roboto.check_grounding import check_grounding
         res = check_grounding(tool_calls=[], produces=[])
         assert res["passed"] is True
 
     def test_failed_writes_excluded(self):
-        from salako.check_grounding import check_grounding
+        from mr_roboto.check_grounding import check_grounding
         res = check_grounding(
             tool_calls=[
                 {"name": "write_file", "args": {"path": "x.py"}, "ok": False},
@@ -78,12 +78,12 @@ class TestSalakoCheckGroundingVerb:
         assert res["passed"] is False
 
 
-# ── salako.run dispatcher ────────────────────────────────────────────────
+# ── mr_roboto.run dispatcher ────────────────────────────────────────────────
 
-class TestSalakoRunDispatch:
+class TestMr. RobotoRunDispatch:
     @pytest.mark.asyncio
     async def test_dispatch_check_grounding_pass(self):
-        from salako import run
+        from mr_roboto import run
         action = await run({
             "id": 1,
             "mission_id": None,
@@ -100,7 +100,7 @@ class TestSalakoRunDispatch:
 
     @pytest.mark.asyncio
     async def test_dispatch_check_grounding_fail(self):
-        from salako import run
+        from mr_roboto import run
         action = await run({
             "id": 1,
             "mission_id": None,

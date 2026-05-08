@@ -435,7 +435,7 @@ async def main():
         api_task = None
 
     # Phase 14.3: Monitoring is now a cron-seeded mechanical task routed via
-    # salako monitoring_check executor — no background loop needed here.
+    # mr_roboto monitoring_check executor — no background loop needed here.
 
     # Phase 3: Connect to NerdHerd sidecar (managed by Yaşar Usta)
     try:
@@ -601,7 +601,7 @@ async def main():
     # watchdog and causing kill-restart loops (2026-04-27 incident).
     # Pre-flight probe heals corrupt collections BEFORE serving traffic.
     # WAL-checkpoint + daily snapshot are now cron-seeded mechanical tasks
-    # routed through salako vector_maint_wal / vector_maint_snapshot executors
+    # routed through mr_roboto vector_maint_wal / vector_maint_snapshot executors
     # (wrapped in run_in_executor so they never block the event loop).
     try:
         from src.memory.vector_store import (

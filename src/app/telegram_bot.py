@@ -350,7 +350,7 @@ def get_telegram() -> "TelegramInterface":
     """Module-level accessor for the singleton TelegramInterface.
 
     Raises RuntimeError if called before the interface is constructed. Used by
-    mechanical executors (e.g. salako clarify/notify_user) to reach Telegram
+    mechanical executors (e.g. mr_roboto clarify/notify_user) to reach Telegram
     without tight coupling.
     """
     if _TG_INSTANCE is None:

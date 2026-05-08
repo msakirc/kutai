@@ -1,10 +1,10 @@
 """Regression guard for the mechanical-task ``context`` shape.
 
 The orchestrator's `_dispatch` unpacks `ctx["payload"]` onto `task["payload"]`
-before calling `salako.run`, and salako routes on `payload["action"]`. If any
+before calling `mr_roboto.run`, and mr_roboto routes on `payload["action"]`. If any
 caller stores a flat `{"action": ..., ...}` at the top level of ``context``
 (instead of the nested ``{"executor": "mechanical", "payload": {...}}`` shape),
-dispatch silently dispatches with an empty payload and salako returns
+dispatch silently dispatches with an empty payload and mr_roboto returns
 "unknown mechanical action: None".
 
 These tests verify that:
@@ -52,12 +52,12 @@ def test_flat_context_breaks_dispatch_unpack_regression():
     """Negative test: a FLAT context (the old bug shape) leaves payload empty.
 
     If anyone reintroduces the old `context={"action": "x", ...}` pattern,
-    this test documents why it breaks: salako.run reads payload.get("action")
+    this test documents why it breaks: mr_roboto.run reads payload.get("action")
     but payload is empty after unpack.
     """
     flat_ctx = {"action": "clarify", "question": "why?"}
     task = _simulate_dispatch_unpack(flat_ctx)
     assert "payload" not in task, (
         "FLAT context has no 'payload' key so unpack sets nothing — "
-        "salako then sees payload.get('action') == None."
+        "mr_roboto then sees payload.get('action') == None."
     )

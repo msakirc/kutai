@@ -2,7 +2,7 @@
 
 Every function returns None. Side-effects: insert rows, update task status.
 Retry / DLQ decisions come from `general_beckman.retry`. Clarify and notify
-tasks are created as mechanical salako rows — salako executors do the
+tasks are created as mechanical mr_roboto rows — mr_roboto executors do the
 actual Telegram I/O at dispatch time.
 
 NOTE: The tasks table has no 'payload' column. Mechanical task payloads are
@@ -11,7 +11,7 @@ stored in the 'context' JSON column with the shape:
     {"executor": "mechanical", "payload": {"action": <name>, **kwargs}}
 
 The orchestrator's `_dispatch` copies `ctx["payload"]` onto `task["payload"]`
-before calling `salako.run`, which routes on `payload["action"]`. Use
+before calling `mr_roboto.run`, which routes on `payload["action"]`. Use
 ``_mechanical_context(action, **kwargs)`` to build this consistently.
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ from general_beckman.retry import decide_retry, DLQAction, RetryDecision
 
 
 def _mechanical_context(action: str, **payload_fields) -> dict:
-    """Build the canonical context shape for a mechanical salako task.
+    """Build the canonical context shape for a mechanical mr_roboto task.
 
     The workflow engine's `expand_steps_to_tasks` emits the same shape
     (see tests/workflows/test_mechanical_step_materializes_with_executor_tag.py).
@@ -383,7 +383,7 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
         except Exception as exc:
             logger.warning("posthook DLQ cascade failed",
                            task_id=task["id"], error=str(exc))
-    # Telegram DLQ notification → mechanical salako task (no inline send).
+    # Telegram DLQ notification → mechanical mr_roboto task (no inline send).
     await add_task(
         title=f"Notify: DLQ task #{task['id']}",
         description="",
@@ -754,7 +754,7 @@ def _posthook_agent_and_payload(
             "artifact_name": artifact_name,
         })
     if a.kind == "verify_artifacts":
-        # Mechanical post-hook: salako resolves declared ``produces`` paths
+        # Mechanical post-hook: mr_roboto resolves declared ``produces`` paths
         # under the mission workspace, checks file exists + non-empty +
         # optional compile/parse. Failure → source retries with feedback.
         produces = list(source_ctx.get("produces") or [])
@@ -770,7 +770,7 @@ def _posthook_agent_and_payload(
             },
         })
     if a.kind == "grounding":
-        # Mechanical post-hook: salako matches the source task's tool_calls
+        # Mechanical post-hook: mr_roboto matches the source task's tool_calls
         # audit log against declared ``produces`` paths. Pass = at least one
         # successful write_file call per produces slot. Fail = the agent
         # narrated completion without ever calling write_file. Floor for

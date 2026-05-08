@@ -87,7 +87,7 @@ So the agent class is a 3-line glue wrapper:
 2. call helper (helper enqueues overhead sub-task → Beckman → dispatcher → result)
 3. shape result into `posthook_verdict` dict for Beckman's rewrite layer
 
-**Right destination is NOT salako (call IS LLM)** and NOT a profile (no ReAct). Right destination is **`src/workflows/engine/post_hooks/`** (or Beckman's terminal hook handler directly). They are post-hook handlers, not agents.
+**Right destination is NOT mr_roboto (call IS LLM)** and NOT a profile (no ReAct). Right destination is **`src/workflows/engine/post_hooks/`** (or Beckman's terminal hook handler directly). They are post-hook handlers, not agents.
 
 After kill-agents:
 - Beckman terminal hook for a task with `posthook_kind: "grade"` runs the 3-step wrapper inline (fetch + call `grade_task` + shape result). `grade_task` itself stays as-is — it already enqueues an overhead sub-task through Beckman.
@@ -110,7 +110,7 @@ Each step shippable, no behavior change until step 6.
 4. `context_builder.py` extracted (~700 LOC moved from `_build_context` + `_fetch_deps` + format helpers). Pure code move.
 5. `react.py` extracted. `BaseAgent.execute` becomes a 5-line shim that calls `react.run(profile, task)`. **Trace replay**: capture 5-10 production task traces (in/out), run through new path, diff. Ship if matched.
 6. Dispatcher gains `dispatch(profile_name, task)` entry. Orchestrator switches `get_agent(t).execute(task)` → `dispatcher.dispatch(t, task)`. Keep `BaseAgent` shim as fallback for one cycle.
-7. `grader` + `artifact_summarizer` migrate to **`workflows/engine/post_hooks/`** handlers (NOT salako — they enqueue LLM sub-tasks via Beckman). Existing `agent_type="grader"` rows: either rewrite via one-shot DB migration to `kind="post_hook" + payload.kind="grade"`, or keep `agent_type` as compat alias the orchestrator routes to the post-hook handler. Existing rows are short-lived; drain naturally within hours.
+7. `grader` + `artifact_summarizer` migrate to **`workflows/engine/post_hooks/`** handlers (NOT mr_roboto — they enqueue LLM sub-tasks via Beckman). Existing `agent_type="grader"` rows: either rewrite via one-shot DB migration to `kind="post_hook" + payload.kind="grade"`, or keep `agent_type` as compat alias the orchestrator routes to the post-hook handler. Existing rows are short-lived; drain naturally within hours.
 8. Delete `BaseAgent`, `src/agents/*.py` (20 files), `get_agent()`, `AGENT_REGISTRY`. `__init__.py` becomes empty or re-exports profile registry.
 9. `_maybe_constrained_emit` → `workflows/engine/post_hooks/constrained_emit.py`, called by workflow_engine after agent completes a step with constrainable schema. Was always workflow-specific; finally lives there.
 

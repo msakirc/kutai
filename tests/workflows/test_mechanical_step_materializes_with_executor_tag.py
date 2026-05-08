@@ -2,7 +2,7 @@
 
 Because tasks are serialized through the DB (no executor column), the expander
 must stash executor + payload inside the task context. The orchestrator later
-reads these from context to route to salako.
+reads these from context to route to mr_roboto.
 """
 
 from src.workflows.engine.expander import expand_steps_to_tasks

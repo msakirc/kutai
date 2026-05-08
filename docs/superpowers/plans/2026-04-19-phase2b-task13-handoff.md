@@ -29,9 +29,9 @@ The fresh session's job is to plan and execute Task 13 **with proper behavior-pr
   - `tick()` — runs watchdog + scheduled_jobs on preserved internal cadences. Orchestrator calls every 3s.
 - **Modules moved with shims** (re-exports preserve backward compat): `task_context`, `result_router`, `result_guards`, `watchdog`, `scheduled_jobs`.
 - **Dead code deleted**: `src/security/risk_assessor.py`, `src/core/task_gates.py`, `tests/test_human_gates.py`, `tests/test_resilience_approvals.py`, `tests/test_risk_assessor_async.py`, `tests/test_task_gates.py`. `cmd_autonomy` also removed from `telegram_bot.py`.
-- **Salako executors**: `clarify` and `notify_user` added (`packages/salako/src/salako/clarify.py`, `notify_user.py`). Telegram singleton (`get_telegram`/`set_telegram`) introduced in `telegram_bot.py`.
-- **Lifecycle handler for clarification** already routes through salako (emits a clarify task), bypassing the orchestrator. The other `_handle_*` handlers still live on the orchestrator class and are called via `get_orchestrator()._handle_*` from `lifecycle.py` — this is the transitional circular delegation to unwind.
-- **Tests**: beckman 25 green, salako 16 green. Full suite baseline went from **253 → 248** failures (dead-test cleanup). Any new failures in orchestrator/beckman/result_*/watchdog/scheduled_jobs/lifecycle must be investigated.
+- **Mr. Roboto executors**: `clarify` and `notify_user` added (`packages/mr_roboto/src/mr_roboto/clarify.py`, `notify_user.py`). Telegram singleton (`get_telegram`/`set_telegram`) introduced in `telegram_bot.py`.
+- **Lifecycle handler for clarification** already routes through mr_roboto (emits a clarify task), bypassing the orchestrator. The other `_handle_*` handlers still live on the orchestrator class and are called via `get_orchestrator()._handle_*` from `lifecycle.py` — this is the transitional circular delegation to unwind.
+- **Tests**: beckman 25 green, mr_roboto 16 green. Full suite baseline went from **253 → 248** failures (dead-test cleanup). Any new failures in orchestrator/beckman/result_*/watchdog/scheduled_jobs/lifecycle must be investigated.
 
 ---
 
@@ -49,7 +49,7 @@ The 8 handlers currently on `Orchestrator`:
 | `_handle_unexpected_failure` | ~1058 | 92 lines | `self.telegram`, DB |
 | `_handle_complete` | ~1150 | 193 lines | `self.telegram`, `self.llm_dispatcher`, workflow engine |
 | `_handle_subtasks` | ~1344 | 202 lines | `self.llm_dispatcher`, `self._resolve_model_for_task`, DB |
-| `_handle_clarification` | ~1547 | 7 lines | Already migrated to salako clarify |
+| `_handle_clarification` | ~1547 | 7 lines | Already migrated to mr_roboto clarify |
 | `_handle_review` | ~1554 | 22 lines | DB |
 | `_handle_exhausted` | ~1576 | 95 lines | `self.telegram`, DB |
 | `_handle_failed` | ~1672 | 241 lines | `self.telegram`, `self.llm_dispatcher`, DB |
@@ -118,7 +118,7 @@ Don't just adopt one of the above. Brainstorm, pick one, defend it in the spec.
 - **Dispatch subagents for plans** (feedback memory: "always use subagents for plans, don't ask").
 - **Baseline**: 248 pre-existing failures after the Phase 2b merge. Any new failures in orchestrator/beckman/result_*/watchdog/scheduled_jobs/lifecycle must be investigated before the merge.
 - **Preserve src/core shims.** Existing test suites must pass unchanged.
-- **Salako `clarify` / `notify_user` are already shipped** — do not reimplement. `_handle_clarification` already routes through salako. Don't redo that migration.
+- **Mr. Roboto `clarify` / `notify_user` are already shipped** — do not reimplement. `_handle_clarification` already routes through mr_roboto. Don't redo that migration.
 
 ---
 

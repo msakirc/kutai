@@ -101,7 +101,7 @@ yazbunu @ git+https://github.com/msakirc/yazbunu.git
 -e ./packages/kuleden_donen_var
 -e ./packages/hallederiz_kadir
 -e ./packages/fatih_hoca
--e ./packages/salako
+-e ./packages/mr_roboto
 -e ./packages/general_beckman
 -e ./packages/workflow_engine
 -e ./packages/coulson

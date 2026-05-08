@@ -6,7 +6,7 @@
 
 **Architecture:** Extend `Product`, `Candidate`, `ProductGroup` with SKU + label fields. Rewrite `step_group` to bucket by SKU first; add `step_label` (LLM-taxonomy), `step_filter`, `step_variant_gate`, `step_compare_all`. Branch `shopping_v2.json` into synth-one vs clarify paths. Telegram reuses `_pending_action` + inline buttons. Scrapers audited in 6 batches to populate `sku` and `category_path`.
 
-**Tech Stack:** Python 3.10, asyncio, pytest, aiosqlite, python-telegram-bot 20+, litellm via HaLLederiz Kadir, Salako mechanical dispatcher, BeautifulSoup/lxml for scraper parsing.
+**Tech Stack:** Python 3.10, asyncio, pytest, aiosqlite, python-telegram-bot 20+, litellm via HaLLederiz Kadir, Mr. Roboto mechanical dispatcher, BeautifulSoup/lxml for scraper parsing.
 
 ---
 
@@ -26,7 +26,7 @@
 - `src/workflows/shopping/prompts_v2.py` — new `LABEL_PROMPT`; `GROUPING_PROMPT` gets sku/category hints.
 - `src/workflows/shopping/shopping_v2.json`, `quick_search_v2.json`, `product_research_v2.json` — new steps + branch.
 - `src/app/telegram_bot.py` — variant-choice callback + `_pending_action` kind.
-- `packages/salako/` — ensure `clarify` executor supports variant-choice payload (likely already does).
+- `packages/mr_roboto/` — ensure `clarify` executor supports variant-choice payload (likely already does).
 - 15+ `src/shopping/scrapers/*.py` — populate `sku` + `category_path`.
 
 ---
@@ -1237,16 +1237,16 @@ rtk git commit -m "feat(shopping_v2): workflow branches on variant gate outcome"
 
 ---
 
-## Task 12: Salako `clarify` executor supports variant_choice payload
+## Task 12: Mr. Roboto `clarify` executor supports variant_choice payload
 
 **Files:**
-- Modify: `packages/salako/src/salako/clarify.py` (find exact path by grepping)
-- Modify: `packages/salako/tests/test_clarify.py` (or wherever salako tests live)
+- Modify: `packages/mr_roboto/src/mr_roboto/clarify.py` (find exact path by grepping)
+- Modify: `packages/mr_roboto/tests/test_clarify.py` (or wherever mr_roboto tests live)
 
 - [ ] **Step 1: Locate clarify executor**
 
 ```bash
-rtk grep -r "def.*clarify" packages/salako/
+rtk grep -r "def.*clarify" packages/mr_roboto/
 ```
 
 Expected: one or two definitions — `clarify_step` handler that emits a pending question and writes a `notify_user` Telegram message with a keyboard.
@@ -1254,13 +1254,13 @@ Expected: one or two definitions — `clarify_step` handler that emits a pending
 - [ ] **Step 2: Write the failing test**
 
 ```python
-# packages/salako/tests/test_clarify_variant.py
+# packages/mr_roboto/tests/test_clarify_variant.py
 import pytest
 from unittest.mock import AsyncMock, patch
 
 @pytest.mark.asyncio
 async def test_clarify_variant_choice_sends_keyboard():
-    from salako.clarify import run_clarify
+    from mr_roboto.clarify import run_clarify
     task = {"id": 9, "mission_id": 1, "context": {
         "executor": "clarify",
         "kind": "variant_choice",
@@ -1274,7 +1274,7 @@ async def test_clarify_variant_choice_sends_keyboard():
         ],
         "base_label": "Samsung Galaxy S25",
     }}
-    with patch("salako.clarify.send_variant_keyboard",
+    with patch("mr_roboto.clarify.send_variant_keyboard",
                new=AsyncMock(return_value=None)) as sent:
         await run_clarify(task, artifacts)
     sent.assert_awaited_once()
@@ -1286,12 +1286,12 @@ async def test_clarify_variant_choice_sends_keyboard():
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `timeout 30 .venv/Scripts/python.exe -m pytest packages/salako/tests/test_clarify_variant.py -v`
+Run: `timeout 30 .venv/Scripts/python.exe -m pytest packages/mr_roboto/tests/test_clarify_variant.py -v`
 Expected: FAIL — no variant-specific path.
 
 - [ ] **Step 4: Implement**
 
-In `packages/salako/src/salako/clarify.py`, add a branch on `context.kind == "variant_choice"`:
+In `packages/mr_roboto/src/mr_roboto/clarify.py`, add a branch on `context.kind == "variant_choice"`:
 
 ```python
 # Pseudo-patch — adapt to the file's actual structure.
@@ -1318,12 +1318,12 @@ Add a stub `send_variant_keyboard` that calls the Telegram-side `_pending_action
 
 - [ ] **Step 5: Run tests + commit**
 
-Run: `timeout 30 .venv/Scripts/python.exe -m pytest packages/salako/tests/test_clarify_variant.py -v`
+Run: `timeout 30 .venv/Scripts/python.exe -m pytest packages/mr_roboto/tests/test_clarify_variant.py -v`
 Expected: PASS.
 
 ```bash
-rtk git add packages/salako/
-rtk git commit -m "feat(salako): clarify executor supports variant_choice payload"
+rtk git add packages/mr_roboto/
+rtk git commit -m "feat(mr_roboto): clarify executor supports variant_choice payload"
 ```
 
 ---
@@ -1464,7 +1464,7 @@ self.app.add_handler(CallbackQueryHandler(
 
 Implement `_resume_mission_at_step` to write `clarify_choice` artifact + mark the `clarify_variant` task completed, and `_run_compare_all_and_reply` to invoke the `format_compare` step directly and deliver the result via `_reply`.
 
-Wire `salako.send_variant_keyboard` to call `TelegramInterface.send_variant_keyboard` via the existing notify bridge.
+Wire `mr_roboto.send_variant_keyboard` to call `TelegramInterface.send_variant_keyboard` via the existing notify bridge.
 
 - [ ] **Step 4: Run tests**
 
@@ -1474,7 +1474,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-rtk git add src/app/telegram_bot.py packages/salako/ tests/app/test_variant_choice_callback.py
+rtk git add src/app/telegram_bot.py packages/mr_roboto/ tests/app/test_variant_choice_callback.py
 rtk git commit -m "feat(telegram): variant-choice inline keyboard + callback handler"
 ```
 

@@ -1,7 +1,7 @@
 """Queue hygiene sweep — port of watchdog.check_stuck_tasks.
 
 Renamed to sweep_queue(); telegram= parameter dropped.
-All Telegram notifications replaced with mechanical salako notify_user tasks.
+All Telegram notifications replaced with mechanical mr_roboto notify_user tasks.
 
 Preserves all 7 numbered sections from the original:
   1. Tasks stuck in "processing" > 5 min

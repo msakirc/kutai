@@ -6,7 +6,7 @@ alert callback on auth_fail / non-recoverable errors.
 
 The orchestrator does NOT touch the registry, KDV, or Telegram. The boot
 caller consumes the returned results map and wires those subsystems.
-``alert_fn`` is injected so this module stays free of telegram/salako
+``alert_fn`` is injected so this module stays free of telegram/mr_roboto
 dependencies.
 """
 from __future__ import annotations

@@ -169,7 +169,7 @@ Approach: deep dive, structural root-cause fixes, no band-aids. "No sells. Hones
 
 **(M) Stale `api_discovery` + `daily_digest` DLQ entries**
 - Recurring scheduled tasks DLQ'd with "unknown mechanical action: 'ap...' / 'da...'". Mechanical executor lookup miss.
-- File: `packages/salako/src/salako/__init__.py` action dispatch table. Either add handlers OR cancel cron schedules.
+- File: `packages/mr_roboto/src/mr_roboto/__init__.py` action dispatch table. Either add handlers OR cancel cron schedules.
 
 **(O) Prompt-noise reduction on high-attempt retries**
 - Current prompt is ~10kB by attempt 4: base instruction + JSON skeleton + Required Output Format + auto-injected Skill Library + Results-from-Previous-Steps narrative + per-artifact checklist + previous-output verbatim. Small models drown.

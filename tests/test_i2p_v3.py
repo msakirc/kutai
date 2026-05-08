@@ -385,7 +385,7 @@ class TestV3WorkflowLoading:
         wf = load_workflow("i2p_v3")
         for step in wf.steps:
             # Mechanical steps (e.g. .git_commit siblings) emit fixed-shape
-            # results from salako verbs, not LLM artifacts — no schema needed.
+            # results from mr_roboto verbs, not LLM artifacts — no schema needed.
             if step.get("agent") == "mechanical" or step.get("executor") == "mechanical":
                 continue
             assert (

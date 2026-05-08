@@ -868,7 +868,7 @@ async def init_db():
 
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
-    # salako mechanical executors. Clean up any stale rows from earlier runs.
+    # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.
     await db.execute("DELETE FROM scheduled_tasks WHERE id IN (9998, 9999)")
     await db.commit()
 
@@ -1058,7 +1058,7 @@ async def init_db():
 
     # Migration: add runner column for orchestrator lane dispatch
     # (Phase D — runtime extraction, 2026-05-05). Three lanes:
-    #   'mechanical' — salako sub-tasks (no LLM)
+    #   'mechanical' — mr_roboto sub-tasks (no LLM)
     #   'direct'     — single-call OVERHEAD (graders, structured_emit, classifier)
     #   'react'      — multi-call ReAct loop with tools (default)
     # Backfill matches what the orchestrator's lane decision derives today:

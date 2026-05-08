@@ -17,7 +17,7 @@ ongoing financial ops.
 
 - 7 NEEDS-REAL-TOOLS steps marked in i2p_v3 (2026-05-06): 7.13 staging_environment, 13.1 production_infrastructure, 13.3 monitoring_setup, 13.11 social_preview_test, feat.13 staging_deploy. Marker is informational; no flow-control hookup.
 - Phase 12 has `legal_review` (12.5) gated on `equals: [pass, approved]` — but no legal-doc generation behind it.
-- No vendor adapters in salako (Vercel / Railway / Supabase / Stripe / SES / Sentry / Apple / Google).
+- No vendor adapters in mr_roboto (Vercel / Railway / Supabase / Stripe / SES / Sentry / Apple / Google).
 - No credential vault; no scoped-token model.
 - Phase 13 has production_infrastructure / monitoring_setup / etc. — all NEEDS-REAL-TOOLS.
 - No founder-action queue artifact.

@@ -63,7 +63,7 @@ async def test_subtasks_spawns_child_rows(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_clarification_spawns_salako_task(tmp_path, monkeypatch):
+async def test_clarification_spawns_mr_roboto_task(tmp_path, monkeypatch):
     await _fresh_db(tmp_path, monkeypatch)
     tid = await add_task(title="t", description="", agent_type="coder")
     await apply_actions(

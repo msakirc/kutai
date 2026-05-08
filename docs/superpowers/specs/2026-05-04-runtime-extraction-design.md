@@ -20,7 +20,7 @@ Beckman.next_task()                                 # admit, queue, lifecycle, r
    ↓
 Orchestrator pump dispatches by task.runner
    │
-   ├── runner=mechanical → salako.run(task)
+   ├── runner=mechanical → mr_roboto.run(task)
    │
    ├── runner=direct → dispatcher.execute(preselected_pick, messages)
    │      (graders, structured_emit, classifier, raw_dispatch overhead)
@@ -71,7 +71,7 @@ class Runner(StrEnum):
 ```
 
 Set at task creation by the producer:
-- Mechanical executors (salako sub-tasks): `runner=mechanical`
+- Mechanical executors (mr_roboto sub-tasks): `runner=mechanical`
 - Single-call OVERHEAD (graders, structured_emit, classifier, raw_dispatch): `runner=direct`
 - Agent multi-call dispatches: `runner=react`
 

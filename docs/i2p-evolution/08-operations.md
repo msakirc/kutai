@@ -96,7 +96,7 @@ boring lift.
 
 ### Phase A — Monitoring kit (recipes)
 - Per-stack monitoring recipes (FastAPI + NextJS + ...): wires Sentry SDK, Better Stack synthetic check, Posthog client.
-- Salako vendor adapters (cross-ref [06-real-world-bridge.md](06-real-world-bridge.md)) configure rules at deploy-time.
+- Mr. Roboto vendor adapters (cross-ref [06-real-world-bridge.md](06-real-world-bridge.md)) configure rules at deploy-time.
 - Alert rules library (per-stack defaults).
 
 ### Phase B — On-call agent (long-running mission)
@@ -123,7 +123,7 @@ boring lift.
 - These are long-running missions managed by the orchestrator (which already has scheduled_jobs).
 
 ### Phase F — Performance regression detection
-- Post-deploy synthetic test suite via salako (cross-ref [02-build-foundation.md](02-build-foundation.md) test_run + [04-build-visual-review.md](04-build-visual-review.md) for visual regression).
+- Post-deploy synthetic test suite via mr_roboto (cross-ref [02-build-foundation.md](02-build-foundation.md) test_run + [04-build-visual-review.md](04-build-visual-review.md) for visual regression).
 - Bisect-on-break (cross-ref [03-build-review-density.md](03-build-review-density.md)) extended to prod.
 
 ## Human-in-loop pattern

@@ -629,6 +629,14 @@ async def on_task_finished(task_id: int, result: dict) -> None:
     except Exception as e:
         log.debug("queue_profile push failed", task_id=task_id, error=str(e))
 
+    # Z0: DLQ cascade auto-pause trigger
+    try:
+        if task.get("mission_id") is not None and task.get("status") == "failed":
+            from general_beckman.lifecycle_events import dlq_cascade_check
+            await dlq_cascade_check(task["mission_id"])
+    except Exception as e:
+        log.warning("dlq_cascade_check failed: %s", e)
+
 
 async def _send_standalone_completion(task: dict, status: str, result: dict) -> None:
     """Deliver completion for a mission-less task back to the user.

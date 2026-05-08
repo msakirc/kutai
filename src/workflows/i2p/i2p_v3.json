@@ -1464,7 +1464,12 @@
         "research_review_result": {
           "type": "object",
           "fields": {
-            "verdict": {"type": "string", "equals": ["pass"]},
+            "verdict": {
+              "type": "string",
+              "equals": [
+                "pass"
+              ]
+            },
             "issues": {}
           }
         }
@@ -1499,7 +1504,13 @@
           "fields": {
             "scores": {},
             "weighted_score": {},
-            "recommendation": {"type": "string", "equals": ["Go", "go"]}
+            "recommendation": {
+              "type": "string",
+              "equals": [
+                "Go",
+                "go"
+              ]
+            }
           }
         }
       },
@@ -1576,20 +1587,41 @@
             "customer_profile": {
               "type": "object",
               "fields": {
-                "jobs": {"type": "array", "min_items": 1},
-                "pains": {"type": "array", "min_items": 1},
-                "gains": {"type": "array", "min_items": 1}
+                "jobs": {
+                  "type": "array",
+                  "min_items": 1
+                },
+                "pains": {
+                  "type": "array",
+                  "min_items": 1
+                },
+                "gains": {
+                  "type": "array",
+                  "min_items": 1
+                }
               }
             },
             "value_map": {
               "type": "object",
               "fields": {
-                "products_and_services": {"type": "array", "min_items": 1},
-                "pain_relievers": {"type": "array", "min_items": 1},
-                "gain_creators": {"type": "array", "min_items": 1}
+                "products_and_services": {
+                  "type": "array",
+                  "min_items": 1
+                },
+                "pain_relievers": {
+                  "type": "array",
+                  "min_items": 1
+                },
+                "gain_creators": {
+                  "type": "array",
+                  "min_items": 1
+                }
               }
             },
-            "top_fits": {"type": "array", "min_items": 1}
+            "top_fits": {
+              "type": "array",
+              "min_items": 1
+            }
           }
         }
       },
@@ -1860,19 +1892,33 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "name": {"type": "string"},
-                  "formula": {"type": "string"},
-                  "data_source": {"type": "string"},
-                  "target_value": {"type": "string"},
-                  "measurement_frequency": {"type": "string"}
+                  "name": {
+                    "type": "string"
+                  },
+                  "formula": {
+                    "type": "string"
+                  },
+                  "data_source": {
+                    "type": "string"
+                  },
+                  "target_value": {
+                    "type": "string"
+                  },
+                  "measurement_frequency": {
+                    "type": "string"
+                  }
                 }
               }
             },
             "north_star_metric": {
               "type": "object",
               "fields": {
-                "name": {"type": "string"},
-                "justification": {"type": "string"}
+                "name": {
+                  "type": "string"
+                },
+                "justification": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -2149,21 +2195,47 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "entity_name": {"type": "string"},
-                  "description": {"type": "string"},
-                  "data_fields": {"type": "array", "min_items": 1},
-                  "sensitivity_level": {"type": "string"},
-                  "volume_estimate": {"type": "string"},
-                  "retention_policy": {"type": "string"},
-                  "deletion_requirements": {"type": "string"},
-                  "backup_requirements": {"type": "string"}
+                  "entity_name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "data_fields": {
+                    "type": "array",
+                    "min_items": 1
+                  },
+                  "sensitivity_level": {
+                    "type": "string"
+                  },
+                  "volume_estimate": {
+                    "type": "string"
+                  },
+                  "retention_policy": {
+                    "type": "string"
+                  },
+                  "deletion_requirements": {
+                    "type": "string"
+                  },
+                  "backup_requirements": {
+                    "type": "string"
+                  }
                 }
               }
             },
-            "data_flows": {"type": "array", "min_items": 1},
-            "data_transformations": {"type": "array"},
-            "data_access_patterns": {"type": "array"},
-            "data_archival_strategy": {"type": "string"}
+            "data_flows": {
+              "type": "array",
+              "min_items": 1
+            },
+            "data_transformations": {
+              "type": "array"
+            },
+            "data_access_patterns": {
+              "type": "array"
+            },
+            "data_archival_strategy": {
+              "type": "string"
+            }
           }
         }
       },
@@ -2534,7 +2606,12 @@
         "requirements_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass"
+              ]
+            },
             "issues": {}
           }
         }
@@ -2771,20 +2848,34 @@
         "openapi_spec": {
           "type": "object",
           "fields": {
-            "openapi": {"type": "string"},
+            "openapi": {
+              "type": "string"
+            },
             "info": {
               "type": "object",
               "fields": {
-                "title": {"type": "string"},
-                "version": {"type": "string"},
-                "description": {"type": "string"}
+                "title": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
               }
             },
-            "paths": {"type": "object", "min_keys": 1},
+            "paths": {
+              "type": "object",
+              "min_keys": 1
+            },
             "components": {
               "type": "object",
               "fields": {
-                "schemas": {"type": "object", "min_keys": 1}
+                "schemas": {
+                  "type": "object",
+                  "min_keys": 1
+                }
               }
             }
           }
@@ -2902,16 +2993,30 @@
           "items": {
             "type": "object",
             "fields": {
-              "integration_id": {"type": "string"},
-              "vendor": {"type": "string"},
-              "pricing": {"type": "string"},
-              "setup_complexity": {"type": "string"},
-              "sdk_quality": {"type": "string"},
-              "lock_in_risk": {"type": "string"}
+              "integration_id": {
+                "type": "string"
+              },
+              "vendor": {
+                "type": "string"
+              },
+              "pricing": {
+                "type": "string"
+              },
+              "setup_complexity": {
+                "type": "string"
+              },
+              "sdk_quality": {
+                "type": "string"
+              },
+              "lock_in_risk": {
+                "type": "string"
+              }
             }
           }
         },
-        "total_monthly_cost": {"type": "string"}
+        "total_monthly_cost": {
+          "type": "string"
+        }
       },
       "context": {}
     },
@@ -3327,7 +3432,13 @@
         "architecture_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {},
             "security_findings": {}
           }
@@ -3563,7 +3674,13 @@
         "wireframe_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {}
           }
         }
@@ -3765,7 +3882,13 @@
         "design_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {}
           }
         }
@@ -3889,13 +4012,29 @@
           "items": {
             "type": "object",
             "fields": {
-              "epic_id": {"type": "string"},
-              "name": {"type": "string"},
-              "description": {"type": "string"},
-              "user_stories": {"type": "array", "min_items": 1},
-              "dependencies": {"type": "array", "optional": true},
-              "estimated_total_effort": {"type": "string"},
-              "priority_order": {"type": "number"}
+              "epic_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "user_stories": {
+                "type": "array",
+                "min_items": 1
+              },
+              "dependencies": {
+                "type": "array",
+                "optional": true
+              },
+              "estimated_total_effort": {
+                "type": "string"
+              },
+              "priority_order": {
+                "type": "number"
+              }
             }
           }
         },
@@ -3908,12 +4047,25 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "task_id": {"type": "string"},
-                  "story_id": {"type": "string"},
-                  "epic_id": {"type": "string"},
-                  "agent": {"type": "string"},
-                  "dependencies": {"type": "array", "optional": true},
-                  "estimated_effort": {"type": "string"}
+                  "task_id": {
+                    "type": "string"
+                  },
+                  "story_id": {
+                    "type": "string"
+                  },
+                  "epic_id": {
+                    "type": "string"
+                  },
+                  "agent": {
+                    "type": "string"
+                  },
+                  "dependencies": {
+                    "type": "array",
+                    "optional": true
+                  },
+                  "estimated_effort": {
+                    "type": "string"
+                  }
                 }
               }
             }
@@ -4040,15 +4192,28 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "task_id": {"type": "string"},
-                  "name": {"type": "string"},
-                  "category": {"type": "string"},
-                  "agent": {"type": "string"},
-                  "estimated_effort": {"type": "string"}
+                  "task_id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "category": {
+                    "type": "string"
+                  },
+                  "agent": {
+                    "type": "string"
+                  },
+                  "estimated_effort": {
+                    "type": "string"
+                  }
                 }
               }
             },
-            "order": {"type": "array", "min_items": 1}
+            "order": {
+              "type": "array",
+              "min_items": 1
+            }
           }
         },
         "sprint_plans": {
@@ -4057,23 +4222,39 @@
           "items": {
             "type": "object",
             "fields": {
-              "sprint_id": {"type": "string"},
-              "name": {"type": "string"},
-              "goal": {"type": "string"},
+              "sprint_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "goal": {
+                "type": "string"
+              },
               "tasks": {
                 "type": "array",
                 "min_items": 1,
                 "items": {
                   "type": "object",
                   "fields": {
-                    "task_id": {"type": "string"},
-                    "story_id": {"type": "string"},
-                    "agent": {"type": "string"},
-                    "estimated_effort": {"type": "string"}
+                    "task_id": {
+                      "type": "string"
+                    },
+                    "story_id": {
+                      "type": "string"
+                    },
+                    "agent": {
+                      "type": "string"
+                    },
+                    "estimated_effort": {
+                      "type": "string"
+                    }
                   }
                 }
               },
-              "deliverable": {"type": "string"}
+              "deliverable": {
+                "type": "string"
+              }
             }
           }
         }
@@ -4152,7 +4333,13 @@
         "project_plan_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {}
           }
         }
@@ -4307,7 +4494,10 @@
             "dependencies_installed",
             "health_check_verified"
           ],
-          "must_be_true": ["dependencies_installed", "health_check_verified"]
+          "must_be_true": [
+            "dependencies_installed",
+            "health_check_verified"
+          ]
         }
       }
     },
@@ -4355,8 +4545,18 @@
         "seed_script"
       ],
       "produces": [
-        ["migrations/**/*.py", "prisma/schema.prisma", "drizzle.config.ts", "drizzle.config.js"],
-        ["scripts/seed.py", "scripts/seed.ts", "prisma/seed.ts", "backend/seed.py"]
+        [
+          "migrations/**/*.py",
+          "prisma/schema.prisma",
+          "drizzle.config.ts",
+          "drizzle.config.js"
+        ],
+        [
+          "scripts/seed.py",
+          "scripts/seed.ts",
+          "prisma/seed.ts",
+          "backend/seed.py"
+        ]
       ],
       "post_hooks": [
         "verify_artifacts"
@@ -4373,7 +4573,9 @@
             "client_path",
             "connection_verified"
           ],
-          "must_be_true": ["connection_verified"]
+          "must_be_true": [
+            "connection_verified"
+          ]
         },
         "migration_system": {
           "type": "object",
@@ -4434,7 +4636,10 @@
             "dependencies_installed",
             "dev_server_verified"
           ],
-          "must_be_true": ["dependencies_installed", "dev_server_verified"]
+          "must_be_true": [
+            "dependencies_installed",
+            "dev_server_verified"
+          ]
         }
       }
     },
@@ -4481,8 +4686,21 @@
         "frontend_test_config"
       ],
       "produces": [
-        ["backend/tests/conftest.py", "backend/pytest.ini", "backend/pyproject.toml", "backend/jest.config.js", "backend/jest.config.ts", "backend/vitest.config.js", "backend/vitest.config.ts"],
-        ["frontend/vitest.config.ts", "frontend/vitest.config.js", "frontend/jest.config.ts", "frontend/jest.config.js"]
+        [
+          "backend/tests/conftest.py",
+          "backend/pytest.ini",
+          "backend/pyproject.toml",
+          "backend/jest.config.js",
+          "backend/jest.config.ts",
+          "backend/vitest.config.js",
+          "backend/vitest.config.ts"
+        ],
+        [
+          "frontend/vitest.config.ts",
+          "frontend/vitest.config.js",
+          "frontend/jest.config.ts",
+          "frontend/jest.config.js"
+        ]
       ],
       "post_hooks": [
         "verify_artifacts"
@@ -4854,7 +5072,9 @@
             "deployed",
             "health_check_passed"
           ],
-          "must_be_true": ["health_check_passed"]
+          "must_be_true": [
+            "health_check_passed"
+          ]
         }
       },
       "context": {}
@@ -4889,7 +5109,9 @@
             "checks",
             "all_passed"
           ],
-          "must_be_true": ["all_passed"]
+          "must_be_true": [
+            "all_passed"
+          ]
         }
       },
       "context": {}
@@ -4962,7 +5184,13 @@
         "sprint_0_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {}
           }
         }
@@ -5037,18 +5265,31 @@
         "implementation_backlog": {
           "type": "array",
           "min_items": 5,
-          "min_items_from": {"artifact": "mvp_scope", "path": "mvp_feature_list", "floor": 5},
+          "min_items_from": {
+            "artifact": "mvp_scope",
+            "path": "mvp_feature_list",
+            "floor": 5
+          },
           "unique_by": "feature_id",
           "items": {
             "type": "object",
             "fields": {
-              "feature_id": {"type": "string", "pattern": "^F-\\d{2,3}$"},
-              "feature_name": {"type": "string", "min_length": 3},
+              "feature_id": {
+                "type": "string",
+                "pattern": "^F-\\d{2,3}$"
+              },
+              "feature_name": {
+                "type": "string",
+                "min_length": 3
+              },
               "epic_id": {},
               "sprint_id": {},
               "status": {},
               "template_ref": {},
-              "depends_on_features": {"type": "array", "optional": true}
+              "depends_on_features": {
+                "type": "array",
+                "optional": true
+              }
             }
           }
         }
@@ -5148,7 +5389,10 @@
             "features_completed",
             "velocity_ratio"
           ],
-          "must_be_true": ["sprint_id_completed", "features_completed"]
+          "must_be_true": [
+            "sprint_id_completed",
+            "features_completed"
+          ]
         }
       },
       "context": {}
@@ -5186,13 +5430,21 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "classification": {"type": "string"},
-                  "description": {"type": "string"},
-                  "design_was_wrong": {"type": "boolean"}
+                  "classification": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "design_was_wrong": {
+                    "type": "boolean"
+                  }
                 }
               }
             },
-            "adrs_created": {"type": "array"}
+            "adrs_created": {
+              "type": "array"
+            }
           }
         }
       },
@@ -5484,7 +5736,9 @@
             "optimizations_applied",
             "before_after_metrics"
           ],
-          "must_be_true": ["optimizations_applied"]
+          "must_be_true": [
+            "optimizations_applied"
+          ]
         }
       },
       "context": {
@@ -5565,7 +5819,9 @@
             "fixes_applied",
             "verified"
           ],
-          "must_be_true": ["fixes_applied"]
+          "must_be_true": [
+            "fixes_applied"
+          ]
         }
       },
       "context": {
@@ -5725,15 +5981,33 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "category":    {"type": "string"},
-                  "severity":    {"type": "string", "equals": ["critical", "high", "medium", "low", "info"]},
-                  "description": {"type": "string"},
-                  "remediation": {"type": "string"}
+                  "category": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "equals": [
+                      "critical",
+                      "high",
+                      "medium",
+                      "low",
+                      "info"
+                    ]
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "remediation": {
+                    "type": "string"
+                  }
                 }
               },
               "blockers": {
                 "field": "severity",
-                "levels": ["critical", "high"]
+                "levels": [
+                  "critical",
+                  "high"
+                ]
               }
             }
           }
@@ -5915,15 +6189,33 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "check":       {"type": "string"},
-                  "severity":    {"type": "string", "equals": ["critical", "high", "medium", "low", "info"]},
-                  "description": {"type": "string"},
-                  "remediation": {"type": "string"}
+                  "check": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "equals": [
+                      "critical",
+                      "high",
+                      "medium",
+                      "low",
+                      "info"
+                    ]
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "remediation": {
+                    "type": "string"
+                  }
                 }
               },
               "blockers": {
                 "field": "severity",
-                "levels": ["critical", "high"]
+                "levels": [
+                  "critical",
+                  "high"
+                ]
               }
             }
           }
@@ -5937,15 +6229,33 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "check":       {"type": "string"},
-                  "severity":    {"type": "string", "equals": ["critical", "high", "medium", "low", "info"]},
-                  "description": {"type": "string"},
-                  "remediation": {"type": "string"}
+                  "check": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "equals": [
+                      "critical",
+                      "high",
+                      "medium",
+                      "low",
+                      "info"
+                    ]
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "remediation": {
+                    "type": "string"
+                  }
                 }
               },
               "blockers": {
                 "field": "severity",
-                "levels": ["critical", "high"]
+                "levels": [
+                  "critical",
+                  "high"
+                ]
               }
             }
           }
@@ -5992,7 +6302,9 @@
           "required_fields": [
             "headers_configured"
           ],
-          "must_be_true": ["headers_configured"]
+          "must_be_true": [
+            "headers_configured"
+          ]
         }
       },
       "context": {
@@ -6112,7 +6424,9 @@
             "fixes_applied",
             "remaining_issues"
           ],
-          "must_be_true": ["fixes_applied"]
+          "must_be_true": [
+            "fixes_applied"
+          ]
         }
       },
       "context": {
@@ -6150,7 +6464,9 @@
             "critical_count",
             "all_resolved"
           ],
-          "must_be_true": ["all_resolved"]
+          "must_be_true": [
+            "all_resolved"
+          ]
         },
         "security_audit_report": {
           "type": "markdown",
@@ -6630,7 +6946,13 @@
         "legal_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {},
             "requires_legal_counsel": {}
           }
@@ -6696,7 +7018,9 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "none",
+      "locked": true
     },
     {
       "id": "13.2",
@@ -6754,7 +7078,9 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "none",
+      "locked": true
     },
     {
       "id": "13.3",
@@ -6974,10 +7300,14 @@
             "data_seeded",
             "verified"
           ],
-          "must_be_true": ["data_seeded"]
+          "must_be_true": [
+            "data_seeded"
+          ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "none",
+      "locked": true
     },
     {
       "id": "13.7",
@@ -7106,7 +7436,9 @@
             "headers_configured",
             "waf_active"
           ],
-          "must_be_true": ["headers_configured"]
+          "must_be_true": [
+            "headers_configured"
+          ]
         },
         "email_deliverability_results": {
           "type": "object",
@@ -7306,7 +7638,10 @@
           "type": "object",
           "fields": {
             "checklist": {},
-            "approved": {"type": "boolean", "equals": true},
+            "approved": {
+              "type": "boolean",
+              "equals": true
+            },
             "launch_date": {}
           }
         }
@@ -7378,7 +7713,13 @@
         "checklist_review": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {}
           }
         }
@@ -7424,10 +7765,15 @@
             "health_check_passed",
             "smoke_tests_passed"
           ],
-          "must_be_true": ["health_check_passed", "smoke_tests_passed"]
+          "must_be_true": [
+            "health_check_passed",
+            "smoke_tests_passed"
+          ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "none",
+      "locked": true
     },
     {
       "id": "14.4",
@@ -7502,7 +7848,9 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "none",
+      "locked": true
     },
     {
       "id": "14.6",
@@ -7541,7 +7889,9 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "none",
+      "locked": true
     },
     {
       "id": "14.7",
@@ -7575,7 +7925,9 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "none",
+      "locked": true
     },
     {
       "id": "14.8",
@@ -7611,7 +7963,9 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "none",
+      "locked": true
     },
     {
       "id": "14.9",
@@ -8092,7 +8446,9 @@
             "advisories_reviewed",
             "patches_applied"
           ],
-          "must_be_true": ["patches_applied"]
+          "must_be_true": [
+            "patches_applied"
+          ]
         }
       },
       "context": {}
@@ -8640,7 +8996,10 @@
               "type": "object",
               "fields": {
                 "page_files": {},
-                "states_implemented": {"type": "array", "optional": true}
+                "states_implemented": {
+                  "type": "array",
+                  "optional": true
+                }
               }
             }
           }

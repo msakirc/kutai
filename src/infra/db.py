@@ -1409,12 +1409,16 @@ async def get_ready_tasks(limit=5):
     """
     db = await get_db()
 
-    # Fetch ALL pending tasks — filter AFTER dep check
+    # Fetch ALL pending tasks — filter AFTER dep check.
+    # LEFT JOIN missions so standalone tasks (mission_id IS NULL) still pass through.
+    # Tasks whose mission is paused or killed are excluded at the SQL level.
     cursor = await db.execute(
-        """SELECT * FROM tasks
-           WHERE status = 'pending'
-           AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
-           ORDER BY priority DESC, created_at ASC"""
+        """SELECT t.* FROM tasks t
+           LEFT JOIN missions m ON t.mission_id = m.id
+           WHERE t.status = 'pending'
+           AND (t.next_retry_at IS NULL OR t.next_retry_at <= datetime('now'))
+           AND (m.id IS NULL OR m.lifecycle_state = 'active')
+           ORDER BY t.priority DESC, t.created_at ASC"""
     )
     all_pending = [dict(row) for row in await cursor.fetchall()]
 

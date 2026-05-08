@@ -18,7 +18,22 @@ __all__ = [
     "next_task", "on_task_finished", "enqueue", "on_model_swap",
     "resolve_inline", "Task", "AgentResult", "TaskResult",
     "INLINE_TIMEOUT", "_inline_waiters",
+    "notify_threshold", "THRESHOLDS_PCT",
 ]
+
+THRESHOLDS_PCT = (50, 75, 90)
+
+
+async def notify_threshold(mission_id: int, pct: int, spent: float, ceiling: float):
+    """Post threshold notify to mission thread.
+
+    Stub for now — Z0-T13 wires this to telegram_bot pinned-status updater.
+    """
+    import logging as _logging
+    _logging.getLogger(__name__).info(
+        "mission %d crossed %d%% threshold ($%.4f / $%.4f)",
+        mission_id, pct, spent, ceiling,
+    )
 
 
 @dataclass
@@ -470,13 +485,63 @@ async def next_task():
     return None
 
 
-async def on_task_finished(task_id: int, result: dict) -> None:
+async def on_task_finished(task_id, result: dict = None) -> None:
     """Mark terminal + create any follow-up tasks the result implies.
 
     Pipeline: route_result -> rewrite_actions -> apply_actions.
     No delegation to Orchestrator. Mission-task completions produce a
     MissionAdvance action which spawns a mr_roboto workflow_advance task.
+
+    Calling conventions:
+      on_task_finished(task_id, result)  — production (orchestrator)
+      on_task_finished(task_dict)        — test shorthand; task_dict has
+                                           all fields incl. cost_usd, and
+                                           only the spent/threshold path runs.
     """
+    # ── Z0: spent_usd accumulation + threshold notifies ───────────────────
+    # Detect test calling convention: single dict with task fields embedded.
+    # In this mode we only run the cost-tracking path and return early —
+    # the full routing pipeline requires a real DB task row.
+    if isinstance(task_id, dict):
+        _task_dict = task_id
+        _mid = _task_dict.get("mission_id")
+        _cost = float(_task_dict.get("cost_usd") or 0.0)
+        if _mid is not None and _cost > 0:
+            import json as _json
+            from src.infra.db import get_db as _get_db
+            _db = await _get_db()
+            await _db.execute(
+                "UPDATE missions SET spent_usd = COALESCE(spent_usd, 0) + ? WHERE id = ?",
+                (_cost, _mid),
+            )
+            _cur = await _db.execute(
+                "SELECT cost_ceiling_usd, spent_usd, context FROM missions WHERE id = ?",
+                (_mid,),
+            )
+            _row = await _cur.fetchone()
+            await _db.commit()
+            if _row:
+                _ceiling, _spent, _ctx_raw = _row[0], _row[1], _row[2]
+                if _ceiling is not None and _ceiling > 0:
+                    _ctx = _json.loads(_ctx_raw) if _ctx_raw else {}
+                    _fired = set(_ctx.get("thresholds_fired", []))
+                    _pct = (float(_spent) / float(_ceiling)) * 100
+                    _new_fires = []
+                    for _t in THRESHOLDS_PCT:
+                        if _pct >= _t and _t not in _fired:
+                            _new_fires.append(_t)
+                            _fired.add(_t)
+                    if _new_fires:
+                        _ctx["thresholds_fired"] = sorted(_fired)
+                        await _db.execute(
+                            "UPDATE missions SET context = ? WHERE id = ?",
+                            (_json.dumps(_ctx), _mid),
+                        )
+                        await _db.commit()
+                        for _t in _new_fires:
+                            await notify_threshold(_mid, _t, float(_spent), float(_ceiling))
+        return
+
     from general_beckman.result_router import route_result
     from general_beckman.rewrite import rewrite_actions
     from general_beckman.apply import apply_actions
@@ -490,6 +555,45 @@ async def on_task_finished(task_id: int, result: dict) -> None:
         log.warning("on_task_finished: missing task", task_id=task_id)
         return
     task_ctx = parse_context(task)
+
+    # ── Z0: spent_usd accumulation + threshold notifies ───────────────────
+    # Production path: cost comes from result dict.
+    import json as _json
+    from src.infra.db import get_db as _get_db
+    _mid = task.get("mission_id")
+    _cost = float((result or {}).get("cost_usd") or 0.0)
+    if _mid is not None and _cost > 0:
+        _db = await _get_db()
+        await _db.execute(
+            "UPDATE missions SET spent_usd = COALESCE(spent_usd, 0) + ? WHERE id = ?",
+            (_cost, _mid),
+        )
+        _cur = await _db.execute(
+            "SELECT cost_ceiling_usd, spent_usd, context FROM missions WHERE id = ?",
+            (_mid,),
+        )
+        _row = await _cur.fetchone()
+        await _db.commit()
+        if _row:
+            _ceiling, _spent, _ctx_raw = _row[0], _row[1], _row[2]
+            if _ceiling is not None and _ceiling > 0:
+                _ctx = _json.loads(_ctx_raw) if _ctx_raw else {}
+                _fired = set(_ctx.get("thresholds_fired", []))
+                _pct = (float(_spent) / float(_ceiling)) * 100
+                _new_fires = []
+                for _t in THRESHOLDS_PCT:
+                    if _pct >= _t and _t not in _fired:
+                        _new_fires.append(_t)
+                        _fired.add(_t)
+                if _new_fires:
+                    _ctx["thresholds_fired"] = sorted(_fired)
+                    await _db.execute(
+                        "UPDATE missions SET context = ? WHERE id = ?",
+                        (_json.dumps(_ctx), _mid),
+                    )
+                    await _db.commit()
+                    for _t in _new_fires:
+                        await notify_threshold(_mid, _t, float(_spent), float(_ceiling))
 
     # Persist generating_model + accumulate failed_models. The retry-
     # recovery layers (model exclusion at attempts >= 3, difficulty

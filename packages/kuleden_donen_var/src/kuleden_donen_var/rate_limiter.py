@@ -301,12 +301,25 @@ class RateLimitState:
 
     def has_capacity(self, estimated_tokens: int = 0) -> bool:
         """Check if a request can be made without waiting."""
-        # Daily limit exhaustion is absolute
-        if self.rpd_remaining is not None and self.rpd_remaining <= 0:
-            if self.rpd_reset_at and time.time() < self.rpd_reset_at:
-                return False
-
         now = time.time()
+        # Daily limit exhaustion is absolute. Both RPD and TPD axes
+        # gate independently — Groq free-tier llama-3.3-70b-versatile
+        # has TPD=100K with RPD effectively unbounded for token-heavy
+        # workloads, so an RPD-only check left TPD-bound calls free
+        # to bash the wall (production triage 2026-05-08 task #14618:
+        # 97775/100000 TPD used, next request 5797 tokens, KDV said
+        # OK because RPD wasn't hit, Groq returned 429 with 51m26s
+        # cooldown). Proactive TPD gate prevents the hit.
+        if self.rpd_remaining is not None and self.rpd_remaining <= 0:
+            if self.rpd_reset_at and now < self.rpd_reset_at:
+                return False
+        if self.tpd_remaining is not None:
+            # Reject when remaining can't fit the estimate (mirrors
+            # tpm gate logic). Strict < admits cold-start calls where
+            # remaining == estimate.
+            if self.tpd_remaining < max(estimated_tokens, 1):
+                if self.tpd_reset_at and now < self.tpd_reset_at:
+                    return False
 
         # Use header-derived remaining when valid (within reset window).
         # Local-decrement in record_request keeps `_header_rpm_remaining`
@@ -328,10 +341,20 @@ class RateLimitState:
         return rpm_ok and tpm_ok
 
     def utilization_pct(self) -> float:
-        """How close to limits we are (0-100)."""
+        """How close to limits we are (0-100). Includes daily axes
+        so pool-pressure scarcity downranks models nearing TPD/RPD
+        before the gate slams shut. Pre-2026-05-08 only minute axes
+        were considered; selector kept ranking groq/llama-3.3-70b
+        first while it sat at 97% TPD."""
         rpm_pct = (self.current_rpm / self.rpm_limit * 100) if self.rpm_limit else 0
         tpm_pct = (self.current_tpm / self.tpm_limit * 100) if self.tpm_limit else 0
-        return max(rpm_pct, tpm_pct)
+        rpd_pct = 0.0
+        if self.rpd_limit and self.rpd_remaining is not None:
+            rpd_pct = (self.rpd_limit - self.rpd_remaining) / self.rpd_limit * 100
+        tpd_pct = 0.0
+        if self.tpd_limit and self.tpd_remaining is not None:
+            tpd_pct = (self.tpd_limit - self.tpd_remaining) / self.tpd_limit * 100
+        return max(rpm_pct, tpm_pct, rpd_pct, tpd_pct)
 
     async def wait_if_needed(self, estimated_tokens: int = 0) -> float:
         """
@@ -343,12 +366,23 @@ class RateLimitState:
         now = time.time()
         self._cleanup(now)
 
-        # Daily limit check — if exhausted, signal skip
+        # Daily limit check — if exhausted, signal skip. Both axes
+        # gate independently; TPD gate added 2026-05-08 (Groq free
+        # tier llama-3.3-70b-versatile hit TPD wall while RPD had
+        # plenty of headroom — caller had no proactive signal).
         if self.rpd_remaining is not None and self.rpd_remaining <= 0:
             if self.rpd_reset_at and self.rpd_reset_at > now:
                 logger.warning(
-                    f"Rate limiter: daily limit exhausted, "
+                    f"Rate limiter: RPD daily exhausted, "
                     f"resets in {self.rpd_reset_at - now:.0f}s"
+                )
+                return -1.0
+        if self.tpd_remaining is not None and self.tpd_remaining < max(estimated_tokens, 1):
+            if self.tpd_reset_at and self.tpd_reset_at > now:
+                logger.warning(
+                    f"Rate limiter: TPD daily exhausted "
+                    f"(remaining={self.tpd_remaining}, est={estimated_tokens}), "
+                    f"resets in {self.tpd_reset_at - now:.0f}s"
                 )
                 return -1.0
 

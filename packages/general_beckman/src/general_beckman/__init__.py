@@ -25,15 +25,44 @@ THRESHOLDS_PCT = (50, 75, 90)
 
 
 async def notify_threshold(mission_id: int, pct: int, spent: float, ceiling: float):
-    """Post threshold notify to mission thread.
+    """Post threshold notify to mission thread."""
+    import json as _json
+    from src.infra.logging_config import get_logger
+    from src.infra.db import get_db
 
-    Stub for now — Z0-T13 wires this to telegram_bot pinned-status updater.
-    """
-    import logging as _logging
-    _logging.getLogger(__name__).info(
-        "mission %d crossed %d%% threshold ($%.4f / $%.4f)",
-        mission_id, pct, spent, ceiling,
+    logger = get_logger(__name__)
+
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT message_thread_id, context FROM missions WHERE id = ?",
+        (mission_id,),
     )
+    row = await cur.fetchone()
+    if not row:
+        return
+    thread_id, ctx_raw = row
+    try:
+        ctx = _json.loads(ctx_raw) if ctx_raw else {}
+    except (TypeError, ValueError):
+        ctx = {}
+    chat_id = ctx.get("chat_id") if isinstance(ctx, dict) else None
+    if chat_id is None:
+        logger.warning("threshold notify: no chat_id in mission %d context", mission_id)
+        return
+
+    text = f"📊 Mission #{mission_id} crossed {pct}% — ${spent:.2f} / ${ceiling:.2f}"
+    try:
+        from src.app.telegram_bot import get_telegram
+        tg = get_telegram()
+        if tg is None:
+            return
+        await tg.bot.send_message(
+            chat_id=chat_id,
+            message_thread_id=thread_id,
+            text=text,
+        )
+    except Exception as e:
+        logger.warning("threshold notify post failed: %s", e)
 
 
 @dataclass

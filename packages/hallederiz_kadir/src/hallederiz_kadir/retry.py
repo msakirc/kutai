@@ -106,16 +106,39 @@ def classify_error(error: str, status_code: int | None = None) -> str:
     cat = _classify_by_status(status_code, e)
     if cat is not None:
         # Refine status-derived rate_limited into daily_exhausted when
-        # body parser already wrote a Daily marker into the error msg.
+        # body parser already wrote a Daily marker into the error msg
+        # OR the provider's native body names a daily axis (TPD/RPD).
         # daily_exhausted retries differently in the dispatcher (model
         # added to failures, not the call retried with backoff).
-        if cat == "rate_limited" and "daily limit exhausted" in e:
+        # Production triage 2026-05-08 task #14618: Groq free-tier 429
+        # body said `tokens per day (TPD): Limit 100000, Used 97775`
+        # -> classified as plain rate_limited -> short cooldown ->
+        # KutAI re-picked the model immediately and hit the same wall
+        # for the next 51 minutes until the daily window reset.
+        if cat == "rate_limited" and (
+            "daily limit exhausted" in e
+            or "tokens per day" in e
+            or "requests per day" in e
+            or "(tpd)" in e
+            or "(rpd)" in e
+        ):
             return "daily_exhausted"
         return cat
 
     # 2. Text fallback for non-HTTP errors and additional disambiguation.
     if "gpu queue timeout" in e or "gpu access denied" in e:
         return "gpu_busy"
+    # Daily-axis check BEFORE generic rate-limit so a body that contains
+    # both "rate limit" and "tokens per day" (Groq free-tier 429) is
+    # bucketed as the longer-cooldown daily case, not the short tpm case.
+    if (
+        "daily limit exhausted" in e
+        or "tokens per day" in e
+        or "requests per day" in e
+        or "(tpd)" in e
+        or "(rpd)" in e
+    ):
+        return "daily_exhausted"
     if any(k in e for k in ("rate limit", "rate_limit", "429",
                              "too many requests", "tokens per minute",
                              "resource_exhausted",
@@ -132,8 +155,6 @@ def classify_error(error: str, status_code: int | None = None) -> str:
                              "exceeded your current quota",
                              "exceeded your quota")):
         return "rate_limited"
-    if "daily limit exhausted" in e:
-        return "daily_exhausted"
     if "loading model" in e:
         return "loading"
     if "circuit breaker" in e or "failed to load local model" in e:

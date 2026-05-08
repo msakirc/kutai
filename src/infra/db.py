@@ -1084,6 +1084,42 @@ async def init_db():
         except Exception as e:
             logger.debug(f"runner column migration skipped: {e}")
 
+    # Z0 mission preflight columns (2026-05-05)
+    for ddl in (
+        "ALTER TABLE missions ADD COLUMN cost_ceiling_usd REAL",
+        "ALTER TABLE missions ADD COLUMN spent_usd REAL DEFAULT 0",
+        "ALTER TABLE missions ADD COLUMN message_thread_id INTEGER",
+        "ALTER TABLE missions ADD COLUMN lifecycle_state TEXT DEFAULT 'active'",
+    ):
+        try:
+            await db.execute(ddl)
+            await db.commit()
+        except Exception as e:
+            logger.debug(f"Z0 column migration skipped (already present): {e}")
+
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS mission_lifecycle_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mission_id INTEGER NOT NULL,
+            from_state TEXT,
+            to_state TEXT NOT NULL,
+            reason TEXT,
+            triggered_by TEXT,
+            ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (mission_id) REFERENCES missions(id)
+        )
+    """)
+    await db.commit()
+
+    # Backfill any pre-existing NULL rows (older installs)
+    await db.execute(
+        "UPDATE missions SET lifecycle_state = 'active' WHERE lifecycle_state IS NULL"
+    )
+    await db.execute(
+        "UPDATE missions SET spent_usd = 0 WHERE spent_usd IS NULL"
+    )
+    await db.commit()
+
     # ── Performance indexes on common query patterns ──
     _indexes = [
         ("idx_tasks_status", "tasks", "status"),

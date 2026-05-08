@@ -18,6 +18,7 @@ folder maps where each piece of work lives.
 
 | Zone | Doc | Frame |
 |---|---|---|
+| Z0 — Mission preflight | [z0-mission-preflight.md](z0-mission-preflight.md) | founder + system readiness contract before phase 0 |
 | Z1 — Pre-code | [01-pre-code.md](01-pre-code.md) | idea → executable spec |
 | Z2 — Build foundation | [02-build-foundation.md](02-build-foundation.md) | mechanical guardrails + specs-as-SoT + memory + recipes + tooling discipline |
 | Z2 — Build review density | [03-build-review-density.md](03-build-review-density.md) | multi-pass review + multi-file expansion + QA modalities |
@@ -32,6 +33,9 @@ folder maps where each piece of work lives.
 ## Sequencing tiers (cross-zone)
 
 ```
+Tier 0 — Establish founder/system contract (BEFORE everything)
+  └ z0-mission-preflight    (every other zone reads its outputs)
+
 Tier 1 — Make code zone reliable
   ├ 02-build-foundation     (most leverage; everything else compounds on this)
   ├ 03-build-review-density
@@ -56,20 +60,24 @@ Tier 5 — Scope expansion
 ## Cross-zone dependency graph
 
 ```
-01-pre-code ──┐
-              ├──> 02-build-foundation ──┬──> 03-build-review-density ──┐
-              │                          │                              │
-              │                          ├──> 04-build-visual-review ───┤
-              │                          │                              │
-              │                          └──> 05-build-mobile-track ────┤
-              │                                                         │
-              ├──> 06-real-world-bridge ────> 08-operations ────────────┤
-              │                                                         │
-              └──> 10-cross-cutting (trust/cost/provenance) ─ all zones ┘
-                                                                        │
-07-humanish-layers ── orthogonal, no hard prerequisite ─────────────────┤
-                                                                        │
-09-growth ─ depends on operations + build review density ───────────────┘
+z0-mission-preflight ─ feeds every zone ─────────────────────────────────┐
+                                                                         │
+01-pre-code ──┐ (reads z0 founder profile + ambition + compliance)       │
+              ├──> 02-build-foundation ──┬──> 03-build-review-density ──┐│
+              │                          │                              ││
+              │                          ├──> 04-build-visual-review ───┤│
+              │                          │                              ││
+              │                          └──> 05-build-mobile-track ────┤│
+              │                                                         ││
+              ├──> 06-real-world-bridge ────> 08-operations ────────────┤│
+              │   (reads z0 vault + vendor list)                        ││
+              │                                                         ││
+              └──> 10-cross-cutting ─ all zones honor patterns ─────────┘│
+                  (reads z0 cost ceiling + idle policy + reversibility)  │
+                                                                         │
+07-humanish-layers ── orthogonal, no hard prerequisite ──────────────────┤
+                                                                         │
+09-growth ─ depends on operations + review density (reads z0 north-star)─┘
 ```
 
 ## Division-of-labor framing
@@ -126,6 +134,20 @@ Each zone doc follows the same skeleton:
 - `docs/handoff/2026-04-27-session-handoff.md` — retry pipeline / reviewer / constrained emit
 - Existing `docs/architecture/` — current architecture docs
 
+## Dispatch groups (parallel-safe)
+
+```
+Group 0 — z0-mission-preflight (must land first; outputs feed all)
+Group A — 01-pre-code + 10-cross-cutting (no other inbound; cross-cutting
+          findings may force minor Z1 rev — accept or sequence 10 first)
+Group B — 02-build-foundation + 06-real-world-bridge
+Group C — 03-build-review-density + 08-operations
+Group D — 04-build-visual-review + 09-growth + 07-humanish-layers
+Group E — 05-build-mobile-track
+```
+
 ## Updates
 
 - 2026-05-08 — folder created; README + 11 zone docs scaffolded.
+- 2026-05-08 — added z0-mission-preflight as new Tier-0 zone; updated
+  zone map + sequencing tiers + dependency graph + dispatch groups.

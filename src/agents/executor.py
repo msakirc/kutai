@@ -72,4 +72,14 @@ class ExecutorAgent(BaseAgent):
             "- Host tools like `ollama`, `systemctl`, `docker` are NOT available in shell.\n"
             "- To access host APIs (like Ollama), use curl: `curl -s http://host.docker.internal:11434/api/tags`\n"
             "- For web requests, use the `web_search` tool or `shell` with `curl`.\n"
+            "\n"
+            "## final_answer format\n"
+            "When the task is complete:\n"
+            "```json\n"
+            "{\n"
+            '  "action": "final_answer",\n'
+            '  "result": "Summary of what was done or found",\n'
+            '  "memories": {}\n'
+            "}\n"
+            "```"
         )

@@ -29,9 +29,13 @@ class PlannerAgent(BaseAgent):
             "\n"
             "## Your Process\n"
             "1. FIRST, always inspect the workspace (use `file_tree` and `project_info` tools)\n"
-            "   to understand what already exists.\n"
-            "2. Understand the mission thoroughly.\n"
-            "3. Create a plan with specific subtasks.\n"
+            "   to understand what already exists — look specifically for partial implementations,\n"
+            "   relevant libraries already installed, and existing configs that address the mission.\n"
+            "2. Before listing subtasks, write one sentence stating the intended user outcome\n"
+            "   of this mission.\n"
+            "3. **Clarification gate** — State any unclear requirements and your resolution\n"
+            "   assumption for each. This prevents silent misinterpretation.\n"
+            "4. Create a plan with specific subtasks.\n"
             "\n"
             "## Rules\n"
             "- Create 5-15 subtasks depending on complexity. Simple tasks need fewer, app-building needs more.\n"
@@ -42,6 +46,10 @@ class PlannerAgent(BaseAgent):
             "- Assign the right agent_type to each subtask.\n"
             "- Choose appropriate tier: \"cheap\" for simple, \"medium\" for moderate, "
             "\"expensive\" for complex.\n"
+            "- Every subtask must have a `priority_label` of P0 (must-have), P1 (should-have),\n"
+            "  or P2 (nice-to-have) alongside the numeric priority.\n"
+            "- Do not create vague subtasks — every subtask description must name the specific\n"
+            "  files, endpoints, or outputs that the agent must produce.\n"
             "\n"
             "## Agent Types Available\n"
             "- **pipeline**: Use for complex coding tasks (>50 words or multi-file). Orchestrates architect, implementer, tester, reviewer.\n"
@@ -66,6 +74,7 @@ class PlannerAgent(BaseAgent):
             '      "agent_type": "researcher",\n'
             '      "tier": "cheap",\n'
             '      "priority": 8,\n'
+            '      "priority_label": "P0",\n'
             '      "depends_on_step": null\n'
             "    },\n"
             "    {\n"
@@ -76,6 +85,7 @@ class PlannerAgent(BaseAgent):
             '      "agent_type": "coder",\n'
             '      "tier": "medium",\n'
             '      "priority": 7,\n'
+            '      "priority_label": "P0",\n'
             '      "depends_on_step": 0\n'
             "    },\n"
             "    {\n"
@@ -85,6 +95,7 @@ class PlannerAgent(BaseAgent):
             '      "agent_type": "writer",\n'
             '      "tier": "cheap",\n'
             '      "priority": 5,\n'
+            '      "priority_label": "P2",\n'
             '      "depends_on_step": 1\n'
             "    }\n"
             "  ]\n"

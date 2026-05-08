@@ -298,6 +298,43 @@ async def _retry_or_dlq(task: dict, *, category: str, error: str) -> None:
     # doesn't replay an unrelated failure as "your last output failed".
     _drop_stale_retry_feedback(ctx, attempts)
 
+    # Persist the failed model so the NEXT pick excludes it. Without
+    # this, fatih_hoca.requirements_builder.get_model_constraints reads
+    # an empty failed_models list and the same model is re-picked on
+    # every retry — defeating model rotation. Production triage
+    # 2026-05-08 task #11930: 5 schema-validation retries, all on the
+    # same Qwen3.5-9B output, no exclusion grew because update_task
+    # below only persisted the new context (without failed_models)
+    # and update_exclusions_on_failure was wired into design but not
+    # called anywhere in production code.
+    #
+    # Source the model that just failed from task_state.used_model
+    # (coulson writes this after every llm call) with fallback to
+    # ctx.generating_model (older shim path). Don't fail the retry on
+    # any error here — exclusion is a quality-of-life nudge, the gate
+    # is decide_retry/DLQ which already runs.
+    try:
+        from src.core.retry import update_exclusions_on_failure
+        _failed_model = ""
+        try:
+            _ts_raw = task.get("task_state")
+            if isinstance(_ts_raw, str):
+                _ts_raw = json.loads(_ts_raw or "{}")
+            if isinstance(_ts_raw, dict):
+                _failed_model = _ts_raw.get("used_model") or ""
+        except Exception:
+            _failed_model = ""
+        if not _failed_model:
+            _failed_model = ctx.get("generating_model") or ""
+        if _failed_model:
+            update_exclusions_on_failure(ctx, _failed_model, attempts)
+    except Exception as _exc:
+        logger.debug(
+            "update_exclusions_on_failure skipped",
+            task_id=task.get("id"),
+            error=str(_exc),
+        )
+
     await update_task(
         task["id"],
         status="pending",

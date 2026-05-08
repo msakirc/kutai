@@ -476,6 +476,56 @@ class TelegramInterface:
                 "Failed to restore clarification state: %s", e,
             )
 
+    async def provision_mission_thread(
+        self, chat_id: int, mission_id: int, title: str,
+    ) -> "int | None":
+        """Create a forum topic for the mission. Returns thread_id or None on failure.
+
+        Caller must persist returned thread_id to missions.message_thread_id.
+        """
+        topic_name = f"#{mission_id} {title[:40]}"
+        try:
+            topic = await self.bot.create_forum_topic(chat_id=chat_id, name=topic_name)
+            thread_id = topic.message_thread_id
+        except Exception as e:
+            logger.warning(
+                "forum topic creation failed for mission %d: %s — falling back to tag-prefix",
+                mission_id, e,
+            )
+            return None
+
+        try:
+            msg = await self.bot.send_message(
+                chat_id=chat_id,
+                message_thread_id=thread_id,
+                text=self._format_pinned_status(mission_id, title, spent=0, ceiling=None),
+            )
+            await self.bot.pin_chat_message(
+                chat_id=chat_id, message_id=msg.message_id, disable_notification=True,
+            )
+        except Exception as e:
+            logger.warning("pin_chat_message failed: %s", e)
+
+        return thread_id
+
+    def _format_pinned_status(
+        self, mission_id: int, title: str,
+        spent: float, ceiling: "float | None",
+        state: str = "active",
+        tasks_done: int = 0, tasks_running: int = 0, tasks_queued: int = 0,
+    ) -> str:
+        if ceiling:
+            pct = (spent / ceiling) * 100 if ceiling > 0 else 0
+            budget_line = f"Spent: ${spent:.2f} / ${ceiling:.2f} ({pct:.1f}%)"
+        else:
+            budget_line = f"Spent: ${spent:.2f} (no ceiling)"
+        return (
+            f"Mission #{mission_id} — \"{title}\"\n"
+            f"Status: {state}\n"
+            f"{budget_line}\n"
+            f"Tasks: {tasks_done} done, {tasks_running} in flight, {tasks_queued} queued"
+        )
+
     async def _reply(self, update_or_msg, text: str, **kwargs):
         """Send a reply with the current keyboard state.
 

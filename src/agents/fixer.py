@@ -17,6 +17,7 @@ class FixerAgent(BaseAgent):
     # 8 iterations: mirrors coder — fix cycles often need multiple
     # read-fix-test rounds, especially for cascading test failures.
     max_iterations = 8
+    enable_self_reflection = True
 
     allowed_tools = [
         "file_tree",

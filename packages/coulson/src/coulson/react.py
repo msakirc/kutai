@@ -57,7 +57,7 @@ from .guards import (
     check_sub_iter_guards, get_search_depth,
 )
 from .parsing import parse_action, parse_function_call, unwrap_final_answer
-from .reflection import self_reflect
+from .reflection import self_reflect, build_reflection_prompt
 from .tools import (
     CACHEABLE_READ_TOOLS, SIDE_EFFECT_TOOLS,
     TOOL_FAILURE_ESCALATION_THRESHOLD, TOOL_SCHEMAS_BY_NAME,
@@ -868,6 +868,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 try:
                     reflection = await self_reflect(
                         task, result, reqs, used_model,
+                        checklist=build_reflection_prompt(profile.name, iteration),
                     )
                     if reflection and reflection.get("verdict") == "fix":
                         corrected = reflection.get("corrected_result")

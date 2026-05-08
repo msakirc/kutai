@@ -1943,6 +1943,9 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("bench_picks", self.cmd_bench_picks))
         self.app.add_handler(CommandHandler("revive", self.cmd_revive))
         self.app.add_handler(CommandHandler("dead", self.cmd_dead))
+        self.app.add_handler(CommandHandler("pause_mission", self.cmd_pause_mission))
+        self.app.add_handler(CommandHandler("resume_mission", self.cmd_resume_mission))
+        self.app.add_handler(CommandHandler("kill_mission", self.cmd_kill_mission))
         self.app.add_handler(CallbackQueryHandler(
             self._handle_variant_choice, pattern=r"^(vc|variant_choice):"
         ))
@@ -3532,6 +3535,89 @@ class TelegramInterface:
         except Exception as e:
             logger.exception("pause command failed", error=str(e))
             await self._reply(update,f"❌ {_friendly_error(str(e))}")
+
+    async def cmd_pause_mission(self, update, context):
+        if not context.args:
+            await self._reply(update, "Usage: /pause_mission <id>")
+            return
+        try:
+            mid = int(context.args[0])
+        except ValueError:
+            await self._reply(update, "Invalid mission id.")
+            return
+        from general_beckman.lifecycle_events import emit_pause
+        changed = await emit_pause(mid, reason="founder_pause", triggered_by="founder")
+        if changed:
+            await self._reply(update, f"Mission {mid} paused. In-flight tasks will finish.")
+        else:
+            await self._reply(update, f"Mission {mid}: not in active state.")
+
+    async def cmd_resume_mission(self, update, context):
+        if not context.args:
+            await self._reply(update, "Usage: /resume_mission <id>")
+            return
+        try:
+            mid = int(context.args[0])
+        except ValueError:
+            await self._reply(update, "Invalid mission id.")
+            return
+        from src.infra.db import get_db
+        db = await get_db()
+        cur = await db.execute("SELECT lifecycle_state FROM missions WHERE id = ?", (mid,))
+        row = await cur.fetchone()
+        if not row:
+            await self._reply(update, f"Mission {mid}: not found.")
+            return
+        state = row[0]
+        if state in ("killed", "completed"):
+            await self._reply(update, f"Mission {mid} is {state}; cannot resume.")
+            return
+        from general_beckman.lifecycle_events import emit_resume
+        changed = await emit_resume(mid, triggered_by="founder")
+        if changed:
+            await self._reply(update, f"Mission {mid} resumed.")
+        else:
+            await self._reply(update, f"Mission {mid} not paused.")
+
+    async def cmd_kill_mission(self, update, context):
+        if not context.args:
+            await self._reply(update, "Usage: /kill_mission <id>")
+            return
+        try:
+            mid = int(context.args[0])
+        except ValueError:
+            await self._reply(update, "Invalid mission id.")
+            return
+        from general_beckman.lifecycle_events import emit_kill
+        changed = await emit_kill(mid, reason="founder_kill", triggered_by="founder")
+        if not changed:
+            await self._reply(update, f"Mission {mid}: cannot kill (already terminal or missing).")
+            return
+        await self._snapshot_mission(mid)
+        await self._reply(update, f"Mission {mid} killed. Snapshot written.")
+
+    async def _snapshot_mission(self, mission_id: int):
+        """Write mission state to artifact store as `mission_kill_<id>`."""
+        import json as _json
+        from src.infra.db import get_db
+        db = await get_db()
+        cur = await db.execute("SELECT * FROM missions WHERE id = ?", (mission_id,))
+        cols = [c[0] for c in cur.description]
+        mrow = await cur.fetchone()
+        mission = dict(zip(cols, mrow)) if mrow else {}
+        cur = await db.execute(
+            "SELECT id, title, status, completed_at FROM tasks WHERE mission_id = ?",
+            (mission_id,),
+        )
+        tcols = [c[0] for c in cur.description]
+        tasks = [dict(zip(tcols, r)) for r in await cur.fetchall()]
+        snapshot = {"mission": mission, "tasks": tasks}
+        try:
+            from src.workflows.engine.artifacts import get_artifact_store
+            store = get_artifact_store()
+            await store.put(mission_id, f"mission_kill_{mission_id}", _json.dumps(snapshot))
+        except Exception as e:
+            logger.error("snapshot write failed for mission %d: %s", mission_id, e)
 
     async def cmd_load(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/load full|heavy|shared|minimal|auto — set GPU load mode"""

@@ -61,3 +61,155 @@ def test_format_pinned_status_no_ceiling():
         spent=0.0, ceiling=None,
     )
     assert "no ceiling" in text.lower() or "unlimited" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_kill_mission_sets_killed_state_and_writes_snapshot(tmp_path, monkeypatch):
+    import src.infra.db as db_module
+    db_path = str(tmp_path / "kutai.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    db_module.DB_PATH = db_path
+    db_module._db_connection = None
+
+    from src.infra.db import init_db
+    import aiosqlite
+    await init_db()
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT INTO missions (title, lifecycle_state) VALUES ('m', 'active')"
+        )
+        cur = await db.execute("SELECT last_insert_rowid()")
+        mid = (await cur.fetchone())[0]
+        await db.execute(
+            "INSERT INTO tasks (mission_id, title, status) VALUES (?, 't1', 'completed')",
+            (mid,),
+        )
+        await db.commit()
+
+    db_module._db_connection = None
+
+    tg = TelegramInterface.__new__(TelegramInterface)
+    tg.bot = MagicMock()
+    tg._reply = AsyncMock()
+
+    update = MagicMock()
+    update.effective_chat.id = 1
+    context = MagicMock()
+    context.args = [str(mid)]
+
+    await tg.cmd_kill_mission(update, context)
+
+    db_module._db_connection = None
+    async with aiosqlite.connect(db_path) as db:
+        row = await (await db.execute(
+            "SELECT lifecycle_state FROM missions WHERE id=?", (mid,))).fetchone()
+    assert row[0] == "killed"
+
+
+@pytest.mark.asyncio
+async def test_resume_after_kill_rejected(tmp_path, monkeypatch):
+    import src.infra.db as db_module
+    db_path = str(tmp_path / "kutai.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    db_module.DB_PATH = db_path
+    db_module._db_connection = None
+
+    from src.infra.db import init_db
+    import aiosqlite
+    await init_db()
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT INTO missions (title, lifecycle_state) VALUES ('m', 'killed')"
+        )
+        cur = await db.execute("SELECT last_insert_rowid()")
+        mid = (await cur.fetchone())[0]
+        await db.commit()
+
+    db_module._db_connection = None
+    tg = TelegramInterface.__new__(TelegramInterface)
+    tg.bot = MagicMock()
+    tg._reply = AsyncMock()
+
+    update = MagicMock()
+    context = MagicMock()
+    context.args = [str(mid)]
+    await tg.cmd_resume_mission(update, context)
+
+    db_module._db_connection = None
+    async with aiosqlite.connect(db_path) as db:
+        row = await (await db.execute(
+            "SELECT lifecycle_state FROM missions WHERE id=?", (mid,))).fetchone()
+    assert row[0] == "killed"
+    tg._reply.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_pause_mission_command(tmp_path, monkeypatch):
+    import src.infra.db as db_module
+    db_path = str(tmp_path / "kutai.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    db_module.DB_PATH = db_path
+    db_module._db_connection = None
+
+    from src.infra.db import init_db
+    import aiosqlite
+    await init_db()
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT INTO missions (title, lifecycle_state) VALUES ('m', 'active')"
+        )
+        cur = await db.execute("SELECT last_insert_rowid()")
+        mid = (await cur.fetchone())[0]
+        await db.commit()
+
+    db_module._db_connection = None
+    tg = TelegramInterface.__new__(TelegramInterface)
+    tg.bot = MagicMock()
+    tg._reply = AsyncMock()
+
+    update = MagicMock()
+    context = MagicMock()
+    context.args = [str(mid)]
+    await tg.cmd_pause_mission(update, context)
+
+    db_module._db_connection = None
+    async with aiosqlite.connect(db_path) as db:
+        row = await (await db.execute(
+            "SELECT lifecycle_state FROM missions WHERE id=?", (mid,))).fetchone()
+    assert row[0] == "paused"
+
+
+@pytest.mark.asyncio
+async def test_resume_mission_command(tmp_path, monkeypatch):
+    import src.infra.db as db_module
+    db_path = str(tmp_path / "kutai.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    db_module.DB_PATH = db_path
+    db_module._db_connection = None
+
+    from src.infra.db import init_db
+    import aiosqlite
+    await init_db()
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT INTO missions (title, lifecycle_state) VALUES ('m', 'paused')"
+        )
+        cur = await db.execute("SELECT last_insert_rowid()")
+        mid = (await cur.fetchone())[0]
+        await db.commit()
+
+    db_module._db_connection = None
+    tg = TelegramInterface.__new__(TelegramInterface)
+    tg.bot = MagicMock()
+    tg._reply = AsyncMock()
+
+    update = MagicMock()
+    context = MagicMock()
+    context.args = [str(mid)]
+    await tg.cmd_resume_mission(update, context)
+
+    db_module._db_connection = None
+    async with aiosqlite.connect(db_path) as db:
+        row = await (await db.execute(
+            "SELECT lifecycle_state FROM missions WHERE id=?", (mid,))).fetchone()
+    assert row[0] == "active"

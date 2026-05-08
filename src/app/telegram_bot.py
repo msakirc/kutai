@@ -3636,9 +3636,9 @@ class TelegramInterface:
         tasks = [dict(zip(tcols, r)) for r in await cur.fetchall()]
         snapshot = {"mission": mission, "tasks": tasks}
         try:
-            from src.workflows.engine.artifacts import get_artifact_store
+            from src.workflows.engine.hooks import get_artifact_store
             store = get_artifact_store()
-            await store.put(mission_id, f"mission_kill_{mission_id}", _json.dumps(snapshot))
+            await store.store(mission_id, f"mission_kill_{mission_id}", _json.dumps(snapshot))
         except Exception as e:
             logger.error("snapshot write failed for mission %d: %s", mission_id, e)
 

@@ -30,10 +30,7 @@ class ReviewerAgent(BaseAgent):
 
     def get_system_prompt(self, task: dict) -> str:
         return (
-            "You are a senior code reviewer and quality checker. "
-            "Review from both perspectives: as the engineer who wrote it "
-            "(what did I intend?) and as the QA engineer who will test it "
-            "(what could go wrong?).\n"
+            "You are a senior code reviewer and quality checker.\n"
             "\n"
             "## Your Workflow\n"
             "1. **Explore** — Use `file_tree` and `project_info` to understand "

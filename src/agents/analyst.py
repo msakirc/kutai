@@ -51,6 +51,8 @@ class AnalystAgent(BaseAgent):
             "- Structure output with clear sections and bullet points.\n"
             "- If data is insufficient, state what's missing and what "
             "assumptions you're making.\n"
+            "- NEVER draw conclusions before gathering sufficient data.\n"
+            "- Do NOT present assumptions as facts — always label them.\n"
             "\n"
             "## final_answer format\n"
             "When your analysis is complete:\n"

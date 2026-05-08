@@ -17,7 +17,7 @@ from __future__ import annotations
 from src.infra.logging_config import get_logger
 from .parsing import _try_parse_json
 
-logger = get_logger("agents.base")
+logger = get_logger("coulson.reflection")
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -45,7 +45,7 @@ REFLECTION_BLOCKS: dict[str, str] = {
         "Self-check before final_answer:\n"
         "1. Every FEEDBACK bullet addressed?\n"
         "2. TESTs run after edit, no new failures?\n"
-        "3. No unintended DELETe of unrelated logic?\n"
+        "3. Did not DELETE unrelated logic by accident?\n"
         "If any 'no' — fix before final_answer."
     ),
     "test_generator": (

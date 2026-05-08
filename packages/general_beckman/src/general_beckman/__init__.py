@@ -182,6 +182,54 @@ async def _claim_task(task_id: int) -> bool:
     return await claim_task(task_id)
 
 
+async def _ceiling_ok(task: dict, log) -> bool:
+    """Return True if admitting this task does not exceed the mission ceiling.
+
+    Enforced only when the mission has a non-NULL cost_ceiling_usd.
+    Standalone tasks (mission_id IS NULL) always pass.
+
+    Formula: spent_usd + SUM(estimated_cost_usd WHERE status='running') + new_est <= ceiling
+    """
+    mid = task.get("mission_id")
+    if mid is None:
+        return True  # Standalone task — no ceiling applies.
+
+    new_est = float(task.get("estimated_cost_usd") or 0.0)
+
+    try:
+        from src.infra.db import get_db
+        db = await get_db()
+        cur = await db.execute(
+            "SELECT cost_ceiling_usd, spent_usd FROM missions WHERE id = ?",
+            (mid,),
+        )
+        mrow = await cur.fetchone()
+        if mrow is None or mrow[0] is None:
+            return True  # No ceiling set — no enforcement.
+
+        ceiling = float(mrow[0])
+        spent = float(mrow[1] or 0.0)
+
+        cur2 = await db.execute(
+            "SELECT COALESCE(SUM(estimated_cost_usd), 0) FROM tasks "
+            "WHERE mission_id = ? AND status = 'running'",
+            (mid,),
+        )
+        in_flight = float((await cur2.fetchone())[0] or 0.0)
+
+        total = spent + in_flight + new_est
+        if total > ceiling:
+            log.info(
+                "ceiling backstop: mission %s spent=%.4f in_flight=%.4f new=%.4f > ceiling=%.4f — skip task #%s",
+                mid, spent, in_flight, new_est, ceiling, task.get("id"),
+            )
+            return False
+        return True
+    except Exception as e:
+        log.debug(f"_ceiling_ok check failed (fail-open): {e}")
+        return True  # Fail-open: don't block admission on unexpected errors.
+
+
 async def next_task():
     """Admission loop: pick one ready task whose pool pressure clears its urgency threshold.
 
@@ -338,6 +386,10 @@ async def next_task():
         # Per design: mechanical is unbounded — local-only backpressure
         # applies only to LLM tasks. Claim and return directly.
         if agent_type == "mechanical":
+            # Ceiling backstop: block if spent + in-flight + new estimated cost
+            # would exceed the mission ceiling. NULL ceiling → no enforcement.
+            if not await _ceiling_ok(task, _log):
+                continue
             if not await _claim_task(task["id"]):
                 _log.debug(f"admission: task #{task['id']} (mechanical) claim race lost")
                 continue
@@ -421,6 +473,10 @@ async def next_task():
                 f"admission: task #{task['id']} agent={agent_type} d={difficulty} "
                 f"urgency={urgency:.3f} select=None err={select_err}"
             )
+            continue
+
+        # Ceiling backstop for LLM tasks: spent + in-flight + new estimated cost.
+        if not await _ceiling_ok(task, _log):
             continue
 
         if not await _claim_task(task["id"]):

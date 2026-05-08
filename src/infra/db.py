@@ -1084,6 +1084,14 @@ async def init_db():
         except Exception as e:
             logger.debug(f"runner column migration skipped: {e}")
 
+    # Migration: add estimated_cost_usd column for per-task cost estimates (Z0-T9)
+    try:
+        await db.execute("ALTER TABLE tasks ADD COLUMN estimated_cost_usd REAL DEFAULT 0")
+        await db.commit()
+        logger.info("Added estimated_cost_usd column to tasks table")
+    except Exception as e:
+        logger.debug(f"tasks.estimated_cost_usd migration skipped: {e}")
+
     # Z0 mission preflight columns (2026-05-05)
     for ddl in (
         "ALTER TABLE missions ADD COLUMN cost_ceiling_usd REAL",

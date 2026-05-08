@@ -17,7 +17,7 @@ from typing import Any
 from fatih_hoca.ranking import rank_candidates
 from fatih_hoca.registry import ModelInfo, ModelRegistry
 from fatih_hoca.requirements import ModelRequirements
-from fatih_hoca.types import Failure, Pick
+from fatih_hoca.types import Failure, Pick, SelectionFailure
 
 logger = logging.getLogger("fatih_hoca.selector")
 
@@ -74,7 +74,8 @@ class Selector:
         remaining_budget: float = 0.0,
         call_category: str = "main_work",
         urgency: float = 0.5,
-    ) -> Pick | None:
+        remaining_budget_usd: float | None = None,
+    ) -> Pick | SelectionFailure | None:
         """
         Select the best model for a task.
 
@@ -240,6 +241,26 @@ class Selector:
             task, len(candidates), prov_str,
             (f" fully_filtered=[{','.join(fully_filtered)}]" if fully_filtered else ""),
         )
+
+        # ── Budget filter (hard cap on per-call cost) ────────────────────────
+        # Applied AFTER eligibility (hard gates), BEFORE scoring (Layer 2/3).
+        # remaining_budget_usd=None means no filter. 0.0 means only free
+        # models ($0 estimated cost) pass.
+        if remaining_budget_usd is not None:
+            before = len(candidates)
+            candidates = [
+                m for m in candidates
+                if (getattr(m, "estimated_cost_usd", 0.0) or 0.0) <= remaining_budget_usd
+            ]
+            logger.info(
+                "budget filter: %d/%d eligible at remaining=$%.4f",
+                len(candidates), before, remaining_budget_usd,
+            )
+            if not candidates:
+                return SelectionFailure(
+                    reason="budget",
+                    detail=f"no model fits remaining ${remaining_budget_usd:.4f}",
+                )
 
         # ── Layer 2/3: Ranking ───────────────────────────────────────────────
         scored = rank_candidates(

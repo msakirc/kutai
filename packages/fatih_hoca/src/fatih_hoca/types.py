@@ -66,3 +66,10 @@ class SwapBudget:
     def exhausted(self) -> bool:
         self._prune()
         return len(self._timestamps) >= self._max
+
+
+@dataclass(frozen=True)
+class SelectionFailure:
+    """Returned by Selector.select() when no model can satisfy constraints."""
+    reason: str  # 'budget' | 'eligibility' | ...
+    detail: str = ""

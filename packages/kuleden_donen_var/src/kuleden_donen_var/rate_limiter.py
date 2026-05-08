@@ -869,12 +869,22 @@ class RateLimitManager:
         return state.utilization_pct() if state else 0.0
 
     def is_daily_exhausted(self, litellm_name: str) -> bool:
-        """Check if a model's daily request limit is exhausted."""
+        """Check if a model's daily request OR token limit is exhausted.
+        Pre-2026-05-08 only checked RPD; mark_daily_exhausted on the TPD
+        axis went undetected by pre_call's hot path. has_capacity caught
+        it one branch deeper, but daily_exhausted=False got reported back
+        to the caller, which routed through the rate-limit path
+        (short cooldown) instead of the daily-out path (long, retryable
+        eject + caller skip)."""
         state = self.model_limits.get(litellm_name)
         if not state:
             return False
+        now = time.time()
         if state.rpd_remaining is not None and state.rpd_remaining <= 0:
-            if state.rpd_reset_at and time.time() < state.rpd_reset_at:
+            if state.rpd_reset_at and now < state.rpd_reset_at:
+                return True
+        if state.tpd_remaining is not None and state.tpd_remaining <= 0:
+            if state.tpd_reset_at and now < state.tpd_reset_at:
                 return True
         return False
 

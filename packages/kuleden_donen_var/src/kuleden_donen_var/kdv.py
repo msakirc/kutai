@@ -551,14 +551,25 @@ class KuledenDonenVar:
             # daily_exhausted fell through with no state update — KDV's
             # gates had nothing to gate on (headers may not have arrived
             # before the wall hit, especially on cold start) and the
-            # selector kept re-picking the same depleted model. Parse
-            # retry-after seconds from the body when present (Groq:
-            # "Please try again in 51m26.208s"). Fall back to 1h when
-            # the body lacks a duration — safer than 0 since the wall
-            # is real and the daily window is real.
-            retry_seconds = self._parse_retry_after_seconds(error_message)
-            if retry_seconds is None:
-                retry_seconds = 3600.0
+            # selector kept re-picking the same depleted model.
+            #
+            # Gemini's free-tier RPD walls return "retry in 29.07s" in
+            # the body — that's the immediate-retry hint, NOT the daily
+            # window's actual reset. Trusting it literally let the
+            # selector re-pick the model 30s later and wall again
+            # (production triage 2026-05-08 gemini-2.5-flash-lite hit
+            # at 17:45:48 + 17:48:40, only 172s apart, both walled).
+            # Floor daily cooldowns at 1 hour: even if the body's
+            # retry-after is short, the daily window itself can't reset
+            # that fast. Cap at 24h for safety on missing-parse case.
+            _MIN_DAILY_COOLDOWN = 3600.0  # 1h floor
+            _MAX_DAILY_COOLDOWN = 86400.0  # 24h cap (daily window upper bound)
+            parsed = self._parse_retry_after_seconds(error_message)
+            if parsed is None:
+                retry_seconds = _MIN_DAILY_COOLDOWN
+            else:
+                retry_seconds = max(parsed, _MIN_DAILY_COOLDOWN)
+            retry_seconds = min(retry_seconds, _MAX_DAILY_COOLDOWN)
             self._rate_limiter.mark_daily_exhausted(
                 model_id,
                 provider,

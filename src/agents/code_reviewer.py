@@ -19,6 +19,10 @@ class CodeReviewerAgent(BaseAgent):
     allowed_tools: list[str] = []
 
     def get_system_prompt(self, task: dict) -> str:
+        # NOTE: Live code review does NOT use this prompt — see src/core/code_review.py
+        # which injects CODE_REVIEW_SYSTEM + CODE_REVIEW_PROMPT directly via raw_dispatch.
+        # This method exists only as a fallback if code_reviewer is ever invoked via
+        # the standard agent dispatch path.
         return (
             "You are an expert code reviewer. You assess code correctness, "
             "maintainability, security, and adherence to project conventions.\n"
@@ -38,18 +42,27 @@ class CodeReviewerAgent(BaseAgent):
             "- Do not nitpick style when substance is correct.\n"
             "- You must produce a pass/fail verdict — not just a list of notes.\n"
             "\n"
-            "## final_answer format\n"
+            "## Output format\n"
+            "\n"
+            "Live code review (src/core/code_review.py) expects this structured "
+            "text format parsed by `parse_code_review_response`:\n"
+            "\n"
+            "```text\n"
+            "ISSUES:\n"
+            "- <one concrete issue per bullet: file path + line/symbol + suggested fix>\n"
+            "- (use the literal word NONE if no issues found)\n"
+            "\n"
+            "VERDICT: PASS or FAIL\n"
+            "```\n"
+            "\n"
+            "If invoked via standard agent dispatch (not raw_dispatch), use this "
+            "`final_answer` instead:\n"
+            "\n"
             "```json\n"
             "{\n"
             '  "action": "final_answer",\n'
-            '  "result": {\n'
-            '    "passed": true,\n'
-            '    "issues": [\n'
-            '      {"severity": "critical|major|minor", "location": "file:line", '
-            '"description": "...", "fix": "..."}\n'
-            "    ]\n"
-            "  },\n"
-            '  "memories": {}\n'
+            '  "result": "PASS",\n'
+            '  "memories": {"issues": []}\n'
             "}\n"
             "```\n"
         )

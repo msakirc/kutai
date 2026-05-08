@@ -536,6 +536,7 @@ class KuledenDonenVar:
         model_id: str,
         provider: str,
         error_type: str,
+        error_message: str = "",
     ) -> None:
         # Accept both "rate_limit" (legacy) and "rate_limited" (the string
         # hallederiz_kadir.classify_error actually emits). Without the
@@ -543,6 +544,27 @@ class KuledenDonenVar:
         # reduction — _rate_limit_hits stayed 0 forever.
         if error_type in ("rate_limit", "rate_limited"):
             self._rate_limiter.record_429(model_id, provider)
+            self._fire(provider, model_id, "limit_hit")
+        elif error_type == "daily_exhausted":
+            # Slam the daily axis shut for this model so has_capacity /
+            # wait_if_needed refuse subsequent admissions. Pre-2026-05-08
+            # daily_exhausted fell through with no state update — KDV's
+            # gates had nothing to gate on (headers may not have arrived
+            # before the wall hit, especially on cold start) and the
+            # selector kept re-picking the same depleted model. Parse
+            # retry-after seconds from the body when present (Groq:
+            # "Please try again in 51m26.208s"). Fall back to 1h when
+            # the body lacks a duration — safer than 0 since the wall
+            # is real and the daily window is real.
+            retry_seconds = self._parse_retry_after_seconds(error_message)
+            if retry_seconds is None:
+                retry_seconds = 3600.0
+            self._rate_limiter.mark_daily_exhausted(
+                model_id,
+                provider,
+                axis=self._daily_axis_from_message(error_message),
+                retry_seconds=retry_seconds,
+            )
             self._fire(provider, model_id, "limit_hit")
         elif error_type in ("server_error", "timeout"):
             cb = self._get_cb(provider)
@@ -593,11 +615,20 @@ class KuledenDonenVar:
             util = state.utilization_pct()
             worst_util = max(worst_util, util)
 
+            _now = time.time()
             daily_exhausted = (
-                state.rpd_remaining is not None
-                and state.rpd_remaining <= 0
-                and state.rpd_reset_at is not None
-                and time.time() < state.rpd_reset_at
+                (
+                    state.rpd_remaining is not None
+                    and state.rpd_remaining <= 0
+                    and state.rpd_reset_at is not None
+                    and _now < state.rpd_reset_at
+                )
+                or (
+                    state.tpd_remaining is not None
+                    and state.tpd_remaining <= 0
+                    and state.tpd_reset_at is not None
+                    and _now < state.tpd_reset_at
+                )
             )
 
             for reset_at in (state._header_rpm_reset_at, state._header_tpm_reset_at, state.rpd_reset_at):
@@ -731,3 +762,47 @@ class KuledenDonenVar:
                 dq.append((ts, success))
             if dq:
                 self._outcomes[mid] = dq
+
+    @staticmethod
+    def _parse_retry_after_seconds(message: str) -> float | None:
+        """Extract retry-after seconds from a 429 body. Handles formats:
+            "Please try again in 51m26.208s"
+            "try again in 1h2m3s"
+            "retry after 30s"
+            "retry-after: 60"
+        Returns None when no duration parseable."""
+        if not message:
+            return None
+        import re as _re
+        m_lc = message.lower()
+        # Look for h/m/s combos
+        match = _re.search(
+            r"(?:try again in|retry after|retry-after[:\s]+)\s*"
+            r"(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+(?:\.\d+)?)\s*s)?",
+            m_lc,
+        )
+        if match and any(match.groups()):
+            h = float(match.group(1) or 0)
+            mi = float(match.group(2) or 0)
+            s = float(match.group(3) or 0)
+            total = h * 3600 + mi * 60 + s
+            if total > 0:
+                return total
+        # Bare seconds: "retry-after: 60"
+        match = _re.search(r"retry[-\s]*after[:\s]+(\d+(?:\.\d+)?)", m_lc)
+        if match:
+            return float(match.group(1))
+        return None
+
+    @staticmethod
+    def _daily_axis_from_message(message: str) -> str:
+        """Return 'tpd' or 'rpd' depending on which axis the body names.
+        Defaults to 'tpd' (Groq's most common cap) when ambiguous."""
+        if not message:
+            return "tpd"
+        m_lc = message.lower()
+        if "requests per day" in m_lc or "(rpd)" in m_lc:
+            return "rpd"
+        if "tokens per day" in m_lc or "(tpd)" in m_lc:
+            return "tpd"
+        return "tpd"

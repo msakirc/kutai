@@ -803,6 +803,36 @@ class RateLimitManager:
         if provider_state:
             provider_state.record_429()
 
+    def mark_daily_exhausted(
+        self,
+        litellm_name: str,
+        provider: str,
+        axis: str = "tpd",
+        retry_seconds: float = 3600.0,
+    ) -> None:
+        """Slam the daily axis shut for this model based on a 429 body
+        that named the daily limit. has_capacity / wait_if_needed will
+        refuse subsequent admissions until reset_at elapses.
+
+        Without this, KDV had no way to learn from the 429 itself —
+        only header-derived state could populate rpd/tpd_remaining,
+        and headers don't always arrive before the wall (cold start,
+        edge cases). Production triage 2026-05-08: Groq's 429 body
+        named "tokens per day (TPD)" with a precise reset duration,
+        but the recovery path threw all of that away."""
+        model_state = self.model_limits.get(litellm_name)
+        if model_state is None:
+            return
+        reset_at = time.time() + max(retry_seconds, 60.0)
+        if axis == "rpd":
+            model_state.rpd_remaining = 0
+            model_state.rpd_reset_at = reset_at
+        else:
+            # TPD: zero out remaining so has_capacity refuses any
+            # estimate; reset_at gates the wait_if_needed skip.
+            model_state.tpd_remaining = 0
+            model_state.tpd_reset_at = reset_at
+
     def update_from_headers(
         self,
         litellm_name: str,

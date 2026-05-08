@@ -190,10 +190,12 @@ def _kdv_end_call(handle):
         pass
 
 
-def _kdv_record_failure(litellm_name, provider, reason):
+def _kdv_record_failure(litellm_name, provider, reason, error_message=""):
     try:
         from src.core.router import get_kdv
-        get_kdv().record_failure(litellm_name, provider, reason)
+        get_kdv().record_failure(
+            litellm_name, provider, reason, error_message=error_message,
+        )
     except Exception:
         pass
 
@@ -1025,7 +1027,10 @@ async def call(
                         )
                     except Exception:
                         pass
-            _kdv_record_failure(model.litellm_name, model.provider, raw_result.category)
+            _kdv_record_failure(
+                model.litellm_name, model.provider, raw_result.category,
+                error_message=raw_result.message or "",
+            )
         return raw_result
 
     # ── Parse response ──

@@ -22,6 +22,103 @@ __all__ = [
     "http_check",
 ]
 
+# Actions that involve running arbitrary shell commands — these go through
+# safety_guard.pre_action before the executor is invoked.
+_SHELL_ACTIONS = {"run_cmd", "run_pytest"}
+
+
+async def _safety_guard_check(task: dict) -> Action | None:
+    """Return a blocked/waiting Action if safety_guard says no, else None (Allow)."""
+    payload = task.get("payload") or {}
+    action = payload.get("action")
+
+    if action not in _SHELL_ACTIONS:
+        return None  # non-shell actions skip the guard
+
+    # Build a string command for the guard to inspect.
+    cmd_raw = payload.get("cmd") or payload.get("command") or payload.get("shell") or ""
+    cmd_is_argv = isinstance(cmd_raw, list)
+    if cmd_is_argv:
+        import shlex
+        cmd_str = shlex.join(str(t) for t in cmd_raw)
+    else:
+        cmd_str = str(cmd_raw)
+
+    if not cmd_str:
+        return None  # nothing to inspect
+
+    # Resolve workspace root.
+    import os
+    workspace_root = (
+        payload.get("workspace_path")
+        or os.environ.get("WORKSPACE_ROOT")
+        or os.getcwd()
+    )
+
+    # For argv-style commands (list), `detect_shell_outside_workspace` is not
+    # meaningful — the executable itself is a trusted binary, not a file target,
+    # and run_cmd's own _resolve_cwd already prevents cwd escape.  Bypass that
+    # specific check by widening workspace_root to the filesystem root.
+    if cmd_is_argv:
+        import pathlib
+        workspace_root = str(pathlib.Path(workspace_root).anchor or workspace_root)
+
+    # Best-effort current branch.
+    current_branch = "unknown"
+    try:
+        import subprocess
+        current_branch = subprocess.check_output(
+            ["git", "branch", "--show-current"],
+            text=True,
+            timeout=5,
+            stderr=subprocess.DEVNULL,
+        ).strip() or "unknown"
+    except Exception:
+        pass
+
+    # Load per-mission allowlist from missions.context.safety_allowlist.
+    mission_allowlist: list[str] = []
+    mission_id = task.get("mission_id")
+    if mission_id is not None:
+        try:
+            from src.infra.db import get_db
+            import json as _json
+            db = await get_db()
+            cur = await db.execute(
+                "SELECT context FROM missions WHERE id = ?", (mission_id,)
+            )
+            row = await cur.fetchone()
+            if row and row[0]:
+                ctx = _json.loads(row[0])
+                if isinstance(ctx, dict):
+                    raw = ctx.get("safety_allowlist", [])
+                    if isinstance(raw, list):
+                        mission_allowlist = [str(p) for p in raw]
+        except Exception:
+            pass
+
+    step = {
+        "id": task.get("step_id") or task.get("title"),
+        "reversibility": task.get("reversibility", "full"),
+        "locked": task.get("locked", False),
+    }
+    sg_action = {"command": cmd_str}
+
+    from safety_guard import pre_action, Allow, WaitForFounder, Block
+    decision = pre_action(
+        step,
+        sg_action,
+        workspace_root=workspace_root,
+        current_branch=current_branch,
+        founder_recently_active=True,  # TODO: wire real activity tracker
+        mission_allowlist=mission_allowlist,
+    )
+    if isinstance(decision, Block):
+        return Action(status="blocked", error=f"safety_guard blocked: {decision.reason}")
+    if isinstance(decision, WaitForFounder):
+        return Action(status="waiting_human", error=f"safety_guard waiting: {decision.reason}")
+    return None  # Allow → proceed
+
 
 async def run(task: dict) -> Action:
     """Route a mechanical task to the appropriate executor.
@@ -34,6 +131,11 @@ async def run(task: dict) -> Action:
     Unknown actions return an ``Action(status="failed", error=...)``; the
     orchestrator is responsible for marking the task failed.
     """
+    # Z0: safety guard pre-action check for shell-executing actions.
+    guard_result = await _safety_guard_check(task)
+    if guard_result is not None:
+        return guard_result
+
     payload = task.get("payload") or {}
     action = payload.get("action")
 

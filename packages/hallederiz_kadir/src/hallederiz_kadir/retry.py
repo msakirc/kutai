@@ -121,6 +121,12 @@ def classify_error(error: str, status_code: int | None = None) -> str:
             or "requests per day" in e
             or "(tpd)" in e
             or "(rpd)" in e
+            # Gemini compacts the daily axis name in quotaId / metric:
+            # "GenerateRequestsPerDayPerProjectPerModel-FreeTier".
+            # Match the lowercase "perday" substring; safe because
+            # other minute-scoped Gemini quotas use "PerMinute".
+            or "perday" in e
+            or "perdayperproject" in e
         ):
             return "daily_exhausted"
         return cat
@@ -137,6 +143,8 @@ def classify_error(error: str, status_code: int | None = None) -> str:
         or "requests per day" in e
         or "(tpd)" in e
         or "(rpd)" in e
+        or "perday" in e
+        or "perdayperproject" in e
     ):
         return "daily_exhausted"
     if any(k in e for k in ("rate limit", "rate_limit", "429",

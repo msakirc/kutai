@@ -777,7 +777,7 @@ class KuledenDonenVar:
         m_lc = message.lower()
         # Look for h/m/s combos
         match = _re.search(
-            r"(?:try again in|retry after|retry-after[:\s]+)\s*"
+            r"(?:try again in|retry in|retry after|retry-after[:\s]+)\s*"
             r"(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+(?:\.\d+)?)\s*s)?",
             m_lc,
         )
@@ -801,8 +801,18 @@ class KuledenDonenVar:
         if not message:
             return "tpd"
         m_lc = message.lower()
-        if "requests per day" in m_lc or "(rpd)" in m_lc:
+        if (
+            "requests per day" in m_lc
+            or "(rpd)" in m_lc
+            # Gemini's compact form: "GenerateRequestsPerDayPerProject..."
+            or "generaterequestsperday" in m_lc
+            or "requestsperday" in m_lc
+        ):
             return "rpd"
-        if "tokens per day" in m_lc or "(tpd)" in m_lc:
+        if (
+            "tokens per day" in m_lc
+            or "(tpd)" in m_lc
+            or "tokensperday" in m_lc
+        ):
             return "tpd"
         return "tpd"

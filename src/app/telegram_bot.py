@@ -2044,14 +2044,37 @@ class TelegramInterface:
             priority=7,
         )
 
+        # Z0: provision forum topic (best-effort; falls back to tag-prefix on failure)
+        try:
+            chat_id_for_thread = update.effective_chat.id
+            thread_id = await self.provision_mission_thread(
+                chat_id=chat_id_for_thread,
+                mission_id=mission_id,
+                title=description[:80],
+            )
+            if thread_id is not None:
+                from src.infra.db import get_db
+                _db = await get_db()
+                await _db.execute(
+                    "UPDATE missions SET message_thread_id = ? WHERE id = ?",
+                    (thread_id, mission_id),
+                )
+                await _db.commit()
+        except Exception as _e:
+            logger.warning("forum topic provisioning skipped: %s", _e)
+
         if self.orchestrator:
             await self.orchestrator.plan_mission(mission_id, description[:80], description)
 
-        await self._reply(update,
-            f"🎯 Mission #{mission_id} created. Planning now...\n"
-            f"_{description[:60]}_",
-            parse_mode="Markdown",
+        # Z0: prompt for cost ceiling
+        await self._reply(
+            update,
+            "Cost ceiling for this mission ($)? Reply with a number, or `none` for unlimited.",
         )
+        self._pending_action[chat_id] = {
+            "kind": "z0_ceiling",
+            "mission_id": mission_id,
+        }
         self.user_last_task_id[chat_id] = None
 
     async def cmd_mission_workflow(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3859,6 +3882,29 @@ class TelegramInterface:
                         pass
                 # Fall through to normal routing
             else:
+                # ── Z0: Cost ceiling Q ──
+                if pending_action.get("kind") == "z0_ceiling":
+                    raw = (update.message.text or "").strip().lower()
+                    if raw in ("none", "skip", ""):
+                        ceiling = None
+                    else:
+                        try:
+                            ceiling = float(raw)
+                        except ValueError:
+                            await self._reply(update, "Invalid number. Skipping (no ceiling).")
+                            ceiling = None
+                    if ceiling is not None:
+                        from src.infra.db import get_db
+                        _db = await get_db()
+                        await _db.execute(
+                            "UPDATE missions SET cost_ceiling_usd = ? WHERE id = ?",
+                            (ceiling, pending_action["mission_id"]),
+                        )
+                        await _db.commit()
+                    self._pending_action.pop(chat_id, None)
+                    await self._reply(update, "Mission starting…")
+                    return
+
                 cmd = pending_action["command"]
                 if cmd == "_todo_help":
                     self._last_todo_help = pending_action
@@ -5257,6 +5303,30 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         query = update.callback_query
         await query.answer()
         data = query.data
+
+        # ── Mission Lifecycle Button Callbacks ───────────────────
+        if data.startswith("mission_resume:"):
+            mid = int(data.split(":", 1)[1])
+            from general_beckman.lifecycle_events import emit_resume
+            await emit_resume(mid, triggered_by="founder")
+            await query.answer("Resumed.")
+            await query.edit_message_text(f"Mission {mid} resumed.")
+            return
+        if data.startswith("mission_pause:"):
+            mid = int(data.split(":", 1)[1])
+            from general_beckman.lifecycle_events import emit_pause
+            await emit_pause(mid, reason="founder_pause", triggered_by="founder")
+            await query.answer("Paused.")
+            await query.edit_message_text(f"Mission {mid} paused.")
+            return
+        if data.startswith("mission_kill:"):
+            mid = int(data.split(":", 1)[1])
+            from general_beckman.lifecycle_events import emit_kill
+            await emit_kill(mid, triggered_by="founder")
+            await self._snapshot_mission(mid)
+            await query.answer("Killed.")
+            await query.edit_message_text(f"Mission {mid} killed.")
+            return
 
         # ── Deep Research Intent Fork ─────────────────────────────
         if data.startswith("shop:"):

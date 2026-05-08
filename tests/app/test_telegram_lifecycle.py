@@ -213,3 +213,97 @@ async def test_resume_mission_command(tmp_path, monkeypatch):
         row = await (await db.execute(
             "SELECT lifecycle_state FROM missions WHERE id=?", (mid,))).fetchone()
     assert row[0] == "active"
+
+
+@pytest.mark.asyncio
+async def test_resume_button_callback_resumes_mission(tmp_path, monkeypatch):
+    import src.infra.db as db_module
+    db_path = str(tmp_path / "kutai.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    db_module.DB_PATH = db_path
+    db_module._db_connection = None
+
+    from src.infra.db import init_db
+    import aiosqlite
+    await init_db()
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT INTO missions (title, lifecycle_state) VALUES ('m', 'paused')"
+        )
+        cur = await db.execute("SELECT last_insert_rowid()")
+        mid = (await cur.fetchone())[0]
+        await db.commit()
+
+    db_module._db_connection = None
+    tg = TelegramInterface.__new__(TelegramInterface)
+    tg.bot = MagicMock()
+    tg._reply = AsyncMock()
+    if hasattr(tg, '_pending_action'):
+        tg._pending_action = {}
+    else:
+        tg._pending_action = {}
+
+    update = MagicMock()
+    update.callback_query = MagicMock()
+    update.callback_query.data = f"mission_resume:{mid}"
+    update.callback_query.answer = AsyncMock()
+    update.callback_query.edit_message_text = AsyncMock()
+    update.effective_chat = MagicMock()
+    update.effective_chat.id = 1
+    update.message = None
+
+    context = MagicMock()
+
+    # Adapt to actual callback method name
+    handler_name = None
+    for name in ("handle_callback", "_handle_callback_query", "callback_handler", "on_callback"):
+        if hasattr(TelegramInterface, name):
+            handler_name = name
+            break
+    assert handler_name is not None, "no callback handler method found"
+    handler = getattr(tg, handler_name)
+    await handler(update, context)
+
+    db_module._db_connection = None
+    async with aiosqlite.connect(db_path) as db:
+        row = await (await db.execute(
+            "SELECT lifecycle_state FROM missions WHERE id=?", (mid,))).fetchone()
+    assert row[0] == "active"
+
+
+@pytest.mark.asyncio
+async def test_pause_button_callback(tmp_path, monkeypatch):
+    import src.infra.db as db_module
+    db_path = str(tmp_path / "kutai.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    db_module.DB_PATH = db_path
+    db_module._db_connection = None
+    from src.infra.db import init_db
+    import aiosqlite
+    await init_db()
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("INSERT INTO missions (title, lifecycle_state) VALUES ('m', 'active')")
+        cur = await db.execute("SELECT last_insert_rowid()")
+        mid = (await cur.fetchone())[0]
+        await db.commit()
+
+    db_module._db_connection = None
+    tg = TelegramInterface.__new__(TelegramInterface)
+    tg.bot = MagicMock()
+    tg._reply = AsyncMock()
+    tg._pending_action = {}
+
+    update = MagicMock()
+    update.callback_query = MagicMock()
+    update.callback_query.data = f"mission_pause:{mid}"
+    update.callback_query.answer = AsyncMock()
+    update.callback_query.edit_message_text = AsyncMock()
+
+    handler_name = next(name for name in ("handle_callback", "_handle_callback_query", "callback_handler", "on_callback") if hasattr(TelegramInterface, name))
+    await getattr(tg, handler_name)(update, MagicMock())
+
+    db_module._db_connection = None
+    async with aiosqlite.connect(db_path) as db:
+        row = await (await db.execute(
+            "SELECT lifecycle_state FROM missions WHERE id=?", (mid,))).fetchone()
+    assert row[0] == "paused"

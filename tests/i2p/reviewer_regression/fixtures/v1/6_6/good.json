@@ -1,0 +1,35 @@
+{
+  "step_id": "6.6",
+  "step_name": "project_plan_review",
+  "schema_version": "1",
+  "input_artifacts": {
+    "sprint_plans": {
+      "_schema_version": "1",
+      "sprint_count": 4,
+      "every_sprint_has_goal": true
+    },
+    "milestones": {
+      "_schema_version": "1",
+      "count": 3,
+      "every_milestone_has_date": true
+    },
+    "risk_assessment": {
+      "_schema_version": "1",
+      "risk_count": 7,
+      "every_risk_has_mitigation": true
+    },
+    "definition_of_done": {
+      "_schema_version": "1",
+      "criteria_count": 6
+    },
+    "effort_estimates": {
+      "_schema_version": "1",
+      "every_task_estimated": true
+    }
+  },
+  "expected_verdict": {
+    "_schema_version": "1",
+    "status": "approved",
+    "issues": []
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "step_id": "4.16",
+  "step_name": "architecture_review",
+  "schema_version": "1",
+  "input_artifacts": {
+    "technical_design_document_summary": {
+      "_schema_version": "1",
+      "components": ["api", "worker", "db"],
+      "all_components_have_interfaces": true,
+      "data_flow_documented": true
+    },
+    "requirements_spec_summary": {
+      "_schema_version": "1",
+      "covered_by_design_pct": 100
+    },
+    "security_requirements": {
+      "_schema_version": "1",
+      "auth_model": "OAuth2",
+      "data_at_rest_encrypted": true,
+      "secrets_in_vault": true
+    }
+  },
+  "expected_verdict": {
+    "_schema_version": "1",
+    "status": "approved",
+    "issues": [],
+    "security_findings": []
+  }
+}

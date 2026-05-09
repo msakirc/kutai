@@ -1,0 +1,41 @@
+{
+  "step_id": "6.6",
+  "step_name": "project_plan_review",
+  "schema_version": "1",
+  "input_artifacts": {
+    "sprint_plans": {
+      "_schema_version": "1",
+      "sprint_count": 0,
+      "every_sprint_has_goal": false
+    },
+    "milestones": {
+      "_schema_version": "1",
+      "count": 0,
+      "every_milestone_has_date": false
+    },
+    "risk_assessment": {
+      "_schema_version": "1",
+      "risk_count": 0,
+      "every_risk_has_mitigation": false
+    },
+    "definition_of_done": {
+      "_schema_version": "1",
+      "criteria_count": 0
+    },
+    "effort_estimates": {
+      "_schema_version": "1",
+      "every_task_estimated": false
+    }
+  },
+  "expected_verdict": {
+    "_schema_version": "1",
+    "status": "fail",
+    "issues": [
+      "no sprints planned",
+      "no milestones",
+      "no risks identified",
+      "no DoD criteria",
+      "estimates missing"
+    ]
+  }
+}

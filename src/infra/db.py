@@ -300,9 +300,39 @@ async def init_db():
             workflow TEXT DEFAULT '',
             repo_path TEXT DEFAULT '',
             language TEXT DEFAULT '',
-            framework TEXT DEFAULT ''
+            framework TEXT DEFAULT '',
+            legacy_pre_p7 INTEGER DEFAULT 0,
+            phase_7_rework_loops INTEGER DEFAULT 0
         )
     """)
+
+    # B10 migration (i2p Z1): rework-loop counter on missions. Counts
+    # rollbacks from phase >=7 back to phase <=6 for spec-first bet
+    # telemetry. See src/telemetry/rework.py + docs/i2p-evolution
+    # /01-pre-code-master-synthesis.md §B10. Idempotent ALTER for
+    # existing DBs that pre-date the inline column above.
+    try:
+        await db.execute(
+            "ALTER TABLE missions ADD COLUMN phase_7_rework_loops INTEGER DEFAULT 0"
+        )
+    except Exception:
+        pass  # Column already exists
+
+    # P7 migration: add `legacy_pre_p7` column to existing DBs and backfill
+    # rows that predate P7. Only the ALTER-succeeded branch backfills —
+    # subsequent runs see the column already exists and skip the UPDATE so
+    # missions created post-P7 keep their default 0.
+    try:
+        await db.execute(
+            "ALTER TABLE missions ADD COLUMN legacy_pre_p7 INTEGER DEFAULT 0"
+        )
+        # Every mission that exists at migration time predates P7 (its
+        # blackboard artifacts have no `_schema_version` field).
+        await db.execute("UPDATE missions SET legacy_pre_p7 = 1")
+        logger.info("P7 migration: legacy_pre_p7 added + existing rows backfilled to 1")
+    except Exception:
+        # Column already exists — no-op; new missions default to 0.
+        pass
 
     # Tasks
     await db.execute("""
@@ -1201,6 +1231,7 @@ async def get_active_missions():
 _MISSION_COLUMNS = frozenset({
     "title", "description", "status", "priority",
     "completed_at", "context", "workflow", "repo_path", "language", "framework",
+    "phase_7_rework_loops",
 })
 
 _TASK_COLUMNS = frozenset({
@@ -1232,6 +1263,47 @@ async def update_mission(mission_id, **kwargs):
     values = list(kwargs.values()) + [mission_id]
     await db.execute(f"UPDATE missions SET {sets} WHERE id = ?", values)
     await db.commit()
+
+
+async def increment_mission_rework_loops(mission_id: int) -> int:
+    """Atomically bump missions.phase_7_rework_loops; return the new count.
+
+    Used by src/telemetry/rework.record_rollback() — the single source of
+    truth for B10 rework telemetry. Returns 0 if the mission row is
+    missing (defensive: telemetry must never crash the caller).
+    """
+    db = await get_db()
+    await db.execute(
+        "UPDATE missions SET phase_7_rework_loops = "
+        "COALESCE(phase_7_rework_loops, 0) + 1 WHERE id = ?",
+        (mission_id,),
+    )
+    cursor = await db.execute(
+        "SELECT phase_7_rework_loops FROM missions WHERE id = ?",
+        (mission_id,),
+    )
+    row = await cursor.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+async def get_mission_rework_summary(
+    limit: int = 20,
+) -> list[dict]:
+    """Return per-mission rework counts + reasons for the most recent missions.
+
+    Reasons are derived from yazbunu phase_rollback events stored in
+    logs/kutai.jsonl. If the log file is missing, only counts are returned.
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT id, title, status, phase_7_rework_loops, created_at
+           FROM missions
+           ORDER BY id DESC
+           LIMIT ?""",
+        (limit,),
+    )
+    rows = [dict(r) for r in await cursor.fetchall()]
+    return rows
 
 
 # --- Task Operations ---

@@ -1867,6 +1867,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("credential", self.cmd_credential))
         self.app.add_handler(CommandHandler("cost", self.cmd_cost))
         self.app.add_handler(CommandHandler("dlq", self.cmd_dlq))
+        self.app.add_handler(CommandHandler("rework", self.cmd_rework))
         self.app.add_handler(CommandHandler("retry", self.cmd_retry))
         self.app.add_handler(CommandHandler("load", self.cmd_load))
         self.app.add_handler(CommandHandler("tune", self.cmd_tune))
@@ -3312,6 +3313,80 @@ class TelegramInterface:
             await self._reply(update,
                 f"❌ {_friendly_error(str(e))}"
             )
+
+    async def cmd_rework(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show B10 rework metric for recent missions: count + reasons summary.
+
+        Backs the spec-first bet (docs/i2p-evolution §B10): high rework
+        means the spec leaked into build, low rework means the spec
+        held. Reads ``missions.phase_7_rework_loops`` for counts and
+        the most recent ``logs/kutai.jsonl`` events for reason
+        breakdown.
+        """
+        from src.infra.db import get_mission_rework_summary
+        import os
+        import json as _json
+
+        try:
+            limit_arg = (context.args or ["10"])[0]
+            limit = max(1, min(int(limit_arg), 50))
+        except (ValueError, TypeError):
+            limit = 10
+
+        rows = await get_mission_rework_summary(limit=limit)
+
+        # Aggregate reason counts from the JSONL log if present
+        reason_totals: dict[str, int] = {}
+        log_path = os.path.join("logs", "kutai.jsonl")
+        if os.path.isfile(log_path):
+            try:
+                with open(log_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if "phase_rollback" not in line:
+                            continue
+                        try:
+                            row = _json.loads(line)
+                        except Exception:
+                            continue
+                        if row.get("event") != "phase_rollback":
+                            continue
+                        reason = row.get("reason") or "other"
+                        reason_totals[reason] = reason_totals.get(reason, 0) + 1
+            except Exception:
+                pass
+
+        lines = ["*Rework Metric (B10)*", ""]
+        total = sum(int(r.get("phase_7_rework_loops") or 0) for r in rows)
+        lines.append(
+            f"Recent {len(rows)} missions: *{total}* phase-7+ rework loops total"
+        )
+        lines.append("")
+
+        if rows:
+            lines.append("*Per mission:*")
+            for r in rows[:10]:
+                count = int(r.get("phase_7_rework_loops") or 0)
+                marker = "!" if count > 0 else " "
+                title = (r.get("title") or "")[:40]
+                lines.append(
+                    f"  {marker} #{r['id']} [{r.get('status','?')}] "
+                    f"{count} loops — {title}"
+                )
+            lines.append("")
+
+        if reason_totals:
+            lines.append("*Rollback reasons (all-time log):*")
+            for reason, n in sorted(
+                reason_totals.items(), key=lambda kv: -kv[1]
+            ):
+                lines.append(f"  {reason:<18} {n}")
+        else:
+            lines.append(
+                "_No phase_rollback events logged yet — "
+                "spec-first bet is holding._"
+            )
+
+        await self._reply(update, "\n".join(lines), parse_mode="Markdown")
 
     async def cmd_dlq(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Dead-letter queue management: /dlq [retry <task_id> | discard <task_id>]."""

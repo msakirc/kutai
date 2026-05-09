@@ -45,6 +45,27 @@ def _mechanical_context(action: str, **payload_fields) -> dict:
 logger = get_logger("beckman.apply")
 
 
+def _task_phase_label(task: dict, ctx: dict | None = None) -> str:
+    """Return a phase label for B10 rework telemetry.
+
+    Prefers ``workflow_step_id`` (e.g. "8.3") which is the granular step
+    address, falls back to ``workflow_phase`` (e.g. "phase_8") which is
+    the band, falls back to "" when neither is set (non-workflow task).
+    """
+    if ctx is None:
+        try:
+            raw = task.get("context") or "{}"
+            ctx = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except Exception:
+            ctx = {}
+    return str(
+        ctx.get("workflow_step_id")
+        or ctx.get("step_id")
+        or ctx.get("workflow_phase")
+        or ""
+    )
+
+
 async def apply_actions(task: dict, actions: Iterable[Action]) -> None:
     for a in actions:
         await _apply_one(task, a)
@@ -345,6 +366,31 @@ async def _retry_or_dlq(task: dict, *, category: str, error: str) -> None:
         next_retry_at=next_retry_at,
         context=json.dumps(ctx),
     )
+
+    # B10 telemetry: a quality-category retry is a schema_failure rework
+    # signal. Today the retry replays the SAME step (no cross-band
+    # rollback) so the counter only bumps when ctx already records the
+    # original (pre-retry) step as phase>=7 AND the retry forces a
+    # re-entry to phase<=6. The helper handles that test internally —
+    # we just hand it both phases. For same-step retries the helper
+    # logs the event but skips the counter bump per is_phase_7_rework.
+    if category == "quality" and task.get("mission_id"):
+        try:
+            from src.telemetry.rework import record_rollback
+            phase_label = _task_phase_label(task, ctx)
+            if phase_label:
+                await record_rollback(
+                    mission_id=int(task["mission_id"]),
+                    from_phase=phase_label,
+                    # to_phase from ctx if a rollback target was set by
+                    # the workflow engine; otherwise same-step retry
+                    to_phase=str(ctx.get("rollback_to_phase") or phase_label),
+                    reason="schema_failure",
+                    triggered_by=str(task.get("agent_type") or "worker"),
+                )
+        except Exception as _exc:
+            logger.debug("rework telemetry skipped",
+                         task_id=task.get("id"), error=str(_exc))
 
 
 async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) -> None:
@@ -1147,6 +1193,24 @@ async def _apply_code_review_verdict(
         next_retry_at=None,
         context=_json.dumps(ctx),
     )
+
+    # B10 telemetry: code-reviewer rejection is a reviewer_reject rework
+    # signal. See _retry_or_dlq for the same-step / cross-band rationale.
+    if source.get("mission_id"):
+        try:
+            from src.telemetry.rework import record_rollback
+            phase_label = _task_phase_label(source, ctx)
+            if phase_label:
+                await record_rollback(
+                    mission_id=int(source["mission_id"]),
+                    from_phase=phase_label,
+                    to_phase=str(ctx.get("rollback_to_phase") or phase_label),
+                    reason="reviewer_reject",
+                    triggered_by="code_reviewer",
+                )
+        except Exception as _exc:
+            logger.debug("rework telemetry skipped (review)",
+                         task_id=source.get("id"), error=str(_exc))
 
 
 def _posthook_title(a: RequestPostHook, source: dict) -> str:

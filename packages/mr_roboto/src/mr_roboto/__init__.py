@@ -5,6 +5,7 @@ from mr_roboto.actions import Action
 from mr_roboto.workspace_snapshot import snapshot_workspace
 from mr_roboto.git_commit import auto_commit
 from mr_roboto.verify_artifacts import verify_artifacts
+from mr_roboto.verify_schema_version import verify_schema_version
 from mr_roboto.run_cmd import run_cmd
 from mr_roboto.run_pytest import run_pytest
 from mr_roboto.parse_og_tags import parse_og_tags
@@ -16,6 +17,7 @@ __all__ = [
     "snapshot_workspace",
     "auto_commit",
     "verify_artifacts",
+    "verify_schema_version",
     "run_cmd",
     "run_pytest",
     "parse_og_tags",
@@ -107,6 +109,33 @@ async def run(task: dict) -> Action:
                     error=(
                         f"verify_artifacts: missing={res.get('missing')} "
                         f"failed={res.get('failed')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_schema_version":
+        # P7 — assert each artifact carries `_schema_version` matching the
+        # workflow step's declared expectation. Pure check; no I/O. Failure
+        # surfaces the (artifact_name, found, expected) triple in error so
+        # the source retries with the missing/mismatched version visible.
+        from mr_roboto.verify_schema_version import (
+            verify_schema_version as _verify_schema,
+        )
+        try:
+            res = _verify_schema(
+                artifacts=payload.get("artifacts") or {},
+                expected_versions=payload.get("expected_versions") or {},
+                legacy_pre_p7=bool(payload.get("legacy_pre_p7", False)),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"verify_schema_version: missing={res.get('missing')} "
+                        f"mismatched={res.get('mismatched')}"
                     ),
                     result=res,
                 )

@@ -478,6 +478,58 @@ async def init_db():
     except Exception:
         pass
 
+    # Z1 Tier 4 migration (T4C / C10+A19): preview-URL surface columns +
+    # legacy gate. `preview_url` holds the most recent tunnel URL (NULL when
+    # no tunnel is active or hosting is deferred to Z2). `preview_started_at`
+    # is a CURRENT_TIMESTAMP marker. `legacy_pre_preview_url` gates the new
+    # phase-5 `5.40 emit_preview_url` step so existing missions don't
+    # retroactively require a preview surface; backfilled to 1 for them.
+    try:
+        await db.execute(
+            "ALTER TABLE missions ADD COLUMN preview_url TEXT"
+        )
+    except Exception:
+        pass  # Column already exists
+    try:
+        await db.execute(
+            "ALTER TABLE missions ADD COLUMN preview_started_at TIMESTAMP"
+        )
+    except Exception:
+        pass  # Column already exists
+    try:
+        await db.execute(
+            "ALTER TABLE missions "
+            "ADD COLUMN legacy_pre_preview_url INTEGER DEFAULT 0"
+        )
+        await db.execute(
+            "UPDATE missions SET legacy_pre_preview_url = 1"
+        )
+        logger.info(
+            "Z1 Tier 4 migration: legacy_pre_preview_url added "
+            "+ existing rows backfilled to 1"
+        )
+    except Exception:
+        pass  # Column already exists
+
+    # Z1 Tier 4 (T4C / C10): preview_log audit trail — one row per
+    # emit/kill action so we can correlate Telegram /preview commands
+    # with mission lifecycle state.
+    try:
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS preview_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mission_id INTEGER NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('emit','kill')),
+                url TEXT,
+                exit_code INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    except Exception:
+        pass
+
     # Z1 Tier 2 migration (A4): interview_skip_reason column. NULL for
     # all existing rows — only set by request_interview_data when the
     # founder explicitly opts SKIP.

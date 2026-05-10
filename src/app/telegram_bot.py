@@ -1868,6 +1868,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("cost", self.cmd_cost))
         self.app.add_handler(CommandHandler("dlq", self.cmd_dlq))
         self.app.add_handler(CommandHandler("rework", self.cmd_rework))
+        self.app.add_handler(CommandHandler("preview", self.cmd_preview))
+        self.app.add_handler(CommandHandler("preview_off", self.cmd_preview_off))
         self.app.add_handler(CommandHandler("retry", self.cmd_retry))
         self.app.add_handler(CommandHandler("load", self.cmd_load))
         self.app.add_handler(CommandHandler("tune", self.cmd_tune))
@@ -3473,6 +3475,80 @@ class TelegramInterface:
             )
 
         await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+
+    async def cmd_preview(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z1 T4C — emit a tunneled preview URL for a mission's HTML prototypes.
+
+        Usage: ``/preview <mission_id>``. Calls
+        :func:`mr_roboto.emit_preview_url` and replies with the live URL or
+        a ``pending: hosting deferred to Z2`` message when the operator has
+        not opted into ``KUTAI_PREVIEW_PROVIDER=cloudflared``.
+        """
+        args = context.args or []
+        if not args:
+            await self._reply(update, "Usage: /preview <mission_id>")
+            return
+        try:
+            mission_id = int(args[0])
+        except (ValueError, TypeError):
+            await self._reply(update, "Mission id must be an integer.")
+            return
+        try:
+            from mr_roboto.emit_preview_url import emit_preview_url
+            res = await emit_preview_url(mission_id=mission_id)
+        except Exception as e:
+            await self._reply(update, f"Preview emit failed: {e}")
+            return
+        if res.get("pending"):
+            await self._reply(
+                update,
+                f"Preview pending for mission #{mission_id}\n"
+                f"Hosting deferred to Z2 — surface written to "
+                f"`{res.get('path')}`",
+                parse_mode="Markdown",
+            )
+            return
+        url = res.get("url") or "(no url)"
+        await self._reply(
+            update,
+            f"📡 Preview ready for mission #{mission_id}\n{url}",
+        )
+
+    async def cmd_preview_off(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+    ):
+        """Z1 T4C — terminate the preview tunnel for a mission.
+
+        Usage: ``/preview_off <mission_id>``.
+        """
+        args = context.args or []
+        if not args:
+            await self._reply(update, "Usage: /preview_off <mission_id>")
+            return
+        try:
+            mission_id = int(args[0])
+        except (ValueError, TypeError):
+            await self._reply(update, "Mission id must be an integer.")
+            return
+        try:
+            from mr_roboto.kill_preview_url import kill_preview_url
+            res = await kill_preview_url(mission_id=mission_id)
+        except Exception as e:
+            await self._reply(update, f"Preview kill failed: {e}")
+            return
+        pid = res.get("killed_pid")
+        if pid:
+            await self._reply(
+                update,
+                f"Preview tunnel for mission #{mission_id} terminated "
+                f"(pid={pid}).",
+            )
+        else:
+            await self._reply(
+                update,
+                f"No active preview tunnel for mission #{mission_id}; "
+                "surface files cleaned.",
+            )
 
     async def cmd_dlq(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Dead-letter queue management: /dlq [retry <task_id> | discard <task_id>]."""
@@ -5367,6 +5443,31 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 "🏷 Hangi kategori? (örn. 'kahve makinesi 5000 TL altı')"
             )
             await query.message.reply_text(prompt)
+            return
+
+        # ── Z1 T4C Preview Share Button ───────────────────────────
+        if data.startswith("preview:share:"):
+            try:
+                mission_id = int(data.split(":")[-1])
+            except (ValueError, IndexError):
+                await query.message.reply_text("Bad mission id in preview share.")
+                return
+            try:
+                from mr_roboto.emit_preview_url import emit_preview_url
+                res = await emit_preview_url(mission_id=mission_id)
+            except Exception as e:
+                await query.message.reply_text(f"Preview emit failed: {e}")
+                return
+            if res.get("pending"):
+                await query.message.reply_text(
+                    f"Preview pending for mission #{mission_id} — hosting "
+                    f"deferred to Z2 (path: {res.get('path')})"
+                )
+            else:
+                await query.message.reply_text(
+                    f"📡 Preview ready for mission #{mission_id}\n"
+                    f"{res.get('url')}"
+                )
             return
 
         # ── Mission Detail Callbacks ──────────────────────────────

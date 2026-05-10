@@ -15,6 +15,9 @@ from mr_roboto.verify_screen_plan_shape import verify_screen_plan_shape
 from mr_roboto.verify_html_prototype_shape import verify_html_prototype_shape
 from mr_roboto.verify_screen_consistency import verify_screen_consistency
 from mr_roboto.generate_intake_todo import generate_intake_todo
+from mr_roboto.annotate_html_oids import annotate_html_oids
+from mr_roboto.propagate_asset_change import propagate_asset_change
+from mr_roboto.propose_spec_patch import propose_spec_patch_from_html_diff
 from mr_roboto.run_cmd import run_cmd
 from mr_roboto.run_pytest import run_pytest
 from mr_roboto.parse_og_tags import parse_og_tags
@@ -36,6 +39,9 @@ __all__ = [
     "verify_html_prototype_shape",
     "verify_screen_consistency",
     "generate_intake_todo",
+    "annotate_html_oids",
+    "propagate_asset_change",
+    "propose_spec_patch_from_html_diff",
     "run_cmd",
     "run_pytest",
     "parse_og_tags",
@@ -581,6 +587,80 @@ async def run(task: dict) -> Action:
                 return Action(
                     status="failed",
                     error=f"verify_shared_shell_shape: {res.get('errors')}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "annotate_html_oids":
+        # Z1 Tier 4 (T4B / C17+A20) — DOM post-processor that assigns
+        # `data-oid` to every semantic block in a generated HTML
+        # prototype. Runs AFTER verify_html_prototype_shape and BEFORE
+        # verify_screen_consistency. Anchor for the spec-patch proposer.
+        from mr_roboto.annotate_html_oids import (
+            annotate_html_oids as _annotate,
+        )
+        try:
+            res = _annotate(
+                html_text=payload.get("html_text"),
+                html_paths=payload.get("html_paths"),
+                artifact_slug=payload.get("artifact_slug"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"annotate_html_oids: {res.get('error') or res.get('per_file')}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "propagate_asset_change":
+        # Z1 Tier 4 (T4B / B2) — paraflow-style asset->spec propagation.
+        # Walks produces/consumes graph for the asset_path and surfaces
+        # dependents + suggested patches. Founder reviews; accepted
+        # items dispatch to T4A's `regen_artifact`.
+        from mr_roboto.propagate_asset_change import (
+            propagate_asset_change as _propagate,
+        )
+        try:
+            res = _propagate(
+                asset_path=payload.get("asset_path") or "",
+                change_description=payload.get("change_description") or "",
+                steps=payload.get("steps"),
+                workflow_path=payload.get("workflow_path"),
+                mission_id=payload.get("mission_id") or task.get("mission_id") or "0",
+                out_path=payload.get("out_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"propagate_asset_change: {res.get('error')}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "propose_spec_patch_from_html_diff":
+        # Z1 Tier 4 (T4B / C17+A20) — DOM-aware HTML diff via data-oid.
+        # Founder edits HTML offline; this proposer pairs nodes by oid
+        # and surfaces upstream artifact patches for review.
+        from mr_roboto.propose_spec_patch import (
+            propose_spec_patch_from_html_diff as _propose,
+        )
+        try:
+            res = _propose(
+                html_path=payload.get("html_path") or "",
+                edited_html_path=payload.get("edited_html_path") or "",
+                out_path=payload.get("out_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"propose_spec_patch_from_html_diff: {res.get('error')}",
                     result=res,
                 )
             return Action(status="completed", result=res)

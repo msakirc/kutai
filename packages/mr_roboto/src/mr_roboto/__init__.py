@@ -1583,4 +1583,13 @@ async def run(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "run_bash_audit":
+        # Z1 Tier 7A (B12) — quarterly sade_kalsin scaffolding audit.
+        from mr_roboto.run_bash_audit import run as bash_audit_run
+        try:
+            res = await bash_audit_run(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

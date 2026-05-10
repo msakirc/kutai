@@ -5836,6 +5836,66 @@
       "context": {}
     },
     {
+      "id": "6.5z",
+      "phase": "phase_6",
+      "name": "failure_premortem",
+      "agent": "analyst",
+      "difficulty": "medium",
+      "tools_hint": [
+        "write_file"
+      ],
+      "depends_on": [
+        "6.5"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "product_charter",
+        "non_goals",
+        "risk_assessment",
+        "milestones"
+      ],
+      "output_artifacts": [
+        "premortem"
+      ],
+      "context": {
+        "estimated_output_tokens": 3000
+      },
+      "instruction": "Z1 Tier 5 (A6) — failure premortem. Imagine it is exactly one year from today and the product has failed. Write THREE plausible obituaries — one per kind: `technical`, `market`, `founder`. For EACH, give a short obituary paragraph, a plausibility score (integer 1-5, where 5 = highly plausible), a one-sentence root cause, and (optionally) the id of an existing monitoring rule that would catch this failure mode (or null if none yet exists).\n\nOUTPUT FORMAT: write `mission_{mission_id}/premortem.md` containing both human-readable bullets AND a fenced ```json block with this STRICT envelope:\n\n```json\n{\n  \"_schema_version\": \"1\",\n  \"scenarios\": [\n    {\"kind\": \"technical\", \"obituary\": \"...\", \"plausibility\": 1-5, \"cause\": \"...\", \"mapped_monitoring_rule\": \"<rule_id|null>\"},\n    {\"kind\": \"market\",    \"obituary\": \"...\", \"plausibility\": 1-5, \"cause\": \"...\", \"mapped_monitoring_rule\": \"<rule_id|null>\"},\n    {\"kind\": \"founder\",   \"obituary\": \"...\", \"plausibility\": 1-5, \"cause\": \"...\", \"mapped_monitoring_rule\": \"<rule_id|null>\"}\n  ]\n}\n```\n\nFounder-mode obituaries are the most commonly missed in startup post-mortems — `founder loses interest in 4 weeks` is the most common cause of silent abandonment; surface it explicitly. Mechanical post-hook `verify_premortem_shape` rejects envelopes missing any kind, with <3 scenarios, or with plausibility outside [1,5].",
+      "done_when": "premortem.md exists at mission_{mission_id}/premortem.md, contains a JSON envelope with >=3 scenarios covering all of {technical, market, founder}, every plausibility ∈ [1,5].",
+      "produces": [
+        "mission_{mission_id}/premortem.md"
+      ],
+      "artifact_schema": {
+        "premortem": {
+          "type": "object",
+          "required_fields": [
+            "_schema_version",
+            "scenarios"
+          ],
+          "_schema_version": "1"
+        }
+      },
+      "skip_when": "mission.legacy_pre_premortem == '1'"
+    },
+    {
+      "id": "6.5z.verify_shape",
+      "phase": "phase_6",
+      "name": "verify_premortem_shape",
+      "agent": "mechanical",
+      "depends_on": [
+        "6.5z"
+      ],
+      "executor": "verify_premortem_shape",
+      "payload": {
+        "action": "verify_premortem_shape"
+      },
+      "context": {
+        "estimated_output_tokens": 0
+      },
+      "instruction": "Mechanical post-hook on 6.5z. Caller wires `premortem_path` (default `mission_{mission_id}/premortem.md`) or `premortem_text`. Asserts the JSON envelope: _schema_version=='1', scenarios>=3, kinds {technical, market, founder} each present, plausibility ∈ [1,5], obituary + cause non-empty.",
+      "skip_when": "mission.legacy_pre_premortem == '1'"
+    },
+    {
       "id": "6.6",
       "phase": "phase_6",
       "name": "project_plan_review",
@@ -5845,7 +5905,8 @@
       "depends_on": [
         "6.3",
         "6.4",
-        "6.5"
+        "6.5",
+        "6.5z"
       ],
       "may_need_clarification": true,
       "input_artifacts": [
@@ -5853,12 +5914,13 @@
         "milestones",
         "risk_assessment",
         "definition_of_done",
-        "effort_estimates"
+        "effort_estimates",
+        "premortem"
       ],
       "output_artifacts": [
         "project_plan_review_result"
       ],
-      "instruction": "Review project plan: all stories assigned, dependencies respected, balanced loads, realistic milestones, risk mitigations as tasks, testing in every sprint, buffer exists. If timeline unrealistic, trigger needs_clarification.",
+      "instruction": "Review project plan: all stories assigned, dependencies respected, balanced loads, realistic milestones, risk mitigations as tasks, testing in every sprint, buffer exists. If timeline unrealistic, trigger needs_clarification.\n\nZ1 Tier 5 (A6) PREMORTEM CHECK — after the standard plan review, also examine the `premortem` artifact. For EVERY scenario with `plausibility >= 4`, confirm a corresponding monitoring rule exists (either `mapped_monitoring_rule` is non-null AND points to a real rule_id, or risk_assessment / monitoring inventory contains a rule that would catch the named cause). If a high-plausibility scenario has no monitoring coverage, REJECT the review (status != pass) with an `issues` entry naming the unmapped scenario; surface as needs_clarification so the founder either accepts the gap explicitly or amends monitoring.",
       "done_when": "project_plan_review_result exists. Timeline is realistic or human has approved adjusted scope.",
       "artifact_schema": {
         "project_plan_review_result": {
@@ -5877,6 +5939,28 @@
         }
       },
       "context": {}
+    },
+    {
+      "id": "7.0z",
+      "phase": "phase_7",
+      "name": "spec_consistency_check_phase_7",
+      "agent": "mechanical",
+      "depends_on": [
+        "6.6"
+      ],
+      "executor": "spec_consistency_check",
+      "payload": {
+        "action": "spec_consistency_check",
+        "current_phase": "phase_7"
+      },
+      "context": {
+        "estimated_output_tokens": 0
+      },
+      "produces": [
+        "mission_{mission_id}/spec_drift_report.md"
+      ],
+      "instruction": "Z1 Tier 5B (B5) — Augment Intent's `specs stay alive`. Wave-start mechanical step before phase-7 execution. Re-reads phase-≤6 locked spec artifacts (charter, ADRs, design_tokens, screen_plans, surfaces, non_goals, premortem, compliance_overlay if present) + any phase-7 artifacts on disk; rule-based drift scan (R1 stack drift / R2 token drift / R3 surface drift / R4 non-goal drift). On drift, returns needs_review + drift report path; reviewer / source has to acknowledge before downstream waves continue.",
+      "skip_when": "mission.legacy_pre_spec_alive == '1'"
     },
     {
       "id": "7.1",
@@ -6769,6 +6853,28 @@
       "context": {}
     },
     {
+      "id": "8.0z",
+      "phase": "phase_8",
+      "name": "spec_consistency_check_phase_8",
+      "agent": "mechanical",
+      "depends_on": [
+        "7.17"
+      ],
+      "executor": "spec_consistency_check",
+      "payload": {
+        "action": "spec_consistency_check",
+        "current_phase": "phase_8"
+      },
+      "context": {
+        "estimated_output_tokens": 0
+      },
+      "produces": [
+        "mission_{mission_id}/spec_drift_report.md"
+      ],
+      "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 8. See 7.0z for full description.",
+      "skip_when": "mission.legacy_pre_spec_alive == '1'"
+    },
+    {
       "id": "8.0",
       "phase": "phase_8",
       "name": "implementation_backlog_initialization",
@@ -6981,6 +7087,28 @@
         }
       },
       "context": {}
+    },
+    {
+      "id": "9.0z",
+      "phase": "phase_9",
+      "name": "spec_consistency_check_phase_9",
+      "agent": "mechanical",
+      "depends_on": [
+        "8.arch_check"
+      ],
+      "executor": "spec_consistency_check",
+      "payload": {
+        "action": "spec_consistency_check",
+        "current_phase": "phase_9"
+      },
+      "context": {
+        "estimated_output_tokens": 0
+      },
+      "produces": [
+        "mission_{mission_id}/spec_drift_report.md"
+      ],
+      "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 9. See 7.0z for full description.",
+      "skip_when": "mission.legacy_pre_spec_alive == '1'"
     },
     {
       "id": "9.1",
@@ -7478,6 +7606,28 @@
         }
       },
       "context": {}
+    },
+    {
+      "id": "10.0z",
+      "phase": "phase_10",
+      "name": "spec_consistency_check_phase_10",
+      "agent": "mechanical",
+      "depends_on": [
+        "9.11"
+      ],
+      "executor": "spec_consistency_check",
+      "payload": {
+        "action": "spec_consistency_check",
+        "current_phase": "phase_10"
+      },
+      "context": {
+        "estimated_output_tokens": 0
+      },
+      "produces": [
+        "mission_{mission_id}/spec_drift_report.md"
+      ],
+      "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 10. See 7.0z for full description.",
+      "skip_when": "mission.legacy_pre_spec_alive == '1'"
     },
     {
       "id": "10.1",
@@ -8014,6 +8164,28 @@
       "context": {}
     },
     {
+      "id": "11.0z",
+      "phase": "phase_11",
+      "name": "spec_consistency_check_phase_11",
+      "agent": "mechanical",
+      "depends_on": [
+        "10.9"
+      ],
+      "executor": "spec_consistency_check",
+      "payload": {
+        "action": "spec_consistency_check",
+        "current_phase": "phase_11"
+      },
+      "context": {
+        "estimated_output_tokens": 0
+      },
+      "produces": [
+        "mission_{mission_id}/spec_drift_report.md"
+      ],
+      "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 11. See 7.0z for full description.",
+      "skip_when": "mission.legacy_pre_spec_alive == '1'"
+    },
+    {
       "id": "11.1",
       "phase": "phase_11",
       "name": "api_and_developer_docs",
@@ -8255,6 +8427,28 @@
         }
       },
       "context": {}
+    },
+    {
+      "id": "12.0z",
+      "phase": "phase_12",
+      "name": "spec_consistency_check_phase_12",
+      "agent": "mechanical",
+      "depends_on": [
+        "11.5"
+      ],
+      "executor": "spec_consistency_check",
+      "payload": {
+        "action": "spec_consistency_check",
+        "current_phase": "phase_12"
+      },
+      "context": {
+        "estimated_output_tokens": 0
+      },
+      "produces": [
+        "mission_{mission_id}/spec_drift_report.md"
+      ],
+      "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 12. See 7.0z for full description.",
+      "skip_when": "mission.legacy_pre_spec_alive == '1'"
     },
     {
       "id": "12.1",

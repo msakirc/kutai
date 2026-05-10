@@ -339,6 +339,8 @@ async def init_db():
             legacy_pre_competitive_positioning INTEGER DEFAULT 0,
             legacy_pre_per_screen_plans INTEGER DEFAULT 0,
             legacy_pre_html_oids INTEGER DEFAULT 0,
+            legacy_pre_premortem INTEGER DEFAULT 0,
+            legacy_pre_spec_alive INTEGER DEFAULT 0,
             interview_skip_reason TEXT,
             phase_7_rework_loops INTEGER DEFAULT 0
         )
@@ -526,6 +528,44 @@ async def init_db():
         )
         logger.info(
             "Z1 Tier 4 migration: legacy_pre_preview_url added "
+            "+ existing rows backfilled to 1"
+        )
+    except Exception:
+        pass  # Column already exists
+
+    # Z1 Tier 5B migration (A6 / premortem): gate the new `6.5z
+    # failure_premortem` step so existing missions don't retroactively
+    # require a premortem.md. Backfilled to 1 for older rows; new
+    # missions default to 0.
+    try:
+        await db.execute(
+            "ALTER TABLE missions "
+            "ADD COLUMN legacy_pre_premortem INTEGER DEFAULT 0"
+        )
+        await db.execute(
+            "UPDATE missions SET legacy_pre_premortem = 1"
+        )
+        logger.info(
+            "Z1 Tier 5B migration: legacy_pre_premortem added "
+            "+ existing rows backfilled to 1"
+        )
+    except Exception:
+        pass  # Column already exists
+
+    # Z1 Tier 5B migration (B5 / spec_consistency_check): gate the new
+    # phase-7+ wave-start `<N>.0z` mechanical steps so existing missions
+    # don't retroactively run drift checks against an absent phase-≤6
+    # spec. Backfilled to 1 for older rows; new missions default to 0.
+    try:
+        await db.execute(
+            "ALTER TABLE missions "
+            "ADD COLUMN legacy_pre_spec_alive INTEGER DEFAULT 0"
+        )
+        await db.execute(
+            "UPDATE missions SET legacy_pre_spec_alive = 1"
+        )
+        logger.info(
+            "Z1 Tier 5B migration: legacy_pre_spec_alive added "
             "+ existing rows backfilled to 1"
         )
     except Exception:

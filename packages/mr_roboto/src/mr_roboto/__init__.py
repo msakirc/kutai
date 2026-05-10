@@ -29,6 +29,8 @@ from mr_roboto.parse_og_tags import parse_og_tags
 from mr_roboto.http_check import http_check
 from mr_roboto.emit_preview_url import emit_preview_url
 from mr_roboto.kill_preview_url import kill_preview_url
+from mr_roboto.verify_premortem_shape import verify_premortem_shape
+from mr_roboto.spec_consistency_check import spec_consistency_check
 
 __all__ = [
     "Action",
@@ -58,6 +60,8 @@ __all__ = [
     "http_check",
     "emit_preview_url",
     "kill_preview_url",
+    "verify_premortem_shape",
+    "spec_consistency_check",
 ]
 
 
@@ -1113,6 +1117,68 @@ async def run(task: dict) -> Action:
                     error=(
                         f"verify_screen_consistency: mismatches={res.get('mismatches')} "
                         f"out_of_set={res.get('out_of_set')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_premortem_shape":
+        # Z1 Tier 5B (A6) — premortem envelope shape verifier. Auto-wired
+        # as post-hook on step 6.5z failure_premortem.
+        from mr_roboto.verify_premortem_shape import (
+            verify_premortem_shape as _verify_premortem,
+        )
+        try:
+            res = _verify_premortem(
+                premortem=payload.get("premortem"),
+                premortem_text=payload.get("premortem_text"),
+                premortem_path=payload.get("premortem_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"verify_premortem_shape: problems={res.get('problems')} "
+                        f"missing_kinds={res.get('missing_kinds')} "
+                        f"per_item_problems={res.get('per_item_problems')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "spec_consistency_check":
+        # Z1 Tier 5B (B5) — Augment Intent's "specs stay alive". Wave-start
+        # mechanical step before every phase 7+ wave: re-reads phase-≤6
+        # spec artifacts + current phase-N artifacts, surfaces drift.
+        # On drift: returns needs_review with the report path so the
+        # reviewer / source acknowledges before downstream phases proceed.
+        from mr_roboto.spec_consistency_check import (
+            spec_consistency_check as _spec_check,
+        )
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id") or "0"
+            current_phase = (
+                payload.get("current_phase")
+                or task.get("phase")
+                or "phase_unknown"
+            )
+            res = _spec_check(
+                mission_id=mid,
+                current_phase=str(current_phase),
+                workspace_path=payload.get("workspace_path"),
+                out_path=payload.get("out_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="needs_review",
+                    error=(
+                        f"spec_consistency_check: drift_count="
+                        f"{len(res.get('drift_items') or [])} "
+                        f"report={res.get('report_path')}"
                     ),
                     result=res,
                 )

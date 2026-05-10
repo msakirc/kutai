@@ -1065,6 +1065,36 @@ async def should_skip_workflow_step(task: dict) -> tuple[bool, str]:
     op = m.group(3)
     literal = m.group(4)
 
+    # Z1 Tier 1: support ``mission.<column>`` form so legacy-flag gates
+    # (``mission.legacy_pre_charter == '1'``) skip new-shape steps for
+    # missions backfilled by the migration. The column is read directly
+    # off the missions row — no blackboard round-trip.
+    if artifact_name == "mission" and len(path) == 1:
+        col = path[0]
+        try:
+            from src.infra.db import get_db as _get_db
+            _db = await _get_db()
+            _cur = await _db.execute(
+                f"SELECT {col} FROM missions WHERE id = ?", (mission_id,),
+            )
+            _row = await _cur.fetchone()
+            await _cur.close()
+        except Exception as exc:
+            logger.debug(
+                f"[Workflow Hook] skip_when mission.{col} lookup failed: {exc}"
+            )
+            return False, ""
+        current = None if (_row is None) else _row[0]
+        # Coerce both sides to strings so the SQLite int column compares
+        # cleanly against the literal in the workflow JSON.
+        cur_s = "" if current is None else str(current)
+        matched = (op == "==" and cur_s == literal) or (
+            op == "!=" and cur_s != literal
+        )
+        if matched:
+            return True, f"mission.{col} {op} {literal!r}"
+        return False, ""
+
     try:
         store = get_artifact_store()
         raw_artifact = await store.retrieve(mission_id, artifact_name)

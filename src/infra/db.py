@@ -302,6 +302,7 @@ async def init_db():
             language TEXT DEFAULT '',
             framework TEXT DEFAULT '',
             legacy_pre_p7 INTEGER DEFAULT 0,
+            legacy_pre_charter INTEGER DEFAULT 0,
             phase_7_rework_loops INTEGER DEFAULT 0
         )
     """)
@@ -330,6 +331,24 @@ async def init_db():
         # blackboard artifacts have no `_schema_version` field).
         await db.execute("UPDATE missions SET legacy_pre_p7 = 1")
         logger.info("P7 migration: legacy_pre_p7 added + existing rows backfilled to 1")
+    except Exception:
+        # Column already exists — no-op; new missions default to 0.
+        pass
+
+    # Z1 Tier 1 migration: add `legacy_pre_charter` column to existing DBs
+    # and backfill rows that predate the charter consolidation (steps
+    # 0.0z / 0.0a / 0.1 product_charter). Same idempotent pattern as P7.
+    try:
+        await db.execute(
+            "ALTER TABLE missions ADD COLUMN legacy_pre_charter INTEGER DEFAULT 0"
+        )
+        # Every mission existing at migration time predates the charter
+        # reshape — its phase-0 produced the old micro-artifacts (idea_brief,
+        # problem_statement, target_users, value_proposition).
+        await db.execute("UPDATE missions SET legacy_pre_charter = 1")
+        logger.info(
+            "Z1 migration: legacy_pre_charter added + existing rows backfilled to 1"
+        )
     except Exception:
         # Column already exists — no-op; new missions default to 0.
         pass

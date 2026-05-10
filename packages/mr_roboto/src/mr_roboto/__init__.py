@@ -15,6 +15,11 @@ from mr_roboto.verify_screen_plan_shape import verify_screen_plan_shape
 from mr_roboto.verify_html_prototype_shape import verify_html_prototype_shape
 from mr_roboto.verify_screen_consistency import verify_screen_consistency
 from mr_roboto.generate_intake_todo import generate_intake_todo
+from mr_roboto.regen import (
+    regen_artifact,
+    regen_bundle,
+    known_axes as known_regen_axes,
+)
 from mr_roboto.run_cmd import run_cmd
 from mr_roboto.run_pytest import run_pytest
 from mr_roboto.parse_og_tags import parse_og_tags
@@ -36,6 +41,9 @@ __all__ = [
     "verify_html_prototype_shape",
     "verify_screen_consistency",
     "generate_intake_todo",
+    "regen_artifact",
+    "regen_bundle",
+    "known_regen_axes",
     "run_cmd",
     "run_pytest",
     "parse_og_tags",
@@ -581,6 +589,59 @@ async def run(task: dict) -> Action:
                 return Action(
                     status="failed",
                     error=f"verify_shared_shell_shape: {res.get('errors')}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "regen_artifact":
+        # Z1 Tier 4A (C11+A15) — single-artifact regen with versioned
+        # `.v{N}` siblings + regen_log row. Founder change_description
+        # required; emitter delegates to coulson when wired (mocked in
+        # unit tests).
+        from mr_roboto.regen import regen_artifact as _regen_one
+        try:
+            change = payload.get("change_description")
+            if not change or not str(change).strip():
+                return Action(
+                    status="failed",
+                    error="regen_artifact: change_description is required",
+                )
+            mid = task.get("mission_id") or payload.get("mission_id")
+            res = await _regen_one(
+                mission_id=int(mid) if mid is not None else 0,
+                artifact_path=str(payload.get("artifact_path") or ""),
+                change_description=str(change),
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=str(res.get("error") or "regen_artifact failed"),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "regen_bundle":
+        # Z1 Tier 4A (C19) — directional bundle regen. Axis registry in
+        # mr_roboto.regen_artifact._KNOWN_AXES; per-artifact emission goes
+        # through regen_artifact (so each gets its own regen_log row).
+        from mr_roboto.regen import regen_bundle as _regen_bundle
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            res = await _regen_bundle(
+                mission_id=int(mid) if mid is not None else 0,
+                axis=str(payload.get("axis") or ""),
+                direction=str(payload.get("direction") or ""),
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=str(res.get("error") or "regen_bundle failed"),
                     result=res,
                 )
             return Action(status="completed", result=res)

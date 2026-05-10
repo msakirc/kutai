@@ -39,6 +39,8 @@ from mr_roboto.attention_check import (
     attention_debit,
     write_deferred_question,
 )
+from mr_roboto.verify_premortem_shape import verify_premortem_shape
+from mr_roboto.spec_consistency_check import spec_consistency_check
 
 __all__ = [
     "Action",
@@ -74,6 +76,8 @@ __all__ = [
     "attention_check",
     "attention_debit",
     "write_deferred_question",
+    "verify_premortem_shape",
+    "spec_consistency_check",
 ]
 
 
@@ -1234,6 +1238,68 @@ async def run(task: dict) -> Action:
                 action=str(payload.get("debit_action") or "clarify"),
                 minutes_debited=int(payload.get("minutes_debited", 5)),
             )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_premortem_shape":
+        # Z1 Tier 5B (A6) — premortem envelope shape verifier. Auto-wired
+        # as post-hook on step 6.5z failure_premortem.
+        from mr_roboto.verify_premortem_shape import (
+            verify_premortem_shape as _verify_premortem,
+        )
+        try:
+            res = _verify_premortem(
+                premortem=payload.get("premortem"),
+                premortem_text=payload.get("premortem_text"),
+                premortem_path=payload.get("premortem_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"verify_premortem_shape: problems={res.get('problems')} "
+                        f"missing_kinds={res.get('missing_kinds')} "
+                        f"per_item_problems={res.get('per_item_problems')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "spec_consistency_check":
+        # Z1 Tier 5B (B5) — Augment Intent's "specs stay alive". Wave-start
+        # mechanical step before every phase 7+ wave: re-reads phase-≤6
+        # spec artifacts + current phase-N artifacts, surfaces drift.
+        # On drift: returns needs_review with the report path so the
+        # reviewer / source acknowledges before downstream phases proceed.
+        from mr_roboto.spec_consistency_check import (
+            spec_consistency_check as _spec_check,
+        )
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id") or "0"
+            current_phase = (
+                payload.get("current_phase")
+                or task.get("phase")
+                or "phase_unknown"
+            )
+            res = _spec_check(
+                mission_id=mid,
+                current_phase=str(current_phase),
+                workspace_path=payload.get("workspace_path"),
+                out_path=payload.get("out_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="needs_review",
+                    error=(
+                        f"spec_consistency_check: drift_count="
+                        f"{len(res.get('drift_items') or [])} "
+                        f"report={res.get('report_path')}"
+                    ),
+                    result=res,
+                )
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

@@ -76,18 +76,12 @@ def _discover_fixtures() -> list[tuple[str, str, Path]]:
         "bad_adr_set",
         "good_component_library",
         "bad_component_library",
-        # Z1 Tier 3 (T3A) — design-tokens / taste fixtures are loaded by
-        # tests/i2p/test_design_tokens.py + test_taste_emphasis.py and have
-        # a different shape than the reviewer-regression contract (they
-        # carry artifact bodies directly, not the {schema_version, payload}
-        # envelope the regression suite expects).
+        # Z1 Tier 3 (T3A) — design-tokens / taste fixtures.
         "good_design_tokens",
         "bad_design_tokens",
         "good_taste_emphasis",
         "bad_taste_emphasis",
-        # Z1 Tier 3 (T3B) — surfaces / user_flow / screen_inventory /
-        # shared_shell fixtures. Loaded by tests/i2p/test_user_flow.py
-        # + test_surfaces.py + test_screen_inventory.py + test_shared_shell.py.
+        # Z1 Tier 3 (T3B) — surfaces / user_flow / screen_inventory / shared_shell.
         "good_surfaces",
         "bad_surfaces",
         "good_user_flow",
@@ -96,7 +90,7 @@ def _discover_fixtures() -> list[tuple[str, str, Path]]:
         "bad_screen_inventory",
         "good_shared_shell",
         "bad_shared_shell",
-        # Z1 Tier 3 (T3C) — per-screen plans / HTML prototypes / consistency.
+        # Z1 Tier 3 (T3C: C3+A10+C9+A11+C18) — per-screen plans / HTML prototypes / consistency.
         "good_screen_plan",
         "bad_screen_plan",
         "good_html_prototype",

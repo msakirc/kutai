@@ -11,6 +11,9 @@ from mr_roboto.verify_reverse_pitch_shape import verify_reverse_pitch_shape
 from mr_roboto.verify_falsification_present import verify_falsification_present
 from mr_roboto.verify_non_goals_shape import verify_non_goals_shape
 from mr_roboto.check_against_non_goals import check_against_non_goals
+from mr_roboto.verify_screen_plan_shape import verify_screen_plan_shape
+from mr_roboto.verify_html_prototype_shape import verify_html_prototype_shape
+from mr_roboto.verify_screen_consistency import verify_screen_consistency
 from mr_roboto.generate_intake_todo import generate_intake_todo
 from mr_roboto.run_cmd import run_cmd
 from mr_roboto.run_pytest import run_pytest
@@ -29,6 +32,9 @@ __all__ = [
     "verify_falsification_present",
     "verify_non_goals_shape",
     "check_against_non_goals",
+    "verify_screen_plan_shape",
+    "verify_html_prototype_shape",
+    "verify_screen_consistency",
     "generate_intake_todo",
     "run_cmd",
     "run_pytest",
@@ -847,6 +853,80 @@ async def run(task: dict) -> Action:
                     error=(
                         f"ingest_visual: reason={res.get('reason')} "
                         f"detail={res.get('detail') or ''}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_screen_plan_shape":
+        # Z1 Tier 3 (C3+A10+C14) — paraflow-shape per-screen plan validator.
+        # Auto-wired as sibling on each chunked sub-step of `5.1
+        # generate_per_screen_plans`.
+        from mr_roboto.verify_screen_plan_shape import (
+            verify_screen_plan_shape as _verify_sp,
+        )
+        try:
+            res = _verify_sp(
+                plan_text=payload.get("plan_text"),
+                plan_paths=payload.get("plan_paths"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"verify_screen_plan_shape: problems={res.get('problems') or [pf.get('problems') for pf in res.get('per_file', [])]}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_html_prototype_shape":
+        # Z1 Tier 3 (C9+A11) — paraflow-shape per-screen HTML validator.
+        # Auto-wired as sibling on each chunked sub-step of `5.2
+        # generate_html_prototypes`.
+        from mr_roboto.verify_html_prototype_shape import (
+            verify_html_prototype_shape as _verify_html,
+        )
+        try:
+            res = _verify_html(
+                html_text=payload.get("html_text"),
+                html_paths=payload.get("html_paths"),
+                design_tokens=payload.get("design_tokens"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"verify_html_prototype_shape: problems={res.get('problems') or [pf.get('problems') for pf in res.get('per_file', [])]}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_screen_consistency":
+        # Z1 Tier 3 (C18+B8) — cross-screen inherits_shell consistency
+        # check. Wired as sibling at the end of each 5.2 chunk-pair step.
+        from mr_roboto.verify_screen_consistency import (
+            verify_screen_consistency as _verify_consistency,
+        )
+        try:
+            res = _verify_consistency(
+                screen_plan_paths=payload.get("screen_plan_paths"),
+                screen_plans=payload.get("screen_plans"),
+                shared_shell_components=payload.get("shared_shell_components"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"verify_screen_consistency: mismatches={res.get('mismatches')} "
+                        f"out_of_set={res.get('out_of_set')}"
                     ),
                     result=res,
                 )

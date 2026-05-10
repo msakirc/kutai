@@ -39,6 +39,6 @@ def test_step_6_7_produces_status_file():
     assert any("github_init_status.md" in p for p in produces)
 
 
-def test_step_6_7_default_visibility_private():
+def test_step_6_7_default_visibility_public():
     s = _step("6.7")
-    assert s["payload"].get("repo_visibility", "private") == "private"
+    assert s["payload"].get("repo_visibility", "public") == "public"

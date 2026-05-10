@@ -1868,6 +1868,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("cost", self.cmd_cost))
         self.app.add_handler(CommandHandler("dlq", self.cmd_dlq))
         self.app.add_handler(CommandHandler("rework", self.cmd_rework))
+        self.app.add_handler(CommandHandler("regen", self.cmd_regen))
         self.app.add_handler(CommandHandler("retry", self.cmd_retry))
         self.app.add_handler(CommandHandler("load", self.cmd_load))
         self.app.add_handler(CommandHandler("tune", self.cmd_tune))
@@ -3474,6 +3475,163 @@ class TelegramInterface:
 
         await self._reply(update, "\n".join(lines), parse_mode="Markdown")
 
+    # ─────────────────────────────────────────────────────────────────
+    # Z1 Tier 4A — regen surface (C11+A15 + C19)
+    # ─────────────────────────────────────────────────────────────────
+    async def cmd_regen(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Trigger a regen of one artifact or a directional bundle.
+
+        Usage:
+          /regen <mission_id> <artifact_path>       → prompts for change description
+          /regen <mission_id> bundle <axis> <dir...> → bundle regen (axis: tone|density|scope)
+
+        With no args, /regen stashes a `_pending_action` that asks the
+        founder to describe what to regen. Inline `🔄 regen` callback
+        buttons on artifact-emit notifications enter this flow with the
+        artifact pre-filled.
+        """
+        chat_id = update.effective_chat.id
+        args = context.args or []
+
+        # No args → stash pending and prompt.
+        if not args:
+            self._pending_action[chat_id] = {
+                "command": "regen",
+                "stage": "ask_target",
+                "ts": _time.time(),
+            }
+            await self._reply(
+                update,
+                "🔄 *Regen*\n\n"
+                "Reply with one of:\n"
+                "• `<mission_id> <artifact_path>` — re-emit one artifact\n"
+                "• `<mission_id> bundle <axis> <direction>` — directional bundle "
+                "(axis: tone | density | scope)",
+                parse_mode="Markdown",
+            )
+            return
+
+        # Bundle path: /regen <mid> bundle <axis> <direction...>
+        if len(args) >= 4 and args[1].lower() == "bundle":
+            try:
+                mission_id = int(args[0])
+            except ValueError:
+                await self._reply(update, "❌ mission_id must be an integer.")
+                return
+            axis = args[2]
+            direction = " ".join(args[3:])
+            await self._enqueue_regen_bundle(update, mission_id, axis, direction)
+            return
+
+        # Artifact path: /regen <mid> <artifact_path> [change description...]
+        try:
+            mission_id = int(args[0])
+        except ValueError:
+            await self._reply(update, "❌ mission_id must be an integer.")
+            return
+        artifact_path = args[1]
+        change_description = " ".join(args[2:]) if len(args) > 2 else ""
+
+        if not change_description.strip():
+            self._pending_action[chat_id] = {
+                "command": "regen",
+                "stage": "ask_change",
+                "mission_id": mission_id,
+                "artifact_path": artifact_path,
+                "ts": _time.time(),
+            }
+            await self._reply(
+                update,
+                f"📝 Describe the change for `{artifact_path}` (mission #{mission_id}):",
+                parse_mode="Markdown",
+            )
+            return
+
+        await self._enqueue_regen_artifact(
+            update, mission_id, artifact_path, change_description
+        )
+
+    async def _enqueue_regen_artifact(
+        self, update, mission_id: int, artifact_path: str, change_description: str
+    ):
+        """Enqueue a mr_roboto `regen_artifact` mechanical task."""
+        try:
+            import general_beckman
+            await general_beckman.enqueue({
+                "title": f"regen_artifact:{os.path.basename(artifact_path)}",
+                "description": (
+                    f"Founder regen of {artifact_path}: {change_description}"
+                ),
+                "agent_type": "mechanical",
+                "kind": "main_work",
+                "priority": 5,
+                "mission_id": int(mission_id),
+                "context": {
+                    "executor": "mechanical",
+                    "payload": {
+                        "action": "regen_artifact",
+                        "artifact_path": artifact_path,
+                        "change_description": change_description,
+                    },
+                },
+            })
+        except Exception as exc:
+            logger.error("regen_artifact enqueue failed", error=str(exc))
+            await self._reply(update, f"❌ Regen enqueue failed: {exc}")
+            return
+        await self._reply(
+            update,
+            f"🔄 Regen queued for `{artifact_path}` — change: _{change_description}_",
+            parse_mode="Markdown",
+        )
+
+    async def _enqueue_regen_bundle(
+        self, update, mission_id: int, axis: str, direction: str
+    ):
+        """Enqueue a mr_roboto `regen_bundle` mechanical task."""
+        try:
+            from mr_roboto import known_regen_axes
+            valid = set(known_regen_axes())
+        except Exception:
+            valid = {"tone", "density", "scope"}
+        if axis not in valid:
+            await self._reply(
+                update,
+                f"❌ Unknown axis `{axis}`. Known: {sorted(valid)}",
+                parse_mode="Markdown",
+            )
+            return
+        try:
+            import general_beckman
+            await general_beckman.enqueue({
+                "title": f"regen_bundle:{axis}:{direction}",
+                "description": (
+                    f"Founder bundle regen mission #{mission_id}: "
+                    f"axis={axis} direction={direction}"
+                ),
+                "agent_type": "mechanical",
+                "kind": "main_work",
+                "priority": 5,
+                "mission_id": int(mission_id),
+                "context": {
+                    "executor": "mechanical",
+                    "payload": {
+                        "action": "regen_bundle",
+                        "axis": axis,
+                        "direction": direction,
+                    },
+                },
+            })
+        except Exception as exc:
+            logger.error("regen_bundle enqueue failed", error=str(exc))
+            await self._reply(update, f"❌ Bundle regen enqueue failed: {exc}")
+            return
+        await self._reply(
+            update,
+            f"🔄 Bundle regen queued — axis: *{axis}*, direction: _{direction}_",
+            parse_mode="Markdown",
+        )
+
     async def cmd_dlq(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Dead-letter queue management: /dlq [retry <task_id> | discard <task_id>]."""
         from ..infra.dead_letter import (
@@ -3889,6 +4047,30 @@ class TelegramInterface:
                     self._last_todo_help = pending_action
                     await self.cmd__todo_help(update, context)
                     return
+
+                # ── Z1 Tier 4A: regen flow (C11+A15 / C19) ──
+                if cmd == "regen":
+                    stage = pending_action.get("stage")
+                    if stage == "ask_change":
+                        # Founder is replying with the change description for
+                        # a previously-selected artifact.
+                        mid = pending_action.get("mission_id")
+                        ap = pending_action.get("artifact_path")
+                        change = (text or "").strip()
+                        if not change:
+                            await self._reply(update, "❌ Empty change description; aborted.")
+                            return
+                        await self._enqueue_regen_artifact(update, int(mid), ap, change)
+                        return
+                    if stage == "ask_target":
+                        # Founder is providing the full target line; re-route
+                        # via cmd_regen with the parsed args.
+                        parts = (text or "").strip().split()
+                        context.args = parts
+                        await self.cmd_regen(update, context)
+                        return
+                    # Unknown stage — clear and fall through.
+                    logger.warning("regen pending: unknown stage", stage=stage)
 
                 # ── B7+C16: visual ingest purpose-tap → enqueue mechanical task ──
                 if cmd == "_visual_purpose":
@@ -5350,6 +5532,31 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         query = update.callback_query
         await query.answer()
         data = query.data
+
+        # ── Z1 Tier 4A: regen inline button ─────────────────────────
+        # Format: `regen:<mission_id>:<base64-or-encoded-artifact-path>`
+        # On tap, stash a `_pending_action` so the next message becomes
+        # the change description (mirrors the /regen <mid> <path> flow).
+        if data.startswith("regen:"):
+            try:
+                _, mid_s, art_path = data.split(":", 2)
+                mid = int(mid_s)
+            except (ValueError, IndexError):
+                await query.message.reply_text("❌ Bozuk regen butonu.")
+                return
+            chat_id = update.effective_chat.id
+            self._pending_action[chat_id] = {
+                "command": "regen",
+                "stage": "ask_change",
+                "mission_id": mid,
+                "artifact_path": art_path,
+                "ts": _time.time(),
+            }
+            await query.message.reply_text(
+                f"📝 Describe the change for `{art_path}` (mission #{mid}):",
+                parse_mode="Markdown",
+            )
+            return
 
         # ── Deep Research Intent Fork ─────────────────────────────
         if data.startswith("shop:"):

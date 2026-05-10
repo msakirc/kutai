@@ -2081,6 +2081,72 @@ async def init_db():
         ),
     )
 
+    # ── Z10 T4B: confidence_outcomes (trust calibration loop) ────────────
+    # Each row attributes a confidence claim on a task to an actual outcome
+    # (reviewer-approved, downstream pass, regression). The nightly job
+    # in cron_seed/cron rolls these up into ``confidence_reliability_scores``
+    # per-(model, task_kind, bucket) which the prompt builder consults to
+    # nudge well/poorly calibrated agents.
+    await apply_migration(
+        version="2026-05-11-confidence-outcomes",
+        sql=(
+            "CREATE TABLE confidence_outcomes ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " task_id INTEGER NOT NULL,"
+            " mission_id INTEGER,"
+            " agent_type TEXT,"
+            " task_kind TEXT,"
+            " model_id TEXT NOT NULL,"
+            " picked_at TIMESTAMP NOT NULL,"
+            " confidence_categorical TEXT,"
+            " confidence_numeric REAL,"
+            " outcome_correct INTEGER,"
+            " outcome_resolved_at TIMESTAMP,"
+            " resolution_source TEXT,"
+            " reviewer_verdict_id INTEGER,"
+            " notes TEXT"
+            ");\n"
+            "CREATE INDEX idx_confidence_outcomes_model_kind "
+            "ON confidence_outcomes(model_id, task_kind);\n"
+            "CREATE INDEX idx_confidence_outcomes_unresolved "
+            "ON confidence_outcomes(outcome_correct) "
+            "WHERE outcome_correct IS NULL;\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_confidence_outcomes_unresolved;\n"
+            "DROP INDEX IF EXISTS idx_confidence_outcomes_model_kind;\n"
+            "DROP TABLE IF EXISTS confidence_outcomes;\n"
+        ),
+        description=(
+            "T4B trust calibration: confidence_outcomes attribution table "
+            "(per-task confidence claim + later outcome resolution)"
+        ),
+    )
+
+    # 2. confidence_reliability_scores — aggregated nightly by recompute
+    await apply_migration(
+        version="2026-05-11-confidence-reliability-scores",
+        sql=(
+            "CREATE TABLE confidence_reliability_scores ("
+            " model_id TEXT NOT NULL,"
+            " task_kind TEXT NOT NULL,"
+            " confidence_bucket TEXT NOT NULL,"
+            " sample_n INTEGER NOT NULL,"
+            " correct_n INTEGER NOT NULL,"
+            " reliability REAL NOT NULL,"
+            " updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+            " PRIMARY KEY (model_id, task_kind, confidence_bucket)"
+            ");\n"
+        ),
+        reversal_sql=(
+            "DROP TABLE IF EXISTS confidence_reliability_scores;\n"
+        ),
+        description=(
+            "T4B trust calibration: per-(model, task_kind, bucket) "
+            "reliability rollup. Recomputed by cron every 6h."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.
@@ -5877,4 +5943,233 @@ async def purge_mission_chroma_collections_via_db(mission_id: int) -> int:
     except Exception as e:
         logger.warning(f"purge_mission_chroma_collections proxy failed: {e}")
         return 0
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Z10 T4B — confidence outcomes + reliability scores (trust calibration)
+# ───────────────────────────────────────────────────────────────────────────
+
+
+async def record_confidence_claim(task_id: int) -> int | None:
+    """Record a confidence claim row for ``task_id``.
+
+    Reads ``tasks.confidence_categorical / confidence_numeric / agent_type /
+    mission_id`` and the most recent ``model_pick_log`` row for the task
+    (matched by task_name=tasks.title). Inserts a row with
+    ``outcome_correct=NULL`` and returns its id.
+
+    Returns None when the task lacks any confidence signal — there's
+    nothing to attribute and we'd just pollute the table.
+
+    ``task_kind`` is derived from ``tasks.agent_type`` (v1 proxy for
+    domain). Later iterations can refine via workflow_step_id or a
+    dedicated tag.
+    """
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT id, title, mission_id, agent_type, confidence_categorical, "
+        "       confidence_numeric "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    )
+    row = await cur.fetchone()
+    await cur.close()
+    if not row:
+        return None
+    (_, title, mission_id, agent_type, conf_cat, conf_num) = row
+    if conf_cat is None and conf_num is None:
+        # No confidence claim to record — bail out quietly.
+        return None
+
+    # Pick the most recent model_pick_log row for this task. task_id isn't a
+    # column on model_pick_log so we use task_name=title (best proxy today).
+    picked_model: str | None = None
+    picked_at: str | None = None
+    if title:
+        cur2 = await db.execute(
+            "SELECT picked_model, timestamp FROM model_pick_log "
+            "WHERE task_name = ? ORDER BY timestamp DESC LIMIT 1",
+            (title,),
+        )
+        prow = await cur2.fetchone()
+        await cur2.close()
+        if prow:
+            picked_model, picked_at = prow[0], prow[1]
+
+    if not picked_model:
+        # Fall back: use agent_type as model_id placeholder so the row is
+        # still attributable. (Rare — only when pick log was scrubbed.)
+        picked_model = f"unknown::{agent_type or 'unknown'}"
+    if not picked_at:
+        picked_at = utc_now_str() if "utc_now_str" in globals() else None
+        if picked_at is None:
+            from src.infra.times import utc_now, to_db as _to_db
+            picked_at = _to_db(utc_now())
+
+    cur3 = await db.execute(
+        "INSERT INTO confidence_outcomes "
+        "(task_id, mission_id, agent_type, task_kind, model_id, picked_at,"
+        " confidence_categorical, confidence_numeric, outcome_correct) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        (
+            task_id,
+            mission_id,
+            agent_type,
+            agent_type,  # task_kind = agent_type (v1 proxy)
+            picked_model,
+            picked_at,
+            conf_cat,
+            conf_num,
+        ),
+    )
+    await db.commit()
+    return cur3.lastrowid or 0
+
+
+async def resolve_confidence_outcome(
+    claim_id: int,
+    correct: bool,
+    source: str,
+    reviewer_verdict_id: int | None = None,
+    notes: str | None = None,
+) -> bool:
+    """Resolve an outstanding confidence claim. Idempotent: returns False
+    if the row was already resolved (outcome_correct IS NOT NULL).
+    """
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT outcome_correct FROM confidence_outcomes WHERE id = ?",
+        (claim_id,),
+    )
+    row = await cur.fetchone()
+    await cur.close()
+    if not row:
+        return False
+    if row[0] is not None:
+        return False  # already resolved — idempotent
+
+    await db.execute(
+        "UPDATE confidence_outcomes "
+        "SET outcome_correct = ?, "
+        "    outcome_resolved_at = CURRENT_TIMESTAMP, "
+        "    resolution_source = ?, "
+        "    reviewer_verdict_id = ?, "
+        "    notes = ? "
+        "WHERE id = ?",
+        (
+            1 if correct else 0,
+            source,
+            reviewer_verdict_id,
+            notes,
+            claim_id,
+        ),
+    )
+    await db.commit()
+    return True
+
+
+async def outstanding_confidence_claims(
+    older_than_hours: int = 24,
+) -> list[dict]:
+    """Return claims older than ``older_than_hours`` still NULL.
+
+    Used by the reaper job: anything dangling that long either needs a
+    downstream signal or should be marked notes='timeout' so calibration
+    isn't skewed by hanging tasks.
+    """
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT id, task_id, mission_id, agent_type, task_kind, model_id,"
+        "       picked_at, confidence_categorical, confidence_numeric "
+        "FROM confidence_outcomes "
+        "WHERE outcome_correct IS NULL "
+        "  AND picked_at <= datetime('now', ?)",
+        (f"-{int(older_than_hours)} hours",),
+    )
+    rows = await cur.fetchall()
+    cols = [d[0] for d in cur.description]
+    await cur.close()
+    return [dict(zip(cols, r)) for r in rows]
+
+
+async def recompute_reliability_scores() -> int:
+    """Aggregate resolved confidence_outcomes into reliability_scores.
+
+    Group by (model_id, task_kind, confidence_categorical); compute
+    correct_n / sample_n per bucket; upsert into
+    ``confidence_reliability_scores``. Returns the number of rows written.
+
+    Skips rows with NULL outcome_correct or NULL confidence_categorical.
+    """
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT model_id, task_kind, confidence_categorical, "
+        "       COUNT(*) AS sample_n, "
+        "       SUM(CASE WHEN outcome_correct=1 THEN 1 ELSE 0 END) AS correct_n "
+        "FROM confidence_outcomes "
+        "WHERE outcome_correct IS NOT NULL "
+        "  AND confidence_categorical IS NOT NULL "
+        "  AND task_kind IS NOT NULL "
+        "GROUP BY model_id, task_kind, confidence_categorical"
+    )
+    rows = await cur.fetchall()
+    await cur.close()
+    written = 0
+    for (model_id, task_kind, bucket, sample_n, correct_n) in rows:
+        sample_n = int(sample_n or 0)
+        correct_n = int(correct_n or 0)
+        reliability = (correct_n / sample_n) if sample_n else 0.0
+        await db.execute(
+            "INSERT INTO confidence_reliability_scores "
+            "(model_id, task_kind, confidence_bucket, sample_n, correct_n, "
+            " reliability, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(model_id, task_kind, confidence_bucket) DO UPDATE SET "
+            "  sample_n=excluded.sample_n, "
+            "  correct_n=excluded.correct_n, "
+            "  reliability=excluded.reliability, "
+            "  updated_at=CURRENT_TIMESTAMP",
+            (model_id, task_kind, bucket, sample_n, correct_n, reliability),
+        )
+        written += 1
+    await db.commit()
+    return written
+
+
+async def get_reliability(
+    model_id: str, task_kind: str, confidence_bucket: str,
+) -> dict | None:
+    """Lookup a single reliability row. Returns None when absent."""
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT model_id, task_kind, confidence_bucket, sample_n, "
+        "       correct_n, reliability, updated_at "
+        "FROM confidence_reliability_scores "
+        "WHERE model_id = ? AND task_kind = ? AND confidence_bucket = ?",
+        (model_id, task_kind, confidence_bucket),
+    )
+    row = await cur.fetchone()
+    cols = [d[0] for d in cur.description]
+    await cur.close()
+    if not row:
+        return None
+    return dict(zip(cols, row))
+
+
+async def calibration_matrix() -> list[dict]:
+    """Full reliability table dump for the /calibration command.
+
+    Sorted by (model_id, task_kind, confidence_bucket).
+    """
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT model_id, task_kind, confidence_bucket, sample_n, "
+        "       correct_n, reliability, updated_at "
+        "FROM confidence_reliability_scores "
+        "ORDER BY model_id, task_kind, confidence_bucket"
+    )
+    rows = await cur.fetchall()
+    cols = [d[0] for d in cur.description]
+    await cur.close()
+    return [dict(zip(cols, r)) for r in rows]
 

@@ -126,6 +126,15 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 5,
         "payload": {"_executor": "mission_event_drain"},
     },
+    # Z10 T4B — recompute confidence reliability scores every 6h. Cheap
+    # aggregation over confidence_outcomes; pulled into prompt builder via
+    # cache refresh at the end of the same job.
+    {
+        "title": "confidence_calibration_recompute",
+        "description": "Roll up confidence_outcomes into reliability scores (T4B)",
+        "interval_seconds": 21600,
+        "payload": {"_marker": "confidence_calibration_recompute"},
+    },
     {
         "title": "bash_audit",
         "description": "sade_kalsin scaffolding audit (quarterly): what does each layer do that bash + Claude can't?",

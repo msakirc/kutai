@@ -1922,6 +1922,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("trace", self.cmd_trace))
         self.app.add_handler(CommandHandler("logs", self.cmd_logs))
         self.app.add_handler(CommandHandler("bench_picks", self.cmd_bench_picks))
+        # Z10 T4B — confidence reliability matrix
+        self.app.add_handler(CommandHandler("calibration", self.cmd_calibration))
         self.app.add_handler(CommandHandler("revive", self.cmd_revive))
         self.app.add_handler(CommandHandler("dead", self.cmd_dead))
         # Z10 T2B: per-mission thread surfacing + cost peek
@@ -2316,6 +2318,77 @@ class TelegramInterface:
         await self._reply(
             update,
             f"📊 *Model picks — last 7 days*\n```\n{body}\n```{footer}",
+            parse_mode="Markdown",
+        )
+
+    async def cmd_calibration(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z10 T4B — per-(model, task_kind) confidence reliability matrix.
+
+        Buckets with sample_n < 5 render as '—' to avoid noise. Color cues:
+            🟢 reliability ≥ 0.85   🟡 0.65–0.85   🔴 < 0.65
+        Empty matrix → friendly nudge that the recompute job hasn't run
+        yet (or no resolved outcomes exist).
+        """
+        from src.infra.db import calibration_matrix
+        try:
+            rows = await calibration_matrix()
+        except Exception as exc:
+            await self._reply(update, f"❌ calibration query failed: {exc}")
+            return
+
+        if not rows:
+            await self._reply(
+                update,
+                "🎯 No calibration data yet "
+                "(need ≥30 outcomes per model+domain).",
+            )
+            return
+
+        # Pivot: dict[(model, kind)] -> {bucket: row}
+        pivot: dict[tuple[str, str], dict[str, dict]] = {}
+        for r in rows:
+            key = (r["model_id"], r["task_kind"])
+            pivot.setdefault(key, {})[r["confidence_bucket"]] = r
+
+        MIN_SAMPLE_VISIBLE = 5
+
+        def _fmt(rel_row: dict | None) -> str:
+            if not rel_row or int(rel_row.get("sample_n") or 0) < MIN_SAMPLE_VISIBLE:
+                return "—"
+            rel = float(rel_row.get("reliability") or 0.0)
+            if rel >= 0.85:
+                icon = "🟢"
+            elif rel >= 0.65:
+                icon = "🟡"
+            else:
+                icon = "🔴"
+            return f"{icon}{rel:.2f}"
+
+        def _samples(rel_row: dict | None) -> str:
+            if not rel_row:
+                return "0"
+            return str(int(rel_row.get("sample_n") or 0))
+
+        lines = [
+            f"{'model/kind':<28} {'low':>7} {'med':>7} {'high':>7}  samples"
+        ]
+        lines.append("─" * 60)
+        for (model_id, task_kind) in sorted(pivot.keys()):
+            buckets = pivot[(model_id, task_kind)]
+            low = buckets.get("low")
+            med = buckets.get("med")
+            high = buckets.get("high")
+            label = f"{(model_id or '?')[:14]}/{(task_kind or '?')[:12]}"
+            samples = f"{_samples(low)}/{_samples(med)}/{_samples(high)}"
+            lines.append(
+                f"{label[:28]:<28} {_fmt(low):>7} {_fmt(med):>7} "
+                f"{_fmt(high):>7}  ({samples})"
+            )
+
+        body = "\n".join(lines)
+        await self._reply(
+            update,
+            f"🎯 *Calibration matrix*\n```\n{body}\n```",
             parse_mode="Markdown",
         )
 

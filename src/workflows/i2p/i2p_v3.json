@@ -940,6 +940,83 @@
       "context": {}
     },
     {
+      "id": "0.0c",
+      "phase": "phase_0",
+      "name": "interview_script_generation",
+      "agent": "analyst",
+      "difficulty": "medium",
+      "tools_hint": ["write_file"],
+      "depends_on": ["0.3"],
+      "may_need_clarification": false,
+      "skip_when": "mission.legacy_pre_charter == '1'",
+      "input_artifacts": [
+        "assumption_list",
+        "product_charter",
+        "strategic_context"
+      ],
+      "output_artifacts": [
+        "interview_script"
+      ],
+      "produces": [
+        "mission_{mission_id}/.intake/interview_script.md"
+      ],
+      "instruction": "Generate `mission_{mission_id}/.intake/interview_script.md` (Z1 A4) — a neutral, non-leading interview script targeting the 5-7 highest-`risk_if_wrong` assumptions from `assumption_list`. Use the product_charter (when present) to identify target personas.\n\nFormat the file EXACTLY:\n\n```\n---\n_schema_version: \"1\"\nmission_id: <id>\ntarget_assumptions: [A-001, A-002, ...]\ntarget_personas: [<persona names>]\nquestion_count: <5..7>\n---\n\n# Interview Script\n\n## Logistics\n- Length: 25-35 min\n- Format: 1:1 video; record with consent\n- Sample size minimum: 3 per persona\n\n## Questions\n\n### Q1 — <short topic for the assumption being probed>\n**Question:** <neutral wording — never leading, never suggesting an answer>\n**Probes:**\n- <follow-up>\n- <follow-up>\n**Looking for:** <what answer pattern would FALSIFY the assumption>\n\n### Q2 — ...\n```\n\nQuestion-writing rules:\n1. Never lead the witness — no \"don't you think...\", no \"wouldn't it be great if...\".\n2. Each question targets ONE assumption (cite the assumption_id in the topic).\n3. \"Looking for\" must describe the FALSIFYING answer pattern, not the confirming one — interview value is in disconfirmation.\n4. 5-7 questions total. More than 7 burns attention budget; fewer than 5 isn't a real script.\n\nMechanical post-hook `0.0c.verify` will reject the file if the front matter is malformed, the question count is out of range, or any question is missing Question/Probes/Looking-for fields.",
+      "done_when": "interview_script.md exists with valid front matter, Logistics section, and 5-7 well-formed Q blocks. Verified by 0.0c.verify.",
+      "artifact_schema": {
+        "interview_script": {
+          "type": "markdown",
+          "required_sections": ["Logistics", "Questions"],
+          "_schema_version": "1"
+        }
+      },
+      "context": {
+        "estimated_output_tokens": 2500
+      }
+    },
+    {
+      "id": "0.0c.verify",
+      "phase": "phase_0",
+      "name": "interview_script_shape_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": ["0.0c"],
+      "skip_when": "mission.legacy_pre_charter == '1'",
+      "input_artifacts": ["interview_script"],
+      "output_artifacts": ["interview_script_shape_result"],
+      "payload": {
+        "action": "verify_interview_script_shape",
+        "script_paths": ["mission_{mission_id}/.intake/interview_script.md"],
+        "min_questions": 5,
+        "max_questions": 7
+      },
+      "instruction": "Mechanical post-check that 0.0c produced a well-formed interview script (Z1 A4). No LLM. Asserts front matter (_schema_version=1, mission_id, target_assumptions non-empty), Logistics section present, 5-7 Q blocks each with Question/Probes (with bullets)/Looking-for fields, no placeholder text. Failure forces 0.0c to regenerate.",
+      "done_when": "verify_interview_script_shape returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "0.0c.request",
+      "phase": "phase_0",
+      "name": "request_interview_data",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": ["0.0c.verify"],
+      "may_need_clarification": true,
+      "skip_when": "mission.legacy_pre_charter == '1'",
+      "input_artifacts": ["interview_script"],
+      "output_artifacts": ["interview_request_ack"],
+      "payload": {
+        "action": "request_interview_data",
+        "script_path": "mission_{mission_id}/.intake/interview_script.md"
+      },
+      "instruction": "Surface the generated interview script to the founder via Telegram (Z1 A4). Founder replies DONE (after dropping transcripts into mission_{mission_id}/.intake/interviews/) or SKIP (mission proceeds at own risk; reviewer 1.13 grades by ambition tier — soft warn at private_beta+, hard reject at public_launch).",
+      "done_when": "Founder has acknowledged via DONE or SKIP.",
+      "context": {}
+    },
+    {
       "id": "0.4",
       "phase": "phase_0",
       "name": "scope_ambiguity_detection",
@@ -1284,6 +1361,67 @@
       "api_hints": [
         "market_data"
       ],
+      "context": {}
+    },
+    {
+      "id": "1.4a",
+      "phase": "phase_1",
+      "name": "competitive_positioning_lock",
+      "agent": "analyst",
+      "difficulty": "hard",
+      "tools_hint": ["write_file"],
+      "depends_on": ["1.3", "1.4"],
+      "may_need_clarification": false,
+      "skip_when": "mission.legacy_pre_competitive_positioning == '1'",
+      "input_artifacts": [
+        "direct_competitors_list",
+        "indirect_competitors_list",
+        "product_charter"
+      ],
+      "output_artifacts": [
+        "competitive_positioning"
+      ],
+      "produces": [
+        "mission_{mission_id}/.prd/competitive_positioning.md"
+      ],
+      "instruction": "Write `mission_{mission_id}/.prd/competitive_positioning.md` (Z1 C2) — the paraflow PRD §6 named-competitor positioning section. Synthesize from `direct_competitors_list` (1.3), `indirect_competitors_list` (1.4) and the `product_charter`.\n\nThe file MUST follow this exact shape:\n\n```\n---\n_schema_version: \"1\"\nmission_id: <id>\nnamed_competitors: [<name1>, <name2>, ...]\n---\n\n## Landscape\n<one paragraph naming each competitor + the audience they serve>\n\n## Value Thesis\n<each named player's value proposition; one bullet or paragraph per player>\n\n## Strengths / Weaknesses\n<experience pros/cons per player>\n\n## Our Differentiators\n<our unique points; tie back to charter brand-keywords + Solutions We Own. Cite the charter solution names (or solution IDs if numbered) you are leveraging — the reviewer at 1.13 rejects if differentiators do not cite charter solutions.>\n\n## Switching Costs & Risks\n<migration costs and adoption risks for users coming from the named players>\n\n## Notes\n<reference links / inspiration patterns>\n```\n\nRules:\n1. `named_competitors` must be non-empty — pull names from the direct + indirect lists.\n2. Every player named in `named_competitors` must show up in Landscape, Value Thesis, and Strengths/Weaknesses.\n3. Differentiators must cite at least one charter Solution name verbatim (or by labeled ID).\n4. Switching Costs & Risks must be a real paragraph — single-line stub fails verify.\n5. No placeholder text (TODO, TBD, <fill in>, lorem ipsum).\n\nMechanical post-hook `1.4a.verify` will reject malformed shape, missing sections, empty `named_competitors`, or placeholder text.",
+      "done_when": "competitive_positioning.md exists at mission_{mission_id}/.prd/ with all six sections, non-empty named_competitors, and passes verify_competitive_positioning_shape.",
+      "artifact_schema": {
+        "competitive_positioning": {
+          "type": "markdown",
+          "required_sections": [
+            "Landscape",
+            "Value Thesis",
+            "Strengths",
+            "Our Differentiators",
+            "Switching Costs",
+            "Notes"
+          ],
+          "_schema_version": "1"
+        }
+      },
+      "context": {
+        "estimated_output_tokens": 4000
+      }
+    },
+    {
+      "id": "1.4a.verify",
+      "phase": "phase_1",
+      "name": "competitive_positioning_shape_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": ["1.4a"],
+      "skip_when": "mission.legacy_pre_competitive_positioning == '1'",
+      "input_artifacts": ["competitive_positioning"],
+      "output_artifacts": ["competitive_positioning_shape_result"],
+      "payload": {
+        "action": "verify_competitive_positioning_shape",
+        "positioning_paths": ["mission_{mission_id}/.prd/competitive_positioning.md"]
+      },
+      "instruction": "Mechanical post-check that 1.4a produced a paraflow-PRD-§6-shape positioning doc (Z1 C2). No LLM. Asserts front matter (_schema_version=1, mission_id, named_competitors non-empty), six required sections present and non-empty, no placeholders. Failure forces 1.4a to regenerate.",
+      "done_when": "verify_competitive_positioning_shape returns ok=true.",
       "context": {}
     },
     {
@@ -1700,12 +1838,14 @@
       "input_artifacts": [
         "market_research_report",
         "product_charter",
-        "reverse_pitch"
+        "reverse_pitch",
+        "competitive_positioning",
+        "interview_script"
       ],
       "output_artifacts": [
         "research_review_result"
       ],
-      "instruction": "Review market_research_report AND (when present, modern Z1 missions) product_charter + reverse_pitch for:\n\nResearch quality:\n1) Claims without evidence,\n2) Logical gaps,\n3) Missing data,\n4) Bias,\n5) Internal contradictions,\n6) Feature matrix and pricing completeness,\n7) Gap analysis quality.\n\nCharter coherence (Z1 Tier 1 — only when product_charter is present):\n8) Charter coherence — do Positioning, Brand Keywords, JTBD, Mission, and Solutions read as one mind, or as 5 disjoint LLM passes? Flag inconsistencies.\n9) Solutions completeness — every Solution must carry a populated `Boundaries` field AND a `Guiding principles` field. Reject if any solution lacks either, or if the section uses placeholder text.\n10) Reverse-pitch alignment — does the charter support the press-release headline, sub-head, customer quote, and founder quote? Flag any contradiction (e.g. headline promises 'free forever' but charter has a paid tier).\n\nReject (verdict != pass) if any section uses placeholder text (TODO, TBD, <fill in>, lorem ipsum) or if any solution lacks `boundaries` / `guiding_principles`. Output: verdict (pass/fail/needs_minor_fixes), issues list — each issue tagged by which check (1-10) it failed.\n\nIMPORTANT: produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
+      "instruction": "Review market_research_report AND (when present, modern Z1 missions) product_charter + reverse_pitch + competitive_positioning + interview_script for:\n\nResearch quality:\n1) Claims without evidence,\n2) Logical gaps,\n3) Missing data,\n4) Bias,\n5) Internal contradictions,\n6) Feature matrix and pricing completeness,\n7) Gap analysis quality.\n\nCharter coherence (Z1 Tier 1 — only when product_charter is present):\n8) Charter coherence — do Positioning, Brand Keywords, JTBD, Mission, and Solutions read as one mind, or as 5 disjoint LLM passes? Flag inconsistencies.\n9) Solutions completeness — every Solution must carry a populated `Boundaries` field AND a `Guiding principles` field. Reject if any solution lacks either, or if the section uses placeholder text.\n10) Reverse-pitch alignment — does the charter support the press-release headline, sub-head, customer quote, and founder quote? Flag any contradiction (e.g. headline promises 'free forever' but charter has a paid tier).\n\nCompetitive positioning (Z1 Tier 2 C2 — only when competitive_positioning is present):\n11) competitive_positioning.md exists with all six sections (Landscape / Value Thesis / Strengths-Weaknesses / Our Differentiators / Switching Costs & Risks / Notes) and `named_competitors` is non-empty.\n12) Differentiators cite at least one Solution from the charter by name (or labeled ID). Reject if Differentiators are generic and do not reference any charter Solution.\n13) Switching Costs & Risks section is non-empty (real prose, not a stub).\n\nInterview-script grounding (Z1 Tier 2 A4 — only when interview_script is present):\n14) interview_script.md exists. If `interview_count == 0` (no transcripts in mission_{mission_id}/.intake/interviews/) AND `mission.ambition` is `private_beta` or higher, soft-warn (verdict=needs_minor_fixes with issue tagged 14). If `mission.ambition` is `public_launch`, hard-reject (verdict=fail).\n\nReject (verdict != pass) if any section uses placeholder text (TODO, TBD, <fill in>, lorem ipsum) or if any solution lacks `boundaries` / `guiding_principles` or if checks 11-13 fail. Output: verdict (pass/fail/needs_minor_fixes), issues list — each issue tagged by which check (1-14) it failed.\n\nIMPORTANT: produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
       "done_when": "research_review_result exists with clear quality assessment.",
       "artifact_schema": {
         "research_review_result": {

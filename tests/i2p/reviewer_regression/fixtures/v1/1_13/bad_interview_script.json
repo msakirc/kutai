@@ -1,0 +1,50 @@
+{
+  "step_id": "1.13",
+  "step_name": "research_quality_review",
+  "schema_version": "1",
+  "input_artifacts": {
+    "market_research_report": {
+      "_schema_version": "1",
+      "summary": "Competitors and pricing complete.",
+      "citations": [],
+      "feature_matrix_complete": true,
+      "gap_analysis_present": true
+    },
+    "product_charter": {
+      "_schema_version": "1",
+      "sections": ["Product Positioning", "Brand Keywords", "Core Problem / JTBD", "Goals & Mission", "Solutions We Own"],
+      "solutions": [
+        {"name": "Universal Search & Listings", "boundaries": "no auto-fact-verify", "guiding_principles": "Universal"}
+      ],
+      "coherence_check": "passed",
+      "no_placeholders": true
+    },
+    "reverse_pitch": {
+      "_schema_version": "1",
+      "sections": ["Headline", "Sub-head", "Customer Quote", "Founder Quote", "FAQ"],
+      "headline": "TruthRate.",
+      "alignment_with_charter": "consistent"
+    },
+    "competitive_positioning": {
+      "_schema_version": "1",
+      "named_competitors": ["Yelp"],
+      "sections_present": ["Landscape", "Value Thesis", "Strengths / Weaknesses", "Our Differentiators", "Switching Costs & Risks", "Notes"],
+      "differentiators_cite_solutions": ["Universal Search & Listings"],
+      "switching_costs_present": true
+    },
+    "interview_script": {
+      "_schema_version": "1",
+      "target_assumptions": ["A-001"],
+      "question_count": 5,
+      "interview_count": 0,
+      "ambition": "public_launch"
+    }
+  },
+  "expected_verdict": {
+    "_schema_version": "1",
+    "verdict": "fail",
+    "issues": [
+      "Interview-script grounding (14): interview_count=0 at public_launch ambition; hard-reject."
+    ]
+  }
+}

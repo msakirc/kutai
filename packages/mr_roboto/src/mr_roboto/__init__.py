@@ -371,6 +371,80 @@ async def run(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "verify_competitive_positioning_shape":
+        # Z1 Tier 2 (C2) — paraflow PRD §6 named-competitor positioning.
+        from mr_roboto.verify_competitive_positioning_shape import (
+            verify_competitive_positioning_shape as _verify_cp,
+        )
+        try:
+            res = _verify_cp(
+                positioning_text=payload.get("positioning_text"),
+                positioning_paths=payload.get("positioning_paths"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"verify_competitive_positioning_shape: "
+                        f"missing={res.get('missing_sections')} "
+                        f"empty={res.get('empty_sections')} "
+                        f"named_competitors={res.get('named_competitors')} "
+                        f"placeholders={res.get('placeholders')} "
+                        f"schema_version={res.get('schema_version')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_interview_script_shape":
+        # Z1 Tier 2 (A4) — interview-script generator post-hook.
+        from mr_roboto.verify_interview_script_shape import (
+            verify_interview_script_shape as _verify_is,
+        )
+        try:
+            res = _verify_is(
+                script_text=payload.get("script_text"),
+                script_paths=payload.get("script_paths"),
+                min_questions=int(payload.get("min_questions", 5)),
+                max_questions=int(payload.get("max_questions", 7)),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"verify_interview_script_shape: "
+                        f"question_count={res.get('question_count')} "
+                        f"problems={res.get('question_problems')} "
+                        f"target_assumptions={res.get('target_assumptions')} "
+                        f"placeholders={res.get('placeholders')} "
+                        f"schema_version={res.get('schema_version')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "request_interview_data":
+        # Z1 Tier 2 (A4) — surface interview-script path to founder via
+        # Telegram and wait for DONE/SKIP. record_skip mode persists
+        # missions.interview_skip_reason.
+        from mr_roboto.request_interview_data import (
+            request_interview_data as _req_iv,
+        )
+        try:
+            res = await _req_iv(task)
+            if res.get("status") == "failed":
+                return Action(status="failed", error=str(res.get("error", "")))
+            if (res.get("status") == "needs_clarification"
+                    and res.get("keyboard_sent")):
+                return Action(status="needs_clarification", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "generate_intake_todo":
         # Z1 Tier 1 (B1) — agent-generated todo as the only structured
         # intake gate. Returns needs_clarification with keyboard_sent so

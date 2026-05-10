@@ -303,6 +303,8 @@ async def init_db():
             framework TEXT DEFAULT '',
             legacy_pre_p7 INTEGER DEFAULT 0,
             legacy_pre_charter INTEGER DEFAULT 0,
+            legacy_pre_competitive_positioning INTEGER DEFAULT 0,
+            interview_skip_reason TEXT,
             phase_7_rework_loops INTEGER DEFAULT 0
         )
     """)
@@ -351,6 +353,35 @@ async def init_db():
         )
     except Exception:
         # Column already exists — no-op; new missions default to 0.
+        pass
+
+    # Z1 Tier 2 migration (C2): legacy_pre_competitive_positioning column.
+    # Backfilled to 1 for existing missions — they predate the
+    # 1.4a competitive_positioning_lock step.
+    try:
+        await db.execute(
+            "ALTER TABLE missions "
+            "ADD COLUMN legacy_pre_competitive_positioning INTEGER DEFAULT 0"
+        )
+        await db.execute(
+            "UPDATE missions SET legacy_pre_competitive_positioning = 1"
+        )
+        logger.info(
+            "Z1 Tier 2 migration: legacy_pre_competitive_positioning added "
+            "+ existing rows backfilled to 1"
+        )
+    except Exception:
+        pass
+
+    # Z1 Tier 2 migration (A4): interview_skip_reason column. NULL for
+    # all existing rows — only set by request_interview_data when the
+    # founder explicitly opts SKIP.
+    try:
+        await db.execute(
+            "ALTER TABLE missions ADD COLUMN interview_skip_reason TEXT"
+        )
+        logger.info("Z1 Tier 2 migration: interview_skip_reason column added")
+    except Exception:
         pass
 
     # Tasks

@@ -1928,6 +1928,10 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("mission_thread", self.cmd_mission_thread))
         self.app.add_handler(CommandHandler("missions_active", self.cmd_missions_active))
         self.app.add_handler(CommandHandler("mission_cost", self.cmd_mission_cost))
+        # Z10 T3C: rollback mission to last green checkpoint
+        self.app.add_handler(
+            CommandHandler("rollback_mission", self.cmd_rollback_mission)
+        )
         self.app.add_handler(CallbackQueryHandler(
             self._handle_variant_choice, pattern=r"^(vc|variant_choice):"
         ))
@@ -7454,6 +7458,70 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 f"Stub response."
             )
         await self._reply(update, text)
+
+    async def cmd_rollback_mission(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Roll a mission back to its last green checkpoint.
+
+        Usage: ``/rollback_mission <mission_id> [task_id]``
+
+        Reversibility: ``irreversible`` — verb is registered in
+        VERB_REVERSIBILITY so the dispatcher's confirmation flow gates on
+        founder approval when ``require_confirmation=True`` is passed.
+        """
+        if not context.args:
+            await self._reply(
+                update,
+                "Usage: /rollback_mission <mission_id> [task_id]"
+            )
+            return
+        try:
+            mid = int(context.args[0])
+        except (TypeError, ValueError):
+            await self._reply(update, "mission_id must be an integer.")
+            return
+        target_task = None
+        if len(context.args) >= 2:
+            try:
+                target_task = int(context.args[1])
+            except (TypeError, ValueError):
+                await self._reply(update, "task_id must be an integer.")
+                return
+
+        try:
+            import mr_roboto
+            task = {
+                "id": 0,
+                "mission_id": mid,
+                "title": f"rollback_mission {mid}",
+                "payload": {
+                    "action": "rollback_mission",
+                    "mission_id": mid,
+                    "target_task_id": target_task,
+                    "require_confirmation": True,
+                },
+            }
+            action = await mr_roboto.run(task)
+        except Exception as e:
+            await self._reply(update, f"rollback failed: {e}")
+            return
+
+        if action.status != "completed":
+            await self._reply(
+                update,
+                f"rollback {action.status}: {action.error or ''}"
+            )
+            return
+        res = action.result or {}
+        ledger = res.get("ledger") or {}
+        lines = [
+            f"Rollback OK for mission #{mid}",
+            f"git tag: {ledger.get('git_tag')}",
+            f"db restored: {res.get('db', {}).get('counts')}",
+            f"chroma restored: {len(res.get('chroma', {}).get('restored') or [])}",
+            f"schema rewind: rewound={len(res.get('schema_rewind', {}).get('rewound') or [])} "
+            f"skipped={len(res.get('schema_rewind', {}).get('skipped') or [])}",
+        ]
+        await self._reply(update, "\n".join(lines))
 
     async def _handle_variant_choice(self, update, context):
         """Parse callback_data directly — survives bot restart."""

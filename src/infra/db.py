@@ -39,6 +39,117 @@ _db_connection_path: str | None = None
 # BEGIN ... COMMIT block.
 _tx_lock: asyncio.Lock = asyncio.Lock()
 
+# ─── Z10 T3C: per-mission tx-lock shard ──────────────────────────────────────
+# Cross-mission interference (zone doc 10): the single global ``_tx_lock``
+# above means Mission A's slow INSERT blocks Mission B's add_task until the
+# 60s WAL busy_timeout fires → ``OperationalError "database is locked"``. The
+# fix: shard the lock per mission_id so writes into mission-scoped tables
+# (tasks / task_events / mission_events / artifact_provenance /
+# mission_pacing_snapshots / mission_tradeoff_prompts / mission_budget_alerts
+# / action_confirmations / cost_budgets WHERE scope='mission') do not contend
+# across missions.
+#
+# Lock-shard table assignments
+# ----------------------------
+# mission-scoped (use ``_get_tx_lock(mission_id)``):
+#   - tasks, task_events
+#   - mission_events
+#   - artifact_provenance
+#   - mission_pacing_snapshots
+#   - mission_tradeoff_prompts
+#   - mission_budget_alerts
+#   - action_confirmations
+#   - cost_budgets rows WHERE scope='mission'
+#   - mission_green_tags  (T3C: green-tag ledger)
+#
+# global / cross-mission (use ``_get_tx_lock(None)``):
+#   - missions row writes (insert/update on the row itself)
+#   - models, model_pick_log, model_call_tokens (cross-mission view)
+#   - registry_events
+#   - schema_migrations
+#   - cost_budgets rows WHERE scope IN ('vendor:*', 'global')
+#
+# Combined writes (mission-scoped + global in one tx) MUST acquire both locks,
+# global first then mission, via ``_get_combined_lock(mission_id)``.
+_mission_tx_locks: dict["int | None", asyncio.Lock] = {}
+_mission_tx_locks_meta_lock: asyncio.Lock = asyncio.Lock()
+
+
+def _get_tx_lock(mission_id: "int | None") -> asyncio.Lock:
+    """Return (or create) the tx lock for ``mission_id``.
+
+    ``mission_id=None`` → global lock for cross-mission tables. A per-mission
+    lock is created lazily on first request. Locks are never evicted — the
+    cardinality is bounded by total missions (~hundreds) and each Lock is
+    ~64 bytes. Eviction would race with concurrent acquirers.
+    """
+    # Fast path: no lock-creation race for already-cached entries.
+    lock = _mission_tx_locks.get(mission_id)
+    if lock is not None:
+        return lock
+    # Slow path: race-safe create. We can't use asyncio.Lock as a context
+    # here without awaiting, so use a simple double-checked pattern with a
+    # synchronous fallback — the only racer is a parallel _get_tx_lock for
+    # the same mission_id, which is rare and ``setdefault`` on a dict is
+    # atomic at the GIL level for non-async dict mutation. The
+    # ``_mission_tx_locks_meta_lock`` is reserved for future invariants
+    # (e.g. periodic eviction) and is intentionally unused on the hot path.
+    fresh = asyncio.Lock()
+    return _mission_tx_locks.setdefault(mission_id, fresh)
+
+
+class _CombinedLock:
+    """Async context manager that acquires (global, mission) locks in order.
+
+    Order is fixed — global first, then mission — so two coroutines that
+    each want both locks for different missions cannot deadlock. The
+    global lock is always the same singleton, so the standard
+    "acquire-in-canonical-order" rule is satisfied.
+
+    Skips the mission lock when ``mission_id is None`` (equivalent to a
+    pure-global tx).
+    """
+
+    def __init__(self, mission_id: "int | None"):
+        self._mission_id = mission_id
+        self._global = _get_tx_lock(None)
+        self._mission = (
+            _get_tx_lock(mission_id) if mission_id is not None else None
+        )
+        # Same Lock object would deadlock on double-acquire — collapse.
+        if self._mission is self._global:
+            self._mission = None
+
+    async def __aenter__(self):
+        await self._global.acquire()
+        if self._mission is not None:
+            try:
+                await self._mission.acquire()
+            except BaseException:
+                self._global.release()
+                raise
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self._mission is not None:
+            try:
+                self._mission.release()
+            except RuntimeError:
+                pass
+        try:
+            self._global.release()
+        except RuntimeError:
+            pass
+
+
+def _get_combined_lock(mission_id: "int | None") -> _CombinedLock:
+    """Acquire-both helper for callers writing mission-scoped AND global rows.
+
+    Deadlock-safe order: global FIRST, then mission. See ``_CombinedLock``.
+    """
+    return _CombinedLock(mission_id)
+
+
 
 async def get_db() -> aiosqlite.Connection:
     """Return the shared database connection, creating it on first call.
@@ -1920,6 +2031,38 @@ async def init_db():
         ),
     )
 
+    # ── Z10 T3C: mission green-tag ledger ───────────────────────────
+    # Records every successful "green" checkpoint per mission so the
+    # rollback_mission verb can restore workspace/git + mission DB rows +
+    # Chroma snapshot atomically.
+    await apply_migration(
+        version="2026-05-10-mission-green-tags",
+        sql=(
+            "CREATE TABLE mission_green_tags ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " mission_id INTEGER NOT NULL,"
+            " task_id INTEGER NOT NULL,"
+            " git_tag TEXT NOT NULL,"
+            " db_snapshot_path TEXT NOT NULL,"
+            " chroma_snapshot_path TEXT NOT NULL,"
+            " schema_migrations_at TEXT,"
+            " created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+            " UNIQUE(mission_id, task_id)"
+            ");\n"
+            "CREATE INDEX idx_mission_green_tags_mission "
+            "ON mission_green_tags(mission_id, created_at DESC);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_mission_green_tags_mission;\n"
+            "DROP TABLE IF EXISTS mission_green_tags;\n"
+        ),
+        description=(
+            "T3C reset-to-green: ledger of mission green checkpoints with "
+            "paired git tag + DB snapshot + Chroma snapshot paths + schema "
+            "version at green time for rewind-on-rollback"
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.
@@ -2405,7 +2548,10 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
         else:
             runner = "react"
 
-    async with connect_aux(DB_PATH, _label="add_task") as db:
+    # Z10 T3C: lock per mission_id so concurrent missions don't serialize.
+    # Writes to `tasks` are mission-scoped — fall back to the global slot for
+    # the rare mission_id=None case (orphan tasks).
+    async with _get_tx_lock(mission_id), connect_aux(DB_PATH, _label="add_task") as db:
         db.row_factory = aiosqlite.Row
         try:
             await db.execute("BEGIN IMMEDIATE")
@@ -2928,7 +3074,10 @@ async def add_subtasks_atomically(
 
     # Isolated connection for the BEGIN/COMMIT region — see add_task
     # docstring for why _tx_lock alone cannot protect the singleton.
-    async with connect_aux(DB_PATH, _label="add_subtasks_atomically") as db:
+    # Z10 T3C: mission-scoped lock — concurrent missions don't contend here.
+    async with _get_tx_lock(mission_id), connect_aux(
+        DB_PATH, _label="add_subtasks_atomically"
+    ) as db:
         db.row_factory = aiosqlite.Row
         try:
             await db.execute("BEGIN IMMEDIATE")
@@ -3028,7 +3177,10 @@ async def insert_tasks_atomically(
     created_ids: list[int] = []
 
     # Isolated connection for the BEGIN/COMMIT region.
-    async with connect_aux(DB_PATH, _label="insert_tasks_atomically") as db:
+    # Z10 T3C: mission-scoped lock — concurrent missions don't contend here.
+    async with _get_tx_lock(mission_id), connect_aux(
+        DB_PATH, _label="insert_tasks_atomically"
+    ) as db:
         db.row_factory = aiosqlite.Row
         try:
             await db.execute("BEGIN IMMEDIATE")
@@ -5474,3 +5626,237 @@ async def set_mission_quality_mode(mission_id: int, mode: str) -> None:
         (mode, mission_id),
     )
     await db.commit()
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Z10 T3C — mission green-tag ledger + mission-scoped row snapshot
+# ───────────────────────────────────────────────────────────────────────────
+
+# Tables whose rows belong to a single mission. Used by the snapshot/restore
+# helpers in the rollback_mission verb. Each entry: (table_name, mission_fk).
+MISSION_SCOPED_TABLES: list[tuple[str, str]] = [
+    ("tasks", "mission_id"),
+    ("task_events", "mission_id"),
+    ("mission_events", "mission_id"),
+    ("artifact_provenance", "mission_id"),
+    ("mission_pacing_snapshots", "mission_id"),
+    ("mission_tradeoff_prompts", "mission_id"),
+    ("mission_budget_alerts", "mission_id"),
+]
+
+
+async def record_green_tag(
+    mission_id: int,
+    task_id: int,
+    git_tag: str,
+    db_snapshot_path: str,
+    chroma_snapshot_path: str,
+    schema_migrations_at: str | None = None,
+) -> int:
+    """Insert a row into ``mission_green_tags``.
+
+    Idempotent: returns the existing rowid when ``(mission_id, task_id)`` is
+    already present.
+    """
+    db = await get_db()
+    async with _get_tx_lock(mission_id):
+        cur = await db.execute(
+            "SELECT id FROM mission_green_tags "
+            "WHERE mission_id = ? AND task_id = ?",
+            (mission_id, task_id),
+        )
+        row = await cur.fetchone()
+        if row is not None:
+            return int(row[0])
+        cur = await db.execute(
+            "INSERT INTO mission_green_tags "
+            "(mission_id, task_id, git_tag, db_snapshot_path, "
+            " chroma_snapshot_path, schema_migrations_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                mission_id,
+                task_id,
+                git_tag,
+                db_snapshot_path,
+                chroma_snapshot_path,
+                schema_migrations_at,
+            ),
+        )
+        await db.commit()
+        return int(cur.lastrowid or 0)
+
+
+async def get_latest_green_tag(
+    mission_id: int,
+    task_id: int | None = None,
+) -> dict | None:
+    """Return the most recent green-tag row for ``mission_id`` (or specific task)."""
+    db = await get_db()
+    if task_id is not None:
+        cur = await db.execute(
+            "SELECT id, mission_id, task_id, git_tag, db_snapshot_path, "
+            "       chroma_snapshot_path, schema_migrations_at, created_at "
+            "FROM mission_green_tags "
+            "WHERE mission_id = ? AND task_id = ?",
+            (mission_id, task_id),
+        )
+    else:
+        cur = await db.execute(
+            "SELECT id, mission_id, task_id, git_tag, db_snapshot_path, "
+            "       chroma_snapshot_path, schema_migrations_at, created_at "
+            "FROM mission_green_tags "
+            "WHERE mission_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (mission_id,),
+        )
+    row = await cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row[0],
+        "mission_id": row[1],
+        "task_id": row[2],
+        "git_tag": row[3],
+        "db_snapshot_path": row[4],
+        "chroma_snapshot_path": row[5],
+        "schema_migrations_at": row[6],
+        "created_at": row[7],
+    }
+
+
+async def snapshot_mission_db_rows(mission_id: int) -> dict:
+    """Serialize all mission-scoped rows for ``mission_id`` into a dict.
+
+    Shape: ``{"<table>": [row_dict, ...], ...}`` + ``"_meta"`` with the max
+    schema_migrations version applied at snapshot time.
+    """
+    db = await get_db()
+    out: dict = {}
+    for table, fk in MISSION_SCOPED_TABLES:
+        try:
+            cur = await db.execute(
+                f"SELECT * FROM {table} WHERE {fk} = ?", (mission_id,)
+            )
+            rows = await cur.fetchall()
+        except Exception as e:
+            logger.debug(f"snapshot: skip {table} ({e})")
+            out[table] = []
+            continue
+        out[table] = [dict(r) for r in rows]
+
+    try:
+        cur = await db.execute(
+            "SELECT version FROM schema_migrations "
+            "ORDER BY applied_at DESC, version DESC LIMIT 1"
+        )
+        row = await cur.fetchone()
+        out["_meta"] = {"schema_migrations_at": (row[0] if row else None)}
+    except Exception:
+        out["_meta"] = {"schema_migrations_at": None}
+    return out
+
+
+async def restore_mission_db_rows(mission_id: int, snapshot: dict) -> dict:
+    """DELETE-then-INSERT mission-scoped rows from ``snapshot``.
+
+    Held under the mission's tx-lock so concurrent writers for the same
+    mission cannot interleave. Returns per-table insert counts.
+    """
+    db = await get_db()
+    counts: dict = {}
+    async with _get_tx_lock(mission_id):
+        for table, fk in MISSION_SCOPED_TABLES:
+            rows = snapshot.get(table) or []
+            try:
+                await db.execute(
+                    f"DELETE FROM {table} WHERE {fk} = ?", (mission_id,)
+                )
+            except Exception as e:
+                logger.debug(f"restore: DELETE {table} skipped: {e}")
+                counts[table] = 0
+                continue
+            inserted = 0
+            for r in rows:
+                cols = list(r.keys())
+                qmarks = ",".join(["?"] * len(cols))
+                col_list = ",".join(cols)
+                try:
+                    await db.execute(
+                        f"INSERT OR REPLACE INTO {table} ({col_list}) "
+                        f"VALUES ({qmarks})",
+                        tuple(r[c] for c in cols),
+                    )
+                    inserted += 1
+                except Exception as e:
+                    logger.warning(f"restore: INSERT {table} row failed: {e}")
+            counts[table] = inserted
+        await db.commit()
+    return counts
+
+
+async def rewind_migrations_to(target_version: str | None) -> dict:
+    """Run reversal_sql for every migration applied AFTER ``target_version``.
+
+    Best-effort. Rows with NULL ``reversal_sql`` are SKIPPED and counted in
+    ``skipped`` — the snapshot rollback will run against a newer schema and
+    may not match the snapshot row shape exactly. Returned dict shape:
+
+        {"rewound": [versions], "skipped": [versions], "failed": [versions]}
+
+    ``target_version=None`` is a no-op.
+    """
+    out = {"rewound": [], "skipped": [], "failed": []}
+    if target_version is None:
+        return out
+    db = await get_db()
+    # Compare by rowid + applied_at so migrations applied within the same
+    # CURRENT_TIMESTAMP second still order correctly. Anything with a
+    # strictly higher (applied_at, rowid) tuple than the target landed AFTER
+    # the snapshot was taken.
+    cur = await db.execute(
+        "SELECT version, reversal_sql FROM schema_migrations "
+        "WHERE (applied_at, rowid) > ("
+        "    SELECT applied_at, rowid FROM schema_migrations WHERE version = ?"
+        ") "
+        "ORDER BY applied_at DESC, rowid DESC",
+        (target_version,),
+    )
+    rows = await cur.fetchall()
+    for version, reversal in rows:
+        if not reversal:
+            out["skipped"].append(version)
+            logger.warning(
+                f"rewind_migrations_to: NULL reversal_sql for {version!r} — "
+                f"cannot rewind; rollback will run against newer schema"
+            )
+            continue
+        try:
+            await db.execute("BEGIN")
+            for stmt in [s.strip() for s in reversal.split(";") if s.strip()]:
+                await db.execute(stmt)
+            await db.execute(
+                "DELETE FROM schema_migrations WHERE version = ?", (version,)
+            )
+            await db.execute("COMMIT")
+            out["rewound"].append(version)
+        except Exception as e:
+            try:
+                await db.execute("ROLLBACK")
+            except Exception:
+                pass
+            logger.error(f"rewind failed for {version}: {e}")
+            out["failed"].append(version)
+    return out
+
+
+async def purge_mission_chroma_collections_via_db(mission_id: int) -> int:
+    """Convenience proxy to vector_store.purge_mission_chroma_collections."""
+    try:
+        from src.memory.vector_store import (
+            purge_mission_chroma_collections as _purge,
+        )
+        return await _purge(mission_id)
+    except Exception as e:
+        logger.warning(f"purge_mission_chroma_collections proxy failed: {e}")
+        return 0
+

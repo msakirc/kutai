@@ -97,6 +97,14 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 86400,
         "payload": {"_executor": "vector_maint_snapshot"},
     },
+    # Z10 T2A — write mission_budget_alerts rows at 50/75/90% ceiling
+    # breaches. T2B drains them onto the per-mission Telegram thread.
+    {
+        "title": "mission_budget_alerts",
+        "description": "Check mission cost-ceiling breaches (50/75/90%) and queue alerts",
+        "interval_seconds": 300,
+        "payload": {"_marker": "mission_budget_alerts"},
+    },
     # Z1 Tier 7A (B12) — quarterly bash-audit. Cron: first of Jan/Apr/Jul/Oct
     # at 09:00. cron_expression beats interval_seconds because quarterly
     # intervals don't fit 86400-second arithmetic cleanly across leap years

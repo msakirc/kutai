@@ -1155,7 +1155,7 @@ async def call(
         _t_step = _t_ctx.get("workflow_step_id") if isinstance(_t_ctx, dict) else None
         _t_phase = _t_ctx.get("workflow_phase") if isinstance(_t_ctx, dict) else None
 
-        from src.infra.db import record_call_tokens
+        from src.infra.db import record_call_tokens, record_call_cost
         await record_call_tokens(
             task_id=_t_id,
             agent_type=_t_agent,
@@ -1182,6 +1182,15 @@ async def call(
             iteration_n=int(iteration_n or 0),
             success=True,
         )
+        # Z10 T2A: stamp the just-written row with its USD cost AND
+        # increment the matching mission's cost_budgets aggregate.
+        try:
+            await record_call_cost(
+                task_id=_t_id,
+                cost_usd=float(parsed.get("cost", 0.0) or 0.0),
+            )
+        except Exception:
+            pass
     except Exception:
         pass  # telemetry best-effort
 

@@ -1866,6 +1866,9 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("pause", self.cmd_pause))
         self.app.add_handler(CommandHandler("credential", self.cmd_credential))
         self.app.add_handler(CommandHandler("cost", self.cmd_cost))
+        # Z10 T2A: per-mission cost gauge + quality_mode dial
+        self.app.add_handler(CommandHandler("mission_cost", self.cmd_mission_cost))
+        self.app.add_handler(CommandHandler("quality_mode", self.cmd_quality_mode))
         self.app.add_handler(CommandHandler("dlq", self.cmd_dlq))
         self.app.add_handler(CommandHandler("rework", self.cmd_rework))
         self.app.add_handler(CommandHandler("regen", self.cmd_regen))
@@ -2722,6 +2725,74 @@ class TelegramInterface:
                 lines.append(f"  {phase}: ${pcost:.4f}")
 
         await self._reply(update,"\n".join(lines), parse_mode="Markdown")
+
+    async def cmd_mission_cost(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z10 T2A D3 — per-mission cost gauge.
+
+        Renders the breakdown from ``src.infra.cost_wiring.format_mission_cost``.
+        T2B will reuse the same formatter when auto-posting on
+        ``[milestone]`` events.
+        """
+        if not context.args:
+            await self._reply(update, "Usage: /mission_cost <mission_id>")
+            return
+        try:
+            mission_id = int(context.args[0])
+        except ValueError:
+            await self._reply(update, "Mission ID must be a number.")
+            return
+        try:
+            from src.infra.cost_wiring import format_mission_cost
+            body = await format_mission_cost(mission_id)
+        except Exception as e:
+            await self._reply(update, f"Failed to render mission cost: {e}")
+            return
+        await self._reply(update, body)
+
+    async def cmd_quality_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z10 T2A D7 — set or read a mission's quality_mode dial.
+
+        Usage:
+          /quality_mode <mission_id>          → read
+          /quality_mode <mission_id> <mode>   → set (quick/balanced/thorough)
+        """
+        if not context.args:
+            await self._reply(
+                update,
+                "Usage: /quality_mode <mission_id> [quick|balanced|thorough]",
+            )
+            return
+        try:
+            mission_id = int(context.args[0])
+        except ValueError:
+            await self._reply(update, "Mission ID must be a number.")
+            return
+        if len(context.args) >= 2:
+            mode = context.args[1].strip().lower()
+            try:
+                from src.infra.db import set_mission_quality_mode
+                await set_mission_quality_mode(mission_id, mode)
+            except ValueError as ve:
+                await self._reply(update, str(ve))
+                return
+            except Exception as e:
+                await self._reply(update, f"Failed to set quality_mode: {e}")
+                return
+            await self._reply(
+                update,
+                f"Mission {mission_id} quality_mode set to {mode}",
+            )
+            return
+        try:
+            from src.infra.db import get_mission_quality_mode
+            cur = await get_mission_quality_mode(mission_id)
+        except Exception as e:
+            await self._reply(update, f"Failed to read quality_mode: {e}")
+            return
+        await self._reply(
+            update,
+            f"Mission {mission_id} quality_mode = {cur}",
+        )
 
     async def cmd_model_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show model performance statistics."""

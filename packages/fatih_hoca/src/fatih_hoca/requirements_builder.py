@@ -106,6 +106,16 @@ async def requirements_for(
     if exclude:
         reqs.exclude_models = exclude
 
+    # ── Z10 T2A D7 — propagate mission quality_mode onto reqs ──
+    try:
+        _mid = task.get("mission_id")
+        if _mid is not None:
+            from src.infra.db import get_mission_quality_mode
+            reqs.quality_mode = await get_mission_quality_mode(int(_mid))
+    except Exception:
+        # leave default "balanced"
+        pass
+
     # ── Retry-based model exclusion and difficulty escalation ──
     task_attempts = task.get("worker_attempts", 0) or 0
     if task_attempts >= 3:

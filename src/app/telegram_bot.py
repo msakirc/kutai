@@ -1868,6 +1868,9 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("cost", self.cmd_cost))
         self.app.add_handler(CommandHandler("dlq", self.cmd_dlq))
         self.app.add_handler(CommandHandler("rework", self.cmd_rework))
+        # Z1 Tier 4 (T4B): asset->spec propagation + two-way HTML edit reflection
+        self.app.add_handler(CommandHandler("edit_html", self.cmd_edit_html))
+        self.app.add_handler(CommandHandler("propagate", self.cmd_propagate))
         self.app.add_handler(CommandHandler("retry", self.cmd_retry))
         self.app.add_handler(CommandHandler("load", self.cmd_load))
         self.app.add_handler(CommandHandler("tune", self.cmd_tune))
@@ -3472,6 +3475,127 @@ class TelegramInterface:
                 "spec-first bet is holding._"
             )
 
+        await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+
+    async def cmd_edit_html(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z1 Tier 4 (T4B / C17+A20): two-way HTML edit reflection.
+
+        Founder edits an annotated HTML offline and uploads the modified
+        file. We store ``_pending_action`` so the next document upload
+        is paired with the original screen for ``propose_spec_patch``.
+
+        Usage: ``/edit_html <screen_slug>``
+        """
+        chat_id = update.effective_chat.id
+        args = context.args or []
+        if not args:
+            await self._reply(update,
+                "Usage: `/edit_html <screen_slug>` — then upload the "
+                "edited HTML as a document. The slug must match a screen "
+                "produced in your active mission (e.g. `screen_5_3`).",
+                parse_mode="Markdown")
+            return
+        screen_slug = args[0].strip()
+        # Find the matching original HTML in the most-recent active mission.
+        try:
+            missions = await get_active_missions()
+        except Exception as exc:
+            await self._reply(update,
+                f"❌ Aktif görev listesi alınamadı: {_friendly_error(str(exc))}")
+            return
+        if not missions:
+            await self._reply(update,
+                "📝 Önce `/mission <açıklama>` ile bir görev başlat.",
+                parse_mode="Markdown")
+            return
+        mission = max(missions, key=lambda m: int(m.get("id") or 0))
+        mission_id = int(mission["id"])
+        try:
+            from src.tools.workspace import get_mission_workspace
+            ws = Path(get_mission_workspace(mission_id))
+            web_dir = ws / ".web"
+            candidates = list(web_dir.glob(f"*{screen_slug}*.html")) if web_dir.exists() else []
+        except Exception:
+            candidates = []
+        if not candidates:
+            await self._reply(update,
+                f"⚠️ `{screen_slug}` için orijinal HTML bulunamadı "
+                f"(`mission_{mission_id}/.web/`).",
+                parse_mode="Markdown")
+            return
+        original_path = str(candidates[0])
+        self._pending_action[chat_id] = {
+            "command": "_edit_html_upload",
+            "mission_id": mission_id,
+            "screen_slug": screen_slug,
+            "original_path": original_path,
+            "ts": _time.time(),
+        }
+        await self._reply(update,
+            f"📤 `{screen_slug}` için düzenlenmiş HTML'i şimdi *belge olarak* "
+            f"(document, photo değil) yükle.\n"
+            f"Orijinal: `{original_path}`",
+            parse_mode="Markdown")
+
+    async def cmd_propagate(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z1 Tier 4 (T4B / B2): asset->spec propagation primitive.
+
+        Usage: ``/propagate <asset_path> <change description...>``
+        Walks the produces/consumes graph in i2p_v3.json and emits a
+        ``propagation_proposal.md`` listing affected dependents.
+        """
+        args = context.args or []
+        if len(args) < 2:
+            await self._reply(update,
+                "Usage: `/propagate <asset_path> <change description>`\n"
+                "Example: `/propagate mission_1/.style/design_tokens.json "
+                "switch primary from blue to teal`",
+                parse_mode="Markdown")
+            return
+        asset_path = args[0]
+        change_description = " ".join(args[1:])
+        # Pick most-recent active mission for context.
+        try:
+            missions = await get_active_missions()
+        except Exception as exc:
+            await self._reply(update,
+                f"❌ Aktif görev listesi alınamadı: {_friendly_error(str(exc))}")
+            return
+        mission_id = (
+            max(missions, key=lambda m: int(m.get("id") or 0))["id"]
+            if missions else 0
+        )
+        try:
+            from mr_roboto.propagate_asset_change import propagate_asset_change
+            from src.tools.workspace import get_mission_workspace
+            wf_path = str(Path("src/workflows/i2p/i2p_v3.json").resolve())
+            out_dir = Path(get_mission_workspace(int(mission_id))) / ".propagation"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / f"propagation_proposal_{int(_time.time())}.md"
+            res = propagate_asset_change(
+                asset_path=asset_path,
+                change_description=change_description,
+                workflow_path=wf_path,
+                mission_id=str(mission_id),
+                out_path=str(out_path),
+            )
+        except Exception as exc:
+            await self._reply(update, f"❌ propagate failed: {_friendly_error(str(exc))}")
+            return
+        if not res.get("ok"):
+            await self._reply(update, f"⚠️ {res.get('error')}", parse_mode="Markdown")
+            return
+        deps = res.get("dependents") or []
+        ups = res.get("upstream_candidates") or []
+        lines = [
+            f"🎯 *Propagation* — `{asset_path}`",
+            f"Origin step: `{res.get('origin_step_id')}`",
+            f"Downstream dependents: {len(deps)}",
+            f"Upstream candidates: {len(ups)}",
+            f"Proposal: `{out_path}`",
+        ]
+        for d in deps[:5]:
+            lines.append(f"  • `{d['step_id']}` — {d.get('step_name','')}")
         await self._reply(update, "\n".join(lines), parse_mode="Markdown")
 
     async def cmd_dlq(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

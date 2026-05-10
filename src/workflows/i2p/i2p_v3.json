@@ -836,7 +836,10 @@
       },
       "context": {
         "estimated_output_tokens": 8000
-      }
+      },
+      "post_hooks": [
+        "find_similar_missions"
+      ]
     },
     {
       "id": "0.1.verify",
@@ -1132,7 +1135,10 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "post_hooks": [
+        "surface_prior_mission_hints"
+      ]
     },
     {
       "id": "0.6",
@@ -6016,6 +6022,29 @@
         }
       },
       "context": {}
+    },
+    {
+      "id": "6.7z",
+      "phase": "phase_6",
+      "name": "index_mission_artifacts",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "depends_on": [
+        "6.6"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [],
+      "output_artifacts": [],
+      "produces": [],
+      "payload": {
+        "action": "index_mission_artifacts"
+      },
+      "instruction": "Z1 Tier 6A (P9) — walk phase-≤6 artifacts (charter, compliance_fingerprint, compliance_overlay, ADR register + .adrs/*.json, non_goals.md, reverse_pitch.md), read each `_schema_version` envelope, derive domain_keywords from the charter brand keywords, and insert/upsert one row per artifact into `mission_artifacts_index`. Cross-mission inheritance hints at step 0.5 of future missions read from this index.",
+      "done_when": "mission_artifacts_index has rows for the in-flight mission's available phase-≤6 artifacts.",
+      "skip_when": "mission.legacy_pre_inheritance == '1'",
+      "context": {
+        "estimated_output_tokens": 0
+      }
     },
     {
       "id": "7.0z",

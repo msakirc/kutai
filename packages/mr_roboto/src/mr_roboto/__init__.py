@@ -66,6 +66,14 @@ from mr_roboto import critic_gate as critic_gate_module  # noqa: F401
 # Z10 T3C — reset-to-green primitives.
 from mr_roboto import mark_green as mark_green_module  # noqa: F401
 from mr_roboto import rollback_mission as rollback_mission_module  # noqa: F401
+# Z10 T4A — end-of-mission demo deliverable.
+# Submodule imports keep `mr_roboto.record_demo` resolving to the module
+# (matches the mocking pattern used elsewhere, e.g. critic_gate / mark_green).
+# `from mr_roboto import record_demo` returns the submodule; callers use
+# `record_demo.run(...)`.
+import mr_roboto.record_demo as record_demo  # noqa: F401
+import mr_roboto.verify_demo_artifact as verify_demo_artifact  # noqa: F401
+import mr_roboto.mission_deliverable_bundle as mission_deliverable_bundle  # noqa: F401
 
 __all__ = [
     "Action",
@@ -1919,6 +1927,100 @@ async def _run_dispatch(task: dict) -> Action:
             )
             if not res.get("ok"):
                 return Action(status="failed", error=res.get("error") or "rollback failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "record_demo":
+        # Z10 T4A — Playwright e2e capture → ffmpeg-trimmed mp4 demo.
+        from mr_roboto.record_demo import run as _record_demo
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            if mid is None:
+                return Action(
+                    status="failed",
+                    error="record_demo requires mission_id (per-mission container)",
+                )
+            scenario = payload.get("scenario_path") or "tests/e2e/golden_path.spec.ts"
+            max_s = int(payload.get("max_seconds") or 90)
+            res = await _record_demo(
+                mission_id=int(mid),
+                scenario_path=str(scenario),
+                max_seconds=max_s,
+            )
+            # Record provenance for demo.mp4 so it surfaces in artifact lineage.
+            try:
+                from src.infra.db import record_artifact_write
+                await record_artifact_write(
+                    path=res.get("video_path") or "",
+                    task_id=task.get("id"),
+                    step_id=payload.get("step_id") or task.get("workflow_step_id"),
+                    model_id=None,
+                    retry_n=int(payload.get("retry_n") or 0),
+                    mission_id=int(mid),
+                )
+            except Exception:
+                pass
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_demo_artifact":
+        # Z10 T4A — sibling gate after record_demo.
+        from mr_roboto.verify_demo_artifact import run as _verify_demo
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            if mid is None:
+                return Action(
+                    status="failed",
+                    error="verify_demo_artifact requires mission_id",
+                )
+            res = _verify_demo(
+                mission_id=int(mid),
+                video_path=payload.get("video_path"),
+                min_bytes=int(payload.get("min_bytes") or (1024 * 1024)),
+                min_duration_s=float(payload.get("min_duration_s") or 5.0),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=res.get("reason") or "demo verify failed",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "mission_deliverable_bundle":
+        # Z10 T4A — Telegram post of demo + commit + provenance + cost.
+        from mr_roboto.mission_deliverable_bundle import run as _bundle
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            if mid is None:
+                return Action(
+                    status="failed",
+                    error="mission_deliverable_bundle requires mission_id",
+                )
+            # Bot may be passed via payload (orchestrator) or via app singleton.
+            bot = payload.get("bot")
+            if bot is None:
+                try:
+                    from src.app.telegram_bot import get_bot
+                    bot = await get_bot()
+                except Exception:
+                    bot = None
+            if bot is None:
+                return Action(
+                    status="failed",
+                    error="mission_deliverable_bundle: no telegram bot available",
+                )
+            res = await _bundle(
+                bot=bot,
+                mission_id=int(mid),
+                video_path=payload.get("video_path"),
+                repo_path=payload.get("repo_path"),
+                chat_id=payload.get("chat_id"),
+            )
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

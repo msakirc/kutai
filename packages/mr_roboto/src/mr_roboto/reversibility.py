@@ -113,6 +113,10 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # ---- Z10 T3C reset-to-green primitives ------------------------------
     "mark_green": "full",  # pure snapshot — git tag + DB+Chroma dump
     "rollback_mission": "irreversible",  # rolls workspace/DB/Chroma back; no roll-forward
+    # ---- Z10 T4A end-of-mission demo deliverable ------------------------
+    "record_demo": "full",  # additive artifact (data/missions/{id}/demo.mp4)
+    "verify_demo_artifact": "full",  # pure check
+    "mission_deliverable_bundle": "irreversible",  # posts to Telegram thread
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

@@ -2063,6 +2063,24 @@ async def init_db():
         ),
     )
 
+    # ── Z10 T4A: demo deliverable strict-mode flag ────────────────────
+    # When demo_required=1 (default), missions without e2e specs post a
+    # [blocker] mission event. When demo_required=0, the demo step is
+    # allowed to skip silently. Founder controls per-mission strictness.
+    await apply_migration(
+        version="2026-05-10-missions-demo-required",
+        sql=(
+            "ALTER TABLE missions ADD COLUMN demo_required INTEGER DEFAULT 1;\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE missions DROP COLUMN demo_required;\n"
+        ),
+        description=(
+            "T4A end-of-mission demo strictness: 1 (default) posts [blocker] "
+            "when no e2e specs found; 0 allows silent skip"
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

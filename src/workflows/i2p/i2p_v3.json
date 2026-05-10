@@ -269,7 +269,8 @@
         ],
         "on_failure": "needs_clarification"
       }
-    }
+    },
+    "_z10_t4a_demo_deliverable": true
   },
   "phases": [
     {
@@ -1274,16 +1275,28 @@
       "name": "prior_art_search",
       "agent": "researcher",
       "difficulty": "medium",
-      "tools_hint": ["find_prior_art", "web_search", "extract_url"],
-      "depends_on": ["0.6"],
+      "tools_hint": [
+        "find_prior_art",
+        "web_search",
+        "extract_url"
+      ],
+      "depends_on": [
+        "0.6"
+      ],
       "may_need_clarification": false,
       "skip_when": "mission.legacy_pre_prior_art == '1'",
-      "input_artifacts": ["idea_brief_final"],
-      "output_artifacts": ["prior_art_report"],
+      "input_artifacts": [
+        "idea_brief_final"
+      ],
+      "output_artifacts": [
+        "prior_art_report"
+      ],
       "produces": [
         "mission_{mission_id}/.research/prior_art_report.json"
       ],
-      "post_hooks": ["prior_art_min_coverage"],
+      "post_hooks": [
+        "prior_art_min_coverage"
+      ],
       "instruction": "Call find_prior_art(idea_summary=idea_brief_final.summary, domain_keywords=<comma-separated tags from idea_brief_final.domain_tags or Vision keywords>, k=10, ambition_tier=context.ambition_tier or 'private_beta'). Inspect the returned report. If verdict='blue_ocean_validated' but you suspect the agent missed adjacent solutions, broaden domain_keywords once and re-call. Save the final report JSON to the produces path verbatim. Surface dead/dormant entries with Wayback timestamps when present.",
       "done_when": "prior_art_report exists at the produces path and prior_art_min_coverage post-hook returns ok=true.",
       "artifact_schema": {
@@ -10328,6 +10341,65 @@
       "context": {}
     },
     {
+      "id": "15.10b_record_demo",
+      "phase": "phase_15",
+      "name": "record_demo",
+      "agent": "mechanical",
+      "executor": "record_demo",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "15.10"
+      ],
+      "may_need_clarification": false,
+      "skip_when": [
+        "no_e2e_specs",
+        "skip_post_launch"
+      ],
+      "input_artifacts": [],
+      "output_artifacts": [
+        "demo_mp4"
+      ],
+      "produces": [
+        "demo.mp4"
+      ],
+      "payload": {
+        "scenario_path": "tests/e2e/golden_path.spec.ts",
+        "max_seconds": 90
+      },
+      "instruction": "Z10 T4A: record an end-of-mission Playwright e2e demo, trim to <=90s, save as data/missions/{id}/demo.mp4. Runs inside per-mission Docker container.",
+      "done_when": "demo.mp4 exists and is a real mp4 video.",
+      "context": {}
+    },
+    {
+      "id": "15.10c_verify_demo",
+      "phase": "phase_15",
+      "name": "verify_demo_artifact",
+      "agent": "mechanical",
+      "executor": "verify_demo_artifact",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "15.10b_record_demo"
+      ],
+      "may_need_clarification": false,
+      "skip_when": [
+        "no_e2e_specs",
+        "skip_post_launch"
+      ],
+      "input_artifacts": [
+        "demo_mp4"
+      ],
+      "output_artifacts": [],
+      "payload": {
+        "min_bytes": 1048576,
+        "min_duration_s": 5
+      },
+      "instruction": "Z10 T4A: gate-check demo.mp4 — must exist, be video/mp4, >1MB, >5s.",
+      "done_when": "verify_demo_artifact reports ok=True.",
+      "context": {}
+    },
+    {
       "id": "15.11",
       "phase": "phase_15",
       "name": "new_feature_cycle",
@@ -10500,7 +10572,8 @@
       "depends_on": [
         "15.5",
         "15.8",
-        "15.12"
+        "15.12",
+        "15.10c_verify_demo"
       ],
       "may_need_clarification": true,
       "skip_when": [
@@ -10530,6 +10603,31 @@
           ]
         }
       },
+      "context": {}
+    },
+    {
+      "id": "15.14b_deliverable_bundle",
+      "phase": "phase_15",
+      "name": "mission_deliverable_bundle",
+      "agent": "mechanical",
+      "executor": "mission_deliverable_bundle",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "15.10c_verify_demo",
+        "15.14"
+      ],
+      "may_need_clarification": false,
+      "skip_when": [
+        "skip_post_launch"
+      ],
+      "input_artifacts": [
+        "demo_mp4",
+        "quarterly_roadmap"
+      ],
+      "output_artifacts": [],
+      "instruction": "Z10 T4A: post end-of-mission deliverable bundle (demo.mp4 + commit + provenance + cost) to the mission's Telegram thread.",
+      "done_when": "deliverable bundle posted to Telegram.",
       "context": {}
     },
     {

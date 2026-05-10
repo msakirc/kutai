@@ -82,6 +82,7 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # ---- Datastore append/refresh (reversible by re-run) -----------
     "cloud_refresh": "full",  # idempotent provider-state pull
     "kdv_persist": "full",  # rate-table upsert; latest-wins
+    "mission_event_drain": "full",  # idempotent post + UPDATE; no external write
     "find_similar_missions": "full",  # vector query only
     "index_idea_fingerprint": "full",  # vector upsert; idempotent
     "surface_prior_mission_hints": "full",  # query-only

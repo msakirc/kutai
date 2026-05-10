@@ -373,6 +373,18 @@ class TelegramInterface:
         self._clarification_events = {}
         self.user_last_task_id = {}
         # Explicit clarification tracking: chat_id → task_id
+        # TODO(Z10 T2B / D6): the mission-scoped subset of this mapping
+        # belongs to ``mission_events`` (kind='asking'). When a task that
+        # owns a clarification is tied to a mission_id, the future
+        # ``post_event(kind='asking', ...)`` path replaces this dict for
+        # that task. Standalone /ask + sequential Q&A queues keep using
+        # this dict — they aren't mission-events. Audit:
+        #   * `restore_clarification_state` (line ~388) → keeps using dict
+        #   * `handle_reply` (line ~5947) → keeps text fallback
+        #   * `_resume_with_clarification` (search) → standalone path
+        # All ad-hoc clarifications continue to live here; mission-scoped
+        # clarifications should be created via ``post_event(kind='asking')``
+        # going forward.
         self._pending_clarifications: dict[int, int] = {}
         # Reverse lookup: message_id → task_id for reply-to detection
         self._clarification_msg_ids: dict[int, int] = {}
@@ -1909,8 +1921,17 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("bench_picks", self.cmd_bench_picks))
         self.app.add_handler(CommandHandler("revive", self.cmd_revive))
         self.app.add_handler(CommandHandler("dead", self.cmd_dead))
+        # Z10 T2B: per-mission thread surfacing + cost peek
+        self.app.add_handler(CommandHandler("mission_thread", self.cmd_mission_thread))
+        self.app.add_handler(CommandHandler("missions_active", self.cmd_missions_active))
+        self.app.add_handler(CommandHandler("mission_cost", self.cmd_mission_cost))
         self.app.add_handler(CallbackQueryHandler(
             self._handle_variant_choice, pattern=r"^(vc|variant_choice):"
+        ))
+        # Z10 T2B: typed event + confirmation reactions
+        self.app.add_handler(CallbackQueryHandler(
+            self._handle_mission_event_callback,
+            pattern=r"^(confirm|event):",
         ))
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(filters.LOCATION, self.handle_location))
@@ -2008,6 +2029,16 @@ class TelegramInterface:
             description=description,
             priority=7,
         )
+
+        # Z10 T2B: provision per-mission forum topic (falls back silently
+        # to flat-prefix mode if chat is not a forum supergroup).
+        try:
+            from .telegram_topics import ensure_mission_topic
+            await ensure_mission_topic(
+                self.app.bot, mission_id, description[:80], chat_id,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ensure_mission_topic skipped: %s", e)
 
         if self.orchestrator:
             await self.orchestrator.plan_mission(mission_id, description[:80], description)
@@ -5944,6 +5975,30 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         answer = update.message.text
         chat_id = update.message.chat_id
 
+        # ── Z10 T2B: reply-to a mission_event → resolution='comment' ──
+        try:
+            from .mission_events import get_event_by_message_id, resolve_event
+            event = await get_event_by_message_id(replied_to.message_id)
+            if event:
+                await resolve_event(event["id"], "comment")
+                logger.info(
+                    "mission_event comment recorded",
+                    event_id=event["id"],
+                    mission_id=event.get("mission_id"),
+                    text_preview=(answer or "")[:80],
+                )
+                # Skeleton: revision-task plumbing for artifact-linked events
+                # is deferred; just persist + log + ack the user so they know
+                # the comment landed.
+                await self._reply(
+                    update,
+                    f"💬 Comment recorded on mission "
+                    f"#{event.get('mission_id')} event.",
+                )
+                return
+        except Exception as e:  # noqa: BLE001
+            logger.debug("mission_event reply lookup skipped", error=str(e))
+
         # ── Primary: message-ID lookup (works for ALL clarification messages) ──
         task_id = self._clarification_msg_ids.get(replied_to.message_id)
         if task_id:
@@ -7116,6 +7171,197 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             "options": options,
             "base_label": base_label,
         }
+
+    # ─── Z10 T2B (D3): mission-event reaction handler ────────────────
+    async def _handle_mission_event_callback(self, update, context):
+        """Dispatch ``confirm:*`` and ``event:*`` callback presses.
+
+        Patterns handled:
+          * ``confirm:approve:<id>``  → db.resolve_confirmation(id, 'approved')
+          * ``confirm:reject:<id>``   → db.resolve_confirmation(id, 'rejected')
+          * ``event:approve:<event_id>`` / ``event:reject:<event_id>``
+          * ``event:answer:<event_id>:<idx>``  ('asking' option pressed)
+        """
+        from src.infra.db import resolve_confirmation
+        from .mission_events import resolve_event, post_event
+        query = update.callback_query
+        try:
+            await query.answer()
+        except Exception:  # noqa: BLE001
+            pass
+        data = (query.data or "")
+
+        try:
+            if data.startswith("confirm:approve:") or data.startswith("confirm:reject:"):
+                _, verdict_kw, cid_s = data.split(":", 2)
+                cid = int(cid_s)
+                verdict = "approved" if verdict_kw == "approve" else "rejected"
+                await resolve_confirmation(cid, verdict)
+                # Update the message in-place to show resolved state.
+                try:
+                    new_text = (
+                        (query.message.text or "")
+                        + f"\n\n✅ Resolved: *{verdict}*"
+                    )
+                    await query.edit_message_text(
+                        text=new_text, parse_mode="Markdown",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                logger.info(
+                    "confirmation resolved via reaction",
+                    confirmation_id=cid, verdict=verdict,
+                )
+                return
+
+            if data.startswith("event:approve:") or data.startswith("event:reject:"):
+                _, verdict_kw, eid_s = data.split(":", 2)
+                event_id = int(eid_s)
+                resolution = "approve" if verdict_kw == "approve" else "reject"
+                await resolve_event(event_id, resolution)
+                # If 'asking' rejected → post a [blocker] follow-up so an agent
+                # sees the deadlock without polling.
+                if verdict_kw == "reject":
+                    # Lookup the event row to find mission_id.
+                    db = await get_db()
+                    cur = await db.execute(
+                        "SELECT mission_id, payload FROM mission_events WHERE id = ?",
+                        (event_id,),
+                    )
+                    row = await cur.fetchone()
+                    if row:
+                        import json as _json
+                        try:
+                            pl = _json.loads(row[1] or "{}")
+                        except Exception:
+                            pl = {}
+                        await post_event(
+                            self.app.bot, int(row[0]), "blocker",
+                            {
+                                "reason": (
+                                    f"Asking event #{event_id} rejected: "
+                                    f"{pl.get('question', '')}"
+                                )[:300],
+                            },
+                        )
+                try:
+                    await query.edit_message_text(
+                        text=(query.message.text or "")
+                        + f"\n\n✅ Resolved: *{resolution}*",
+                        parse_mode="Markdown",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                logger.info(
+                    "mission_event resolved via reaction",
+                    event_id=event_id, resolution=resolution,
+                )
+                return
+
+            if data.startswith("event:answer:"):
+                # event:answer:<event_id>:<option_idx>
+                _, _, eid_s, idx_s = data.split(":", 3)
+                event_id = int(eid_s)
+                # Persist resolution as 'answer'; the agent polling this event
+                # can read payload to map idx→option.
+                await resolve_event(event_id, f"answer:{idx_s}")
+                try:
+                    await query.edit_message_text(
+                        text=(query.message.text or "")
+                        + f"\n\n✅ Answered: option #{idx_s}",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                logger.info(
+                    "mission_event answer recorded",
+                    event_id=event_id, option_idx=idx_s,
+                )
+                return
+        except Exception as e:  # noqa: BLE001
+            logger.exception("mission_event callback failed: %s", e)
+
+    # ─── Z10 T2B (D5): thread + cost commands ────────────────────────
+    async def cmd_mission_thread(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Surface the Telegram thread link for a mission. /mission_thread <id>"""
+        if not context.args:
+            await self._reply(update, "Usage: /mission_thread <mission_id>")
+            return
+        try:
+            mid = int(context.args[0])
+        except (TypeError, ValueError):
+            await self._reply(update, "❌ mission_id must be an integer.")
+            return
+        mission = await get_mission(mid)
+        if not mission:
+            await self._reply(update, f"❌ Mission #{mid} not found.")
+            return
+        thread_id = mission.get("telegram_thread_id")
+        if not thread_id:
+            await self._reply(
+                update,
+                f"📭 Mission #{mid}: no thread (flat-mode fallback).",
+            )
+            return
+        chat_id = update.effective_chat.id
+        # Telegram deep-link: t.me/c/<chat_id without -100 prefix>/<thread_id>
+        c_id = str(chat_id)
+        if c_id.startswith("-100"):
+            c_id = c_id[4:]
+        link = f"https://t.me/c/{c_id}/{int(thread_id)}"
+        await self._reply(
+            update,
+            f"🧵 Mission #{mid} thread:\n{link}",
+        )
+
+    async def cmd_missions_active(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List currently-active missions with their thread links."""
+        missions = await get_active_missions()
+        if not missions:
+            await self._reply(update, "📭 No active missions.")
+            return
+        chat_id = update.effective_chat.id
+        c_id = str(chat_id)
+        if c_id.startswith("-100"):
+            c_id = c_id[4:]
+        lines = ["🎯 *Active missions:*"]
+        for m in missions:
+            title = (m.get("title") or "")[:60]
+            mid = m.get("id")
+            tid = m.get("telegram_thread_id")
+            if tid:
+                link = f"https://t.me/c/{c_id}/{int(tid)}"
+                lines.append(f"• #{mid} {title} — [thread]({link})")
+            else:
+                lines.append(f"• #{mid} {title} — (flat)")
+        await self._reply(
+            update, "\n".join(lines), parse_mode="Markdown",
+        )
+
+    async def cmd_mission_cost(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show running cost for a mission (T2A integration). /mission_cost <id>"""
+        if not context.args:
+            await self._reply(update, "Usage: /mission_cost <mission_id>")
+            return
+        try:
+            mid = int(context.args[0])
+        except (TypeError, ValueError):
+            await self._reply(update, "❌ mission_id must be an integer.")
+            return
+        # T2A may not be merged yet — try to import its formatter and stub on
+        # ImportError or attribute miss.
+        text: str | None = None
+        try:
+            from src.app import mission_cost as _mc  # type: ignore
+            if hasattr(_mc, "format_mission_cost"):
+                text = await _mc.format_mission_cost(mid)
+        except Exception:  # noqa: BLE001
+            text = None
+        if text is None:
+            text = (
+                f"💸 Mission #{mid} cost: T2A (cost accounting) not merged yet. "
+                f"Stub response."
+            )
+        await self._reply(update, text)
 
     async def _handle_variant_choice(self, update, context):
         """Parse callback_data directly — survives bot restart."""

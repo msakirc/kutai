@@ -41,6 +41,11 @@ from mr_roboto.attention_check import (
 )
 from mr_roboto.verify_premortem_shape import verify_premortem_shape
 from mr_roboto.spec_consistency_check import spec_consistency_check
+# NOTE: do NOT `from mr_roboto.critic_gate import critic_gate` — that would
+# shadow the submodule on the mr_roboto package namespace and break
+# `patch("mr_roboto.critic_gate._persist")` style mocking. Import the
+# submodule itself so `mr_roboto.critic_gate` keeps resolving to the module.
+from mr_roboto import critic_gate as critic_gate_module  # noqa: F401
 
 __all__ = [
     "Action",
@@ -107,7 +112,72 @@ async def run(task: dict) -> Action:
         return Action(status="completed", result=snap)
 
     if action == "git_commit":
+        # Z1 Tier 5C (B4) — Critic gate post-hook on `git_commit`.
+        # Pattern: pre-stage, capture the planned commit message + staged
+        # diff, gate-check; on veto unstage and return failed; on pass
+        # let auto_commit perform the real commit.
+        from mr_roboto.critic_gate import critic_gate as _critic_gate, _opt_out as _critic_opt_out
+        from src.tools.workspace import get_mission_workspace_relative
+        from src.tools.git_ops import _run_git, ensure_git_repo
+
+        gate_enabled = (not _critic_opt_out()) and bool(payload.get("critic_gate", True))
+        gate_result: dict | None = None
+        if gate_enabled:
+            try:
+                mid = task.get("mission_id")
+                repo_path = (
+                    get_mission_workspace_relative(mid) if mid else ""
+                )
+                await ensure_git_repo(repo_path)
+                # Stage everything so we can read the staged diff.
+                from src.tools.git_ops import _resolve_repo
+                target = _resolve_repo(repo_path) or ""
+                if target:
+                    await _run_git(["add", "-A"], cwd=target)
+                    _, diff_out, _ = await _run_git(
+                        ["diff", "--cached", "--stat"], cwd=target
+                    )
+                    _, diff_full, _ = await _run_git(
+                        ["diff", "--cached"], cwd=target
+                    )
+                else:
+                    diff_out = ""
+                    diff_full = ""
+                planned_msg = (
+                    f"Task #{task.get('id')}: "
+                    f"{(task.get('title') or 'untitled')[:60]}"
+                )
+                gate_result = await _critic_gate(
+                    "git_commit",
+                    {
+                        "commit_message": planned_msg,
+                        "diff_stat": (diff_out or "")[:2000],
+                        "diff_excerpt": (diff_full or "")[:4000],
+                    },
+                    mission_id=task.get("mission_id"),
+                )
+                if gate_result.get("verdict") == "veto":
+                    # Roll back the stage so the next attempt starts clean.
+                    if target:
+                        await _run_git(["reset"], cwd=target)
+                    return Action(
+                        status="failed",
+                        error=(
+                            "critic_gate vetoed git_commit: "
+                            f"{gate_result.get('reasons')}"
+                        ),
+                        result={"critic": gate_result},
+                    )
+            except Exception as e:
+                # Never block work on a broken gate — log and continue.
+                from src.infra.logging_config import get_logger as _gl
+                _gl("mr_roboto.critic_gate").warning(
+                    f"git_commit critic gate failed open: {e}"
+                )
+
         commit_info = await auto_commit(task, payload.get("result") or {})
+        if gate_result is not None:
+            (commit_info or {}).setdefault("critic", gate_result)
         # Backwards-compatible default: empty diff is OK (no-op success).
         # Opt-in: when payload.require_diff is true, an empty diff is a
         # hard failure — surfaces the "step claimed file changes but
@@ -123,6 +193,27 @@ async def run(task: dict) -> Action:
             # unless require_diff is set and we got nothing.
             return Action(status="completed", result=commit_info or {})
         return Action(status="completed", result=commit_info or {})
+
+    if action == "critic_gate":
+        # Z1 Tier 5C (B4) — standalone critic-gate invocation. Useful
+        # for non-mr_roboto actions (e.g. pre-deploy gates) and for
+        # explicit workflow steps. Returns failed when verdict=veto.
+        from mr_roboto.critic_gate import critic_gate as _standalone_critic
+        try:
+            res = await _standalone_critic(
+                action_name=str(payload.get("action_name") or "unknown"),
+                payload=payload.get("target_payload"),
+                mission_id=task.get("mission_id") or payload.get("mission_id"),
+            )
+            if res.get("verdict") == "veto":
+                return Action(
+                    status="failed",
+                    error=f"critic_gate veto: {res.get('reasons')}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
 
     if action == "check_grounding":
         # Layer 2 of G: declarative match between source task's tool_calls
@@ -942,7 +1033,40 @@ async def run(task: dict) -> Action:
             return Action(status="failed", error=str(e))
 
     if action == "notify_user":
+        # Z1 Tier 5C (B4) — Critic gate pre-hook on `notify_user`.
+        # Send is irreversible (user sees the message); gate the text
+        # before dispatch. Veto = drop the message and return failed.
         from mr_roboto.notify_user import notify_user
+        from mr_roboto.critic_gate import (
+            critic_gate as _critic_gate,
+            _opt_out as _critic_opt_out,
+        )
+        gate_enabled = (
+            (not _critic_opt_out()) and bool(payload.get("critic_gate", True))
+        )
+        if gate_enabled:
+            text = payload.get("message") or payload.get("text") or ""
+            try:
+                gate_result = await _critic_gate(
+                    "notify_user",
+                    {"message": text, "chat_id": payload.get("chat_id")},
+                    mission_id=task.get("mission_id"),
+                )
+            except Exception as e:
+                from src.infra.logging_config import get_logger as _gl
+                _gl("mr_roboto.critic_gate").warning(
+                    f"notify_user critic gate failed open: {e}"
+                )
+                gate_result = None
+            if gate_result and gate_result.get("verdict") == "veto":
+                return Action(
+                    status="failed",
+                    error=(
+                        "critic_gate vetoed notify_user: "
+                        f"{gate_result.get('reasons')}"
+                    ),
+                    result={"critic": gate_result, "sent": False},
+                )
         try:
             res = await notify_user(task)
             return Action(status="completed", result=res)

@@ -338,6 +338,7 @@ async def init_db():
             legacy_pre_non_goals INTEGER DEFAULT 0,
             legacy_pre_competitive_positioning INTEGER DEFAULT 0,
             legacy_pre_per_screen_plans INTEGER DEFAULT 0,
+            legacy_pre_html_oids INTEGER DEFAULT 0,
             interview_skip_reason TEXT,
             phase_7_rework_loops INTEGER DEFAULT 0
         )
@@ -473,6 +474,25 @@ async def init_db():
         )
         logger.info(
             "Z1 Tier 3 migration: legacy_pre_per_screen_plans added "
+            "+ existing rows backfilled to 1"
+        )
+    except Exception:
+        pass
+
+    # Z1 Tier 4 migration (T4B / C17+A20): add `legacy_pre_html_oids`
+    # column. Backfilled to 1 for existing missions — they predate the
+    # `annotate_html_oids` post-processor (step `5.30c`) that tags
+    # semantic blocks with `data-oid` for the spec-patch proposer.
+    try:
+        await db.execute(
+            "ALTER TABLE missions "
+            "ADD COLUMN legacy_pre_html_oids INTEGER DEFAULT 0"
+        )
+        await db.execute(
+            "UPDATE missions SET legacy_pre_html_oids = 1"
+        )
+        logger.info(
+            "Z1 Tier 4 migration: legacy_pre_html_oids added "
             "+ existing rows backfilled to 1"
         )
     except Exception:

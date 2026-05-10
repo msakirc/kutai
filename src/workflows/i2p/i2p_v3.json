@@ -680,42 +680,174 @@
       "context": {}
     },
     {
-      "id": "0.1",
+      "id": "0.0z",
       "phase": "phase_0",
-      "name": "raw_idea_intake",
-      "agent": "writer",
+      "name": "reverse_pitch_draft",
+      "agent": "mechanical",
+      "executor": "mechanical",
       "difficulty": "easy",
-      "tools_hint": [
-        "write_file"
-      ],
+      "tools_hint": [],
       "depends_on": [],
-      "may_need_clarification": false,
+      "may_need_clarification": true,
+      "skip_when": "mission.legacy_pre_charter == '1'",
       "input_artifacts": [
         "raw_idea",
-        "project_conventions",
         "strategic_context"
       ],
       "output_artifacts": [
-        "raw_idea_document"
+        "reverse_pitch"
       ],
-      "instruction": "The user's raw idea is provided in the Context Artifacts section below. Take it exactly as stated, preserving all details, aspirations, mentioned features, and constraints. Do not interpret, filter, or add anything. Structure the output as a document with sections: Original Statement, Mentioned Features, Mentioned Constraints, Mentioned Audience, Mentioned Goals. If any section has no content from the raw idea, mark it as 'Not specified'.\n\nOutput the complete document as your final answer in markdown format. Do NOT just write a file â€” your response text IS the artifact.",
-      "done_when": "A structured raw_idea_document exists that faithfully represents the original idea with zero interpretation added.",
+      "produces": [
+        "mission_{mission_id}/.charter/reverse_pitch.md"
+      ],
+      "payload": {
+        "action": "clarify",
+        "kind": "reverse_pitch_request",
+        "question": "Write a one-page launch press release for this product BEFORE we generate the charter. Include: (1) Headline (one line, customer-language), (2) Sub-head (one line clarifying who + outcome), (3) Customer quote (a real-feeling user quote about the value), (4) Founder quote (your one-line conviction), (5) FAQ (3-5 likely questions + answers). If you cannot write the customer quote, the product has no felt-need framing yet — reply with `acknowledgement: I am not building for users` only if this is a prototype-tier exploration; otherwise the mission self-aborts at $0."
+      },
+      "instruction": "Reverse-pitch / Amazon working-backwards artifact (Z1 A1). Founder authors a one-page press release: headline, sub-head, customer quote, founder quote, FAQ. Output is `mission_{mission_id}/.charter/reverse_pitch.md`. The charter (0.1) and the intake todo (0.0a) both consume it. If founder cannot write the customer quote, the mission is meant to abort cheaply.",
+      "done_when": "reverse_pitch.md exists with all required sections (headline / sub-head / customer quote / founder quote / FAQ) and no placeholder text.",
       "artifact_schema": {
-        "raw_idea_document": {
+        "reverse_pitch": {
           "type": "markdown",
           "required_sections": [
-            "Original Statement",
-            "Mentioned Features",
-            "Mentioned Constraints",
-            "Mentioned Audience",
-            "Mentioned Goals"
+            "Headline",
+            "Sub-head",
+            "Customer Quote",
+            "Founder Quote",
+            "FAQ"
           ],
           "_schema_version": "1"
         }
       },
       "context": {
-        "estimated_output_tokens": 10000
+        "ambition_tier_aware": true
       }
+    },
+    {
+      "id": "0.0z.verify",
+      "phase": "phase_0",
+      "name": "reverse_pitch_shape_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": ["0.0z"],
+      "skip_when": "mission.legacy_pre_charter == '1'",
+      "input_artifacts": ["reverse_pitch"],
+      "output_artifacts": ["reverse_pitch_shape_result"],
+      "payload": {
+        "action": "verify_reverse_pitch_shape",
+        "pitch_paths": ["mission_{mission_id}/.charter/reverse_pitch.md"]
+      },
+      "instruction": "Mechanical post-check that 0.0z produced a paraflow-shape reverse pitch (Z1 A1). No LLM. Failure surfaces missing sections / placeholder text and forces a regenerate.",
+      "done_when": "verify_reverse_pitch_shape returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "0.0a",
+      "phase": "phase_0",
+      "name": "generate_intake_todo",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": ["0.0z"],
+      "may_need_clarification": true,
+      "skip_when": "mission.legacy_pre_charter == '1'",
+      "input_artifacts": [
+        "raw_idea",
+        "strategic_context",
+        "reverse_pitch"
+      ],
+      "output_artifacts": [
+        "intake_todo"
+      ],
+      "produces": [
+        "mission_{mission_id}/.intake/intake_todo.md"
+      ],
+      "payload": {
+        "action": "generate_intake_todo",
+        "use_llm": true
+      },
+      "instruction": "Generate the intake todo (Z1 B1) — the ONLY structured gate before charter generation. Replaces the per-question interrogation in legacy 0.4/0.5. Reads founder pitch + Z0 outputs + reverse_pitch.md and emits 10-15 todo items covering audience / problem / outcome / scope / differentiation / constraints / surfaces / brand / risk. Founder confirms via Telegram (status flips back to in_progress); founder edits the file → todo regenerates on next run.",
+      "done_when": "intake_todo.md exists with 10-15 items AND founder has confirmed via Telegram (clarify-shape).",
+      "artifact_schema": {
+        "intake_todo": {
+          "type": "markdown",
+          "required_sections": [
+            "Items"
+          ],
+          "_schema_version": "1"
+        }
+      },
+      "context": {}
+    },
+    {
+      "id": "0.1",
+      "phase": "phase_0",
+      "name": "product_charter",
+      "agent": "writer",
+      "difficulty": "hard",
+      "tools_hint": [
+        "write_file"
+      ],
+      "depends_on": ["0.0a"],
+      "may_need_clarification": false,
+      "skip_when": "mission.legacy_pre_charter == '1'",
+      "input_artifacts": [
+        "raw_idea",
+        "strategic_context",
+        "reverse_pitch",
+        "intake_todo"
+      ],
+      "output_artifacts": [
+        "product_charter"
+      ],
+      "produces": [
+        "mission_{mission_id}/.charter/product_charter.md"
+      ],
+      "instruction": "Write the product charter as a SINGLE coherent document (paraflow shape, Z1 C1+A9+C6+A14). Output `mission_{mission_id}/.charter/product_charter.md` with EXACTLY these five top-level `## ` sections in order:\n\n1. **Product Positioning** — one paragraph naming the audience, the category, and the one-line bet vs. the alternatives.\n2. **Brand Keywords** — at least 5 bullets, each `**name** — one-line description`.\n3. **Core Problem / JTBD** — one paragraph naming the felt pain and the job-to-be-done.\n4. **Goals & Mission** — a `Mission:` line + a `Desired Outcomes` sub-header with 4-7 outcome bullets.\n5. **Solutions We Own** — 3 to 7 solutions, each as a `### <Solution Name>` block with ALL of these labeled fields (every solution, no exceptions): `What it solves`, `Typical path`, `Outcome for the user`, `Boundaries`, `Guiding principles`.\n\nThe document must read as one mind, not five disjoint LLM passes. The reverse pitch headline should be defensible from the charter; the intake-todo confirmations must be reflected. Do NOT use placeholder text (TODO, TBD, <fill in>, lorem ipsum); the mechanical post-hook verify_charter_shape rejects them.\n\nAlso emit a JSON envelope alongside the markdown for schema-version tracking:\n```json\n{\"_schema_version\": \"1\", \"path\": \"mission_{mission_id}/.charter/product_charter.md\"}\n```",
+      "done_when": "product_charter.md exists at `mission_{mission_id}/.charter/product_charter.md`, passes verify_charter_shape (5 sections present, 3-7 solutions each with full sub-shape, no placeholders), and is referenced as the mission's charter for downstream phases.",
+      "artifact_schema": {
+        "product_charter": {
+          "type": "markdown",
+          "required_sections": [
+            "Product Positioning",
+            "Brand Keywords",
+            "Core Problem",
+            "Goals & Mission",
+            "Solutions We Own"
+          ],
+          "_schema_version": "1"
+        }
+      },
+      "context": {
+        "estimated_output_tokens": 8000
+      }
+    },
+    {
+      "id": "0.1.verify",
+      "phase": "phase_0",
+      "name": "product_charter_shape_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": ["0.1"],
+      "skip_when": "mission.legacy_pre_charter == '1'",
+      "input_artifacts": ["product_charter"],
+      "output_artifacts": ["product_charter_shape_result"],
+      "payload": {
+        "action": "verify_charter_shape",
+        "charter_paths": ["mission_{mission_id}/.charter/product_charter.md"],
+        "min_solutions": 3,
+        "max_solutions": 7,
+        "min_brand_keywords": 5
+      },
+      "instruction": "Mechanical post-check that 0.1 produced a paraflow-shape product charter (Z1 C1+A9+C6+A14). No LLM. Asserts 5 sections + 3-7 solutions each with full sub-shape (boundaries + guiding-principles required) + no placeholder text. Failure forces 0.1 to regenerate.",
+      "done_when": "verify_charter_shape returns ok=true.",
+      "context": {}
     },
     {
       "id": "0.2",
@@ -728,6 +860,7 @@
         "0.1"
       ],
       "may_need_clarification": false,
+      "skip_when": "mission.legacy_pre_charter == '0'",
       "input_artifacts": [
         "raw_idea_document"
       ],
@@ -799,6 +932,7 @@
         "0.3"
       ],
       "may_need_clarification": false,
+      "skip_when": "mission.legacy_pre_charter == '0'",
       "input_artifacts": [
         "raw_idea_document",
         "problem_statement",
@@ -836,6 +970,7 @@
         "0.4"
       ],
       "may_need_clarification": true,
+      "skip_when": "mission.legacy_pre_charter == '0'",
       "input_artifacts": [
         "open_questions_list",
         "assumption_list"
@@ -863,22 +998,22 @@
       "tools_hint": [],
       "depends_on": [
         "0.1",
-        "0.2",
-        "0.3",
-        "0.5"
+        "0.3"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
         "raw_idea_document",
+        "product_charter",
         "problem_statement",
         "assumption_list",
         "clarification_request",
-        "clarification_answers"
+        "clarification_answers",
+        "intake_todo"
       ],
       "output_artifacts": [
         "idea_brief_final"
       ],
-      "instruction": "Compile all inputs into a clean Idea Brief document with these sections: 1) Vision (one paragraph describing the aspiration), 2) Problem Statement (from problem_statement, updated with clarifications), 3) Target Audience (specific, from clarifications), 4) Proposed Solution (high-level, what the product does), 5) Key Constraints (budget, timeline, tech, from clarifications), 6) Initial Scope Boundaries (what's in for v1, what's explicitly out), 7) Assumptions (updated list, marking which were validated by clarifications), 8) Open Risks (remaining unknowns). Write in clear, professional prose. Then self-review: check for internal contradictions between sections, anything from clarification_answers not reflected, anything from raw idea lost or misrepresented, vague language that should be specific, and missing information. Fix any issues found. Output the final versioned document as idea_brief_final with a version number and date.",
+      "instruction": "Compile inputs into a clean Idea Brief document with these sections: 1) Vision (one paragraph), 2) Problem Statement, 3) Target Audience, 4) Proposed Solution, 5) Key Constraints, 6) Initial Scope Boundaries, 7) Assumptions, 8) Open Risks. PREFERENCE ORDER for source data: when `product_charter` is present (modern Z1 missions), distill its Positioning + JTBD + Solutions into the brief and treat the charter as canonical. When the charter is absent (legacy missions), fall back to `problem_statement` + `clarification_answers` (the old phase-0 micro-artifacts). Write in clear, professional prose. Self-review: check for internal contradictions, anything from charter or clarifications not reflected, vague language. Output the final versioned document as idea_brief_final with a version number and date.",
       "done_when": "idea_brief_final exists as a clean, self-reviewed, internally consistent document with all 8 sections.",
       "artifact_schema": {
         "idea_brief_final": {
@@ -1474,12 +1609,14 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "market_research_report"
+        "market_research_report",
+        "product_charter",
+        "reverse_pitch"
       ],
       "output_artifacts": [
         "research_review_result"
       ],
-      "instruction": "Review market_research_report for: 1) Claims without evidence, 2) Logical gaps, 3) Missing data, 4) Bias, 5) Internal contradictions, 6) Feature matrix and pricing completeness, 7) Gap analysis quality. Output: verdict (pass/fail/needs_minor_fixes), issues list.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching â€” use what you found. Your response text IS the artifact.",
+      "instruction": "Review market_research_report AND (when present, modern Z1 missions) product_charter + reverse_pitch for:\n\nResearch quality:\n1) Claims without evidence,\n2) Logical gaps,\n3) Missing data,\n4) Bias,\n5) Internal contradictions,\n6) Feature matrix and pricing completeness,\n7) Gap analysis quality.\n\nCharter coherence (Z1 Tier 1 — only when product_charter is present):\n8) Charter coherence — do Positioning, Brand Keywords, JTBD, Mission, and Solutions read as one mind, or as 5 disjoint LLM passes? Flag inconsistencies.\n9) Solutions completeness — every Solution must carry a populated `Boundaries` field AND a `Guiding principles` field. Reject if any solution lacks either, or if the section uses placeholder text.\n10) Reverse-pitch alignment — does the charter support the press-release headline, sub-head, customer quote, and founder quote? Flag any contradiction (e.g. headline promises 'free forever' but charter has a paid tier).\n\nReject (verdict != pass) if any section uses placeholder text (TODO, TBD, <fill in>, lorem ipsum) or if any solution lacks `boundaries` / `guiding_principles`. Output: verdict (pass/fail/needs_minor_fixes), issues list — each issue tagged by which check (1-10) it failed.\n\nIMPORTANT: produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
       "done_when": "research_review_result exists with clear quality assessment.",
       "artifact_schema": {
         "research_review_result": {
